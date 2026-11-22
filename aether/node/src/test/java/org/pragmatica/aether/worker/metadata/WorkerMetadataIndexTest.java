@@ -36,6 +36,25 @@ class WorkerMetadataIndexTest {
         assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).doesNotContainKey(key);
     }
 
+    /// #3303 A3a (vA3b survivors wmi-seed/waiver-empty and wmi-seed/waiver-global): the seed offer and the arc waiver of an entity
+    /// keyspace belong to exactly that keyspace's `entity:` scope, like [AetherKey.EntityCheckpointKey]: not to the empty scope set
+    /// (the row would never reach a worker) and not to the global scope (it would reach every worker).
+    @Test
+    void entityArcKeys_areInExactlyTheirKeyspaceScope() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var offer = AetherKey.EntitySeedOfferKey.entitySeedOfferKey("orders", 3);
+        var waiver = AetherKey.EntityArcWaiverKey.entityArcWaiverKey("orders", 5);
+
+        index.put(offer, "offer-value");
+        index.put(waiver, "waiver-value");
+
+        assertThat(index.snapshot("entity:orders")).containsEntry(offer, "offer-value")
+                                                    .containsEntry(waiver, "waiver-value");
+        assertThat(index.snapshot("entity:other")).isEmpty();
+        assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).doesNotContainKeys(offer, waiver);
+        assertThat(index.hasScope(WorkerMetadataIndex.GLOBAL)).isFalse();
+    }
+
     /// v-2339 F4 (#1337): a worker receives both topic row kinds: in the global scope and in its artifact's scope. A worker that
     /// hosts a publisher or a subscriber has to see the other side's rows for the activation check, and the delivery path reads them.
     @Test
@@ -134,5 +153,42 @@ class WorkerMetadataIndexTest {
         assertThat(index.peersForWorker(WORKER, Set.of(CORE))).doesNotContain(FOREIGN);
         index.put(foreignAssignment, AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.DEACTIVATING));
         assertThat(index.endpointPeersForWorker(WORKER)).containsExactly(WORKER);
+    }
+
+    /// #3533 F2 (survivors of the NodePlacementKey, SpokesmanKey and BackupRestoreKey arms): a node placement row belongs to exactly its
+    /// node's scope (not to the global scope, not to the empty scope set); a spokesman row and the restore-authority row belong to the
+    /// global scope (not to the empty scope set, where the row would never reach a worker).
+    @Test
+    void nodePlacementKey_isInExactlyItsNodeScope() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var key = new AetherKey.NodePlacementKey(CORE);
+
+        index.put(key, "placement-value");
+
+        assertThat(index.snapshot("node:core")).containsEntry(key, "placement-value");
+        assertThat(index.snapshot("node:worker")).doesNotContainKey(key);
+        assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).doesNotContainKey(key);
+    }
+
+    @Test
+    void spokesmanKey_isInTheGlobalScope() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var key = AetherKey.SpokesmanKey.spokesmanKey(CORE);
+
+        index.put(key, "spokesman-value");
+
+        assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).containsEntry(key, "spokesman-value");
+        assertThat(index.snapshot("node:core")).doesNotContainKey(key);
+    }
+
+    @Test
+    void backupRestoreKey_isInTheGlobalScope() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var key = AetherKey.BackupRestoreKey.SINGLETON;
+
+        index.put(key, "restore-value");
+
+        assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).containsEntry(key, "restore-value");
+        assertThat(index.snapshot("node:core")).doesNotContainKey(key);
     }
 }

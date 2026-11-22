@@ -171,6 +171,44 @@ class SpokesmanPingLoopTest {
             assertThat(reports.getFirst().communityEpochCounter()).isEqualTo(3L);
         }
 
+        /// A HELD pong counts as a suspected (winding-down) member exactly as a DRAINING one does.
+        /// Mutation: the suspected test back to a `DRAINING` name comparison.
+        @Test
+        void drainingConsumersMatchHeld_spokesmanCountsHeldAsSuspected() {
+            activateWith(List.of("pool-a"));
+            loop.onClusterSyncPong(pongWithState(GOV_A, "HELD"));
+
+            assertThat(loop.currentReports().getFirst().suspectedMembers()).isEqualTo(1);
+            assertThat(loop.currentReports().getFirst().healthyMembers()).isEqualTo(0);
+        }
+
+        @Test
+        void drainingConsumersMatchHeld_spokesmanControlReadyIsHealthy() {
+            activateWith(List.of("pool-a"));
+            loop.onClusterSyncPong(pongWithState(GOV_A, "READY"));
+
+            assertThat(loop.currentReports().getFirst().suspectedMembers()).isEqualTo(0);
+            assertThat(loop.currentReports().getFirst().healthyMembers()).isEqualTo(1);
+        }
+
+        private ClusterSyncPong pongWithState(NodeId sender, String state) {
+            return new ClusterSyncPong(sender,
+                                       new MetricObservation(0L,
+                                                             System.nanoTime(),
+                                                             System.currentTimeMillis(),
+                                                             Map.of()),
+                                       0L,
+                                       7L,
+                                       0L,
+                                       7L,
+                                       3L,
+                                       state,
+                                       List.of(),
+                                       List.of(),
+                                       List.of(),
+                                       org.pragmatica.lang.Option.none());
+        }
+
         @Test
         void onClusterSyncPong_fromUnknownSender_isIgnored() {
             activateWith(List.of("pool-a"));

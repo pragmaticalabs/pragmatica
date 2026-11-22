@@ -125,6 +125,23 @@ public record StreamConfig(String name,
                                 declaration);
     }
 
+    /// This config carrying `resolved` as its declaration, every other field carried over verbatim (#3333: the parser stores
+    /// the declaration it resolved against the defaults, after the rest of the section is parsed).
+    public StreamConfig withDeclaration(StreamDeclaration resolved) {
+        return new StreamConfig(name,
+                                partitions,
+                                retention,
+                                autoOffsetReset,
+                                maxEventSizeBytes,
+                                consistencyMode,
+                                replicationFactor,
+                                confirmationFactor,
+                                compression,
+                                encryptionKeyId,
+                                incarnation,
+                                Option.some(resolved));
+    }
+
     /// The stored factors as a pair. The engine re-checks them with [ReplicationFactors#replicationFactors].
     public ReplicationFactors replication() {
         return new ReplicationFactors(replicationFactor, confirmationFactor);

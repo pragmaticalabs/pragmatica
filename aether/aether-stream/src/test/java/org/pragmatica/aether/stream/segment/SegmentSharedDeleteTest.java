@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.stream.segment.StreamRetentionSource.EnforcedRetention;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -91,7 +92,7 @@ class SegmentSharedDeleteTest {
 
         assertThat(p0).as("the identity header gives each partition its own block").isNotEqualTo(p1);
 
-        enforcer(stream -> stream.equals("orders") ? Option.some(HOURLY) : Option.none(), partitionZeroOnly()).enforceNow().await();
+        enforcer(stream -> stream.equals("orders") ? Option.some(EnforcedRetention.enforcedRetention(HOURLY, 1)) : Option.none(), partitionZeroOnly()).enforceNow().await();
         collector.collectSharedDeletes(snapshots, NO_GRACE);
 
         assertThat(shared.holds(p0)).as("partition 0's block left the shared tier").isFalse();
@@ -111,7 +112,7 @@ class SegmentSharedDeleteTest {
 
         var young = block("streams/orders/0/1-1");
 
-        enforcer(_ -> Option.some(HOURLY), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
+        enforcer(_ -> Option.some(EnforcedRetention.enforcedRetention(HOURLY, 1)), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
         collector.collectSharedDeletes(snapshots, NO_GRACE);
         tick();
 
@@ -157,7 +158,7 @@ class SegmentSharedDeleteTest {
 
         seal("orders", 0, 0, now - 2 * HOUR, events(0, now - 2 * HOUR));
         seal("orders", 0, 1, now, events(1, now));
-        enforcer(_ -> Option.some(HOURLY), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
+        enforcer(_ -> Option.some(EnforcedRetention.enforcedRetention(HOURLY, 1)), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
         collector.collectSharedDeletes(snapshots, NO_GRACE);
 
         var read = TieredStreamReader.tieredStreamReader(index, storage).read("orders", 0, 0, 1).await();
@@ -174,7 +175,7 @@ class SegmentSharedDeleteTest {
 
         seal("orders", 0, 0, old, events(0, old));
         seal("orders", 0, 1, System.currentTimeMillis(), events(1, System.currentTimeMillis()));
-        enforcer(_ -> Option.some(HOURLY), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
+        enforcer(_ -> Option.some(EnforcedRetention.enforcedRetention(HOURLY, 1)), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
 
         var floor = storage.resolveRef(index.floorRefOf("orders", 0, 0)).unwrap();
 
@@ -239,7 +240,7 @@ class SegmentSharedDeleteTest {
 
         var legacy = block("streams/orders/0/0-0");
 
-        enforcer(_ -> Option.some(HOURLY), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
+        enforcer(_ -> Option.some(EnforcedRetention.enforcedRetention(HOURLY, 1)), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
         collector.collectSharedDeletes(snapshots, NO_GRACE);
 
         assertThat(storage.resolveRef("streams/orders/0/0-0").isPresent()).as("released").isFalse();
@@ -282,7 +283,7 @@ class SegmentSharedDeleteTest {
         failing.failOn.set(true);
         RetentionEnforcer.retentionEnforcer(failing,
                                             index,
-                                            _ -> Option.some(HOURLY),
+                                            _ -> Option.some(EnforcedRetention.enforcedRetention(HOURLY, 1)),
                                             HOUR,
                                             RetentionEnforcer.SegmentRetentionFloor.NONE,
                                             Option.none())
@@ -304,7 +305,7 @@ class SegmentSharedDeleteTest {
         collection.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add), "node-1");
         seal("orders", 0, 0, old, events(0, old));
         seal("orders", 0, 1, System.currentTimeMillis(), events(1, System.currentTimeMillis()));
-        enforcer(_ -> Option.some(HOURLY), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
+        enforcer(_ -> Option.some(EnforcedRetention.enforcedRetention(HOURLY, 1)), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
         shared.failDeletes.set(true);
 
         for (var run = 0; run < 4; run++) {
@@ -331,7 +332,7 @@ class SegmentSharedDeleteTest {
         collection.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add), "node-1");
         seal("orders", 0, 0, old, events(0, old));
         seal("orders", 0, 1, System.currentTimeMillis(), events(1, System.currentTimeMillis()));
-        enforcer(_ -> Option.some(HOURLY), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
+        enforcer(_ -> Option.some(EnforcedRetention.enforcedRetention(HOURLY, 1)), RetentionEnforcer.SegmentRetentionFloor.NONE).enforceNow().await();
         shared.failDeletes.set(true);
 
         collection.runOnce();

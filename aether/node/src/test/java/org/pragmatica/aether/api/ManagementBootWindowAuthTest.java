@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.fail;
 ///
 /// WHAT THIS ASSERTS, AND WHERE IT SITS. The claim is about what an unauthenticated caller
 /// RECEIVES, so the assertions run the pipeline `ManagementServerImpl#validateManagementSecurity`
-/// runs -- `securityValidator.validate(ctx, apiKeyRequired())` then
+/// runs -- `securityValidator.context(ctx, apiKeyRequired())` then
 /// `RoleEnforcer.enforce(sc, resolvePermission(method, path))`, minus the audit side-effect the
 /// production path wraps around that enforce call -- and end on
 /// [ManagementServerImpl#resolveSecurityErrorStatus], the switch that decides the status handed to
@@ -88,7 +88,7 @@ class ManagementBootWindowAuthTest {
     /// Mirrors `ManagementServerImpl#validateManagementSecurity`, calling the same two production
     /// decisions it calls.
     private Result<SecurityContext> pipeline(SecurityValidator validator, String apiKey, String method, String path) {
-        return validator.validate(request(apiKey, method, path), SecurityPolicy.apiKeyRequired())
+        return validator.context(request(apiKey, method, path), SecurityPolicy.apiKeyRequired())
                         .flatMap(sc -> RoleEnforcer.enforce(sc, ManagementServerImpl.resolvePermission(method, path)));
     }
 
@@ -190,7 +190,7 @@ class ManagementBootWindowAuthTest {
         void unknownKey_isRefused_ratherThanFallingBackToAnonymous() {
             var validator = managementValidator(Map.of());
 
-            validator.validate(request("not-a-registered-key", "GET", STATUS_PATH), SecurityPolicy.apiKeyRequired())
+            validator.context(request("not-a-registered-key", "GET", STATUS_PATH), SecurityPolicy.apiKeyRequired())
                      .onSuccess(sc -> fail("unknown key was accepted as " + sc.authorizationRole()))
                      .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.InvalidCredentials.class));
         }
@@ -209,7 +209,7 @@ class ManagementBootWindowAuthTest {
         void bearerTokenRequired_isRefused_evenWithARegisteredAdminKey() {
             registerKvKey(BOOTSTRAP_KEY_ID, BOOTSTRAP_KEY, "ADMIN");
 
-            managementValidator(Map.of()).validate(request(BOOTSTRAP_KEY, "GET", STATUS_PATH),
+            managementValidator(Map.of()).context(request(BOOTSTRAP_KEY, "GET", STATUS_PATH),
                                                    SecurityPolicy.bearerTokenRequired())
                                          .onSuccess(sc -> fail("bearer-token route served an api-key caller as "
                                                               + sc.authorizationRole()));
@@ -227,7 +227,7 @@ class ManagementBootWindowAuthTest {
 
         @Test
         void publicRoute_isStillServedAnonymously() {
-            managementValidator(Map.of()).validate(request(null, "GET", STATUS_PATH), SecurityPolicy.publicRoute())
+            managementValidator(Map.of()).context(request(null, "GET", STATUS_PATH), SecurityPolicy.publicRoute())
                                          .onFailure(cause -> fail("public route was refused: " + cause.message()))
                                          .onSuccess(sc -> assertThat(sc.isAuthenticated()).isFalse());
         }
@@ -235,7 +235,7 @@ class ManagementBootWindowAuthTest {
         private void assertRefused(SecurityPolicy policy, String expectedMessage) {
             registerKvKey(BOOTSTRAP_KEY_ID, BOOTSTRAP_KEY, "ADMIN");
 
-            managementValidator(Map.of()).validate(request(BOOTSTRAP_KEY, "GET", STATUS_PATH), policy)
+            managementValidator(Map.of()).context(request(BOOTSTRAP_KEY, "GET", STATUS_PATH), policy)
                                          .onSuccess(sc -> fail("policy " + policy.asString() + " served "
                                                               + sc.authorizationRole()))
                                          .onFailure(cause -> {

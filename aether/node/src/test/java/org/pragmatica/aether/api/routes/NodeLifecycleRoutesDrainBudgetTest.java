@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.management.route.LeaderRefusal;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.NodeReportedState;
@@ -63,6 +64,8 @@ class NodeLifecycleRoutesDrainBudgetTest {
     private MembershipFsm fsm;
     private Set<NodeId> allPresent;
     private Set<NodeId> installedVoters;
+    private Option<NodeId> currentLeader = Option.none();
+    private NodeId handlingNode = new NodeId("handler-self");
 
     @BeforeEach
     void setUp() {
@@ -146,6 +149,8 @@ class NodeLifecycleRoutesDrainBudgetTest {
                 case "initialTopology" -> presentMembers().stream().toList();
                 case "membershipFsm" -> fsm;
                 case "kvStore" -> kvStore;
+                case "leader" -> currentLeader;
+                case "self" -> handlingNode;
                 case "route" -> recordRoute(args);
                 default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
             });
@@ -381,6 +386,167 @@ class NodeLifecycleRoutesDrainBudgetTest {
 
             assertThat(result.isSuccess()).isTrue();
             result.onSuccess(transition -> assertThat(transition.message()).contains("core-guard applied (role=core"));
+        }
+    }
+
+    /// #3348: an operator drain of the current leader is a typed 409 decided before the readiness lookup and before
+    /// anything is dispatched; the leader has no row in the readiness view, so without it the answer is the 404.
+    @Nested
+    class LeaderDrain {
+        @Test
+        void leaderTarget_refusedWithTypedConflictAndNothingDispatched() {
+            currentLeader = Option.some(node(1));
+            allPresent = Set.of(node(2), node(3), node(4), node(5));
+
+            var failure = routes().drainNodeForTest(node(1).id()).await();
+
+            assertThat(failure.isFailure()).isTrue();
+            failure.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeDrained.class);
+                assertThat(((NodeLifecycleRoutes.LeaderCannotBeDrained) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+                assertThat(cause.message()).as("the CLI recognises this refusal by the shared wording").contains(LeaderRefusal.DRAIN_REASON);
+                assertThat(cause.message()).isEqualTo(
+                    "Cannot drain node node-1: it is the current leader or the node handling this request, and such a node is not drained. Move leadership first:"
+                    + " stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another"
+                    + " leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too.");
+            });
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void leaderTargetRefusedEvenWhenViewReportsItReady() {
+            currentLeader = Option.some(node(1));
+
+            var failure = routes().drainNodeForTest(node(1).id()).await();
+
+            failure.onSuccess(_ -> fail("the leader must not be admitted"))
+                   .onFailure(cause -> assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeDrained.class));
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void nonLeaderTargetUnknownToTheView_stillLifecycleNotFound() {
+            currentLeader = Option.some(node(1));
+            allPresent = Set.of(node(1), node(2), node(3), node(4));
+
+            var answer = routes().drainNodeForTest(node(5).id()).await();
+
+            answer.onSuccess(_ -> fail("a target with no reported state must not be admitted"))
+                  .onFailure(cause -> {
+                      assertThat(cause).isInstanceOf(HttpError.class);
+                      assertThat(((HttpError) cause).status()).isEqualTo(HttpStatus.NOT_FOUND);
+                      assertThat(cause.message()).contains("Node lifecycle not found");
+                  });
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void noLeaderKnown_targetUnknownToTheView_keepsLifecycleNotFound() {
+            currentLeader = Option.none();
+            allPresent = Set.of(node(2), node(3), node(4), node(5));
+
+            routes().drainNodeForTest(node(1).id()).await()
+                    .onSuccess(_ -> fail("a target with no reported state must not be admitted"))
+                    .onFailure(cause -> assertThat(cause.message()).contains("Node lifecycle not found"));
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void followerTargetReady_isAdmitted() {
+            currentLeader = Option.some(node(1));
+
+            assertThat(routes().drainNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+            assertThat(pendingDrains).containsExactly(node(2));
+        }
+
+        /// #3348 (R-a): the handler runs on the believed leader, so a target equal to the handling node is refused
+        /// whether or not this node has learned of its own election; the arm with no leader known pins "own id compared".
+        @Test
+        void selfTarget_noLeaderKnown_isRefused() {
+            currentLeader = Option.none();
+            handlingNode = node(3);
+
+            assertRefusedAndNothingDispatched(node(3));
+        }
+
+        @Test
+        void selfTarget_whileLeaderStateStillNamesTheOldLeader_isRefused() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(3);
+
+            assertRefusedAndNothingDispatched(node(3));
+        }
+
+        @Test
+        void otherNodeThatIsTheLeader_isRefused() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(3);
+
+            assertRefusedAndNothingDispatched(node(1));
+        }
+
+        @Test
+        void readyFollowerHandledOnTheLeader_isAdmitted() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(1);
+
+            assertThat(routes().drainNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+            assertThat(pendingDrains).containsExactly(node(2));
+        }
+
+        private void assertRefusedAndNothingDispatched(NodeId target) {
+            routes().drainNodeForTest(target.id()).await()
+                    .onSuccess(_ -> fail("a drain of the leader or of the handling node must not be admitted"))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeDrained.class));
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        /// #3348 (R-b, R-c): an API shutdown of the leader, or of the handling node, is refused with its own typed text
+        /// and nothing is dispatched; a shutdown of a follower handled on the leader is still admitted (control).
+        @Test
+        void shutdownOfTheLeader_isRefusedWithItsOwnTextAndNothingDispatched() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(1);
+
+            routes().shutdownNodeForTest(node(1).id()).await()
+                    .onSuccess(_ -> fail("a shutdown of the leader must not be admitted"))
+                    .onFailure(cause -> {
+                        assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeShutDown.class);
+                        assertThat(((NodeLifecycleRoutes.LeaderCannotBeShutDown) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+                        assertThat(cause.message()).as("the CLI recognises this refusal by the shared wording").contains(LeaderRefusal.SHUTDOWN_REASON);
+                        assertThat(cause.message()).startsWith("Cannot shut down node node-1: it is the current leader")
+                                                   .contains("the service manager or the container runtime");
+                    });
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void shutdownOfTheHandlingNode_whileLeaderStateNamesAnother_isRefused() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(3);
+
+            routes().shutdownNodeForTest(node(3).id()).await()
+                    .onSuccess(_ -> fail("a shutdown of the handling node must not be admitted"))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(NodeLifecycleRoutes.LeaderCannotBeShutDown.class));
+            assertThat(pendingDrains).isEmpty();
+        }
+
+        @Test
+        void shutdownOfAFollowerHandledOnTheLeader_isAdmitted() {
+            currentLeader = Option.some(node(1));
+            handlingNode = node(1);
+
+            assertThat(routes().shutdownNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+            assertThat(pendingDrains).containsExactly(node(2));
+        }
+
+        @Test
+        void drainRefusalNamesOnlySafeExits_andRefusesShutdownToo() {
+            currentLeader = Option.some(node(1));
+
+            routes().drainNodeForTest(node(1).id()).await()
+                    .onFailure(cause -> assertThat(cause.message()).contains("the service manager or the container runtime")
+                                                                     .contains("`aether nodes shutdown` is refused for the leader too"));
         }
     }
 }

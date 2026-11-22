@@ -28,9 +28,11 @@ interface SliceStates {
     /// Every state `reader`'s committed view holds for `artifact` on `node`; empty when the engine wrote no current row.
     static List<SliceState> statesOf(AetherNode reader, NodeId node, Artifact artifact) {
         var states = new ArrayList<SliceState>();
+
         reader.sliceRows()
               .forEachRow(reader.kvStore(),
                           (rowNode, rowArtifact, state) -> collect(states, node, artifact, rowNode, rowArtifact, state));
+
         return states;
     }
 

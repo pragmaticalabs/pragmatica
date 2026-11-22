@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.storage.MemoryTier;
@@ -170,7 +171,7 @@ class TieredStreamReaderTest {
             var result = reader.read(STREAM, PARTITION, 2, 10).await();
 
             result.onSuccess(events -> fail("Expected an expired cursor, got " + events.size() + " events"))
-                  .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(2, 5)));
+                  .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(2, 5, RemovalCause.RETENTION)));
         }
     }
 

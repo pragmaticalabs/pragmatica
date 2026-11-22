@@ -24,6 +24,7 @@ import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// without a reservation it is found only by hand-checking every open PR.
 class SystemTagsLedgerTest {
     private static final String LEDGER = "wire-tag-ranges.txt";
+    private static final String ARTIFACT_CONTENT_VALUE = "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue";
 
     /// One ledger line: `<from>..<to> <owner> <date> <note>`.
     record Reservation(int from, int to, String owner, LocalDate date, String note, int line) {
@@ -130,5 +132,102 @@ class SystemTagsLedgerTest {
                    "%s is pinned to %d, which no reservation in %s covers: reserve a range first, then allocate inside it".formatted(name,
                                                                                                                                       tag,
                                                                                                                                       LEDGER));
+    }
+
+    /// #420 T12 (design r13; run red at rc6 in `red-rows-420.md`): the tag lies in the block assigned to #420.
+    @Test
+    void artifactContentValue_movedToAssignedBlock() {
+        var tag = SystemTags.tagFor(ARTIFACT_CONTENT_VALUE);
+
+        assertTrue(tag != SystemTags.NOT_PINNED, "PRECONDITION ArtifactContentValue is pinned in SystemTags.TAGS");
+        assertTrue(tag >= 2990 && tag <= 2999, "ArtifactContentValue's tag must be in 2990..2999 but is " + tag);
+    }
+
+    /// #3303 RA-0: 2986..2989 is reserved for restore authority (know `d021c7b150`), and the reservation is exact.
+    /// RA-2 pinned `Refusal` and `RefusalKind` at 2986..2987, which retired RA-0's no-pin tripwire half.
+    @Test
+    void restoreAuthority_reserves2986to2989() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("restore-authority-3303"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "restore-authority-3303 must hold exactly one reservation in " + LEDGER);
+        assertEquals(2986, owned.getFirst().from(), "restore-authority-3303 must start at 2986");
+        assertEquals(2989, owned.getFirst().to(), "restore-authority-3303 must end at 2989");
+    }
+
+    /// #3303 stream split: 3038..3069 is reserved for the stream split and merge lanes, and the reservation is exact.
+    /// The second half is a tripwire: while nothing is pinned inside the block, it fails the lane that pins the
+    /// first tag, which deletes it.
+    @Test
+    void splitSp_reserves3038to3069() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("split-sp"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "split-sp must hold exactly one reservation in " + LEDGER);
+        assertEquals(3038, owned.getFirst().from(), "split-sp must start at 3038");
+        assertEquals(3069, owned.getFirst().to(), "split-sp must end at 3069");
+
+        SystemTags.TAGS.forEach(SystemTagsLedgerTest::assertNotInSplitSpRange);
+    }
+
+    private static void assertNotInSplitSpRange(String name, int tag) {
+        assertFalse(tag >= 3038 && tag <= 3069,
+                    "SP1a pinned in 3038..3069: delete this half (%s is pinned to %d)".formatted(name, tag));
+    }
+
+    /// #3303 S4b: 3070..3109 is reserved for the stream split state (partition state, epoch floor, life outcome), and the
+    /// reservation is exact. This case asserts the range only: the first pin into the block lands in a later step.
+    @Test
+    void s4b_reserves3070to3109() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("s4b"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "s4b must hold exactly one reservation in " + LEDGER);
+        assertEquals(3070, owned.getFirst().from(), "s4b must start at 3070");
+        assertEquals(3109, owned.getFirst().to(), "s4b must end at 3109");
+    }
+
+    /// #3303 A3a: 3018..3037 belongs to the arc lanes (know `f3033886ee`); A3a pins the seed-offer and arc-waiver keys at 3018 and 3019.
+    /// The reservation is exact, and both pins lie inside it.
+    @Test
+    void arcKeys_areInsideTheArcReservation() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("arc-3303"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "arc-3303 must hold exactly one reservation in " + LEDGER);
+        assertEquals(3018, owned.getFirst().from(), "arc-3303 must start at 3018");
+        assertEquals(3037, owned.getFirst().to(), "arc-3303 must end at 3037");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey");
+    }
+
+    /// #3303 A3b: the arc values take the next four numbers of the same reservation, 3020..3023.
+    @Test
+    void arcValues_areInsideTheArcReservation() throws Exception {
+        var owned = ledger().stream()
+                            .filter(reservation -> reservation.owner()
+                                                              .equals("arc-3303"))
+                            .toList();
+
+        assertEquals(1, owned.size(), "arc-3303 must hold exactly one reservation in " + LEDGER);
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue.OfferEntry");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue");
+        assertArcPinInside(owned.getFirst(), "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase");
+    }
+
+    private static void assertArcPinInside(Reservation reservation, String name) {
+        var tag = SystemTags.tagFor(name);
+
+        assertTrue(tag != SystemTags.NOT_PINNED, "PRECONDITION " + name + " is pinned in SystemTags.TAGS");
+        assertTrue(reservation.contains(tag), name + " must lie in " + reservation.describe() + " but is " + tag);
     }
 }

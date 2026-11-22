@@ -996,8 +996,8 @@ class AppHttpServerAdapter implements AppHttpServer {
             return refuseWith(SecurityError.NO_VALIDATOR_CONFIGURED, path, requestId, method);
         }
 
-        return securityValidator.validate(toHttpRequestContext(head, requestId),
-                                          effectivePolicy)
+        return securityValidator.context(toHttpRequestContext(head, requestId),
+                                         effectivePolicy)
                                 .flatMap(ctx -> enforceRoleIfRequired(ctx, effectivePolicy))
                                 .fold(cause -> refuseWith(cause, path, requestId, method),
                                       ctx -> admit(ctx,
@@ -1241,7 +1241,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         var httpContext = toHttpRequestContext(request, requestId);
 
-        securityValidator.validate(httpContext, effectivePolicy)
+        securityValidator.context(httpContext, effectivePolicy)
                          .flatMap(ctx -> enforceRoleIfRequired(ctx, effectivePolicy))
                          .apply(cause -> refuseDispatch(request, response, cause, path, requestId, method),
                                 ctx -> dispatchAuthenticated(request,
@@ -2256,7 +2256,7 @@ class AppHttpServerAdapter implements AppHttpServer {
             return Option.none();
         }
 
-        return securityValidator.validate(httpCtx, policy)
+        return securityValidator.context(httpCtx, policy)
                                 .flatMap(ctx -> enforceRoleIfRequired(ctx, policy))
                                 .onFailure(cause -> refuseForwarded(cause, httpCtx, request, network, ser, method))
                                 .option();

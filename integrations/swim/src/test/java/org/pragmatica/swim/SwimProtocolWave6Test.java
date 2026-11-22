@@ -91,7 +91,7 @@ class SwimProtocolWave6Test {
     void setUp() {
         transport = new RecordingTransport();
         listener = new RecordingListener();
-        protocol = SwimProtocol.swimProtocol(slowConfig(), transport, listener, SELF_ID, SELF_ADDR)
+        protocol = SwimTestProtocols.swimProtocol(slowConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                .unwrap();
     }
 
@@ -186,7 +186,7 @@ class SwimProtocolWave6Test {
                                     timeSpan(100).millis(),
                                     8,
                                     timeSpan(20).millis());
-            var residencyProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            var residencyProtocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                                 .unwrap();
             residencyProtocol.start();
             try {
@@ -258,7 +258,7 @@ class SwimProtocolWave6Test {
                                     timeSpan(10).seconds(),
                                     8,
                                     timeSpan(10).seconds());
-            var timingProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            var timingProtocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                              .unwrap();
             timingProtocol.addSeedMember(NODE_A, ADDR_A);
             timingProtocol.probeOnceForTest();
@@ -485,7 +485,7 @@ class SwimProtocolWave6Test {
                                     timeSpan(100).millis(),
                                     8,
                                     timeSpan(20).millis());
-            var sweepProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            var sweepProtocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                             .unwrap();
             var observations = new RecordingObservationSink();
             sweepProtocol.addObservationListener(observations);
@@ -528,7 +528,7 @@ class SwimProtocolWave6Test {
                                     timeSpan(100).millis(),
                                     8,
                                     timeSpan(20).millis()).withJoinGrace(timeSpan(2).seconds());
-            var graced = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+            var graced = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
                                      .unwrap();
             var observations = new RecordingObservationSink();
             graced.addObservationListener(observations);
@@ -567,7 +567,7 @@ class SwimProtocolWave6Test {
                                     8,
                                     timeSpan(20).millis()).withJoinGrace(timeSpan(300).millis())
                                                           .withLhmMaxScore(1);
-            var graced = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+            var graced = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
                                      .unwrap();
             var observations = new RecordingObservationSink();
             graced.addObservationListener(observations);
@@ -625,7 +625,7 @@ class SwimProtocolWave6Test {
                                     timeSpan(300).millis(),
                                     8,
                                     timeSpan(20).millis());
-            var sloProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            var sloProtocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                           .unwrap();
 
             sloProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(updateOf(NODE_A, MemberState.ALIVE, 1L))));

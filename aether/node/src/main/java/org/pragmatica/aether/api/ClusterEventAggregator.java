@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -12,6 +13,7 @@ import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -33,6 +35,7 @@ import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
 import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
 import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
+import org.pragmatica.aether.api.ClusterEvent.StreamRetentionChanged;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
@@ -52,6 +55,7 @@ import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
 import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.controller.ScalingEvent;
+import org.pragmatica.aether.deployment.cluster.fsm2.Warnings;
 import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.metrics.deployment.ReconciliationAdjustment;
@@ -59,12 +63,14 @@ import org.pragmatica.aether.slice.StreamAccess.PartitionInfo;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.ObservedSliceListener;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -155,8 +161,22 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     /// this account — preserves the prior unconditional-emit behaviour for test / non-gated callers.
     private static final BooleanSupplier NEVER_REPLAYING = () -> false;
 
-    /// The completion of a warning nobody awaits (every entry except [#raiseAwaited]).
-    private static final Runnable NO_SETTLE = () -> {};
+    /// The completion of a raised warning (#3345): `landed` is true only when its event reached the log.
+    @FunctionalInterface
+    private interface Settle {
+        void settled(boolean landed);
+
+        default void landed() {
+            settled(true);
+        }
+
+        default void lost() {
+            settled(false);
+        }
+    }
+
+    /// The completion of a warning nobody awaits (every entry except [#raiseLanded] and the forms built on it).
+    private static final Settle NO_SETTLE = _ -> {};
 
     /// Default leader-check used by the legacy factory overloads (tests / call sites that don't gate
     /// on leadership): always-leader, preserving prior unconditional-emit behaviour through
@@ -233,11 +253,11 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
 
     /// Warnings with a recovery that are admitted but not yet in the log, each holding the recovery that arrived meanwhile.
     /// Recoveries raised during snapshot/resync replay, by the key of the warning they close, released after it (#752).
-    private final ConcurrentHashMap<String, ClusterEvent> replayHeldRecoveries = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, HeldRecovery> replayHeldRecoveries = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Option<HeldRecovery>> awaitingDelivery = new ConcurrentHashMap<>();
 
     /// A recovery held until the warning it closes lands, with the completion of whoever awaits it (#2034).
-    private record HeldRecovery(ClusterEvent event, Runnable settle) {}
+    private record HeldRecovery(ClusterEvent event, Settle settle) {}
 
     /// Per-task window for the scheduled-task outcome events (#1723): the same 60 s mechanism, its own key space
     /// (`task@node`), so one flapping task cannot starve another and neither starves the operator warnings.
@@ -271,6 +291,11 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     static final long OPERATOR_WARNING_RETRY_MS = 5_000L;
 
     private volatile Option<ClusterEvent> lastRaisedOperatorWarning = Option.none();
+
+    /// How many admitted operator warnings [#raisedOperatorWarnings] keeps; the oldest is dropped past it.
+    private static final int RAISED_HISTORY_LIMIT = 256;
+
+    private final ConcurrentLinkedDeque<ClusterEvent> raisedOperatorWarnings = new ConcurrentLinkedDeque<>();
 
     /// A key with no call for this long is evicted by [#evictIdleThrottleWindows] (#1617 R3). Twice the
     /// window, so a key is never evicted while its window could still hold a call back.
@@ -1029,19 +1054,57 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     /// Raise `warning` from a thread that must know when its event's life ended (#2034: a draining node waits for its departure
     /// events before it halts). The returned promise completes when the event lands, when redelivery gives up on it, or at once
     /// when it is throttled, suppressed by replay, dropped by the open cap, refused (a recovery with no open warning), or when raising
-    /// it threw. A recovery held behind its warning completes once it is released and delivered (or dropped with the warning). It
+    /// it threw. A recovery held behind its warning or during replay completes once it is released and delivered, or dropped. It
     /// never fails. Reads the replay bit on the calling thread, so the caller must not be a KV handler of a replay burst it wants
     /// to count as live (the departure push thread is not one). The caller bounds the wait.
     public Promise<Unit> raiseAwaited(OperatorWarning warning) {
-        Promise<Unit> settled = Promise.promise();
-        var settle = settleOnce(settled);
+        return raiseLanded(warning).mapToUnit();
+    }
+
+    /// [#raiseAwaited] that tells the caller whether the event is in the log (#3345): `true` only when it landed. `false` when it was
+    /// throttled, suppressed by replay (a condition), dropped by the open cap, refused (a recovery with no open warning on THIS
+    /// aggregator), given up by redelivery (a POSSIBLY_DELIVERED give-up included), or when raising it threw. A held recovery (behind
+    /// its warning's delivery, or during a snapshot/resync replay) stays pending while held and completes with its final outcome:
+    /// `true` when it is released and lands, `false` when it is dropped or superseded; it never completes `false` and then lands. A caller that needs the event retries after [#OPERATOR_WARNING_RETRY_MS]
+    /// (a lost event shortens the window to it) or after [#EVENT_THROTTLE_MS] (a throttled one). It never fails. Same replay-bit and
+    /// bounded-wait terms as [#raiseAwaited].
+    public Promise<Boolean> raiseLanded(OperatorWarning warning) {
+        Promise<Boolean> settled = Promise.promise();
+        var settle = settleLandedOnce(settled);
 
         Result.lift(Causes::fromThrowable, () -> onOperatorWarning(warning, replayingCheck, settle)).onFailure(cause -> settleAfterThrow(warning.code()
                                                                                                                                                 .code(),
                                                                                                                                          cause,
-                                                                                                                                         settle));
+                                                                                                                                         settle::lost));
 
         return settled;
+    }
+
+    /// Raise `closer`, a recovery of `warning`'s code for the same subject, on an aggregator that may never have seen `warning`
+    /// open (#3345: a new leader closing a hold an earlier leader opened). A recovery with no open warning here is refused, so when
+    /// the warning is neither open nor in delivery on THIS aggregator, `warning` is raised first and `closer` only once it landed;
+    /// the event log may then show the warning twice for one subject (once per raising node). Completes `true` only when the closer
+    /// landed, `false` when either raise did not land (the [#raiseLanded] cases); the caller retries the whole call.
+    public Promise<Boolean> raiseClosing(OperatorWarning warning, OperatorWarning closer) {
+        var key = throttleKey(warning.code(), warning.subject());
+
+        return openHere(key)
+               ? raiseLanded(closer)
+               : raiseLanded(warning).flatMap(landed -> closeIfLanded(landed, closer));
+    }
+
+    private boolean openHere(String key) {
+        return openRecoverable.contains(key) || awaitingDelivery.containsKey(key);
+    }
+
+    private Promise<Boolean> closeIfLanded(boolean landed, OperatorWarning closer) {
+        return landed
+               ? raiseLanded(closer)
+               : Promise.success(false);
+    }
+
+    private static Settle settleLandedOnce(Promise<Boolean> settled) {
+        return settled::succeed;
     }
 
     private static Runnable settleOnce(Promise<Unit> settled) {
@@ -1058,7 +1121,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
         onOperatorWarning(warning, replayed, NO_SETTLE);
     }
 
-    private void onOperatorWarning(OperatorWarning warning, BooleanSupplier replayed, Runnable settle) {
+    private void onOperatorWarning(OperatorWarning warning, BooleanSupplier replayed, Settle settle) {
         var key = throttleKey(warning.code(), warning.subject());
 
         warning.code()
@@ -1067,7 +1130,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                .onEmpty(() -> onCondition(warning, key, replayed, settle));
     }
 
-    private void onCondition(OperatorWarning warning, String key, BooleanSupplier replayed, Runnable settle) {
+    private void onCondition(OperatorWarning warning, String key, BooleanSupplier replayed, Settle settle) {
         var spoofable = SPOOFABLE_SUBJECT_CODES.contains(warning.code());
 
         if (spoofable) {
@@ -1080,30 +1143,30 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                       warning.code().code(),
                       warning.subject(),
                       MAX_OPEN_RECOVERABLE_PER_CODE);
-            settle.run();
+            settle.lost();
 
             return;
         }
         // A recurrence makes a repair still held from replay stale: the tick must not publish it behind the new condition.
-        replayHeldRecoveries.remove(key);
+        dropReplayHeld(key);
         var window = admit(operatorWarningThrottle, key);
 
         if (!window.admitted()) {
             LOG.debug("ClusterEventAggregator: suppressing throttled OperatorWarning {} for {}",
                       warning.code().code(),
                       warning.subject());
-            settle.run();
+            settle.lost();
 
             return;
         }
 
         var event = warningEvent(warning, window.suppressedBefore());
 
-        lastRaisedOperatorWarning = Option.some(event);
+        recordRaised(event);
         if (replayed.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
             shortenWindow(key, window);
-            settle.run();
+            settle.lost();
 
             return;
         }
@@ -1113,7 +1176,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
         if (warning.code().hasRecovery()) {
             deliverRecoverable(event, key, window, settle);
         } else {
-            redelivery.deliver(stampedOrAsIs(event), _ -> shortenWindowThenSettle(key, window, settle), settle);
+            redelivery.deliver(stampedOrAsIs(event), _ -> shortenWindowThenSettle(key, window, settle), settle::landed);
         }
 
         if (spoofable) {
@@ -1150,7 +1213,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                 Option.option(awaitingDelivery.remove(mark.getKey()))
                       .flatMap(held -> held)
                       .onPresent(held -> held.settle()
-                                             .run());
+                                             .lost());
             }
         }
     }
@@ -1159,7 +1222,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     /// held in `awaitingDelivery` and released when the warning lands, or dropped with it if redelivery gives up, so a
     /// recovery never reaches the log without the warning it closes. A recovery still held for an earlier delivery of the same
     /// warning is dropped, and its settle runs, so whoever awaits it is released (#2684 N1).
-    private void deliverRecoverable(ClusterEvent event, String key, ThrottleWindow window, Runnable settle) {
+    private void deliverRecoverable(ClusterEvent event, String key, ThrottleWindow window, Settle settle) {
         Option.option(awaitingDelivery.put(key,
                                            Option.none()))
               .flatMap(held -> held)
@@ -1169,22 +1232,22 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                            () -> warningLandedThenSettle(key, settle));
     }
 
-    private void shortenWindowThenSettle(String key, ThrottleWindow window, Runnable settle) {
+    private void shortenWindowThenSettle(String key, ThrottleWindow window, Settle settle) {
         shortenWindow(key, window);
-        settle.run();
+        settle.lost();
     }
 
     private void warningLostThenSettle(String key,
                                        ThrottleWindow window,
                                        ClusterEventRedelivery.GiveUpOutcome outcome,
-                                       Runnable settle) {
+                                       Settle settle) {
         warningLost(key, window, outcome);
-        settle.run();
+        settle.lost();
     }
 
-    private void warningLandedThenSettle(String key, Runnable settle) {
+    private void warningLandedThenSettle(String key, Settle settle) {
         warningLanded(key);
-        settle.run();
+        settle.landed();
     }
 
     /// A warning redelivery gave up on. If an attempt's outcome was unknown it may be in the log, so it is treated as
@@ -1203,7 +1266,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                 held.onPresent(recovery -> releaseHeldRecovery(key, recovery));
             } else {
                 held.onPresent(recovery -> recovery.settle()
-                                                   .run());
+                                                   .lost());
             }
         }
 
@@ -1220,15 +1283,15 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
 
     /// A held recovery superseded before its warning landed is never published; its settle runs outside the map update.
     private static void settleReplaced(HeldRecovery recovery) {
-        recovery.settle().run();
+        recovery.settle().lost();
     }
 
     private void releaseHeldRecovery(String key, HeldRecovery recovery) {
         openRecoverable.remove(key);
         redelivery.deliver(stampedOrAsIs(recovery.event()),
                            _ -> recovery.settle()
-                                        .run(),
-                           recovery.settle());
+                                        .lost(),
+                           recovery.settle()::landed);
     }
 
     /// A recovery is published iff the warning it closes was published for the same subject and is still open, and it
@@ -1238,7 +1301,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     private void onRecovery(OperatorWarning warning,
                             OperatorWarningCode closes,
                             BooleanSupplier replayed,
-                            Runnable settle) {
+                            Settle settle) {
         var closedKey = throttleKey(closes, warning.subject());
         var event = warningEvent(warning, 0);
         var replaced = Option.option(awaitingDelivery.replace(closedKey, Option.some(new HeldRecovery(event, settle))));
@@ -1259,18 +1322,17 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
         }
 
         if (replayed.getAsBoolean()) {
-            holdDuringReplay(closedKey, event);
-            settle.run();
+            holdDuringReplay(closedKey, new HeldRecovery(event, settle));
 
             return;
         }
 
-        replayHeldRecoveries.remove(closedKey);
+        dropReplayHeld(closedKey);
         if (!openRecoverable.remove(closedKey)) {
             LOG.debug("ClusterEventAggregator: refusing OperatorWarning {} for {}, no published warning is open",
                       warning.code().code(),
                       warning.subject());
-            settle.run();
+            settle.lost();
 
             return;
         }
@@ -1279,12 +1341,23 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     }
 
     /// A shown warning must get its recovery, but replay suppresses local emits. So during replay the recovery is held
-    /// and the open mark is left alone; [#releaseReplayHeldRecoveries] publishes it on the first tick after replay.
-    private void holdDuringReplay(String closedKey, ClusterEvent recovery) {
+    /// and the open mark is left alone; [#releaseReplayHeldRecoveries] publishes it on the first tick after replay, and its settle
+    /// runs with that delivery's outcome (#3345: the caller learns the final outcome, never `false` for a recovery that then
+    /// lands). With no open mark nothing would ever publish it, so it settles `false` at once; a recovery it replaces is never
+    /// published, so that one settles `false`.
+    private void holdDuringReplay(String closedKey, HeldRecovery recovery) {
         if (openRecoverable.contains(closedKey)) {
-            replayHeldRecoveries.put(closedKey, recovery);
-            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — holding {} until it ends", recovery);
+            Option.option(replayHeldRecoveries.put(closedKey, recovery)).onPresent(ClusterEventAggregator::settleReplaced);
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — holding {} until it ends",
+                      recovery.event());
+        } else {
+            recovery.settle().lost();
         }
+    }
+
+    /// A replay-held recovery made stale (a recurrence of its condition, or a newer recovery after replay) is never published.
+    private void dropReplayHeld(String closedKey) {
+        Option.option(replayHeldRecoveries.remove(closedKey)).onPresent(ClusterEventAggregator::settleReplaced);
     }
 
     private void releaseReplayHeldRecoveries() {
@@ -1296,15 +1369,23 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     }
 
     private void releaseReplayHeld(String closedKey) {
-        Option.option(replayHeldRecoveries.remove(closedKey))
-              .filter(_ -> openRecoverable.remove(closedKey))
-              .onPresent(recovery -> publishRecovery(closedKey, recovery, NO_SETTLE));
+        Option.option(replayHeldRecoveries.remove(closedKey)).onPresent(recovery -> publishOrDropReplayHeld(closedKey,
+                                                                                                            recovery));
     }
 
-    private void publishRecovery(String closedKey, ClusterEvent event, Runnable settle) {
+    /// The mark may have closed while the recovery was held (a spoofable mark expired): then it is never published.
+    private void publishOrDropReplayHeld(String closedKey, HeldRecovery recovery) {
+        if (openRecoverable.remove(closedKey)) {
+            publishRecovery(closedKey, recovery.event(), recovery.settle());
+        } else {
+            settleReplaced(recovery);
+        }
+    }
+
+    private void publishRecovery(String closedKey, ClusterEvent event, Settle settle) {
         operatorWarningThrottle.remove(closedKey);
-        lastRaisedOperatorWarning = Option.some(event);
-        redelivery.deliver(stampedOrAsIs(event), _ -> settle.run(), settle);
+        recordRaised(event);
+        redelivery.deliver(stampedOrAsIs(event), _ -> settle.lost(), settle::landed);
     }
 
     private ClusterEvent.OperatorWarning warningEvent(OperatorWarning warning, long suppressedSince) {
@@ -1312,6 +1393,25 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                                                 severityOf(warning.code().level()),
                                                 warning.message(),
                                                 operatorWarningDetails(warning, suppressedSince));
+    }
+
+    private void recordRaised(ClusterEvent event) {
+        lastRaisedOperatorWarning = Option.some(event);
+        raisedOperatorWarnings.addLast(event);
+        trimRaisedHistory();
+    }
+
+    private void trimRaisedHistory() {
+        while (raisedOperatorWarnings.size() > RAISED_HISTORY_LIMIT) {
+            raisedOperatorWarnings.pollFirst();
+        }
+    }
+
+    /// Observability: the operator-warning events this node admitted for publication, oldest first, bounded to the last
+    /// 256 (RAISED_HISTORY_LIMIT). Unlike [#lastRaisedOperatorWarning] a later warning does not hide an earlier one, so a
+    /// reader asking "was a warning with code X raised" is not overwritten by an unrelated producer (#3403).
+    public List<ClusterEvent> raisedOperatorWarnings() {
+        return List.copyOf(raisedOperatorWarnings);
     }
 
     /// Observability: the operator-warning event this node most recently admitted for publication,
@@ -1953,6 +2053,29 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                                                event.oldValue(),
                                                event.cause().value())
                                 .forEach(this::emitCommitted);
+    }
+
+    /// #3203 (CTO ruling B): a family warning of the cluster FSM is published from the committed `FsmWarningKey` put, never from the
+    /// writer's settlement. Rule E reads the committed pair (the row this put replaced at its KV index, and the put), so every node derives
+    /// the same notice at one index, and [#emitCommitted] lets one node publish it, in commit order: a deposed leader's late settlement
+    /// can no longer reopen a key its successor closed. A code that is not an `OperatorWarningCode` is not published; every family
+    /// opener and recovery code is one (`FsmWarningCatalogueTest`).
+    @Contract
+    public void onFsmWarningPut(ValuePut<FsmWarningKey, FsmWarningValue> event) {
+        Warnings.committedNotice(event.cause().key(),
+                                 event.oldValue(),
+                                 event.cause().value())
+                .flatMap(ClusterEventAggregator::catalogued)
+                .onPresent(warning -> emitCommitted(warningEvent(warning, 0)));
+    }
+
+    private static Option<OperatorWarning> catalogued(Warnings.Notice notice) {
+        return Option.from(Arrays.stream(OperatorWarningCode.values())
+                                 .filter(code -> code.code()
+                                                     .equals(notice.code()))
+                                 .findFirst()).map(code -> OperatorWarning.operatorWarning(code,
+                                                                                           notice.subject(),
+                                                                                           notice.message()));
     }
 
     @Contract
@@ -2623,6 +2746,27 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                                                      String.valueOf(event.effectiveConfirmationFactor()),
                                                      "reason",
                                                      event.reason())));
+    }
+
+    /// Taste: INFO. A committed retention change is routine operator action; the summary states the change only, no
+    /// prediction of what the stream will retain. Raised on every node whose stream manager ADOPTS the committed config Put
+    /// (its adopt site, #3554), with `oldBounds` the bounds that node enforced before, so it takes the committed gate
+    /// ([#emitCommitted], #1671 I-35): one node per KV index publishes it, with the raiser's eventId unchanged.
+    @Contract
+    public void onStreamRetentionChanged(OperationalEvent.StreamRetentionChanged event) {
+        emitCommitted(new StreamRetentionChanged(hlcClock.now(),
+                                                 Severity.INFO,
+                                                 "Stream " + event.stream()
+                                                + " retention bounds changed: committed " + event.oldBounds()
+                                                + " -> " + event.newBounds(),
+                                                 Map.of(ClusterEventIdentity.EVENT_ID,
+                                                        event.eventId(),
+                                                        "stream",
+                                                        event.stream(),
+                                                        "oldBounds",
+                                                        event.oldBounds(),
+                                                        "newBounds",
+                                                        event.newBounds())));
     }
 
     @Contract

@@ -1,0 +1,2 @@
+### Fixed (2026-11-19 — #3406: JoinGenerationGuardTest compares a 100 ms sleep with the guard's short wait)
+- **`JoinGenerationGuardTest` no longer races a wall-clock sleep against the guard's wait.** The "still waiting" claims now run against a 30 s wait and are asserted right after `admit` returns (its first poll is synchronous), and the timeout path is a separate test with no "still waiting" assertion. `[verified: integrations/consensus/src/test/java/org/pragmatica/consensus/net/JoinGenerationGuardTest.java]`

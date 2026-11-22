@@ -60,7 +60,7 @@ class SwimSelfIsolationLatchAtomicityTest {
                                 8,
                                 timeSpan(20).millis()).withJoinGrace(timeSpan(0).millis());
 
-        protocol = SwimProtocol.swimProtocol(config, new SilentTransport(), new SilentListener(), SELF_ID, SELF_ADDR, () -> false)
+        protocol = SwimTestProtocols.swimProtocol(config, new SilentTransport(), new SilentListener(), SELF_ID, SELF_ADDR, () -> false)
                                .unwrap();
     }
 
@@ -74,7 +74,7 @@ class SwimSelfIsolationLatchAtomicityTest {
         protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.FAULTY);
         var checked = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        var detector = new Thread(() -> protocol.latchSelfIsolation(() -> allFaultyThenHold(checked, release)), "latch-detector");
+        var detector = new Thread(() -> protocol.latchSelfIsolationForTest(() -> allFaultyThenHold(checked, release)), "latch-detector");
 
         detector.start();
         assertThat(checked.await(WAIT_MS, TimeUnit.MILLISECONDS)).as("control: the check read all peers FAULTY and is parked").isTrue();
@@ -118,7 +118,7 @@ class SwimSelfIsolationLatchAtomicityTest {
 
     @Test
     void noPeers_neverLatches() {
-        assertThat(protocol.latchSelfIsolation(() -> true)).as("an empty membership is not an all-peers-FAULTY signature").isFalse();
+        assertThat(protocol.latchSelfIsolationForTest(() -> true)).as("an empty membership is not an all-peers-FAULTY signature").isFalse();
         assertThat(protocol.selfIsolatedForTest()).isFalse();
     }
 
@@ -126,14 +126,14 @@ class SwimSelfIsolationLatchAtomicityTest {
     void alreadyLatched_secondCheckReportsNothingNew() {
         protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.FAULTY);
 
-        assertThat(protocol.latchSelfIsolation(this::allFaulty)).as("first check latches").isTrue();
-        assertThat(protocol.latchSelfIsolation(this::allFaulty)).as("the latch is already set").isFalse();
+        assertThat(protocol.latchSelfIsolationForTest(this::allFaulty)).as("first check latches").isTrue();
+        assertThat(protocol.latchSelfIsolationForTest(this::allFaulty)).as("the latch is already set").isFalse();
         assertThat(protocol.selfIsolatedForTest()).isTrue();
     }
 
     private void faultyThenCheck(NodeId peer, InetSocketAddress address, BooleanSupplier check) {
         protocol.putMemberForTest(peer, address, MemberState.FAULTY);
-        protocol.latchSelfIsolation(check);
+        protocol.latchSelfIsolationForTest(check);
     }
 
     private boolean allFaulty() {
@@ -153,12 +153,12 @@ class SwimSelfIsolationLatchAtomicityTest {
         return new Ping(NODE_A, 99L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 5, ADDR_A)));
     }
 
-    /// The reviver either finishes (nothing serialises it with the check) or parks on the latch guard; both
-    /// mean it has done everything it can do while the check is held open.
+    /// The reviver either finishes (its task is queued behind the held check on the serial state executor) or
+    /// parks waiting for it to run; both mean it has done everything it can do while the check is held open.
     private static void awaitBlockedOrDone(Thread thread) throws InterruptedException {
         var deadline = System.currentTimeMillis() + WAIT_MS;
 
-        while (thread.isAlive() && thread.getState() != Thread.State.BLOCKED && System.currentTimeMillis() < deadline) {
+        while (thread.isAlive() && thread.getState() == Thread.State.RUNNABLE && System.currentTimeMillis() < deadline) {
             Thread.sleep(1);
         }
     }

@@ -33,6 +33,22 @@ jobs:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: scripts/changelog-check.sh "origin/${{ github.base_ref }}"
 
-      - name: Merge queue - fragment verified on the pull request
+      # Runs the check's own cases on pull_request AND merge_group: a mutant of the check script or of the merge_group
+      # step below passes every Java test and goes red only here.
+      - name: Self-test the wire-generation check
+        run: scripts/wire-generation-check-selftest.sh
+
+      - name: Check the wire-generation bump
+        if: github.event_name == 'pull_request'
+        run: scripts/wire-generation-check.sh "origin/${{ github.base_ref }}"
+
+      # Merge queue: the queue commit is a SQUASH on top of its predecessor, so HEAD^1 is the base the commit lands on.
+      # A PR validated against an older base is re-checked against what is actually ahead of it (two bumps 2->3 pass
+      # pull_request separately and refuse here). No labels are needed, so the step is label-free.
+      - name: Check the wire-generation bump against the queue predecessor
         if: github.event_name == 'merge_group'
-        run: echo "changelog fragment not re-checked on merge_group (needs PR labels and base ref), the pull_request run of this check gates entry to the queue"
+        run: scripts/wire-generation-check.sh "HEAD^1"
+
+      - name: Merge queue - changelog fragment verified on the pull request
+        if: github.event_name == 'merge_group'
+        run: echo "changelog fragment not re-checked on merge_group (needs PR labels and the base ref), the pull_request run of this check gates entry to the queue"

@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -24,8 +25,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// A booted node raises `storage-promotion-stalled` through its own operator sink when promotion copies keep failing,
 /// and `storage-promotion-resumed` when a copy succeeds again. What is observed is the node's own
-/// `ClusterEventAggregator`, the sink's only consumer: the stalled event is the aggregator's
-/// `lastRaisedOperatorWarning()` (the precedent for "the warning reached this node's aggregator", used where the
+/// `ClusterEventAggregator`, the sink's only consumer: the stalled event is read from the aggregator's
+/// raised-warning history `raisedOperatorWarnings()` (not the single most-recent slot: #3403; the precedent for "the warning reached this node's aggregator", used where the
 /// cluster-events stream is not up, as in a single-node fixture), and the resumed event is the aggregator closing the
 /// stalled warning's throttle window (`operatorWarningThrottleKeys()` back to its baseline), which only a recovery that
 /// reached `onOperatorWarning` does. The line `[storage-promotion-resumed]` in the log is not enough: it is written before
@@ -76,7 +77,7 @@ class AetherNodePromotionStallBootTest {
 
         assertThat(artifacts.promotionManager().stats().failed()).as("control: nothing has failed yet; memory has no room")
                                                                    .isZero();
-        assertThat(raisedCode()).as("control: nothing raised before the failure").isNotEqualTo(STALLED);
+        assertThat(RaisedWarnings.codesRaised(node.eventAggregator())).as("control: nothing raised before the failure").doesNotContain(STALLED);
 
         var baselineWindows = node.eventAggregator().operatorWarningThrottleKeys();
         var blockFile = blockFile(cold);
@@ -89,9 +90,7 @@ class AetherNodePromotionStallBootTest {
            .limit(3)
            .forEach(id -> artifacts.instance().delete(id).await().onFailure(cause -> fail("delete failed: " + cause.message())));
 
-        PromotionBootFixture.await(() -> STALLED.equals(raisedCode()), "the node's aggregator received storage-promotion-stalled");
-
-        var stalled = node.eventAggregator().lastRaisedOperatorWarning().unwrap();
+        var stalled = RaisedWarnings.awaitCode(node.eventAggregator(), STALLED, Duration.ofSeconds(60));
 
         assertThat(stalled).isInstanceOfSatisfying(ClusterEvent.OperatorWarning.class,
                                                    warning -> assertThat(warning.details()).containsEntry("subject", PromotionBootFixture.ARTIFACTS)
@@ -108,15 +107,6 @@ class AetherNodePromotionStallBootTest {
         assertThat(PromotionBootFixture.isResidentInMemory(artifacts, cold)).as("the successful copy is what ended the stall")
                                                                               .isTrue();
         assertThat(artifacts.promotionManager().stats().blocksPromoted()).isGreaterThanOrEqualTo(1);
-    }
-
-    private String raisedCode() {
-        return node.eventAggregator()
-                   .lastRaisedOperatorWarning()
-                   .filter(ClusterEvent.OperatorWarning.class::isInstance)
-                   .map(ClusterEvent.OperatorWarning.class::cast)
-                   .map(warning -> warning.details().get("code"))
-                   .or("");
     }
 
     /// `LocalDiskTier`'s own block layout: `{disk_path}/{hex[0:2]}/{hex[2:4]}/{hex}`.

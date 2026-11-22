@@ -51,6 +51,18 @@ class ClusterSyncWiringTest {
         assertThat(assemblyCode()).containsOnlyOnce("cdmDrainingNodesRef.set(()->nodesReporting(pongSignalFan,nodeReportedStateHolder,config.self(),NodeReportedState.DRAINING));");
     }
 
+    /// The node assembly wires no held-report supplier: the pong of a production node carries none. Together with the node-state
+    /// reporter pin above (the positive control: the same text does contain the neighbouring supplier wiring), this is the
+    /// assembled-node side of `ClusterSyncHeldInertTest`. The step that wires a reporter must replace this pin.
+    @Test
+    void assembly_wiresNoHeldReportSupplier() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("metricsCollector.setNodeReportedStateSupplier(");
+        assertThat(code).doesNotContain("setHeldReportSupplier");
+        assertThat(code).doesNotContain("HeldReport");
+    }
+
     /// The generation counter advances once per tick on the leader.
     @Test
     void assembly_ticksTheGenerationCounterOnTheLeader() {

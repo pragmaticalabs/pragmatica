@@ -88,7 +88,7 @@ class ConfigChangeFeedWiringTest {
 
         assertThat(source).containsOnlyOnce("configChangeFeed.shutdown()")
                           .containsOnlyOnce("deploymentWiring.deactivateCluster(clusterDeploymentManager::deactivate)")
-                          .containsOnlyOnce("NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,");
+                          .containsOnlyOnce("() -> stopNodeComponents(backupFlushed), this::releaseWatchesThenDeactivate,");
         assertThat(source).as("the first stop step is one chain: the deactivation runs in the shutdown's flatMap, so after it at runtime")
                           .containsOnlyOnce("private Promise<Unit> releaseWatchesThenDeactivate() { return configChangeFeed.shutdown()"
                                             + " .flatMap(() -> deploymentWiring.deactivateCluster(clusterDeploymentManager::deactivate)); }");

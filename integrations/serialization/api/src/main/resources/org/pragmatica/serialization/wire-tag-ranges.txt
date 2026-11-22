@@ -58,3 +58,12 @@
 2904..2907 fix1715 2026-11-11 #1715 node-id high-water key and value (2904, 2905 pinned; 2906..2907 spare)
 2910..2911 impl2981s1 2026-11-11 #2981 NodeLeaseKey and NodeLeaseValue (2908..2909 left free)
 2920..2959 rc6-streams-wire 2026-11-17 #3334 S2a1/S1a flag-day and new types: S2a1-1 2920..2925, S2a1-3 2926..2927, S1a-1a 2928..2930, S1a-2 2931..2943, rest spare 2944..2959 (know 38cad36811)
+2960..2961 dht-3345-3347 2026-11-18 #3345 #3347 (2960 HeldReport, 2961 HeldEnd; rest by step)
+2962..2979 drain-3413 2026-11-20 #3413 D1 committed drain + D2 (know d2ce3461aa, wire-tag-allocations.md)
+2984..2985 fix834 2026-11-19 #834 SchemaVersionValue new shape (2984) and SchemaReach (2985); RQ-TAGS-3, moved off 2980..2981 (#2625's)
+2986..2989 restore-authority-3303 2026-11-20 #3303 restore authority: refusal kinds and markers (know d021c7b150)
+2990..2999 flag-day-420 2026-11-20 #420 artifact churn: ArtifactContentValue with its block manifest (2990), flag-day tag (know d2ce3461aa, wire-tag-allocations.md)
+3010..3017 stream-mem 2026-11-20 #3458 in-memory streams (know d0048c4f79)
+3018..3037 arc-3303 2026-11-20 #3303 entity arc keys, values and codecs: A3a pins 3018 and 3019 (know f3033886ee)
+3038..3069 split-sp 2026-11-20 #3303 stream split and merge (SP lanes): SP1a 3038, SP1b 3039..3042, 3043..3045 held for lastAbort, SP7 3046..3047, SP3d events 3048..3063, spare 3064..3069
+3070..3109 s4b 2026-11-21 #3303 stream split row step: partition state, epoch floor, life outcome (S4b lanes)

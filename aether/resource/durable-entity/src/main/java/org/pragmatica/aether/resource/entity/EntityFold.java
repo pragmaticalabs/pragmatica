@@ -634,6 +634,140 @@ final class EntityFold {
                : Option.none();
     }
 
+    /// The final fold of a closed parent, captured from ONE published instance: the contents, the offset they are claimed through
+    /// and the lineage of the log record at that offset.
+    ///
+    /// @param through  the offset the capture claims, equal to the `lastOffset` the caller closed the parent at
+    /// @param snapshot the encoded contents, folded through exactly `through`
+    /// @param lineage  the identity of the log record at `through` as the substrate answers it, none when the substrate keeps no lineage or cannot read the record (`through` of `-1` included only for a substrate that answers none there; the production substrate answers some)
+    record Capture(long through, byte[] snapshot, Option<byte[]> lineage) {}
+
+    /// Why [#capture] answered no capture. Typed so a caller can tell a fold that is not ready from one that moved.
+    sealed interface CaptureRefusal extends Cause {
+        /// This partition's rebuild has not resolved successfully, so an empty fold cannot be told from an unbuilt one.
+        record NotReady(int partition) implements CaptureRefusal {
+            @Override
+            public String message() {
+                return "Entity partition " + partition + " has no successful rebuild; its fold cannot be captured";
+            }
+        }
+
+        /// The log's head is not the closed parent's last offset: records exist above it, or the caller's offset is above the log.
+        record LogEndMismatch(int partition, long head, long lastOffset) implements CaptureRefusal {
+            @Override
+            public String message() {
+                return "Entity partition " + partition + " log head " + head + " is not the closed offset " + lastOffset;
+            }
+        }
+
+        /// The fold's applied watermark is not exactly the closed offset: below, records are missing; above, records past the close are in it.
+        record AppliedMismatch(int partition, long applied, long lastOffset) implements CaptureRefusal {
+            @Override
+            public String message() {
+                return "Entity partition " + partition
+                     + " fold applied through " + applied
+                     + " is not the closed offset " + lastOffset;
+            }
+        }
+
+        /// The log has not committed the closed offset, so a failover could still replace records the capture would claim.
+        record NotCommitted(int partition, long committed, long lastOffset) implements CaptureRefusal {
+            @Override
+            public String message() {
+                return "Entity partition " + partition
+                     + " log committed through " + committed
+                     + ", below the closed offset " + lastOffset;
+            }
+        }
+
+        /// The log was cut since the fold was built, or a cut is in progress.
+        record Cut(int partition) implements CaptureRefusal {
+            @Override
+            public String message() {
+                return "Entity partition " + partition
+                     + " log was cut since its fold was built; the fold may hold removed records";
+            }
+        }
+    }
+
+    /// One capture of the final fold of a closed parent, answering `lastOffset` as the log's end, or a typed [CaptureRefusal].
+    /// It never saves and never offers a checkpoint: the caller decides what to do with the capture.
+    ///
+    /// It does not drive [#ready] or [#caughtUp]. The partition's rebuild memo must already have resolved successfully: an unbuilt fold
+    /// with `lastOffset == -1` would otherwise read as an EMPTY capture, which is honest only after a successful rebuild.
+    ///
+    /// The published fold is taken ONCE. Before the copy it must be applied through exactly `lastOffset` (equality, never at-or-above:
+    /// a fold past the close holds records the parent never closed over), its log head must be exactly `lastOffset`, it must be committed
+    /// through `lastOffset` and current; all four are re-read after the copy and any change refuses, so the contents and the lineage belong
+    /// to one unchanged fold. It never reads the checkpoint pointer and never goes through [#checkpointCandidate] or [#committedClaim],
+    /// which answer a claim, not a capture.
+    ///
+    /// The invariant the after-check carries: a capture of `lastOffset` is accepted only if, read AFTER the copy, the log head and the applied
+    /// watermark both equal `lastOffset`. [#apply] runs only for a record already in the log, so any state write the copy could have seen
+    /// (completed, parked out of order, or still in flight before its watermark step) has already moved the head; the head re-read refuses
+    /// all three, and no separate check of parked offsets is needed.
+    Result<Capture> capture(int partition, long lastOffset) {
+        var fold = partitionFold(partition);
+
+        return rebuilt(partition, fold).flatMap(_ -> logEndsAt(partition, lastOffset))
+                      .flatMap(_ -> captureOf(partition,
+                                              fold.published.get(),
+                                              lastOffset));
+    }
+
+    private Result<Unit> rebuilt(int partition, PartitionFold fold) {
+        var memo = fold.rebuild.get();
+
+        return memo != null && memo.isResolved() && settledResult(memo).isSuccess()
+               ? success(unit())
+               : new CaptureRefusal.NotReady(partition).result();
+    }
+
+    private Result<Unit> logEndsAt(int partition, long lastOffset) {
+        var head = substrate.headOffset(keyspace, partition);
+
+        return head == lastOffset
+               ? success(unit())
+               : new CaptureRefusal.LogEndMismatch(partition, head, lastOffset).result();
+    }
+
+    private Result<Capture> captureOf(int partition, FoldedPartition data, long lastOffset) {
+        drain(data);
+
+        return stableAt(partition, data, lastOffset).flatMap(_ -> copied(partition, data, lastOffset));
+    }
+
+    private Result<Capture> copied(int partition, FoldedPartition data, long lastOffset) {
+        var snapshot = encodedFold(data);
+        var lineage = substrate.lineageAt(keyspace, partition, lastOffset);
+
+        return stableAt(partition, data, lastOffset).map(_ -> new Capture(lastOffset, snapshot, lineage));
+    }
+
+    /// Whether `data` is applied through exactly `lastOffset`, the log head is exactly `lastOffset`, the log is committed through it, and
+    /// `data` is current. Run before and after the copy; the after-run reads the head after the copy, so a record whose state write the copy saw refuses.
+    private Result<Unit> stableAt(int partition, FoldedPartition data, long lastOffset) {
+        var applied = data.appliedThrough.get();
+
+        if (applied != lastOffset) {
+            return new CaptureRefusal.AppliedMismatch(partition, applied, lastOffset).result();
+        }
+
+        return logEndsAt(partition, lastOffset).flatMap(_ -> committedAndCurrent(partition, data, lastOffset));
+    }
+
+    private Result<Unit> committedAndCurrent(int partition, FoldedPartition data, long lastOffset) {
+        var committed = substrate.committedOffset(keyspace, partition);
+
+        if (committed < lastOffset) {
+            return new CaptureRefusal.NotCommitted(partition, committed, lastOffset).result();
+        }
+
+        return isCurrent(partition, data)
+               ? success(unit())
+               : new CaptureRefusal.Cut(partition).result();
+    }
+
     /// Apply every log record past the watermark, so the fold reflects the log's CURRENT head — records
     /// this node appended AND records replication landed behind its back (#596 review S1).
     ///
@@ -827,9 +961,35 @@ final class EntityFold {
     /// to fold when the log below the head is not all readable here, so a skipped checkpoint can cost a
     /// longer replay or a refused fold — never state missing committed records.
     private Promise<Option<SeedCheckpoint>> usableCheckpoint(int partition) {
-        return substrate.loadCheckpoint(keyspace, partition)
-                        .map(checkpoint -> checkpoint.flatMap(c -> seedable(partition, c)))
+        return substrate.loadCheckpointOutcome(keyspace, partition)
+                        .map(outcome -> seedFrom(partition, outcome))
                         .recover(cause -> unreadableCheckpoint(partition, cause));
+    }
+
+    /// #3303 A0b: the typed answer of the substrate. An `Unreadable` checkpoint (a committed pointer whose block is lost, failed to fetch
+    /// or cannot be decoded) folds from the log exactly as an absent one does (forward recovery; [#replayFrom]'s gap check still
+    /// refuses a fold that would miss committed records); the difference is that it is named in the log, not silent.
+    private Option<SeedCheckpoint> seedFrom(int partition, EntityLogSubstrate.CheckpointLoad outcome) {
+        return switch (outcome) {
+            case EntityLogSubstrate.CheckpointLoad.Loaded(var checkpoint) -> seedable(partition, checkpoint);
+            case EntityLogSubstrate.CheckpointLoad.Absent() -> Option.none();
+            case EntityLogSubstrate.CheckpointLoad.Unreadable(var cause, var blockIdHex) -> unreadableBlock(partition,
+                                                                                                            cause,
+                                                                                                            blockIdHex);
+        };
+    }
+
+    private Option<SeedCheckpoint> unreadableBlock(int partition,
+                                                   EntityLogSubstrate.UnreadableCause cause,
+                                                   String blockIdHex) {
+        LOG.warn("Entity keyspace '{}' partition {}: the checkpoint block {} is unreadable ({}); ignoring the checkpoint and folding"
+                + " from the log",
+                 keyspace,
+                 partition,
+                 blockIdHex,
+                 cause);
+
+        return Option.none();
     }
 
     /// #2087 B4-cut: a checkpoint is usable only over the lineage it was taken over. It records the identity of the log records ending at its

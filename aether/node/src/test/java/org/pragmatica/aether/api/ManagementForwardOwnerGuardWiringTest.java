@@ -12,6 +12,7 @@ import java.util.Set;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -32,7 +33,9 @@ import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
+import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.http.security.SecurityValidator;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -204,7 +207,7 @@ class ManagementForwardOwnerGuardWiringTest {
                                         mock(SliceInvoker.class),
                                         mock(ScheduledTaskStateRegistry.class),
                                         Option.none(),
-                                        mock(SecurityValidator.class),
+                                        SecurityValidator.managementValidator(AppHttpConfig.insecureAppHttpConfig(0), () -> mock(KVStore.class)).validator(),
                                         false,
                                         Map::of,
                                         Option.none(),
@@ -218,8 +221,7 @@ class ManagementForwardOwnerGuardWiringTest {
                                                                                                                 Map.of(),
                                                                                                                 Map.of(),
                                                                                                                 "req-owner-guard"))),
-                                        _ -> {},
-                                        Set::of,
+                                        NodeLifecycleRoutes.DrainPort.none(),
                 org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(),
                                                                                          org.pragmatica.utility.warning.OperatorWarningSink.logOnly()));
     }

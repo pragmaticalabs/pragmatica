@@ -10,7 +10,6 @@ import java.net.http.HttpResponse.BodyHandler;
 import java.util.List;
 import java.util.Map;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -18,7 +17,10 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #727 review B1/B2 — the state dump must report what it read, and name what it could not read.
 ///
@@ -34,21 +36,19 @@ class ClusterSnapshotTest {
     @Test
     void unreachableHealthEndpoint_isNamedUnavailable_neverHealthy() {
         var node = new EmberCluster.NodeStatus("si-1", 6000, MGMT_PORT, EmberCluster.STATE_INACTIVE, false);
-
         var line = ClusterSnapshot.liveNodeLine(node, failingHttp("Connection refused"));
 
         assertThat(line).describedAs("an unanswerable health probe must be reported as such, by name")
-                        .contains("health=unavailable (Connection refused)");
+                  .contains("health=unavailable (Connection refused)");
         assertThat(line).describedAs("nothing in the line may claim health that was never observed")
-                        .doesNotContain("healthy");
+                  .doesNotContain("healthy");
         assertThat(line).describedAs("the node's own state is read from the node, not defaulted")
-                        .contains("si-1 state=inactive leader=false port=6000 mgmt=6100");
+                  .contains("si-1 state=inactive leader=false port=6000 mgmt=6100");
     }
 
     @Test
     void reachableHealthEndpoint_reportsTheBodyItRead() {
         var node = new EmberCluster.NodeStatus("si-2", 6001, MGMT_PORT, EmberCluster.STATE_ACTIVE, true);
-
         var line = ClusterSnapshot.liveNodeLine(node, respondingHttp(200, "{\"quorum\":true}"));
 
         assertThat(line).isEqualTo("  si-2 state=active leader=true port=6001 mgmt=6100 health=200 {\"quorum\":true}");
@@ -60,7 +60,6 @@ class ClusterSnapshotTest {
     @Test
     void aNodeThatIsNotActive_isRenderedAsSuch() {
         var node = new EmberCluster.NodeStatus("si-3", 6002, MGMT_PORT, EmberCluster.STATE_INACTIVE, false);
-
         var line = ClusterSnapshot.liveNodeLine(node, respondingHttp(503, "{\"quorum\":false}"));
 
         assertThat(line).isEqualTo("  si-3 state=inactive leader=false port=6002 mgmt=6100 health=503 {\"quorum\":false}");
@@ -71,7 +70,7 @@ class ClusterSnapshotTest {
         var rendered = ClusterSnapshot.render(emptyStatus(), Option.none(), failingHttp("must not be probed"));
 
         assertThat(rendered).describedAs("no nodes and no failed start is a fact to state, not an empty block")
-                            .isEqualTo(ClusterSnapshot.NO_STATE);
+                  .isEqualTo(ClusterSnapshot.NO_STATE);
     }
 
     /// Review B2's rendering half: when the live registry is empty because an abort cleared it, the
@@ -81,13 +80,18 @@ class ClusterSnapshotTest {
     /// `EmberClusterPartialStartFailureTest` in `aether/ember`.
     @Test
     void aClearedRegistry_rendersTheRetainedStartFailure_labelledAsCaptured() {
-        var captured = new EmberCluster.StartFailure(
-            new EmberCluster.ClusterStatus(
-                List.of(new EmberCluster.NodeStatus("si-1", 6000, 6100, EmberCluster.STATE_INACTIVE, false),
-                        new EmberCluster.NodeStatus("si-2", 6001, 6101, EmberCluster.STATE_INACTIVE, false)),
-                "none"),
-            Map.of("si-1", "Address already in use"));
-
+        var captured = new EmberCluster.StartFailure(new EmberCluster.ClusterStatus(List.of(new EmberCluster.NodeStatus("si-1",
+                                                                                                                        6000,
+                                                                                                                        6100,
+                                                                                                                        EmberCluster.STATE_INACTIVE,
+                                                                                                                        false),
+                                                                                            new EmberCluster.NodeStatus("si-2",
+                                                                                                                        6001,
+                                                                                                                        6101,
+                                                                                                                        EmberCluster.STATE_INACTIVE,
+                                                                                                                        false)),
+                                                                                    "none"),
+                                                     Map.of("si-1", "Address already in use"));
         var rendered = ClusterSnapshot.render(emptyStatus(), Option.some(captured), failingHttp("must not be probed"));
 
         assertThat(rendered).contains("captured when the start failed");
@@ -95,19 +99,21 @@ class ClusterSnapshotTest {
         assertThat(rendered).contains("si-2 state=inactive leader=false port=6001 mgmt=6101");
         assertThat(rendered).contains("start failures: {si-1=Address already in use}");
         assertThat(rendered).describedAs("a captured snapshot must not carry a live health probe")
-                            .doesNotContain("health=");
+                  .doesNotContain("health=");
     }
 
     /// The live registry wins over a retained failure: a cluster that failed one start and then
     /// started must report what it is doing now, not what it did then.
     @Test
     void aLiveRegistry_isPreferredOverARetainedStartFailure() {
-        var live = new EmberCluster.ClusterStatus(
-            List.of(new EmberCluster.NodeStatus("si-1", 6000, 6100, EmberCluster.STATE_ACTIVE, true)),
-            "si-1");
+        var live = new EmberCluster.ClusterStatus(List.of(new EmberCluster.NodeStatus("si-1",
+                                                                                      6000,
+                                                                                      6100,
+                                                                                      EmberCluster.STATE_ACTIVE,
+                                                                                      true)),
+                                                  "si-1");
         var stale = new EmberCluster.StartFailure(new EmberCluster.ClusterStatus(List.of(), "none"),
                                                   Map.of("si-9", "Address already in use"));
-
         var rendered = ClusterSnapshot.render(live, Option.some(stale), respondingHttp(200, "{\"quorum\":true}"));
 
         assertThat(rendered).isEqualTo("  leader=si-1\n  si-1 state=active leader=true port=6000 mgmt=6100 health=200 {\"quorum\":true}");

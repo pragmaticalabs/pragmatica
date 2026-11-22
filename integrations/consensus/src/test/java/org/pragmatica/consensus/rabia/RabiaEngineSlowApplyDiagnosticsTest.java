@@ -524,7 +524,7 @@ class RabiaEngineSlowApplyDiagnosticsTest {
             oldestPendingAgeMs.set(ageMs);
         }
 
-        @Override public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long durationNs) {}
+        @Override public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue) {}
 
         @Override public void recordProposal(NodeId nodeId, Phase phase) {}
 

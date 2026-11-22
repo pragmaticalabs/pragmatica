@@ -56,6 +56,7 @@ import org.pragmatica.consensus.net.quic.QuicTransportMetrics.DropSite;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
+import org.pragmatica.consensus.topology.TransportView;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -4562,6 +4563,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var epoch = observedEpochSupplier;
 
         connectivityReporter.onPeerConnected(peerId, epoch.term(), epoch.counter());
+    }
+
+    /// #3047: the sequence is taken before the view is read, as in `processViewChange`, so the returned view orders
+    /// against the observations exactly like one of them.
+    @Override
+    public Option<TransportView> sequencedView() {
+        var sequence = observationSequence.incrementAndGet();
+
+        return Option.some(TransportView.transportView(currentView(), sequence));
     }
 
     private List<NodeId> currentView() {

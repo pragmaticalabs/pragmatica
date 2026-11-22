@@ -68,7 +68,7 @@ class SwimDatagramBudgetTest {
     @BeforeEach
     void setUp() {
         transport = new RecordingTransport();
-        protocol = SwimProtocol.swimProtocol(swimConfig(timeSpan(1).seconds(), timeSpan(500).millis(), 3, timeSpan(5).seconds(), 64, timeSpan(1).seconds()),
+        protocol = SwimTestProtocols.swimProtocol(swimConfig(timeSpan(1).seconds(), timeSpan(500).millis(), 3, timeSpan(5).seconds(), 64, timeSpan(1).seconds()),
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,
@@ -93,7 +93,7 @@ class SwimDatagramBudgetTest {
 
     @Test
     void selfAliveGossip_carriesTheNodesOwnLabels() {
-        var fresh = SwimProtocol.swimProtocol(swimConfig(timeSpan(100).millis(), timeSpan(80).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(40).millis())
+        var fresh = SwimTestProtocols.swimProtocol(swimConfig(timeSpan(100).millis(), timeSpan(80).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(40).millis())
                                                   .withJoinGrace(timeSpan(0).millis()),
                                               transport,
                                               new RecordingListener(),
@@ -140,7 +140,7 @@ class SwimDatagramBudgetTest {
     /// the budget with room to spare instead of tipping every probe past the receive buffer.
     @Test
     void defaultEightUpdateAck_withLongRealisticLabels_carriesOnlyRoleSourceAndZone_underBudget() {
-        var defaults = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, transport, new RecordingListener(), SELF_ID, SELF_ADDR)
+        var defaults = SwimTestProtocols.swimProtocol(SwimConfig.DEFAULT, transport, new RecordingListener(), SELF_ID, SELF_ADDR)
                                    .unwrap();
         var longLabels = Map.of(NodeInfo.LABEL_ROLE, "core",
                                 NodeInfo.LABEL_SOURCE, "replacement",

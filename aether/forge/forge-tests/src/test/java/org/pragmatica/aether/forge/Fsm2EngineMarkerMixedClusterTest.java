@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.net.URI;
@@ -18,11 +17,6 @@ import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -44,10 +38,17 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// W-29's cross-process arms (phase-3 design 8.2 and 9.2; MT-24, MT-29, MT-30): the engine marker keeps a node of one engine out of a cluster of
 /// the other, and **every refusal is a node refusing itself**.
@@ -89,6 +90,7 @@ class Fsm2EngineMarkerMixedClusterTest {
         if (sampler != null) {
             sampler.stop();
         }
+
         if (cluster != null) {
             LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
@@ -104,7 +106,6 @@ class Fsm2EngineMarkerMixedClusterTest {
         startCluster(prefix, DeploymentEngine.LEGACY, 26400);
         sampler = Sampler.start(cluster, newcomerOf(prefix), Fsm2EngineMarkerMixedClusterTest::isFsm2Write);
         takeOver(prefix, DeploymentEngine.FSM2);
-
         assertArm(prefix, DeploymentEngine.LEGACY);
     }
 
@@ -119,7 +120,6 @@ class Fsm2EngineMarkerMixedClusterTest {
         deployEchoSlice();
         sampler = Sampler.start(cluster, newcomerOf(prefix), key -> key instanceof AetherKey.NodeArtifactKey);
         takeOver(prefix, DeploymentEngine.LEGACY);
-
         assertArm(prefix, DeploymentEngine.FSM2);
     }
 
@@ -132,14 +132,23 @@ class Fsm2EngineMarkerMixedClusterTest {
         sampler = Sampler.start(cluster, "", _ -> false);
         LifecycleAwait.settled("cluster start", cluster, cluster.start());
         awaitHealthyLeaderWithMarker(DeploymentEngine.FSM2);
-        await().atMost(WAIT).until(() -> cluster.allNodes().stream().allMatch(node -> guardOf(node) == EngineMarkerGuard.State.OPEN));
+        await().atMost(WAIT)
+             .until(() -> cluster.allNodes()
+                                 .stream()
+                                 .allMatch(node -> guardOf(node) == EngineMarkerGuard.State.OPEN));
         sampler.stop();
-
         System.out.println("W29 late-genesis guard states seen: " + sampler.states());
         assertThat(sampler.states()).as("the arm saw a member waiting on both keys absent").contains("WAITING");
-        assertThat(sampler.states()).as("no member was ever in a mismatch state or refused").containsOnly("WAITING", "OPEN");
-        assertThat(cluster.allNodes().stream().map(node -> node.self().id()).filter(id -> cluster.exitCodeOf(id).isPresent()).toList())
-                  .as("no member exited").isEmpty();
+        assertThat(sampler.states()).as("no member was ever in a mismatch state or refused")
+                  .containsOnly("WAITING", "OPEN");
+        assertThat(cluster.allNodes()
+                          .stream()
+                          .map(node -> node.self()
+                                           .id())
+                          .filter(id -> cluster.exitCodeOf(id)
+                                               .isPresent())
+                          .toList()).as("no member exited")
+                  .isEmpty();
     }
 
     private void startCluster(String prefix, DeploymentEngine engine, int basePort) {
@@ -151,9 +160,12 @@ class Fsm2EngineMarkerMixedClusterTest {
     }
 
     private void awaitHealthyLeaderWithMarker(DeploymentEngine engine) {
-        await().atMost(WAIT).pollInterval(Duration.ofMillis(500)).until(() -> cluster.currentLeader().isPresent());
+        await().atMost(WAIT).pollInterval(Duration.ofMillis(500)).until(() -> cluster.currentLeader()
+                                                                                     .isPresent());
         await().atMost(WAIT).pollInterval(Duration.ofMillis(500)).until(this::allNodesHealthy);
-        await().atMost(WAIT).pollInterval(Duration.ofMillis(250)).until(() -> markerOf(leader()).equals(Option.some(engine)));
+        await().atMost(WAIT)
+             .pollInterval(Duration.ofMillis(250))
+             .until(() -> markerOf(leader()).equals(Option.some(engine)));
     }
 
     /// The misconfigured newcomer joins under the lowest NodeId, becomes a voter, and the leader stops, so the newcomer ranks first in the
@@ -164,21 +176,31 @@ class Fsm2EngineMarkerMixedClusterTest {
         var oldLeader = cluster.currentLeader().unwrap();
 
         stoppedLeader = oldLeader;
-
         scaleCoresTo(MAJORITY + 2);
         cluster.withDeploymentEngine(newcomer, newcomerEngine);
         var joined = cluster.addCoreNode(newcomer);
         var filled = cluster.addCoreNode(fillerOf(prefix));
 
-        await().atMost(WAIT).pollInterval(Duration.ofMillis(100)).until(() -> sampler.sequence().contains("MISMATCH_WINDOW") || cluster.exitCodeOf(newcomer).isPresent());
+        await().atMost(WAIT)
+             .pollInterval(Duration.ofMillis(100))
+             .until(() -> sampler.sequence()
+                                 .contains("MISMATCH_WINDOW") || cluster.exitCodeOf(newcomer)
+                                                                        .isPresent());
         sampler.note("in its window; voter=" + isVoter(newcomer));
         LifecycleAwait.nodeSettled("stop the leader " + oldLeader, cluster, cluster.killNode(oldLeader));
         sampler.note("leader " + oldLeader + " stopped");
-        await().atMost(REFUSAL_BOUND).pollInterval(Duration.ofMillis(100)).until(() -> sampler.voter(isVoter(newcomer)) && cluster.exitCodeOf(newcomer).isPresent());
+        await().atMost(REFUSAL_BOUND)
+             .pollInterval(Duration.ofMillis(100))
+             .until(() -> sampler.voter(isVoter(newcomer)) && cluster.exitCodeOf(newcomer)
+                                                                     .isPresent());
         sampler.note("newcomer exited with " + cluster.exitCodeOf(newcomer));
         LifecycleAwait.bestEffort("the newcomer's start", cluster, joined);
         LifecycleAwait.nodeSettled("the filler's start", cluster, filled);
-        await().atMost(WAIT).pollInterval(Duration.ofMillis(500)).until(() -> cluster.currentLeader().filter(id -> !id.equals(newcomer)).isPresent());
+        await().atMost(WAIT)
+             .pollInterval(Duration.ofMillis(500))
+             .until(() -> cluster.currentLeader()
+                                 .filter(id -> !id.equals(newcomer))
+                                 .isPresent());
         sampler.stop();
     }
 
@@ -186,16 +208,23 @@ class Fsm2EngineMarkerMixedClusterTest {
         var newcomer = newcomerOf(prefix);
 
         System.out.println("W29 " + prefix + " timeline: " + sampler.timeline());
-        assertThat(sampler.wasVoter()).as("the closed newcomer was never admitted as a voter, so it could not be elected").isFalse();
+        assertThat(sampler.wasVoter()).as("the closed newcomer was never admitted as a voter, so it could not be elected")
+                  .isFalse();
         assertThat(sampler.leadersSeen()).as("an observer is never elected").doesNotContain(newcomer);
         assertThat(sampler.writes()).as("the misconfigured newcomer wrote nothing of its engine").isEmpty();
         assertThat(sampler.afterFirstMismatch()).as("the newcomer's guard never opened once it saw the marker; sequence " + sampler.sequence())
-                                                .isNotEmpty()
-                                                .doesNotContain("OPEN");
-        assertThat(cluster.exitCodeOf(newcomer)).as("the newcomer refused itself").isEqualTo(Option.some(AetherNode.EXIT_IDENTITY_REFUSED));
-        assertThat(majority(prefix).stream().filter(id -> !id.equals(stoppedLeader)).filter(id -> cluster.exitCodeOf(id).isPresent()).toList())
-                  .as("no member of the majority exited (the leader the test stopped aside)").isEmpty();
-        assertThat(markerOf(leader())).as("the committed marker is the majority's").isEqualTo(Option.some(clusterEngine));
+                  .isNotEmpty()
+                  .doesNotContain("OPEN");
+        assertThat(cluster.exitCodeOf(newcomer)).as("the newcomer refused itself")
+                  .isEqualTo(Option.some(AetherNode.EXIT_IDENTITY_REFUSED));
+        assertThat(majority(prefix).stream()
+                           .filter(id -> !id.equals(stoppedLeader))
+                           .filter(id -> cluster.exitCodeOf(id)
+                                                .isPresent())
+                           .toList()).as("no member of the majority exited (the leader the test stopped aside)")
+                  .isEmpty();
+        assertThat(markerOf(leader())).as("the committed marker is the majority's")
+                  .isEqualTo(Option.some(clusterEngine));
     }
 
     private static String newcomerOf(String prefix) {
@@ -208,7 +237,10 @@ class Fsm2EngineMarkerMixedClusterTest {
 
     /// The five initial members and the filler.
     private static List<String> majority(String prefix) {
-        return IntStream.concat(IntStream.rangeClosed(1, MAJORITY), IntStream.of(9)).mapToObj(i -> prefix + "-" + i).toList();
+        return IntStream.concat(IntStream.rangeClosed(1, MAJORITY),
+                                IntStream.of(9))
+                        .mapToObj(i -> prefix + "-" + i)
+                        .toList();
     }
 
     private static boolean isFsm2Write(Object key) {
@@ -219,26 +251,41 @@ class Fsm2EngineMarkerMixedClusterTest {
     private boolean isVoter(String nodeId) {
         return cluster.allNodes()
                       .stream()
-                      .filter(node -> !node.self().id().equals(nodeId))
-                      .allMatch(node -> node.coreNodeIds().stream().anyMatch(voter -> voter.id().equals(nodeId)));
+                      .filter(node -> !node.self()
+                                           .id()
+                                           .equals(nodeId))
+                      .allMatch(node -> node.coreNodeIds()
+                                            .stream()
+                                            .anyMatch(voter -> voter.id()
+                                                                    .equals(nodeId)));
     }
 
     private static Option<DeploymentEngine> markerOf(AetherNode node) {
         return node.kvStore()
-                   .getTyped(AetherKey.DeploymentEngineKey.deploymentEngineKey(), AetherValue.DeploymentEngineValue.class)
+                   .getTyped(AetherKey.DeploymentEngineKey.deploymentEngineKey(),
+                             AetherValue.DeploymentEngineValue.class)
                    .map(AetherValue.DeploymentEngineValue::engine);
     }
 
     private static EngineMarkerGuard.State guardOf(AetherNode node) {
-        return node.deploymentWiring().guard().state();
+        return node.deploymentWiring()
+                   .guard()
+                   .state();
     }
 
     private AetherNode leader() {
-        return cluster.currentLeader().flatMap(cluster::getNode).or(() -> cluster.allNodes().getFirst());
+        return cluster.currentLeader()
+                      .flatMap(cluster::getNode)
+                      .or(() -> cluster.allNodes()
+                                       .getFirst());
     }
 
     private boolean allNodesHealthy() {
-        return cluster.status().nodes().stream().allMatch(node -> httpGet(node.mgmtPort(), "/api/v1/health").contains("\"quorum\":true"));
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .allMatch(node -> httpGet(node.mgmtPort(),
+                                                "/api/v1/health").contains("\"quorum\":true"));
     }
 
     private void deployEchoSlice() {
@@ -252,18 +299,29 @@ class Fsm2EngineMarkerMixedClusterTest {
             instances = %d
             """.formatted(BLUEPRINT_ID, TestArtifacts.ECHO_SLICE, MAJORITY);
         var response = send(HttpRequest.newBuilder()
-                                       .uri(URI.create("http://localhost:" + cluster.getLeaderManagementPort().unwrap() + "/api/v1/blueprints"))
+                                       .uri(URI.create("http://localhost:" + cluster.getLeaderManagementPort().unwrap()
+                                                      + "/api/v1/blueprints"))
                                        .header("Content-Type", "application/toml")
                                        .POST(HttpRequest.BodyPublishers.ofString(blueprint))
                                        .timeout(Duration.ofSeconds(10))
                                        .build());
 
-        assertThat(response).describedAs("SETUP: blueprint deployment").doesNotContain("\"error\"").contains("\"status\":\"applied\"");
-        await().atMost(DEPLOY_TIMEOUT).pollInterval(Duration.ofMillis(250)).until(() -> leader().blueprintService()
-                                                                                                  .outcome(id)
-                                                                                                  .map(outcome -> outcome.status() == DeploymentOutcomeStatus.SUCCEEDED)
-                                                                                                  .or(false));
-        await().atMost(DEPLOY_TIMEOUT).pollInterval(Duration.ofMillis(250)).until(() -> cluster.allNodes().stream().allMatch(node -> node.invocationHandler().localSlice(artifact).isPresent()));
+        assertThat(response).describedAs("SETUP: blueprint deployment")
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
+        await().atMost(DEPLOY_TIMEOUT)
+             .pollInterval(Duration.ofMillis(250))
+             .until(() -> leader().blueprintService()
+                                .outcome(id)
+                                .map(outcome -> outcome.status() == DeploymentOutcomeStatus.SUCCEEDED)
+                                .or(false));
+        await().atMost(DEPLOY_TIMEOUT)
+             .pollInterval(Duration.ofMillis(250))
+             .until(() -> cluster.allNodes()
+                                 .stream()
+                                 .allMatch(node -> node.invocationHandler()
+                                                       .localSlice(artifact)
+                                                       .isPresent()));
     }
 
     private void scaleCoresTo(int count) {
@@ -271,7 +329,9 @@ class Fsm2EngineMarkerMixedClusterTest {
         var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/v1/cluster/config"));
 
         assertThat(matcher.find()).as("SETUP: the cluster config version is readable").isTrue();
-        var body = "{\"source\":\"\",\"role\":\"core\",\"count\":" + count + ",\"expectedVersion\":" + matcher.group(1) + "}";
+        var body = "{\"source\":\"\",\"role\":\"core\",\"count\":" + count
+                 + ",\"expectedVersion\":" + matcher.group(1)
+                 + "}";
         var response = send(HttpRequest.newBuilder()
                                        .uri(URI.create("http://localhost:" + port + "/api/v1/cluster/scale"))
                                        .header("Content-Type", "application/json")
@@ -279,15 +339,23 @@ class Fsm2EngineMarkerMixedClusterTest {
                                        .timeout(Duration.ofSeconds(10))
                                        .build());
 
-        assertThat(response).as("SETUP: the scale to " + count + " cores was accepted").contains("\"newCount\":" + count);
+        assertThat(response).as("SETUP: the scale to " + count + " cores was accepted")
+                  .contains("\"newCount\":" + count);
     }
 
     private String httpGet(int port, String path) {
-        return send(HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).GET().timeout(Duration.ofSeconds(10)).build());
+        return send(HttpRequest.newBuilder()
+                               .uri(URI.create("http://localhost:" + port + path))
+                               .GET()
+                               .timeout(Duration.ofSeconds(10))
+                               .build());
     }
 
     private String send(HttpRequest request) {
-        return http.sendString(request).await().map(HttpResult::body).or("{\"error\":\"request failed\"}");
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or("{\"error\":\"request failed\"}");
     }
 
     /// The newcomer is added by the test, never by auto-heal, so the cluster's raised core count does not provision a node of its own. Shared
@@ -306,7 +374,8 @@ class Fsm2EngineMarkerMixedClusterTest {
 
         @Override
         public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
-            return EnvironmentError.capacityUnavailable("", new RuntimeException("provisioning blocked by the test (W-29)")).promise();
+            return EnvironmentError.capacityUnavailable("",
+                                                        new RuntimeException("provisioning blocked by the test (W-29)")).promise();
         }
 
         @Override
@@ -365,6 +434,7 @@ class Fsm2EngineMarkerMixedClusterTest {
                     Thread.sleep(25);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+
                     return;
                 }
             }
@@ -374,9 +444,11 @@ class Fsm2EngineMarkerMixedClusterTest {
             matching().stream().filter(key -> !baseline.contains(key)).forEach(this::wrote);
             for (var node : cluster.allNodes()) {
                 if (watched.isBlank() || node.self().id().equals(watched)) {
-                    guard(node.self().id(), node.deploymentWiring().guard().state().name());
+                    guard(node.self().id(),
+                          node.deploymentWiring().guard().state().name());
                 }
             }
+
             cluster.currentLeader().onPresent(leader -> seen(leaders, "leader", leader));
         }
 
@@ -385,7 +457,6 @@ class Fsm2EngineMarkerMixedClusterTest {
 
             for (var node : cluster.allNodes()) {
                 Set<?> keys = node.kvStore().snapshot().keySet();
-
                 // the committed mirror holds the consensus's own keys (LeaderKey) beside the AetherKeys its type names
                 keys.stream().map(Object.class::cast).filter(forbidden).forEach(found::add);
             }
@@ -454,7 +525,12 @@ class Fsm2EngineMarkerMixedClusterTest {
         List<String> afterFirstMismatch() {
             var all = sequence();
 
-            return all.stream().filter(state -> state.startsWith("MISMATCH")).findFirst().map(first -> all.subList(all.indexOf(first), all.size())).orElse(List.of());
+            return all.stream()
+                      .filter(state -> state.startsWith("MISMATCH"))
+                      .findFirst()
+                      .map(first -> all.subList(all.indexOf(first),
+                                                all.size()))
+                      .orElse(List.of());
         }
 
         Set<String> leadersSeen() {

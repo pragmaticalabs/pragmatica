@@ -26,6 +26,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.quic.PeerTransitionRecord;
+import org.pragmatica.consensus.topology.TransportView;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -220,6 +221,14 @@ public interface ClusterNetwork {
     /// Default falls back to `connectedPeers` for transports without an EVICTED state.
     default Set<NodeId> activePeers() {
         return connectedPeers();
+    }
+
+    /// The transport's current view under a FRESH sequence, ordered against this transport's view-carrying
+    /// observations (#3047): the leader election re-reads it after a view-free removal, so a node that was removed
+    /// while its transport link stayed up returns without waiting for the next observation. Empty for transports
+    /// that do not sequence their views.
+    default Option<TransportView> sequencedView() {
+        return Option.empty();
     }
 
     /// Get the underlying server instance for metrics collection.

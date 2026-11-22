@@ -43,6 +43,7 @@ public final class StreamReadRouter {
     private final Option<CommittedStreamOwnerSource> committedOwnerSource;
     private final Option<OwnershipEpochHighWater> epochHighWater;
     private final Option<LinearizableBarrier> barrier;
+    private final LocalValidatedRead localValidatedRead;
     private final Map<ReadPreference, ForwardingReadRouter<OffHeapRingBuffer.RawEvent>> readRouters;
 
     private StreamReadRouter(StreamPartitionManager partitionManager,
@@ -53,8 +54,10 @@ public final class StreamReadRouter {
                              StreamReadForwardMetrics metrics,
                              Option<CommittedStreamOwnerSource> committedOwnerSource,
                              Option<OwnershipEpochHighWater> epochHighWater,
-                             Option<LinearizableBarrier> barrier) {
+                             Option<LinearizableBarrier> barrier,
+                             LocalValidatedRead localValidatedRead) {
         this.partitionManager = partitionManager;
+        this.localValidatedRead = localValidatedRead;
         this.replicaRegistry = replicaRegistry;
         this.forwardClient = forwardClient;
         this.selfNodeId = selfNodeId;
@@ -80,7 +83,8 @@ public final class StreamReadRouter {
                                     metrics,
                                     Option.none(),
                                     Option.none(),
-                                    Option.none());
+                                    Option.none(),
+                                    partitionManager::readServingTiered);
     }
 
     /// #345 item 1e overload: also wires the COMMITTED-owner source + the ownership epoch high-water +
@@ -104,7 +108,37 @@ public final class StreamReadRouter {
                                     metrics,
                                     committedOwnerSource,
                                     epochHighWater,
-                                    barrier);
+                                    barrier,
+                                    partitionManager::readServingTiered);
+    }
+
+    /// The local half of [#readValidated]: production is [StreamPartitionManager#readServingTiered]. A seam so a test can
+    /// script the local answer, `BelowCopyTail` included, which nothing raises in production yet (M-9f; M-2r-1 raises it).
+    @FunctionalInterface
+    interface LocalValidatedRead {
+        Promise<StreamPartitionManager.EpochRead> read(String streamName,
+                                                       int partition,
+                                                       long fromOffset,
+                                                       int maxEvents,
+                                                       Epoch consumerEpoch);
+    }
+
+    /// Test seam ([LocalValidatedRead]): a router whose local consumer read is `localRead`.
+    static StreamReadRouter withLocalValidatedRead(StreamPartitionManager partitionManager,
+                                                   Option<StreamForwardClient> forwardClient,
+                                                   NodeId selfNodeId,
+                                                   OwnerResolver ownerResolver,
+                                                   LocalValidatedRead localRead) {
+        return new StreamReadRouter(partitionManager,
+                                    Option.none(),
+                                    forwardClient,
+                                    selfNodeId,
+                                    ownerResolver,
+                                    StreamReadForwardMetrics.NOOP,
+                                    Option.none(),
+                                    Option.none(),
+                                    Option.none(),
+                                    localRead);
     }
 
     public static StreamReadRouter localOnly(StreamPartitionManager partitionManager) {
@@ -116,7 +150,8 @@ public final class StreamReadRouter {
                                     StreamReadForwardMetrics.NOOP,
                                     Option.none(),
                                     Option.none(),
-                                    Option.none());
+                                    Option.none(),
+                                    partitionManager::readServingTiered);
     }
 
     public Promise<List<OffHeapRingBuffer.RawEvent>> read(String streamName,
@@ -132,6 +167,10 @@ public final class StreamReadRouter {
     /// either case checked against the committed epoch starts by the node that serves it. The answer is the events and the
     /// epoch they were served under, or the typed [StreamError.EpochDiverged].
     ///
+    /// A local [StreamError.BelowCopyTail] (the copy holds nothing at the offset asked, M-9f) is forwarded the same way, to the
+    /// HRW owner, at most once: the owner's answer, a `BelowCopyTail` included, is the read's answer. With no target (the owner
+    /// is this node, or no forward client is wired) the original `BelowCopyTail` surfaces, never `PARTITION_NOT_LOCAL`.
+    ///
     /// Unlike the plain GOVERNOR read, a failed forward is NOT softened to a local read: a refusal that tells the consumer its
     /// lineage was replaced must reach it, and a local read of a ring this node does not hold could only fail again.
     ///
@@ -142,22 +181,31 @@ public final class StreamReadRouter {
                                                                    long fromOffset,
                                                                    int maxEvents,
                                                                    Epoch consumerEpoch) {
-        return partitionManager.readServingTiered(streamName, partition, fromOffset, maxEvents, consumerEpoch)
-                               .fold(result -> result.fold(cause -> cause == StreamError.General.PARTITION_NOT_LOCAL
-                                                                    ? forwardValidated(streamName,
-                                                                                       partition,
-                                                                                       fromOffset,
-                                                                                       maxEvents,
-                                                                                       consumerEpoch)
-                                                                    : cause.<StreamPartitionManager.EpochRead> promise(),
-                                                           Promise::success));
+        return localValidatedRead.read(streamName, partition, fromOffset, maxEvents, consumerEpoch)
+                                 .fold(result -> result.fold(cause -> isForwarded(cause)
+                                                                      ? forwardValidated(streamName,
+                                                                                         partition,
+                                                                                         fromOffset,
+                                                                                         maxEvents,
+                                                                                         consumerEpoch,
+                                                                                         cause)
+                                                                      : cause.<StreamPartitionManager.EpochRead> promise(),
+                                                             Promise::success));
+    }
+
+    /// The local refusals this router answers by forwarding the read ONCE to the owner: a ring this node does not hold
+    /// (`PARTITION_NOT_LOCAL`), and a read below the first offset this copy holds ([StreamError.BelowCopyTail], M-9f). Only
+    /// the type `BelowCopyTail` is keyed, never `CursorExpired`: a read inside the range the copy holds is its own answer.
+    private static boolean isForwarded(Cause cause) {
+        return cause == StreamError.General.PARTITION_NOT_LOCAL || cause instanceof StreamError.BelowCopyTail;
     }
 
     private Promise<StreamPartitionManager.EpochRead> forwardValidated(String streamName,
                                                                        int partition,
                                                                        long fromOffset,
                                                                        int maxEvents,
-                                                                       Epoch consumerEpoch) {
+                                                                       Epoch consumerEpoch,
+                                                                       Cause noTarget) {
         return ownerResolver.resolve(streamName, partition)
                             .filter(owner -> !owner.equals(selfNodeId))
                             .flatMap(owner -> forwardClient.map(client -> client.readRemoteValidated(owner,
@@ -171,7 +219,7 @@ public final class StreamReadRouter {
                                                                                                        result.ownerEpoch(),
                                                                                                        positionOf(result.bounds(),
                                                                                                                   fromOffset))))
-                            .or(() -> StreamError.General.PARTITION_NOT_LOCAL.<StreamPartitionManager.EpochRead> promise());
+                            .or(() -> noTarget.<StreamPartitionManager.EpochRead> promise());
     }
 
     /// Whether a forwarded consumer read began below the owner's ring tail, so the owner served it from its sealed tier

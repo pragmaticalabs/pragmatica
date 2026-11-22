@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.io.IOException;
@@ -13,10 +12,12 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Pattern;
 
-import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.testlogging.LogCapture;
+
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+
 
 /// What a FSM2 cluster run is checked against (phase-3 design 9.5 O6, 12 item 6): the log lines the deployment FSM loggers wrote while it ran, and
 /// the checked-in expected-WARN list of the scenario (`fsm2/expected-warns-*.txt`). Shared by T and E-01, so both read the same sensors the same way.
@@ -39,7 +40,9 @@ final class Fsm2Sensors implements AutoCloseable {
         }
 
         boolean matches(String line) {
-            return Pattern.compile(name).matcher(line).find();
+            return Pattern.compile(name)
+                          .matcher(line)
+                          .find();
         }
     }
 
@@ -59,7 +62,8 @@ final class Fsm2Sensors implements AutoCloseable {
                                                     thresholdOf(name),
                                                     true,
                                                     event -> sensors.logged.add(new Logged(event.getLevel(),
-                                                                                           event.getMessage().getFormattedMessage()))));
+                                                                                           event.getMessage()
+                                                                                                .getFormattedMessage()))));
         }
 
         return sensors;
@@ -82,7 +86,8 @@ final class Fsm2Sensors implements AutoCloseable {
     /// Every WARN-or-worse line captured so far.
     List<String> warnLines() {
         return logged.stream()
-                     .filter(line -> line.level().isMoreSpecificThan(Level.WARN))
+                     .filter(line -> line.level()
+                                         .isMoreSpecificThan(Level.WARN))
                      .map(Logged::message)
                      .toList();
     }
@@ -127,9 +132,9 @@ final class Fsm2Sensors implements AutoCloseable {
             }
 
             return new String(in.readAllBytes(), StandardCharsets.UTF_8).lines()
-                                                                         .filter(line -> !line.startsWith("#") && !line.isBlank())
-                                                                         .map(Fsm2Sensors::expectation)
-                                                                         .toList();
+                                                                        .filter(line -> !line.startsWith("#") && !line.isBlank())
+                                                                        .map(Fsm2Sensors::expectation)
+                                                                        .toList();
         } catch (IOException e) {
             throw new AssertionError("SETUP: cannot read " + resource, e);
         }
@@ -142,6 +147,9 @@ final class Fsm2Sensors implements AutoCloseable {
             throw new AssertionError("SETUP: unreadable expected-WARN entry: " + line);
         }
 
-        return new Expectation(match.group(1), match.group(2), Integer.parseInt(match.group(3)), Integer.parseInt(match.group(4)));
+        return new Expectation(match.group(1),
+                               match.group(2),
+                               Integer.parseInt(match.group(3)),
+                               Integer.parseInt(match.group(4)));
     }
 }

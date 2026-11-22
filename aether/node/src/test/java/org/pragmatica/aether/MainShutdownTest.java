@@ -7,6 +7,7 @@ package org.pragmatica.aether;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.StopReport;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.storage.EncryptionError;
 
@@ -18,12 +19,14 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.IntConsumer;
 
 import org.mockito.Mockito;
+import org.apache.logging.log4j.Level;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #838 review round 1 pins the expiry path of [Main#shutdownNode] directly, without touching the real
@@ -71,7 +74,7 @@ class MainShutdownTest {
         @Test
         void shutdownNode_logsAndDoesNotHalt_whenStopResolvesInTime() {
             var node = Mockito.mock(AetherNode.class);
-            Mockito.when(node.stop()).thenReturn(Promise.success(unit()));
+            Mockito.when(node.stop()).thenReturn(Promise.success(StopReport.clean()));
 
             var flushed = new AtomicBoolean(false);
             var haltedWith = new AtomicInteger(-1);
@@ -80,6 +83,47 @@ class MainShutdownTest {
 
             assertFalse(flushed.get(), "log flush must run only on the timeout path, not on a clean stop");
             assertEquals(-1, haltedWith.get(), "halt must not be invoked when stop() resolves in time");
+        }
+
+        @Test
+        void shutdownNode_logsAtInfo_whenTheStopIsClean() {
+            var capture = LogCapture.capture(Main.class, Level.INFO, false);
+
+            try {
+                Main.shutdownNode(stoppingWith(StopReport.clean()), timeSpan(200).millis(), () -> {}, _ -> {});
+
+                assertTrue(capture.entries().contains(new LogCapture.Entry(Level.INFO, "Node stopped")),
+                           "a clean stop logs 'Node stopped' at INFO, got " + capture.entries());
+                assertTrue(capture.entries().stream().noneMatch(entry -> entry.level() == Level.WARN),
+                           "a clean stop must not log a WARN, got " + capture.entries());
+            } finally {
+                capture.close();
+            }
+        }
+
+        @Test
+        void shutdownNode_logsAtWarnWithTheFailures_whenTheStopCompletedWithFailures() {
+            var capture = LogCapture.capture(Main.class, Level.INFO, false);
+            var report = StopReport.of(List.of(StopReport.StepFailure.stepFailure("App HTTP server",
+                                                                                   Causes.cause("Promise timed out after 2000ms"))));
+
+            try {
+                Main.shutdownNode(stoppingWith(report), timeSpan(200).millis(), () -> {}, _ -> {});
+
+                assertTrue(capture.messages(Level.WARN).stream().anyMatch(message -> message.contains("Node stopped with 1 step failure(s)")
+                                                                                    && message.contains("App HTTP server: Promise timed out after 2000ms")),
+                           "a stop completed with failures logs WARN with the failures, got " + capture.entries());
+                assertTrue(capture.entries().stream().noneMatch(entry -> entry.level() == Level.INFO && entry.message().startsWith("Node stopped")),
+                           "...and not at INFO, got " + capture.entries());
+            } finally {
+                capture.close();
+            }
+        }
+
+        private static AetherNode stoppingWith(StopReport report) {
+            var node = Mockito.mock(AetherNode.class);
+            Mockito.when(node.stop()).thenReturn(Promise.success(report));
+            return node;
         }
 
         @Test

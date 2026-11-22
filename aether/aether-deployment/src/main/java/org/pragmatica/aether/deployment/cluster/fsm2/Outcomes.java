@@ -16,7 +16,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.ArtifactIntent;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;

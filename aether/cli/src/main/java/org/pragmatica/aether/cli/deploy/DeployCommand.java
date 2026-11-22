@@ -67,6 +67,9 @@ public class DeployCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--timeout", description = "Wait timeout in seconds", defaultValue = "300")
     private int timeoutSeconds;
 
+    @CommandLine.Option(names = "--force", description = "Accept re-applying schema versions an operator undid or baselined (refused with 409 otherwise); immediate deploys only")
+    private boolean force;
+
     OutputOptions outputOptions() {
         return parent.outputOptions();
     }
@@ -96,7 +99,9 @@ public class DeployCommand implements Callable<Integer> {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private int deployImmediate() {
-        var body = "{\"artifact\":\"" + coordinates + "\"}";
+        var body = "{\"artifact\":\"" + coordinates + "\"" + (force
+                                                              ? ",\"force\":true"
+                                                              : "") + "}";
         var response = parent.post(BLUEPRINT_DEPLOY, body);
 
         return OutputFormatter.printQuery(response, parent.outputOptions());

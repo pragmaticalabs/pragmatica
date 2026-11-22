@@ -34,6 +34,7 @@ import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.swim.TransportObservation;
 
@@ -83,7 +84,7 @@ class PhantomSeedMembershipTest {
         membership = MembershipFsm.membershipFsm();
         membership.onEnteredDeparting(this::onEnteredDeparting);
         membership.seed(seeds);
-        swim = SwimProtocol.swimProtocol(tightConfig(),
+        swim = SwimTestProtocols.swimProtocol(tightConfig(),
                                          new SeedTransport(genuineUp),
                                          new SilentListener(),
                                          SELF,

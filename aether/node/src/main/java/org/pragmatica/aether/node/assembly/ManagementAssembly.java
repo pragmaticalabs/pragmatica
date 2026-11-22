@@ -14,7 +14,6 @@ import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.ObservabilityConfigRegistry;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.TlsRotation;
 import org.pragmatica.aether.http.security.SecurityValidator;
@@ -23,7 +22,6 @@ import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceInvoker;
-import org.pragmatica.aether.metrics.DrainCommandRegistry;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNode.ResourceProviderSetup;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -56,7 +54,6 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.node.AetherNode.LOG;
 import static org.pragmatica.aether.node.AetherNode.findSelfAddress;
-import static org.pragmatica.aether.node.assembly.DrainAssembly.requestDrainThroughFsm;
 
 
 /// The management unit of the node assembly: the certificate renewal scheduler with the rotation of the QUIC, management
@@ -93,14 +90,13 @@ public sealed interface ManagementAssembly {
                                   RabiaNode<KVCommand<AetherKey>> clusterNode,
                                   Serializer serializer,
                                   Deserializer deserializer,
-                                  AtomicReference<MembershipFsm> membershipFsmRef,
                                   AetherNode.ResourceProviderSetup resourceProviderSetup,
                                   LogLevelRegistry logLevelRegistry,
                                   InvocationTraceStore traceStore,
                                   ObservabilityConfigRegistry configRegistry,
                                   ScheduledTaskRegistry scheduledTaskRegistry,
                                   ScheduledTaskStateRegistry scheduledTaskStateRegistry,
-                                  DrainCommandRegistry drainCommandRegistry,
+                                  NodeLifecycleRoutes.DrainPort drainPort,
                                   AlertManager alertManager,
                                   Option<DynamicConfigManager> dynamicConfigManager,
                                   OperatorWarningSink operatorWarningSink,
@@ -120,14 +116,12 @@ public sealed interface ManagementAssembly {
         var clusterNode = in.clusterNode();
         var serializer = in.serializer();
         var deserializer = in.deserializer();
-        var membershipFsmRef = in.membershipFsmRef();
         var resourceProviderSetup = in.resourceProviderSetup();
         var logLevelRegistry = in.logLevelRegistry();
         var traceStore = in.traceStore();
         var configRegistry = in.configRegistry();
         var scheduledTaskRegistry = in.scheduledTaskRegistry();
         var scheduledTaskStateRegistry = in.scheduledTaskStateRegistry();
-        var drainCommandRegistry = in.drainCommandRegistry();
         var alertManager = in.alertManager();
         var dynamicConfigManager = in.dynamicConfigManager();
         var operatorWarningSink = in.operatorWarningSink();
@@ -139,7 +133,6 @@ public sealed interface ManagementAssembly {
         var entityCheckpointDriver = in.entityCheckpointDriver();
         var node = in.node();
         var deploymentMeters = in.deploymentMeters();
-        var mgmtSecurityEnabled = config.appHttp().managementSecurityEnabled();
         // #962: `[management] security_mode` decides whether the Management API authenticates and,
         // when absent, INHERITS `[app-http] security_mode`. Both planes check the same
         // `api-keys` and the same cluster bootstrap admin key. They authorize on
@@ -148,14 +141,14 @@ public sealed interface ManagementAssembly {
         // plane and the axis (ManagementServerImpl#denialDetail); the operator documentation
         // states the coupling where api-key mode is configured.
         //
-        // #1121: `security_mode = "none"` leaves this plane FULLY OPEN. `ManagementServerImpl`
-        // gates on `mgmtSecurityEnabled` and, when false, dispatches without consulting any
-        // validator -- on the local path, the forwarded path, the websocket feeds and the Maven
-        // push admission alike. An earlier version of this block installed
-        // `denyUnlessPublicValidator` here and claimed non-public routes were refused unless a
-        // bootstrap key was present; that validator was never consulted, so the claim was false
-        // and the validator is gone. The validator below is built for the enabled case only.
-        var configValidator = SecurityValidator.apiKeyValidator(config.appHttp().apiKeys());
+        // #1121: `security_mode = "none"` leaves this plane FULLY OPEN, but not unvalidated: ONE call builds the
+        // flag and the validator from a single read of the configured mode, and the server calls that validator
+        // inside every request's scope in every mode. With the mode off it is the OFF validator: it serves every
+        // caller, enforces nothing and mints the grant for the `security-off` principal, so every AdminGrant a
+        // management route receives comes from `validate`. The websocket feeds and the Maven push admission read the
+        // same flag.
+        var mgmtSecurity = SecurityValidator.managementValidator(config.appHttp(), () -> node.kvStore());
+        var mgmtSecurityEnabled = mgmtSecurity.enabled();
 
         if (!mgmtSecurityEnabled) {
             LOG.warn("Management API on port {} is FULLY OPEN: its security mode is \"none\" ([management] security_mode, or inherited from"
@@ -186,7 +179,6 @@ public sealed interface ManagementAssembly {
                      config.managementPort());
         }
 
-        var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator, () -> node.kvStore());
         var managementServer = ManagementServer.managementServer(config.managementPort(),
                                                                  () -> node,
                                                                  entityCheckpointDriver,
@@ -200,7 +192,7 @@ public sealed interface ManagementAssembly {
                                                                  sliceInvoker,
                                                                  scheduledTaskStateRegistry,
                                                                  config.tls(),
-                                                                 mgmtSecurityValidator,
+                                                                 mgmtSecurity.validator(),
                                                                  mgmtSecurityEnabled,
                                                                  () -> config.appHttp()
                                                                              .apiKeys(),
@@ -211,10 +203,7 @@ public sealed interface ManagementAssembly {
                                                                  Option.some(clusterNode.network()),
                                                                  Option.some(serializer),
                                                                  Option.some(deserializer),
-                                                                 target -> requestDrainThroughFsm(drainCommandRegistry,
-                                                                                                  membershipFsmRef,
-                                                                                                  target),
-                                                                 drainCommandRegistry::drainTargets,
+                                                                 in.drainPort(),
 
         // #1720: operator drain and shutdown honour the slice minAvailable floor,
         // as the automatic drain does (same KV-backed guard, same counting rules).

@@ -172,6 +172,11 @@ jobs:
           python3 tools/check-publish-closure.py
           python3 tools/check-publish-closure.py --check-table docs/release/maven-central-publish-set.md
 
+      # #3532: the management route reference page is generated from ManagementRoute; a route added or moved without
+      # regenerating it fails here.
+      - name: Management route reference drift
+        run: python3 tools/gen-management-routes.py --check
+
       - name: Licence closure
         run: |
           python3 -B -m unittest discover -s tools -p test_licence_closure.py
@@ -180,6 +185,12 @@ jobs:
 
       - name: JBCT format + lint gate
         run: mvn org.pragmatica-lite:jbct-maven-plugin:check -B -pl '!jbct'
+        timeout-minutes: 15
+
+      # #1629: forge-tests is outside the default reactor (profile with-e2e) and its sources are tests, so the step above
+      # examines neither; its pom sets jbct.includeTests=true.
+      - name: JBCT format + lint gate, forge-tests
+        run: mvn org.pragmatica-lite:jbct-maven-plugin:check -B -Pwith-e2e -pl aether/forge/forge-tests
         timeout-minutes: 15
 
   # build-and-test's module tests, split into groups that run in parallel. In one reactor each module's tests waited for
@@ -734,7 +745,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Tools the suites use
-        run: bash --version | head -1 && awk --version 2>&1 | head -1 && sed --version | head -1 && command -v mktemp tee perl pgrep mkfifo
+        run: bash --version | head -1 && awk --version 2>&1 | head -1 && sed --version | head -1 && command -v mktemp tee perl pgrep mkfifo unzip javac jar javap
 
       # #2029: run-tests.sh runs lint-tests.sh under `set -euo pipefail`, so a finding that is not in lint-baseline.txt aborts
       # every integration run before anything is provisioned. CI never ran it, so the PR that introduced the finding merged green.

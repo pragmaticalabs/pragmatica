@@ -2,22 +2,23 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
+
+import java.util.HashSet;
+import java.util.List;
+
+import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.slice.ReadPreference;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.aether.node.AetherNode;
-import org.pragmatica.aether.slice.ReadPreference;
-
-import java.util.HashSet;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+
 
 /// #429 — multi-partition stream e2e fixture. Existing forge stream fixtures
 /// ([StreamFanoutConsumerTest], [AbstractStreamOwnerFailover]) exercise SINGLE-partition streams only
@@ -80,40 +81,33 @@ class MultiPartitionStreamTest extends AbstractMultiPartitionStream {
     @Test
     void multiPartition_ownersSpreadAndPerPartitionOrdered_localAndForwardedReadsAgree() {
         var port = appPort();
-
         // The RF=2 replica sets of ALL four partitions must be PLACED (owner + >=1 non-owner) before
         // publishing, so owner distribution is stable and each min-sync-2 publish has a replica to await.
         await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allPartitionsPlaced);
-
         // 40 keyless publishes through ONE app port -> round-robin over 40 consecutive counter values ->
         // each partition receives exactly 10, spread deterministically regardless of the warm-up prefix.
         publishSequence(port, EVENTS);
-
         var partitionEvents = drainAllPartitions(port);
-
         // (a) distribution + (b) per-partition ordering.
         assertEvenDistribution(partitionEvents);
         assertOwnersSpanMultipleNodes();
         for (int partition = 0; partition < PARTITIONS; partition++) {
             assertPerPartitionOrdered(partitionEvents.get(partition), partition);
         }
-
         // (c) read paths: owner-local GOVERNOR read vs forwarded NEAREST read from outside the replica set.
         assertLocalAndForwardedReadsAgree(READ_PATH_PARTITION);
     }
 
     // --- publishing ---------------------------------------------------------
-
     private void publishSequence(int port, int count) {
         for (long seq = 0; seq < count; seq++) {
-            assertThat(publish(port, seq))
-                .describedAs("publish seq %d must be ACKED (min-sync-2 replica ack)", seq)
-                .isTrue();
+            assertThat(publish(port, seq)).describedAs("publish seq %d must be ACKED (min-sync-2 replica ack)",
+                                                       seq)
+                      .isTrue();
         }
     }
 
     // --- assertions ---------------------------------------------------------
-
     /// 40 events / 4 partitions: round-robin over 40 consecutive counter values hits each residue class
     /// exactly 10 times, so every partition holds exactly 10 of the test's events and the four together
     /// account for all 40 (no loss, no partition starved).
@@ -123,15 +117,16 @@ class MultiPartitionStreamTest extends AbstractMultiPartitionStream {
         for (int partition = 0; partition < PARTITIONS; partition++) {
             var events = partitionEvents.get(partition);
 
-            assertThat(events)
-                .describedAs("partition %d receives exactly %d of the %d round-robin events", partition, PER_PARTITION, EVENTS)
-                .hasSize(PER_PARTITION);
+            assertThat(events).describedAs("partition %d receives exactly %d of the %d round-robin events",
+                                           partition,
+                                           PER_PARTITION,
+                                           EVENTS)
+                      .hasSize(PER_PARTITION);
             total += events.size();
         }
 
-        assertThat(total)
-            .describedAs("every published event lands in exactly one of the %d partitions", PARTITIONS)
-            .isEqualTo(EVENTS);
+        assertThat(total).describedAs("every published event lands in exactly one of the %d partitions", PARTITIONS)
+                  .isEqualTo(EVENTS);
     }
 
     private void assertOwnersSpanMultipleNodes() {
@@ -141,10 +136,9 @@ class MultiPartitionStreamTest extends AbstractMultiPartitionStream {
             owners.add(ownerId(partition));
         }
 
-        assertThat(owners)
-            .describedAs("the %d partitions' HRW owners span more than one node", PARTITIONS)
-            .doesNotContain("")
-            .hasSizeGreaterThan(1);
+        assertThat(owners).describedAs("the %d partitions' HRW owners span more than one node", PARTITIONS)
+                  .doesNotContain("")
+                  .hasSizeGreaterThan(1);
     }
 
     /// The owner serves its own log under `GOVERNOR` (local read); a node OUTSIDE the partition's
@@ -157,26 +151,28 @@ class MultiPartitionStreamTest extends AbstractMultiPartitionStream {
         var forwarder = forwarderOutsideReplicaSet(partition);
         var localOffsets = inJvmOffsets(ownerNode, partition, ReadPreference.GOVERNOR);
 
-        assertThat(localOffsets)
-            .describedAs("owner-local GOVERNOR read of partition %d returns its log", partition)
-            .isNotEmpty();
-
+        assertThat(localOffsets).describedAs("owner-local GOVERNOR read of partition %d returns its log", partition)
+                  .isNotEmpty();
         await().atMost(FAILOVER_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> inJvmOffsets(forwarder, partition, ReadPreference.NEAREST).size() == localOffsets.size());
-
-        assertThat(inJvmOffsets(forwarder, partition, ReadPreference.NEAREST))
-            .describedAs("forwarded NEAREST read from a non-replica node agrees with the owner-local read")
-            .isEqualTo(localOffsets);
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> inJvmOffsets(forwarder, partition, ReadPreference.NEAREST).size() == localOffsets.size());
+        assertThat(inJvmOffsets(forwarder, partition, ReadPreference.NEAREST)).describedAs("forwarded NEAREST read from a non-replica node agrees with the owner-local read")
+                  .isEqualTo(localOffsets);
     }
 
     // --- in-JVM read helpers ------------------------------------------------
-
     private List<Long> inJvmOffsets(AetherNode node, int partition, ReadPreference preference) {
         return node.streamReadRouter()
-                   .read(streamName(), partition, 0, 500, preference)
+                   .read(streamName(),
+                         partition,
+                         0,
+                         500,
+                         preference)
                    .await()
-                   .map(events -> events.stream().map(event -> event.offset()).sorted().toList())
+                   .map(events -> events.stream()
+                                        .map(event -> event.offset())
+                                        .sorted()
+                                        .toList())
                    .or(List.of());
     }
 
@@ -185,14 +181,19 @@ class MultiPartitionStreamTest extends AbstractMultiPartitionStream {
 
         return cluster.allNodes()
                       .stream()
-                      .filter(node -> node.self().id().equals(ownerId))
+                      .filter(node -> node.self()
+                                          .id()
+                                          .equals(ownerId))
                       .findFirst()
                       .orElseThrow(() -> new AssertionError("owner node not resolvable for partition " + partition));
     }
 
     private AetherNode forwarderOutsideReplicaSet(int partition) {
-        var replicaIds = ownerView(partition).map(view -> view.replicas().stream().map(replica -> replica.nodeId()).toList())
-                                             .or(List.of());
+        var replicaIds = ownerView(partition).map(view -> view.replicas()
+                                                              .stream()
+                                                              .map(replica -> replica.nodeId())
+                                                              .toList())
+                                  .or(List.of());
 
         return cluster.allNodes()
                       .stream()

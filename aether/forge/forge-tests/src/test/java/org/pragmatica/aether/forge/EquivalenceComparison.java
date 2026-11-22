@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.util.ArrayList;
@@ -15,6 +14,7 @@ import java.util.stream.Collectors;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.consensus.NodeId;
+
 
 /// Outcome equivalence, LEGACY vs FSM2 (phase-3 design 9.5 criterion 4, O1-O6), over [Arm]s recorded by the same instruments for both engines.
 ///
@@ -68,7 +68,10 @@ final class EquivalenceComparison {
 
     /// A RULED outcome change, not a divergence: in `scenario` (and nowhere else), LEGACY's `legacy` verdict and the other arm's `other` verdict
     /// on the same blueprint are equal by an owner ruling, recorded as the `know` commit. Never a general normaliser: one named mapping per ruling.
-    record RuledVerdict(String scenario, AetherValue.DeploymentOutcomeStatus legacy, AetherValue.DeploymentOutcomeStatus other, String know) {}
+    record RuledVerdict(String scenario,
+                        AetherValue.DeploymentOutcomeStatus legacy,
+                        AetherValue.DeploymentOutcomeStatus other,
+                        String know) {}
 
     /// E-09 only: owner ruling know `8018203973` (2026-10-21; #970 folds into the FSM rewrite with terminal ROLLED_BACK, matching #922
     /// ALL_OR_NOTHING). LEGACY writes FAILED, FSM2 writes ROLLED_BACK; the round treats the pair as one verdict.
@@ -91,24 +94,33 @@ final class EquivalenceComparison {
     /// The O4 count of one arm from its per-slot effects (`Family op detail key`): every slot, minus, on E-09 only, the slots made solely of
     /// [#E09_ROLLBACK_SIGNATURES]. The same function for both arms.
     static long o4Counted(Map<Long, List<String>> slotEffects, String scenario) {
-        return slotEffects.values().stream().filter(effects -> !isRuledRollback(effects, scenario)).count();
+        return slotEffects.values()
+                          .stream()
+                          .filter(effects -> !isRuledRollback(effects, scenario))
+                          .count();
     }
 
     private static boolean isRuledRollback(List<String> effects, String scenario) {
         return E09_ROLLED_BACK.scenario().equals(scenario)
                && !effects.isEmpty()
-               && effects.stream().map(EquivalenceComparison::signature).allMatch(E09_ROLLBACK_SIGNATURES::contains);
+               && effects.stream()
+                         .map(EquivalenceComparison::signature)
+                         .allMatch(E09_ROLLBACK_SIGNATURES::contains);
     }
 
     /// The `Family op detail` part of one effect description `Family op detail key`.
     static String signature(String effect) {
         var parts = effect.split(" ", 4);
 
-        return parts.length < 3 ? effect : parts[0] + " " + parts[1] + " " + parts[2];
+        return parts.length < 3
+               ? effect
+               : parts[0] + " " + parts[1] + " " + parts[2];
     }
 
     /// The families whose per-node puts are placement decisions: LEGACY's `NodeArtifactKey`, FSM2's `SliceDesiredKey` and `SliceObservedKey`.
-    private static final Set<String> PLACEMENT_FAMILIES = Set.of("NodeArtifactKey", "SliceDesiredKey", "SliceObservedKey");
+    private static final Set<String> PLACEMENT_FAMILIES = Set.of("NodeArtifactKey",
+                                                                 "SliceDesiredKey",
+                                                                 "SliceObservedKey");
 
     /// The placement of one arm from its per-slot effects (`Family op detail key`, key `prefix/node/artifact`): per artifact, the number of
     /// distinct nodes that ever received a non-teardown put (detail not UNLOAD*). Every placement family is keyed per (node, artifact), so a
@@ -122,10 +134,14 @@ final class EquivalenceComparison {
                           .filter(parts -> isPlacement(parts))
                           .map(parts -> parts[3].split("/", 3))
                           .filter(key -> key.length == 3)
-                          .collect(Collectors.groupingBy(key -> key[2], TreeMap::new, Collectors.mapping(key -> key[1], Collectors.toSet())))
+                          .collect(Collectors.groupingBy(key -> key[2],
+                                                         TreeMap::new,
+                                                         Collectors.mapping(key -> key[1],
+                                                                            Collectors.toSet())))
                           .entrySet()
                           .stream()
-                          .map(entry -> entry.getKey() + "=" + entry.getValue().size() + " nodes")
+                          .map(entry -> entry.getKey() + "=" + entry.getValue()
+                                                                    .size() + " nodes")
                           .collect(Collectors.joining(", ", "[", "]"));
     }
 
@@ -135,7 +151,10 @@ final class EquivalenceComparison {
     }
 
     private static boolean isPlacement(String[] parts) {
-        return parts.length == 4 && PLACEMENT_FAMILIES.contains(parts[0]) && parts[1].equals("put") && !parts[2].startsWith("UNLOAD");
+        return parts.length == 4
+               && PLACEMENT_FAMILIES.contains(parts[0])
+               && parts[1].equals("put")
+               && !parts[2].startsWith("UNLOAD");
     }
 
     /// Compares outside any ruled scenario: no outcome mapping applies.
@@ -154,15 +173,24 @@ final class EquivalenceComparison {
         residue(legacy).forEach(row -> divergences.add(new Divergence("O3", legacy.engine() + " residue " + row)));
         o4(legacy, other, divergences);
         o5(legacy, other, divergences);
-        other.o6().forEach((counter, count) -> {
-            if (count != 0.0) {
-                divergences.add(new Divergence("O6", other.engine() + " " + counter + "=" + count + ", expected 0"));
-            }
-        });
-        monitor.check(other.samples(), other.targetEvents())
-               .forEach(violation -> divergences.add(new Divergence("MON-" + violation.invariant(), other.engine() + " " + violation.describe())));
-        monitor.check(legacy.samples(), legacy.targetEvents())
-               .forEach(violation -> divergences.add(new Divergence("MON-" + violation.invariant(), legacy.engine() + " " + violation.describe())));
+        other.o6()
+             .forEach((counter, count) -> {
+                          if (count != 0.0) {
+                              divergences.add(new Divergence("O6",
+                                                             other.engine()
+                                                            + " " + counter
+                                                            + "=" + count
+                                                            + ", expected 0"));
+                          }
+                      });
+        monitor.check(other.samples(),
+                      other.targetEvents())
+               .forEach(violation -> divergences.add(new Divergence("MON-" + violation.invariant(),
+                                                                    other.engine() + " " + violation.describe())));
+        monitor.check(legacy.samples(),
+                      legacy.targetEvents())
+               .forEach(violation -> divergences.add(new Divergence("MON-" + violation.invariant(),
+                                                                    legacy.engine() + " " + violation.describe())));
 
         return divergences;
     }
@@ -173,7 +201,8 @@ final class EquivalenceComparison {
         var right = ruled(left, verdicts(other.quiescent()), scenario);
 
         if (!left.equals(right)) {
-            divergences.add(new Divergence("O1", legacy.engine() + "=" + left + " " + other.engine() + "=" + right));
+            divergences.add(new Divergence("O1",
+                                           legacy.engine() + "=" + left + " " + other.engine() + "=" + right));
         }
     }
 
@@ -182,21 +211,29 @@ final class EquivalenceComparison {
     static Map<String, String> ruled(Map<String, String> legacy, Map<String, String> other, String scenario) {
         var mapped = new TreeMap<String, String>();
 
-        other.forEach((blueprint, status) -> mapped.put(blueprint, isRuled(scenario, legacy.get(blueprint), status) ? E09_ROLLED_BACK.legacy().name() : status));
+        other.forEach((blueprint, status) -> mapped.put(blueprint,
+                                                        isRuled(scenario, legacy.get(blueprint), status)
+                                                        ? E09_ROLLED_BACK.legacy().name()
+                                                        : status));
 
         return mapped;
     }
 
     private static boolean isRuled(String scenario, String legacy, String other) {
         return E09_ROLLED_BACK.scenario().equals(scenario)
-               && E09_ROLLED_BACK.legacy().name().equals(legacy)
-               && E09_ROLLED_BACK.other().name().equals(other);
+               && E09_ROLLED_BACK.legacy()
+                                 .name()
+                                 .equals(legacy)
+               && E09_ROLLED_BACK.other()
+                                 .name()
+                                 .equals(other);
     }
 
     static Map<String, String> verdicts(EquivalenceKv kv) {
         var verdicts = new TreeMap<String, String>();
 
-        kv.outcomes().forEach((blueprint, outcome) -> verdicts.put(blueprint, outcome.status().name()));
+        kv.outcomes().forEach((blueprint, outcome) -> verdicts.put(blueprint,
+                                                                   outcome.status().name()));
 
         return verdicts;
     }
@@ -205,13 +242,19 @@ final class EquivalenceComparison {
     private static void o2(Arm arm, List<Divergence> divergences) {
         var active = arm.quiescent().active();
 
-        arm.quiescent().targets().forEach((base, target) -> {
-            var count = active.getOrDefault(base, 0L);
+        arm.quiescent()
+           .targets()
+           .forEach((base, target) -> {
+                        var count = active.getOrDefault(base, 0L);
 
-            if (count != target.targetInstances()) {
-                divergences.add(new Divergence("O2", arm.engine() + " " + base.asString() + " active=" + count + " target=" + target.targetInstances()));
-            }
-        });
+                        if (count != target.targetInstances()) {
+                            divergences.add(new Divergence("O2",
+                                                           arm.engine()
+                                                          + " " + base.asString()
+                                                          + " active=" + count
+                                                          + " target=" + target.targetInstances()));
+                        }
+                    });
     }
 
     /// O3: rows left behind at quiescence. Exempt by design: FSM2 desired tombstones (goal UNLOADED) issued within [#TOMBSTONE_GRACE_MS] of the
@@ -222,26 +265,26 @@ final class EquivalenceComparison {
         var live = arm.liveNodes();
         var rows = new ArrayList<String>();
 
-        kv.entries().forEach((key, value) -> {
-            switch (key) {
-                case AetherKey.NodeArtifactKey row when !targets.contains(row.artifact().base()) || !live.contains(row.nodeId()) -> rows.add(row.toString());
-                case AetherKey.SliceObservedKey row when !targets.contains(row.artifact().base()) || !live.contains(row.nodeId()) -> rows.add(row.toString());
-                case AetherKey.SliceDesiredKey row when value instanceof AetherValue.SliceDesiredValue desired
-                                                       && !isFreshTombstone(desired, arm.nowMs())
-                                                       && (!targets.contains(row.artifact().base()) || !live.contains(row.nodeId())) -> rows.add(row.toString());
-                case AetherKey.TopicPublisherKey row when !live.contains(row.nodeId()) || !targets.contains(row.artifact().base()) -> rows.add(row.toString());
-                case AetherKey.HttpNodeRouteKey row when !live.contains(row.nodeId()) -> rows.add(row.toString());
-                case AetherKey.EndpointKey row when !targets.contains(row.artifact().base()) -> rows.add(row.toString());
-                case AetherKey.DeploymentApplyKey row -> rows.add(row + " (open apply at quiescence)");
-                default -> {}
-            }
-        });
+        kv.entries()
+          .forEach((key, value) -> {
+                       switch (key) {
+                           case AetherKey.NodeArtifactKey row when!targets.contains(row.artifact().base()) || !live.contains(row.nodeId()) -> rows.add(row.toString());
+                           case AetherKey.SliceObservedKey row when!targets.contains(row.artifact().base()) || !live.contains(row.nodeId()) -> rows.add(row.toString());
+                           case AetherKey.SliceDesiredKey row when value instanceof AetherValue.SliceDesiredValue desired && !isFreshTombstone(desired,
+                                                                                                                                               arm.nowMs()) && (!targets.contains(row.artifact().base()) || !live.contains(row.nodeId())) -> rows.add(row.toString());
+                           case AetherKey.TopicPublisherKey row when!live.contains(row.nodeId()) || !targets.contains(row.artifact().base()) -> rows.add(row.toString());
+                           case AetherKey.HttpNodeRouteKey row when!live.contains(row.nodeId()) -> rows.add(row.toString());
+                           case AetherKey.EndpointKey row when!targets.contains(row.artifact().base()) -> rows.add(row.toString());
+                           case AetherKey.DeploymentApplyKey row -> rows.add(row + " (open apply at quiescence)");
+                           default -> {}
+                       }
+                   });
         kv.outcomes()
           .forEach((blueprint, outcome) -> {
-              if (outcome.status() == AetherValue.DeploymentOutcomeStatus.IN_PROGRESS) {
-                  rows.add(blueprint + " outcome IN_PROGRESS at quiescence");
-              }
-          });
+                       if (outcome.status() == AetherValue.DeploymentOutcomeStatus.IN_PROGRESS) {
+                           rows.add(blueprint + " outcome IN_PROGRESS at quiescence");
+                       }
+                   });
 
         return rows;
     }
@@ -256,7 +299,10 @@ final class EquivalenceComparison {
     static List<String> voids(Arm legacy, Arm other) {
         return hasO4Count(legacy) && hasO4Count(other)
                ? List.of()
-               : List.of("O4 void count: an arm did not quiesce (legacy=" + legacy.o4Batches() + ", " + other.engine() + "=" + other.o4Batches() + ")");
+               : List.of("O4 void count: an arm did not quiesce (legacy=" + legacy.o4Batches()
+                        + ", " + other.engine()
+                        + "=" + other.o4Batches()
+                        + ")");
     }
 
     private static final List<String> MONITOR_FAMILIES = List.of("MON-i", "MON-ii", "MON-iii", "MON-iv");
@@ -270,12 +316,15 @@ final class EquivalenceComparison {
         if (verdicts(legacy.quiescent()).isEmpty() && verdicts(other.quiescent()).isEmpty()) {
             families.add("O1");
         }
+
         if (legacy.quiescent().targets().isEmpty() && other.quiescent().targets().isEmpty()) {
             families.add("O2");
         }
+
         if (legacy.o5PlacementMs() < 0 && other.o5PlacementMs() < 0) {
             families.add("O5");
         }
+
         if (legacy.samples().size() < EquivalenceMonitor.MIN_SAMPLES || other.samples().size() < EquivalenceMonitor.MIN_SAMPLES) {
             families.addAll(MONITOR_FAMILIES);
         }
@@ -289,7 +338,11 @@ final class EquivalenceComparison {
 
     private static void o4(Arm legacy, Arm other, List<Divergence> divergences) {
         if (hasO4Count(legacy) && hasO4Count(other) && other.o4Batches() > O4_RATIO * legacy.o4Batches()) {
-            divergences.add(new Divergence("O4", other.engine() + " batches=" + other.o4Batches() + " > " + O4_RATIO + " x legacy " + legacy.o4Batches()));
+            divergences.add(new Divergence("O4",
+                                           other.engine()
+                                          + " batches=" + other.o4Batches()
+                                          + " > " + O4_RATIO
+                                          + " x legacy " + legacy.o4Batches()));
         }
     }
 
@@ -297,15 +350,26 @@ final class EquivalenceComparison {
         if (legacy.o5PlacementMs() < 0 && other.o5PlacementMs() < 0) {
             return;
         }
+
         if (legacy.o5PlacementMs() < 0 || other.o5PlacementMs() < 0) {
-            divergences.add(new Divergence("O5", "placement completed in one arm only (legacy=" + legacy.o5PlacementMs() + " ms, " + other.engine() + "=" + other.o5PlacementMs() + " ms)"));
+            divergences.add(new Divergence("O5",
+                                           "placement completed in one arm only (legacy=" + legacy.o5PlacementMs()
+                                          + " ms, " + other.engine()
+                                          + "=" + other.o5PlacementMs()
+                                          + " ms)"));
 
             return;
         }
-        var allowance = Math.max(O5_FLOOR_MS, (long) (O5_RATIO * legacy.o5PlacementMs()));
+
+        var allowance = Math.max(O5_FLOOR_MS, (long)(O5_RATIO * legacy.o5PlacementMs()));
 
         if (other.o5PlacementMs() > legacy.o5PlacementMs() + allowance) {
-            divergences.add(new Divergence("O5", other.engine() + " placement=" + other.o5PlacementMs() + " ms > legacy " + legacy.o5PlacementMs() + " ms + " + allowance + " ms"));
+            divergences.add(new Divergence("O5",
+                                           other.engine()
+                                          + " placement=" + other.o5PlacementMs()
+                                          + " ms > legacy " + legacy.o5PlacementMs()
+                                          + " ms + " + allowance
+                                          + " ms"));
         }
     }
 }

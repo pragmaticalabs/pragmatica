@@ -94,6 +94,22 @@ class JoinGenerationGuardTest {
                            .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 3)));
     }
 
+    /// #3303 RA-3b bumped WIRE_GENERATION: a peer still at the previous generation cannot decode BackupRestoreValue's new
+    /// shape, so it is refused at this binary's own generation.
+    @Test
+    void handshakenMemberAtThePreviousGeneration_isRefusedAtThisBinarysGeneration() {
+        var previous = JoinGenerationGuard.WIRE_GENERATION - 1;
+        handshaken.put(A, generation(Integer.toString(previous)));
+        handshaken.put(B, generation(Integer.toString(JoinGenerationGuard.WIRE_GENERATION)));
+
+        JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, JoinGenerationGuard.WIRE_GENERATION)
+                           .await(AWAIT)
+                           .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("must be refused"))
+                           .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(A,
+                                                                                                                  previous,
+                                                                                                                  JoinGenerationGuard.WIRE_GENERATION)));
+    }
+
     @Test
     void unparseableLabel_countsAsGenerationOne() {
         assertThat(JoinGenerationGuard.generationOf(generation("two"))).isEqualTo(1);
@@ -123,26 +139,47 @@ class JoinGenerationGuardTest {
         assertThat((System.nanoTime() - start) / 1_000_000).as("ended early, not at the 30 s bound").isLessThan(5_000);
     }
 
+    // admit() runs its first poll on the calling thread, so once it returns the guard has already observed B as not
+    // handshaken and parked on the timer: "still waiting" is asserted against a wait far longer than the test.
     @Test
-    void unknownMemberIsWaitedFor_thenProceededOver_decidingOnlyHandshakenMembers() throws InterruptedException {
+    void unknownMemberIsWaitedFor_untilItHandshakes() {
         handshaken.put(A, generation("2"));
-        var promise = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, 2);
+        var promise = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, 2);
 
-        Thread.sleep(100);
         assertThat(promise.isResolved()).as("B has not handshaken: the guard still waits").isFalse();
-        assertThat(promise.await(AWAIT).isSuccess()).as("timeout proceeds").isTrue();
+
+        handshaken.put(B, generation("2"));
+
+        assertThat(promise.await(AWAIT).isSuccess()).as("all handshaken: proceeds before the bound").isTrue();
     }
 
     @Test
-    void lowerMemberHandshakingDuringTheWait_isRefusedAtOnce() throws InterruptedException {
+    void unknownMemberIsProceededOver_whenTheWaitEnds_decidingOnlyHandshakenMembers() {
+        handshaken.put(A, generation("2"));
+
+        assertThat(JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, 2).await(AWAIT).isSuccess())
+            .as("timeout proceeds").isTrue();
+    }
+
+    @Test
+    void lowerMemberHandshakingDuringTheWait_isRefusedAtOnce() {
         var promise = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, 2);
 
-        Thread.sleep(100);
+        assertThat(promise.isResolved()).as("first poll saw nobody handshaken: waiting").isFalse();
         handshaken.put(B, Map.of());
 
         promise.await(AWAIT)
                .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("must be refused"))
                .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 2)));
+    }
+
+    /// Pin: the generation is bumped to 11 by #3458 W-4 (`ReadRefusal.Kind` gained `BELOW_COPY_TAIL`, so `UNKNOWN`'s ordinal
+    /// moved from 16 to 17 and an older node misreads the new kind). 10 was #3458 M-1c (ReadRefusal gained its `causes` slot, so
+    /// an older node decodes the new shape's extra field as a malformed refusal). 9 was #3458 M-1b (the `cause` slot); 8 was #3530 (four dead key types
+    /// left the wire baseline); 7 was #3334 S1a-1a (assignment flag day). A literal, so a revert to 9 goes red.
+    @Test
+    void thisBinarysGeneration_isElevenAfterTheBelowCopyTailKind() {
+        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(11);
     }
 
     @Test

@@ -40,6 +40,7 @@ class DHTTopologyListenerDepartingTest {
     private static final NodeId LOCAL = new NodeId("local");
     private static final NodeId PEER_A = new NodeId("peer-a");
     private static final NodeId DEPARTING = new NodeId("departing");
+    private static final NodeId WORKER = new NodeId("worker");
 
     private static byte[] key(String value) {
         return value.getBytes(StandardCharsets.UTF_8);
@@ -160,6 +161,78 @@ class DHTTopologyListenerDepartingTest {
         listener.onNodeRecovered(DEPARTING);
 
         assertThat(node.ring().nodes()).containsExactlyInAnyOrder(LOCAL, PEER_A, DEPARTING);
+    }
+
+    /// #3415: a node that was never on this ring (a worker) and goes DEPARTING then recovers leaves the ring unchanged. The
+    /// recovery edge restores only what this listener pruned on the departing edge; a worker pruned nothing.
+    @Test
+    void onNodeRecovered_nonMemberDepartingThenRecovered_leavesRingUnchanged() {
+        var node = threeNodeNode();
+        var listener = DHTTopologyListener.dhtTopologyListener(node, dhtRebalancer(node, AcceptingNetwork.accepting((target, message) -> {}), DHTConfig.DEFAULT));
+
+        listener.onNodeDeparting(WORKER);
+        listener.onNodeRecovered(WORKER);
+
+        assertThat(node.ring().nodes()).as("a worker's refuted drain must not put it on a core's ring")
+                                       .containsExactlyInAnyOrder(LOCAL, PEER_A, DEPARTING);
+    }
+
+    /// #3415: a recovery with no departing edge seen here restores nothing, even for a node missing from the ring. The
+    /// explicit path that puts a core member on the ring is its join: a member that reaches MEMBER for the first time
+    /// through DEPARTING emits JOINED at the recovery (pinned in `MembershipFsmTest`), and `onNodeJoined` adds it.
+    @Test
+    void onNodeRecovered_withoutDepartingEdge_leavesRingUnchanged_joinAddsIt() {
+        var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+        ring.addNode(LOCAL);
+        ring.addNode(PEER_A);
+        var node = dhtNode(LOCAL, memoryStorageEngine(), ring, DHTConfig.DEFAULT);
+        var listener = DHTTopologyListener.dhtTopologyListener(node);
+
+        listener.onNodeRecovered(DEPARTING);
+
+        assertThat(node.ring().nodes()).as("nothing was pruned here, so the recovery restores nothing")
+                                       .containsExactlyInAnyOrder(LOCAL, PEER_A);
+
+        listener.onNodeJoined(nodeJoined(DEPARTING));
+
+        assertThat(node.ring().nodes()).as("the join is the path that adds a member").containsExactlyInAnyOrder(LOCAL, PEER_A, DEPARTING);
+    }
+
+    /// #3415: a removal decision supersedes the departing prune: a later recovery of the same id does not resurrect it.
+    /// (DEPARTING→DEAD→rejoin re-emits JOINED, so the join, not the recovery, puts a rejoined member back.)
+    @Test
+    void onNodeRecovered_afterPruneAndRemoval_leavesRingUnchanged() {
+        var node = threeNodeNode();
+        var listener = DHTTopologyListener.dhtTopologyListener(node);
+
+        listener.onNodeDeparting(DEPARTING);
+        listener.onNodeRemoved(nodeRemoved(DEPARTING));
+        listener.onNodeRecovered(DEPARTING);
+
+        assertThat(node.ring().nodes()).containsExactlyInAnyOrder(LOCAL, PEER_A);
+    }
+
+    /// #3415: the recovery edge consumes the pruned entry. After prune and recovery, a node lost from the ring by some
+    /// other path and recovered again WITHOUT a new departing edge is not re-added; a full prune-die-recover cycle is.
+    @Test
+    void onNodeRecovered_secondRecoveryWithoutDepartingEdge_doesNotReAdd_fullCycleStillDoes() {
+        var node = threeNodeNode();
+        var listener = DHTTopologyListener.dhtTopologyListener(node);
+
+        listener.onNodeDeparting(DEPARTING);
+        listener.onNodeRecovered(DEPARTING);
+        node.ring().removeNode(DEPARTING);
+        listener.onNodeRecovered(DEPARTING);
+
+        assertThat(node.ring().nodes()).as("the first recovery consumed the entry; no departing edge since")
+                                       .containsExactlyInAnyOrder(LOCAL, PEER_A);
+
+        node.ring().addNode(DEPARTING);
+        listener.onNodeDeparting(DEPARTING);
+        listener.onNodeRecovered(DEPARTING);
+
+        assertThat(node.ring().nodes()).as("a complete departing-then-recovery cycle re-adds the node")
+                                       .containsExactlyInAnyOrder(LOCAL, PEER_A, DEPARTING);
     }
 
     /// #1818 round 3: the listener remembers who entered DEPARTING, even after the DEAD edge prunes it — its

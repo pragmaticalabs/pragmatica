@@ -36,6 +36,16 @@ def pom(*modules, profile=""):
     return f"<project><modules>{listed}<!-- <module>commented</module> --></modules>{profile}</project>"
 
 
+FAILSAFE = "<plugin><artifactId>maven-failsafe-plugin</artifactId></plugin>"
+
+
+def bound(plugin=FAILSAFE, management=False, inside="build"):
+    """A pom whose <build> lists the plugin under <plugins> (or, for the negative cases, under pluginManagement/a profile)."""
+    plugins = f"<plugins>{plugin}</plugins>"
+    build = f"<build><pluginManagement>{plugins}</pluginManagement></build>" if management else f"<build>{plugins}</build>"
+    return f"<project>{f'<profiles><profile>{build}</profile></profiles>' if inside == 'profile' else build}</project>"
+
+
 def report(root, module, kind, name, *cases, tests=None):
     body = "".join(f'<testcase classname="{c}" name="{n}">{"<skipped/>" if s else ""}</testcase>' for c, n, s in cases)
     count = len(cases) if tests is None else tests
@@ -56,7 +66,7 @@ class CiTestGroupsTest(unittest.TestCase):
         write(self.root / "agg/c/src/test/java/TestSerializers.java", "class TestSerializers {}")  # a fixture, no @Test
         # @Test methods in a class surefire's and failsafe's names never select: an abstract contract, not a test
         write(self.root / "agg/c/src/test/java/ContractSpec.java", "abstract class ContractSpec { @Test void t() {} }")
-        write(self.root / "nested-profile-free/pom.xml", pom())
+        write(self.root / "nested-profile-free/pom.xml", bound())
         write(self.root / "nested-profile-free/src/test/java/LoaderIT.java", "class LoaderIT { @Test void t() {} }")
         self.groups = self.root / "groups.txt"
         self.ci = self.root / "ci.yml"
@@ -82,6 +92,148 @@ class CiTestGroupsTest(unittest.TestCase):
         self.assertEqual(groups.reactor_modules(self.root), ["", "a", "agg", "agg/b", "agg/c", "ember", "nested-profile-free"])
         # agg/c has only a fixture; an IT-only module has tests
         self.assertEqual(groups.modules_with_tests(self.root), ["a", "agg/b", "ember", "nested-profile-free"])
+
+    def test_a_module_with_it_classes_and_no_failsafe_binding_fails(self):
+        # #3506: surefire excludes *IT.java and the root only manages failsafe, so an unbound module runs its ITs nowhere
+        owners = "g1 a\ng2 agg/b\ng2 nested-profile-free\njob:ember-shard ember\n"
+        self.assertEqual(self._check(owners), [])
+        write(self.root / "nested-profile-free/pom.xml", pom())
+        problems = self._check(owners)
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(problems, ["nested-profile-free has *IT classes and no maven-failsafe-plugin binding in its <build><plugins> or an "
+                                    "inherited parent's: they run in no build (surefire excludes *IT.java)"])
+
+    def test_only_a_build_plugins_binding_counts_not_plugin_management_or_a_profile(self):
+        for pom_text in (bound(management=True), bound(inside="profile"), bound("<plugin><artifactId>other</artifactId></plugin>")):
+            write(self.root / "nested-profile-free/pom.xml", pom_text)
+            self.assertEqual(groups.modules_with_unbound_its(self.root), ["nested-profile-free"], pom_text)
+
+    def test_a_binding_inherited_from_a_parent_counts_unless_the_parent_is_not_inherited(self):
+        write(self.root / "nested-profile-free/pom.xml", "<project><parent><artifactId>p</artifactId></parent></project>")
+        self.assertEqual(groups.modules_with_unbound_its(self.root), ["nested-profile-free"])  # ../pom.xml (the root) binds nothing
+        write(self.root / "pom.xml", pom("a", "agg", "ember", "nested-profile-free").replace(
+            "</modules>", "</modules><build><plugins>" + FAILSAFE + "</plugins></build>"))
+        self.assertEqual(groups.modules_with_unbound_its(self.root), [])
+        write(self.root / "pom.xml", pom("a", "agg", "ember", "nested-profile-free").replace(
+            "</modules>", "</modules><build><plugins><plugin><artifactId>maven-failsafe-plugin</artifactId>"
+                          "<inherited>false</inherited></plugin></plugins></build>"))
+        self.assertEqual(groups.modules_with_unbound_its(self.root), ["nested-profile-free"])
+
+    def _bound_root(self, plugin=FAILSAFE):
+        write(self.root / "pom.xml", pom("a", "agg", "ember", "nested-profile-free").replace(
+            "</modules>", f"</modules><build><plugins>{plugin}</plugins></build>"))
+
+    def _loader_pom(self, body):
+        write(self.root / "nested-profile-free/pom.xml", f"<project>{body}</project>")
+
+    def test_an_own_plugin_marked_not_inherited_still_binds_its_own_module(self):
+        # <inherited>false</inherited> stops the entry reaching children, not the module that declares it
+        self._loader_pom("<build><plugins><plugin><artifactId>maven-failsafe-plugin</artifactId>"
+                         "<inherited>false</inherited></plugin></plugins></build>")
+        self.assertEqual(groups.modules_with_unbound_its(self.root), [])
+
+    def test_a_parent_is_found_at_dot_dot_by_default_and_at_the_relative_path_when_given(self):
+        self._bound_root()
+        self._loader_pom("<parent><artifactId>p</artifactId></parent>")
+        self.assertEqual(groups.modules_with_unbound_its(self.root), [])  # default ../pom.xml, the root, binds
+        write(self.root / "agg/pom.xml", bound() .replace("<project>", "<project><modules><module>b</module><module>c</module></modules>"))
+        self._loader_pom("<parent><artifactId>p</artifactId><relativePath>../agg</relativePath></parent>")
+        self.assertEqual(groups.modules_with_unbound_its(self.root), [])  # a directory naming agg, which binds
+        self._loader_pom("<parent><artifactId>p</artifactId><relativePath>../agg/pom.xml</relativePath></parent>")
+        self.assertEqual(groups.modules_with_unbound_its(self.root), [])  # a path naming a pom.xml file
+        write(self.root / "pom.xml", pom("a", "agg", "ember", "nested-profile-free"))  # the root no longer binds: only relativePath reaches agg
+        self.assertEqual(groups.modules_with_unbound_its(self.root), [])
+        self._loader_pom("<parent><artifactId>p</artifactId></parent>")
+        self.assertEqual(groups.modules_with_unbound_its(self.root), ["nested-profile-free"])  # default ".." is the root again
+
+    def test_an_empty_relative_path_means_no_local_parent(self):
+        # Maven resolves the parent from a repository then, so the root's binding does not reach the module
+        self._bound_root()
+        self._loader_pom("<parent><artifactId>p</artifactId><relativePath/></parent>")
+        self.assertEqual(groups.modules_with_unbound_its(self.root), ["nested-profile-free"])
+
+    def test_a_parent_chain_that_ends_at_a_missing_pom_binds_nothing(self):
+        self._loader_pom("<parent><artifactId>p</artifactId><relativePath>../missing</relativePath></parent>")
+        self.assertEqual(groups.modules_with_unbound_its(self.root), ["nested-profile-free"])
+
+    def test_a_binding_in_an_active_by_default_profile_counts_as_bound(self):
+        active = "<profile><activation><activeByDefault>true</activeByDefault></activation>{}</profile>"
+        build = f"<build><plugins>{FAILSAFE}</plugins></build>"
+        self._loader_pom(f"<profiles>{active.format(build)}</profiles>")
+        self.assertEqual(self._check_modules(), [])
+        self._loader_pom(f"<profiles>{active.format(build).replace('true', 'false')}</profiles>")
+        self.assertEqual(groups.modules_with_unbound_its(self.root), ["nested-profile-free"])
+
+    def _check_modules(self):
+        return [p for p in self._check("g1 a\ng2 agg/b\ng2 nested-profile-free\njob:ember-shard ember\n")]
+
+    def test_a_failsafe_binding_that_skips_or_moves_a_phase_to_none_fails(self):
+        skipped = ("<configuration><skip>true</skip></configuration>", "<configuration><skipITs>true</skipITs></configuration>",
+                   "<configuration><skipTests>true</skipTests></configuration>",
+                   "<executions><execution><phase>none</phase></execution></executions>",
+                   "<executions><execution><goals><goal>verify</goal></goals><configuration><skipITs>true</skipITs></configuration>"
+                   "</execution></executions>")
+        for config in skipped:
+            self._loader_pom(f"<build><plugins><plugin><artifactId>maven-failsafe-plugin</artifactId>{config}</plugin></plugins></build>")
+            problems = self._check_modules()
+            self.assertEqual(len(problems), 1, config)
+            self.assertTrue(problems[0].startswith("nested-profile-free has *IT classes and its maven-failsafe-plugin binding is disabled"), config)
+        self._loader_pom(f"<properties><skipITs>true</skipITs></properties><build><plugins>{FAILSAFE}</plugins></build>")
+        self.assertEqual(len(self._check_modules()), 1)  # the property form
+        self._loader_pom(f"<properties><skipITs>false</skipITs></properties><build><plugins>{FAILSAFE}</plugins></build>")
+        self.assertEqual(self._check_modules(), [])
+        self._loader_pom("<build><plugins><plugin><artifactId>maven-failsafe-plugin</artifactId>"
+                         "<executions><execution><phase>verify</phase></execution></executions></plugin></plugins></build>")
+        self.assertEqual(self._check_modules(), [])
+
+    def test_a_class_named_it_prefix_or_itcase_runs_nowhere_even_in_a_bound_module(self):
+        # the root failsafe <includes> is **/*IT.java and surefire's defaults do not select these names either
+        for name in ("ITLoader", "LoaderITCase"):
+            write(self.root / "nested-profile-free/src/test/java/x" / f"{name}.java", f"class {name} {{ @Test void t() {{}} }}")
+            problems = self._check_modules()
+            self.assertEqual(problems, [f"nested-profile-free/src/test/java/x/{name}.java is named IT*/*ITCase, which the failsafe "
+                                        f"includes (**/*IT.java) never select: it runs in no build"])
+            (self.root / "nested-profile-free/src/test/java/x" / f"{name}.java").unlink()
+        self.assertEqual(self._check_modules(), [])
+
+    def test_a_binding_whose_includes_select_none_of_the_it_classes_fails(self):
+        def includes(*patterns):
+            return ("<build><plugins><plugin><artifactId>maven-failsafe-plugin</artifactId><configuration><includes>"
+                    + "".join(f"<include>{p}</include>" for p in patterns) + "</includes></configuration></plugin></plugins></build>")
+        self._loader_pom(includes("**/*Nothing.java"))
+        self.assertEqual(self._check_modules(), ["nested-profile-free has *IT classes and its maven-failsafe-plugin includes "
+                                                 "[**/*Nothing.java] select none of them: they run in no build"])
+        for matching in ("**/*IT.java", "**/Loader*", "LoaderIT.java", "**/LoaderIT"):
+            self._loader_pom(includes("**/*Nothing.java", matching))
+            self.assertEqual(self._check_modules(), [], matching)
+        self._loader_pom(includes("pkg/*IT.java"))  # a single-star pattern does not cross directories: LoaderIT.java is at the top
+        self.assertEqual(len(self._check_modules()), 1)
+
+    def test_include_patterns_follow_ant_globs_and_unevaluable_ones_count_as_matching(self):
+        def includes(pattern):
+            return ("<build><plugins><plugin><artifactId>maven-failsafe-plugin</artifactId><configuration><includes>"
+                    f"<include>{pattern}</include></includes></configuration></plugin></plugins></build>")
+        (self.root / "nested-profile-free/src/test/java/LoaderIT.java").unlink()
+        write(self.root / "nested-profile-free/src/test/java/pkg/sub/DeepIT.java", "class DeepIT { @Test void t() {} }")
+        for pattern, selects in (("pkg/*IT.java", False), ("pkg/*/*IT.java", True), ("pkg/**IT.java", True), ("pkg/**/DeepIT.java", True),
+                                 ("**/pkg/**", True), ("%regex[.*Nothing.*]", True), ("${it.includes}", True)):
+            self._loader_pom(includes(pattern))
+            self.assertEqual(self._check_modules() == [], selects, pattern)
+        self._loader_pom(includes("**/*IT.java").replace("maven-failsafe-plugin", " maven-failsafe-plugin\n  "))
+        self.assertEqual(self._check_modules(), [])  # padded artifactId text is still failsafe
+
+    def test_a_module_whose_it_class_has_no_test_method_still_needs_a_binding(self):
+        # modules_with_tests does not list it, so the guard cannot lean on that list
+        write(self.root / "nested-profile-free/src/test/java/LoaderIT.java", "class LoaderIT {}")
+        write(self.root / "nested-profile-free/pom.xml", pom())
+        self.assertEqual(groups.modules_with_unbound_its(self.root), ["nested-profile-free"])
+
+    def test_unbound_modules_are_reported_in_name_order(self):
+        write(self.root / "agg/pom.xml", pom("c", "b"))  # declared out of name order
+        for module in ("agg/c", "agg/b", "nested-profile-free"):
+            write(self.root / module / "pom.xml", pom())
+            write(self.root / module / "src/test/java/XIT.java", "class XIT {}")
+        self.assertEqual(groups.modules_with_unbound_its(self.root), ["agg/b", "agg/c", "nested-profile-free"])
 
     def test_a_profile_ahead_of_the_default_modules_is_not_read_as_the_reactor(self):
         # the first <modules> in the text is the profile's: only stripping <profiles> leaves the default block first

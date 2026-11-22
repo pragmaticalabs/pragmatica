@@ -432,12 +432,12 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
     private static LifecycleCounts lifecycleCount(ClusterSyncPong pong) {
         var state = pong.lifecycleState();
         // Membership-v2 finale: lifecycleState carries the real NodeReportedState
-        // (SYNCING|READY|DRAINING). READY/SYNCING are operational (healthy); DRAINING is winding
-        // down (suspected). The legacy synthetic lifecycle states are gone.
+        // (SYNCING|READY|DRAINING|HELD). READY/SYNCING are operational (healthy); DRAINING and HELD
+        // are winding down (suspected). The legacy synthetic lifecycle states are gone.
         var healthy = NodeReportedState.READY.name().equals(state) || NodeReportedState.SYNCING.name().equals(state)
                       ? 1
                       : 0;
-        var suspected = NodeReportedState.DRAINING.name().equals(state)
+        var suspected = NodeReportedState.fromWire(state).isDraining()
                         ? 1
                         : 0;
 

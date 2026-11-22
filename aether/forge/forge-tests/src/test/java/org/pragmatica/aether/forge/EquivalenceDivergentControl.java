@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.util.ArrayList;
@@ -23,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+
 
 /// The divergent-engine control (FSM replacement plan 3.3, round 2, H5): one deliberately divergent result per comparison family, which the
 /// comparison MUST report. A round in which any family does not report the control's divergence is VOID, whatever FSM2 shows.
@@ -48,19 +48,23 @@ import org.pragmatica.lang.Option;
 /// manufactures a divergence the real data could not have, and [#silentFamilies] does not require that family to fire.
 final class EquivalenceDivergentControl {
     static final List<String> FAMILIES = List.of("O1", "O2", "O3", "O5", "O6", "MON-i", "MON-ii", "MON-iii", "MON-iv");
+
     static final NodeId DEPARTED = NodeId.nodeId("f4-control-departed").unwrap();
     private static final Artifact I_PLANT = Artifact.artifact("org.f4.control:monitor-i:1.0.0").unwrap();
     private static final Artifact III_PLANT = Artifact.artifact("org.f4.control:monitor-iii:1.0.0").unwrap();
     private static final Artifact II_PLANT = Artifact.artifact("org.f4.control:monitor-ii:1.0.0").unwrap();
     private static final Artifact O2_PLANT = Artifact.artifact("org.f4.control:o2:1.0.0").unwrap();
+
     private static final BlueprintId II_OWNER = BlueprintId.blueprintId("org.f4.control:monitor-ii-owner:1.0.0").unwrap();
+
     private static final BlueprintId IV_PLANT = BlueprintId.blueprintId("org.f4.control:monitor-iv:1.0.0").unwrap();
 
     private EquivalenceDivergentControl() {}
 
     static Arm of(Arm fsm2, Arm legacy, EquivalenceMonitor monitor) {
         return new Arm("control",
-                       new EquivalenceKv(diverged(fsm2.quiescent().entries(), new EquivalenceKv(legacy.quiescent().entries()))),
+                       new EquivalenceKv(diverged(fsm2.quiescent().entries(),
+                                                  new EquivalenceKv(legacy.quiescent().entries()))),
                        fsm2.liveNodes(),
                        planted(fsm2.samples(), monitor),
                        fsm2.o4Batches(),
@@ -78,7 +82,9 @@ final class EquivalenceDivergentControl {
             return legacy.o5PlacementMs() + Math.max(60_000L, 2 * legacy.o5PlacementMs());
         }
 
-        return fsm2.o5PlacementMs() >= 0 ? fsm2.o5PlacementMs() + 1L : fsm2.o5PlacementMs();
+        return fsm2.o5PlacementMs() >= 0
+               ? fsm2.o5PlacementMs() + 1L
+               : fsm2.o5PlacementMs();
     }
 
     /// The families the control did NOT make the comparison report: a divergence of the control comparison that the FSM2 comparison does not
@@ -94,33 +100,47 @@ final class EquivalenceDivergentControl {
                .filter(divergence -> !fsm2Details.contains(anonymous(divergence)))
                .forEach(divergence -> fired.add(divergence.family()));
 
-        return FAMILIES.stream().filter(family -> !notMeasured.contains(family) && !fired.contains(family)).toList();
+        return FAMILIES.stream()
+                       .filter(family -> !notMeasured.contains(family) && !fired.contains(family))
+                       .toList();
     }
 
     /// A divergence with the arm's name erased, so the same finding in the FSM2 and the control comparison compares equal.
     private static String anonymous(Divergence divergence) {
-        return divergence.describe().replaceAll("\\b(fsm2|control)\\b", "ARM");
+        return divergence.describe()
+                         .replaceAll("\\b(fsm2|control)\\b",
+                                     "ARM");
     }
 
     private static Map<AetherKey, AetherValue> diverged(Map<AetherKey, AetherValue> entries, EquivalenceKv legacyView) {
         var kv = new LinkedHashMap<>(entries);
         var view = new EquivalenceKv(entries);
-
         // O1: FSM2's first outcome flipped; with none, LEGACY's first (N1: FSM2 with no outcome while LEGACY has one still measures O1); with
         // none in either arm there is nothing to flip (not measured)
-        (view.outcomes().isEmpty() ? legacyView : view).outcomes()
-            .entrySet()
-            .stream()
-            .findFirst()
-            .ifPresent(first -> kv.put(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BlueprintId.blueprintId(first.getKey()).unwrap()), flipped(first.getValue())));
+        (view.outcomes().isEmpty()
+         ? legacyView
+         : view).outcomes()
+                .entrySet()
+                .stream()
+                .findFirst()
+                .ifPresent(first -> kv.put(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BlueprintId.blueprintId(first.getKey()).unwrap()),
+                                           flipped(first.getValue())));
         // O2: with no target in either arm there is nothing to under-place (not measured)
         var active = view.active();
-        var placed = view.targets().entrySet().stream().filter(entry -> entry.getValue().targetInstances() > 0 && active.getOrDefault(entry.getKey(), 0L) > 0).findFirst();
+        var placed = view.targets()
+                         .entrySet()
+                         .stream()
+                         .filter(entry -> entry.getValue()
+                                               .targetInstances() > 0 && active.getOrDefault(entry.getKey(),
+                                                                                             0L) > 0)
+                         .findFirst();
 
         placed.ifPresentOrElse(target -> removeOneActive(kv, target.getKey()),
                                () -> plantUnplacedTarget(kv, view, legacyView));
         // O3
-        kv.put(new AetherKey.TopicPublisherKey(ResourceAddress.resourceAddress("f4", "control", "1.0.0").unwrap(), O2_PLANT, DEPARTED),
+        kv.put(new AetherKey.TopicPublisherKey(ResourceAddress.resourceAddress("f4", "control", "1.0.0").unwrap(),
+                                               O2_PLANT,
+                                               DEPARTED),
                AetherValue.TopicPublisherValue.topicPublisherValue(DEPARTED, AetherValue.TopicTier.ANY));
 
         return kv;
@@ -128,9 +148,12 @@ final class EquivalenceDivergentControl {
 
     /// A target of 1 with no row, planted when either arm has a target: FSM2 with no target while LEGACY has one is a measured family whose FSM2
     /// side has no O2 finding to repeat (N1).
-    private static void plantUnplacedTarget(Map<AetherKey, AetherValue> kv, EquivalenceKv view, EquivalenceKv legacyView) {
+    private static void plantUnplacedTarget(Map<AetherKey, AetherValue> kv,
+                                            EquivalenceKv view,
+                                            EquivalenceKv legacyView) {
         if (!view.targets().isEmpty() || !legacyView.targets().isEmpty()) {
-            kv.put(AetherKey.SliceTargetKey.sliceTargetKey(O2_PLANT.base()), AetherValue.SliceTargetValue.sliceTargetValue(O2_PLANT.version(), 1));
+            kv.put(AetherKey.SliceTargetKey.sliceTargetKey(O2_PLANT.base()),
+                   AetherValue.SliceTargetValue.sliceTargetValue(O2_PLANT.version(), 1));
         }
     }
 
@@ -160,12 +183,8 @@ final class EquivalenceDivergentControl {
 
     private static boolean isActiveRowOf(Map.Entry<AetherKey, AetherValue> entry, ArtifactBase base) {
         return switch (entry.getKey()) {
-            case AetherKey.NodeArtifactKey key -> key.artifact().base().equals(base)
-                                                  && entry.getValue() instanceof AetherValue.NodeArtifactValue value
-                                                  && value.state().name().equals("ACTIVE");
-            case AetherKey.SliceObservedKey key -> key.artifact().base().equals(base)
-                                                   && entry.getValue() instanceof AetherValue.SliceObservedValue value
-                                                   && value.state() == AetherValue.SliceObservedState.ACTIVE;
+            case AetherKey.NodeArtifactKey key -> key.artifact().base().equals(base) && entry.getValue() instanceof AetherValue.NodeArtifactValue value && value.state().name().equals("ACTIVE");
+            case AetherKey.SliceObservedKey key -> key.artifact().base().equals(base) && entry.getValue() instanceof AetherValue.SliceObservedValue value && value.state() == AetherValue.SliceObservedState.ACTIVE;
             default -> false;
         };
     }
@@ -180,30 +199,44 @@ final class EquivalenceDivergentControl {
 
     /// The arm's samples, each carrying the steady plant targets (so the plants never look like a scale step), then a tail with the four
     /// violations held for longer than every bound (3 ticks + the scale window), one sample per second.
-    private static List<EquivalenceMonitor.Sample> planted(List<EquivalenceMonitor.Sample> samples, EquivalenceMonitor monitor) {
+    private static List<EquivalenceMonitor.Sample> planted(List<EquivalenceMonitor.Sample> samples,
+                                                           EquivalenceMonitor monitor) {
         var out = new ArrayList<EquivalenceMonitor.Sample>();
 
         if (samples.isEmpty()) {
             return out;
         }
-        samples.forEach(sample -> out.add(new EquivalenceMonitor.Sample(sample.atMs(), new EquivalenceKv(withPlantTargets(sample.kv().entries())))));
+
+        samples.forEach(sample -> out.add(new EquivalenceMonitor.Sample(sample.atMs(),
+                                                                        new EquivalenceKv(withPlantTargets(sample.kv()
+                                                                                                                 .entries())))));
         var last = samples.getLast();
         var tail = new LinkedHashMap<>(withPlantTargets(last.kv().entries()));
-
         // (i): three LOADING rows of an artifact whose steady target is 1
         for (var index = 0; index < 3; index++) {
-            tail.put(AetherKey.SliceObservedKey.sliceObservedKey(NodeId.nodeId("f4-control-i-" + index).unwrap(), I_PLANT), observed(AetherValue.SliceObservedState.LOADING));
+            tail.put(AetherKey.SliceObservedKey.sliceObservedKey(NodeId.nodeId("f4-control-i-" + index).unwrap(),
+                                                                 I_PLANT),
+                     observed(AetherValue.SliceObservedState.LOADING));
         }
         // (ii): a target owned by a blueprint that is not committed
-        tail.put(AetherKey.SliceTargetKey.sliceTargetKey(II_PLANT.base()), AetherValue.SliceTargetValue.sliceTargetValue(II_PLANT.version(), 0, Option.some(II_OWNER)));
+        tail.put(AetherKey.SliceTargetKey.sliceTargetKey(II_PLANT.base()),
+                 AetherValue.SliceTargetValue.sliceTargetValue(II_PLANT.version(), 0, Option.some(II_OWNER)));
         // (iii): an ACTIVE row of a DEPARTED node
         tail.put(new AetherKey.NodeDepartureKey(DEPARTED),
-                 new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED, 1L, new AetherValue.ProcessIncarnation(1L, 1L), Option.none(), 0L));
-        tail.put(AetherKey.SliceObservedKey.sliceObservedKey(DEPARTED, III_PLANT), observed(AetherValue.SliceObservedState.ACTIVE));
+                 new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED,
+                                                    1L,
+                                                    new AetherValue.ProcessIncarnation(1L, 1L),
+                                                    Option.none(),
+                                                    0L));
+        tail.put(AetherKey.SliceObservedKey.sliceObservedKey(DEPARTED, III_PLANT),
+                 observed(AetherValue.SliceObservedState.ACTIVE));
         // (iv): an open apply of an attempt that is not the committed blueprint's
         tail.put(new AetherKey.AppBlueprintKey(IV_PLANT),
-                 AetherValue.AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(IV_PLANT, List.of()), false, "f4-control-current-attempt"));
-        tail.put(AetherKey.DeploymentApplyKey.deploymentApplyKey(IV_PLANT), new AetherValue.DeploymentApplyValue("f4-control-superseded-attempt", Option.none(), 0L));
+                 AetherValue.AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(IV_PLANT, List.of()),
+                                                                 false,
+                                                                 "f4-control-current-attempt"));
+        tail.put(AetherKey.DeploymentApplyKey.deploymentApplyKey(IV_PLANT),
+                 new AetherValue.DeploymentApplyValue("f4-control-superseded-attempt", Option.none(), 0L));
         var tailKv = new EquivalenceKv(tail);
         var span = 3 * monitor.tickMs() + monitor.scaleWindowMs() + 2_000L;
 
@@ -220,15 +253,27 @@ final class EquivalenceDivergentControl {
         var rows = new LinkedHashMap<AetherKey, AetherValue>();
 
         for (var index = 0; index < 3; index++) {
-            rows.put(AetherKey.SliceObservedKey.sliceObservedKey(NodeId.nodeId("f4-control-i-" + index).unwrap(), I_PLANT), observed(AetherValue.SliceObservedState.LOADING));
+            rows.put(AetherKey.SliceObservedKey.sliceObservedKey(NodeId.nodeId("f4-control-i-" + index).unwrap(),
+                                                                 I_PLANT),
+                     observed(AetherValue.SliceObservedState.LOADING));
         }
-        rows.put(AetherKey.SliceTargetKey.sliceTargetKey(II_PLANT.base()), AetherValue.SliceTargetValue.sliceTargetValue(II_PLANT.version(), 0, Option.some(II_OWNER)));
+
+        rows.put(AetherKey.SliceTargetKey.sliceTargetKey(II_PLANT.base()),
+                 AetherValue.SliceTargetValue.sliceTargetValue(II_PLANT.version(), 0, Option.some(II_OWNER)));
         rows.put(new AetherKey.NodeDepartureKey(DEPARTED),
-                 new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED, 1L, new AetherValue.ProcessIncarnation(1L, 1L), Option.none(), 0L));
-        rows.put(AetherKey.SliceObservedKey.sliceObservedKey(DEPARTED, III_PLANT), observed(AetherValue.SliceObservedState.ACTIVE));
+                 new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED,
+                                                    1L,
+                                                    new AetherValue.ProcessIncarnation(1L, 1L),
+                                                    Option.none(),
+                                                    0L));
+        rows.put(AetherKey.SliceObservedKey.sliceObservedKey(DEPARTED, III_PLANT),
+                 observed(AetherValue.SliceObservedState.ACTIVE));
         rows.put(new AetherKey.AppBlueprintKey(IV_PLANT),
-                 AetherValue.AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(IV_PLANT, List.of()), false, "f4-control-current-attempt"));
-        rows.put(AetherKey.DeploymentApplyKey.deploymentApplyKey(IV_PLANT), new AetherValue.DeploymentApplyValue("f4-control-superseded-attempt", Option.none(), 0L));
+                 AetherValue.AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(IV_PLANT, List.of()),
+                                                                 false,
+                                                                 "f4-control-current-attempt"));
+        rows.put(AetherKey.DeploymentApplyKey.deploymentApplyKey(IV_PLANT),
+                 new AetherValue.DeploymentApplyValue("f4-control-superseded-attempt", Option.none(), 0L));
 
         return rows;
     }
@@ -236,13 +281,23 @@ final class EquivalenceDivergentControl {
     private static Map<AetherKey, AetherValue> withPlantTargets(Map<AetherKey, AetherValue> entries) {
         var kv = new LinkedHashMap<>(entries);
 
-        kv.put(AetherKey.SliceTargetKey.sliceTargetKey(I_PLANT.base()), AetherValue.SliceTargetValue.sliceTargetValue(I_PLANT.version(), 1));
-        kv.put(AetherKey.SliceTargetKey.sliceTargetKey(III_PLANT.base()), AetherValue.SliceTargetValue.sliceTargetValue(III_PLANT.version(), 1));
+        kv.put(AetherKey.SliceTargetKey.sliceTargetKey(I_PLANT.base()),
+               AetherValue.SliceTargetValue.sliceTargetValue(I_PLANT.version(), 1));
+        kv.put(AetherKey.SliceTargetKey.sliceTargetKey(III_PLANT.base()),
+               AetherValue.SliceTargetValue.sliceTargetValue(III_PLANT.version(), 1));
 
         return kv;
     }
 
     private static AetherValue.SliceObservedValue observed(AetherValue.SliceObservedState state) {
-        return new AetherValue.SliceObservedValue(state, 1L, new AetherValue.Generation(1L, 1L), new AetherValue.ProcessIncarnation(1L, 1L), Option.none(), false, 0, List.of(), 0L);
+        return new AetherValue.SliceObservedValue(state,
+                                                  1L,
+                                                  new AetherValue.Generation(1L, 1L),
+                                                  new AetherValue.ProcessIncarnation(1L, 1L),
+                                                  Option.none(),
+                                                  false,
+                                                  0,
+                                                  List.of(),
+                                                  0L);
     }
 }

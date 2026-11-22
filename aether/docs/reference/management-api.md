@@ -138,6 +138,14 @@ A management request may land on any core node, but where it is ultimately serve
 - **Per-node diagnostic routes are served node-locally** (metrics, traces, alerts, logs, storage, DHT replication map, certificates). These report the receiving node's own view and are not forwarded.
 - **Per-node addressed routes** (those with an `{id}` node parameter) are forwarded to the named node.
 
+The per-node addressed forms of the status, slice and in-flight reads are:
+
+| Request | Same answer as | Role |
+|---------|----------------|------|
+| `GET /api/v1/nodes/status/{id}` | [`GET /api/v1/nodes/status`](#get-apiv1nodesstatus), from node `{id}` | VIEWER |
+| `GET /api/v1/nodes/slices/{id}` | [`GET /api/v1/nodes/slices`](#get-apiv1nodesslices), from node `{id}` | VIEWER |
+| `GET /api/v1/nodes/inflight/{id}` | [`GET /api/v1/nodes/inflight`](#get-apiv1nodesinflight), from node `{id}` | VIEWER |
+
 ---
 
 ## Cluster Status
@@ -520,7 +528,7 @@ event per advance would be a 1 Hz stream with no information beyond "the leader 
 changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on demand from
 `GET /api/v1/cluster/generation`.
 
-**Delivery when a publish fails (#1640).** A node whose event publish does not land keeps the event and re-sends it. The common case is a forward to a cluster-events owner that has just died, which reports "Publish outcome unknown". The node re-sends once a second with backoff up to 8 s, and immediately when the partition gets a new owner, for up to 5 minutes. It holds at most 1,024 such events and drops the oldest beyond that. Every dropped event is counted, and one WARN line names the dropped event types on the next publish that lands (during a long outage, the counters are the only live signal); the first expiry is also logged once at ERROR. Each event carries `details.eventId` (`<node-process incarnation>:<sequence>`), and a re-sent event keeps it, so an event that did land before its outcome was known is not listed twice: `GET /api/v1/events` de-duplicates every read by `eventId` (events without one by `at`) and lists events in `at` order. The live feed follows an offset cursor and sends events in the order they land, so a late event is still sent, possibly after events with a later `at`. It sends each event once for as long as its first copy is retained: it remembers every `eventId` it sent until retention trims that event, so a re-sent copy is not sent again, and a copy landing after its first copy was trimmed is sent a second time. After an owner failover, the new owner can reuse offsets the feed already read; the feed then re-reads the log from its oldest retained offset (on the node applying the ownership change, or when the log moves back below its cursor) and sends only what it has not sent. A worker learns of the ownership change from its metadata projection (polled once a second), so on a worker these events can arrive a little later, but they are not lost while retained. `eventId` collapses the copies of ONE raise: an owner-gated fact raised on both sides of a cluster-events ownership handover appears twice, with distinct `eventId`s (at-least-once across a handover; see guarantees.md row 14b). **The raw stream read (`GET /api/v1/streams/system/cluster-events/1.0.0/read`) does not de-duplicate or sort:** it returns the log as stored, so it can show a re-sent event twice and out of `at` order; de-duplicate by `details.eventId`. The limit: redelivery needs a writable owner. On a cluster where the dead owner is not re-placed, or a partition flagged for an operator, the held events expire after 5 minutes, counted, and the logs are the only record.
+**Delivery when a publish fails (#1640).** A node whose event publish does not land keeps the event and re-sends it. The common case is a forward to a cluster-events owner that has just died, which reports "Publish outcome unknown". The node re-sends once a second with backoff up to 8 s, and immediately when the partition gets a new owner, for up to 5 minutes. It holds at most 1,024 such events and drops the oldest beyond that. Every dropped event is counted, and one WARN line names the dropped event types on the next publish that lands (during a long outage, the counters are the only live signal); the first expiry is also logged once at ERROR. Each event carries `details.eventId` (`<node-process incarnation>:<sequence>`), and a re-sent event keeps it, so an event that did land before its outcome was known is not listed twice: `GET /api/v1/events` de-duplicates every read by `eventId` (events without one by `at`) and lists events in `at` order. The live feed follows an offset cursor and sends events in the order they land, so a late event is still sent, possibly after events with a later `at`. It sends each event once for as long as its first copy is retained: it remembers every `eventId` it sent until retention trims that event, so a re-sent copy is not sent again, and a copy landing after its first copy was trimmed is sent a second time. After an owner failover, the new owner can reuse offsets the feed already read; the feed then re-reads the log from its oldest retained offset (on the node applying the ownership change, or when the log moves back below its cursor) and sends only what it has not sent. A worker learns of the ownership change from its metadata projection (polled once a second), so on a worker these events can arrive a little later, but they are not lost while retained. `eventId` collapses the copies of ONE raise: an owner-gated fact raised on both sides of a cluster-events ownership handover appears twice, with distinct `eventId`s (at-least-once across a handover; see guarantees.md row 14b). **The raw stream read (`GET /api/v1/streams/system/cluster-events/1.0.0/read/{partition}`) does not de-duplicate or sort:** it returns the log as stored, so it can show a re-sent event twice and out of `at` order; de-duplicate by `details.eventId`. The limit: redelivery needs a writable owner. On a cluster where the dead owner is not re-placed, or a partition flagged for an operator, the held events expire after 5 minutes, counted, and the logs are the only record.
 
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 
@@ -664,6 +672,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `kv-dispatcher-failed` (CRITICAL — the node's KV notification dispatcher failed: the store is closed, waiting writes fail as outcome-unknown and the node stops; a production node halts with exit code 70. Subject is the store (the node id). No recovery code: restart the node; the node log carries the failure, the batch and a thread dump. Best-effort: the halt can overtake the publish)
 - `dht-departure-sole-copy-at-risk` (CRITICAL — a draining node holds DHT keys whose only copy it may be, and no target has acknowledged them yet. Subject `<nodeId>@<drainStartMillis>`, one drain episode; `details` count and the first 16 keys are in the message, the full list in the node's WARN log. Raised once per drain. If the node halts with keys still unacknowledged the drain reports "completed with data at risk" and the event stays open (no operator closer yet): restore or re-put the named keys from their source of truth. Count 0 means the inventory was not enumerated before the drain deadline: the at-risk set is unknown)
 - `dht-departure-sole-copy-delivered` (INFO — recovery of `dht-departure-sole-copy-at-risk`, same subject: every sole-copy key was acknowledged by a target in its post-departure responsible set before the draining node halted)
+- `dht-departure-hold-ended` (INFO — the other recovery of `dht-departure-sole-copy-at-risk`, same subject: a held drain ended without every sole-copy key acknowledged, because an operator accepted the loss or because the node was declared dead while held. The message names the keys owed as of the last report and their digest; they may be lost: restore them from their source of truth. Raised by the leader, which opens the at-risk warning on its own event layer first when it has not seen it, so the log may show that warning twice for one episode. Not raised yet: the drain hold that raises it is later work of #3345)
+- `dht-departure-loss-accepted` (INFO — standalone, closes nothing: an operator accepted the loss of a held drain's unacknowledged DHT keys. Subject is the drain episode; the event carries the key count, the digest the operator confirmed, a sample of the keys and the time of the report they were read from. The at-risk warning stays open until `dht-departure-hold-ended`. Not raised yet: the drain hold that raises it is later work of #3345)
 
 Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
@@ -1509,8 +1519,9 @@ The response has two halves with different time semantics, deliberately:
 - The `consensus` block (#674) is **live** — cumulative monotonic totals read from the consensus
   collector at request time, present from the node's first request. Consumers measuring load
   difference the totals over their own window (the same contract as `/api/v1/metrics/transport`).
-  `pendingBatches` is a level, not a total; `avgDecisionLatencyMs` is derived over the cumulative
-  counts; `leaderId` is absent until a leader is known.
+  `pendingBatches` is a level, not a total; `avgDecisionLatencyMs` is the mean over the SAMPLED
+  decisions only (those this node held locally, which carry a measured duration), not over `decisionsCount`;
+  `leaderId` is absent until a leader is known.
 
 **Response:**
 The `intervalMeanLatencyP*` fields summarize the distribution of interval means, not
@@ -4231,6 +4242,15 @@ curl http://localhost:8080/repository/info/org/example/my-slice/1.0.0
 }
 ```
 
+### GET /repository/artifacts
+
+**Not implemented — returns HTTP 501.** The route is registered, but artifacts are content-addressed in the DHT, which
+exposes no scan primitive, so a repository-wide listing needs an index that does not exist yet (tracked by #527).
+Use `GET /repository/{groupPath}/{artifactId}/maven-metadata.xml` (`aether artifacts versions <group:artifact>`) to list
+the versions of a known artifact, `GET /repository/info/{groupPath}/{artifactId}/{version}` for one artifact, and
+`GET /api/v1/artifacts/metrics` for repository totals. A group id that begins with `artifacts.` is unaffected: only the
+exact path `/repository/artifacts` is refused.
+
 ### GET /repository/{groupPath}/{artifactId}/{version}/{filename}
 
 Download an artifact file from the repository.
@@ -4718,6 +4738,17 @@ Node membership is presence-derived (SWIM/QUIC via NTT); node readiness/drain is
 
 **Readiness values (heartbeat-reported):** `SYNCING`, `READY`, `DRAINING`. A node that is no longer present (SWIM/QUIC) simply disappears from the membership view — there is no terminal KV state.
 
+### GET /api/v1/nodes/inflight
+
+Number of requests this node's in-flight tracker is currently counting (the tracker the drain gate closes and
+waits on). **Routing:** LOCAL on the bare form; `GET /api/v1/nodes/inflight/{id}` is forwarded to node `{id}`.
+**Auth:** VIEWER.
+
+**Response:**
+```json
+{"count": 3}
+```
+
 ### GET /api/v1/nodes/lifecycle
 
 Get membership + readiness for all nodes.
@@ -4785,6 +4816,18 @@ Which guard applied — and why — is always visible in `message`, both on succ
 
 **Slice `minAvailable` floor (#1720).** Independently of the budget above, and for workers as well as cores (slices run on workers), a drain is refused with `409 Conflict` when it would leave a slice the target hosts below its `minAvailable` ACTIVE instances on the remaining nodes. The remaining nodes are the cluster's counted members minus the leader's pending drains minus the target, the same rule the automatic drain (leader reconciler) applies. The refusal names every such slice and its counts. Admission is serialised against concurrent operator drains, so two requests cannot both pass against one pending-drains snapshot. Add the query parameter `force=true` (`aether nodes drain <id> --override-floor`) to override: the drain is admitted and an `OPERATOR_WARNING` event with code `slice-floor-breached-by-force` (subject: the node, message: each breached slice and its counts) is raised, so a forced breach is never silent. A REFUSED drain raises `slice-floor-drain-refused` once per target (on entering refusal), and the next admission of that target raises its recovery event `slice-floor-drain-admitted` (severity `INFO`). `aether cluster destroy` passes `force` on every drain and shutdown, because destroying a cluster takes every slice below its floor by definition.
 
+**The current leader is not drained (#3348).** A drain whose target is the current leader, or the node that is handling the request, is refused with `409 Conflict`. Every request for this route is forwarded to the node the receiver believes is the leader, so the handling node is the leader or a node just elected that has not yet applied its own election; both are refused. The decision uses only state the node holds, runs before any readiness lookup, budget read or dispatch, and nothing is commanded. The product has no leadership step-down command: stop the leader's process from outside the cluster (the service manager or the container runtime), the cluster elects another leader, then drain the node once it is no longer the leader. `shutdown` of the leader is refused the same way (see `POST /api/v1/nodes/shutdown/{id}`). When no leader is known and the target is another node, the leader rule does not apply and the target is answered as any target is (`404 Node lifecycle not found` if it has no reported state).
+
+**Response (target is the current leader, 409 Conflict):**
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Cannot drain node node-1: it is the current leader or the node handling this request, and such a node is not drained. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too."
+}
+```
+
 **Response (slice floor, 409 Conflict):**
 ```json
 {
@@ -4827,7 +4870,7 @@ Which guard applied — and why — is always visible in `message`, both on succ
 
 ### POST /api/v1/nodes/shutdown/{id}
 
-Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The same admission as drain applies, including the slice `minAvailable` floor and the `force=true` override described there (#1720); a refused shutdown answers `409` with `Cannot shutdown node <id>: ...`. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
+Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The same admission as drain applies, including the slice `minAvailable` floor and the `force=true` override described there (#1720); a refused shutdown answers `409` with `Cannot shutdown node <id>: ...`. A shutdown of the current leader (or of the handling node) is refused with `409 Conflict` before anything is dispatched, with its own text: `Cannot shut down node <id>: it is the current leader or the node handling this request, and such a node is not shut down through the API. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader; ...` (#3348). A shutdown of any other node is unchanged. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
 
 **Response:**
 ```json
@@ -5324,7 +5367,7 @@ Returns schema migration status for all datasources.
 | `lastMigration` | string | Filename of the last migration recorded |
 | `status` | string | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
 | `owningBlueprint` | string | Blueprint id (`group:artifact:version`) that declared the migrations. Whose slices this record holds while `status` is not `COMPLETED` |
-| `heldSlices` | string[] | Slices owned by this record's blueprint that are currently sitting in `LOADED` state and being held back from `ACTIVE` by a blocking `status` (#760). Requires BOTH a blocking status (`PENDING`, `MIGRATING`, or `FAILED`) AND at least one owned slice in `LOADED`; empty when `status` is `COMPLETED`, and equally empty under a blocking status if no owned slice is currently `LOADED` (e.g. already `ACTIVE`, or not yet loaded) `[mechanism: ClusterDeploymentState.blocksSliceActivation]` |
+| `heldSlices` | string[] | Slices owned by this record's blueprint that are currently sitting in `LOADED` state and being held back from `ACTIVE` by a blocking `status` (#760). Requires BOTH a blocking status (`PENDING`, `MIGRATING`, or `FAILED`) AND at least one owned slice in `LOADED`; empty when `status` is `COMPLETED`, and equally empty under a blocking status if no owned slice is currently `LOADED` (e.g. already `ACTIVE`, or not yet loaded) `[mechanism: SchemaHold.blocksSliceActivation]` |
 
 ### GET /api/v1/schema/status/{datasource}
 
@@ -6156,7 +6199,7 @@ registration has been removed; nothing serves that path any more.
 ### Read Events
 
 ```
-GET /api/v1/streams/read/{name}/{partition}?from={offset}&max={count}
+GET /api/v1/streams/{namespace}/{stream}/{version}/read/{partition}?from={offset}&max={count}
 ```
 
 **Auth:** ALL_AUTHENTICATED
@@ -6293,6 +6336,17 @@ aether streams consumer-group status <group> [<stream>]
 }
 ```
 
+### Stream Consumers
+
+```
+GET /api/v1/streams/{namespace}/{stream}/{version}/consumers
+```
+
+**Auth:** VIEWER. Per-partition offsets of one stream version, as the receiving stream node holds them. The address is
+validated first (a malformed address is `400`); an unknown stream is refused with the stream-manager's typed status.
+
+**Response:** `{"name": "<namespace:stream:version>", "partitions": [{"partition": 0, "headOffset": 0, "tailOffset": 41, "eventCount": 42}]}`
+
 ---
 
 ## Stream Namespaces
@@ -6309,32 +6363,37 @@ Path parameters appear in route order as `{namespace}/{stream}/{version}` (versi
 ### List Registered Streams (namespaced)
 
 ```
-GET /api/v1/streams/list[?namespace={ns}]
+GET /api/v1/streams[?namespace={ns}&limit={n}&cursor={c}]
 ```
 
-Snapshot of all registered stream versions across the namespace registry. The optional
-`namespace` query parameter filters to a single namespace.
+Snapshot of all registered stream versions across the namespace registry
+(`{"streams": [{namespace, stream, version, refCount, registeredAtEpochMs}]}`). The optional
+`namespace` query parameter filters to a single namespace and `limit` caps the number of entries
+returned. `cursor` is accepted but not applied: the route returns the (capped) snapshot, not pages.
 
 ### List Versions
 
 ```
-GET /api/v1/streams/versions/{namespace}/{stream}
+GET /api/v1/streams/{namespace}/{stream}
 ```
 
-Lists all registered versions of a given `(namespace, stream)`.
+Lists all registered versions of a given `(namespace, stream)`
+(`{"namespace", "stream", "versions": [{namespace, stream, version, refCount, registeredAtEpochMs}]}`).
+An unregistered `(namespace, stream)` answers `404`.
 
 ### Latest Version
 
 ```
-GET /api/v1/streams/latest/{namespace}/{stream}
+GET /api/v1/streams/{namespace}/{stream}/latest
 ```
 
-Resolves the highest registered version for a `(namespace, stream)`.
+Resolves the highest registered version for a `(namespace, stream)`; the response has the shape of
+[Stream Metadata](#stream-metadata).
 
 ### Stream Metadata
 
 ```
-GET /api/v1/streams/metadata/{namespace}/{stream}/{version}
+GET /api/v1/streams/{namespace}/{stream}/{version}
 ```
 
 Returns the registry entry for an exact stream version (config, partitions, retention, reference
@@ -6343,22 +6402,23 @@ count, `registeredBy`, `registeredAtEpochMs`).
 ### Read Events (tail polling)
 
 ```
-GET /api/v1/streams/events/{namespace}/{stream}/{version}?fromOffset={n}&maxEvents={k}
+GET /api/v1/streams/{namespace}/{stream}/{version}/events?fromOffset={n}&maxEvents={k}
 ```
 
 Paginated event read used by `aether stream tail`. Returns a page of events plus `nextOffset`
 and `hasMore`. `maxEvents` is server-capped (1000). A streaming `tail` subscription
-(SSE/WebSocket) over `/api/v1/streams/tail/...` is **deferred to issue #212**; polling `/events` is
+(SSE/WebSocket) over `/api/v1/streams/{namespace}/{stream}/{version}/tail` is **deferred to issue #212**; polling `/events` is
 the supported tail mechanism today.
 
 ### Tail (reserved)
 
 ```
-GET /api/v1/streams/tail/{namespace}/{stream}/{version}
+GET /api/v1/streams/{namespace}/{stream}/{version}/tail
 ```
 
-Reserved for the deferred SSE/WebSocket subscription (#212). Operators tail via polling
-`/api/v1/streams/events/...` in the interim.
+Reserved for the deferred SSE/WebSocket subscription (#212); the route is registered and answers
+`501 Not Implemented`, with a message that names the polling `/events` form. Operators tail via polling
+`/api/v1/streams/{namespace}/{stream}/{version}/events` in the interim.
 
 ### Create Stream Version
 
@@ -6474,24 +6534,31 @@ segment disambiguates them.
 ### Consumer Groups (namespaced)
 
 ```
-GET    /api/v1/streams/groups/{namespace}/{stream}/{version}            # list groups
-POST   /api/v1/streams/groups/create/{namespace}/{stream}/{version}     # create a durable group
-DELETE /api/v1/streams/groups/delete/{namespace}/{stream}/{version}/{group}   # delete a group
+GET    /api/v1/streams/{namespace}/{stream}/{version}/groups            # list groups
+POST   /api/v1/streams/{namespace}/{stream}/{version}/groups            # create a durable group
+DELETE /api/v1/streams/{namespace}/{stream}/{version}/groups/{group}    # delete a group
 ```
 
-`create` and `delete` are **OPERATOR_AND_ABOVE** and are subject to the `system:*` write gate.
-Deleting a group releases its reference on the stream version.
+Create and delete are **OPERATOR_AND_ABOVE** and are subject to the `system:*` write gate.
+Create takes the body `{"groupId": "<id>", "initialPosition": "<position>"}` and answers
+`{"address", "groupId", "status": "created"}`; only `groupId` is read, `initialPosition` is accepted
+and not applied. Delete answers `{"address", "groupId", "status": "deleted"}` after removing the
+group's consumers on that stream version, or `404` for an unknown group. Deleting a group releases
+its reference on the stream version. The list route answers `{"address", "groups": []}` for a valid address: it
+does not enumerate groups today (use [Consumer Group Status](#consumer-group-status) or
+`GET /api/v1/streams/{namespace}/{stream}/{version}/consumers`).
 
 ### Namespace Registry Lookup
 
 ```
-GET /api/v1/stream-namespaces/list
-GET /api/v1/stream-namespaces/get/{namespace}/{stream}/{version}
+GET /api/v1/streams/namespaces
+GET /api/v1/streams/namespaces/{address}
 ```
 
 Read-only views served **locally on every node** (target `LOCAL`) — non-governor nodes answer
 these from replicated registry state (see [Stream metadata registries](#stream-metadata-registries)).
-`list` returns all registry entries; `get` is an exact lookup returning `404` when the address is
+The first returns all registry entries (`{"entries": [...]}`); the second is an exact lookup by the
+full `namespace:stream:version` address as ONE path segment (`{"entry": {...}}`), returning `404` when the address is
 not registered. Each entry carries `namespace`, `stream`, `version`, `registeredBy`,
 `registeredAtEpochMs`, and `refCount`.
 
@@ -6599,7 +6666,7 @@ Stream metadata is held in **two complementary, consensus-replicated registries*
   directly from the replicated KV store.
 
 Because both registries are replicated through consensus, **non-governor nodes serve stream
-metadata (and the `/api/v1/stream-namespaces/*` views) from local replicated state** rather than
+metadata (and the `/api/v1/streams/namespaces` views) from local replicated state** rather than
 forwarding to the governor — the #215 fix that gave every node a durable, consistent view of the
 stream registry.
 

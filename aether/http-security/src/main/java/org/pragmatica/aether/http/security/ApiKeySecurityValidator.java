@@ -54,8 +54,13 @@ class ApiKeySecurityValidator implements HttpAuthenticator {
 
     @Override
     public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
+        return authenticate(request, policy).map(Authenticated::context);
+    }
+
+    @Override
+    public Result<Authenticated> authenticate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
-            case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
+            case SecurityPolicy.Public() -> Result.success(Authenticated.authenticated(SecurityContext.securityContext()));
             case SecurityPolicy.OptionalAuth() -> validateApiKeyIfPresented(request);
             case SecurityPolicy.ApiKeyRequired() -> validateApiKey(request);
             case SecurityPolicy.Authenticated() -> validateApiKey(request);
@@ -67,17 +72,17 @@ class ApiKeySecurityValidator implements HttpAuthenticator {
     }
 
     /// #2946: no `X-API-Key` is anonymous; a presented key is held to the full check, so a wrong key is refused.
-    private Result<SecurityContext> validateApiKeyIfPresented(HttpRequestContext request) {
+    private Result<Authenticated> validateApiKeyIfPresented(HttpRequestContext request) {
         return extractApiKey(request.headers()).map(this::checkApiKey)
-                            .or(() -> Result.success(SecurityContext.securityContext()));
+                            .or(() -> Result.success(Authenticated.authenticated(SecurityContext.securityContext())));
     }
 
-    private Result<SecurityContext> validateApiKey(HttpRequestContext request) {
+    private Result<Authenticated> validateApiKey(HttpRequestContext request) {
         return extractApiKey(request.headers()).toResult(SecurityError.MISSING_API_KEY)
                             .flatMap(this::checkApiKey);
     }
 
-    private Result<SecurityContext> checkApiKey(String apiKey) {
+    private Result<Authenticated> checkApiKey(String apiKey) {
         var candidateHash = hashKey(apiKey).getBytes(StandardCharsets.UTF_8);
 
         return Option.from(keyEntries.entrySet()
@@ -87,14 +92,18 @@ class ApiKeySecurityValidator implements HttpAuthenticator {
                                      .map(Map.Entry::getValue)
                                      .findFirst())
                      .toResult(SecurityError.INVALID_API_KEY)
-                     .flatMap(ApiKeySecurityValidator::toSecurityContext);
+                     .flatMap(ApiKeySecurityValidator::toAuthenticated);
     }
 
-    private static Result<SecurityContext> toSecurityContext(ApiKeyEntry entry) {
+    /// The credential match: the context of the matched key, with a grant minted when it is ADMIN.
+    private static Result<Authenticated> toAuthenticated(ApiKeyEntry entry) {
         var roles = entry.roles().stream().map(Role::role).flatMap(r -> r.stream()).collect(Collectors.toSet());
         var authRole = parseAuthorizationRole(entry.authorizationRole());
 
-        return SecurityContext.securityContext(entry.name(), roles, authRole);
+        return SecurityContext.securityContext(entry.name(),
+                                               roles,
+                                               authRole)
+                              .map(ApiKeySecurityValidator::minted);
     }
 
     private static AuthorizationRole parseAuthorizationRole(String value) {
@@ -139,5 +148,10 @@ class ApiKeySecurityValidator implements HttpAuthenticator {
         } catch (NoSuchAlgorithmException e) {
             throw new AssertionError("SHA-256 not available", e);
         }
+    }
+
+    /// The credential match: the matched context, with an ADMIN grant minted when its authorization role is ADMIN.
+    private static Authenticated minted(SecurityContext context) {
+        return Authenticated.authenticated(context, AdminGrant.mint(context));
     }
 }

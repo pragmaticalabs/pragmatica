@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.PendingGoal;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
@@ -28,6 +28,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
@@ -286,7 +287,8 @@ class V2174bPinsTest {
                                                  "g:a:1",
                                                  blueprintId("org.example:app:1.0.0"),
                                                  0,
-                                                 FsmHarness.START_WALL));
+                                                 FsmHarness.START_WALL,
+                                                 SchemaReach.MIGRATED));
         }
 
         return h;
@@ -414,7 +416,7 @@ class V2174bPinsTest {
 
     // -- D2: ActivationBlocked withheld while suspended ------------------------------------------------------------------------------
     private static SchemaVersionValue schema(SchemaStatus status) {
-        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", blueprintId("org.example:app:1.0.0"), 2, FsmHarness.START_WALL);
+        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", blueprintId("org.example:app:1.0.0"), 2, FsmHarness.START_WALL, SchemaReach.MIGRATED);
     }
 
     private static long blockedRoutes(FsmHarness h) {

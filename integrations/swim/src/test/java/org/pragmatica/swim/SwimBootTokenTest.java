@@ -56,7 +56,7 @@ class SwimBootTokenTest {
 
     @BeforeEach
     void setUp() {
-        protocol = SwimProtocol.swimProtocol(config(), targetTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
+        protocol = SwimTestProtocols.swimProtocol(config(), targetTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
                                .unwrap();
         protocol.addObservationListener(observations::add);
     }
@@ -251,7 +251,7 @@ class SwimBootTokenTest {
     void probeAck_fromRetiredIdentity_doesNotReviveMember() {
         var transport = new RecordingTransport();
         var tokens = BootTokens.bootTokens(0x5E1FL);
-        var probing = SwimProtocol.swimProtocol(probingConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
+        var probing = SwimTestProtocols.swimProtocol(probingConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
                                   .unwrap();
 
         probing.setBootTokens(tokens);

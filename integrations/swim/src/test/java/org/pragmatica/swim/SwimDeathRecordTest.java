@@ -82,7 +82,7 @@ class SwimDeathRecordTest {
         tokens = BootTokens.bootTokens(0x5E1FL);
         observations = new RecordingObservationSink();
         transport = new RecordingTransport();
-        protocol = SwimProtocol.swimProtocol(tightConfig(),
+        protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,

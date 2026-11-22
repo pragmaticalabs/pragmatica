@@ -116,7 +116,7 @@ class ClusterDeploymentManagerReplayBurstTest {
                                                                         router,
                                                                         List.of(self),
                                                                         cluster.topologyManager(),
-                                                                        ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT,
+                                                                        DeploymentAtomicity.BEST_EFFORT,
                                                                         0,
                                                                         ClusterDeploymentManager.DEFAULT_RECONCILE_INTERVAL,
                                                                         ClusterDeploymentManagerTest.NO_OP_SCHEMA,

@@ -20,7 +20,7 @@ import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;

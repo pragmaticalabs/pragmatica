@@ -53,7 +53,7 @@ class BootstrapAdminKeyValidatorAcceptanceTest {
         registerBootstrapAdminKey();
         var cliDerivedKey = ClusterSecretDerivation.bootstrapAdminKey(SECRET).unwrap();
 
-        validator().validate(request(cliDerivedKey), new SecurityPolicy.RoleRequired(Role.ADMIN.value()))
+        validator().context(request(cliDerivedKey), new SecurityPolicy.RoleRequired(Role.ADMIN.value()))
                    .onFailure(cause -> Assertions.fail("the CLI-derived key must authenticate against the "
                                                        + "cluster-registered hash: " + cause.message()))
                    .onSuccess(context -> assertThat(context.roles()).as("the bootstrap key must carry ADMIN")
@@ -67,7 +67,7 @@ class BootstrapAdminKeyValidatorAcceptanceTest {
         registerBootstrapAdminKey();
         var foreignKey = ClusterSecretDerivation.bootstrapAdminKey(SECRET + "-other").unwrap();
 
-        var result = validator().validate(request(foreignKey), new SecurityPolicy.RoleRequired(Role.ADMIN.value()));
+        var result = validator().context(request(foreignKey), new SecurityPolicy.RoleRequired(Role.ADMIN.value()));
 
         assertThat(result.isFailure()).as("another cluster's derived key must not authenticate here").isTrue();
     }

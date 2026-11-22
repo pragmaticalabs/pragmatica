@@ -4,6 +4,7 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.RetentionMode;
+import org.pragmatica.aether.slice.TruncationPolicy;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -26,6 +27,9 @@ public sealed interface DeclarationDefaults {
     long DEFAULT_MAX_BYTES_FLOOR = 1024L * 1024 * 1024;
     /// `[retention] mode` when none is declared.
     RetentionMode DEFAULT_MODE = RetentionMode.ANY;
+    /// `[truncation] policy` when none is declared, and the policy of a committed row that stores no declaration: a
+    /// stream committed before the declaration existed reclaims by window (stream-storage-design 2.2, 2.5).
+    TruncationPolicy DEFAULT_POLICY = TruncationPolicy.WINDOW;
     /// Mirror of `StreamingConfig.DEFAULT_SEAL_RUN_BYTES`.
     long SEAL_RUN_BYTES = 1024 * 1024L;
     /// Mirror of `StreamingConfig.DEFAULT_SEAL_RUN_EVENTS`.

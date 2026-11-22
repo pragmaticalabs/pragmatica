@@ -203,6 +203,14 @@ class ReplicaFeedClientRelayTest {
             pump();
         }
 
+        /// Hands a slow worker only the entry messages it held (a grant), in order, and drops the rest (its heartbeats): the sender is heard, and no beat
+        /// of it counts.
+        void releaseEntriesOnly(Worker worker) {
+            List.copyOf(worker.held).stream().filter(ReplicaEntries.class::isInstance).forEach(message -> dispatch(worker.id, message));
+            worker.held.clear();
+            pump();
+        }
+
         void pump() {
             while (!queue.isEmpty()) {
                 queue.poll().run();
@@ -393,6 +401,117 @@ class ReplicaFeedClientRelayTest {
         assertThat(mesh.lastSubscribe(member).unwrap().mode()).isEqualTo(SubscribeMode.FROM_ANCHOR);
         assertThat(member.installs.get()).as("no second snapshot").isEqualTo(1);
         assertThat(member.readiness.ready()).isTrue();
+    }
+
+    /// #2502 pin: a governor that never answers at all costs the member no not-ready dip while the 3 s silence is waited out (the carry grace of 4.5 s
+    /// outlasts it, #2510). Not red on the pre-fix code: the next test is the one that fails there.
+    @Test
+    void aMemberMovedToAGovernorThatNeverAnswers_staysReadyWhileTheSilenceIsWaitedOut() {
+        var mesh = meshWithData();
+        var member = mesh.worker("w-1");
+
+        mesh.run(4);
+        assertThat(member.readiness.ready()).as("precondition: ready on a core").isTrue();
+        var gov = mesh.governorServing("w-gov");
+
+        member.holdInbound.set(true);
+        mesh.announced.set(Option.some(gov.id));
+        for (var i = 0; i < 20; i++) {
+            mesh.advance(300);
+            mesh.step();
+            assertThat(member.readiness.ready()).as("round %d: ready while the governor is silent", i).isTrue();
+        }
+
+        assertThat(mesh.subscribeTargets(member).getLast()).as("left the silent governor for a core").isNotEqualTo(gov.id);
+    }
+
+    /// #2502: the member moves deliberately to the announced governor, the governor GRANTS (one `ReplicaEntries`, 1.8 s after the announcement)
+    /// and then falls silent with its link up: no heartbeat of it is ever counted. The silence (over 3 s since the grant) is detected at 5.1 s, and
+    /// the member falls back to a core at 5.4 s. A carry window armed at the move (pre-fix: at the subscribe, 0.6 s) expires at 5.1 s, before that
+    /// fall-back, and an expired window is never renewed, so the member is not ready from 5.4 s until the core's heartbeat counts (red at round 11).
+    /// The window is armed only after a FAILED session; the old heartbeats count on their 30 s freshness bound through the wait, and the failed
+    /// fall-back arms it. The member's inbound is held only until the fall-back (it models the silent governor), never past it. Mutation: arm the
+    /// carry window on every resume (the pre-fix `subscribeTo`), or on a deliberate end.
+    @Test
+    void aMemberMovedToAGovernorThatGrantsThenFallsSilent_staysReadyUntilItFallsBackToACore() {
+        var mesh = meshWithData();
+        var member = mesh.worker("w-1");
+
+        mesh.run(4);
+        var gov = governorWithAnEffect(mesh);
+        assertThat(member.readiness.ready()).as("precondition: ready on a core").isTrue();
+
+        member.holdInbound.set(true);
+        mesh.announced.set(Option.some(gov.id));
+        mesh.run(6);
+        assertThat(mesh.subscribeTargets(member).getLast()).as("moved to the governor").isEqualTo(gov.id);
+        assertThat(member.held).as("precondition: the governor granted").anyMatch(ReplicaEntries.class::isInstance);
+        mesh.releaseEntriesOnly(member);
+        staysReadyUntilTheFallBack(mesh, member);
+    }
+
+    /// #2502 residue: a deliberate move made while a FAILURE-armed carry window runs renews that window, as any resume does while a window is armed.
+    /// The member's core falls silent; it falls back to the other core (a failure: the window is armed, at T), which grants and is left before its
+    /// first heartbeat counts, because the announced governor appears (a deliberate move, subscribe at T + 0.6 s). The governor grants 0.6 s after
+    /// that subscribe and falls silent; the silence is detected at T + 4.5 s and the member falls back to a core at T + 4.8 s. Unrenewed, the window
+    /// armed at T ends at T + 4.5 s, before that fall-back, and is never renewed again (red at round 11); renewed at the move, it ends at T + 5.1 s
+    /// and the failed fall-back renews it up to the cap. Mutation: renew nothing on a deliberate move (arm or renew only after a failed session).
+    @Test
+    void aMoveToAGovernorWhileAFailureCarryRuns_renewsTheCarry_andTheMemberStaysReadyUntilItFallsBackToACore() {
+        var mesh = meshWithData();
+        var member = mesh.worker("w-1");
+
+        mesh.run(4);
+        var gov = governorWithAnEffect(mesh);
+        assertThat(member.readiness.ready()).as("precondition: ready on a core").isTrue();
+        var firstCore = mesh.subscribeTargets(member).getLast();
+
+        member.holdInbound.set(true);
+        for (var i = 0; i < 20 && mesh.subscribeTargets(member).getLast().equals(firstCore); i++) {
+            mesh.run(1);
+            assertThat(member.readiness.ready()).as("round %d: ready while the first core is silent", i).isTrue();
+        }
+        assertThat(mesh.subscribeTargets(member).getLast()).as("fell back to the other core").isNotEqualTo(firstCore);
+        assertThat(member.held).as("precondition: the other core granted").anyMatch(ReplicaEntries.class::isInstance);
+        mesh.releaseEntriesOnly(member);
+
+        mesh.announced.set(Option.some(gov.id));
+        mesh.run(2);
+        assertThat(mesh.subscribeTargets(member).getLast()).as("moved to the governor before the other core beat").isEqualTo(gov.id);
+        mesh.run(2);
+        assertThat(member.held).as("precondition: the governor granted").anyMatch(ReplicaEntries.class::isInstance);
+        mesh.releaseEntriesOnly(member);
+        staysReadyUntilTheFallBack(mesh, member);
+    }
+
+    /// A worker that serves as the governor, not yet announced, whose ring recorded one effect batch since its snapshot install, so it can grant a
+    /// member's resume (an empty ring verifies no anchor).
+    private static Worker governorWithAnEffect(Mesh mesh) {
+        var gov = mesh.governorServing("w-gov");
+
+        mesh.commit(put("announcement", "1"));
+        mesh.run(3);
+
+        return gov;
+    }
+
+    /// Rounds of 300 ms while the member's source is silent (its inbound held): ready in every round, and the hold is released in the round the
+    /// member falls back to a core, so no core heartbeat is held past the fall-back.
+    private static void staysReadyUntilTheFallBack(Mesh mesh, Worker member) {
+        for (var i = 0; i < 20; i++) {
+            mesh.advance(300);
+            mesh.step();
+            assertThat(member.readiness.ready()).as("round %d: ready while the governor is silent", i).isTrue();
+            releaseOnFallBack(mesh, member);
+        }
+
+        assertThat(member.holdInbound.get()).as("fell back to a core").isFalse();
+    }
+
+    private static void releaseOnFallBack(Mesh mesh, Worker member) {
+        if (member.holdInbound.get() && mesh.isCore(mesh.subscribeTargets(member).getLast())) {
+            mesh.release(member);
+        }
     }
 
     /// NT-O21, governor dies mid-relay: the members' last counted heartbeat keeps them ready while they wait out the 3 s silence, then each resubscribes to

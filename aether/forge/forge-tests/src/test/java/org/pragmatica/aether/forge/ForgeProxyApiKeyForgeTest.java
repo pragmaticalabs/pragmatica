@@ -28,6 +28,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+
 /// #1105 — with a sibling `aether.toml` declaring API keys the embedded nodes run `SecurityMode.API_KEY`, and every
 /// call Forge itself makes to a node must carry the operator's key or the node refuses it. What is left of Forge's
 /// own node calls once the dashboard proxies are gone is its event poll ([NodeEventPoll], behind
@@ -61,10 +62,10 @@ class ForgeProxyApiKeyForgeTest {
                                            ApiKeyEntry.apiKeyEntry("forge-1105-operator", Set.of("service"), "ADMIN")));
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         await().alias("leader elected")
-               .atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader()
-                                   .isPresent());
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> cluster.currentLeader()
+                                 .isPresent());
     }
 
     @AfterAll
@@ -83,11 +84,11 @@ class ForgeProxyApiKeyForgeTest {
         var keyed = NodeEventPoll.nodeEventPoll(() -> Option.some(OPERATOR_KEY));
 
         await().alias("keyed event poll returns a non-empty timeline")
-               .atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> keyed.fetch(port, "")
-                                 .fold(_ -> false, body -> body.startsWith("[") && body.contains("\"type\"")));
-
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> keyed.fetch(port, "")
+                               .fold(_ -> false,
+                                     body -> body.startsWith("[") && body.contains("\"type\"")));
         var keyless = NodeEventPoll.nodeEventPoll(OperatorKey.none()).fetch(port, "");
 
         assertThat(keyless.isFailure()).as("control: the cluster refuses a keyless event poll").isTrue();
@@ -114,10 +115,10 @@ class ForgeProxyApiKeyForgeTest {
         var poll = NodeEventPoll.nodeEventPoll(() -> Option.some(OPERATOR_KEY));
 
         await().alias("the keyed poller can poll")
-               .atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> poll.fetch(port, "").isSuccess());
-
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> poll.fetch(port, "")
+                              .isSuccess());
         for (int i = 0; i < POLLS; i++) {
             assertThat(poll.fetch(port, "").isSuccess()).as("keyed poll %d succeeds", i).isTrue();
         }
@@ -125,10 +126,10 @@ class ForgeProxyApiKeyForgeTest {
         var created = newSince(before);
 
         assertThat(created).as("control: the poller's own client selector thread is visible").isNotEmpty();
-        assertThat(created).as("one poller, one client across %d polls (other JVM clients allowed)", POLLS)
-                           .hasSizeLessThanOrEqualTo(CLIENT_SLACK);
+        assertThat(created).as("one poller, one client across %d polls (other JVM clients allowed)",
+                               POLLS)
+                  .hasSizeLessThanOrEqualTo(CLIENT_SLACK);
         Reference.reachabilityFence(poll);
-
         var beforeControl = selectorThreads();
         var perFetch = new ArrayList<NodeEventPoll>();
 
@@ -138,7 +139,7 @@ class ForgeProxyApiKeyForgeTest {
         }
 
         assertThat(newSince(beforeControl)).as("control: a client per fetch is visible above the bound")
-                                           .hasSizeGreaterThan(CLIENT_SLACK);
+                  .hasSizeGreaterThan(CLIENT_SLACK);
         Reference.reachabilityFence(perFetch);
     }
 
@@ -146,14 +147,15 @@ class ForgeProxyApiKeyForgeTest {
         return Thread.getAllStackTraces()
                      .keySet()
                      .stream()
-                     .filter(thread -> thread.getName().startsWith("HttpClient-")
-                                       && thread.getName().endsWith("-SelectorManager"))
+                     .filter(thread -> thread.getName()
+                                             .startsWith("HttpClient-") && thread.getName()
+                                                                                 .endsWith("-SelectorManager"))
                      .collect(Collectors.toSet());
     }
 
     private static Set<Thread> newSince(Set<Thread> before) {
         return selectorThreads().stream()
-                                .filter(thread -> !before.contains(thread))
-                                .collect(Collectors.toSet());
+                              .filter(thread -> !before.contains(thread))
+                              .collect(Collectors.toSet());
     }
 }

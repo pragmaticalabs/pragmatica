@@ -2,29 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.TestMethodOrder;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.awaitility.core.ConditionTimeoutException;
-import org.pragmatica.aether.slice.ReplicationFactors;
-import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
-import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
-import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Option;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -36,12 +14,34 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
+import org.pragmatica.aether.ember.EmberCluster;
+
+import org.awaitility.core.ConditionTimeoutException;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
-import org.pragmatica.aether.ember.EmberCluster;
 
 /// #1564 acceptance B — at `confirmation_factor = replication_factor` a write needs every replica, so losing one
 /// core refuses writes to the partition until a replacement holds the data. The fixture is `test-stream-acked`
@@ -60,6 +60,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class StreamConfirmationEqualsFactorAvailabilityTest {
     private static final System.Logger LOG = System.getLogger(StreamConfirmationEqualsFactorAvailabilityTest.class.getName());
+
     private static final int BASE_PORT = 16500;
     private static final int BASE_MGMT_PORT = 16600;
     private static final int BASE_APP_HTTP_PORT = 16700;
@@ -67,20 +68,17 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     private static final int INSTANCES = 3;
     private static final int N_EVENTS = 20;
     private static final int PARTITION = 0;
-
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final Duration PLACEMENT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration FAILOVER_TIMEOUT = Duration.ofSeconds(180);
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
-
     private static final String STREAM_SLICE = TestArtifacts.STREAM_ACKED_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:stream-cf-equals-rf:1.0.0";
     private static final String STREAM_NAME = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "acked-events");
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
     private static final int DECLARED_FACTOR = 3;
     private static final int REFUSED_ATTEMPTS = 3;
-
     private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");
     private static final Pattern OFFSET_FIELD = Pattern.compile("\"offset\"\\s*:\\s*(\\d+)");
     private static final Pattern PAYLOAD_FIELD = Pattern.compile("\"payload\"\\s*:\\s*\"([^\"]*)\"");
@@ -98,6 +96,7 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
                                                   .withSystemProperties("aether.")
                                                   .withEnvironment("AETHER_")
                                                   .build();
+
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "stre", Option.some(configProvider));
         startAndAwaitReady();
     }
@@ -106,6 +105,7 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     void tearDown() {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
             LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
@@ -115,13 +115,13 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     @Order(1)
     void everyCoreUp_publishesSucceed_atConfirmationEqualToFactor() {
         await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> committedConfig().isPresent());
-        assertThat(committedConfig().unwrap().replication())
-            .describedAs("the fixture's declared RF 3 / CF 3 reaches the committed runtime config")
-            .isEqualTo(new ReplicationFactors(DECLARED_FACTOR, DECLARED_FACTOR));
+        assertThat(committedConfig().unwrap().replication()).describedAs("the fixture's declared RF 3 / CF 3 reaches the committed runtime config")
+                  .isEqualTo(new ReplicationFactors(DECLARED_FACTOR, DECLARED_FACTOR));
         await().atMost(PLACEMENT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> ownerView().map(view -> view.replicas().size() >= DECLARED_FACTOR).or(false));
-
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> ownerView().map(view -> view.replicas()
+                                                      .size() >= DECLARED_FACTOR)
+                                   .or(false));
         publishBatch(appPort(), "pre", N_EVENTS);
         assertContiguousBatch(drain(appPort(), 0L, N_EVENTS, deadline(FAILOVER_TIMEOUT)), "read back with every core up");
     }
@@ -131,21 +131,23 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     @Order(2)
     void oneCoreLost_publishesToThePartitionAreRefused() {
         var owner = ownerView().flatMap(ReplicaSetView::ownerNodeId).or("");
+
         assertThat(owner).describedAs("owner identified before the kill").isNotBlank();
         killedNode = cluster.allNodes()
                             .stream()
-                            .map(node -> node.self().id())
+                            .map(node -> node.self()
+                                             .id())
                             .filter(id -> !id.equals(owner))
                             .findFirst()
                             .orElseThrow();
         LOG.log(System.Logger.Level.INFO, "#1564 killing non-owner core {0} (owner {1})", killedNode, owner);
         LifecycleAwait.nodeBestEffort("kill core " + killedNode, cluster, cluster.killNode(killedNode));
-
         for (int attempt = 0; attempt < REFUSED_ATTEMPTS; attempt++) {
             var response = httpPost(appPort(), "/api/stream-acked/publish", "{\"payload\":\"refused-" + attempt + "\"}");
+
             LOG.log(System.Logger.Level.INFO, "#1564 publish {0} with one core lost: {1}", attempt, response);
             assertThat(response).describedAs("a publish at CF == RF with one of three cores lost must be refused")
-                                .doesNotContain("\"published\"");
+                      .doesNotContain("\"published\"");
         }
     }
 
@@ -167,14 +169,14 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
         // The dead peer leaves the registry asynchronously (it is still registered right after the kill: the refused
         // publishes above answer REPLICATION_TIMEOUT), so the control waits for the degraded state it describes.
         awaitOrDump("the owner view lists exactly the two survivors", this::ownerViewListsOnlyTheSurvivors);
-
         joinReplacement();
-
         awaitOrDump("the replacement enters the partition's replica set", this::replacementPlaced);
         awaitOrDump("publishes succeed once the replacement is placed",
                     () -> httpPost(appPort(), "/api/stream-acked/publish", "{\"payload\":\"after\"}").contains("\"published\""));
         awaitOrDump("the replacement holds the pre-kill history", this::replacementHoldsFullHistory);
-        LOG.log(System.Logger.Level.INFO, "#1564 nodes holding the pre-kill history after the replacement: {0}", survivorsHoldingFullHistory());
+        LOG.log(System.Logger.Level.INFO,
+                "#1564 nodes holding the pre-kill history after the replacement: {0}",
+                survivorsHoldingFullHistory());
     }
 
     private String replacementNode = "";
@@ -182,7 +184,8 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     private void joinReplacement() {
         var replacement = cluster.addNode().await().unwrap();
 
-        assertThat(replacement.id()).describedAs("the replacement joins under a FRESH identity").isNotEqualTo(killedNode);
+        assertThat(replacement.id()).describedAs("the replacement joins under a FRESH identity")
+                  .isNotEqualTo(killedNode);
         replacementNode = replacement.id();
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
     }
@@ -192,8 +195,8 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
                                            .stream()
                                            .map(replica -> replica.nodeId())
                                            .toList())
-                         .map(nodes -> nodes.size() == 2 && !nodes.contains(killedNode))
-                         .or(false);
+                        .map(nodes -> nodes.size() == 2 && !nodes.contains(killedNode))
+                        .or(false);
     }
 
     private boolean replacementPlaced() {
@@ -201,13 +204,15 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
                                            .stream()
                                            .anyMatch(replica -> replica.nodeId()
                                                                        .equals(replacementNode)))
-                          .or(false);
+                        .or(false);
     }
 
     private boolean replacementHoldsFullHistory() {
         return cluster.allNodes()
                       .stream()
-                      .filter(node -> node.self().id().equals(replacementNode))
+                      .filter(node -> node.self()
+                                          .id()
+                                          .equals(replacementNode))
                       .anyMatch(node -> holdsFullHistory(node.streamReadRouter().replicaSnapshot(STREAM_NAME, PARTITION)));
     }
 
@@ -217,7 +222,8 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
         return cluster.allNodes()
                       .stream()
                       .filter(node -> holdsFullHistory(node.streamReadRouter().replicaSnapshot(STREAM_NAME, PARTITION)))
-                      .map(node -> node.self().id())
+                      .map(node -> node.self()
+                                       .id())
                       .toList();
     }
 
@@ -226,7 +232,6 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     }
 
     // --- replica-set view (in-JVM, owner-authoritative) ---------------------
-
     private Option<ReplicaSetView> ownerView() {
         for (var node : cluster.allNodes()) {
             var view = node.streamReadRouter().replicaSnapshot(STREAM_NAME, PARTITION);
@@ -251,6 +256,7 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
                                             what,
                                             node.self(),
                                             node.streamReadRouter().replicaSnapshot(STREAM_NAME, PARTITION)));
+
             throw timeout;
         }
     }
@@ -264,12 +270,8 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     }
 
     // --- assertions ---------------------------------------------------------
-
     private static void assertContiguousBatch(List<Event> events, String phase) {
-        assertThat(events)
-            .describedAs("all %d events %s (no loss, no dups)", N_EVENTS, phase)
-            .hasSize(N_EVENTS);
-
+        assertThat(events).describedAs("all %d events %s (no loss, no dups)", N_EVENTS, phase).hasSize(N_EVENTS);
         for (int i = 0; i < N_EVENTS; i++) {
             assertThat(events.get(i).offset()).describedAs("event %d offset", i).isEqualTo((long) i);
             assertThat(events.get(i).payload()).describedAs("event %d payload", i).isEqualTo("pre-" + i);
@@ -277,7 +279,6 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     }
 
     // --- publish / read -----------------------------------------------------
-
     private void publishBatch(int port, String tag, int count) {
         for (int i = 0; i < count; i++) {
             publish(port, tag + "-" + i);
@@ -288,8 +289,8 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
         var response = httpPost(port, "/api/stream-acked/publish", "{\"payload\":\"" + payload + "\"}");
 
         assertThat(response).describedAs("publish '%s' must succeed", payload)
-                            .doesNotContain("\"error\"")
-                            .contains("published");
+                  .doesNotContain("\"error\"")
+                  .contains("published");
     }
 
     private List<Event> drain(int port, long base, int count, long deadlineNanos) {
@@ -327,7 +328,8 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
             Matcher payload = PAYLOAD_FIELD.matcher(object);
 
             if (offset.find() && payload.find()) {
-                events.add(new Event(Long.parseLong(offset.group(1)), payload.group(1)));
+                events.add(new Event(Long.parseLong(offset.group(1)),
+                                     payload.group(1)));
             }
         }
 
@@ -335,19 +337,16 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     }
 
     // --- deployment + readiness --------------------------------------------
-
     private void startAndAwaitReady() {
         LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
-
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
-
         deployStreamSlice();
-
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .until(this::appHttpReady);
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .until(this::appHttpReady);
     }
 
     private void deployStreamSlice() {
@@ -362,8 +361,8 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
         var response = postBlueprintWithRetry(leaderPort, blueprint);
 
         assertThat(response).describedAs("#1564 stream-slice deployment")
-                            .doesNotContain("\"error\"")
-                            .contains("\"status\":\"applied\"");
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     private boolean appHttpReady() {
@@ -375,13 +374,15 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
 
         var body = httpPost(ports.getFirst(), "/api/stream-acked/read", "{\"fromOffset\":0,\"maxEvents\":1}");
 
-        return !body.contains("\"error\"") && body.contains("events");
+        return ! body.contains("\"error\"") && body.contains("events");
     }
 
     private void failIfSliceFailed() {
         var failed = cluster.slicesStatus()
                             .stream()
-                            .anyMatch(s -> s.artifact().equals(STREAM_SLICE) && s.state().equals("FAILED"));
+                            .anyMatch(s -> s.artifact()
+                                            .equals(STREAM_SLICE) && s.state()
+                                                                      .equals("FAILED"));
 
         if (failed) {
             throw new AssertionError("#1564 stream slice deployment FAILED: " + STREAM_SLICE);
@@ -396,7 +397,10 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     }
 
     private int anyMgmtPort() {
-        return cluster.status().nodes().getFirst().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .getFirst()
+                      .mgmtPort();
     }
 
     private static long deadline(Duration budget) {
@@ -410,9 +414,11 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
+
         return http.sendString(request)
                    .await()
-                   .map(r -> r.statusCode() == 200 && healthHasFullMembership(r.body(), expected))
+                   .map(r -> r.statusCode() == 200 && healthHasFullMembership(r.body(),
+                                                                              expected))
                    .or(false);
     }
 
@@ -427,13 +433,11 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
     }
 
     // --- HTTP ---------------------------------------------------------------
-
     private String postBlueprintWithRetry(int port, String body) {
         var lastResponse = ERROR_FALLBACK;
 
         for (int attempt = 1; attempt <= 3; attempt++) {
             lastResponse = httpPostToml(port, "/api/v1/blueprints", body);
-
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;
             }
@@ -453,6 +457,7 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -466,6 +471,7 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(15))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -478,6 +484,7 @@ class StreamConfirmationEqualsFactorAvailabilityTest {
                                  .DELETE()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)

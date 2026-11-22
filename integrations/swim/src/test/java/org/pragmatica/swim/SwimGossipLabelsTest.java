@@ -66,7 +66,7 @@ class SwimGossipLabelsTest {
     void setUp() {
         transport = new RecordingTransport();
         observations = new RecordingObservationSink();
-        protocol = SwimProtocol.swimProtocol(swimConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
+        protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
                                .unwrap();
         protocol.addObservationListener(observations);
     }

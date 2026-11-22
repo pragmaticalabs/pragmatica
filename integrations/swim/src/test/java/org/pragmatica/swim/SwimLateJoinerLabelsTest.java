@@ -88,7 +88,7 @@ class SwimLateJoinerLabelsTest {
                                            0);
         var address = new InetSocketAddress("127.0.0.1", port);
         var transport = new MemoryTransport(address);
-        var protocol = SwimProtocol.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId(id), address)
+        var protocol = SwimTestProtocols.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId(id), address)
                                    .unwrap();
         var seedAddresses = new ArrayList<InetSocketAddress>();
 

@@ -11,6 +11,7 @@ import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.api.extension.LifecycleMethodExecutionExceptionHandler;
 import org.junit.jupiter.api.extension.TestExecutionExceptionHandler;
 
+
 /// Dumps every thread's stack when a LIFECYCLE method fails (#749 / #750).
 ///
 /// ## Why this exists
@@ -59,8 +60,7 @@ import org.junit.jupiter.api.extension.TestExecutionExceptionHandler;
 /// reason this comment exists rather than a silent second `implements`: **an instrument validated
 /// for one question is not validated for its neighbour.** A hang reaching JUnit by a different
 /// path is still the hang you built the instrument for.
-public class HangDiagnosticExtension implements LifecycleMethodExecutionExceptionHandler,
-                                                TestExecutionExceptionHandler {
+public class HangDiagnosticExtension implements LifecycleMethodExecutionExceptionHandler, TestExecutionExceptionHandler {
     /// `@Test` bodies — the path #749 recurred through. A node-stop hang can surface here just as
     /// readily as in a lifecycle method, and the dump is worth exactly as much.
     @Override
@@ -104,16 +104,15 @@ public class HangDiagnosticExtension implements LifecycleMethodExecutionExceptio
     /// it exists to inform.
     private static void dump(ExtensionContext context, String phase, Throwable throwable) {
         try {
-            var header = "=== HANG DIAGNOSTIC (#749/#750) === " + phase + " failed in "
-                         + context.getDisplayName() + ": " + throwable.getClass().getSimpleName()
-                         + ": " + throwable.getMessage();
+            var header = "=== HANG DIAGNOSTIC (#749/#750) === " + phase
+                       + " failed in " + context.getDisplayName()
+                       + ": " + throwable.getClass().getSimpleName()
+                       + ": " + throwable.getMessage();
 
             System.err.println(header);
-
             var infos = ManagementFactory.getThreadMXBean().dumpAllThreads(true, true);
 
             System.err.println("--- " + infos.length + " threads ---");
-
             for (var info : infos) {
                 System.err.print(render(info));
             }
@@ -129,9 +128,12 @@ public class HangDiagnosticExtension implements LifecycleMethodExecutionExceptio
     private static String render(ThreadInfo info) {
         var sb = new StringBuilder(512);
 
-        sb.append('"').append(info.getThreadName()).append("\" #").append(info.getThreadId())
-          .append(' ').append(info.getThreadState());
-
+        sb.append('"')
+          .append(info.getThreadName())
+          .append("\" #")
+          .append(info.getThreadId())
+          .append(' ')
+          .append(info.getThreadState());
         if (info.getLockName() != null) {
             sb.append(" on ").append(info.getLockName());
         }
@@ -141,11 +143,11 @@ public class HangDiagnosticExtension implements LifecycleMethodExecutionExceptio
         }
 
         sb.append('\n');
-
         for (var frame : info.getStackTrace()) {
             sb.append("\tat ").append(frame).append('\n');
         }
 
-        return sb.append('\n').toString();
+        return sb.append('\n')
+                 .toString();
     }
 }

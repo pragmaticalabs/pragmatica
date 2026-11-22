@@ -18,6 +18,7 @@ import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.logging.log4j.Level;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.ClusterIncarnationRegistrar;
@@ -66,6 +67,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.testlogging.LogCapture;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -277,11 +279,8 @@ class BackupRestoreCoordinatorTest {
             return warnings.stream().map(BackupWarning::code).toList();
         }
 
-        @SuppressWarnings({"unchecked", "rawtypes"})
         private void commitMarker(BackupRestoreOutcome outcome) {
-            kvStore.processCommitted(kvStore.createBatch((List) List.of(new KVCommand.Put<>(AetherKey.BackupRestoreKey.SINGLETON,
-                                                                                            BackupRestoreValue.decided(outcome)))),
-                                     ++slot);
+            commitAuthority(BackupRestoreValue.decided(outcome));
         }
 
         @SuppressWarnings({"unchecked", "rawtypes"})
@@ -495,12 +494,11 @@ class BackupRestoreCoordinatorTest {
             var commit = git(Path.of(remote), "rev-parse", "backup").strip();
 
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 60), Map.of(ConfigKey.forKey("later"), ALPHA));
-            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
-                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+            commitAuthority(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
                                                                                   LINEAGE,
                                                                                   3,
                                                                                   40,
-                                                                                  commit)));
+                                                                                  commit));
             applyDirect(new KVCommand.Put<>(ConfigKey.forKey("alpha"), ALPHA));
             // Already restored by the interrupted leader, and version-fenced: re-writing it equal would be
             // refused by the successor fence and take the whole chunk down with it.
@@ -528,12 +526,11 @@ class BackupRestoreCoordinatorTest {
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
             var commit = git(Path.of(remote), "rev-parse", "backup").strip();
 
-            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
-                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+            commitAuthority(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
                                                                                   LINEAGE,
                                                                                   3,
                                                                                   40,
-                                                                                  commit)));
+                                                                                  commit));
             applyDirect(new KVCommand.Put<>(ClusterIncarnationKey.clusterIncarnationKey(),
                                             ClusterIncarnationValue.genesis("ungated-lineage", "ungated-incarnation")));
 
@@ -557,12 +554,11 @@ class BackupRestoreCoordinatorTest {
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
             var commit = git(Path.of(remote), "rev-parse", "backup").strip();
 
-            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
-                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+            commitAuthority(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
                                                                                   LINEAGE,
                                                                                   3,
                                                                                   40,
-                                                                                  commit)));
+                                                                                  commit));
             applyDirect(new KVCommand.Put<>(ClusterIncarnationKey.clusterIncarnationKey(),
                                             ClusterIncarnationValue.genesis("ungated-lineage", "ungated-incarnation")));
             tearFinishOnce = true;
@@ -736,12 +732,11 @@ class BackupRestoreCoordinatorTest {
         private void interruptedRestore(String remote) {
             var commit = git(Path.of(remote), "rev-parse", "backup").strip();
 
-            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
-                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+            commitAuthority(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
                                                                                   LINEAGE,
                                                                                   3,
                                                                                   40,
-                                                                                  commit)));
+                                                                                  commit));
         }
 
         /// A backup-enabled leader began restoring `remote`'s head and stopped (marker `IN_PROGRESS`, nothing else written). Then a leader
@@ -771,12 +766,11 @@ class BackupRestoreCoordinatorTest {
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
             var commit = git(Path.of(remote), "rev-parse", "backup").strip();
 
-            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
-                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+            commitAuthority(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
                                                                                   LINEAGE,
                                                                                   3,
                                                                                   40,
-                                                                                  commit)));
+                                                                                  commit));
             var secondWorker = new KvBackupServiceTest.ManualScheduler();
             var secondService = KvBackupService.kvBackupService(kvStore,
                                                                 CODEC,
@@ -1058,8 +1052,7 @@ class BackupRestoreCoordinatorTest {
             var aside = temp.resolve("remote-aside.git");
 
             Files.move(Path.of(remote), aside);
-            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
-                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS, LINEAGE, 3, 40, commit)));
+            commitAuthority(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS, LINEAGE, 3, 40, commit));
             var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
 
             coordinator.activate();
@@ -1260,8 +1253,7 @@ class BackupRestoreCoordinatorTest {
             var coordinator = coordinator(Option.some(source(Option.some(temp.resolve("gone.git").toString()), RestoreMode.AUTO)));
 
             coordinator.activate();
-            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
-                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.RESTORED, LINEAGE, 3, 40, ABSENT_COMMIT)));
+            commitAuthority(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.RESTORED, LINEAGE, 3, 40, ABSENT_COMMIT));
             worker.advance(0);
             fireRetries(2);
 
@@ -1281,8 +1273,7 @@ class BackupRestoreCoordinatorTest {
             var coordinator = coordinator(Option.some(source(Option.some(temp.resolve("gone.git").toString()), RestoreMode.AUTO)));
 
             coordinator.activate();
-            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
-                                            BackupRestoreValue.backupRestoreValue(outcome, LINEAGE, 3, 40, ABSENT_COMMIT)));
+            commitAuthority(BackupRestoreValue.backupRestoreValue(outcome, LINEAGE, 3, 40, ABSENT_COMMIT));
             worker.advance(0);
             fireRetries(3);
 
@@ -1297,7 +1288,7 @@ class BackupRestoreCoordinatorTest {
         private static boolean resumes(BackupRestoreOutcome outcome) {
             return switch (outcome) {
                 case IN_PROGRESS -> true;
-                case RESTORED, FRESH, SKIPPED_EXISTING_STATE, DISABLED, UNKNOWN -> false;
+                case RESTORED, FRESH, SKIPPED_EXISTING_STATE, DISABLED, ABANDONED, UNKNOWN -> false;
             };
         }
 
@@ -1373,6 +1364,137 @@ class BackupRestoreCoordinatorTest {
             assertNamesStepAndAdvice(Step.REF_UNRESOLVED, false);
         }
 
+        // --- #3464: a git read that cannot answer blocks the restore; it is never a fresh cluster ---
+
+        /// The local source answers `show-ref --exists` with a failure (a damaged repository): the old read of `HEAD` mapped every non-zero exit to
+        /// "no commit" and started FRESH.
+        @Test
+        void anUnreadableLocalBranch_blocksAtSourceUnreachable_andCommitsNoDecision() {
+            blockOverShimmed(Option.none(), "show-ref");
+
+            assertNamesStepAndAdvice(Step.SOURCE_UNREACHABLE, false);
+            assertThat(submitted).as("no decision is committed over an unreadable source").isEmpty();
+        }
+
+        /// L3 (#3501): an old git refuses `show-ref --exists` (exit 129); the restore blocks and its warning names the git it needs.
+        @Test
+        void anOldGitOnALocalSource_blocksAtSourceUnreachable_namingGit243() {
+            blockOverShimmed(Option.none(), "show-ref", "echo \"error: unknown option \\`exists'\" >&2\n    exit 129");
+
+            assertNamesStepAndAdvice(Step.SOURCE_UNREACHABLE, false);
+            assertThat(warnings.getFirst().detail()).contains("git >= 2.43");
+            assertThat(submitted).as("no decision is committed over an unreadable source").isEmpty();
+        }
+
+        /// The control for the test above: the same local source, really empty, is a fresh cluster.
+        @Test
+        void aLocalRepositoryWithNoCommit_isFresh() {
+            var coordinator = coordinator(Option.some(source(Option.none(), RestoreMode.AUTO)));
+
+            runToCompletion(coordinator);
+
+            assertThat(outcome()).isEqualTo(BackupRestoreOutcome.FRESH);
+        }
+
+        @Test
+        void anUnreadableRemoteBranch_blocksAtSourceUnreachable() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            blockOverShimmed(Option.some(remote), "ls-remote");
+
+            assertNamesStepAndAdvice(Step.SOURCE_UNREACHABLE, false);
+        }
+
+        @Test
+        void aRefGitCannotResolve_blocksAtRefUnresolved() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            blockOverShimmed(Option.some(remote), "rev-parse");
+
+            assertNamesStepAndAdvice(Step.REF_UNRESOLVED, false);
+        }
+
+        /// `git show` failing on a commit that exists: the document read is unreadable, and must not decode as an empty document.
+        @Test
+        void aDocumentGitCannotShow_blocksAtCommitUnreadable() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
+            blockOverShimmed(Option.some(remote), "show");
+
+            assertNamesStepAndAdvice(Step.COMMIT_UNREADABLE, false);
+        }
+
+        /// The production factory asks the installed git for its version on the worker: older than 2.43 is a WARN naming the requirement.
+        @Test
+        void aGitOlderThan243_isWarnedAbout_whenTheProductionCoordinatorIsBuilt() {
+            var env = GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "--version", "echo 'git version 2.42.0'\n    exit 0");
+
+            try (var capture = LogCapture.capture(BackupRestoreCoordinator.class, Level.WARN, true)) {
+                productionCoordinator(env);
+                worker.advance(0);
+                for (int i = 0; i < 100 && capture.entries().isEmpty(); i++) {
+                    pause();
+                }
+
+                assertThat(capture.entries()).filteredOn(entry -> entry.level() == Level.WARN)
+                                             .singleElement()
+                                             .satisfies(entry -> assertThat(entry.message()).contains("git >= 2.43"));
+            }
+        }
+
+        /// The control: 2.43.0 is the floor itself, and is not warned about.
+        @Test
+        void aGit243_isNotWarnedAbout() {
+            var env = GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "--version", "echo 'git version 2.43.0'\n    exit 0");
+
+            try (var capture = LogCapture.capture(BackupRestoreCoordinator.class, Level.WARN, true)) {
+                productionCoordinator(env);
+                worker.advance(0);
+                for (int i = 0; i < 20; i++) {
+                    pause();
+                }
+
+                assertThat(capture.entries()).isEmpty();
+            }
+        }
+
+        private void productionCoordinator(Map<String, String> environment) {
+            BackupRestoreCoordinator.backupRestoreCoordinator(NodeId.nodeId("node-1").unwrap(),
+                                                              runningEngine,
+                                                              kvStore,
+                                                              BackupRestoreCoordinatorTest.this::gatedApply,
+                                                              Option.some(BackupRestoreCoordinator.Source.source(shimmedService(Option.none(), environment),
+                                                                                                                RestoreMode.AUTO)),
+                                                              warnings::add);
+        }
+
+        /// A coordinator over `remote` whose git runs `subcommand` as a failing shim, run until it has blocked and retried.
+        private void blockOverShimmed(Option<String> remote, String subcommand) {
+            blockOverShimmed(remote, subcommand, GitBackupRepositoryTest.SHIM_FAILS);
+        }
+
+        private void blockOverShimmed(Option<String> remote, String subcommand, String behaviour) {
+            var env = GitBackupRepositoryTest.gitShim(temp.resolve("bin"), subcommand, behaviour);
+            var coordinator = coordinator(Option.some(BackupRestoreCoordinator.Source.source(shimmedService(remote, env), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(3);
+        }
+
+        private KvBackupService shimmedService(Option<String> remote, Map<String, String> environment) {
+            var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"),
+                                                                     remote,
+                                                                     "backup",
+                                                                     TimeSpan.timeSpan(30).seconds(),
+                                                                     environment);
+
+            return KvBackupService.kvBackupService(kvStore, CODEC, repository, worker, worker::now, warnings::add, TIMING);
+        }
+
         /// One warning, naming `step`, with the advice chosen by marker presence alone, and no sentence predicting the outcome.
         private void assertNamesStepAndAdvice(Step step, boolean marked) {
             assertThat(outcome()).as("CONTROL: marker presence")
@@ -1402,12 +1524,11 @@ class BackupRestoreCoordinatorTest {
 
         /// A coordinator over `remote`, with an `IN_PROGRESS` marker pinning `pinned` when present, run until it has blocked and retried.
         private void blockOver(String remote, Option<String> pinned) {
-            pinned.onPresent(commit -> applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
-                                                                       BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+            pinned.onPresent(commit -> commitAuthority(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
                                                                                                              LINEAGE,
                                                                                                              3,
                                                                                                              40,
-                                                                                                             commit))));
+                                                                                                             commit)));
             var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
 
             coordinator.activate();
@@ -1437,12 +1558,11 @@ class BackupRestoreCoordinatorTest {
         }
 
         private void markInProgress(String remote) {
-            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
-                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+            commitAuthority(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
                                                                                   LINEAGE,
                                                                                   3,
                                                                                   40,
-                                                                                  git(Path.of(remote), "rev-parse", "backup").strip())));
+                                                                                  git(Path.of(remote), "rev-parse", "backup").strip()));
         }
 
         /// The cold-start exit at the level a test can model it: a full stop leaves an EMPTY store (consensus persistence is in-memory), so
@@ -1486,12 +1606,11 @@ class BackupRestoreCoordinatorTest {
             var remote = bareRemote(temp.resolve("remote.git"));
 
             seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(ConfigKey.forKey("alpha"), ALPHA));
-            applyDirect(new KVCommand.Put<>(AetherKey.BackupRestoreKey.backupRestoreKey(),
-                                            BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+            commitAuthority(BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
                                                                                   LINEAGE,
                                                                                   3,
                                                                                   40,
-                                                                                  git(Path.of(remote), "rev-parse", "backup").strip())));
+                                                                                  git(Path.of(remote), "rev-parse", "backup").strip()));
             var coordinator = coordinator(Option.some(source(Option.some(temp.resolve("gone.git").toString()), RestoreMode.FRESH)));
 
             coordinator.activate();
@@ -1610,6 +1729,52 @@ class BackupRestoreCoordinatorTest {
 
     private void applyDirect(KVCommand<AetherKey> command) {
         applyDirect(List.of(command));
+    }
+
+    /// #3303 RA-3b: commits `target` at K_A as a leader writes it, by restore-authority r3.1 §2's rows from the committed
+    /// state (a bare `Put` of the authority is dropped, row 11). RESTORED goes through `(c)` (rows 1, 5), ABANDONED through
+    /// `(c)` and `(c,a)` (rows 1, 7, 10); `UNKNOWN` enters by no row, so it is installed by snapshot. A step the fence refuses
+    /// fails the fixture.
+    private void commitAuthority(BackupRestoreValue target) {
+        switch (target.outcome()) {
+            case RESTORED -> leaderWrites(inProgressOf(target, false), target);
+            case ABANDONED -> leaderWrites(inProgressOf(target, false), inProgressOf(target, true), target);
+            case UNKNOWN -> installAuthority(target);
+            case IN_PROGRESS, FRESH, SKIPPED_EXISTING_STATE, DISABLED -> leaderWrites(target);
+        }
+    }
+
+    private static BackupRestoreValue inProgressOf(BackupRestoreValue target, boolean abandon) {
+        return BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+                                                     target.lineageId(),
+                                                     target.incarnation(),
+                                                     target.revision(),
+                                                     target.commit(),
+                                                     Option.none(),
+                                                     abandon,
+                                                     0L);
+    }
+
+    private void leaderWrites(BackupRestoreValue... steps) {
+        var key = AetherKey.BackupRestoreKey.backupRestoreKey();
+
+        for (var step : steps) {
+            applyDirect(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                "test-authority:" + slot,
+                                                                                kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap(),
+                                                                                List.of(),
+                                                                                List.of(new KVCommand.Mutation<>(key, kvStore.get(key), Option.some(step)))));
+            assertThat(kvStore.get(key)).as("fixture: the fence admits %s", step).isEqualTo(Option.some(step));
+        }
+    }
+
+    /// The committed state plus `target` at K_A, installed by snapshot (the one path outside the fence).
+    private void installAuthority(BackupRestoreValue target) {
+        var content = new HashMap<Object, Object>(kvStore.snapshot());
+
+        content.put(AetherKey.BackupRestoreKey.backupRestoreKey(), target);
+        assertThat(kvStore.restoreSnapshot(NODE_CODEC.canonical().encode(content)).isSuccess()).isTrue();
+        assertThat(kvStore.get(AetherKey.BackupRestoreKey.backupRestoreKey())).isEqualTo(Option.some(target));
     }
 
     /// The last batch this node submitted whose transactions are the restore's finish.

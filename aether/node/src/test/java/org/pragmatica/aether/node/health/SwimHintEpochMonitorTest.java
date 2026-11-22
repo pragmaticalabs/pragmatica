@@ -42,6 +42,7 @@ import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMembershipListener;
 import org.pragmatica.swim.SwimMessage;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
 
@@ -126,7 +127,7 @@ class SwimHintEpochMonitorTest {
                                                                      () -> true,
                                                                      store);
         var ctx = detector.contextForTest();
-        var swim = SwimProtocol.swimProtocol(SwimConfig.DEFAULT,
+        var swim = SwimTestProtocols.swimProtocol(SwimConfig.DEFAULT,
                                              new StubTransport(),
                                              noListener(),
                                              SELF,

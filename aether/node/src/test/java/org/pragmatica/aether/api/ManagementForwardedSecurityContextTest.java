@@ -34,6 +34,7 @@ import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.http.security.Authenticated;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
@@ -171,6 +172,8 @@ class ManagementForwardedSecurityContextTest {
 
         when(appHttpServer.httpRoutePublisher()).thenReturn(Option.none());
         when(node.self()).thenReturn(SELF);
+        // a real node answers an Option, never null; the drain and shutdown route reads it (#3348): a leader other than the targeted worker
+        when(node.leader()).thenReturn(Option.some(SENDER));
         when(node.appHttpServer()).thenReturn(appHttpServer);
         when(node.clusterTopologyManager()).thenReturn(Option.none());
         when(node.consumerGroupCoordinator()).thenReturn(ConsumerGroupCoordinator.noOp());
@@ -187,7 +190,8 @@ class ManagementForwardedSecurityContextTest {
         when(maven.handlePut(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any()))
                 .thenReturn(Promise.success(new MavenResponse(201, "text/plain", "created".getBytes())));
         when(validator.validate(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
-                .thenReturn(org.pragmatica.lang.Result.success(validated));
+                .thenReturn(org.pragmatica.lang.Result.success(Authenticated.authenticated(validated)));
+        when(validator.context(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any())).thenCallRealMethod();
 
         return new ManagementServerImpl(0,
                                         () -> node,
@@ -212,8 +216,7 @@ class ManagementForwardedSecurityContextTest {
                                         Option.some(network),
                                         Option.some(serializer),
                                         Option.some(new StubDeserializer(forwarded)),
-                                        _ -> {},
-                                        Set::of,
+                                        NodeLifecycleRoutes.DrainPort.none(),
                                         floor);
     }
 

@@ -12,7 +12,6 @@ import java.net.http.WebSocket;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -24,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.mockito.stubbing.Answer;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor;
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.deployment.DeploymentMap;
@@ -174,8 +174,7 @@ class ManagementServerWebSocketFeedsTest {
                                                  Option.none(),
                                                  Option.none(),
                                                  Option.none(),
-                                                 _ -> {},
-                                                 Set::of,
+                                                 NodeLifecycleRoutes.DrainPort.none(),
                                                  SliceFloor.sliceFloor((_, _) -> List.of(), OperatorWarningSink.logOnly()));
     }
 

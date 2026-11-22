@@ -55,9 +55,9 @@ class KvStoreApiKeyValidator implements SecurityValidator {
     /// #866 review G1 removed from the two sibling validators and left behind here. Adding a policy
     /// state must be a COMPILE error, as it already is there.
     @Override
-    public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
+    public Result<Authenticated> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
-            case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
+            case SecurityPolicy.Public() -> Result.success(Authenticated.authenticated(SecurityContext.securityContext()));
             case SecurityPolicy.OptionalAuth() -> validateApiKeyIfPresented(request);
             case SecurityPolicy.ApiKeyRequired() -> validateApiKey(request);
             case SecurityPolicy.Authenticated() -> validateApiKey(request);
@@ -88,7 +88,7 @@ class KvStoreApiKeyValidator implements SecurityValidator {
     /// by never consulting a validator at all (`AppHttpServer` has the same gate in its own
     /// `handleRequestInScope`; the two are different methods in different classes). A missing
     /// credential arriving HERE has already passed a node that asked for one.
-    private Result<SecurityContext> validateApiKey(HttpRequestContext request) {
+    private Result<Authenticated> validateApiKey(HttpRequestContext request) {
         var configResult = configValidator.validate(request, SecurityPolicy.apiKeyRequired());
 
         if (configResult.isSuccess()) {
@@ -100,12 +100,12 @@ class KvStoreApiKeyValidator implements SecurityValidator {
     }
 
     /// #2946: no `X-API-Key` is anonymous; a presented key is held to the full check (configured keys, then KV).
-    private Result<SecurityContext> validateApiKeyIfPresented(HttpRequestContext request) {
+    private Result<Authenticated> validateApiKeyIfPresented(HttpRequestContext request) {
         return extractApiKey(request.headers()).map(_ -> validateApiKey(request))
-                            .or(() -> Result.success(SecurityContext.securityContext()));
+                            .or(() -> Result.success(Authenticated.authenticated(SecurityContext.securityContext())));
     }
 
-    private Result<SecurityContext> checkKvStoreKey(String apiKey) {
+    private Result<Authenticated> checkKvStoreKey(String apiKey) {
         var candidateHash = hashKey(apiKey);
         var kvStore = kvStoreSupplier.get();
 
@@ -146,10 +146,20 @@ class KvStoreApiKeyValidator implements SecurityValidator {
     /// prefix came from the FACTORY, not from the keyId, so the doubling was this call site's alone.
     /// [ApiKeySecurityValidator#toSecurityContext] passes its bare `entry.name()` through the same
     /// factory and has always been correct; this now matches it.
-    private static Result<SecurityContext> buildContext(ApiKeyValue keyValue) {
+    ///
+    /// The KV credential match is a mint site: a stored key whose authorization role is ADMIN yields an [AdminGrant],
+    /// any other role none (`mint` decides on the role, never on `roles()`).
+    private static Result<Authenticated> buildContext(ApiKeyValue keyValue) {
         var role = parseAuthorizationRole(keyValue.authorizationRole());
 
-        return SecurityContext.securityContext(keyValue.keyId(), Set.of(Role.ADMIN), role);
+        return SecurityContext.securityContext(keyValue.keyId(),
+                                               Set.of(Role.ADMIN),
+                                               role)
+                              .map(KvStoreApiKeyValidator::matched);
+    }
+
+    private static Authenticated matched(SecurityContext context) {
+        return Authenticated.authenticated(context, AdminGrant.mint(context));
     }
 
     // RET-06: `raw` is a stored ApiKeyValue field (null on legacy keys); the null/blank coalesce to a

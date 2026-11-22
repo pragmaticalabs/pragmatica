@@ -66,6 +66,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public final class DrainProcedure {
     private static final Logger log = LoggerFactory.getLogger(DrainProcedure.class);
     private static final TimeSpan DEFAULT_DRAIN_TIMEOUT = timeSpan(30).seconds();
+    /// The default hold answer: today's quiesced exit, until a source is bound.
+    private static final Supplier<HoldAnswer> NOT_HELD = () -> HoldAnswer.NOT_HELD;
     /// How long before the grace deadline the departure legs must resolve (#2034): time to log the outcome and reach the
     /// quiesced-fork exit before the grace fork forces it. [taste, marked: settle by forge drain timings]
     static final TimeSpan HALT_SLACK = timeSpan(1).seconds();
@@ -86,6 +88,10 @@ public final class DrainProcedure {
     private final Function<DrainWindow, Promise<DepartureOutcome>> departurePush;
     private final Runnable jvmExit;
     private final TimeSpan drainTimeout;
+    /// The hold seam (D1 C3): read ONCE, when the departure push settles. NOT_HELD there takes the quiesced exit; HELD or
+    /// UNKNOWN forgo it for good (the answer is never re-read) and only the grace fork exits. The grace fork never reads it,
+    /// as it ignores both flags above. Every factory but the hold-aware one defaults it to NOT_HELD.
+    private final Supplier<HoldAnswer> holdAnswer;
     private final AtomicReference<DrainState> state = new AtomicReference<>(DrainState.INACTIVE);
     /// Why this node is draining, set by the single winning [#initiate] BEFORE anything the drain triggers
     /// (the drainee's consensus going passive happens synchronously inside it). Null until initiated.
@@ -109,13 +115,15 @@ public final class DrainProcedure {
                            Consumer<DrainReason> drainInitiatedEmitter,
                            Function<DrainWindow, Promise<DepartureOutcome>> departurePush,
                            Runnable jvmExit,
-                           TimeSpan drainTimeout) {
+                           TimeSpan drainTimeout,
+                           Supplier<HoldAnswer> holdAnswer) {
         this.tracker = tracker;
         this.swimLeaveEmitter = swimLeaveEmitter;
         this.drainInitiatedEmitter = drainInitiatedEmitter;
         this.departurePush = departurePush;
         this.jvmExit = jvmExit;
         this.drainTimeout = drainTimeout;
+        this.holdAnswer = holdAnswer;
     }
 
     /// Canonical factory. Production wiring passes
@@ -132,19 +140,8 @@ public final class DrainProcedure {
                                   reason -> {},
                                   NO_DEPARTURE_PUSH,
                                   jvmExit,
-                                  drainTimeout);
-    }
-
-    /// Convenience factory using the spec §14 default drain timeout (30s).
-    public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
-                                                Runnable swimLeaveEmitter,
-                                                Runnable jvmExit) {
-        return new DrainProcedure(tracker,
-                                  swimLeaveEmitter,
-                                  reason -> {},
-                                  NO_DEPARTURE_PUSH,
-                                  jvmExit,
-                                  DEFAULT_DRAIN_TIMEOUT);
+                                  drainTimeout,
+                                  NOT_HELD);
     }
 
     /// Factory variant that additionally takes a best-effort `drainInitiatedEmitter`, invoked once
@@ -161,7 +158,8 @@ public final class DrainProcedure {
                                   drainInitiatedEmitter,
                                   NO_DEPARTURE_PUSH,
                                   jvmExit,
-                                  DEFAULT_DRAIN_TIMEOUT);
+                                  DEFAULT_DRAIN_TIMEOUT,
+                                  NOT_HELD);
     }
 
     /// Production factory (issue #427) that additionally takes a bounded, best-effort
@@ -197,7 +195,8 @@ public final class DrainProcedure {
                                   drainInitiatedEmitter,
                                   completedAfter(departurePush),
                                   jvmExit,
-                                  drainTimeout);
+                                  drainTimeout,
+                                  NOT_HELD);
     }
 
     /// The #2034 production factory: the departure push receives the [DrainWindow] (absolute deadline, drain start, halt flag)
@@ -223,7 +222,48 @@ public final class DrainProcedure {
                                                 Function<DrainWindow, Promise<DepartureOutcome>> departurePush,
                                                 Runnable jvmExit,
                                                 TimeSpan drainTimeout) {
-        return new DrainProcedure(tracker, swimLeaveEmitter, drainInitiatedEmitter, departurePush, jvmExit, drainTimeout);
+        return new DrainProcedure(tracker,
+                                  swimLeaveEmitter,
+                                  drainInitiatedEmitter,
+                                  departurePush,
+                                  jvmExit,
+                                  drainTimeout,
+                                  NOT_HELD);
+    }
+
+    /// The hold-aware factory (D1 C3): as the #2034 factory with the default drain grace window, plus the [HoldAnswer] source
+    /// consulted at the quiesced exit. The existing factories keep today's behaviour (NOT_HELD).
+    public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
+                                                Runnable swimLeaveEmitter,
+                                                Consumer<DrainReason> drainInitiatedEmitter,
+                                                Function<DrainWindow, Promise<DepartureOutcome>> departurePush,
+                                                Runnable jvmExit,
+                                                Supplier<HoldAnswer> holdAnswer) {
+        return drainProcedure(tracker,
+                              swimLeaveEmitter,
+                              drainInitiatedEmitter,
+                              departurePush,
+                              jvmExit,
+                              DEFAULT_DRAIN_TIMEOUT,
+                              holdAnswer);
+    }
+
+    /// Fully-explicit variant of the hold-aware factory with a caller-supplied drain grace window. Package-private: production
+    /// uses the hold-aware factory above, and tests in this package need the short grace.
+    static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
+                                         Runnable swimLeaveEmitter,
+                                         Consumer<DrainReason> drainInitiatedEmitter,
+                                         Function<DrainWindow, Promise<DepartureOutcome>> departurePush,
+                                         Runnable jvmExit,
+                                         TimeSpan drainTimeout,
+                                         Supplier<HoldAnswer> holdAnswer) {
+        return new DrainProcedure(tracker,
+                                  swimLeaveEmitter,
+                                  drainInitiatedEmitter,
+                                  departurePush,
+                                  jvmExit,
+                                  drainTimeout,
+                                  holdAnswer);
     }
 
     /// A legacy push knows nothing of sole copies: whatever it settles with, the outcome is [DepartureOutcome#COMPLETED].
@@ -332,10 +372,12 @@ public final class DrainProcedure {
         maybeExit();
     }
 
-    /// Quiesced-fork exit: both the in-flight tracker AND the departure push must have settled. The
-    /// grace-deadline fork bypasses this entirely (see [#onGraceExpired]).
+    /// Quiesced-fork exit: both the in-flight tracker AND the departure push must have settled, and the hold seam, read once
+    /// here when the push settles, must answer NOT_HELD. HELD or UNKNOWN (never NOT_HELD by absence) forgo the quiesced exit:
+    /// the answer is not re-read, so only the grace fork exits. The grace-deadline fork bypasses this entirely (see
+    /// [#onGraceExpired]).
     private void maybeExit() {
-        if (trackerDrained.get() && pushSettled.get()) {
+        if (trackerDrained.get() && pushSettled.get() && holdAnswer.get() == HoldAnswer.NOT_HELD) {
             performExit();
         }
     }
