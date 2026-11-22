@@ -63,7 +63,7 @@ class SwimQuorumReportTest {
     void setUp() {
         transport = new RecordingTransport();
         observations = new RecordingObservationSink();
-        protocol = SwimProtocol.swimProtocol(swimConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
+        protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
                                .unwrap();
         protocol.addObservationListener(observations);
     }
@@ -148,20 +148,20 @@ class SwimQuorumReportTest {
     void selfReport_bumpsIncarnationOncePerChange_andRidesTheSelfAlive() {
         announceSelf();
 
-        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.LOST));
-        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.LOST));
+        protocol.reportSelfQuorum(QuorumReport.LOST);
+        protocol.reportSelfQuorum(QuorumReport.LOST);
         assertThat(protocol.selfIncarnation()).as("one bump for one change; a repeat is a no-op").isEqualTo(2L);
         assertThat(lastSelfAdvertised()).extracting(MembershipUpdate::incarnation).isEqualTo(2L);
         assertThat(lastSelfAdvertised().labels()).containsEntry("quorum", "lost");
 
-        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.HELD));
+        protocol.reportSelfQuorum(QuorumReport.HELD);
         assertThat(protocol.selfIncarnation()).isEqualTo(3L);
         assertThat(lastSelfAdvertised().labels()).doesNotContainKey("quorum");
     }
 
     @Test
     void selfReport_beforeAnnounce_isKeptAndCarriedOnceAnnounced() {
-        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.LOST));
+        protocol.reportSelfQuorum(QuorumReport.LOST);
         assertThat(protocol.selfIncarnation()).as("no incarnation to bump before announce").isZero();
 
         announceSelf();
@@ -197,21 +197,21 @@ class SwimQuorumReportTest {
     void selfReport_observer_isAdvertisedAsItsOwnValue_withABumpPerChange() {
         announceSelf();
 
-        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.OBSERVER));
+        protocol.reportSelfQuorum(QuorumReport.OBSERVER);
         assertThat(protocol.selfIncarnation()).isEqualTo(2L);
         assertThat(lastSelfAdvertised().labels()).containsEntry("quorum", "observer");
 
-        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.LOST));
+        protocol.reportSelfQuorum(QuorumReport.LOST);
         assertThat(protocol.selfIncarnation()).as("observer -> lost is a change: one bump").isEqualTo(3L);
         assertThat(lastSelfAdvertised().labels()).containsEntry("quorum", "lost");
     }
 
     private void announceSelf() {
-        protocol.driveForTest(() -> protocol.announceJoin(NodeInfo.nodeInfo(SELF_ID, new NodeAddress("127.0.0.1", 9200), CORE_LABELS),
+        protocol.announceJoin(NodeInfo.nodeInfo(SELF_ID, new NodeAddress("127.0.0.1", 9200), CORE_LABELS),
                               "",
                               1L,
                               TOKEN,
-                              List.of()));
+                              List.of());
     }
 
     private void recordReportAtHealthy(SwimObservation observation, Map<Long, Boolean> sink) {
@@ -229,7 +229,7 @@ class SwimQuorumReportTest {
     }
 
     private List<MembershipUpdate> relayedPeerUpdates() {
-        protocol.deliverForTest(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of()));
+        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of()));
 
         return transport.sentMessages.stream()
                                      .map(SentMessage::message)
@@ -241,7 +241,7 @@ class SwimQuorumReportTest {
     }
 
     private MembershipUpdate lastSelfAdvertised() {
-        protocol.deliverForTest(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of()));
+        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of()));
 
         return transport.sentMessages.stream()
                                      .map(SentMessage::message)
@@ -254,7 +254,7 @@ class SwimQuorumReportTest {
     }
 
     private void gossip(MembershipUpdate update) {
-        protocol.deliverForTest(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of(update)));
+        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of(update)));
     }
 
     private static MembershipUpdate update(MemberState state, long incarnation, Map<String, String> labels) {

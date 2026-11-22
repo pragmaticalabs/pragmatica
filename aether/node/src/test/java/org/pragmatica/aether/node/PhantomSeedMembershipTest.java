@@ -34,6 +34,7 @@ import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.swim.TransportObservation;
 
@@ -83,7 +84,7 @@ class PhantomSeedMembershipTest {
         membership = MembershipFsm.membershipFsm();
         membership.onEnteredDeparting(this::onEnteredDeparting);
         membership.seed(seeds);
-        swim = SwimProtocol.swimProtocol(tightConfig(),
+        swim = SwimTestProtocols.swimProtocol(tightConfig(),
                                          new SeedTransport(genuineUp),
                                          new SilentListener(),
                                          SELF,
@@ -91,8 +92,8 @@ class PhantomSeedMembershipTest {
                                          booting::get)
                            .unwrap();
         swim.addObservationListener(observation -> MembershipAssembly.routeSwimEdgeToMembershipFsm(observation, membership));
-        swim.driveForTest(() -> swim.addSeedMember(PHANTOM, PHANTOM_ADDR));
-        swim.driveForTest(() -> swim.addSeedMember(GENUINE, GENUINE_ADDR));
+        swim.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        swim.addSeedMember(GENUINE, GENUINE_ADDR);
     }
 
     @AfterEach
@@ -107,7 +108,7 @@ class PhantomSeedMembershipTest {
 
         swim.start();
         // QUIC dials the seed's address and 6nphj answers: Hello identity mismatch.
-        swim.driveForTest(() -> swim.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, RECYCLED_HOLDER)));
+        swim.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, RECYCLED_HOLDER));
 
         await().atMost(Duration.ofSeconds(3))
                .until(() -> enteredDeparting.contains(PHANTOM));
@@ -129,7 +130,7 @@ class PhantomSeedMembershipTest {
 
         // The genuine seed comes up inside the window: it answers probes and gossips its own Alive.
         genuineUp.set(true);
-        swim.deliverForTest(GENUINE_ADDR,
+        swim.onMessage(GENUINE_ADDR,
                        new Ping(GENUINE, 1L, List.of(MembershipUpdate.membershipUpdate(GENUINE, MemberState.ALIVE, 5, GENUINE_ADDR))));
 
         booting.set(false);
@@ -183,7 +184,6 @@ class PhantomSeedMembershipTest {
         @Override
         public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
             if (genuineUp.get() && target.equals(GENUINE_ADDR) && message instanceof Ping ping) {
-                // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                 handler.get().onMessage(GENUINE_ADDR, Ack.ack(GENUINE, ping.sequence(), List.of()));
             }
 

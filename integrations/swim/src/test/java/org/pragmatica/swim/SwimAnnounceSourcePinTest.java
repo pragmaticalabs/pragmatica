@@ -80,7 +80,7 @@ class SwimAnnounceSourcePinTest {
         protocol = manualProtocol();
         pinnedMemberA();
 
-        protocol.deliverForTest(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
 
         assertThat(protocol.members().get(NODE_A).address())
             .as("a pinned member's SWIM probe address must not follow another source address")
@@ -95,7 +95,7 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
         var joinsBefore = observations.byType(SwimObservation.JoinAnnounced.class).size();
 
-        protocol.deliverForTest(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
 
         assertThat(observations.byType(SwimObservation.JoinAnnounced.class)
                                .stream()
@@ -115,7 +115,7 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
         transport.sentMessages.clear();
 
-        protocol.deliverForTest(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
 
         assertThat(transport.sentMessages.stream().filter(sent -> sent.target().equals(A_OTHER)).toList())
             .as("nothing may be sent to a source address that is not the member's pin")
@@ -129,7 +129,7 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
         transport.sentMessages.clear();
 
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
 
         assertThat(transport.sentMessages.stream()
                             .filter(sent -> sent.target().equals(A_REAL))
@@ -147,7 +147,7 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
         driveToTombstone();
 
-        protocol.deliverForTest(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
 
         assertThat(protocol.tombstonedForTest(NODE_A))
             .as("an ANNOUNCE from an unpinned address must not clear a tombstone")
@@ -163,7 +163,7 @@ class SwimAnnounceSourcePinTest {
 
         // Above the death incarnation (2): a same-process ANNOUNCE at or below it is refused by the death record
         // (#3028), and the member heals with the refutation it sends once notified.
-        protocol.deliverForTest(A_REAL, Announce.announce(infoOf(NODE_A, 9001), "", 3L, TOKEN_A));
+        protocol.onMessage(A_REAL, Announce.announce(infoOf(NODE_A, 9001), "", 3L, TOKEN_A));
 
         assertThat(protocol.tombstonedForTest(NODE_A))
             .as("the member itself, from its own address, heals exactly as before")
@@ -179,7 +179,7 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
 
         for (int i = 0; i < 50; i++) {
-            protocol.deliverForTest(A_OTHER, announceA());
+            protocol.onMessage(A_OTHER, announceA());
         }
 
         await().pollDelay(Duration.ofMillis(300)).atMost(Duration.ofSeconds(5)).until(() -> !warnings.isEmpty());
@@ -194,8 +194,8 @@ class SwimAnnounceSourcePinTest {
         protocol = manualProtocol();
         pinnedMemberA();
 
-        protocol.deliverForTest(A_REAL, announceA());
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
 
         assertNoConflictRaised("a false alert is blocking");
     }
@@ -207,12 +207,12 @@ class SwimAnnounceSourcePinTest {
         var restarted = new NodeId("node-a-restarted");
         var newSource = new InetSocketAddress("10.0.0.7", 9001);
 
-        protocol.deliverForTest(newSource, Announce.announce(infoOf(restarted, 9001), "", 1L, 777L));
+        protocol.onMessage(newSource, Announce.announce(infoOf(restarted, 9001), "", 1L, 777L));
         confirmPin(newSource, restarted, 777L);
 
         assertNoConflictRaised("a restart (a new process identity) is not a conflict");
         assertThat(protocol.members()).containsKey(restarted);
-        protocol.deliverForTest(newSource, Announce.announce(infoOf(restarted, 9001), "", 1L, 777L));
+        protocol.onMessage(newSource, Announce.announce(infoOf(restarted, 9001), "", 1L, 777L));
         assertNoConflictRaised("a re-announce from the new pin");
     }
 
@@ -221,7 +221,7 @@ class SwimAnnounceSourcePinTest {
         protocol = manualProtocol();
         pinnedMemberA();
 
-        protocol.deliverForTest(A_MOVED, Announce.announce(infoOf(NODE_A, 9001), "", 1L, TOKEN_A + 1));
+        protocol.onMessage(A_MOVED, Announce.announce(infoOf(NODE_A, 9001), "", 1L, TOKEN_A + 1));
 
         assertThat(protocol.addressConflictsReportedForTest()).as("the pin refuses it before any token is looked at").isEqualTo(1);
         assertThat(protocol.bootTokenRefusals()).isZero();
@@ -235,15 +235,15 @@ class SwimAnnounceSourcePinTest {
         protocol = manualProtocol();
 
         // an announce from an address that never answers arrives first
-        protocol.deliverForTest(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
         // the member's own ANNOUNCE then arrives, and its probe is answered
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
         confirmPin(A_REAL, NODE_A, TOKEN_A);
 
         assertThat(protocol.members().get(NODE_A).address())
             .as("the address that answered a probe is the pin, whichever ANNOUNCE came first")
             .isEqualTo(A_REAL);
-        protocol.deliverForTest(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
         assertThat(protocol.addressConflictsReportedForTest()).as("the unanswered address is now a conflict with the pin").isEqualTo(1);
     }
 
@@ -252,7 +252,7 @@ class SwimAnnounceSourcePinTest {
         protocol = manualProtocol();
         protocol.putMemberForTest(NODE_B, B_ADDR, MemberState.ALIVE);
 
-        protocol.deliverForTest(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
 
         assertThat(transport.sentMessages.stream()
                             .filter(sent -> sent.target().equals(A_OTHER))
@@ -265,12 +265,12 @@ class SwimAnnounceSourcePinTest {
     @Test
     void firstContact_isConfirmedByAMatchingAckOnly() {
         protocol = manualProtocol();
-        protocol.deliverForTest(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
         var probe = lastPingTo(A_OTHER);
 
         // an ack for the right sequence, but from another source address, pins nothing
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence()));
-        protocol.deliverForTest(A_MOVED, announceA());
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence()));
+        protocol.onMessage(A_MOVED, announceA());
 
         assertNoConflictRaised("no pin exists yet, so there is nothing to conflict with");
     }
@@ -278,27 +278,27 @@ class SwimAnnounceSourcePinTest {
     @Test
     void firstContact_ackNamingAnotherMember_pinsNothing() {
         protocol = manualProtocol();
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
         var probe = lastPingTo(A_REAL);
 
-        protocol.deliverForTest(A_REAL, Ack.ack(NODE_B, probe.sequence(), List.of()));
+        protocol.onMessage(A_REAL, Ack.ack(NODE_B, probe.sequence(), List.of()));
 
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("an ack from another member").isFalse();
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence()));
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("the right ack still pins: the bad one burned nothing").isTrue();
     }
 
     @Test
     void firstContact_twoUnconfirmedSources_firstToAnswerIsThePin_theOtherIsLaterRefused() {
         protocol = manualProtocol();
-        protocol.deliverForTest(A_REAL, announceA());
-        protocol.deliverForTest(A_MOVED, announceA());
+        protocol.onMessage(A_REAL, announceA());
+        protocol.onMessage(A_MOVED, announceA());
         var viaReal = lastPingTo(A_REAL);
         var viaMoved = lastPingTo(A_MOVED);
 
         assertNoConflictRaised("two unconfirmed sources are two candidates, not a conflict");
-        protocol.deliverForTest(A_MOVED, provenAck(NODE_A, TOKEN_A, viaMoved.sequence()));
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, viaReal.sequence()));
+        protocol.onMessage(A_MOVED, provenAck(NODE_A, TOKEN_A, viaMoved.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, viaReal.sequence()));
 
         assertThat(protocol.addressPinForTest(NODE_A).map(ip -> ip.getHostAddress()).or("none"))
             .as("the first address to answer a probe keeps the pin")
@@ -310,7 +310,7 @@ class SwimAnnounceSourcePinTest {
     void firstContact_unresolvedSource_isIgnored_nothingIsSent() {
         protocol = manualProtocol();
 
-        protocol.deliverForTest(InetSocketAddress.createUnresolved("a.invalid", 9001), announceA());
+        protocol.onMessage(InetSocketAddress.createUnresolved("a.invalid", 9001), announceA());
 
         assertThat(transport.sentMessages).as("an address with no IP cannot be pinned, so it is not even probed").isEmpty();
     }
@@ -318,16 +318,16 @@ class SwimAnnounceSourcePinTest {
     @Test
     void firstContact_staleSequenceAck_confirmsNothing_andEveryProbeHasItsOwnSequence() {
         protocol = manualProtocol();
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
         var first = lastPingTo(A_REAL);
         protocol.sweepAddressCandidatesForTest(System.currentTimeMillis() + 11_000);
-        protocol.deliverForTest(A_MOVED, announceA());
+        protocol.onMessage(A_MOVED, announceA());
         var second = lastPingTo(A_MOVED);
 
         assertThat(second.sequence()).as("a sequence is never reused across candidates").isNotEqualTo(first.sequence());
-        protocol.deliverForTest(A_MOVED, provenAck(NODE_A, TOKEN_A, first.sequence()));
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, first.sequence()));
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, second.sequence()));
+        protocol.onMessage(A_MOVED, provenAck(NODE_A, TOKEN_A, first.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, first.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, second.sequence()));
 
         assertThat(protocol.addressPinForTest(NODE_A).isPresent())
             .as("an otherwise valid ack of an expired probe, or of another source's probe, confirms nothing")
@@ -337,13 +337,13 @@ class SwimAnnounceSourcePinTest {
     @Test
     void firstContact_ackOfAnEarlierProcessLife_confirmsNothing_afterARestart() {
         protocol = manualProtocol();
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
         var earlierLife = lastPingTo(A_REAL);
         protocol.stop();
 
         var restartedTransport = new RecordingTransport();
-        protocol = wire(SwimProtocol.swimProtocol(manualConfig(), restartedTransport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol = wire(SwimTestProtocols.swimProtocol(manualConfig(), restartedTransport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
+        protocol.onMessage(A_REAL, announceA());
         var thisLife = restartedTransport.sentMessages.stream()
                                                       .filter(sent -> sent.message() instanceof Ping)
                                                       .map(sent -> (Ping) sent.message())
@@ -353,22 +353,22 @@ class SwimAnnounceSourcePinTest {
         assertThat(thisLife.sequence()).as("the restarted process does not draw the sequences of its earlier life")
                                        .isNotEqualTo(earlierLife.sequence());
         assertThat(thisLife.sequence()).isPositive();
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, earlierLife.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, earlierLife.sequence()));
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("an ack of the earlier life confirms nothing").isFalse();
 
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, thisLife.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, thisLife.sequence()));
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("control: the ack of this life's probe confirms").isTrue();
     }
 
     @Test
     void firstContact_isOneEmptyPing_notRepeatedWithinTheWindow() {
         protocol = manualProtocol();
-        protocol.deliverForTest(B_ADDR,
+        protocol.onMessage(B_ADDR,
                            new Ping(NODE_B, 1L, List.of(MembershipUpdate.membershipUpdate(NODE_C, MemberState.ALIVE, 1, C_ADDR))));
 
-        protocol.deliverForTest(A_OTHER, announceA());
-        protocol.deliverForTest(A_OTHER, announceA());
-        protocol.deliverForTest(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
 
         var sent = transport.sentMessages.stream().filter(message -> message.target().equals(A_OTHER)).toList();
 
@@ -379,11 +379,11 @@ class SwimAnnounceSourcePinTest {
     @Test
     void firstContact_aCandidateThatNeverAnswered_expires() {
         protocol = manualProtocol();
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
         var probe = lastPingTo(A_REAL);
 
         protocol.sweepAddressCandidatesForTest(System.currentTimeMillis() + 11_000);
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence()));
 
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("a late ack finds no candidate").isFalse();
     }
@@ -391,13 +391,13 @@ class SwimAnnounceSourcePinTest {
     @Test
     void firstContact_candidatesAreBounded_oldestIsDropped() {
         protocol = manualProtocol();
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
         var first = lastPingTo(A_REAL);
 
         for (int i = 0; i < 4200; i++) {
-            protocol.deliverForTest(new InetSocketAddress("172.16." + (i / 250) + "." + (i % 250 + 1), 9001), announceA());
+            protocol.onMessage(new InetSocketAddress("172.16." + (i / 250) + "." + (i % 250 + 1), 9001), announceA());
         }
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, first.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, first.sequence()));
 
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("the oldest candidate was evicted at the bound").isFalse();
     }
@@ -418,11 +418,11 @@ class SwimAnnounceSourcePinTest {
     void pin_isDroppedWithTheMembersScope_andTheNextAddressIsAFirstContact() {
         protocol = tickingProtocol();
         pinnedMemberA();
-        protocol.driveForTest(() -> protocol.setMembershipEligibility(peer -> !peer.equals(NODE_A)));
+        protocol.setMembershipEligibility(peer -> !peer.equals(NODE_A));
         await().atMost(Duration.ofSeconds(3)).until(() -> protocol.addressPinForTest(NODE_A).isEmpty());
-        protocol.driveForTest(() -> protocol.setMembershipEligibility(_ -> true));
+        protocol.setMembershipEligibility(_ -> true);
 
-        protocol.deliverForTest(A_MOVED, announceA());
+        protocol.onMessage(A_MOVED, announceA());
 
         assertNoConflictRaised("with the pin gone there is nothing to conflict with");
     }
@@ -438,7 +438,7 @@ class SwimAnnounceSourcePinTest {
         var refusalsBefore = protocol.bootTokenRefusals();
         transport.sentMessages.clear();
 
-        protocol.deliverForTest(A_REAL, Announce.announce(infoOf(NODE_A, 9001), "", 1L, OLD_TOKEN));
+        protocol.onMessage(A_REAL, Announce.announce(infoOf(NODE_A, 9001), "", 1L, OLD_TOKEN));
 
         assertThat(protocol.bootTokenRefusals()).as("an unconfirmed token is not presented to the registry").isEqualTo(refusalsBefore);
         assertThat(protocol.members().get(NODE_A).state()).as("the live member is not declared dead").isNotEqualTo(MemberState.FAULTY);
@@ -447,7 +447,7 @@ class SwimAnnounceSourcePinTest {
             .isFalse();
         var challenge = lastPingTo(A_REAL);
 
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, challenge.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, challenge.sequence()));
 
         assertThat(protocol.bootTokenRefusals()).as("the live process answered with its own token").isEqualTo(refusalsBefore);
         assertThat(protocol.members().get(NODE_A).state()).isNotEqualTo(MemberState.FAULTY);
@@ -462,9 +462,9 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
         transport.sentMessages.clear();
 
-        protocol.deliverForTest(A_REAL, Announce.announce(infoOf(NODE_A, 9001), "", 2L, OLD_TOKEN));
+        protocol.onMessage(A_REAL, Announce.announce(infoOf(NODE_A, 9001), "", 2L, OLD_TOKEN));
         var challenge = lastPingTo(A_REAL);
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, OLD_TOKEN, challenge.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, OLD_TOKEN, challenge.sequence()));
 
         assertThat(protocol.members().get(NODE_A).state()).as("the known process is treated as dead").isEqualTo(MemberState.FAULTY);
         assertThat(transport.sentMessages.stream().anyMatch(sent -> sent.target().equals(A_REAL) && sent.message() instanceof SwimMessage.IdentityRefused))
@@ -477,7 +477,7 @@ class SwimAnnounceSourcePinTest {
     void unconfirmedFirstToken_doesNotPoisonTheRegistry() {
         protocol = manualProtocol();
 
-        protocol.deliverForTest(A_OTHER, Announce.announce(infoOf(NODE_A, 9001), "", 1L, OLD_TOKEN));
+        protocol.onMessage(A_OTHER, Announce.announce(infoOf(NODE_A, 9001), "", 1L, OLD_TOKEN));
         pinnedMemberA();
 
         assertThat(protocol.members()).as("the real process is admitted").containsKey(NODE_A);
@@ -488,10 +488,10 @@ class SwimAnnounceSourcePinTest {
     @Test
     void firstContact_ackWithoutTheTokenProof_pinsNothing() {
         protocol = manualProtocol();
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
         var probe = lastPingTo(A_REAL);
 
-        protocol.deliverForTest(A_REAL, Ack.ack(NODE_A, probe.sequence(), List.of()));
+        protocol.onMessage(A_REAL, Ack.ack(NODE_A, probe.sequence(), List.of()));
 
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("the ack must carry the announced token").isFalse();
     }
@@ -499,9 +499,9 @@ class SwimAnnounceSourcePinTest {
     @Test
     void ack_alwaysCarriesThisProcessesIdentityFirst() {
         protocol = manualProtocol();
-        protocol.driveForTest(() -> protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of()));
+        protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of());
 
-        protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 1L, List.of()));
+        protocol.onMessage(B_ADDR, new Ping(NODE_B, 1L, List.of()));
 
         var ack = transport.sentMessages.stream()
                            .filter(sent -> sent.target().equals(B_ADDR) && sent.message() instanceof Ack)
@@ -517,11 +517,11 @@ class SwimAnnounceSourcePinTest {
     @Test
     void ack_carriesThisProcessesIdentityOnce_evenWhenTheBufferedGossipHasIt() {
         protocol = tickingProtocol();
-        protocol.driveForTest(() -> protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of()));
+        protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of());
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
             transport.sentMessages.clear();
-            protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 9L, List.of()));
+            protocol.onMessage(B_ADDR, new Ping(NODE_B, 9L, List.of()));
             var own = transport.sentMessages.stream()
                                .filter(sent -> sent.target().equals(B_ADDR) && sent.message() instanceof Ack)
                                .flatMap(sent -> ((Ack) sent.message()).piggyback().stream())
@@ -536,7 +536,7 @@ class SwimAnnounceSourcePinTest {
     @Test
     void ack_keepsTheIdentity_andFitsTheDatagramBudget_whenGossipFillsIt() {
         protocol = manualProtocol();
-        protocol.driveForTest(() -> protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of()));
+        protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of());
         var gossip = new java.util.ArrayList<MembershipUpdate>();
 
         for (int i = 0; i < 8; i++) {
@@ -545,10 +545,10 @@ class SwimAnnounceSourcePinTest {
                                                          1L,
                                                          new InetSocketAddress("10.1.0." + (i + 1), 9100)));
         }
-        protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 1L, gossip));
+        protocol.onMessage(B_ADDR, new Ping(NODE_B, 1L, gossip));
         transport.sentMessages.clear();
 
-        protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 2L, List.of()));
+        protocol.onMessage(B_ADDR, new Ping(NODE_B, 2L, List.of()));
 
         var ack = transport.sentMessages.stream()
                            .filter(sent -> sent.target().equals(B_ADDR) && sent.message() instanceof Ack)
@@ -566,10 +566,10 @@ class SwimAnnounceSourcePinTest {
     void ack_keepsTheIdentity_evenWhenItAloneExceedsTheBudget() {
         var longId = new NodeId("s".repeat(700));
 
-        protocol = wire(SwimProtocol.swimProtocol(manualConfig(), transport, listener, longId, SELF_ADDR, () -> false).unwrap());
-        protocol.driveForTest(() -> protocol.announceJoin(infoOf(longId, 9000), "", 1L, 555L, List.of()));
+        protocol = wire(SwimTestProtocols.swimProtocol(manualConfig(), transport, listener, longId, SELF_ADDR, () -> false).unwrap());
+        protocol.announceJoin(infoOf(longId, 9000), "", 1L, 555L, List.of());
 
-        protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 2L, List.of()));
+        protocol.onMessage(B_ADDR, new Ping(NODE_B, 2L, List.of()));
 
         var ack = transport.sentMessages.stream()
                            .filter(sent -> sent.target().equals(B_ADDR) && sent.message() instanceof Ack)
@@ -586,17 +586,17 @@ class SwimAnnounceSourcePinTest {
     @Test
     void ackConfirmsOnlyWhenSequenceMemberAndProbedAddressAllMatch() {
         protocol = manualProtocol();
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
         var probe = lastPingTo(A_REAL);
 
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence() + 1));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence() + 1));
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("wrong sequence").isFalse();
-        protocol.deliverForTest(A_REAL, provenAck(NODE_B, TOKEN_A, probe.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_B, TOKEN_A, probe.sequence()));
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("wrong member").isFalse();
-        protocol.deliverForTest(A_MOVED, provenAck(NODE_A, TOKEN_A, probe.sequence()));
+        protocol.onMessage(A_MOVED, provenAck(NODE_A, TOKEN_A, probe.sequence()));
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("wrong source address").isFalse();
 
-        protocol.deliverForTest(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence()));
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence()));
         assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("control: all three match").isTrue();
     }
 
@@ -625,7 +625,7 @@ class SwimAnnounceSourcePinTest {
         protocol = manualProtocol();
         pinnedMemberA();
 
-        protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 1L, List.of(aliveAt(NODE_A, 2L, A_OTHER))));
+        protocol.onMessage(B_ADDR, new Ping(NODE_B, 1L, List.of(aliveAt(NODE_A, 2L, A_OTHER))));
 
         assertThat(protocol.members().get(NODE_A).address())
             .as("only a confirmed ANNOUNCE moves a pinned member's address")
@@ -641,7 +641,7 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
 
         for (int i = 0; i < 20; i++) {
-            protocol.deliverForTest(B_ADDR, new Ping(NODE_B, i + 1L, List.of(aliveAt(NODE_A, 2L + i, A_OTHER))));
+            protocol.onMessage(B_ADDR, new Ping(NODE_B, i + 1L, List.of(aliveAt(NODE_A, 2L + i, A_OTHER))));
         }
 
         await().pollDelay(Duration.ofMillis(300)).atMost(Duration.ofSeconds(5)).until(() -> !warnings.isEmpty());
@@ -657,7 +657,7 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
         var samePinnedIpOtherPort = new InetSocketAddress("10.0.0.1", 9100);
 
-        protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 1L, List.of(aliveAt(NODE_A, 2L, samePinnedIpOtherPort))));
+        protocol.onMessage(B_ADDR, new Ping(NODE_B, 1L, List.of(aliveAt(NODE_A, 2L, samePinnedIpOtherPort))));
 
         assertThat(protocol.members().get(NODE_A).address()).isEqualTo(samePinnedIpOtherPort);
         assertNoConflictRaised("gossip that agrees with the pin is not a conflict");
@@ -669,7 +669,7 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
         driveToTombstone();
 
-        protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 3L, List.of(aliveAt(NODE_A, 5L, A_OTHER))));
+        protocol.onMessage(B_ADDR, new Ping(NODE_B, 3L, List.of(aliveAt(NODE_A, 5L, A_OTHER))));
 
         assertThat(protocol.members()).containsKey(NODE_A);
         assertThat(protocol.members().get(NODE_A).address())
@@ -685,7 +685,7 @@ class SwimAnnounceSourcePinTest {
         protocol = manualProtocol();
         pinnedMemberA();
 
-        protocol.deliverForTest(A_OTHER, announceA());
+        protocol.onMessage(A_OTHER, announceA());
 
         await().atMost(Duration.ofSeconds(5)).until(() -> !warnings.isEmpty());
         assertThat(warnings.getFirst().subject()).isEqualTo(NODE_A.id());
@@ -698,9 +698,9 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
 
         for (var i = 0; i < 5; i++) {
-            protocol.deliverForTest(A_OTHER, announceA());
-            protocol.deliverForTest(A_MOVED, announceA());
-            protocol.deliverForTest(new InetSocketAddress("198.51.100.7", 9001), announceA());
+            protocol.onMessage(A_OTHER, announceA());
+            protocol.onMessage(A_MOVED, announceA());
+            protocol.onMessage(new InetSocketAddress("198.51.100.7", 9001), announceA());
         }
 
         assertThat(protocol.addressConflictsReportedForTest())
@@ -714,9 +714,9 @@ class SwimAnnounceSourcePinTest {
     void secondAnnounceFromTheSameSource_afterTheReprobeWindow_sendsASecondProbe() throws InterruptedException {
         protocol = manualProtocol();
 
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
         Thread.sleep(450);
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
 
         assertThat(transport.sentMessages.stream().filter(sent -> sent.target().equals(A_REAL) && sent.message() instanceof Ping).count())
             .as("a lost Ack to the first probe is retried by the next ANNOUNCE once the 400 ms window has passed")
@@ -726,10 +726,10 @@ class SwimAnnounceSourcePinTest {
     @Test
     void tick_forgetsACandidateWhoseMemberLeftTheMembershipScope_withoutAnyTestHook() {
         protocol = tickingProtocol();
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
         assertThat(protocol.addressCandidatesForTest()).isEqualTo(1);
 
-        protocol.driveForTest(() -> protocol.setMembershipEligibility(_ -> false));
+        protocol.setMembershipEligibility(_ -> false);
 
         await().atMost(Duration.ofSeconds(5))
                .untilAsserted(() -> assertThat(protocol.addressCandidatesForTest())
@@ -746,7 +746,7 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
         transport.sentMessages.clear();
 
-        protocol.deliverForTest(A_REAL, Announce.announce(infoOf(NODE_A, 9001), "", 1L, 0L));
+        protocol.onMessage(A_REAL, Announce.announce(infoOf(NODE_A, 9001), "", 1L, 0L));
 
         assertThat(transport.sentMessages.stream().filter(sent -> sent.message() instanceof Ping).toList())
             .as("a token-less ANNOUNCE (an older node) has no token to prove")
@@ -762,7 +762,7 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
         protocol.putMemberForTest(NODE_A, A_MOVED, MemberState.ALIVE);
 
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
 
         assertThat(protocol.members().get(NODE_A).address())
             .as("only the first confirmation lets an ANNOUNCE take the resident member's address")
@@ -787,7 +787,7 @@ class SwimAnnounceSourcePinTest {
     }
 
     private SwimProtocol manualProtocol() {
-        return wire(SwimProtocol.swimProtocol(manualConfig(), transport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
+        return wire(SwimTestProtocols.swimProtocol(manualConfig(), transport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
     }
 
     private static SwimConfig manualConfig() {
@@ -801,7 +801,7 @@ class SwimAnnounceSourcePinTest {
                                            timeSpan(100).millis(),
                                            8,
                                            timeSpan(20).millis()).withJoinGrace(timeSpan(40).millis());
-        var ticking = wire(SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
+        var ticking = wire(SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
 
         ticking.start();
 
@@ -825,7 +825,7 @@ class SwimAnnounceSourcePinTest {
 
     /// A announces from its own address and answers the probe sent to it: the pin is now effective.
     private void pinnedMemberA() {
-        protocol.deliverForTest(A_REAL, announceA());
+        protocol.onMessage(A_REAL, announceA());
         confirmPin(A_REAL, NODE_A, TOKEN_A);
     }
 
@@ -835,7 +835,7 @@ class SwimAnnounceSourcePinTest {
                  .filter(sent -> sent.target().equals(source) && sent.message() instanceof Ping)
                  .map(sent -> (Ping) sent.message())
                  .toList()
-                 .forEach(ping -> protocol.deliverForTest(source, provenAck(member, token, ping.sequence())));
+                 .forEach(ping -> protocol.onMessage(source, provenAck(member, token, ping.sequence())));
     }
 
     private Ping lastPingTo(InetSocketAddress target) {
@@ -849,13 +849,13 @@ class SwimAnnounceSourcePinTest {
     private void driveToTombstone() {
         var aliveA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 1, A_REAL);
 
-        protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 1L, List.of(aliveA)));
+        protocol.onMessage(B_ADDR, new Ping(NODE_B, 1L, List.of(aliveA)));
         assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
-        protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A,
+        protocol.recordTransportHint(NODE_A,
                                      new TransportObservation.PeerUnreachable(NODE_A,
                                                                               Causes.cause("test peer down"),
-                                                                              TransportObservation.HintOrigin.LINK_LOST)));
-        protocol.deliverForTest(B_ADDR,
+                                                                              TransportObservation.HintOrigin.LINK_LOST));
+        protocol.onMessage(B_ADDR,
                            new Ping(NODE_B, 2L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 2, A_REAL))));
         await().atMost(Duration.ofSeconds(3))
                .until(() -> protocol.tombstonedForTest(NODE_A) && !protocol.members().containsKey(NODE_A));

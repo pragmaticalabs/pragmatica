@@ -56,7 +56,7 @@ class SwimBootTokenTest {
 
     @BeforeEach
     void setUp() {
-        protocol = SwimProtocol.swimProtocol(config(), targetTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
+        protocol = SwimTestProtocols.swimProtocol(config(), targetTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
                                .unwrap();
         protocol.addObservationListener(observations::add);
     }
@@ -121,7 +121,7 @@ class SwimBootTokenTest {
     void differentToken_inAPingFromTheMemberItself_retiresNothing() {
         announce(5, TOKEN);
 
-        protocol.deliverForTest(ADDR_A,
+        protocol.onMessage(ADDR_A,
                            Ping.ping(NODE_A, 1L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 99, ADDR_A, OTHER_TOKEN))));
 
         assertThat(protocol.isRetiredIdentity(NODE_A)).isFalse();
@@ -137,7 +137,7 @@ class SwimBootTokenTest {
         protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
         var forA = List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 99, ADDR_A, OTHER_TOKEN));
 
-        protocol.deliverForTest(ADDR_B, Ack.ack(NODE_B, 123_456_789L, forA));
+        protocol.onMessage(ADDR_B, Ack.ack(NODE_B, 123_456_789L, forA));
         for (var i = 0; i < 6; i++) {
             protocol.probeOnceForTest();
         }
@@ -145,7 +145,7 @@ class SwimBootTokenTest {
                                     .filter(sent -> sent.target().equals(ADDR_B) && sent.message() instanceof Ping)
                                     .map(sent -> (Ping) sent.message())
                                     .toList()
-                                    .forEach(ping -> protocol.deliverForTest(ADDR_B, Ack.ack(NODE_B, ping.sequence(), forA)));
+                                    .forEach(ping -> protocol.onMessage(ADDR_B, Ack.ack(NODE_B, ping.sequence(), forA)));
 
         assertThat(targetTransport.sentMessages.stream().anyMatch(sent -> sent.target().equals(ADDR_B) && sent.message() instanceof Ping))
             .as("positive control: B was probed and its answer was delivered")
@@ -165,7 +165,7 @@ class SwimBootTokenTest {
                                                 .reduce((_, last) -> last)
                                                 .orElseThrow();
 
-        protocol.deliverForTest(ADDR_A,
+        protocol.onMessage(ADDR_A,
                            Ack.ack(NODE_A, probe.sequence(), List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 99, ADDR_A, OTHER_TOKEN))));
 
         assertThat(protocol.isRetiredIdentity(NODE_A)).as("the process answering at the address is a different one").isTrue();
@@ -190,7 +190,7 @@ class SwimBootTokenTest {
         var tokens = BootTokens.bootTokens(0x5E1FL);
 
         tokens.attachLedger(IdentityLedger.identityLedger(directory.resolve("ledger"), IdentityLedger.DurableWriter.fileOps()));
-        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
+        protocol.setBootTokens(tokens);
 
         announce(5, TOKEN);
 
@@ -210,9 +210,9 @@ class SwimBootTokenTest {
 
     @Test
     void selfSuspicion_aboutAnotherProcess_isNotRefuted() {
-        protocol.driveForTest(() -> protocol.announceJoin(NodeInfo.nodeInfo(SELF_ID, new NodeAddress("127.0.0.1", 9000)), "", 1, TOKEN, List.of()));
+        protocol.announceJoin(NodeInfo.nodeInfo(SELF_ID, new NodeAddress("127.0.0.1", 9000)), "", 1, TOKEN, List.of());
 
-        protocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 1, List.of(MembershipUpdate.membershipUpdate(SELF_ID,
+        protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1, List.of(MembershipUpdate.membershipUpdate(SELF_ID,
                                                                                                     MemberState.SUSPECT,
                                                                                                     10,
                                                                                                     SELF_ADDR,
@@ -220,7 +220,7 @@ class SwimBootTokenTest {
         assertThat(protocol.selfIncarnation()).as("a suspicion of a previous process with this NodeId is not ours to refute")
                                               .isEqualTo(1);
 
-        protocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 2, List.of(MembershipUpdate.membershipUpdate(SELF_ID,
+        protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 2, List.of(MembershipUpdate.membershipUpdate(SELF_ID,
                                                                                                     MemberState.SUSPECT,
                                                                                                     10,
                                                                                                     SELF_ADDR,
@@ -234,12 +234,12 @@ class SwimBootTokenTest {
     void seedMember_forRetiredIdentity_isNotAdmitted() {
         var tokens = BootTokens.bootTokens(0x5E1FL);
 
-        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
+        protocol.setBootTokens(tokens);
         tokens.admit(NODE_A, TOKEN);
         tokens.admit(NODE_A, OTHER_TOKEN);
 
-        protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
-        protocol.driveForTest(() -> protocol.addSeedMember(NODE_B, ADDR_B));
+        protocol.addSeedMember(NODE_A, ADDR_A);
+        protocol.addSeedMember(NODE_B, ADDR_B);
 
         assertThat(protocol.members()).as("a retired identity is not re-seeded").doesNotContainKey(NODE_A);
         assertThat(protocol.members()).as("control: an unrelated seed is admitted").containsKey(NODE_B);
@@ -251,11 +251,11 @@ class SwimBootTokenTest {
     void probeAck_fromRetiredIdentity_doesNotReviveMember() {
         var transport = new RecordingTransport();
         var tokens = BootTokens.bootTokens(0x5E1FL);
-        var probing = SwimProtocol.swimProtocol(probingConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
+        var probing = SwimTestProtocols.swimProtocol(probingConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
                                   .unwrap();
 
-        probing.driveForTest(() -> probing.setBootTokens(tokens));
-        probing.driveForTest(() -> probing.addSeedMember(NODE_A, ADDR_A));
+        probing.setBootTokens(tokens);
+        probing.addSeedMember(NODE_A, ADDR_A);
         probing.start();
         try {
             var sequence = awaitPingSequence(transport);
@@ -265,7 +265,7 @@ class SwimBootTokenTest {
             assertThat(probing.members().get(NODE_A).state()).as("the retirement listener marks the member FAULTY")
                                                              .isEqualTo(MemberState.FAULTY);
 
-            probing.deliverForTest(ADDR_A, Ack.ack(NODE_A, sequence, List.of()));
+            probing.onMessage(ADDR_A, Ack.ack(NODE_A, sequence, List.of()));
 
             assertThat(probing.members().get(NODE_A).state()).as("an ack from the retired identity revives nothing")
                                                              .isEqualTo(MemberState.FAULTY);
@@ -327,7 +327,7 @@ class SwimBootTokenTest {
         tokens.attachLedger(ledger);
         tokens.preload(ledger.open(true).facts(), false);
         gate.set(new CountDownLatch(1));
-        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
+        protocol.setBootTokens(tokens);
 
         announce(5, TOKEN);
         announce(6, OTHER_TOKEN);
@@ -410,12 +410,12 @@ class SwimBootTokenTest {
         var reasons = new java.util.concurrent.CopyOnWriteArrayList<String>();
 
         tokens.onSelfRefused(reasons::add);
-        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
+        protocol.setBootTokens(tokens);
 
-        protocol.deliverForTest(ADDR_B, SwimMessage.IdentityRefused.identityRefused(NODE_B, NODE_A, "not you"));
+        protocol.onMessage(ADDR_B, SwimMessage.IdentityRefused.identityRefused(NODE_B, NODE_A, "not you"));
         assertThat(reasons).as("a refusal about another NodeId is not ours").isEmpty();
 
-        protocol.deliverForTest(ADDR_B, SwimMessage.IdentityRefused.identityRefused(NODE_B, SELF_ID, "retired"));
+        protocol.onMessage(ADDR_B, SwimMessage.IdentityRefused.identityRefused(NODE_B, SELF_ID, "retired"));
         assertThat(reasons).containsExactly("retired");
     }
 
@@ -431,7 +431,7 @@ class SwimBootTokenTest {
 
         pings.stream()
              .skip(answeredPings)
-             .forEach(ping -> protocol.deliverForTest(ADDR_A,
+             .forEach(ping -> protocol.onMessage(ADDR_A,
                                                  Ack.ack(NODE_A,
                                                          ping.sequence(),
                                                          List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, incarnation, ADDR_A, bootToken)))));
@@ -439,7 +439,7 @@ class SwimBootTokenTest {
     }
 
     private void gossip(MemberState state, long incarnation, long bootToken) {
-        protocol.deliverForTest(ADDR_B,
+        protocol.onMessage(ADDR_B,
                            Ping.ping(NODE_B, incarnation, List.of(MembershipUpdate.membershipUpdate(NODE_A, state, incarnation, ADDR_A, bootToken))));
     }
 

@@ -66,7 +66,7 @@ class SwimGossipLabelsTest {
     void setUp() {
         transport = new RecordingTransport();
         observations = new RecordingObservationSink();
-        protocol = SwimProtocol.swimProtocol(swimConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
+        protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
                                .unwrap();
         protocol.addObservationListener(observations);
     }
@@ -122,7 +122,7 @@ class SwimGossipLabelsTest {
     @Test
     void gossipedLabels_areRedisseminatedToOtherPeers() {
         gossip(1L, update(MemberState.ALIVE, 0L, CORE_LABELS));
-        protocol.deliverForTest(OTHER_ADDR, new Ping(OTHER, 1L, List.of()));
+        protocol.onMessage(OTHER_ADDR, new Ping(OTHER, 1L, List.of()));
 
         assertThat(piggybackedFor(REPLACEMENT))
             .as("an update relayed for the replacement carries the labels this node stored")
@@ -143,7 +143,7 @@ class SwimGossipLabelsTest {
     }
 
     private void gossip(long sequence, MembershipUpdate update) {
-        protocol.deliverForTest(GOSSIPER_ADDR, new Ping(GOSSIPER, sequence, List.of(update)));
+        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, sequence, List.of(update)));
     }
 
     private static MembershipUpdate update(MemberState state, long incarnation, Map<String, String> labels) {

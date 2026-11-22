@@ -82,7 +82,7 @@ class SwimDeathRecordTest {
         tokens = BootTokens.bootTokens(0x5E1FL);
         observations = new RecordingObservationSink();
         transport = new RecordingTransport();
-        protocol = SwimProtocol.swimProtocol(tightConfig(),
+        protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,
@@ -90,7 +90,7 @@ class SwimDeathRecordTest {
                                              booting::get)
                                .unwrap();
         protocol.addObservationListener(observations);
-        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
+        protocol.setBootTokens(tokens);
     }
 
     @AfterEach
@@ -99,7 +99,7 @@ class SwimDeathRecordTest {
     }
 
     private void gossip(long sequence, MembershipUpdate update) {
-        protocol.deliverForTest(ADDR_B, new Ping(NODE_B, sequence, List.of(update)));
+        protocol.onMessage(ADDR_B, new Ping(NODE_B, sequence, List.of(update)));
     }
 
     private static MembershipUpdate updateOfA(MemberState state, long incarnation, long token) {
@@ -111,10 +111,10 @@ class SwimDeathRecordTest {
     /// stays resident FAULTY.
     private void driveToFaultyResident(long token) {
         gossip(1L, updateOfA(MemberState.ALIVE, 0, token));
-        protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A,
+        protocol.recordTransportHint(NODE_A,
                                      new TransportObservation.PeerUnreachable(NODE_A,
                                                                               Causes.cause("test peer down"),
-                                                                              TransportObservation.HintOrigin.LINK_LOST)));
+                                                                              TransportObservation.HintOrigin.LINK_LOST));
         gossip(2L, updateOfA(MemberState.FAULTY, DEATH_INCARNATION, token));
 
         assertThat(protocol.members().get(NODE_A).state()).as("precondition: NODE_A FAULTY-resident")
@@ -187,7 +187,7 @@ class SwimDeathRecordTest {
     private void driveToReSeededObserved() {
         driveToDeathPastTombstoneTtl(TOKEN_A);
         protocol.stop();
-        protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
+        protocol.addSeedMember(NODE_A, ADDR_A);
         assertThat(protocol.members().get(NODE_A).state()).as("precondition: re-seeded OBSERVED")
                                                            .isEqualTo(MemberState.OBSERVED);
         observations.all.clear();
@@ -216,7 +216,7 @@ class SwimDeathRecordTest {
                                           .findFirst()
                                           .orElseThrow();
 
-        protocol.deliverForTest(ADDR_A, new Ack(NODE_A, probe.sequence(), List.of()));
+        protocol.onMessage(ADDR_A, new Ack(NODE_A, probe.sequence(), List.of()));
 
         assertThat(protocol.members().get(NODE_A).state()).as("a verified probe-ack carries no incarnation and is refused by the record")
                                                            .isEqualTo(MemberState.OBSERVED);

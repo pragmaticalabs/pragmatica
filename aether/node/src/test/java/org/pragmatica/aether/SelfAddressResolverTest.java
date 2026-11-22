@@ -190,7 +190,6 @@ class SelfAddressResolverTest {
         public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
             lastTarget.set(target);
             Option.option(handler.get())
-                  // ASYNC-DELIVERY: `h` is the SwimMessageHandler that SelfAddressResolver registered on its transient transport, not a SwimProtocol: there is no protocol, executor or task here, and deliverForTest exists only on SwimProtocol. This is the simulated WhoAmIReply on the wire.
                   .onPresent(h -> h.onMessage(target, SwimMessage.WhoAmIReply.whoAmIReply(observed)));
             return Promise.unitPromise();
         }

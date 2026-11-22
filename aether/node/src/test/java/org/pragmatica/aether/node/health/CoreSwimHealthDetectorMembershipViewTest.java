@@ -25,6 +25,7 @@ import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.Announce;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 
 import java.net.InetSocketAddress;
@@ -67,11 +68,11 @@ class CoreSwimHealthDetectorMembershipViewTest {
         var transport = new RecordingTransport();
 
         ctx.dispatch(new SwimHealthEvents.StartRequested());
-        swim = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, transport, noopListener(), SELF, new InetSocketAddress("127.0.0.1", 9101))
+        swim = SwimTestProtocols.swimProtocol(SwimConfig.DEFAULT, transport, noopListener(), SELF, new InetSocketAddress("127.0.0.1", 9101))
                            .unwrap();
         ctx.dispatch(new SwimHealthEvents.ProtocolReady(swim, transport, GossipEncryptor.none()));
-        swim.driveForTest(() -> detector.announceJoin(self, "c", 1L, 7L, List.of(SEED)));
-        swim.deliverForTest(KNOWN_SWIM,
+        detector.announceJoin(self, "c", 1L, 7L, List.of(SEED));
+        swim.onMessage(KNOWN_SWIM,
                        Ack.ack(KNOWN, 0L, List.of(MembershipUpdate.membershipUpdate(KNOWN, MemberState.ALIVE, 1, KNOWN_SWIM))));
         assertThat(swim.members()).as("precondition: one live member is known").containsKey(KNOWN);
     }

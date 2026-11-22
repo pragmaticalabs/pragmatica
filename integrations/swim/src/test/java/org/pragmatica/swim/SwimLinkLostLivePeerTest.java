@@ -184,7 +184,7 @@ class SwimLinkLostLivePeerTest {
         var pingsBefore = transport.pingsTo(ADDR_A);
         var stateAtHint = protocol.members().get(LEADER).state();
 
-        protocol.driveForTest(() -> protocol.recordTransportHint(LEADER, peerUnresponsiveHint()));
+        protocol.recordTransportHint(LEADER, peerUnresponsiveHint());
 
         assertThat(stateAtHint).as("instrument: the leader is FAULTY when the second hint lands")
                   .isEqualTo(MemberState.FAULTY);
@@ -206,7 +206,7 @@ class SwimLinkLostLivePeerTest {
              .until(() -> transport.pingsTo(ADDR_A) >= 1);
         var pingsBefore = transport.pingsTo(ADDR_A);
 
-        protocol.driveForTest(() -> protocol.recordTransportHint(LEADER, linkLostHint()));
+        protocol.recordTransportHint(LEADER, linkLostHint());
 
         assertThat(transport.pingsTo(ADDR_A)).as("a hint that is not current death evidence sends no hint-time probe (the next round-robin probe of the leader is 4 periods away)")
                   .isEqualTo(pingsBefore);
@@ -241,7 +241,7 @@ class SwimLinkLostLivePeerTest {
 
     private void build(Map<NodeId, Boolean> answersAfterHint) {
         transport.answersAfterHint.putAll(answersAfterHint);
-        protocol = SwimProtocol.swimProtocol(config,
+        protocol = SwimTestProtocols.swimProtocol(config,
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,
@@ -270,7 +270,7 @@ class SwimLinkLostLivePeerTest {
     }
 
     private void seed(NodeId nodeId, InetSocketAddress addr) {
-        protocol.deliverForTest(ADDR_B,
+        protocol.onMessage(ADDR_B,
                            new Ping(NODE_B,
                                     1L,
                                     List.of(MembershipUpdate.membershipUpdate(nodeId, MemberState.ALIVE, 0, addr))));
@@ -336,7 +336,6 @@ class SwimLinkLostLivePeerTest {
                 var peer = PEERS.get(target);
 
                 if (!hinted.get() || answersAfterHint.getOrDefault(peer, true)) {
-                    // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                     protocol.get().onMessage(target,
                                              new Ack(peer, ping.sequence(), List.of()));
                 }
@@ -344,14 +343,12 @@ class SwimLinkLostLivePeerTest {
                 if (autoHint.get() && peer.equals(LEADER) && hinted.compareAndSet(false, true)) {
                     hintedAt.set(System.currentTimeMillis());
                     pingIndexAtHint.set(pings.size());
-                    // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task; it must not wait (the wait would fail from inside a task)
                     protocol.get()
                             .recordTransportHint(LEADER,
                                                  new TransportObservation.PeerUnreachable(LEADER,
                                                                                           Causes.cause("QUIC link evicted by the leader after NodeRemoved"),
                                                                                           TransportObservation.HintOrigin.LINK_LOST));
                     if (secondHint.get()) {
-                        // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task; it must not wait (the wait would fail from inside a task)
                         protocol.get()
                                 .recordTransportHint(LEADER,
                                                      new TransportObservation.PeerUnreachable(LEADER,

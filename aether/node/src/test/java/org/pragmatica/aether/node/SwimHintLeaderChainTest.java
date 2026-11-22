@@ -47,6 +47,7 @@ import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.swim.TransportObservation;
 
@@ -94,12 +95,12 @@ class SwimHintLeaderChainTest {
                                            8,
                                            timeSpan(40).millis())
                                .withJoinGrace(timeSpan(0).millis());
-        protocol = SwimProtocol.swimProtocol(config, new NullTransport(), new NullListener(), SELF, SELF_ADDR,
+        protocol = SwimTestProtocols.swimProtocol(config, new NullTransport(), new NullListener(), SELF, SELF_ADDR,
                                              () -> false, liveTransport::contains)
                                .unwrap();
         protocol.addObservationListener(observations::add);
         // VICTIM is an established, ever-HEALTHY core member with a CONNECTED link.
-        protocol.deliverForTest(GOSSIPER_ADDR, new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(VICTIM, MemberState.ALIVE, 0, VICTIM_ADDR))));
+        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(VICTIM, MemberState.ALIVE, 0, VICTIM_ADDR))));
         liveTransport.add(VICTIM);
         connected.add(VICTIM);
     }
@@ -228,7 +229,7 @@ class SwimHintLeaderChainTest {
 
     private void deliver(TransportObservation hint) {
         hints.add(hint);
-        protocol.driveForTest(() -> protocol.recordTransportHint(hint.peer(), hint));
+        protocol.recordTransportHint(hint.peer(), hint);
     }
 
     private void stall(Wiring wiring, int ticks) {

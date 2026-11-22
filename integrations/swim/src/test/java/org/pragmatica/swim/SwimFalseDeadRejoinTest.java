@@ -115,10 +115,10 @@ class SwimFalseDeadRejoinTest {
         awaitHealthyOnObserver();
         observerVerdictPrivate.set(true);
         pairCut.set(true);
-        observer.driveForTest(() -> observer.recordTransportHint(LIVE,
+        observer.recordTransportHint(LIVE,
                                                                  new TransportObservation.PeerUnreachable(LIVE,
                                                                                                           Causes.cause("link to the live node lost"),
-                                                                                                          TransportObservation.HintOrigin.LINK_LOST)));
+                                                                                                          TransportObservation.HintOrigin.LINK_LOST));
 
         await().atMost(30, TimeUnit.SECONDS)
                .untilAsserted(() -> assertThat(verdictSnapshot.get()).as("instrument: the observer alone declared the live node dead")
@@ -245,8 +245,8 @@ class SwimFalseDeadRejoinTest {
     }
 
     private static void seed(SwimProtocol protocol, NodeId a, int aPort, NodeId b, int bPort) {
-        protocol.driveForTest(() -> protocol.addSeedMember(a, new InetSocketAddress("127.0.0.1", aPort)));
-        protocol.driveForTest(() -> protocol.addSeedMember(b, new InetSocketAddress("127.0.0.1", bPort)));
+        protocol.addSeedMember(a, new InetSocketAddress("127.0.0.1", aPort));
+        protocol.addSeedMember(b, new InetSocketAddress("127.0.0.1", bPort));
     }
 
     private SwimProtocol node(NodeId id, int port, long incarnation) {
@@ -265,17 +265,17 @@ class SwimFalseDeadRejoinTest {
                                            timeSpan(0).millis());
         var address = new InetSocketAddress("127.0.0.1", port);
         var transport = new MemoryTransport(address, port);
-        var protocol = SwimProtocol.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), id, address, () -> false)
+        var protocol = SwimTestProtocols.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), id, address, () -> false)
                                    .unwrap();
 
         transport.start(port, protocol::onMessage);
-        protocol.driveForTest(() -> protocol.announceJoin(NodeInfo.nodeInfo(id,
+        protocol.announceJoin(NodeInfo.nodeInfo(id,
                                                 NodeAddress.nodeAddress("127.0.0.1", port).unwrap(),
                                                 Map.of(NodeInfo.LABEL_ROLE, "core")),
                               "c",
                               incarnation,
                               1000L + port,
-                              List.of()));
+                              List.of());
         protocol.start();
         started.add(protocol);
         rememberNode(id, protocol);
@@ -327,7 +327,6 @@ class SwimFalseDeadRejoinTest {
             var handler = net.get(new InetSocketAddress("127.0.0.1", target.getPort()));
 
             if (handler != null) {
-                // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task or from the wire thread; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                 handler.onMessage(self, filtered(target, message));
             }
         }

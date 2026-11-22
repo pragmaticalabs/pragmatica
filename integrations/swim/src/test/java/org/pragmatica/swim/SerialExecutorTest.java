@@ -26,7 +26,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 
 import org.junit.jupiter.api.Test;
 
@@ -36,7 +35,7 @@ import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 
-/// #3529: the serial executor's drain contract. Every exit of a drain releases the drainer (an [Error] from a task
+/// #3529, #3568: the serial executor's drain contract and its quiescing mode. Every exit of a drain releases the drainer (an [Error] from a task
 /// included), tasks run in submission order, one failing task never stops the drain, and a drainer's exit never
 /// strands a task submitted while it released.
 class SerialExecutorTest {
@@ -63,54 +62,141 @@ class SerialExecutorTest {
         inner.get().onFailure(cause -> assertThat(cause).isSameAs(SwimError.General.CALL_FROM_INSIDE_TASK));
     }
 
+    /// #3568: a quiescing executor's `call` returns after its own task AND the follow-up that task queued, even when
+    /// another thread is the drainer. Control, on the default executor: `call` returns while the follow-up is running.
     @Test
-    void awaitQuiet_onAnIdleExecutor_returnsAtOnce() {
+    void call_onADefaultExecutorWhileAnotherThreadDrains_returnsBeforeTheFollowUpFinished() throws InterruptedException {
         var executor = SerialExecutor.serialExecutor();
+        var run = followUpRun(executor);
 
-        assertThat(executor.awaitQuiet().isSuccess()).isTrue();
+        run.caller().join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(run.callReturned().get()).as("the call returned after its own task").isTrue();
+        assertThat(run.followUpDone().get()).as("the follow-up it queued is still running").isFalse();
+        run.followUpGate().countDown();
+        run.holder().join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(run.followUpDone().get()).isTrue();
     }
 
     @Test
-    void awaitQuiet_fromInsideATask_failsWithTypedCauseInsteadOfWaiting() {
-        var executor = SerialExecutor.serialExecutor();
-        var inner = new AtomicReference<Result<Unit>>();
+    void call_onAQuiescingExecutorWhileAnotherThreadDrains_waitsForTheFollowUp() throws InterruptedException {
+        var executor = SerialExecutor.quiescingSerialExecutor();
+        var run = followUpRun(executor);
 
-        executor.execute(() -> inner.set(executor.awaitQuiet()));
+        awaitTimedWaitingOrDone(run.caller());
+        assertThat(run.caller().isAlive()).as("the call waits for the running follow-up").isTrue();
+        assertThat(run.callReturned().get()).isFalse();
+        run.followUpGate().countDown();
+        run.caller().join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        run.holder().join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(run.caller().isAlive()).as("the call returned once the follow-up finished").isFalse();
+        assertThat(run.followUpDone().get()).as("the follow-up had finished when the call returned").isTrue();
+    }
+
+    @Test
+    void execute_onAQuiescingExecutorWhileAnotherThreadDrains_waitsUntilItsTaskRan() throws InterruptedException {
+        var executor = SerialExecutor.quiescingSerialExecutor();
+        var release = new CountDownLatch(1);
+        var ran = new AtomicBoolean();
+        var holder = holdDrainer(executor, release);
+        var submitter = Thread.ofPlatform().start(() -> executor.execute(() -> ran.set(true)));
+
+        awaitTimedWaitingOrDone(submitter);
+        assertThat(submitter.isAlive()).as("execute waits behind the holder").isTrue();
+        assertThat(ran.get()).isFalse();
+        release.countDown();
+        submitter.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        holder.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(submitter.isAlive()).isFalse();
+        assertThat(ran.get()).as("its task ran before execute returned").isTrue();
+    }
+
+    @Test
+    void execute_fromInsideAQuiescingTask_returnsAtOnceAndRunsAfterTheCurrentTask() {
+        var executor = SerialExecutor.quiescingSerialExecutor();
+        var order = new CopyOnWriteArrayList<String>();
+
+        assertTimeoutPreemptively(Duration.ofSeconds(WAIT_SECONDS), () -> executor.execute(() -> nestedSubmission(executor, order)));
+        assertThat(order).as("run-to-completion: nested runs after the outer task ended").containsExactly("outer", "outer-end", "nested");
+    }
+
+    @Test
+    void call_fromInsideAQuiescingTask_failsWithTypedCause() {
+        var executor = SerialExecutor.quiescingSerialExecutor();
+        var inner = new AtomicReference<Result<Integer>>();
+
+        executor.execute(() -> inner.set(executor.call(() -> 1)));
         assertThat(inner.get().isFailure()).isTrue();
         inner.get().onFailure(cause -> assertThat(cause).isSameAs(SwimError.General.CALL_FROM_INSIDE_TASK));
     }
 
-    /// #3568 A1: `call` returns after its own task, but when another thread is the drainer the follow-up that task
-    /// queued is still pending. Control: the call has returned while the follow-up is still running. `awaitQuiet` is
-    /// then seen waiting on it (a no-op wait returns at once), and returns only after the follow-up finished.
+    /// #3568 condition (b): the wait is skipped inside a quiescing task of ANY executor. Protocol A's task hops into B
+    /// while B's drainer, inside a B task, hops back into A: each waits on the drainer the other holds unless the skip
+    /// is thread-wide. Must return (bounded), not deadlock; the mutant "skip only for the same executor" deadlocks here.
     @Test
-    void awaitQuiet_whileAFollowUpOfACompletedCallIsStillRunning_waitsForTheFollowUp() throws InterruptedException {
-        var executor = SerialExecutor.serialExecutor();
+    void execute_aTaskOfOneQuiescingExecutorHoppingIntoAnotherWhileTheOtherHopsBack_returnsInsteadOfDeadlocking() {
+        var a = SerialExecutor.quiescingSerialExecutor();
+        var b = SerialExecutor.quiescingSerialExecutor();
+        var aInside = new CountDownLatch(1);
+        var bInside = new CountDownLatch(1);
+        var hops = new AtomicInteger();
+        var first = daemon(() -> a.execute(() -> hop(aInside, bInside, b, hops)));
+        var second = daemon(() -> b.execute(() -> hop(bInside, aInside, a, hops)));
+
+        assertTimeoutPreemptively(Duration.ofSeconds(WAIT_SECONDS),
+                                  () -> {
+                                      first.join();
+                                      second.join();
+                                  });
+        assertThat(hops.get()).as("both hops ran").isEqualTo(2);
+    }
+
+    private static void hop(CountDownLatch inside, CountDownLatch otherInside, SerialExecutor other, AtomicInteger hops) {
+        inside.countDown();
+        awaitUnchecked(otherInside);
+        other.execute(hops::incrementAndGet);
+    }
+
+    private static void awaitUnchecked(CountDownLatch latch) {
+        try {
+            latch.await(WAIT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static Thread daemon(Runnable action) {
+        return Thread.ofPlatform().daemon(true).start(action);
+    }
+
+    private static void nestedSubmission(SerialExecutor executor, List<String> order) {
+        order.add("outer");
+        executor.execute(() -> order.add("nested"));
+        order.add("outer-end");
+    }
+
+    private record FollowUpRun(Thread holder,
+                               Thread caller,
+                               CountDownLatch followUpGate,
+                               AtomicBoolean followUpDone,
+                               AtomicBoolean callReturned) {}
+
+    /// A holder drains; a caller's `call` queues behind it and queues a follow-up; the holder is released, runs the
+    /// call's task, and is then inside the follow-up (gated). Returns with the follow-up running.
+    private static FollowUpRun followUpRun(SerialExecutor executor) throws InterruptedException {
         var release = new CountDownLatch(1);
         var followUpStarted = new CountDownLatch(1);
         var followUpGate = new CountDownLatch(1);
         var followUpDone = new AtomicBoolean();
         var callReturned = new AtomicBoolean();
         var holder = holdDrainer(executor, release);
-        var caller = Thread.ofPlatform().start(() -> callQueueingAFollowUp(executor, followUpStarted, followUpGate, followUpDone, callReturned));
+        var caller = Thread.ofPlatform().daemon(true).start(() -> callQueueingAFollowUp(executor, followUpStarted, followUpGate, followUpDone, callReturned));
 
         awaitTimedWaitingOrDone(caller);
         assertThat(caller.isAlive()).as("control: the call is queued behind the holder, which is the drainer").isTrue();
         release.countDown();
         assertThat(followUpStarted.await(WAIT_SECONDS, TimeUnit.SECONDS)).as("the holder drained the call's task and started the follow-up").isTrue();
-        caller.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
-        assertThat(callReturned.get()).as("control: the call returned after its own task").isTrue();
-        assertThat(followUpDone.get()).as("control: the follow-up it queued is still running").isFalse();
 
-        var quietWaiter = Thread.ofPlatform().start(() -> executor.awaitQuiet());
-
-        awaitTimedWaitingOrDone(quietWaiter);
-        assertThat(quietWaiter.isAlive()).as("awaitQuiet waits for the running follow-up").isTrue();
-        followUpGate.countDown();
-        quietWaiter.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
-        holder.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
-        assertThat(quietWaiter.isAlive()).as("awaitQuiet returned once the follow-up finished").isFalse();
-        assertThat(followUpDone.get()).isTrue();
+        return new FollowUpRun(holder, caller, followUpGate, followUpDone, callReturned);
     }
 
     private static void callQueueingAFollowUp(SerialExecutor executor,

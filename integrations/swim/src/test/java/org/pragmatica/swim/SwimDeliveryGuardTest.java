@@ -29,209 +29,173 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #3560, #3568: fails the build when a test that drives a SWIM protocol reaches it by a path that can return before
-/// the protocol executor applied it. One invariant: a test drives a protocol only through a path that has completed
-/// on the executor before it returns.
+/// #3568 (the class of #3560): fails the build when a test builds a SWIM protocol other than through
+/// `SwimTestProtocols`, and when production code reaches a test seam. One invariant: the executor a test's protocol runs
+/// on is chosen at construction, by the one test factory.
 ///
 /// Why: production `onMessage` and the six entry points (`addSeedMember`, `recordTransportHint`, `announceJoin`,
 /// `setBootTokens`, `setMembershipEligibility`, `reportSelfQuorum`) never wait. While the probe tick drains, they only
-/// enqueue, so a test that asserts on the next line reads the state before the call was applied. Tests deliver
-/// messages through `deliverForTest` and make entry-point calls inside `driveForTest(() -> ...)`, which wait.
+/// enqueue, so a test that asserts on the next line reads the state before the call was applied. A protocol built by
+/// `SwimTestProtocols.swimProtocol` runs on a quiescing executor, so every call into it returns after it was applied;
+/// a protocol built by the production factory (`SwimProtocol.swimProtocol`, `new SwimProtocol(`) would silently lose
+/// that, for every entry point present and future. No per-entry-point scan is needed, or kept.
 ///
-/// Scope: every `src/test/java` file under the repository root that mentions `SwimProtocol` or `SwimMessageHandler`
-/// (the other modules' tests that drive a protocol are included, not only this module's). Comment lines are skipped.
-/// An entry-point call is accepted when `driveForTest(` precedes it on the same line. A deliberate bare call (a
-/// simulated network hop that runs inside a task and must not wait, or a pin of the production contract) carries the
-/// marker `ASYNC-DELIVERY:` with its reason on its own line or in one of the two lines above it; there is no other
-/// allow-list. The scan is line based, like `FlakeScan`: a call split so that its name is not on one line is invisible,
-/// and the entry-point names are matched on any receiver (a detector or mock in a file that mentions a protocol
-/// needs the wrapper as well).
+/// Construction scope: every `src/test/java` file under the repository root that mentions `SwimProtocol`, except the
+/// factory itself. Comment lines are skipped. The scan is line based, like `FlakeScan`.
+/// Production scope: every `src/main/java` file. `quiescingSerialExecutor` may be named only by `SerialExecutor`, and
+/// `protocolFactoryForTest` only by its declaring `CoreSwimHealthDetector`; the test factory and its opt-out may be named
+/// by no production file.
 ///
 /// The scans prove their own reach: each asserts a minimum file count and that it examined aether sources, and a
 /// planted tree that reaches almost nothing must fail that check.
 class SwimDeliveryGuardTest {
-    private static final String MARKER = "ASYNC-DELIVERY:";
-    private static final String ENTRY_POINTS = "addSeedMember|recordTransportHint|announceJoin|setBootTokens|setMembershipEligibility|reportSelfQuorum";
-    private static final Pattern BARE_CALL = Pattern.compile("\\.onMessage\\(|(?:\\.|::)(?:" + ENTRY_POINTS + ")\\b");
-    private static final Pattern ENTRY_CALL = Pattern.compile("(?:\\.|::)(?:" + ENTRY_POINTS + ")\\b");
-    private static final String DRIVE = "drive" + "ForTest(";
-    private static final Pattern DRIVES_SWIM = Pattern.compile("SwimProtocol|SwimMessageHandler");
+    private static final Pattern CONSTRUCTION = Pattern.compile("SwimProtocol\\.swimProtocol\\b|SwimProtocol::swimProtocol\\b|new\\s+SwimProtocol\\(");
+    private static final Pattern DRIVES_SWIM = Pattern.compile("SwimProtocol");
     private static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules");
-    private static final String SEAM = "deliver" + "ForTest";
-    private static final String SEAM_OWNER = "integrations/swim/src/main/java/org/pragmatica/swim/SwimProtocol.java";
-    private static final int MARKER_REACH = 2;
+    private static final String FACTORY_FILE = "integrations/swim/src/test/java/org/pragmatica/swim/SwimTestProtocols.java";
+    private static final String QUIESCING = "quiescing" + "SerialExecutor";
+    private static final String QUIESCING_OWNER = "integrations/swim/src/main/java/org/pragmatica/swim/SerialExecutor.java";
+    private static final String FACTORY_SEAM = "protocolFactory" + "ForTest";
+    private static final String FACTORY_SEAM_OWNER = "aether/node/src/main/java/org/pragmatica/aether/node/health/CoreSwimHealthDetector.java";
+    private static final List<String> TEST_FACTORY_NAMES = List.of("SwimTest" + "Protocols", "swimProtocolWith" + "HeldExecutor");
     private static final int MINIMUM_SWIM_FILES = 30;
     private static final int MINIMUM_AETHER_TEST_FILES = 20;
     private static final int MINIMUM_PRODUCTION_FILES = 1_000;
     private static final int MINIMUM_AETHER_PRODUCTION_FILES = 500;
-    private static final String AETHER_PRODUCTION_WITNESS = "aether/node/src/main/java/org/pragmatica/aether/node/health/CoreSwimHealthDetector.java";
     private static final String AETHER_TEST_WITNESS = "aether/node/src/test/java/org/pragmatica/aether/node/PhantomSeedMembershipTest.java";
 
     @TempDir
     Path tmp;
 
     @Test
-    void swimDrivingTests_neverCallOnMessageDirectly() throws IOException {
-        var root = repositoryRoot();
-        var scan = scan(root);
+    void tests_buildAProtocolOnlyThroughTheTestFactory() throws IOException {
+        var scan = scan(repositoryRoot());
 
         assertThat(scan.examined()).as("positive control: the scan reached this module's tests")
                                    .contains("integrations/swim/src/test/java/org/pragmatica/swim/SwimStateConfinementTest.java");
+        assertThat(scan.examined()).as("positive control: the factory itself was reached (and so exempted by name)")
+                                   .contains(FACTORY_FILE);
         assertThat(testScanShortfalls(scan)).as("positive control: the scan reached the swim and the aether tests, in number")
                                             .isEmpty();
-        assertThat(scan.marked()).as("positive control: the deliberate async sites are still seen, with their marker")
-                                 .isNotEmpty();
-        assertThat(scan.violations()).as("bare onMessage or entry-point call in a test that drives a SWIM protocol; use protocol.deliverForTest(sender, message) or protocol.driveForTest(() -> ...)")
+        assertThat(scan.violations()).as("a test builds a SWIM protocol by the production factory; use SwimTestProtocols.swimProtocol")
                                      .isEmpty();
     }
 
     @Test
     void scan_aTreeThatReachedAlmostNothing_failsTheBreadthControl() throws IOException {
-        var scan = scan(plant("A.java", "SwimProtocol p;\n" + bareLine()));
+        var scan = scan(plant("A.java", "SwimProtocol p;\n" + constructionLine()));
 
         assertThat(testScanShortfalls(scan)).hasSize(3);
     }
 
     @Test
-    void scan_aBareEntryPointCall_isReported() throws IOException {
-        var scan = scan(plant("A.java", "SwimProtocol p;\n" + entryLine("")));
+    void scan_aPlantedProductionFactoryCall_isReported() throws IOException {
+        var scan = scan(plant("A.java", "SwimProtocol p;\n" + constructionLine()));
 
         assertThat(scan.violations()).containsExactly("m/src/test/java/A.java:2");
     }
 
     @Test
-    void scan_anEntryPointCallInsideDriveForTest_isNotAViolation() throws IOException {
-        var scan = scan(plant("A.java", "SwimProtocol p;\n" + entryLine("p." + DRIVE + "() -> ")));
-
-        assertThat(scan.violations()).isEmpty();
-    }
-
-    @Test
-    void scan_anEntryPointCallAfterTheWrapperOnAnEarlierLine_isReported() throws IOException {
-        var scan = scan(plant("A.java", "SwimProtocol p;\np." + DRIVE + "() -> q.x());\n" + entryLine("")));
-
-        assertThat(scan.violations()).containsExactly("m/src/test/java/A.java:3");
-    }
-
-    @Test
-    void scan_anEntryPointMethodReference_isReported() throws IOException {
-        var scan = scan(plant("A.java", "SwimProtocol p;\nseeds.forEach(p::addSeed" + "Member);"));
+    void scan_aPlantedFactoryMethodReference_isReported() throws IOException {
+        var scan = scan(plant("A.java", "SwimProtocol p;\ndetector.x(SwimProtocol::swim" + "Protocol);"));
 
         assertThat(scan.violations()).containsExactly("m/src/test/java/A.java:2");
     }
 
     @Test
-    void scan_aMarkerOnTheSameLine_excusesAnEntryPointCall() throws IOException {
-        var scan = scan(plant("A.java", "SwimProtocol p;\n" + entryLine("") + " // " + MARKER + " pin"));
+    void scan_aPlantedDirectConstructor_isReported() throws IOException {
+        var scan = scan(plant("A.java", "SwimProtocol p = new Swim" + "Protocol(c, t, l, i, a, b, f, e);"));
 
-        assertThat(scan.violations()).isEmpty();
-        assertThat(scan.marked()).containsExactly("m/src/test/java/A.java:2");
+        assertThat(scan.violations()).containsExactly("m/src/test/java/A.java:1");
     }
 
     @Test
-    void scan_aWrapperThatNamesNoEntryPoint_isNotAViolation() throws IOException {
-        var scan = scan(plant("A.java", "SwimProtocol p;\np." + DRIVE + "() -> p.members());"));
-
-        assertThat(scan.violations()).isEmpty();
-    }
-
-    @Test
-    void scan_aPlantedBareCall_isReported() throws IOException {
-        var scan = scan(plant("A.java", "SwimProtocol p;\n" + bareLine()));
-
-        assertThat(scan.violations()).containsExactly("m/src/test/java/A.java:2");
-    }
-
-    @Test
-    void scan_aMarkedCall_isNotAViolationButIsCounted() throws IOException {
-        var scan = scan(plant("A.java", "SwimMessageHandler h;\n// " + MARKER + " wire hop\n" + bareLine()));
-
-        assertThat(scan.violations()).isEmpty();
-        assertThat(scan.marked()).containsExactly("m/src/test/java/A.java:3");
-    }
-
-    @Test
-    void scan_aMarkerTooFarAbove_doesNotExcuseTheCall() throws IOException {
-        var scan = scan(plant("A.java", "SwimProtocol p;\n// " + MARKER + " far\nint a;\nint b;\n" + bareLine()));
-
-        assertThat(scan.violations()).containsExactly("m/src/test/java/A.java:5");
-    }
-
-    @Test
-    void scan_aFileThatDoesNotDriveSwim_isNotExamined() throws IOException {
-        var scan = scan(plant("A.java", bareLine()));
-
-        assertThat(scan.examined()).isEmpty();
-        assertThat(scan.violations()).isEmpty();
-    }
-
-    @Test
-    void scan_aCommentedCall_isNotAViolation() throws IOException {
-        var scan = scan(plant("A.java", "SwimProtocol p;\n// " + bareLine() + "\n/// " + bareLine()));
+    void scan_theTestFactoryCall_isNotAViolation() throws IOException {
+        var scan = scan(plant("A.java", "SwimProtocol p = SwimTestProtocols.swimProtocol(c, t, l, i, a);"));
 
         assertThat(scan.violations()).isEmpty();
     }
 
     @Test
-    void scan_deliverForTest_isNotAViolation() throws IOException {
-        var scan = scan(plant("A.java", "SwimProtocol p;\np.deliverForTest(addr, message);"));
+    void scan_aCommentedConstruction_isNotAViolation() throws IOException {
+        var scan = scan(plant("A.java", "SwimProtocol p;\n// " + constructionLine() + "\n/// " + constructionLine()));
 
         assertThat(scan.violations()).isEmpty();
     }
 
-    /// The seam is public only because tests in other packages and modules drive a started protocol (#3560); this is
-    /// what keeps it test-only: no production source except its own declaration mentions it.
     @Test
-    void productionSources_neverCallTheDeliverySeam() throws IOException {
+    void scan_theFactoryFileItself_isExemptByPath() throws IOException {
+        var file = tmp.resolve(FACTORY_FILE);
+
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "SwimProtocol p;\n" + constructionLine());
+
+        assertThat(scan(tmp).violations()).isEmpty();
+    }
+
+    /// Condition (a): the quiescing executor and the detector's factory seam are test-only because no main source
+    /// reaches them. The owners declare them; nobody else in main names them.
+    @Test
+    void productionSources_neverCallTheTestSeams() throws IOException {
         var root = repositoryRoot();
         var production = productionScan(root);
 
-        assertThat(production.callers()).as("production source referencing a test seam; they are test-only seams")
-                                        .isEmpty();
-        assertThat(Files.readString(root.resolve(SEAM_OWNER))).as("positive control: the scan knows the seam's owner")
-                                                              .contains(SEAM + "(");
+        assertThat(production.quiescingCallers()).as("main source other than SerialExecutor names the quiescing factory")
+                                                 .isEmpty();
+        assertThat(production.factorySeamCallers()).as("main source other than CoreSwimHealthDetector names its test factory seam")
+                                                   .isEmpty();
+        assertThat(production.testFactoryCallers()).as("main source naming the test protocol factory or its opt-out")
+                                                   .isEmpty();
+        assertThat(Files.readString(root.resolve(QUIESCING_OWNER))).as("positive control: the scan knows the quiescing owner")
+                                                                  .contains(QUIESCING + "(");
+        assertThat(Files.readString(root.resolve(FACTORY_SEAM_OWNER))).as("positive control: the scan knows the factory seam's owner")
+                                                                      .contains(FACTORY_SEAM + "(");
         assertThat(productionScanShortfalls(production)).as("positive control: the scan reached the production sources of the repository, aether included")
                                                         .isEmpty();
     }
 
     @Test
-    void productionScan_aPlantedCallInProductionCode_isReported() throws IOException {
-        var main = tmp.resolve("m/src/main/java");
+    void productionScan_aPlantedQuiescingCall_isReported() throws IOException {
+        plantMain("A.java", "class A { void f() { SerialExecutor." + QUIESCING + "(); } }");
 
-        Files.createDirectories(main);
-        Files.writeString(main.resolve("A.java"), "class A { void f() { p." + SEAM + "(a, m); } }");
+        assertThat(productionScan(tmp).quiescingCallers()).containsExactly("m/src/main/java/A.java");
+    }
 
-        assertThat(productionScan(tmp).callers()).containsExactly("m/src/main/java/A.java");
+    @Test
+    void productionScan_aPlantedFactorySeamCall_isReported() throws IOException {
+        plantMain("A.java", "class A { void f() { d." + FACTORY_SEAM + "(f); } }");
+
+        assertThat(productionScan(tmp).factorySeamCallers()).containsExactly("m/src/main/java/A.java");
+    }
+
+    @Test
+    void productionScan_aPlantedTestFactoryCall_isReported() throws IOException {
+        plantMain("A.java", "class A { void f() { " + TEST_FACTORY_NAMES.getFirst() + ".swimProtocol(c); } }");
+
+        assertThat(productionScan(tmp).testFactoryCallers()).containsExactly("m/src/main/java/A.java");
+    }
+
+    @Test
+    void productionScan_theOwnersDeclarations_areNotCallers() throws IOException {
+        plantAt(QUIESCING_OWNER, "class SerialExecutor { static SerialExecutor " + QUIESCING + "() {} }");
+        plantAt(FACTORY_SEAM_OWNER, "class D { void " + FACTORY_SEAM + "(F f) {} }");
+
+        var production = productionScan(tmp);
+
+        assertThat(production.quiescingCallers()).isEmpty();
+        assertThat(production.factorySeamCallers()).isEmpty();
     }
 
     @Test
     void productionScan_aTreeThatReachedAlmostNothing_failsTheBreadthControl() throws IOException {
-        var main = tmp.resolve("m/src/main/java");
-
-        Files.createDirectories(main);
-        Files.writeString(main.resolve("A.java"), "class A {}");
+        plantMain("A.java", "class A {}");
 
         assertThat(productionScanShortfalls(productionScan(tmp))).hasSize(2);
     }
 
-    @Test
-    void productionScan_aPlantedDriveForTestCall_isReported() throws IOException {
-        var main = tmp.resolve("m/src/main/java");
-
-        Files.createDirectories(main);
-        Files.writeString(main.resolve("A.java"), "class A { void f() { p." + DRIVE + "() -> q.x()); } }");
-
-        assertThat(productionScan(tmp).callers()).containsExactly("m/src/main/java/A.java");
-    }
-
     /// Built from pieces so this file never carries the pattern it scans for.
-    private static String bareLine() {
-        return "protocol" + ".onMes" + "sage(addr, message);";
-    }
-
-    /// An entry-point call, optionally behind a prefix (the wrapper); the name is built from pieces for the same reason.
-    private static String entryLine(String prefix) {
-        return prefix + "protocol" + ".addSeed" + "Member(id, address);";
+    private static String constructionLine() {
+        return "var p = Swim" + "Protocol.swim" + "Protocol(config, transport, listener, id, address).unwrap();";
     }
 
     private static List<String> testScanShortfalls(Scan scan) {
@@ -260,70 +224,80 @@ class SwimDeliveryGuardTest {
         }
 
         if (scan.examined().stream().filter(file -> file.startsWith("aether/")).count() < MINIMUM_AETHER_PRODUCTION_FILES
-            || !scan.examined().contains(AETHER_PRODUCTION_WITNESS)) {
+            || !scan.examined().contains(FACTORY_SEAM_OWNER)) {
             shortfalls.add("the aether production sources were not reached");
         }
 
         return shortfalls;
     }
 
-    private record Scan(List<String> examined, List<String> violations, List<String> marked) {}
+    private record Scan(List<String> examined, List<String> violations) {}
 
     private static Scan scan(Path root) throws IOException {
         var examined = new ArrayList<String>();
         var violations = new ArrayList<String>();
-        var marked = new ArrayList<String>();
 
         try (var files = Files.walk(root)) {
             for (var file : files.filter(Files::isRegularFile).toList()) {
                 var relative = root.relativize(file).toString().replace('\\', '/');
 
                 if (isTestSource(relative)) {
-                    scanFile(relative, file, examined, violations, marked);
+                    scanFile(relative, file, examined, violations);
                 }
             }
         }
-        return new Scan(examined, violations, marked);
+        return new Scan(examined, violations);
     }
 
-    private record ProductionScan(List<String> examined, List<String> callers) {}
+    private record ProductionScan(List<String> examined,
+                                  List<String> quiescingCallers,
+                                  List<String> factorySeamCallers,
+                                  List<String> testFactoryCallers) {}
 
     private static ProductionScan productionScan(Path root) throws IOException {
         var examined = new ArrayList<String>();
-        var callers = new ArrayList<String>();
+        var quiescing = new ArrayList<String>();
+        var factorySeam = new ArrayList<String>();
+        var testFactory = new ArrayList<String>();
 
         try (var files = Files.walk(root)) {
             for (var file : files.filter(Files::isRegularFile).toList()) {
                 var relative = root.relativize(file).toString().replace('\\', '/');
 
                 if (isProductionSource(relative)) {
+                    var text = Files.readString(file);
+
                     examined.add(relative);
-                    if (!relative.equals(SEAM_OWNER) && referencesATestSeam(Files.readString(file))) {
-                        callers.add(relative);
-                    }
+                    addIf(!relative.equals(QUIESCING_OWNER) && text.contains(QUIESCING), relative, quiescing);
+                    addIf(!relative.equals(FACTORY_SEAM_OWNER) && text.contains(FACTORY_SEAM), relative, factorySeam);
+                    addIf(TEST_FACTORY_NAMES.stream().anyMatch(text::contains), relative, testFactory);
                 }
             }
         }
-        return new ProductionScan(examined, callers);
+        return new ProductionScan(examined, quiescing, factorySeam, testFactory);
     }
 
-    private static boolean referencesATestSeam(String text) {
-        return text.contains(SEAM + "(") || text.contains(DRIVE);
+    private static void addIf(boolean condition, String relative, List<String> into) {
+        if (condition) {
+            into.add(relative);
+        }
     }
 
     private static boolean isProductionSource(String relative) {
-        return relative.endsWith(".java")
-               && ("/" + relative).contains("/src/main/java/")
-               && Arrays.stream(relative.split("/")).noneMatch(SKIPPED_DIRECTORIES::contains);
+        return isJavaUnder(relative, "/src/main/java/");
     }
 
     private static boolean isTestSource(String relative) {
+        return isJavaUnder(relative, "/src/test/java/");
+    }
+
+    private static boolean isJavaUnder(String relative, String marker) {
         return relative.endsWith(".java")
-               && ("/" + relative).contains("/src/test/java/")
+               && ("/" + relative).contains(marker)
                && Arrays.stream(relative.split("/")).noneMatch(SKIPPED_DIRECTORIES::contains);
     }
 
-    private static void scanFile(String relative, Path file, List<String> examined, List<String> violations, List<String> marked)
+    private static void scanFile(String relative, Path file, List<String> examined, List<String> violations)
         throws IOException {
         var text = Files.readString(file);
 
@@ -331,36 +305,12 @@ class SwimDeliveryGuardTest {
             examined.add(relative);
             var lines = text.split("\\R", -1);
 
-            for (var i = 0; i < lines.length; i++) {
-                if (!isComment(lines[i].strip()) && isBareCall(lines[i])) {
-                    (isMarked(lines, i) ? marked : violations).add(relative + ":" + (i + 1));
+            for (var i = 0; i < lines.length && !relative.equals(FACTORY_FILE); i++) {
+                if (!isComment(lines[i].strip()) && CONSTRUCTION.matcher(lines[i]).find()) {
+                    violations.add(relative + ":" + (i + 1));
                 }
             }
         }
-    }
-
-    /// A bare `onMessage`, or an entry-point call with no `driveForTest(` before it on the line.
-    private static boolean isBareCall(String line) {
-        var onMessage = BARE_CALL.matcher(line);
-
-        while (onMessage.find()) {
-            if (!ENTRY_CALL.matcher(onMessage.group()).find() || line.indexOf(DRIVE) < 0 || line.indexOf(DRIVE) > onMessage.start()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isMarked(String[] lines, int index) {
-        if (lines[index].contains(MARKER)) {
-            return true;
-        }
-        for (var back = 1; back <= MARKER_REACH && index - back >= 0; back++) {
-            if (lines[index - back].contains(MARKER)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static boolean isComment(String text) {
@@ -382,5 +332,16 @@ class SwimDeliveryGuardTest {
         Files.createDirectories(file.getParent());
         Files.writeString(file, content);
         return tmp;
+    }
+
+    private void plantMain(String name, String content) throws IOException {
+        plantAt("m/src/main/java/" + name, content);
+    }
+
+    private void plantAt(String relative, String content) throws IOException {
+        var file = tmp.resolve(relative);
+
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, content);
     }
 }

@@ -24,6 +24,7 @@ import org.pragmatica.swim.SwimConfig;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMembershipListener;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage;
@@ -166,7 +167,7 @@ class SwimMessageLabelsCodecTest {
             for (var hostnameLength : List.of(1856, 1870, 1879, 3072)) {
                 var transport = new CapturingTransport();
                 var selfId = new NodeId("s".repeat(idLength));
-                var protocol = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, transport, new NullListener(), selfId, ADDRESS)
+                var protocol = SwimTestProtocols.swimProtocol(SwimConfig.DEFAULT, transport, new NullListener(), selfId, ADDRESS)
                                            .unwrap();
                 var hugeLabels = Map.of(NodeInfo.LABEL_ROLE, "core",
                                         NodeInfo.LABEL_SOURCE, "replacement",
@@ -179,12 +180,12 @@ class SwimMessageLabelsCodecTest {
                                                                     ADDRESS,
                                                                     0L,
                                                                     hugeLabels);
-                    protocol.deliverForTest(ADDRESS, new Ping(FROM, 1L, List.of(subject)));
+                    protocol.onMessage(ADDRESS, new Ping(FROM, 1L, List.of(subject)));
                 }
 
                 for (int round = 0; round < 40; round++) {
                     transport.sent.clear();
-                    protocol.deliverForTest(ADDRESS, new Ping(FROM, 100L + round, List.of()));
+                    protocol.onMessage(ADDRESS, new Ping(FROM, 100L + round, List.of()));
                     var ack = transport.sent.stream().filter(Ack.class::isInstance).map(Ack.class::cast).findFirst().orElseThrow();
                     byte[] encoded = codec.encode((SwimMessage) ack);
 
@@ -203,7 +204,7 @@ class SwimMessageLabelsCodecTest {
     void selfAlive_withHugeHostnameAndLongId_fitsTheDatagramCeiling() {
         var transport = new CapturingTransport();
         var selfId = new NodeId("s".repeat(600));
-        var protocol = SwimProtocol.swimProtocol(SwimConfig.swimConfig(TimeSpan.timeSpan(100).millis(), TimeSpan.timeSpan(80).millis(), 3, TimeSpan.timeSpan(5).seconds(), 8, TimeSpan.timeSpan(40).millis())
+        var protocol = SwimTestProtocols.swimProtocol(SwimConfig.swimConfig(TimeSpan.timeSpan(100).millis(), TimeSpan.timeSpan(80).millis(), 3, TimeSpan.timeSpan(5).seconds(), 8, TimeSpan.timeSpan(40).millis())
                                                                       .withJoinGrace(TimeSpan.timeSpan(0).millis()),
                                                  transport,
                                                  new NullListener(),
@@ -215,11 +216,11 @@ class SwimMessageLabelsCodecTest {
                                      Map.of(NodeInfo.LABEL_ROLE, "core", NodeInfo.LABEL_HOSTNAME, "h".repeat(1870)));
 
         protocol.start();
-        protocol.driveForTest(() -> protocol.announceJoin(info, "c", 1L, 5L, List.of()));
+        protocol.announceJoin(info, "c", 1L, 5L, List.of());
         try {
             await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
                 transport.sent.clear();
-                protocol.deliverForTest(ADDRESS, new Ping(FROM, 7L, List.of()));
+                protocol.onMessage(ADDRESS, new Ping(FROM, 7L, List.of()));
                 var ack = transport.sent.stream().filter(Ack.class::isInstance).map(Ack.class::cast).findFirst().orElseThrow();
                 byte[] encoded = codec.encode((SwimMessage) ack);
 

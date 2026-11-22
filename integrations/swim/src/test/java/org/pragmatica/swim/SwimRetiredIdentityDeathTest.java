@@ -94,7 +94,7 @@ class SwimRetiredIdentityDeathTest {
                                          RecordingObservationSink observations,
                                          BootTokens tokens,
                                          RecordingTransport transport) {
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  transport,
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -103,7 +103,7 @@ class SwimRetiredIdentityDeathTest {
                                    .unwrap();
 
         protocol.addObservationListener(observations);
-        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
+        protocol.setBootTokens(tokens);
 
         return protocol;
     }
@@ -115,7 +115,7 @@ class SwimRetiredIdentityDeathTest {
         var tokens = BootTokens.bootTokens(0x5E1FL);
         var protocol = protocol(booting, observations, tokens);
 
-        protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
+        protocol.addSeedMember(NODE_A, ADDR_A);
         tokens.admit(NODE_A, TOKEN);
         tokens.admit(NODE_A, OTHER_TOKEN);
 
@@ -136,7 +136,7 @@ class SwimRetiredIdentityDeathTest {
         var clusterObservations = new CopyOnWriteArrayList<Object>();
 
         protocol.addTransportObservationEmitter(clusterObservations::add);
-        protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
+        protocol.addSeedMember(NODE_A, ADDR_A);
         tokens.admit(NODE_A, TOKEN);
         tokens.admit(NODE_A, OTHER_TOKEN);
         assertThat(tokens.admit(NODE_A, OTHER_TOKEN)).isEqualTo(BootTokens.Admission.RETIRED);
@@ -157,7 +157,7 @@ class SwimRetiredIdentityDeathTest {
         var tokens = BootTokens.bootTokens(0x5E1FL);
         var protocol = protocol(booting, observations, tokens);
 
-        protocol.deliverForTest(GOSSIPER_ADDR,
+        protocol.onMessage(GOSSIPER_ADDR,
                            new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 0, ADDR_A))));
         assertThat(hasUnknown(observations, NODE_A)).as("precondition: the cold-boot rule deferred the FAULTY edge").isTrue();
         assertThat(departures(observations, NODE_A)).as("precondition: nothing departed yet").isEmpty();
@@ -178,7 +178,7 @@ class SwimRetiredIdentityDeathTest {
         var tokens = BootTokens.bootTokens(0x5E1FL);
         var protocol = protocol(booting, observations, tokens);
 
-        protocol.deliverForTest(GOSSIPER_ADDR,
+        protocol.onMessage(GOSSIPER_ADDR,
                            new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 0, ADDR_A))));
         tokens.admit(NODE_A, TOKEN);
         tokens.admit(NODE_A, TOKEN);
@@ -222,7 +222,7 @@ class SwimRetiredIdentityDeathTest {
     void retiredNeverHealthyMember_withALiveLink_isDepartedPastTheTransportVeto() {
         var observations = new RecordingObservationSink();
         var tokens = BootTokens.bootTokens(0x5E1FL);
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -232,9 +232,9 @@ class SwimRetiredIdentityDeathTest {
                                    .unwrap();
 
         protocol.addObservationListener(observations);
-        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
+        protocol.setBootTokens(tokens);
         try {
-            protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
+            protocol.addSeedMember(NODE_A, ADDR_A);
             tokens.admit(NODE_A, TOKEN);
             tokens.admit(NODE_A, OTHER_TOKEN);
 
@@ -254,7 +254,7 @@ class SwimRetiredIdentityDeathTest {
         var tokens = BootTokens.bootTokens(0x5E1FL);
         var protocol = protocol(booting, observations, tokens);
 
-        protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
+        protocol.addSeedMember(NODE_A, ADDR_A);
         protocol.start();
         try {
             tokens.admit(NODE_A, TOKEN);
@@ -263,12 +263,12 @@ class SwimRetiredIdentityDeathTest {
 
             assertThat(tokens.admit(NODE_A, OTHER_TOKEN)).isEqualTo(BootTokens.Admission.RETIRED);
             assertThat(tokens.admit(NODE_A, TOKEN)).isEqualTo(BootTokens.Admission.RETIRED);
-            protocol.deliverForTest(GOSSIPER_ADDR,
+            protocol.onMessage(GOSSIPER_ADDR,
                                new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 3, ADDR_A))));
             Thread.sleep(PAST_RESIDENCY.toMillis());
             assertThat(protocol.members()).as("positive control: the residency sweep ran").doesNotContainKey(NODE_A);
 
-            protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
+            protocol.addSeedMember(NODE_A, ADDR_A);
             Thread.sleep(200);
 
             assertThat(protocol.members()).as("a retired identity is never re-seeded").doesNotContainKey(NODE_A);
@@ -288,7 +288,7 @@ class SwimRetiredIdentityDeathTest {
         var observations = new RecordingObservationSink();
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL));
 
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -317,7 +317,7 @@ class SwimRetiredIdentityDeathTest {
 
         protocol.start();
         try {
-            protocol.deliverForTest(GOSSIPER_ADDR,
+            protocol.onMessage(GOSSIPER_ADDR,
                                new Ping(GOSSIPER,
                                         1L,
                                         List.of(MembershipUpdate.membershipUpdate(PHANTOM, MemberState.FAULTY, DEFERRED_INCARNATION, PHANTOM_ADDR))));
@@ -349,7 +349,7 @@ class SwimRetiredIdentityDeathTest {
         var tokens = BootTokens.bootTokens(0x5E1FL);
         var protocol = protocol(booting, observations, tokens);
 
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -380,7 +380,7 @@ class SwimRetiredIdentityDeathTest {
         var observations = new RecordingObservationSink();
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL));
 
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -388,7 +388,7 @@ class SwimRetiredIdentityDeathTest {
             assertThat(protocol.members()).as("positive control: swept").doesNotContainKey(PHANTOM);
             assertThat(departures(observations, PHANTOM)).isEmpty();
 
-            protocol.driveForTest(() -> protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT)));
+            protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT));
 
             assertThat(departures(observations, PHANTOM)).as("replayed on the refutation, gate still shut").hasSize(1);
         } finally {
@@ -407,7 +407,7 @@ class SwimRetiredIdentityDeathTest {
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL), transport);
 
         transport.protocol = protocol;
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -442,7 +442,7 @@ class SwimRetiredIdentityDeathTest {
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL), transport);
 
         transport.protocol = protocol;
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -478,7 +478,7 @@ class SwimRetiredIdentityDeathTest {
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL), transport);
 
         transport.protocol = protocol;
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -508,14 +508,14 @@ class SwimRetiredIdentityDeathTest {
         var observations = new RecordingObservationSink();
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL));
 
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
             Thread.sleep(PAST_RESIDENCY.toMillis());
             assertThat(protocol.members()).as("positive control: swept, deferral kept").doesNotContainKey(PHANTOM);
 
-            protocol.driveForTest(() -> protocol.setMembershipEligibility(peer -> !peer.equals(PHANTOM)));
+            protocol.setMembershipEligibility(peer -> !peer.equals(PHANTOM));
             booting.set(false);
             Thread.sleep(AFTER_GATE_CLOSE.toMillis());
 
@@ -528,7 +528,7 @@ class SwimRetiredIdentityDeathTest {
     /// The HEALTHY phantom dies: a second-hand FAULTY verdict is authoritative for an ever-HEALTHY peer, so its pair is
     /// emitted at once; the residency sweep then removes the member.
     private static void dieAndAwaitTheSweep(SwimProtocol protocol, RecordingObservationSink observations) {
-        protocol.deliverForTest(GOSSIPER_ADDR,
+        protocol.onMessage(GOSSIPER_ADDR,
                            new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(PHANTOM, MemberState.FAULTY, 1, PHANTOM_ADDR))));
         await().atMost(Duration.ofSeconds(3)).until(() -> !departures(observations, PHANTOM).isEmpty());
         await().atMost(Duration.ofSeconds(3)).until(() -> !protocol.members().containsKey(PHANTOM));
@@ -545,7 +545,7 @@ class SwimRetiredIdentityDeathTest {
                               .map(sent -> (Ping) sent.message())
                               .filter(ping -> answered.add(ping.sequence()))
                               .toList()
-                              .forEach(ping -> protocol.deliverForTest(PHANTOM_ADDR,
+                              .forEach(ping -> protocol.onMessage(PHANTOM_ADDR,
                                                                   Ack.ack(PHANTOM,
                                                                           ping.sequence(),
                                                                           List.of(MembershipUpdate.membershipUpdate(PHANTOM,
@@ -566,7 +566,7 @@ class SwimRetiredIdentityDeathTest {
 
             if (answering && target.equals(PHANTOM_ADDR) && message instanceof Ping ping) {
                 Thread.ofVirtual()
-                      .start(() -> protocol.deliverForTest(PHANTOM_ADDR,
+                      .start(() -> protocol.onMessage(PHANTOM_ADDR,
                                                       Ack.ack(PHANTOM,
                                                               ping.sequence(),
                                                               List.of(MembershipUpdate.membershipUpdate(PHANTOM, MemberState.ALIVE, 1, PHANTOM_ADDR)))));

@@ -60,7 +60,7 @@ class SwimSelfIsolationLatchAtomicityTest {
                                 8,
                                 timeSpan(20).millis()).withJoinGrace(timeSpan(0).millis());
 
-        protocol = SwimProtocol.swimProtocol(config, new SilentTransport(), new SilentListener(), SELF_ID, SELF_ADDR, () -> false)
+        protocol = SwimTestProtocols.swimProtocol(config, new SilentTransport(), new SilentListener(), SELF_ID, SELF_ADDR, () -> false)
                                .unwrap();
     }
 
@@ -79,7 +79,7 @@ class SwimSelfIsolationLatchAtomicityTest {
         detector.start();
         assertThat(checked.await(WAIT_MS, TimeUnit.MILLISECONDS)).as("control: the check read all peers FAULTY and is parked").isTrue();
 
-        var reviver = new Thread(() -> protocol.deliverForTest(ADDR_A, revivalOfNodeA()), "latch-reviver");
+        var reviver = new Thread(() -> protocol.onMessage(ADDR_A, revivalOfNodeA()), "latch-reviver");
 
         reviver.start();
         awaitBlockedOrDone(reviver);

@@ -70,7 +70,7 @@ class SwimProtocolIdentityRefutationTest {
     private static SwimProtocol bootingProtocol(RecordingObservationSink observations,
                                                 AtomicBoolean linkUp,
                                                 SwimTransport transport) {
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  transport,
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -89,8 +89,8 @@ class SwimProtocolIdentityRefutationTest {
         var observations = new RecordingObservationSink();
         var protocol = bootingProtocol(observations, new AtomicBoolean(false));
 
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
-        protocol.driveForTest(() -> protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT)));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3))
@@ -108,14 +108,14 @@ class SwimProtocolIdentityRefutationTest {
         var observations = new RecordingObservationSink();
         var protocol = bootingProtocol(observations, new AtomicBoolean(false));
 
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3))
                    .until(() -> !unknowns(observations, PHANTOM).isEmpty());
             assertThat(departures(observations, PHANTOM)).isEmpty();
 
-            protocol.driveForTest(() -> protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT)));
+            protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT));
 
             assertThat(departures(observations, PHANTOM)).as("the suppressed edge is replayed on the refutation itself")
                                                          .hasSize(1);
@@ -130,11 +130,11 @@ class SwimProtocolIdentityRefutationTest {
         var observations = new RecordingObservationSink();
         var protocol = bootingProtocol(observations, new AtomicBoolean(false), new ClaimantAnsweringTransport());
 
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         // The claimant is a live peer this node already knows ALIVE, and it answers every probe.
-        protocol.deliverForTest(CLAIMANT_ADDR,
+        protocol.onMessage(CLAIMANT_ADDR,
                            new Ping(CLAIMANT, 1L, List.of(MembershipUpdate.membershipUpdate(CLAIMANT, MemberState.ALIVE, 5, CLAIMANT_ADDR))));
-        protocol.driveForTest(() -> protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT)));
+        protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3))
@@ -160,9 +160,9 @@ class SwimProtocolIdentityRefutationTest {
         var observations = new RecordingObservationSink();
         var protocol = bootingProtocol(observations, new AtomicBoolean(false));
 
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
-        protocol.driveForTest(() -> protocol.addSeedMember(CLAIMANT, CLAIMANT_ADDR));
-        protocol.driveForTest(() -> protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT)));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.addSeedMember(CLAIMANT, CLAIMANT_ADDR);
+        protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3))
@@ -184,8 +184,8 @@ class SwimProtocolIdentityRefutationTest {
         var observations = new RecordingObservationSink();
         var protocol = bootingProtocol(observations, new AtomicBoolean(true));
 
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
-        protocol.driveForTest(() -> protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT)));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3))
@@ -206,10 +206,10 @@ class SwimProtocolIdentityRefutationTest {
         var observations = new RecordingObservationSink();
         var protocol = bootingProtocol(observations, new AtomicBoolean(false));
 
-        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
-        protocol.driveForTest(() -> protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT)));
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT));
         // The identity answered after all (link established, then lost again before the FAULTY edge).
-        protocol.driveForTest(() -> protocol.recordTransportHint(PHANTOM, new TransportObservation.PeerReachable(PHANTOM)));
+        protocol.recordTransportHint(PHANTOM, new TransportObservation.PeerReachable(PHANTOM));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3))
@@ -234,7 +234,6 @@ class SwimProtocolIdentityRefutationTest {
         @Override
         public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
             if (target.equals(CLAIMANT_ADDR) && message instanceof Ping ping) {
-                // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task or from the wire thread; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                 handler.get().onMessage(CLAIMANT_ADDR, Ack.ack(CLAIMANT, ping.sequence(), List.of()));
             }
 

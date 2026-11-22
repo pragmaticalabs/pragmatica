@@ -88,15 +88,15 @@ class SwimLateJoinerLabelsTest {
                                            0);
         var address = new InetSocketAddress("127.0.0.1", port);
         var transport = new MemoryTransport(address);
-        var protocol = SwimProtocol.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId(id), address)
+        var protocol = SwimTestProtocols.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId(id), address)
                                    .unwrap();
         var seedAddresses = new ArrayList<InetSocketAddress>();
 
         transport.start(port, protocol::onMessage);
         protocol.start();
         seeds.forEach(seed -> seedAddresses.add(new InetSocketAddress("127.0.0.1", seed)));
-        seeds.forEach(seed -> protocol.driveForTest(() -> protocol.addSeedMember(new NodeId(seedName(seed)), new InetSocketAddress("127.0.0.1", seed))));
-        protocol.driveForTest(() -> protocol.announceJoin(selfInfo(id, port), "c", 1L, 1000L + port, seedAddresses));
+        seeds.forEach(seed -> protocol.addSeedMember(new NodeId(seedName(seed)), new InetSocketAddress("127.0.0.1", seed)));
+        protocol.announceJoin(selfInfo(id, port), "c", 1L, 1000L + port, seedAddresses);
         started.add(protocol);
 
         return protocol;
@@ -135,7 +135,6 @@ class SwimLateJoinerLabelsTest {
             var handler = net.get(new InetSocketAddress("127.0.0.1", target.getPort()));
 
             if (handler != null) {
-                // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task or from the wire thread; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                 handler.onMessage(self, message);
             }
         }

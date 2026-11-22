@@ -27,6 +27,7 @@ import org.pragmatica.swim.SwimMessage;
 import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.Announce;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 
 import java.net.InetSocketAddress;
@@ -83,7 +84,7 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
 
         detector.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
         ctx.dispatch(new SwimHealthEvents.StartRequested());
-        swim = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, transport, noopListener(), SELF, new InetSocketAddress("127.0.0.1", 9101))
+        swim = SwimTestProtocols.swimProtocol(SwimConfig.DEFAULT, transport, noopListener(), SELF, new InetSocketAddress("127.0.0.1", 9101))
                            .unwrap();
         ctx.dispatch(new SwimHealthEvents.ProtocolReady(swim, transport, GossipEncryptor.none()));
     }
@@ -131,7 +132,7 @@ class CoreSwimHealthDetectorAssignedAnnounceTest {
         detector.announceJoinWhenAssigned(self, "c", 5L, 7L, List.of(SEED), NEVER_OVERDUE);
         detector.markAssigned();
         await().atMost(5, TimeUnit.SECONDS).until(() -> !announcesToSeed().isEmpty());
-        swim.deliverForTest(SEED, Ack.ack(SEED_ID, 0L, List.of()));
+        swim.onMessage(SEED, Ack.ack(SEED_ID, 0L, List.of()));
         Thread.sleep(200);
 
         var afterJoinAck = announcesToSeed().size();

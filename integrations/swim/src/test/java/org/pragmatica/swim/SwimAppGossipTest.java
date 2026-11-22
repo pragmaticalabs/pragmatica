@@ -57,7 +57,7 @@ class SwimAppGossipTest {
     @BeforeEach
     void setUp() {
         transport = new RecordingTransport();
-        protocol = SwimProtocol.swimProtocol(swimConfig(timeSpan(1).seconds(), timeSpan(500).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(1).seconds()),
+        protocol = SwimTestProtocols.swimProtocol(swimConfig(timeSpan(1).seconds(), timeSpan(500).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(1).seconds()),
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,
@@ -232,7 +232,7 @@ class SwimAppGossipTest {
 
         @Test
         void tick_runsAppGossip_onTheProbeCadence() {
-            var ticking = SwimProtocol.swimProtocol(swimConfig(timeSpan(50).millis(), timeSpan(40).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(20).millis()),
+            var ticking = SwimTestProtocols.swimProtocol(swimConfig(timeSpan(50).millis(), timeSpan(40).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(20).millis()),
                                                     transport,
                                                     new RecordingListener(),
                                                     SELF_ID,
@@ -253,7 +253,7 @@ class SwimAppGossipTest {
     @Nested
     class Receiving {
         private void arrives(NodeId from, int channel, byte[] payload) {
-            protocol.deliverForTest(addressOf(0), AppGossip.appGossip(from, channel, payload));
+            protocol.onMessage(addressOf(0), AppGossip.appGossip(from, channel, payload));
         }
 
         @BeforeEach
@@ -291,7 +291,7 @@ class SwimAppGossipTest {
 
         @Test
         void onMessage_fromAMemberPrunedOutOfTheMembershipScope_isDropped() {
-            protocol.driveForTest(() -> protocol.setMembershipEligibility(id -> !id.equals(peer(0))));
+            protocol.setMembershipEligibility(id -> !id.equals(peer(0)));
             member(1, MemberState.ALIVE);
 
             arrives(peer(0), CHANNEL, new byte[]{1});
