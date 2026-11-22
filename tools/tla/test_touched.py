@@ -359,5 +359,85 @@ class RealCommits(unittest.TestCase):
         self.assertIn('Stalled:ClearStalledOf', out)
 
 
+class LiveCaseDeparturePush(unittest.TestCase):
+    """The live case of 2026-11-22: #3576 (50a8222c45, on rc6) rewrote DeparturePushRun.java, under code whose
+    DHTDepartureDrain fragments are not on rc6 yet (#3580, tip 8a0383dded on feat/tla-dht-departure-drain-rc6). On rc6 the
+    check is green because no fragment exists there; had #3580 landed first, #3576 would have conflicted with the fragments
+    and its author would have kept them and taken the new code. The fixture is built from the two real commits: git's own
+    three-way merge of #3576 onto the #3580 tip, each conflict resolved as that author would (the fragment block kept above
+    the new declaration), committed on top of the tip. It needs both commits in the clone: the #3580 tip lives on its branch
+    until #3580 merges, so a clone without it skips (TLA_REQUIRE_REAL=1 makes that an error)."""
+    PATH = 'integrations/dht/src/main/java/org/pragmatica/dht/DeparturePushRun.java'
+    TIP = '8a0383dded'
+    FIX = '50a8222c45'
+
+    @staticmethod
+    def resolve(text):
+        out, lines, i = [], text.split('\n'), 0
+        while i < len(lines):
+            if not lines[i].startswith('<<<<<<<'):
+                out.append(lines[i]); i += 1; continue
+            ours, theirs = [], []
+            i += 1
+            while not lines[i].startswith('======='):
+                ours.append(lines[i]); i += 1
+            i += 1
+            while not lines[i].startswith('>>>>>>>'):
+                theirs.append(lines[i]); i += 1
+            i += 1
+            s = next(k for k, l in enumerate(ours) if l.strip().startswith('/// ```tla '))
+            e = s + 1
+            while ours[e].strip() != '/// ```':
+                e += 1
+            k = 0
+            while k < len(theirs) and theirs[k].strip().startswith('///'):
+                k += 1
+            out += theirs[:k] + ours[s:e + 1] + theirs[k:]
+        return '\n'.join(out)
+
+    def setUp(self):
+        for sha in (self.TIP, self.FIX):
+            if subprocess.run(['git', '-C', REPO, 'cat-file', '-e', sha + '^{commit}'], capture_output=True).returncode != 0:
+                if os.environ.get('TLA_REQUIRE_REAL') == '1':
+                    self.fail(f'commit {sha} is not in this clone and TLA_REQUIRE_REAL=1')
+                self.skipTest(f'commit {sha} is not in this clone (fetch feat/tla-dht-departure-drain-rc6)')
+        self.r = Repo()
+        self.addCleanup(shutil.rmtree, self.r.d)
+        # the fixture repository borrows the clone's objects through alternates: nothing is copied into or written to the clone
+        gd = subprocess.run(['git', '-C', REPO, 'rev-parse', '--git-common-dir'], capture_output=True, text=True).stdout.strip()
+        gd = gd if os.path.isabs(gd) else os.path.join(REPO, gd)
+        with open(os.path.join(self.r.d, '.git', 'objects', 'info', 'alternates'), 'w') as f:
+            f.write(os.path.join(gd, 'objects') + '\n')
+        merged = subprocess.run(['git', '-C', self.r.d, 'merge-tree', '--write-tree', f'--merge-base={self.FIX}^', self.TIP, self.FIX],
+                                capture_output=True, text=True)
+        self.assertIn(merged.returncode, (0, 1), merged.stderr)
+        tree = merged.stdout.split('\n')[0].strip()
+        text = self.r.g('show', f'{tree}:{self.PATH}')
+        blob = subprocess.run(['git', '-C', self.r.d, 'hash-object', '-w', '--stdin'], input=self.resolve(text), capture_output=True,
+                              text=True, env=ENV).stdout.strip()
+        self.r.g('read-tree', tree)
+        self.r.g('update-index', '--add', '--cacheinfo', f'100644,{blob},{self.PATH}')
+        self.head = self.r.g('commit-tree', self.r.g('write-tree'), '-p', self.TIP, '-m', '#3576 over the #3580 fragments')
+
+    def run_check(self, body=''):
+        return self.r.run(self.TIP, self.head, body)
+
+    def test_3576_over_the_3580_fragments_is_red_for_plan_retarget_and_halt(self):
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        for part in ('Plan', 'Retarget', 'Halt'):
+            self.assertIn(f'DeparturePushRun.java', out)
+            self.assertIn(f'RED DHTDepartureDrain:{part} ', out)
+
+    def test_3576_over_the_3580_fragments_is_green_with_a_reason(self):
+        rc, out = self.run_check('tla-unchanged: DHTDepartureDrain: the push is re-planned per chain now, the model abstracts it')
+        self.assertEqual(rc, 0, out)
+
+    def test_the_same_3576_on_rc6_is_green_because_no_fragment_is_there_to_go_stale(self):
+        p = subprocess.run([sys.executable, SCRIPT, '--base', self.FIX + '^', '--head', self.FIX, '--repo', REPO], capture_output=True,
+                           text=True, env=dict(os.environ, PR_BODY=''))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()

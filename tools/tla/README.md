@@ -130,7 +130,9 @@ line that holds code (not a blank line, not a comment) falls inside such a regio
   fragment of that module in the PR). Use it when the model still describes the code, e.g. metrics-only edits.
 - The base is reduced to `merge-base(base, head)`; a rename is followed; a file new in the PR has no fragment to keep.
 - Not a required check (a ruleset edit, the owner's). Tests: `python3 -m unittest discover -s tools/tla -p test_touched.py`
-  (fixture repositories for every case, plus the real rc6 commits of #3455 and #3278 as positive controls).
+  (fixture repositories for every case, plus the real rc6 commits of #3455 and #3278 as positive controls, and the live case of
+  2026-11-22: #3576 over the not-yet-landed #3580 fragments of `DHTDepartureDrain` is RED for Plan, Retarget and Halt, while
+  the same #3576 on rc6 is green because no fragment was there; that case needs the #3580 tip commit in the clone and skips without it).
 
 ### Evidence rows (`results.tsv`)
 
