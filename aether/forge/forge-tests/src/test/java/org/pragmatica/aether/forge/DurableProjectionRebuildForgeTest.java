@@ -317,8 +317,12 @@ class DurableProjectionRebuildForgeTest {
                                 assertThat(found).describedAs("exactly one node holds the group's partition")
                                           .hasSize(1);
                                 seen.add(found.getFirst().id());
-                                assertThat(seen.size() >= 3 && seen.subList(seen.size() - 3, seen.size()).stream().distinct().count() == 1)
-                                          .describedAs("the assignment is stable across one reconcile interval: %s", seen)
+                                assertThat(seen.size() >= 3 && seen.subList(seen.size() - 3,
+                                                                            seen.size())
+                                                                   .stream()
+                                                                   .distinct()
+                                                                   .count() == 1).describedAs("the assignment is stable across one reconcile interval: %s",
+                                                                                              seen)
                                           .isTrue();
                                 // The holder's store holds a model. NOT "the first node with a model is the holder": a
                                 // node that lost the assignment keeps its stale store (rev1369 MEDIUM-3).
@@ -350,8 +354,9 @@ class DurableProjectionRebuildForgeTest {
         await().atMost(DELIVERY_TIMEOUT)
              .pollInterval(POLL_INTERVAL)
              .failFast(this::failIfSliceFailed)
-             .untilAsserted(() -> assertThat(model(appPort)).describedAs("the consuming node's model (app port %d)", appPort)
-                                                            .isEqualTo(expected));
+             .untilAsserted(() -> assertThat(model(appPort)).describedAs("the consuming node's model (app port %d)",
+                                                                         appPort)
+                                            .isEqualTo(expected));
     }
 
     private long model(int appPort) {

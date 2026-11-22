@@ -1,0 +1,5 @@
+class Generics 6:1-21:1
+  method max(List<? extends T>, Map<K, V[]>): T 7:5-9:5
+  method group(List<B>, java.util.function.Function<? super B, ? extends A>): Map<A, List<B>> 11:5-13:5
+  method rethrow(E): void 15:5-17:5
+  method listOf(X...): List<X> 19:5-20:67 @SafeVarargs

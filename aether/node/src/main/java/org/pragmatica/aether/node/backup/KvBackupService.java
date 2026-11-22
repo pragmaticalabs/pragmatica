@@ -494,19 +494,35 @@ public final class KvBackupService {
     /// A re-run after a failed push finds its declaration already committed locally: commit nothing then
     /// (git refuses an empty commit) and let the push carry the earlier one.
     private Result<Unit> commitDeclarationUnlessPresent(BackupDecision.Declaration declaration) {
-        return repository.localFile(GitBackupRepository.DECLARATION)
-                         .flatMap(present -> present.equals(Option.some(declaration.render()))
-                                             ? Result.unitResult()
-                                             : repository.commitFile(GitBackupRepository.DECLARATION,
-                                                                     declaration.render(),
-                                                                     "declare genesis " + declaration.render().strip()));
+        return localText(GitBackupRepository.DECLARATION).flatMap(present -> present.equals(Option.some(declaration.render()))
+                                                                             ? Result.unitResult()
+                                                                             : repository.commitFile(GitBackupRepository.DECLARATION,
+                                                                                                     declaration.render(),
+                                                                                                     "declare genesis " + declaration.render()
+                                                                                                                                     .strip()));
     }
 
     /// The declaration committed in the local repository, if any. Worker thread only.
     Result<Option<BackupDecision.Declaration>> localDeclaration() {
         return repository.prepare()
-                         .flatMap(_ -> repository.localFile(GitBackupRepository.DECLARATION))
+                         .flatMap(_ -> localText(GitBackupRepository.DECLARATION))
                          .map(KvBackupService::parseDeclaration);
+    }
+
+    /// `path` as committed at the local branch's head, three-valued (#3464): absent when the local branch does not exist yet or its head holds no
+    /// such file; a failure when git could not say (the flush then retries, changing nothing). Never "absent" for a read git did not answer.
+    private Result<Option<String>> localText(String path) {
+        return GitBackupRepository.found(repository.readLocalBranch()).flatMap(branch -> branch.fold(() -> success(Option.<String> none()),
+                                                                                                     _ -> remoteText("HEAD",
+                                                                                                                     path)));
+    }
+
+    /// `path` as committed at `ref`, a ref known to exist (the fetched remote head, or `HEAD` once [#localText] found the local branch): absent
+    /// when that commit's tree does not list it, a failure when git could not say or could not show it (#3464).
+    private Result<Option<String>> remoteText(String ref, String path) {
+        return GitBackupRepository.found(repository.readPath(ref, path)).flatMap(listed -> listed.fold(() -> success(Option.<String> none()),
+                                                                                                       _ -> GitBackupRepository.required(repository.readFile(ref,
+                                                                                                                                                             path)).map(Option::some)));
     }
 
     private Result<Unit> pushDeclaration() {
@@ -552,7 +568,7 @@ public final class KvBackupService {
     /// restore (#1533) and `declare-genesis` (#1532) — so neither reuses an incarnation this backup has
     /// already recorded for the lineage. Worker thread only.
     Result<Long> highestRecordedForLineage(String lineageId, long floor) {
-        return repository.fetchRestoreRef()
+        return repository.restoreRef()
                          .flatMap(ref -> ref.map(present -> highestRecorded(present, lineageId, floor))
                                             .or(() -> success(floor)));
     }
@@ -561,14 +577,14 @@ public final class KvBackupService {
     /// this service writes ([#commitMessage]); a backup commit whose subject is not in that form is decoded
     /// from its document instead, so it is never silently left out.
     Result<Long> highestRecorded(String ref, String lineageId, long floor) {
-        return repository.history(ref)
-                         .flatMap(lines -> Result.allOf(lines.stream().map(this::recordedHeader).toList()))
-                         .map(headers -> headers.stream()
-                                                .flatMap(Option::stream)
-                                                .filter(recorded -> recorded.lineageId()
-                                                                            .equals(lineageId))
-                                                .mapToLong(BackupHeader::incarnation)
-                                                .reduce(floor, Math::max));
+        return GitBackupRepository.required(repository.readHistory(ref))
+                                  .flatMap(lines -> Result.allOf(lines.stream().map(this::recordedHeader).toList()))
+                                  .map(headers -> headers.stream()
+                                                         .flatMap(Option::stream)
+                                                         .filter(recorded -> recorded.lineageId()
+                                                                                     .equals(lineageId))
+                                                         .mapToLong(BackupHeader::incarnation)
+                                                         .reduce(floor, Math::max));
     }
 
     /// `<sha> <subject>` → the header that commit recorded, absent for a commit that is not a backup.
@@ -591,9 +607,9 @@ public final class KvBackupService {
         }
 
         return subject.startsWith(SUBJECT_PREFIX)
-               ? repository.documentAt(commit)
-                           .flatMap(codec::decode)
-                           .map(document -> Option.some(document.header()))
+               ? GitBackupRepository.required(repository.readFile(commit, GitBackupRepository.FILE))
+                                    .flatMap(codec::decode)
+                                    .map(document -> Option.some(document.header()))
                : success(Option.none());
     }
 
@@ -749,24 +765,27 @@ public final class KvBackupService {
     }
 
     private Result<Head> readRemoteHead() {
-        return repository.fetchRemoteHead()
+        return repository.restoreRef()
                          .fold(_ -> readLocalHead(HeadKind.UNREACHABLE),
                                this::withRemoteDeclaration);
     }
 
-    private Result<Head> withRemoteDeclaration(Option<String> document) {
-        return repository.remoteFile(GitBackupRepository.DECLARATION)
-                         .map(declaration -> Head.head(HeadKind.REMOTE,
-                                                       document,
-                                                       parseDeclaration(declaration)));
+    /// The head at the fetched remote branch `ref`; none (no document, no declaration) when the remote has no such branch yet (a brand-new remote).
+    private Result<Head> withRemoteDeclaration(Option<String> ref) {
+        return ref.fold(() -> success(Head.head(HeadKind.REMOTE, Option.none(), Option.none())),
+                        this::remoteHeadAt);
+    }
+
+    private Result<Head> remoteHeadAt(String ref) {
+        return Result.all(remoteText(ref, GitBackupRepository.FILE), remoteText(ref, GitBackupRepository.DECLARATION)).map((document, declaration) -> Head.head(HeadKind.REMOTE,
+                                                                                                                                                                document,
+                                                                                                                                                                parseDeclaration(declaration)));
     }
 
     private Result<Head> readLocalHead(HeadKind kind) {
-        return Result.all(repository.localHead(),
-                          repository.localFile(GitBackupRepository.DECLARATION))
-                     .map((document, declaration) -> Head.head(kind,
-                                                               document,
-                                                               parseDeclaration(declaration)));
+        return Result.all(localText(GitBackupRepository.FILE), localText(GitBackupRepository.DECLARATION)).map((document, declaration) -> Head.head(kind,
+                                                                                                                                                    document,
+                                                                                                                                                    parseDeclaration(declaration)));
     }
 
     private static Option<BackupDecision.Declaration> parseDeclaration(Option<String> text) {
@@ -821,8 +840,7 @@ public final class KvBackupService {
     }
 
     private Result<Boolean> commitUnlessUnchanged(String document) {
-        return repository.localHead()
-                         .flatMap(local -> commitUnlessSame(local, document));
+        return localText(GitBackupRepository.FILE).flatMap(local -> commitUnlessSame(local, document));
     }
 
     private Result<Boolean> commitUnlessSame(Option<String> local, String document) {
@@ -899,21 +917,26 @@ public final class KvBackupService {
 
         LOG.debug("KV backup push failed: {}", cause.message());
 
-        return success(pushNotLanded(cause));
+        return pushNotLanded(cause);
     }
 
     /// A rejection remembers the remote head it was rejected against (the fetched tracking ref is still the one this attempt decided on), so a caller
-    /// that decides again can tell a race, which moves the head, from a refusal that repeats against the same one.
-    private String rejectedHeadId() {
-        return repository.remoteHeadCommit()
-                         .or(Option.none())
-                         .or(NO_REMOTE_HEAD);
+    /// that decides again can tell a race, which moves the head, from a refusal that repeats against the same one. A remote that had no backup branch
+    /// when it was read has no tracking ref: its identity is [#NO_REMOTE_HEAD]. A tracking ref git cannot read fails the flush (#3464); it never
+    /// becomes that stand-in, which a second unreadable read would match and so take for a repeated refusal.
+    private Result<String> rejectedHeadId() {
+        return GitBackupRepository.found(repository.readTrackingBranch()).flatMap(tracked -> tracked.fold(() -> success(NO_REMOTE_HEAD),
+                                                                                                          _ -> trackedHeadId()));
     }
 
-    private Outcome pushNotLanded(Cause cause) {
+    private Result<String> trackedHeadId() {
+        return GitBackupRepository.required(repository.readCommitId(repository.remoteTrackingRef()));
+    }
+
+    private Result<Outcome> pushNotLanded(Cause cause) {
         return cause instanceof BackupRepositoryError.PushRejected
-               ? Outcome.pushRejected(rejectedHeadId(), cause.message())
-               : Outcome.pushFailed(cause.message());
+               ? rejectedHeadId().map(rejectedAt -> Outcome.pushRejected(rejectedAt, cause.message()))
+               : success(Outcome.pushFailed(cause.message()));
     }
 
     // --- outcome handling ---

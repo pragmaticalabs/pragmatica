@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.io.IOException;
@@ -21,10 +20,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
@@ -56,9 +51,15 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+
 
 /// #1573 end to end on a real three-node cluster: the echo slice deployed on every node, the real
 /// admission-boundary recorder, the real cluster-sync pong, the real leader-side detector, the real
@@ -108,11 +109,9 @@ class AutoRollbackOnAllInstancesFailedTest {
     void everyInstanceDefective_insideBakeWindow_rollsBackOnce_andRaisesEventAndAlert() {
         startDeployed();
         assertThat(committedClusterToml().isEmpty()).as("arming: the built-in default — the bootstrap seed carries no cluster TOML, no [rollback]")
-                                          .isTrue();
+                  .isTrue();
         seedRollbackRecord(System.currentTimeMillis());
-
         probeUntil(this::rolledBack);
-
         assertRolledBackOnce();
         assertEventAndAlert();
         assertAutoRollbackEvent();
@@ -127,10 +126,8 @@ class AutoRollbackOnAllInstancesFailedTest {
                           enabled = false
                           """);
         seedRollbackRecord(System.currentTimeMillis());
-
         probeUntil(this::alertRaised);
         probeFor(QUIET_MS);
-
         assertEventAndAlert();
         assertNotRolledBack();
     }
@@ -140,10 +137,8 @@ class AutoRollbackOnAllInstancesFailedTest {
     void everyInstanceDefective_outsideBakeWindow_raisesEventAndAlert_butNeverRollsBack() {
         startDeployed();
         seedRollbackRecord(System.currentTimeMillis() - TimeSpan.timeSpan(16).minutes().millis());
-
         probeUntil(this::alertRaised);
         probeFor(QUIET_MS);
-
         assertEventAndAlert();
         assertNotRolledBack();
     }
@@ -153,14 +148,13 @@ class AutoRollbackOnAllInstancesFailedTest {
     void everyInstanceReturnsBusinessFailures_neverRaisesOrRollsBack() {
         startDeployed();
         seedRollbackRecord(System.currentTimeMillis());
-
         var deadline = System.currentTimeMillis() + QUIET_MS;
 
         while (System.currentTimeMillis() < deadline) {
             cluster.allNodes()
-                   .forEach(node -> assertThat(businessFailureOnOwnInstance(node))
-                                        .as("arming: %s executed the method and returned its business failure", node.self().id())
-                                        .isTrue());
+                   .forEach(node -> assertThat(businessFailureOnOwnInstance(node)).as("arming: %s executed the method and returned its business failure",
+                                                                                      node.self().id())
+                                              .isTrue());
             sleep(250);
         }
 
@@ -181,8 +175,7 @@ class AutoRollbackOnAllInstancesFailedTest {
         var deadline = System.currentTimeMillis() + 2 * QUIET_MS;
 
         while (System.currentTimeMillis() < deadline) {
-            IntStream.range(0, NODES)
-                     .forEach(slot -> countStatus(httpPing(basePort + APP_OFFSET + slot), served, other));
+            IntStream.range(0, NODES).forEach(slot -> countStatus(httpPing(basePort + APP_OFFSET + slot), served, other));
             probeRounds(1);
             sleep(500);
         }
@@ -203,13 +196,14 @@ class AutoRollbackOnAllInstancesFailedTest {
         startDeployed("b2");
         var ids = cluster.allNodes().stream().map(AetherNode::self).toList();
 
-        assertThat(ReplicaPlacement.isOwner(SystemStreams.CLUSTER_EVENTS.asString(), 0, ids, NODES, leader().self()))
-            .as("arming: the leader is NOT the cluster-events owner")
-            .isFalse();
+        assertThat(ReplicaPlacement.isOwner(SystemStreams.CLUSTER_EVENTS.asString(),
+                                            0,
+                                            ids,
+                                            NODES,
+                                            leader().self())).as("arming: the leader is NOT the cluster-events owner")
+                  .isFalse();
         seedRollbackRecord(System.currentTimeMillis());
-
         probeUntil(this::rolledBack);
-
         assertEventAndAlert();
         assertAutoRollbackEvent();
     }
@@ -230,12 +224,13 @@ class AutoRollbackOnAllInstancesFailedTest {
         var oldLeader = cluster.currentLeader().unwrap();
 
         assertThat(LifecycleAwait.bestEffort("kill leader", cluster, cluster.killNode(oldLeader, false)).isSuccess()).isTrue();
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS)
-               .until(() -> cluster.currentLeader().filter(leader -> !leader.equals(oldLeader)).isPresent());
-
+        await().atMost(BUDGET.millis(),
+                       TimeUnit.MILLISECONDS)
+             .until(() -> cluster.currentLeader()
+                                 .filter(leader -> !leader.equals(oldLeader))
+                                 .isPresent());
         probeUntil(this::rolledBack);
         probeFor(QUIET_MS);
-
         assertRolledBackOnce();
     }
 
@@ -245,13 +240,14 @@ class AutoRollbackOnAllInstancesFailedTest {
 
     private void startDeployed(String prefix) {
         startOnFreeBlock(prefix);
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS)
-               .until(() -> cluster.currentLeader().isPresent());
+        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> cluster.currentLeader()
+                                                                                  .isPresent());
         applyBlueprint();
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS)
-               .until(() -> cluster.allNodes()
-                                   .stream()
-                                   .allMatch(this::hostsActiveInstance));
+        await().atMost(BUDGET.millis(),
+                       TimeUnit.MILLISECONDS)
+             .until(() -> cluster.allNodes()
+                                 .stream()
+                                 .allMatch(this::hostsActiveInstance));
     }
 
     /// The probe (see [#blockIsFree]) releases every port before the cluster binds it, and CI runs a module-parallel
@@ -271,11 +267,16 @@ class AutoRollbackOnAllInstancesFailedTest {
             if ("started".equals(outcome)) {
                 return;
             }
+
             if (!isBindCollision(outcome) || attempt == START_ATTEMPTS) {
                 LifecycleAwait.settled("start auto-rollback cluster", cluster, starting);
+
                 return;
             }
-            LifecycleAwait.bestEffort("stop the cluster that lost a port between probe and bind", cluster, cluster.stop());
+
+            LifecycleAwait.bestEffort("stop the cluster that lost a port between probe and bind",
+                                      cluster,
+                                      cluster.stop());
             cluster = null;
         }
     }
@@ -308,17 +309,21 @@ class AutoRollbackOnAllInstancesFailedTest {
 
     private boolean legacyActive(AetherNode node) {
         return leader().kvStore()
-                       .getTyped(new AetherKey.NodeArtifactKey(node.self(), ARTIFACT), AetherValue.NodeArtifactValue.class)
-                       .filter(value -> value.state() == SliceState.ACTIVE)
-                       .isPresent();
+                     .getTyped(new AetherKey.NodeArtifactKey(node.self(),
+                                                             ARTIFACT),
+                               AetherValue.NodeArtifactValue.class)
+                     .filter(value -> value.state() == SliceState.ACTIVE)
+                     .isPresent();
     }
 
     /// F5b: under FSM2 the instance's state is its observed row; no `NodeArtifactKey` is written.
     private boolean observedActive(AetherNode node) {
         return leader().kvStore()
-                       .getTyped(new AetherKey.SliceObservedKey(node.self(), ARTIFACT), AetherValue.SliceObservedValue.class)
-                       .filter(value -> value.state() == AetherValue.SliceObservedState.ACTIVE)
-                       .isPresent();
+                     .getTyped(new AetherKey.SliceObservedKey(node.self(),
+                                                              ARTIFACT),
+                               AetherValue.SliceObservedValue.class)
+                     .filter(value -> value.state() == AetherValue.SliceObservedState.ACTIVE)
+                     .isPresent();
     }
 
     /// The deployment engine this suite forces, over the global selector; none here, FSM2 in
@@ -329,8 +334,8 @@ class AutoRollbackOnAllInstancesFailedTest {
 
     private Option<String> committedClusterToml() {
         return leader().kvStore()
-                       .getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class)
-                       .flatMap(ClusterConfigValue::tomlContent);
+                     .getTyped(ClusterConfigKey.CURRENT, ClusterConfigValue.class)
+                     .flatMap(ClusterConfigValue::tomlContent);
     }
 
     /// Commits a full, apply-valid cluster TOML carrying `rollbackSection` into the RUNNING cluster — a
@@ -352,9 +357,8 @@ class AutoRollbackOnAllInstancesFailedTest {
                    %s
                    """.formatted(NODES, rollbackSection);
 
-        assertThat(ClusterBootstrapConfigParser.parse(toml).fold(Cause::message, _ -> "valid"))
-            .as("arming: the document passes apply validation")
-            .isEqualTo("valid");
+        assertThat(ClusterBootstrapConfigParser.parse(toml).fold(Cause::message, _ -> "valid")).as("arming: the document passes apply validation")
+                  .isEqualTo("valid");
         assertThat(RollbackPolicyParser.fromClusterToml(Option.some(toml)).map(RollbackConfig::enabled).or(true)).isFalse();
         var value = new ClusterConfigValue(Option.some(toml),
                                            before.clusterName(),
@@ -375,43 +379,56 @@ class AutoRollbackOnAllInstancesFailedTest {
                                                                                                                    Option.some(before),
                                                                                                                    Option.some(value))));
 
-        assertThat(node.<Object>apply(List.of(transaction)).await(REQUEST).unwrap())
-            .anyMatch(outcome -> outcome instanceof KVCommand.TransactionResult accepted && accepted.transactionId().equals(id)
-                                 && accepted.accepted());
+        assertThat(node.<Object> apply(List.of(transaction)).await(REQUEST).unwrap()).anyMatch(outcome -> outcome instanceof KVCommand.TransactionResult accepted
+                                                                                                          && accepted.transactionId()
+                                                                                                                     .equals(id)
+                                                                                                          && accepted.accepted());
     }
 
     private void assertAutoRollbackEvent() {
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS)
-               .until(this::autoRollbackEventEmitted);
+        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(this::autoRollbackEventEmitted);
     }
 
     /// The CRITICAL rollback event names the artifact, from→to, and the per-host defect evidence.
     private boolean autoRollbackEventEmitted() {
         return leader().eventAggregator()
-                       .events()
-                       .await(REQUEST)
-                       .map(events -> events.stream()
-                                            .anyMatch(event -> event instanceof ClusterEvent.AutoRollback rollback
-                                                               && rollback.severity() == ClusterEvent.Severity.CRITICAL
-                                                               && rollback.details().getOrDefault("artifact", "").equals(ARTIFACT.base().asString())
-                                                               && rollback.details().getOrDefault("from", "").equals(ARTIFACT.version().withQualifier())
-                                                               && rollback.details().getOrDefault("to", "").equals(EARLIER.withQualifier())
-                                                               && rollback.details().keySet().stream().filter(key -> key.startsWith("defects.")).count() == NODES))
-                       .or(false);
+                     .events()
+                     .await(REQUEST)
+                     .map(events -> events.stream()
+                                          .anyMatch(event -> event instanceof ClusterEvent.AutoRollback rollback
+                                                             && rollback.severity() == ClusterEvent.Severity.CRITICAL
+                                                             && rollback.details()
+                                                                        .getOrDefault("artifact", "")
+                                                                        .equals(ARTIFACT.base().asString())
+                                                             && rollback.details()
+                                                                        .getOrDefault("from", "")
+                                                                        .equals(ARTIFACT.version().withQualifier())
+                                                             && rollback.details()
+                                                                        .getOrDefault("to", "")
+                                                                        .equals(EARLIER.withQualifier())
+                                                             && rollback.details()
+                                                                        .keySet()
+                                                                        .stream()
+                                                                        .filter(key -> key.startsWith("defects."))
+                                                                        .count() == NODES))
+                     .or(false);
     }
 
     /// The rollback record a deploy from [#EARLIER] to the current version would have committed, anchored at
     /// `sinceMs` — inside or outside the bake window.
     private void seedRollbackRecord(long sinceMs) {
         var record = new PreviousVersionValue(ARTIFACT.base(), EARLIER, ARTIFACT.version(), sinceMs, 0, 0, List.of());
-        var put = new KVCommand.Put<AetherKey, AetherValue>(PreviousVersionKey.previousVersionKey(ARTIFACT.base()), record);
+        var put = new KVCommand.Put<AetherKey, AetherValue>(PreviousVersionKey.previousVersionKey(ARTIFACT.base()),
+                                                            record);
 
-        assertThat(leader().<Object>apply(List.of(put)).await(REQUEST).isSuccess()).isTrue();
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS)
-               .until(() -> leader().kvStore()
-                                    .getTyped(PreviousVersionKey.previousVersionKey(ARTIFACT.base()), PreviousVersionValue.class)
-                                    .filter(record::equals)
-                                    .isPresent());
+        assertThat(leader().<Object> apply(List.of(put)).await(REQUEST).isSuccess()).isTrue();
+        await().atMost(BUDGET.millis(),
+                       TimeUnit.MILLISECONDS)
+             .until(() -> leader().kvStore()
+                                .getTyped(PreviousVersionKey.previousVersionKey(ARTIFACT.base()),
+                                          PreviousVersionValue.class)
+                                .filter(record::equals)
+                                .isPresent());
     }
 
     private void probeUntil(BooleanSupplier done) {
@@ -463,7 +480,8 @@ class AutoRollbackOnAllInstancesFailedTest {
                      .flatMap(bridge::encode)
                      .flatMap(bytes -> bridge.invoke("fail", bytes))
                      .await(REQUEST)
-                     .fold(cause -> !(cause instanceof SliceDefect), _ -> false);
+                     .fold(cause -> !(cause instanceof SliceDefect),
+                           _ -> false);
     }
 
     private static int httpPing(int port) {
@@ -473,9 +491,9 @@ class AutoRollbackOnAllInstancesFailedTest {
                                  .build();
 
         return jdkHttpOperations().sendString(request)
-                                  .await(REQUEST)
-                                  .map(response -> response.statusCode())
-                                  .or(-1);
+                                .await(REQUEST)
+                                .map(response -> response.statusCode())
+                                .or(-1);
     }
 
     private static void countStatus(int status, AtomicInteger served, AtomicInteger other) {
@@ -487,21 +505,25 @@ class AutoRollbackOnAllInstancesFailedTest {
     }
 
     private boolean rolledBack() {
-        return sliceTarget().filter(target -> target.currentVersion().equals(EARLIER)).isPresent();
+        return sliceTarget().filter(target -> target.currentVersion()
+                                                    .equals(EARLIER))
+                          .isPresent();
     }
 
     private boolean alertRaised() {
         return leader().alertManager()
-                       .getActiveSliceFailureAlerts()
-                       .stream()
-                       .anyMatch(alert -> alert.artifact().equals(ARTIFACT));
+                     .getActiveSliceFailureAlerts()
+                     .stream()
+                     .anyMatch(alert -> alert.artifact()
+                                             .equals(ARTIFACT));
     }
 
     private void assertRolledBackOnce() {
         assertThat(rolledBack()).isTrue();
         var record = leader().kvStore()
-                             .getTyped(PreviousVersionKey.previousVersionKey(ARTIFACT.base()), PreviousVersionValue.class)
-                             .unwrap();
+                           .getTyped(PreviousVersionKey.previousVersionKey(ARTIFACT.base()),
+                                     PreviousVersionValue.class)
+                           .unwrap();
 
         assertThat(record.currentVersion()).isEqualTo(EARLIER);
         assertThat(record.rollbackCount()).as("exactly one rollback committed").isEqualTo(1);
@@ -510,33 +532,34 @@ class AutoRollbackOnAllInstancesFailedTest {
 
     private void assertNotRolledBack() {
         assertThat(sliceTarget().map(SliceTargetValue::currentVersion)).as("the target never moved")
-                                                                       .isEqualTo(Option.some(ARTIFACT.version()));
+                  .isEqualTo(Option.some(ARTIFACT.version()));
         assertThat(leader().kvStore()
-                           .getTyped(PreviousVersionKey.previousVersionKey(ARTIFACT.base()), PreviousVersionValue.class)
-                           .map(PreviousVersionValue::rollbackCount)).isEqualTo(Option.some(0));
+                         .getTyped(PreviousVersionKey.previousVersionKey(ARTIFACT.base()),
+                                   PreviousVersionValue.class)
+                         .map(PreviousVersionValue::rollbackCount)).isEqualTo(Option.some(0));
     }
 
     private void assertEventAndAlert() {
         assertThat(alertRaised()).as("the leader's AlertManager holds the slice-failure alert").isTrue();
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS)
-               .until(this::sliceFailureEventEmitted);
+        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(this::sliceFailureEventEmitted);
     }
 
     private boolean sliceFailureEventEmitted() {
         return leader().eventAggregator()
-                       .events()
-                       .await(REQUEST)
-                       .map(events -> events.stream()
-                                            .anyMatch(event -> event instanceof ClusterEvent.SliceFailure failure
-                                                               && failure.details()
-                                                                         .getOrDefault("artifact", "")
-                                                                         .equals(ARTIFACT.asString())))
-                       .or(false);
+                     .events()
+                     .await(REQUEST)
+                     .map(events -> events.stream()
+                                          .anyMatch(event -> event instanceof ClusterEvent.SliceFailure failure && failure.details()
+                                                                                                                          .getOrDefault("artifact",
+                                                                                                                                        "")
+                                                                                                                          .equals(ARTIFACT.asString())))
+                     .or(false);
     }
 
     private Option<SliceTargetValue> sliceTarget() {
         return leader().kvStore()
-                       .getTyped(SliceTargetKey.sliceTargetKey(ARTIFACT.base()), SliceTargetValue.class);
+                     .getTyped(SliceTargetKey.sliceTargetKey(ARTIFACT.base()),
+                               SliceTargetValue.class);
     }
 
     private AetherNode leader() {
@@ -551,7 +574,8 @@ class AutoRollbackOnAllInstancesFailedTest {
         return cluster.status()
                       .nodes()
                       .stream()
-                      .filter(status -> status.id().equals(leaderId))
+                      .filter(status -> status.id()
+                                              .equals(leaderId))
                       .findFirst()
                       .orElseThrow()
                       .mgmtPort();
@@ -571,17 +595,17 @@ class AutoRollbackOnAllInstancesFailedTest {
                 return base;
             }
         }
+
         throw new AssertionError("no free port block between " + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE);
     }
 
     private static boolean blockIsFree(int base) {
         for (int slot = 0; slot < SLOTS; slot++) {
-            if (!(udpFree(base + slot) && tcpFree(base + slot)
-                  && udpFree(base + slot + CoreSwimHealthDetector.SWIM_PORT_OFFSET)
-                  && tcpFree(base + MGMT_OFFSET + slot) && tcpFree(base + APP_OFFSET + slot))) {
+            if (! (udpFree(base + slot) && tcpFree(base + slot) && udpFree(base + slot + CoreSwimHealthDetector.SWIM_PORT_OFFSET) && tcpFree(base + MGMT_OFFSET + slot) && tcpFree(base + APP_OFFSET + slot))) {
                 return false;
             }
         }
+
         return true;
     }
 
@@ -589,6 +613,7 @@ class AutoRollbackOnAllInstancesFailedTest {
         try (var socket = new ServerSocket()) {
             socket.setReuseAddress(false);
             socket.bind(loopback(port));
+
             return true;
         } catch (IOException e) {
             return false;
@@ -599,6 +624,7 @@ class AutoRollbackOnAllInstancesFailedTest {
         try (var socket = new DatagramSocket(null)) {
             socket.setReuseAddress(false);
             socket.bind(loopback(port));
+
             return true;
         } catch (IOException e) {
             return false;

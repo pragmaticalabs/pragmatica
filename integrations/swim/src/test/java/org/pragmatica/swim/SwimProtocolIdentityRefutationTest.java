@@ -70,7 +70,7 @@ class SwimProtocolIdentityRefutationTest {
     private static SwimProtocol bootingProtocol(RecordingObservationSink observations,
                                                 AtomicBoolean linkUp,
                                                 SwimTransport transport) {
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  transport,
                                                  new RecordingListener(),
                                                  SELF_ID,

@@ -492,6 +492,10 @@ public final class EntityCheckpointDriver {
     /// refused Put still resolves successfully, so counting it would report a write that did not happen.
     /// What stays uncountable here is a claim refused because ANOTHER node committed higher — this node
     /// cannot see that, the same detection limit #700 records.
+    ///
+    /// `writes` also counts a restart skip (#3480): the substrate resolves a save at the committed claim, whose block this node holds on a
+    /// private durable tier, successfully without writing, and it is counted here as a write, because the record it reached holds. The
+    /// skip is not reported separately.
     @Contract
     private static void recordWrite(Registration registration, int partition, long through) {
         if (registration.checkpointedThrough().merge(partition, through, Math::max) == through) {

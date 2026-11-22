@@ -67,7 +67,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -225,7 +225,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -330,7 +330,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
             observations = new RecordingObservationSink();
             protocol.addObservationListener(observations);
@@ -447,7 +447,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
             observations = new RecordingObservationSink();
             protocol.addObservationListener(observations);
@@ -562,7 +562,7 @@ class SwimProtocolTest {
             var config = swimConfig(timeSpan(50).millis(), timeSpan(20).millis(), 3, timeSpan(100).millis(), 8);
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -601,7 +601,7 @@ class SwimProtocolTest {
             );
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
                                             .fold(cause -> null, v -> v);
 
             localProtocol.addSeedMember(NODE_A, ADDR_A);
@@ -697,7 +697,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -974,7 +974,7 @@ class SwimProtocolTest {
         @Test
         void stopDuringAnAttempt_doesNotAnnounceToTheRemainingSeeds() throws InterruptedException {
             var blocking = new ParkingTransport();
-            var local = SwimProtocol.swimProtocol(swimConfig(), blocking, new RecordingListener(), SELF_ID, SELF_ADDR)
+            var local = SwimTestProtocols.swimProtocol(swimConfig(), blocking, new RecordingListener(), SELF_ID, SELF_ADDR)
                                     .fold(cause -> null, v -> v);
 
             local.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A, ADDR_B));
@@ -1082,7 +1082,7 @@ class SwimProtocolTest {
 
         @Test
         void start_alreadyRunning_returnsError() {
-            var protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            var protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                        .fold(cause -> null, v -> v);
 
             protocol.start();
@@ -1095,7 +1095,7 @@ class SwimProtocolTest {
 
         @Test
         void stop_notRunning_returnsError() {
-            var protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            var protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                        .fold(cause -> null, v -> v);
 
             var result = protocol.stop();
@@ -1120,7 +1120,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -1251,7 +1251,7 @@ class SwimProtocolTest {
             );
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
                                             .fold(cause -> null, v -> v);
 
             localProtocol.addSeedMember(FLAPPER, FLAPPER_ADDR);
@@ -1304,7 +1304,7 @@ class SwimProtocolTest {
             );
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
                                             .fold(cause -> null, v -> v);
 
             // Three stable members + one id that churns in and out between selections.
@@ -1383,7 +1383,7 @@ class SwimProtocolTest {
                                     timeSpan(60).seconds());  // joinGrace (≫ test window)
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener,
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener,
                                                           SELF_ID, SELF_ADDR, () -> false)
                                             .fold(cause -> null, v -> v);
 

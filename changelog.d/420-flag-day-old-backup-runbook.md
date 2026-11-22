@@ -1,0 +1,2 @@
+### Changed (2026-11-20 — #420: what an operator does with a backup written by another release)
+- **The backup-recovery runbook covers an old-release backup head** (#420). Restoring from a head this release cannot decode is not gated: the backup status is `HEAD_UNREADABLE` (`BACKUP_REMOTE_UNREADABLE`), nothing is flushed, and `aether backup declare-genesis` is refused. The runbook gives the six-step exit. It abandons the old backup, and the cluster starts empty. [verified: `EmberArtifactFlagDayRestoreTest`]

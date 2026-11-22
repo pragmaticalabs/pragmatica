@@ -18,7 +18,6 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
-
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -37,6 +36,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+
 
 /// #2983 — a Forge cluster run from a sibling `aether.toml` with `[app-http] security_mode = "jwt"`, `jwt_algorithm = "HS256"`
 /// and `auth_schemes = ["Token"]` and NO API key: the configuration goes through the real `ForgeServer.applyAppHttpSecurity`
@@ -61,6 +61,7 @@ class ForgeJwtAppHttpForgeTest {
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String PROTECTED_PATH = "/echo/jwt-probe";
     private static final String PUBLIC_PATH = "/ping";
+
     private static final String SIBLING = """
         [cluster]
         environment = "docker"
@@ -75,6 +76,7 @@ class ForgeJwtAppHttpForgeTest {
         [management]
         security_mode = "none"
         """;
+
     private static final String BLUEPRINT = """
         id = "forge.test:forge-jwt-2983:1.0.0"
 
@@ -88,10 +90,10 @@ class ForgeJwtAppHttpForgeTest {
         [security.overrides]
         "GET /ping" = "public"
         """.formatted(TestArtifacts.ECHO_SLICE, NODES);
+
     private static final Base64.Encoder B64 = Base64.getUrlEncoder().withoutPadding();
 
     private Path dir;
-
     private EmberCluster cluster;
     private final HttpClient http = HttpClient.newHttpClient();
 
@@ -100,20 +102,32 @@ class ForgeJwtAppHttpForgeTest {
         dir = Files.createTempDirectory("fjwt-sibling");
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "fjwt");
         Files.writeString(dir.resolve("aether.toml"), SIBLING);
-
         var base = EmberConfig.DEFAULT;
-        var startup = new StartupConfig(Option.some(dir.resolve("forge.toml")), Option.none(), Option.none(), false, 8888, base.nodes(), 1000);
+        var startup = new StartupConfig(Option.some(dir.resolve("forge.toml")),
+                                        Option.none(),
+                                        Option.none(),
+                                        false,
+                                        8888,
+                                        base.nodes(),
+                                        1000);
         var exits = new ArrayList<Integer>();
 
         new ForgeServer(startup, base, JdkHttpOperations.jdkHttpOperations()).applyAppHttpSecurity(cluster, exits::add);
         assertThat(exits).as("the sibling loads: the HS256 secret reaches Forge through AETHER_JWT_SECRET").isEmpty();
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-        await().alias("leader elected").atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
+        await().alias("leader elected")
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> cluster.currentLeader()
+                                 .isPresent());
         deployEchoSlice();
         await().alias("a valid token is served on every node: the route is live and the JWT config reached it")
-               .atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> appPorts().stream().allMatch(port -> status(port, PROTECTED_PATH, "Token " + token(SECRET)) == 200));
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> appPorts().stream()
+                                  .allMatch(port -> status(port,
+                                                           PROTECTED_PATH,
+                                                           "Token " + token(SECRET)) == 200));
     }
 
     @AfterAll
@@ -125,12 +139,18 @@ class ForgeJwtAppHttpForgeTest {
 
     @Test
     void validHs256Token_isServedOnEveryNode() {
-        appPorts().forEach(port -> assertThat(send(port, PROTECTED_PATH, "Token " + token(SECRET)).statusCode()).as("port %d", port).isEqualTo(200));
+        appPorts().forEach(port -> assertThat(send(port,
+                                                   PROTECTED_PATH,
+                                                   "Token " + token(SECRET)).statusCode()).as("port %d", port)
+                                             .isEqualTo(200));
     }
 
     @Test
     void forgedToken_isRefused401WithTheTokenChallenge() {
-        appPorts().forEach(port -> assertInvalidToken(send(port, PROTECTED_PATH, "Token " + token("another-shared-secret-of-32-bytes!!!")), port));
+        appPorts().forEach(port -> assertInvalidToken(send(port,
+                                                           PROTECTED_PATH,
+                                                           "Token " + token("another-shared-secret-of-32-bytes!!!")),
+                                                      port));
     }
 
     @Test
@@ -145,41 +165,52 @@ class ForgeJwtAppHttpForgeTest {
 
     private static void assertChallengeWithoutError(HttpResponse<String> response, int port) {
         assertThat(response.statusCode()).as("port %d", port).isEqualTo(401);
-        assertThat(response.headers().firstValue("WWW-Authenticate").orElse("")).as("port %d", port).startsWith("Token ").doesNotContain("error=");
+        assertThat(response.headers().firstValue("WWW-Authenticate").orElse("")).as("port %d", port)
+                  .startsWith("Token ")
+                  .doesNotContain("error=");
     }
 
     @Test
     void publicRoute_staysOpenWithoutACredential() {
-        appPorts().forEach(port -> assertThat(send(port, PUBLIC_PATH, null).statusCode()).as("port %d", port).isEqualTo(200));
+        appPorts().forEach(port -> assertThat(send(port, PUBLIC_PATH, null).statusCode()).as("port %d", port)
+                                             .isEqualTo(200));
     }
 
     private static void assertInvalidToken(HttpResponse<String> response, int port) {
         assertThat(response.statusCode()).as("port %d", port).isEqualTo(401);
         assertThat(response.headers().firstValue("WWW-Authenticate").orElse("")).as("port %d", port)
-                                                                                .contains("Token ")
-                                                                                .contains("error=\"invalid_token\"");
+                  .contains("Token ")
+                  .contains("error=\"invalid_token\"");
     }
 
     private List<Integer> appPorts() {
-        return cluster.status().nodes().stream().map(node -> BASE_APP_HTTP_PORT + (node.port() - BASE_PORT)).toList();
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .map(node -> BASE_APP_HTTP_PORT + (node.port() - BASE_PORT))
+                      .toList();
     }
 
     private void deployEchoSlice() {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + cluster.getLeaderManagementPort().unwrap() + "/api/v1/blueprints"))
+                                 .uri(URI.create("http://localhost:" + cluster.getLeaderManagementPort().unwrap()
+                                                + "/api/v1/blueprints"))
                                  .header("Content-Type", "application/toml")
                                  .POST(HttpRequest.BodyPublishers.ofString(BLUEPRINT))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
 
         await().alias("blueprint applied")
-               .atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> exchange(request).map(response -> response.body().contains("\"status\":\"applied\"")).orElse(false));
+             .atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> exchange(request).map(response -> response.body()
+                                                                    .contains("\"status\":\"applied\""))
+                                  .orElse(false));
     }
 
     private int status(int port, String path, String authorization) {
-        return exchange(request(port, path, authorization)).map(HttpResponse::statusCode).orElse(-1);
+        return exchange(request(port, path, authorization)).map(HttpResponse::statusCode)
+                       .orElse(-1);
     }
 
     private HttpResponse<String> send(int port, String path, String authorization) {
@@ -187,9 +218,14 @@ class ForgeJwtAppHttpForgeTest {
     }
 
     private static HttpRequest request(int port, String path, String authorization) {
-        var builder = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).GET().timeout(Duration.ofSeconds(10));
+        var builder = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .GET()
+                                 .timeout(Duration.ofSeconds(10));
 
-        return (authorization == null ? builder : builder.header("Authorization", authorization)).build();
+        return (authorization == null
+                ? builder
+                : builder.header("Authorization", authorization)).build();
     }
 
     private Optional<HttpResponse<String>> exchange(HttpRequest request) {
@@ -205,8 +241,9 @@ class ForgeJwtAppHttpForgeTest {
     }
 
     private static String token(String secret) {
-        var signingInput = B64.encodeToString("{\"alg\":\"HS256\",\"typ\":\"JWT\"}".getBytes(StandardCharsets.UTF_8)) + "."
-                           + B64.encodeToString(("{\"sub\":\"forge-2983\",\"exp\":" + (System.currentTimeMillis() / 1000 + 3600) + "}").getBytes(StandardCharsets.UTF_8));
+        var signingInput = B64.encodeToString("{\"alg\":\"HS256\",\"typ\":\"JWT\"}".getBytes(StandardCharsets.UTF_8))
+                         + "." + B64.encodeToString(("{\"sub\":\"forge-2983\",\"exp\":" + (System.currentTimeMillis() / 1000 + 3600)
+                                                    + "}").getBytes(StandardCharsets.UTF_8));
 
         return signingInput + "." + B64.encodeToString(hmac(secret, signingInput));
     }

@@ -126,7 +126,7 @@ class SwimIsolationProbeTest {
     @BeforeEach
     void setUp() {
         transport = new AddressedTransport();
-        protocol = SwimProtocol.swimProtocol(config(), transport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
+        protocol = SwimTestProtocols.swimProtocol(config(), transport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
                                .unwrap();
         protocol.setBootTokens(BootTokens.bootTokens(SELF_TOKEN));
         protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.FAULTY);
@@ -143,7 +143,7 @@ class SwimIsolationProbeTest {
 
     @Test
     void isolationProbe_latched_onePingPerRoundToTheFaultyPeers_roundRobin() {
-        assertThat(protocol.latchSelfIsolation(() -> true)).as("precondition: latched").isTrue();
+        assertThat(protocol.latchSelfIsolationForTest(() -> true)).as("precondition: latched").isTrue();
 
         protocol.probeRoundForTest();
         protocol.probeRoundForTest();
@@ -155,7 +155,7 @@ class SwimIsolationProbeTest {
 
     @Test
     void isolationProbe_directPing_namesNoRequester() {
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
 
         protocol.probeRoundForTest();
 
@@ -172,7 +172,7 @@ class SwimIsolationProbeTest {
 
     @Test
     void isolationProbe_lostPing_raisesNoLhmAndSendsNoPingReq() {
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
 
         protocol.probeRoundForTest();
         await().pollDelay(300, TimeUnit.MILLISECONDS).atMost(Duration.ofSeconds(1)).until(() -> true);
@@ -188,9 +188,9 @@ class SwimIsolationProbeTest {
     @Test
     void isolationProbe_peerHoldingTheNodeDead_answersWithNotice_nodeRefutes() {
         protocol.announceJoin(INFO_SELF, "", 1L, SELF_TOKEN, List.of());
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
         var holderTransport = new RecordingTransport();
-        holder = SwimProtocol.swimProtocol(config(), holderTransport, new RecordingListener(), NODE_A, ADDR_A, () -> false)
+        holder = SwimTestProtocols.swimProtocol(config(), holderTransport, new RecordingListener(), NODE_A, ADDR_A, () -> false)
                              .unwrap();
         holder.setBootTokens(BootTokens.bootTokens(TOKEN_A));
         holder.putDeathRecordForTest(SELF_ID, 1L, SELF_TOKEN, System.currentTimeMillis());
@@ -211,7 +211,7 @@ class SwimIsolationProbeTest {
 
     @Test
     void isolationProbe_stillLatchedAfterAPeerAck_probingContinues() {
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
 
         protocol.probeRoundForTest();
         protocol.onMessage(ADDR_A, Ack.ack(NODE_A, transport.firstPingTo(ADDR_A).sequence(), List.of()));
@@ -227,7 +227,7 @@ class SwimIsolationProbeTest {
 
         protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
         protocol.joinAcknowledgedForTest();
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
         protocol.removeMemberForTest(NODE_A);
         protocol.removeMemberForTest(NODE_B);
         transport.sent.clear();
@@ -248,7 +248,7 @@ class SwimIsolationProbeTest {
         protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of());
         protocol.addSeedMember(seedNode, seed);
         protocol.joinAcknowledgedForTest();
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
         protocol.removeMemberForTest(NODE_A);
         protocol.removeMemberForTest(NODE_B);
         protocol.removeMemberForTest(seedNode);
@@ -268,7 +268,7 @@ class SwimIsolationProbeTest {
 
         protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
         protocol.joinAcknowledgedForTest();
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
         transport.sent.clear();
 
         protocol.probeRoundForTest();
@@ -284,7 +284,7 @@ class SwimIsolationProbeTest {
 
         protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
         protocol.joinAcknowledgedForTest();
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
         protocol.removeMemberForTest(NODE_A);
         protocol.removeMemberForTest(NODE_B);
         protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.UNKNOWN);
@@ -309,7 +309,7 @@ class SwimIsolationProbeTest {
                                                                               Causes.cause("test peer down"),
                                                                               TransportObservation.HintOrigin.LINK_LOST));
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyClaim(MemberState.FAULTY, 1L))));
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
         transport.sent.clear();
 
         assertThat(protocol.members().get(NODE_A).state()).as("precondition: stamped FAULTY resident").isEqualTo(MemberState.FAULTY);
@@ -329,7 +329,7 @@ class SwimIsolationProbeTest {
     @Test
     void isolationProbe_latchedAlone_noSeedsKnown_doesNotThrowAndSendsNothing() {
         protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of());
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
         protocol.removeMemberForTest(NODE_A);
         protocol.removeMemberForTest(NODE_B);
         transport.sent.clear();
@@ -367,7 +367,7 @@ class SwimIsolationProbeTest {
 
     /// A latched protocol with a 1 s period whose only peer has been swept, so the round announces to the seed.
     private SwimProtocol aloneAndLatched(AddressedTransport recorder, InetSocketAddress seed) {
-        var alone = SwimProtocol.swimProtocol(swimConfig(timeSpan(1000).millis(),
+        var alone = SwimTestProtocols.swimProtocol(swimConfig(timeSpan(1000).millis(),
                                                          timeSpan(20).millis(),
                                                          3,
                                                          timeSpan(100).millis(),
@@ -383,7 +383,7 @@ class SwimIsolationProbeTest {
         alone.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
         alone.joinAcknowledgedForTest();
         alone.putMemberForTest(NODE_A, ADDR_A, MemberState.FAULTY);
-        alone.latchSelfIsolation(() -> true);
+        alone.latchSelfIsolationForTest(() -> true);
         alone.removeMemberForTest(NODE_A);
         recorder.sent.clear();
 
@@ -396,7 +396,7 @@ class SwimIsolationProbeTest {
         protocol.removeMemberForTest(NODE_A);
         protocol.removeMemberForTest(NODE_B);
         protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.UNKNOWN);
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
 
         protocol.probeRoundForTest();
 
@@ -409,7 +409,7 @@ class SwimIsolationProbeTest {
     void isolationProbe_latchedWithAProbablePeer_onlyTheRegularProbeGoesOut() {
         protocol.removeMemberForTest(NODE_A);
         protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
-        protocol.latchSelfIsolation(() -> true);
+        protocol.latchSelfIsolationForTest(() -> true);
 
         protocol.probeRoundForTest();
 

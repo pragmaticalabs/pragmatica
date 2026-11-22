@@ -81,6 +81,14 @@ When `[tls]` `auto_generate = false` with operator-provided `cert_path`/`key_pat
 incompatible with real operator certificates. See
 [TLS Certificate Management](../operators/tls-certificates.md).
 
+### `[cluster.ports]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `management` | int | `PortsConfig.DEFAULT_MANAGEMENT_PORT` | Management API port |
+| `cluster` | int | `PortsConfig.DEFAULT_CLUSTER_PORT` | Cluster (node-to-node) port |
+| `management_protocol` | string | `"h1"` | HTTP protocol the management API serves: `h1`, `h3` or `both` (aliases `http1`, `http/1.1`, `http3`, `http/3`, `dual`; case-insensitive). `h3` and `both` serve over QUIC, which is always TLS. Without `[cluster] tls` configured, the HTTP/3 listener runs on an ephemeral self-signed certificate, so a client must either skip certificate verification or be configured to trust that certificate (it changes on every start). Any other value is refused at load |
+
 ## Slice Configuration
 
 ### SliceActionConfig
@@ -728,6 +736,9 @@ zone = "local"
 | `group_name` | string | `"default"` | Logical group name for this worker pool. Parsed, validated and stored; **read by no production code** (see below) |
 | `zone` | string | `"local"` | Zone identifier. Parsed, validated and stored; **read by no production code** (see below). Not the same knob as the `AETHER_ZONE` environment variable |
 | `max_group_size` | — | — | **Removed (#673, 2026-09-14).** A present key is refused at parse: worker group splitting was never wired, and communities are one per source (`<source>-w-0`). Remove the key from any `[worker]` table. |
+| `core_nodes` | string list | `[]` | Core node addresses. Parsed and stored on `WorkerConfig`; **read by no production code** today |
+| `swim.indirect_probes` | int | `3` | Indirect probes per suspected member. Parsed and stored on `SwimSettings`; **read by no production code** today |
+| `swim.max_piggyback` | int | `8` | Maximum piggybacked updates per SWIM message. Parsed and stored on `SwimSettings`; **read by no production code** today |
 
 Both keys above are parsed, validated and stored on `AetherNodeConfig`, and then **read by nothing**. Their only
 consumer was the worker group-splitting chain (`GroupMembershipTracker` → `GroupAssignment.computeGroups`), which
@@ -747,6 +758,25 @@ because the landing zone is chosen by capacity rotation after the node's user-da
 stamped the same way, always.
 
 Workers self-organize into groups deterministically from SWIM membership. Same membership produces identical groups on every worker — no coordination needed. Each group elects its own governor (lowest ALIVE NodeId).
+
+## Alert Webhook Configuration
+
+```toml
+[alerts.webhook]
+enabled = true
+urls = ["https://alerts.example.com/hook"]
+retry_count = 3
+timeout = "5s"
+```
+
+When the `[alerts.webhook]` section is absent, webhook delivery is off. A present section is opt-in too: `enabled` defaults to `false`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | boolean | `false` | Turns delivery on. Requires at least one URL: `enabled = true` with an empty `urls` is refused at boot |
+| `urls` | string list | `[]` | Endpoints that receive each forwarded alert as an HTTP `POST` with a JSON body. A node sends to every URL in the list |
+| `retry_count` | int | `3` | Retries, with jittered backoff, after a non-2xx HTTP response. A transport error (connection refused, timeout) is not retried: that delivery fails at once. `0` means one attempt. After the last retry the failure is logged at ERROR and the alert is not re-sent |
+| `timeout` | duration | `5s` | Per-request timeout |
 
 ## Backup Configuration
 
@@ -995,6 +1025,27 @@ pool.max_connections = 30
 database = "analytics"
 pool.max_connections = 10
 ```
+
+### Blueprint `[deployment]`
+
+The deployment policy table in the blueprint itself (not `resources.toml`). It exists only when `strategy` is present; without it the blueprint has no deployment config.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `strategy` | string | none (table ignored) | `rolling`, `canary` or `blue-green` |
+| `max_error_rate` | double | `0.01` | Error-rate ceiling. Parsed and stored on `DeploymentConfig`; of this table the node reads only `schema_required` |
+| `max_latency_ms` | long | `500` | Latency ceiling (ms). Parsed and stored on `DeploymentConfig`; of this table the node reads only `schema_required` |
+| `drain_timeout_ms` | long | `300000` | Drain timeout (ms). Parsed and stored on `DeploymentConfig`; **read by no production code** today. The drain timeout in effect comes from `aether deploy` (`blueGreen.drainTimeoutMs`) |
+| `schema_required` | boolean | `true` | Whether the deployment requires its schema migrations |
+
+Canary stages are an array of tables, `[[deployment.canary.stages]]`, used with `strategy = "canary"`. When the array is absent the defaults are `(traffic_percent, observation_minutes)` = (1,5), (5,5), (25,10), (50,10), (100,0).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `traffic_percent` | integer | `5` | Share of traffic routed to the new version in this stage. Any number is accepted and truncated to an integer; no range is checked |
+| `observation_minutes` | integer | `5` | Minutes to observe the stage. Any number is accepted and truncated to an integer; no range is checked |
+
+A non-numeric value falls back to the default `5`. The stages are parsed and stored on `DeploymentConfig`; no production code reads them today.
 
 ## Infrastructure Endpoints (`[endpoints.*]`)
 

@@ -7,13 +7,7 @@ package org.pragmatica.aether.forge;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -24,8 +18,18 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+
 
 /// Only operator placement intent is submitted by the test. Creation, observed source facts,
 /// assignment, quiescent drain acknowledgement and provider retirement use production machinery.
@@ -35,66 +39,117 @@ import static org.awaitility.Awaitility.await;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class HierarchicalCommunityMovementTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(180).seconds();
+
     private EmberCluster cluster;
 
-    @BeforeAll void start() {
+    @BeforeAll
+    void start() {
         cluster = EmberCluster.emberCluster(3, 29400, 29500, 29600, "movement");
         LifecycleAwait.settled("start movement cluster", cluster, cluster.start());
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> cluster.currentLeader()
-            .flatMap(cluster::getNode).filter(node -> node.kvStore().get(AetherKey.ClusterConfigKey.CURRENT).isPresent()).isPresent());
+        await().atMost(BUDGET.millis(),
+                       TimeUnit.MILLISECONDS)
+             .until(() -> cluster.currentLeader()
+                                 .flatMap(cluster::getNode)
+                                 .filter(node -> node.kvStore()
+                                                     .get(AetherKey.ClusterConfigKey.CURRENT)
+                                                     .isPresent())
+                                 .isPresent());
     }
 
-    @AfterAll void stop() {
+    @AfterAll
+    void stop() {
         Option.option(cluster).onPresent(value -> LifecycleAwait.bestEffort("stop movement cluster", value, value.stop()));
     }
 
-    @Test void committedPolicyMovesWorkerBetweenSourcesWithConfirmedRetirement() {
+    @Test
+    void committedPolicyMovesWorkerBetweenSourcesWithConfirmedRetirement() {
         changeDestination("east");
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).untilAsserted(() ->
-            assertThat(operation().filter(value -> value.phase() == AetherValue.PlacementOperationPhase.COMPLETE).isPresent())
-                .as("initial provisioning: %s", operation()).isTrue());
+        await().atMost(BUDGET.millis(),
+                       TimeUnit.MILLISECONDS)
+             .untilAsserted(() -> assertThat(operation().filter(value -> value.phase() == AetherValue.PlacementOperationPhase.COMPLETE)
+                                                      .isPresent()).as("initial provisioning: %s",
+                                                                       PlacementGateDiagnostics.describe(leader(),
+                                                                                                         "stable"))
+                                            .isTrue());
         var original = operation().unwrap().targetNode();
+
         assertAssignmentAndSource(original, "east");
         assertThat(cluster.getNode(original.id()).isPresent()).isTrue();
-        var initialCapacity = leader().kvStore().getTyped(new AetherKey.CapacityLedgerKey(),
-            AetherValue.CapacityLedgerValue.class).unwrap().allocated();
+        var initialCapacity = leader().kvStore()
+                                    .getTyped(new AetherKey.CapacityLedgerKey(),
+                                              AetherValue.CapacityLedgerValue.class)
+                                    .unwrap()
+                                    .allocated();
 
         changeDestination("west");
-        await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).untilAsserted(() ->
-            assertThat(operation().filter(value -> value.targetSource().equals("west")
-                && value.phase() == AetherValue.PlacementOperationPhase.COMPLETE).isPresent())
-                .as("replacement creation, drain acknowledgement and retirement: %s", operation()).isTrue());
+        await().atMost(BUDGET.millis(),
+                       TimeUnit.MILLISECONDS)
+             .untilAsserted(() -> assertThat(operation().filter(value -> value.targetSource()
+                                                                              .equals("west") && value.phase() == AetherValue.PlacementOperationPhase.COMPLETE)
+                                                      .isPresent()).as("replacement creation, drain acknowledgement and retirement: %s",
+                                                                       operation())
+                                            .isTrue());
         var moved = operation().unwrap();
+
         assertThat(moved.previousNode()).isEqualTo(Option.some(original));
         assertThat(moved.targetNode()).isNotEqualTo(original);
         assertAssignmentAndSource(moved.targetNode(), "west");
         assertThat(cluster.getNode(original.id()).isEmpty()).isTrue();
         assertThat(leader().kvStore().get(new AetherKey.CapacityReservationKey(original)).isEmpty()).isTrue();
-        assertThat(leader().kvStore().getTyped(new AetherKey.CapacityLedgerKey(),
-            AetherValue.CapacityLedgerValue.class).unwrap().allocated()).isEqualTo(initialCapacity);
-        assertThat(leader().membershipFsm().coreCountedMembers()).hasSize(3).doesNotContain(original, moved.targetNode());
+        assertThat(leader().kvStore()
+                         .getTyped(new AetherKey.CapacityLedgerKey(),
+                                   AetherValue.CapacityLedgerValue.class)
+                         .unwrap()
+                         .allocated()).isEqualTo(initialCapacity);
+        assertThat(leader().membershipFsm().coreCountedMembers()).hasSize(3)
+                  .doesNotContain(original,
+                                  moved.targetNode());
     }
 
     private void assertAssignmentAndSource(NodeId node, String source) {
-        assertThat(leader().kvStore().getTyped(new AetherKey.ActivationDirectiveKey(node),
-            AetherValue.ActivationDirectiveValue.class).unwrap().communityId()).isEqualTo("stable");
-        assertThat(leader().kvStore().getTyped(new AetherKey.NodePlacementKey(node),
-            AetherValue.NodePlacementValue.class).unwrap().sourceName()).isEqualTo(source);
+        assertThat(leader().kvStore()
+                         .getTyped(new AetherKey.ActivationDirectiveKey(node),
+                                   AetherValue.ActivationDirectiveValue.class)
+                         .unwrap()
+                         .communityId()).isEqualTo("stable");
+        assertThat(leader().kvStore()
+                         .getTyped(new AetherKey.NodePlacementKey(node),
+                                   AetherValue.NodePlacementValue.class)
+                         .unwrap()
+                         .sourceName()).isEqualTo(source);
     }
 
     private void changeDestination(String destination) {
         var node = leader();
-        var before = node.kvStore().getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class).unwrap();
-        var value = new AetherValue.ClusterConfigValue(Option.some(policy(destination)), "movement", "1.0.0",
-            List.of(new AetherValue.TopologyEntry("default", "core", 3), new AetherValue.TopologyEntry("east", "worker", 0),
-                new AetherValue.TopologyEntry("west", "worker", 0)), 3, 3, "forge", before.configVersion() + 1, System.currentTimeMillis());
+        var before = node.kvStore()
+                         .getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
+                         .unwrap();
+        var value = new AetherValue.ClusterConfigValue(Option.some(policy(destination)),
+                                                       "movement",
+                                                       "1.0.0",
+                                                       List.of(new AetherValue.TopologyEntry("default", "core", 3),
+                                                               new AetherValue.TopologyEntry("east", "worker", 0),
+                                                               new AetherValue.TopologyEntry("west", "worker", 0)),
+                                                       3,
+                                                       3,
+                                                       "forge",
+                                                       before.configVersion() + 1,
+                                                       System.currentTimeMillis());
         var id = UUID.randomUUID().toString();
         var authority = node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
         var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(AetherKey.ClusterConfigKey.CURRENT,
-            id, authority, List.of(), List.of(new KVCommand.Mutation<>(AetherKey.ClusterConfigKey.CURRENT, Option.some(before), Option.some(value))));
-        var result = node.<Object>apply(List.of(transaction)).await(BUDGET).unwrap();
+                                                                                  id,
+                                                                                  authority,
+                                                                                  List.of(),
+                                                                                  List.of(new KVCommand.Mutation<>(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                                                   Option.some(before),
+                                                                                                                   Option.some(value))));
+        var result = node.<Object> apply(List.of(transaction)).await(BUDGET).unwrap();
+
         assertThat(result).anyMatch(outcome -> outcome instanceof KVCommand.TransactionResult accepted
-            && accepted.transactionId().equals(id) && accepted.accepted());
+                                               && accepted.transactionId()
+                                                          .equals(id)
+                                               && accepted.accepted());
     }
 
     private static String policy(String destination) {
@@ -122,9 +177,15 @@ class HierarchicalCommunityMovementTest {
             """.formatted(destination);
     }
 
-    private AetherNode leader() { return cluster.currentLeader().flatMap(cluster::getNode).unwrap(); }
+    private AetherNode leader() {
+        return cluster.currentLeader()
+                      .flatMap(cluster::getNode)
+                      .unwrap();
+    }
+
     private Option<AetherValue.CommunityPlacementOperationValue> operation() {
-        return leader().kvStore().getTyped(new AetherKey.CommunityPlacementOperationKey("stable"),
-            AetherValue.CommunityPlacementOperationValue.class);
+        return leader().kvStore()
+                     .getTyped(new AetherKey.CommunityPlacementOperationKey("stable"),
+                               AetherValue.CommunityPlacementOperationValue.class);
     }
 }

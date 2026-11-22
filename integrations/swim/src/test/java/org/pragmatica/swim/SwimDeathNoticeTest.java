@@ -20,6 +20,7 @@ package org.pragmatica.swim;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 import org.junit.jupiter.api.AfterEach;
@@ -28,6 +29,8 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
@@ -80,7 +83,7 @@ class SwimDeathNoticeTest {
 
     private void createHolder(int maxPiggyback) {
         transport = new RecordingTransport();
-        protocol = SwimProtocol.swimProtocol(config(maxPiggyback),
+        protocol = SwimTestProtocols.swimProtocol(config(maxPiggyback),
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,
@@ -313,6 +316,43 @@ class SwimDeathNoticeTest {
                           .allMatch(probe -> probe.onBehalfOf().isEmpty());
     }
 
+    /// The relay hop of arm 1e (#3326): the target answers the relayed Ping with the notice for the requester named in `onBehalfOf`,
+    /// and the relayer forwards that Ack, notice included, to the requester's address under the requester's own sequence. A relayer
+    /// that dropped the piggyback, or sent the Ack elsewhere, leaves the requester with no notice: reachable only indirectly, it
+    /// would never learn it was declared dead.
+    @Test
+    void deathNotice_relayedAck_isForwardedToTheRequesterWithTheNotice() {
+        var forwardedTo = new ConcurrentHashMap<Long, InetSocketAddress>();
+        var relayerTransport = new RecordingTransport() {
+            @Override
+            public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
+                if (message instanceof Ack ack) {
+                    forwardedTo.put(ack.sequence(), target);
+                }
+                return super.send(target, message);
+            }
+        };
+
+        claimant = SwimTestProtocols.swimProtocol(config(8), relayerTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
+                               .unwrap();
+        claimant.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
+        claimant.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
+        claimant.onMessage(ADDR_A, new PingReq(NODE_A, NODE_B, 9L));
+
+        var relayed = relayerTransport.sentMessages.stream()
+                                                   .filter(Ping.class::isInstance)
+                                                   .map(Ping.class::cast)
+                                                   .reduce((first, last) -> last)
+                                                   .orElseThrow();
+        var notice = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1L, ADDR_A, TOKEN_A);
+
+        claimant.onMessage(ADDR_B, Ack.ack(NODE_B, relayed.sequence(), List.of(notice)));
+
+        assertThat(forwardedTo).as("the Ack answering the requester's PingReq goes to the requester's address").containsEntry(9L, ADDR_A);
+        assertThat(ackOf(relayerTransport, 9L).piggyback()).as("the forwarded Ack carries the notice for the requester")
+                                                           .anyMatch(noticeOf(NODE_A, 1L, TOKEN_A));
+    }
+
     /// Mutant m29 (notice for any claim state): the relayed requester entry is answered like the pinger's own claim,
     /// but only an `Alive` claim earns a notice. The relayer's snapshot of the requester may be `Suspect`.
     @Test
@@ -490,7 +530,7 @@ class SwimDeathNoticeTest {
                .until(() -> !protocol.members().containsKey(NODE_A) && !protocol.tombstonedForTest(NODE_A));
         var claimantTransport = new RecordingTransport();
 
-        claimant = SwimProtocol.swimProtocol(config(8),
+        claimant = SwimTestProtocols.swimProtocol(config(8),
                                              claimantTransport,
                                              new RecordingListener(),
                                              NODE_A,

@@ -18,10 +18,10 @@
 package org.pragmatica.http;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.RefusingHttpClient;
 
 import java.io.IOException;
 import java.net.ConnectException;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.net.http.HttpRequest;
@@ -143,17 +143,13 @@ class HttpClientErrorTest {
     }
 
     /// The mapping as JdkHttpOperations really invokes it: a dependent stage hands `whenComplete` a WRAPPED
-    /// failure. Feeding `fromException` a raw ConnectException (above) cannot see that; a real refused socket can.
+    /// failure. Feeding `fromException` a raw ConnectException (above) cannot see that. The refusal is a
+    /// RefusingHttpClient (#3558): the claim is the typing of a refusal, so the refusal is scripted, not left to
+    /// what the kernel does with a loopback port under load (#3319, #3321).
     @Test
-    void send_toAPortNothingListensOn_failsWithConnectionFailedCarryingTheConnectException() throws IOException {
-        int port;
-
-        try (var socket = new ServerSocket(0)) {
-            port = socket.getLocalPort();
-        }
-
-        var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/")).GET().build();
-        var result = JdkHttpOperations.jdkHttpOperations().sendString(request).await();
+    void send_whenTheConnectIsRefused_failsWithConnectionFailedCarryingTheConnectException() {
+        var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:1/")).GET().build();
+        var result = JdkHttpOperations.jdkHttpOperations(RefusingHttpClient.refusingHttpClient()).sendString(request).await();
 
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> {

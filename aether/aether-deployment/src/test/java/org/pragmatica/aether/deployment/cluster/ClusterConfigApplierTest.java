@@ -59,6 +59,11 @@ class ClusterConfigApplierTest {
         applier = ClusterConfigApplier.clusterConfigApplier(topologyManager);
     }
 
+    @Test
+    void drainTenure_nonOverridingImplementer_isZero() {
+        assertThat(topologyManager.drainTenure()).isZero();
+    }
+
     @Nested
     class CoreScale {
         @Test
@@ -425,6 +430,11 @@ class ClusterConfigApplierTest {
         @Override
         public boolean isAutoHealEnabled() {
             return true;
+        }
+
+        @Override
+        public boolean scalingHeld(String subject) {
+            return false;
         }
 
         @Override

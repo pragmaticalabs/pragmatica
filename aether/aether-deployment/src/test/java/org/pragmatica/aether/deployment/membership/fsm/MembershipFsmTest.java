@@ -752,6 +752,29 @@ class MembershipFsmTest {
             assertThat(pruned).as("pruned once on the DEPARTING edge").containsExactly(A);
             assertThat(recovered).as("re-added once on the recovery edge — symmetric").containsExactly(A);
         }
+
+        /// #3415: the DHT listener's recovery re-add restores only what it pruned on the departing edge, so a core that
+        /// reaches MEMBER for the FIRST time through DEPARTING (drained while still OBSERVED, then refuted by a newer
+        /// incarnation) reaches the ring by its join instead: the recovery emits the JOINED edge that becomes `NodeJoined`.
+        @Test
+        void drainWhileObservedThenNewerIncarnation_emitsJoinedAtRecovery() {
+            var manager = activeManager();
+            var edges = new ArrayList<MembershipDeltaEdge>();
+            var recovered = new ArrayList<NodeId>();
+
+            manager.onMembershipDelta(edges::add);
+            manager.onDepartingRecovery(recovered::add);
+            manager.onMemberDescriptor(labeledInfo(A, "host-a", 6001, Map.of(NodeInfo.LABEL_ROLE, "core")));
+            manager.onDrainRequested(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+            assertThat(edges).as("never MEMBER yet, so no JOINED edge").isEmpty();
+            manager.onSwimHealthy(A, 2L);
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+            assertThat(recovered).containsExactly(A);
+            assertThat(edges).as("the first MEMBER entry, reached by recovery, is the member's join")
+                             .extracting(MembershipDeltaEdge::kind)
+                             .containsExactly(MembershipDeltaEdge.Kind.JOINED);
+        }
     }
 
     /// M10 (Wave 7) + gate RCA fix (2026-06-11) — the join-grace reaper: a tracked member that
@@ -1917,7 +1940,7 @@ class MembershipFsmTest {
     }
 
     /// Drain-safety grace age source ([`MembershipFsm#memberAgeMs`], cluster-topology-overhaul
-    /// Wave 2): wall-clock age since the member's FIRST observation (tracking creation), on the
+    /// Wave 2): wall-clock age since the member's FIRST reachability evidence (0 before it), on the
     /// manager's injected clock; `none()` for an untracked id; retained across DEAD/rejoin (the
     /// descriptor is retained too, so the role-propagation race the consumer guards against does
     /// not re-open on rejoin).
@@ -1931,6 +1954,19 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             clock.set(31_000L);
             assertThat(manager.memberAgeMs(A)).isEqualTo(Option.some(30_000L));
+        }
+
+        @Test
+        void memberAgeMs_seededThenJoinedLater_countsFromFirstReachability() {
+            var clock = new AtomicLong(1_000L);
+            var manager = MembershipFsm.membershipFsm(FsmObserver.noop(), clock::get, NO_HINT_DECAY, SHORT_BACKSTOP);
+
+            manager.seed(Set.of(A));
+            clock.set(101_000L);
+            assertThat(manager.memberAgeMs(A)).as("seeded but never reached: it has not joined yet").isEqualTo(Option.some(0L));
+            manager.onSwimHealthy(A, 1L);
+            clock.set(106_000L);
+            assertThat(manager.memberAgeMs(A)).as("age runs from the first reachability evidence, not from the seed").isEqualTo(Option.some(5_000L));
         }
 
         @Test

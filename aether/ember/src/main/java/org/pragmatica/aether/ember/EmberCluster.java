@@ -33,7 +33,7 @@ import java.util.stream.Stream;
 import org.pragmatica.config.ConfigSource;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -304,13 +304,13 @@ public final class EmberCluster {
     /// Exposed to tests via [#currentClusterSecret].
     private final AtomicReference<byte[]> clusterSecret = new AtomicReference<>(generateClusterSecret());
     /// The engine the global selector names ([EngineSelector], `-Daether.deployment.engine`): read once per cluster. A value that names no
-    /// engine refuses [#start] instead of running LEGACY.
+    /// engine refuses [#start] instead of running the default.
     private final Result<DeploymentEngine> selectedEngine = EngineSelector.fromSystemProperty();
 
-    /// The deployment engine every node of this cluster is constructed with (phase-3 design 8.2): the selector's engine (LEGACY when the
+    /// The deployment engine every node of this cluster is constructed with (phase-3 design 8.2): the selector's engine (FSM2 when the
     /// property is absent) unless a test says otherwise. The committed engine marker, minted by the first leader, then makes the choice
     /// cluster-wide.
-    private final AtomicReference<DeploymentEngine> deploymentEngine = new AtomicReference<>(selectedEngine.or(DeploymentEngine.LEGACY));
+    private final AtomicReference<DeploymentEngine> deploymentEngine = new AtomicReference<>(selectedEngine.or(DeploymentEngine.FSM2));
 
     /// Per-node engine overrides (phase-3 design 8.2, W-29's misconfigured-newcomer arms), by NodeId; a node absent here takes [#deploymentEngine].
     private final Map<String, DeploymentEngine> nodeEngines = new ConcurrentHashMap<>();
@@ -1002,18 +1002,16 @@ public final class EmberCluster {
             }
 
             nodes.put(nodeIdStr, node);
-            startPromises.add(node.start()
-                                  .onFailure(cause -> startFailures.put(nodeIdStr,
-                                                                        cause.message()))
-                                  .onFailure(firstFailure::fail)
-                                  .map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
-                                                                            port,
-                                                                            mgmtPort,
-                                                                            Option.none()))
-                                  .recover(cause -> NodeStartResult.nodeStartResult(nodeIdStr,
-                                                                                    port,
-                                                                                    mgmtPort,
-                                                                                    Option.some(cause))));
+            var recorded = recordFailureThenSignal(node.start(), nodeIdStr, startFailures, firstFailure);
+
+            startPromises.add(recorded.map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
+                                                                                port,
+                                                                                mgmtPort,
+                                                                                Option.none()))
+                                      .recover(cause -> NodeStartResult.nodeStartResult(nodeIdStr,
+                                                                                        port,
+                                                                                        mgmtPort,
+                                                                                        Option.some(cause))));
         }
 
         var outcome = Promise.<Unit> promise();
@@ -1024,6 +1022,27 @@ public final class EmberCluster {
         firstFailure.onFailure(cause -> abortStart(cause, startFailures).onResult(outcome::resolve));
 
         return outcome;
+    }
+
+    /// #1611: record the failing node, THEN signal the abort, in ONE `onFailure` handler. The abort
+    /// snapshots `startFailures`, so the entry must already be there when `firstFailure` fires. With two
+    /// registrations on `start`, a `start` that resolved between them ran the second inline in `push()`
+    /// while the first was still queued, so the signal could precede the put; one handler has no such
+    /// window. Package-visible so `EmberClusterStartFailureOrderTest` pins it with a delayed map put.
+    static <T> Promise<T> recordFailureThenSignal(Promise<T> start,
+                                                  String nodeIdStr,
+                                                  Map<String, String> startFailures,
+                                                  Promise<Unit> firstFailure) {
+        return start.onFailure(cause -> recordThenSignal(cause, nodeIdStr, startFailures, firstFailure));
+    }
+
+    private static Promise<Unit> recordThenSignal(Cause cause,
+                                                  String nodeIdStr,
+                                                  Map<String, String> startFailures,
+                                                  Promise<Unit> firstFailure) {
+        startFailures.put(nodeIdStr, cause.message());
+
+        return firstFailure.fail(cause);
     }
 
     /// #727: the first node-start failure aborts the whole start, instead of waiting for every node.
@@ -1045,9 +1064,8 @@ public final class EmberCluster {
         var registered = registeredNow();
         var stopPromises = nodes.values()
                                 .stream()
-                                .map(node -> node.stop()
-                                                 .timeout(NODE_TIMEOUT)
-                                                 .recover(_ -> Unit.unit()))
+                                .map(node -> stopped(node).timeout(NODE_TIMEOUT)
+                                                    .recover(_ -> Unit.unit()))
                                 .toList();
 
         return clearThenSettle(settledWithLateArrivals(stopPromises, registered),
@@ -1166,10 +1184,9 @@ public final class EmberCluster {
     private Promise<Unit> stopFailedHeldBackNode(String nodeIdStr, AetherNode node, Cause cause) {
         log.error("Held-back node {} failed to start: {}", nodeIdStr, cause.message());
 
-        return node.stop()
-                   .timeout(NODE_TIMEOUT)
-                   .recover(_ -> Unit.unit())
-                   .flatMap(_ -> cause.promise());
+        return stopped(node).timeout(NODE_TIMEOUT)
+                      .recover(_ -> Unit.unit())
+                      .flatMap(_ -> cause.promise());
     }
 
     private static Promise<Unit> allHeldBackStartedOrFail(List<Result<Unit>> results) {
@@ -1222,9 +1239,8 @@ public final class EmberCluster {
         var registered = registeredNow();
         var stopPromises = succeeded.stream()
                                     .map(r -> Option.option(nodes.get(r.nodeId()))
-                                                    .map(node -> node.stop()
-                                                                     .timeout(NODE_TIMEOUT)
-                                                                     .recover(_ -> Unit.unit()))
+                                                    .map(node -> stopped(node).timeout(NODE_TIMEOUT)
+                                                                        .recover(_ -> Unit.unit()))
                                                     .or(Promise.success(Unit.unit())))
                                     .toList();
 
@@ -1351,11 +1367,28 @@ public final class EmberCluster {
                                                              node).onResult(promise::resolve)).timeout(NODE_TIMEOUT);
     }
 
+    /// `node.stop()` as a plain "the node is stopped" outcome (#3565): the stop succeeds with a report once every step has
+    /// settled, so a report carrying step failures (a listener close that timed out) still means STOPPED. It is logged here and
+    /// never read as "did not stop"; only a stop that FAILS (the sequence could not complete) is a node that did not stop.
+    /// Strategy: FER (degrade forward) -- the step failures are dropped from the outcome because every step ran and the node is stopped;
+    /// the WARN line here, the step's own WARN in `NodeStopSequence` and the report itself keep them legible. Pinned by
+    /// `EmberClusterStopBoundTest#clusterStop_succeeds_whenANodeStopCompletedWithFailures_theNodeCountsAsStopped`.
+    private static Promise<Unit> stopped(AetherNode node) {
+        return node.stop()
+                   .onSuccess(report -> Option.option(report)
+                                              .filter(r -> !r.isClean())
+                                              .onPresent(r -> log.warn("Node {} stopped with {} step failure(s): {}",
+                                                                       node.self().id(),
+                                                                       r.failures().size(),
+                                                                       r.summary())))
+                   .mapToUnit();
+    }
+
     /// Start `node.stop()` and keep it in [#inFlightStops] until it resolves. The returned promise is the node's own, never
     /// failed by a bound: bound a COPY with [#bounded], so a stop that resolves after its bound is still seen.
     private Promise<Unit> trackedStop(String nodeId, AetherNode node) {
         var token = new Object();
-        var raw = node.stop();
+        var raw = stopped(node);
 
         inFlightStops.put(token, new InFlightStop(nodeId, raw));
 
@@ -1947,7 +1980,7 @@ public final class EmberCluster {
                                           Option.some(emberEnvironment()),
                                           AutoHealConfig.DEFAULT,
                                           observability,
-                                          ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
+                                          DeploymentAtomicity.ALL_OR_NOTHING,
                                           activationGated,
                                           nodeTimeouts,
                                           Option.some(certificateProvider),

@@ -108,18 +108,24 @@ public final class ReplicaReadiness {
         return Unit.unit();
     }
 
-    /// A resume onto another source keeps the counted heartbeats only until `graceNanos` from now, or until the new source counts its own. A further
-    /// resume before any beat of the previous new source (it was silent, or was left again) restarts the grace from that latest subscribe: the
-    /// deadline never moves backwards, and a silent source cannot outlive a grace anchored to the first subscribe (#2510). Renewal is capped: the
-    /// deadline never passes the start of the first carry since the last counted beat plus [ReplicaClientLimits#carryCapMillis] (two silences), so a chain of
-    /// re-parents onto silent sources cannot extend readiness past that bound. A carry that has already EXPIRED is never renewed: readiness does not rise
-    /// again without a counted beat, which clears the carry and the anchor.
+    /// A resume after a FAILED session keeps the counted heartbeats only until `graceNanos` from now, or until the new source counts its own; a
+    /// deliberate move arms nothing, and the heartbeats then count on their ordinary freshness bound (#2502). A further resume while the carry is
+    /// armed (before any beat of the previous new source: it was silent, or was left again, deliberately or not) restarts the grace from that latest
+    /// subscribe: the deadline never moves backwards, and a silent source cannot outlive a grace anchored to the first subscribe (#2510). Renewal is
+    /// capped: the deadline never passes the start of the first carry since the last counted beat plus [ReplicaClientLimits#carryCapMillis] (two
+    /// silences), so a chain of re-parents onto silent sources cannot extend readiness past that bound. A carry that has already EXPIRED is never
+    /// renewed: readiness does not rise again without a counted beat, which clears the carry and the anchor.
     public synchronized Unit carryBeatsFor(long graceNanos) {
         var now = nanos.getAsLong();
 
         return carryExpired(now)
                ? Unit.unit()
                : renewCarry(now, graceNanos);
+    }
+
+    /// Whether a carry is armed: started by [#carryBeatsFor] and not yet cleared by a counted beat (it may have expired).
+    public synchronized boolean carrying() {
+        return carriedUntilNanos != 0L;
     }
 
     private boolean carryExpired(long now) {

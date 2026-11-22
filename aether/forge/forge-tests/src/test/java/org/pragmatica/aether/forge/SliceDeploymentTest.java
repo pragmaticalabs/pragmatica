@@ -2,31 +2,31 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.http.HttpOperations;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
 
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.aether.ember.EmberCluster;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
-import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// Tests for slice deployment and lifecycle operations.
 ///
@@ -60,16 +60,10 @@ class SliceDeploymentTest {
     @BeforeAll
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "sd");
-
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::allNodesHealthy);
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
     }
 
     @BeforeEach
@@ -92,33 +86,28 @@ class SliceDeploymentTest {
     @Test
     void deploySlice_becomesActive() {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
-
         var response = deploy(leaderPort, TEST_ARTIFACT, 3);
+
         assertThat(response).doesNotContain("\"error\"");
-
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> sliceIsActive(TEST_ARTIFACT));
-
+        await().atMost(DEPLOY_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> sliceIsActive(TEST_ARTIFACT));
         var slices = getSlices(leaderPort);
+
         assertThat(slices).contains(TEST_ARTIFACT);
     }
 
     @Test
     void deploySlice_multipleInstances_distributedAcrossNodes() {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
-
         var response = deploy(leaderPort, TEST_ARTIFACT, 3);
+
         assertThat(response).doesNotContain("\"error\"");
-
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> sliceIsActive(TEST_ARTIFACT));
-
+        await().atMost(DEPLOY_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> sliceIsActive(TEST_ARTIFACT));
         // Check that instances are distributed - each node should report the slice
         var status = cluster.status();
+
         for (var node : status.nodes()) {
             var nodeSlices = getSlices(node.mgmtPort());
+
             assertThat(nodeSlices).contains(TEST_ARTIFACT);
         }
     }
@@ -126,58 +115,50 @@ class SliceDeploymentTest {
     @Test
     void scaleSlice_belowTheFloor_isRefusedWhileAtTheFloorIsAccepted() {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
-
         // Deploy at the blueprint floor of 3 instances (#1495), one per node of this 3-node cluster
         deploy(leaderPort, TEST_ARTIFACT, 3);
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> sliceIsActive(TEST_ARTIFACT));
-
+        await().atMost(DEPLOY_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> sliceIsActive(TEST_ARTIFACT));
         // The floor holds at runtime too (#1495, owner ruling): the scale API refuses 2, naming the floor
         var refused = scale(leaderPort, TEST_ARTIFACT, 2);
-        assertThat(refused).contains("must run at least 3 instances");
 
+        assertThat(refused).contains("must run at least 3 instances");
         // and accepts a count at the floor; a 3-node cluster leaves no room to scale above 3
         var scaleResponse = scale(leaderPort, TEST_ARTIFACT, 3);
-        assertThat(scaleResponse).doesNotContain("\"error\"")
-                                 .doesNotContain("must run at least");
 
+        assertThat(scaleResponse).doesNotContain("\"error\"").doesNotContain("must run at least");
         // Wait for scale operation to complete
         await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(Duration.ofSeconds(2))
-               .until(() -> {
-                   var slices = getSlices(leaderPort);
-                   return slices.contains(TEST_ARTIFACT);
-               });
+             .pollInterval(Duration.ofSeconds(2))
+             .until(() -> {
+                 var slices = getSlices(leaderPort);
+
+                 return slices.contains(TEST_ARTIFACT);
+             });
     }
 
     @Test
     void undeploySlice_removesFromCluster() {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
-
         // Deploy
         deploy(leaderPort, TEST_ARTIFACT, 3);
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> sliceIsActive(TEST_ARTIFACT));
-
+        await().atMost(DEPLOY_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> sliceIsActive(TEST_ARTIFACT));
         // Undeploy
         var undeployResponse = undeploy(leaderPort, TEST_ARTIFACT);
-        assertThat(undeployResponse).doesNotContain("\"error\"");
 
+        assertThat(undeployResponse).doesNotContain("\"error\"");
         // Wait for slice to be removed
         await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> {
-                   var slices = getSlices(leaderPort);
-                   return !slices.contains(TEST_ARTIFACT);
-               });
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> {
+                 var slices = getSlices(leaderPort);
+
+                 return ! slices.contains(TEST_ARTIFACT);
+             });
     }
 
     @Test
     void blueprintApply_deploysMultipleSlices() {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
-
         var blueprint = """
             id = "org.test:blueprint:1.0.0"
 
@@ -185,17 +166,13 @@ class SliceDeploymentTest {
             artifact = "%s"
             instances = 3
             """.formatted(TEST_ARTIFACT);
-
         var response = applyBlueprint(leaderPort, blueprint);
-        assertThat(response).doesNotContain("\"error\"");
 
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> sliceIsActive(TEST_ARTIFACT));
+        assertThat(response).doesNotContain("\"error\"");
+        await().atMost(DEPLOY_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> sliceIsActive(TEST_ARTIFACT));
     }
 
     // ===== HTTP Helper Methods =====
-
     private String deploy(int port, String artifact, int instances) {
         var blueprint = """
             id = "%s"
@@ -204,16 +181,19 @@ class SliceDeploymentTest {
             artifact = "%s"
             instances = %d
             """.formatted(BLUEPRINT_ID, artifact, instances);
+
         return postBlueprintWithRetry(port, blueprint);
     }
 
     private String postBlueprintWithRetry(int port, String body) {
         String lastResponse = null;
+
         for (int attempt = 1; attempt <= 3; attempt++) {
             lastResponse = post(port, "/api/v1/blueprints", body, "application/toml");
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;
             }
+
             if (attempt < 3) {
                 try {
                     Thread.sleep(2000);
@@ -223,11 +203,13 @@ class SliceDeploymentTest {
                 }
             }
         }
+
         return lastResponse;
     }
 
     private String scale(int port, String artifact, int instances) {
         var body = String.format("{\"artifact\": \"%s\", \"instances\": %d}", artifact, instances);
+
         return post(port, "/api/v1/scale", body, "application/json");
     }
 
@@ -245,6 +227,7 @@ class SliceDeploymentTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -257,6 +240,7 @@ class SliceDeploymentTest {
                                  .DELETE()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -270,6 +254,7 @@ class SliceDeploymentTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -279,9 +264,11 @@ class SliceDeploymentTest {
     private boolean sliceIsActive(String artifact) {
         try {
             var slicesStatus = cluster.slicesStatus();
+
             return slicesStatus.stream()
-                               .anyMatch(status -> status.artifact().equals(artifact)
-                                                   && status.state().equals(SliceState.ACTIVE.name()));
+                               .anyMatch(status -> status.artifact()
+                                                         .equals(artifact) && status.state()
+                                                                                    .equals(SliceState.ACTIVE.name()));
         } catch (Exception e) {
             return false;
         }
@@ -289,7 +276,9 @@ class SliceDeploymentTest {
 
     private boolean allNodesHealthy() {
         var status = cluster.status();
-        return status.nodes().stream()
+
+        return status.nodes()
+                     .stream()
                      .allMatch(node -> checkNodeHealth(node.mgmtPort()));
     }
 
@@ -299,9 +288,11 @@ class SliceDeploymentTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
+
         return http.sendString(request)
                    .await()
-                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .map(r -> r.statusCode() == 200 && r.body()
+                                                       .contains("\"quorum\":true"))
                    .or(false);
     }
 }

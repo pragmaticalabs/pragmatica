@@ -413,7 +413,7 @@ class StreamPartitionVisibilityTest {
     }
 
     /// #1387: `visible = min(durable, acked)` must survive a restart. Nothing about acks is persisted on
-    /// the owner (the production `ReplicaRegistry` writes through `WatermarkStore.NOOP`), so the honest
+    /// the owner (the production `ReplicaRegistry` persists no watermarks), so the honest
     /// post-restart position is the sealed bound recovery seeds from: the replayed WAL tail is durable but
     /// NOT visible until a peer ack covers it — exactly its state before the restart. Before the fix
     /// recovery placed the tail with the plain `append`, which is visible at once. A "restart" is a second

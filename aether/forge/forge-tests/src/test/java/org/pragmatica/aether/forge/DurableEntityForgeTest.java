@@ -2,26 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.TestMethodOrder;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.aether.dht.EntityPartitionArc;
-import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.awaitility.core.ConditionTimeoutException;
-import org.pragmatica.lang.Option;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -37,10 +18,30 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Pattern;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.pragmatica.aether.dht.EntityPartitionArc;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
+
+import org.awaitility.core.ConditionTimeoutException;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// #345 increment I0 — a `DurableEntity` that actually RUNS inside a node, and a measured baseline
 /// of what it does today.
@@ -118,7 +119,6 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class DurableEntityForgeTest {
     private static final System.Logger LOG = System.getLogger(DurableEntityForgeTest.class.getName());
-
     /// Registered in `TEST_PORT_ALLOCATION.md` (#1627). This suite used to bind 19000/19100/19200, which
     /// `DurableTopicDeliveryForgeTest` also binds. The block is compact because this cluster has 5 nodes:
     /// the cluster ports are 24300-24304 and SWIM is +100 (UDP 24400-24404). Management is 24320-24324
@@ -139,28 +139,25 @@ class DurableEntityForgeTest {
 
     /// The SAME partition function production uses, so a key can be mapped to the arc whose committed owner
     /// [#entityArcOwners] reports. Re-deriving it here would only test this test's own arithmetic.
-    private static final EntityPartitionArc ENTITY_ARC = EntityPartitionArc.entityPartitionArc("orders", ENTITY_PARTITIONS);
+    private static final EntityPartitionArc ENTITY_ARC = EntityPartitionArc.entityPartitionArc("orders",
+                                                                                               ENTITY_PARTITIONS);
 
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-
     /// The delay [#scheduleTimer_appliesTheEffectExactlyOnce_whenTheSameTokenIsResent] schedules under. It
     /// only has to outlive the five presentations of the one token — the timer must still be pending when
     /// the last of them arrives, or that one plants a fresh timer and the gate measures the wrong thing.
     /// Five sequential localhost posts (four of them forwarded a hop) measure 5-15 ms, so 8s is nearly three
     /// orders of magnitude of margin, and the test asserts the measured figure against a quarter of it.
     private static final long RESEND_DELAY_MILLIS = 8_000L;
-
     /// Ticks to wait out before declaring a fire exactly-once. `ENTITY_TIMER_INTERVAL` is one second, so a
     /// duplicate timer planted alongside the first would come due within one tick of it; five gives four
     /// spare ticks for the second fire that must not happen to happen.
     private static final Duration EXACTLY_ONCE_SETTLE = Duration.ofSeconds(5);
-
     private static final String ENTITY_SLICE = TestArtifacts.ENTITY_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:durable-entity:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
     private static final int REASON_EXCERPT_LIMIT = 300;
-
     /// Distinct probe keys per convergence round. The fixture declares 8 partitions, and these keys hash
     /// across them, so readiness reflects the whole keyspace rather than whichever partition one key
     /// happened to land on.
@@ -180,23 +177,17 @@ class DurableEntityForgeTest {
                                                   .withSystemProperties("aether.")
                                                   .withEnvironment("AETHER_")
                                                   .build();
+
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "dur", Option.some(configProvider));
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::allNodesHealthy);
-
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
         deployEntitySlice();
-
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .until(this::entityReadyOnEveryNode);
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .until(this::entityReadyOnEveryNode);
         // Placement converges LATER than entity readiness, and the gap is wide enough to be read as a
         // defect. Measured on 2026-08-27: the scheduler's first pass placed 2 of the 3 requested instances,
         // the reconciler logged "has 2 instances, desired 3 - adjusting" 52s after deploy, and the third
@@ -212,6 +203,27 @@ class DurableEntityForgeTest {
         // throwaway key rather than sleeping: a sleep would either flake on a slow tick or hide a driver
         // that never ran at all.
         awaitOwnershipConvergence();
+        awaitOwnershipViewComplete();
+    }
+
+    /// #3391 item 4. `/api/v1/ownership/stream` reads the committed records of the ONE node it is asked (the node's own applied
+    /// KV store), and the convergence probe above is satisfied by a create accepted on ANY node's app port, so it proves an owner
+    /// exists, not that this node has applied every arc. The tests assert on [#entityArcOwners] read from [#anyMgmtPort]; wait
+    /// for that view itself. It reads [#anyMgmtPort], the node the assertions read, not the routing nodes, so it can pass while another node
+    /// still lacks an arc; the all-port probe in [#awaitOwnershipConvergence] is what covers the owner. The slice-host view needs no such wait: [#awaitFullSlicePlacement] polls the same node and the
+    /// same endpoint the assertions read.
+    private void awaitOwnershipViewComplete() {
+        try {
+            await().atMost(WAIT_TIMEOUT)
+                 .pollInterval(POLL_INTERVAL)
+                 .failFast(this::failIfSliceFailed)
+                 .until(() -> entityArcOwners().size() == ENTITY_PARTITIONS);
+        } catch (ConditionTimeoutException e) {
+            throw new AssertionError("The ownership view of the node on port " + anyMgmtPort()
+                                    + " never carried all " + ENTITY_PARTITIONS
+                                    + " entity arcs; arcs seen: " + entityArcOwners(),
+                                     e);
+        }
     }
 
     /// Wait until the blueprint's full instance count is ACTIVE cluster-wide, reporting WHICH hosts were
@@ -219,12 +231,13 @@ class DurableEntityForgeTest {
     private void awaitFullSlicePlacement() {
         try {
             await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(this::failIfSliceFailed)
-                   .until(() -> activeSliceHosts().size() == INSTANCES);
+                 .pollInterval(POLL_INTERVAL)
+                 .failFast(this::failIfSliceFailed)
+                 .until(() -> activeSliceHosts().size() == INSTANCES);
         } catch (ConditionTimeoutException e) {
-            throw new AssertionError("Slice placement never reached " + INSTANCES + " ACTIVE instances; hosts seen: "
-                                     + activeSliceHosts(), e);
+            throw new AssertionError("Slice placement never reached " + INSTANCES
+                                    + " ACTIVE instances; hosts seen: " + activeSliceHosts(),
+                                     e);
         }
     }
 
@@ -237,11 +250,12 @@ class DurableEntityForgeTest {
     private void awaitOwnershipConvergence() {
         try {
             await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(this::failIfSliceFailed)
-                   .until(this::ownershipHasConverged);
+                 .pollInterval(POLL_INTERVAL)
+                 .failFast(this::failIfSliceFailed)
+                 .until(this::ownershipHasConverged);
         } catch (ConditionTimeoutException e) {
-            throw new AssertionError("Entity ownership never converged; last probe answers: " + lastProbeAnswers.get(), e);
+            throw new AssertionError("Entity ownership never converged; last probe answers: " + lastProbeAnswers.get(),
+                                     e);
         }
     }
 
@@ -256,7 +270,6 @@ class DurableEntityForgeTest {
     }
 
     // --- the API surface actually executes ------------------------------------
-
     /// The 02w hosting-set pin, asserted directly: every committed `entity:orders` arc owner is a node
     /// hosting an ACTIVE instance of the entity slice. Before the fix the leader minted owners over ALL
     /// members, so with 3 instances on 5 nodes roughly two-fifths of the arcs landed on nodes with no
@@ -271,13 +284,13 @@ class DurableEntityForgeTest {
         var owners = entityArcOwners();
 
         assertThat(hosts).describedAs("the blueprint places fewer instances than nodes, else this pin is vacuous")
-                         .hasSize(INSTANCES);
+                  .hasSize(INSTANCES);
         assertThat(owners).describedAs("every entity partition must carry a committed ownership record")
-                          .hasSize(ENTITY_PARTITIONS);
+                  .hasSize(ENTITY_PARTITIONS);
         assertThat(owners.entrySet()).describedAs("every arc owner must host the declaring slice; owners=%s hosts=%s",
                                                   owners,
                                                   hosts)
-                                     .allSatisfy(entry -> assertThat(hosts).contains(entry.getValue()));
+                  .allSatisfy(entry -> assertThat(hosts).contains(entry.getValue()));
     }
 
     /// The headline I0 assertion: a durable entity provisioned from `resources.toml` accepts a
@@ -298,8 +311,7 @@ class DurableEntityForgeTest {
     @Order(2)
     void get_returnsTheCreatedState_onTheSameNode() {
         var owner = createOnOwner("order-get", "placed", 250).port();
-
-        var response = get(owner, "order-get");
+        var response = getReadable(owner, "order-get");
 
         assertThat(outcome(response)).isEqualTo("found");
         assertThat(text(response, "status")).isEqualTo("placed");
@@ -312,14 +324,15 @@ class DurableEntityForgeTest {
     @Order(3)
     void update_commitsTheMutatedState_forExistingKey() {
         var owner = createOnOwner("order-update", "placed", 10).port();
-
         var updated = update(owner, "order-update", 999);
 
         assertThat(outcome(updated)).isEqualTo("updated");
         assertThat(number(updated, "amount")).isEqualTo(999);
         assertThat(text(updated, "status")).describedAs("the mutator changes amount only").isEqualTo("placed");
-        assertThat(number(get(owner, "order-update"), "amount")).describedAs("the mutation is committed, not just returned")
-                                                                 .isEqualTo(999);
+        var reread = getReadable(owner, "order-update");
+
+        assertThat(outcome(reread)).isEqualTo("found");
+        assertThat(number(reread, "amount")).describedAs("the mutation is committed, not just returned").isEqualTo(999);
     }
 
     /// Delete removes the instance, and the subsequent read reports absence rather than failing.
@@ -329,11 +342,10 @@ class DurableEntityForgeTest {
         var owner = createOnOwner("order-delete", "placed", 5).port();
 
         assertThat(outcome(delete(owner, "order-delete"))).isEqualTo("deleted");
-        assertThat(outcome(get(owner, "order-delete"))).isEqualTo("absent");
+        assertThat(outcome(getReadable(owner, "order-delete"))).isEqualTo("absent");
     }
 
     // --- typed failures are real, not decorative -------------------------------
-
     /// `EntityAlreadyExists` is enforced, so the entity genuinely holds state rather than accepting
     /// every write. This is the sensor that stops the whole suite from passing against a no-op
     /// implementation.
@@ -341,7 +353,6 @@ class DurableEntityForgeTest {
     @Order(5)
     void create_failsWithKeyAlreadyExists_forDuplicateKeyOnOneNode() {
         var owner = createOnOwner("order-duplicate", "placed", 1).port();
-
         var duplicate = create(owner, "order-duplicate", "placed", 2);
 
         assertThat(outcome(duplicate)).isEqualTo("failed");
@@ -356,11 +367,12 @@ class DurableEntityForgeTest {
     @Order(6)
     void update_failsWithKeyNotFound_forUnknownKey() {
         var failureTypes = appPorts().stream()
-                                     .map(port -> text(update(port, "order-never-created", 1), "failureType"))
-                                     .toList();
+                                   .map(port -> text(update(port, "order-never-created", 1),
+                                                     "failureType"))
+                                   .toList();
 
         assertThat(failureTypes).describedAs("every caller receives the owner's typed verdict through the forward (#596)")
-                                .containsOnly("EntityNotFound");
+                  .containsOnly("EntityNotFound");
     }
 
     @Test
@@ -369,7 +381,6 @@ class DurableEntityForgeTest {
         var owner = createOnOwner("order-double-delete", "placed", 1).port();
 
         delete(owner, "order-double-delete");
-
         var repeated = delete(owner, "order-double-delete");
 
         assertThat(outcome(repeated)).isEqualTo("failed");
@@ -401,52 +412,39 @@ class DurableEntityForgeTest {
     @Order(8)
     void scheduleTimer_succeedsOnEveryNode_includingInstancesThatCannotBeTheCommittedOwner() {
         createOnOwner("order-timer", "placed", 1);
-
         var partition = ENTITY_ARC.partitionOf("order-timer");
 
         assertThat(entityArcOwners()).describedAs("the key's partition must carry a committed owner, else 'an instance "
-                                                  + "that cannot be the owner' names nothing")
-                                     .containsKey(partition);
-
-        var responses = appPorts().stream()
-                                  .map(port -> scheduleTimer(port, "order-timer"))
-                                  .toList();
+                                                 + "that cannot be the owner' names nothing")
+                  .containsKey(partition);
+        var responses = appPorts().stream().map(port -> scheduleTimer(port, "order-timer")).toList();
 
         assertThat(responses).describedAs("every node must answer a schedule, the owner locally and the rest by forwarding")
-                             .hasSize(NODES);
+                  .hasSize(NODES);
         assertThat(responses).allSatisfy(response -> {
             assertThat(outcome(response)).describedAs("timers are real after I4 — a refusal here is the regression")
-                                         .isEqualTo("scheduled");
+                      .isEqualTo("scheduled");
             assertThat(text(response, "token")).describedAs("a scheduled timer must come back with the handle that cancels it")
-                                               .isNotEmpty();
+                      .isNotEmpty();
         });
-
-        var tokens = responses.stream()
-                              .map(response -> text(response, "token"))
-                              .distinct()
-                              .toList();
+        var tokens = responses.stream().map(response -> text(response, "token")).distinct().toList();
 
         assertThat(tokens).describedAs("five schedules with no caller token are five timers, each with its own handle")
-                          .hasSize(NODES);
-
-        var instances = responses.stream()
-                                 .map(response -> text(response, "instance"))
-                                 .distinct()
-                                 .toList();
+                  .hasSize(NODES);
+        var instances = responses.stream().map(response -> text(response, "instance")).distinct().toList();
 
         LOG.log(System.Logger.Level.INFO,
                 "I4 forwarding gate: nodes={0} committedOwner={1} distinctServingInstances={2}",
                 NODES,
                 entityArcOwners().get(partition),
                 instances.size());
-
         assertThat(instances).describedAs("more than one slice instance must have answered: a node hosts at most one, and "
-                                          + "the partition asserted above has a single committed owner, so a second "
-                                          + "instance answering 'scheduled' is a non-owner that relayed instead of "
-                                          + "refusing. All five served by one instance would leave that untested; "
-                                          + "instances=%s",
+                                         + "the partition asserted above has a single committed owner, so a second "
+                                         + "instance answering 'scheduled' is a non-owner that relayed instead of "
+                                         + "refusing. All five served by one instance would leave that untested; "
+                                         + "instances=%s",
                                           instances)
-                             .hasSizeGreaterThan(1);
+                  .hasSizeGreaterThan(1);
     }
 
     /// The retry-after-lost-ack gate, at cluster level: a schedule RE-SENT under the same token is the same
@@ -480,33 +478,29 @@ class DurableEntityForgeTest {
     @Order(9)
     void scheduleTimer_appliesTheEffectExactlyOnce_whenTheSameTokenIsResent() {
         createOnOwner("order-timer-resend", "placed", 500);
-
         var token = "resent-" + UUID.randomUUID();
         var startNanos = System.nanoTime();
         var responses = appPorts().stream()
-                                  .map(port -> scheduleTimer(port, "order-timer-resend", RESEND_DELAY_MILLIS, token))
-                                  .toList();
+                                .map(port -> scheduleTimer(port, "order-timer-resend", RESEND_DELAY_MILLIS, token))
+                                .toList();
         var presentationMillis = Duration.ofNanos(System.nanoTime() - startNanos).toMillis();
 
         assertThat(presentationMillis).describedAs("all five presentations must land while the timer is still pending, "
-                                                   + "else the later ones plant fresh timers and prove nothing")
-                                      .isLessThan(RESEND_DELAY_MILLIS / 4);
-
+                                                  + "else the later ones plant fresh timers and prove nothing")
+                  .isLessThan(RESEND_DELAY_MILLIS / 4);
         LOG.log(System.Logger.Level.INFO,
                 "I4 resend gate: delay={0}ms fivePresentations={1}ms",
                 RESEND_DELAY_MILLIS,
                 presentationMillis);
         assertThat(responses).allSatisfy(response -> {
             assertThat(outcome(response)).describedAs("a re-sent schedule is the same schedule, and answers success")
-                                         .isEqualTo("scheduled");
+                      .isEqualTo("scheduled");
             assertThat(text(response, "token")).describedAs("the owner must echo the CALLER's token, not one of its own")
-                                               .isEqualTo(token);
+                      .isEqualTo(token);
         });
-
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> expiriesAcrossCluster("order-timer-resend").contains(1));
-
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> expiriesAcrossCluster("order-timer-resend").contains(1));
         // A duplicate arrives on a LATER tick, so a reading taken at the moment of the fire cannot tell
         // exactly-once from not-yet-twice. There is no condition to poll for the absence of a second fire —
         // only elapsed ticks — so this waits out a quiet period and then re-reads.
@@ -515,20 +509,18 @@ class DurableEntityForgeTest {
 
         assertThat(counts).describedAs("at least one node must serve the key after the fire").isNotEmpty();
         assertThat(counts).describedAs("five presentations of ONE token are one timer, so Expire lands once — "
-                                       + "a second timer would show as 2 on whichever node folded both fires")
-                          .allSatisfy(count -> assertThat(count).isLessThanOrEqualTo(1));
+                                      + "a second timer would show as 2 on whichever node folded both fires")
+                  .allSatisfy(count -> assertThat(count).isLessThanOrEqualTo(1));
         assertThat(counts).describedAs("and the fire did land, on some node's committed view").contains(1);
-
         var settled = servedView("order-timer-resend");
 
         assertThat(text(settled, "status")).describedAs("the fire is a real mutation, applied through the ordinary update path")
-                                           .isEqualTo("expired");
+                  .isEqualTo("expired");
         assertThat(number(settled, "amount")).describedAs("Expire touches the counter and the status only")
-                                             .isEqualTo(500);
+                  .isEqualTo(500);
     }
 
     // --- replication and durability, across nodes --------------------------------
-
     /// More than ONE slice instance answers a key with the value that was written, after a create on a
     /// single node.
     ///
@@ -551,30 +543,21 @@ class DurableEntityForgeTest {
     void get_isServedByMoreThanOneNode_afterCreateOnOne() {
         var accepted = createOnOwner("order-isolated", "placed", 42);
         var ownerInstance = text(accepted.response(), "instance");
-
         // Polled, not sampled: a replica serves only once it has folded the partition, and taking one
         // reading immediately after the create would measure the fold's latency rather than whether the
         // key is answerable cluster-wide at all.
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> serversOf("order-isolated").size() > 1);
-
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> serversOf("order-isolated").size() > 1);
         var servers = serversOf("order-isolated");
 
         assertThat(servers).describedAs("more than the accepting node must answer the key — from its own fold if it "
-                                        + "holds the partition, by forwarding to the owner if it does not")
-                           .hasSizeGreaterThan(1);
-
-        var instances = servers.stream()
-                               .map(response -> text(response, "instance"))
-                               .distinct()
-                               .toList();
+                                       + "holds the partition, by forwarding to the owner if it does not")
+                  .hasSizeGreaterThan(1);
+        var instances = servers.stream().map(response -> text(response, "instance")).distinct().toList();
 
         assertThat(instances).describedAs("the answers must come from DIFFERENT slice instances, else the test is vacuous")
-                             .hasSizeGreaterThan(1);
+                  .hasSizeGreaterThan(1);
         assertThat(instances).describedAs("and one of them is not the node that accepted the write")
-                             .anySatisfy(instance -> assertThat(instance).isNotEqualTo(ownerInstance));
-
+                  .anySatisfy(instance -> assertThat(instance).isNotEqualTo(ownerInstance));
         // The value is the assertion. A replica that answered with anything other than what was written
         // would be worse than one that refused.
         assertThat(servers).allSatisfy(response -> {
@@ -590,9 +573,9 @@ class DurableEntityForgeTest {
     /// names a node that answered, not necessarily one that holds the state.
     private List<String> serversOf(String key) {
         return appPorts().stream()
-                         .map(port -> get(port, key))
-                         .filter(response -> response.contains("\"outcome\":\"found\""))
-                         .toList();
+                       .map(port -> get(port, key))
+                       .filter(response -> response.contains("\"outcome\":\"found\""))
+                       .toList();
     }
 
     /// The I1 gate, flipped — then flipped once more by #596. At I0 all five nodes accepted a create for
@@ -630,59 +613,54 @@ class DurableEntityForgeTest {
     void state_survivesTheLossOfTheNodeThatOwnedIt() {
         var ownerPort = createOnOwner("order-durability", "placed", 77).port();
 
-        assertThat(outcome(get(ownerPort, "order-durability"))).isEqualTo("found");
-
+        assertThat(outcome(getReadable(ownerPort, "order-durability"))).isEqualTo("found");
         var ownerNodeId = nodeIdForAppPort(ownerPort);
 
         LifecycleAwait.nodeSettled("kill node " + ownerNodeId + " in state_survivesTheLossOfTheNodeThatOwnedIt()",
                                    cluster,
                                    cluster.killNode(ownerNodeId));
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> !appPorts().contains(ownerPort));
-
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> !appPorts().contains(ownerPort));
         // Ownership must move and the new owner must rebuild the partition from the log before it can
         // answer, so the read is POLLED rather than taken once. A fold in progress reports itself as a
         // transient refusal — polling is what distinguishes "still replaying" from "gone", and taking a
         // single reading immediately after the kill would conflate them.
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> survivorsAnswering("order-durability").contains("found"));
-
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> survivorsAnswering("order-durability").contains("found"));
         // Assert on the DATA, not on a status field. #508 passed throughout a run in which a status-gated
         // test failed on the same cluster at the same moment; the value is the thing that either survived
         // or did not.
         var recovered = appPorts().stream()
-                                  .map(port -> get(port, "order-durability"))
-                                  .filter(response -> "found".equals(outcome(response)))
-                                  .toList();
+                                .map(port -> get(port, "order-durability"))
+                                .filter(response -> "found".equals(outcome(response)))
+                                .toList();
 
         assertThat(recovered).describedAs("at least one surviving node must serve the entity after failover")
-                             .isNotEmpty();
+                  .isNotEmpty();
         assertThat(recovered).allSatisfy(response -> {
             assertThat(text(response, "status")).describedAs("the recovered state must be the state that was written")
-                                                .isEqualTo("placed");
+                      .isEqualTo("placed");
             assertThat(number(response, "amount")).describedAs("the recovered amount must be the amount that was written")
-                                                  .isEqualTo(77);
+                      .isEqualTo(77);
         });
     }
 
     private List<String> survivorsAnswering(String key) {
         return appPorts().stream()
-                         .map(port -> get(port, key))
-                         .map(DurableEntityForgeTest::outcomeOrPending)
-                         .toList();
+                       .map(port -> get(port, key))
+                       .map(DurableEntityForgeTest::outcomeOrPending)
+                       .toList();
     }
 
     /// `outcome` throws on a transport-level error body, and this runs while ownership is still moving, so
     /// a node mid-handover would abort the poll instead of simply reporting "not yet".
     private static String outcomeOrPending(String response) {
-        return response.contains("\"outcome\":\"found\"") ? "found" : "pending";
+        return response.contains("\"outcome\":\"found\"")
+               ? "found"
+               : "pending";
     }
 
     // --- the fence invariant, asserted on every create ---------------------------
-
     /// The port that accepted a create, plus its response body.
     private record Accepted(int port, String response) {}
 
@@ -704,20 +682,16 @@ class DurableEntityForgeTest {
     /// committed owner — a real defect once setUp has waited for convergence — and `containsOnly`
     /// fails it explicitly rather than lumping it in with "not created".
     private Accepted createOnOwner(String key, String status, int amount) {
-        var responses = appPorts().stream()
-                                  .map(port -> new Accepted(port, create(port, key, status, amount)))
-                                  .toList();
-        var accepted = responses.stream()
-                                .filter(entry -> "created".equals(outcome(entry.response())))
-                                .toList();
+        var responses = appPorts().stream().map(port -> new Accepted(port, create(port, key, status, amount))).toList();
+        var accepted = responses.stream().filter(entry -> "created".equals(outcome(entry.response()))).toList();
 
         assertThat(responses).describedAs("every node must have answered").hasSize(NODES);
         assertThat(accepted).describedAs("exactly one attempt may create '%s'; got %s",
-                                          key,
-                                          outcomesOf(responses))
-                            .hasSize(1);
+                                         key,
+                                         outcomesOf(responses))
+                  .hasSize(1);
         assertThat(rejectionTypesOf(responses)).describedAs("every later attempt must surface the duplicate as EntityAlreadyExists — its forward reached the owner and the single-writer invariant held (#596)")
-                                               .containsOnly("EntityAlreadyExists");
+                  .containsOnly("EntityAlreadyExists");
 
         return accepted.getFirst();
     }
@@ -731,7 +705,8 @@ class DurableEntityForgeTest {
     private static List<String> rejectionTypesOf(List<Accepted> responses) {
         return responses.stream()
                         .filter(entry -> !"created".equals(outcome(entry.response())))
-                        .map(entry -> text(entry.response(), "failureType"))
+                        .map(entry -> text(entry.response(),
+                                           "failureType"))
                         .toList();
     }
 
@@ -751,26 +726,25 @@ class DurableEntityForgeTest {
         var round = ownershipProbe.incrementAndGet();
 
         return java.util.stream.IntStream.range(0, PARTITION_PROBE_KEYS)
-                                         .allMatch(index -> probeAccepted("__ownership_probe_" + round + "_" + index + "__"));
+                                         .allMatch(index -> probeAccepted("__ownership_probe_" + round
+                                                                         + "_" + index
+                                                                         + "__"));
     }
 
     private boolean probeAccepted(String key) {
-
         // Deliberately NOT via outcome(): that throws on a transport-level error body, and this predicate
         // runs while the cluster is still settling, so one slow node would abort setUp instead of simply
         // reporting "not converged yet". A failed request is not-yet-converged; only a literal accepted
         // create counts.
-        var answers = appPorts().stream()
-                                .map(port -> create(port, key, "probe", 0))
-                                .toList();
+        var answers = appPorts().stream().map(port -> create(port, key, "probe", 0)).toList();
 
         lastProbeAnswers.set(answers);
 
-        return answers.stream().anyMatch(response -> response.contains("\"outcome\":\"created\""));
+        return answers.stream()
+                      .anyMatch(response -> response.contains("\"outcome\":\"created\""));
     }
 
     // --- entity operations -----------------------------------------------------
-
     private String create(int port, String key, String status, int amount) {
         return httpPost(port,
                         "/api/entity/create",
@@ -779,6 +753,50 @@ class DurableEntityForgeTest {
 
     private String get(int port, String key) {
         return httpPost(port, "/api/entity/get", "{\"orderId\":\"" + key + "\"}");
+    }
+
+    /// A read answered by the node that ACCEPTED the create, which is not necessarily the owner: a non-owner that holds the
+    /// partition serves the bounded-stale read from its own replica fold, and while that fold is being rebuilt (the log was cut)
+    /// it refuses with a typed transient failure, `FoldInProgress` among them, whose shape carries `amount` 0 like an absent key
+    /// (#3398). One rule decides what is retried: the product's own classification, `Cause.isTransient()`, which the test
+    /// blueprint reports as `transientFailure`. Polls at once, then backs off. A transient refusal is retried until WAIT_TIMEOUT,
+    /// when the test fails naming the key, the port and the last response; any other failure ends the wait and fails the test
+    /// at once; any other answer is returned for the caller's assertions to judge.
+    private String getReadable(int port, String key) {
+        var deadline = System.nanoTime() + WAIT_TIMEOUT.toNanos();
+        var backoffMillis = 20L;
+        var retries = 0;
+        String last;
+
+        while (true) {
+            last = get(port, key);
+            if (!"failed".equals(outcome(last))) {
+                LOG.log(System.Logger.Level.INFO,
+                        "getReadable key={0} port={1} transientRetries={2}",
+                        key,
+                        port,
+                        retries);
+
+                return last;
+            }
+
+            if (!last.matches("(?s).*\"transientFailure\"\\s*:\\s*true.*")) {
+                throw new AssertionError("read of '" + key
+                                        + "' on port " + port
+                                        + " failed with a non-transient failure: " + last);
+            }
+
+            if (System.nanoTime() >= deadline) {
+                throw new AssertionError("read of '" + key
+                                        + "' on port " + port
+                                        + " still refused transiently after " + WAIT_TIMEOUT
+                                        + "; last response: " + last);
+            }
+
+            retries++;
+            LockSupport.parkNanos(Duration.ofMillis(backoffMillis).toNanos());
+            backoffMillis = Math.min(backoffMillis * 2, POLL_INTERVAL.toMillis());
+        }
     }
 
     private String update(int port, String key, int amount) {
@@ -813,15 +831,15 @@ class DurableEntityForgeTest {
     /// and this sees all of them.
     private List<Integer> expiriesAcrossCluster(String key) {
         return serversOf(key).stream()
-                             .map(response -> number(response, "expiries"))
-                             .toList();
+                        .map(response -> number(response, "expiries"))
+                        .toList();
     }
 
     /// One serving node's view of `key`, for reading components other than the count.
     private String servedView(String key) {
         return serversOf(key).stream()
-                             .findFirst()
-                             .orElseThrow(() -> new AssertionError("No node serves '" + key + "'"));
+                        .findFirst()
+                        .orElseThrow(() -> new AssertionError("No node serves '" + key + "'"));
     }
 
     /// Wait out a fixed span. Deliberately a sleep and not a poll: what is being waited for is the ABSENCE
@@ -851,15 +869,13 @@ class DurableEntityForgeTest {
                 "I4 quiet period: requested={0}ms elapsed={1}ms",
                 span.toMillis(),
                 elapsedMillis);
-
         assertThat(elapsedMillis).describedAs("the quiet period must actually elapse — a residual unpark permit left by "
-                                              + "Promise.await() makes a bare park return at once, which would reduce the "
-                                              + "exactly-once assertion below to a re-read of the value just polled for")
-                                 .isGreaterThanOrEqualTo(span.toMillis());
+                                             + "Promise.await() makes a bare park return at once, which would reduce the "
+                                             + "exactly-once assertion below to a re-read of the value just polled for")
+                  .isGreaterThanOrEqualTo(span.toMillis());
     }
 
     // --- response reading -------------------------------------------------------
-
     /// Fails loudly on a missing field rather than returning "": a renamed component would otherwise
     /// turn every `isEqualTo` into a silent comparison against the empty string.
     private static String text(String body, String field) {
@@ -893,7 +909,6 @@ class DurableEntityForgeTest {
     }
 
     // --- cluster addressing ------------------------------------------------------
-
     /// Node ids hosting an ACTIVE instance of the entity slice, from the cluster-wide slice view. The
     /// suite deploys exactly one slice, so every `nodeId` in the filtered response belongs to it.
     private Set<String> activeSliceHosts() {
@@ -912,12 +927,12 @@ class DurableEntityForgeTest {
     /// arcs ride the stream record family under the `entity:` namespace).
     private Map<Integer, String> entityArcOwners() {
         var body = httpGet(anyMgmtPort(), "/api/v1/ownership/stream");
-        var matcher = Pattern.compile("\"identity\"\\s*:\\s*\"entity:orders:(\\d+)\"[^}]*\"owner\"\\s*:\\s*\"([^\"]+)\"")
-                             .matcher(body);
+        var matcher = Pattern.compile("\"identity\"\\s*:\\s*\"entity:orders:(\\d+)\"[^}]*\"owner\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
         var owners = new HashMap<Integer, String>();
 
         while (matcher.find()) {
-            owners.put(Integer.parseInt(matcher.group(1)), matcher.group(2));
+            owners.put(Integer.parseInt(matcher.group(1)),
+                       matcher.group(2));
         }
 
         return owners;
@@ -929,8 +944,8 @@ class DurableEntityForgeTest {
 
     private int firstPort() {
         return appPorts().stream()
-                         .findFirst()
-                         .orElseThrow(() -> new AssertionError("No app-http route is ready"));
+                       .findFirst()
+                       .orElseThrow(() -> new AssertionError("No app-http route is ready"));
     }
 
     /// The node id behind an app-http port. Both ports are assigned from the same per-node slot
@@ -956,11 +971,13 @@ class DurableEntityForgeTest {
     }
 
     private int anyMgmtPort() {
-        return cluster.status().nodes().getFirst().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .getFirst()
+                      .mgmtPort();
     }
 
     // --- deployment + readiness ----------------------------------------------------
-
     private void deployEntitySlice() {
         var blueprint = """
             id = "%s"
@@ -973,8 +990,8 @@ class DurableEntityForgeTest {
         var response = httpPostToml(leaderPort, "/api/v1/blueprints", blueprint);
 
         assertThat(response).describedAs("durable-entity slice deployment")
-                            .doesNotContain("\"error\"")
-                            .contains("\"status\":\"applied\"");
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     /// Every node must serve the entity before any test runs: the cross-node assertions compare
@@ -982,7 +999,8 @@ class DurableEntityForgeTest {
     private boolean entityReadyOnEveryNode() {
         var ports = appPorts();
 
-        return ports.size() == NODES && ports.stream().allMatch(this::entityReady);
+        return ports.size() == NODES && ports.stream()
+                                             .allMatch(this::entityReady);
     }
 
     /// A node is ready once its entity resource ANSWERS — either with a state verdict, or by saying
@@ -998,10 +1016,7 @@ class DurableEntityForgeTest {
     private boolean entityReady(int port) {
         var body = get(port, "__readiness_probe__");
 
-        return !body.contains("\"error\"")
-               && (body.contains("\"outcome\":\"absent\"")
-                   || body.contains("\"outcome\":\"found\"")
-                   || body.contains("PartitionNotHeld"));
+        return ! body.contains("\"error\"") && (body.contains("\"outcome\":\"absent\"") || body.contains("\"outcome\":\"found\"") || body.contains("PartitionNotHeld"));
     }
 
     /// `slicesStatus()` cannot detect this failure: under `ALL_OR_NOTHING` a deterministic slice
@@ -1015,7 +1030,8 @@ class DurableEntityForgeTest {
             var reason = deploymentFailedReason(httpGet(port, "/api/v1/events"));
 
             if (reason != null) {
-                throw new AssertionError("Deployment of " + ENTITY_SLICE + " FAILED — event surface reason: " + excerpt(reason));
+                throw new AssertionError("Deployment of " + ENTITY_SLICE
+                                        + " FAILED — event surface reason: " + excerpt(reason));
             }
         }
     }
@@ -1023,22 +1039,27 @@ class DurableEntityForgeTest {
     /// Extracts `details.reason` from a `DEPLOYMENT_FAILED` cluster event for {@link #ENTITY_SLICE}
     /// in an `/api/v1/events` response body, or null if no such event is present (yet).
     private static String deploymentFailedReason(String eventsBody) {
-        var matcher = Pattern.compile("\"type\"\\s*:\\s*\"DEPLOYMENT_FAILED\".*?\"artifact\"\\s*:\\s*\""
-                                      + Pattern.quote(ENTITY_SLICE)
-                                      + "\".*?\"reason\"\\s*:\\s*\"([^\"]*)\"", Pattern.DOTALL)
-                                .matcher(eventsBody);
+        var matcher = Pattern.compile("\"type\"\\s*:\\s*\"DEPLOYMENT_FAILED\".*?\"artifact\"\\s*:\\s*\"" + Pattern.quote(ENTITY_SLICE)
+                                     + "\".*?\"reason\"\\s*:\\s*\"([^\"]*)\"",
+                                      Pattern.DOTALL)
+                             .matcher(eventsBody);
 
-        return matcher.find() ? matcher.group(1) : null;
+        return matcher.find()
+               ? matcher.group(1)
+               : null;
     }
 
     /// Caps a raw event reason to {@link #REASON_EXCERPT_LIMIT} characters so a large nested
     /// exception chain in `details.reason` cannot blow up the assertion message.
     private static String excerpt(String reason) {
-        return reason.length() <= REASON_EXCERPT_LIMIT ? reason : reason.substring(0, REASON_EXCERPT_LIMIT) + "...";
+        return reason.length() <= REASON_EXCERPT_LIMIT
+               ? reason
+               : reason.substring(0, REASON_EXCERPT_LIMIT) + "...";
     }
 
     private boolean allNodesHealthy() {
-        return mgmtPorts().stream().allMatch(this::checkNodeHealth);
+        return mgmtPorts().stream()
+                        .allMatch(this::checkNodeHealth);
     }
 
     private boolean checkNodeHealth(int port) {
@@ -1050,12 +1071,12 @@ class DurableEntityForgeTest {
 
         return http.sendString(request)
                    .await()
-                   .map(response -> response.statusCode() == 200 && response.body().contains("\"quorum\":true"))
+                   .map(response -> response.statusCode() == 200 && response.body()
+                                                                            .contains("\"quorum\":true"))
                    .or(false);
     }
 
     // --- HTTP ------------------------------------------------------------------------
-
     private String httpPostToml(int port, String path, String body) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))

@@ -6,14 +6,19 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.config.cluster.CommunityPlacement;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
@@ -23,6 +28,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
@@ -45,6 +51,7 @@ import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 /// path of C8). Admissions handed to the FSM are built from the registry, never stubbed.
 final class MbWorld {
     final FsmHarness h;
+    private long configVersion;
     final BootTokens tokens = BootTokens.bootTokens(0x7001L);
     final Set<NodeId> cores = new HashSet<>();
 
@@ -203,6 +210,61 @@ final class MbWorld {
         h.seams = change.apply(h.seams);
 
         return this;
+    }
+
+    /// B-070: commit a cluster config whose `[community.<id>]` sections are `policies`, the way an operator's apply does; the indexer
+    /// reads the worker community policies from that committed row (`ClusterModel.communityPlacements`). Before activation the row
+    /// already exists (seeded quietly, read by the rebuild); while active it is a committed write the FSM is notified of.
+    MbWorld placements(Map<String, CommunityPlacement> policies) {
+        configVersion++;
+        var value = new ClusterConfigValue(Option.some(placementToml(policies)), "test", "1.0.0", List.of(), 3, 3, "forge", configVersion, 0L);
+
+        if (h.isActive()) {
+            h.seed(ClusterConfigKey.CURRENT, value);
+        } else {
+            h.seedQuietly(ClusterConfigKey.CURRENT, value);
+        }
+
+        return this;
+    }
+
+    private static String placementToml(Map<String, CommunityPlacement> policies) {
+        var zones = new TreeMap<String, TreeSet<String>>();
+
+        policies.values()
+                .forEach(policy -> policy.locations()
+                                         .forEach(location -> zones.computeIfAbsent(location.source(), _ -> new TreeSet<>())
+                                                                   .addAll(location.zone()
+                                                                                   .stream()
+                                                                                   .toList())));
+        var toml = new StringBuilder("config_version = \"1.0.0\"\n[cluster]\nname = \"test\"\nversion = \"1.0.0\"\n"
+                                     + "[source.fixture-cores]\ntype = \"forge\"\n[source.fixture-cores.core]\ncount = 3\n");
+
+        zones.forEach((source, sourceZones) -> toml.append(sourceSection(source, sourceZones)));
+        new TreeMap<>(policies).forEach((id, policy) -> toml.append(communitySection(id, policy)));
+
+        return toml.toString();
+    }
+
+    private static String sourceSection(String source, TreeSet<String> zones) {
+        var zoneLine = zones.isEmpty()
+                       ? ""
+                       : "zones = [" + String.join(", ", zones.stream().map(zone -> "\"" + zone + "\"").toList()) + "]\n";
+
+        return "[source." + source + "]\ntype = \"forge\"\n" + zoneLine + "[source." + source + ".worker]\ncount = 0\n";
+    }
+
+    private static String communitySection(String id, CommunityPlacement policy) {
+        var toml = new StringBuilder("[community." + id + "]\ntarget_size = " + policy.targetSize() + "\n");
+        var index = 0;
+
+        for (var location : policy.locations()) {
+            toml.append("[community." + id + ".placement.l" + index++ + "]\nsource = \"" + location.source() + "\"\n"
+                        + location.zone().map(zone -> "zone = \"" + zone + "\"\n").or("")
+                        + "minimum = " + location.minimum() + "\nweight = " + location.weight() + "\n");
+        }
+
+        return toml.toString();
     }
 
     // -- while active ----------------------------------------------------------------------------------------------

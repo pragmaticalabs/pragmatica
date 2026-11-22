@@ -16,7 +16,7 @@ public final class LineIndex {
         int count = 1;
 
         for (int i = 0; i < source.length(); i++) {
-            if (source.charAt(i) == '\n') {
+            if (terminatesLine(source, i)) {
                 if (count >= starts.length) {
                     starts = Arrays.copyOf(starts, starts.length * 2);
                 }
@@ -26,6 +26,13 @@ public final class LineIndex {
         }
 
         this.lineStarts = Arrays.copyOf(starts, count);
+    }
+
+    /// A line ends at `\n`, at `\r\n` (one terminator, ending at its `\n`) and at a lone `\r`, as the Java compiler counts.
+    private static boolean terminatesLine(String source, int index) {
+        var character = source.charAt(index);
+
+        return character == '\n' || character == '\r' && (index + 1 == source.length() || source.charAt(index + 1) != '\n');
     }
 
     /// 1-based line number for the character at `offset`. Offsets at or past EOF clamp to

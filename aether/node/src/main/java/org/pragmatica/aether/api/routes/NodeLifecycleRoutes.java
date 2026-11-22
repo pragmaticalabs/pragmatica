@@ -23,6 +23,7 @@ import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.management.route.LeaderRefusal;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.ManageableNode;
@@ -37,6 +38,7 @@ import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -71,21 +73,16 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private static final String MEMBERSHIP_DEAD = "Dead";
 
     private final Supplier<ManageableNode> nodeSupplier;
-    /// Membership v2 (B5b) — leader-local DRAIN command sink. Operator `drain` / `shutdown` routes
-    /// enqueue the target here (wired to `DrainCommandRegistry::requestDrain` in `AetherNode`) so
-    /// the leader's cluster-sync ping carries the target in its global `drainNodes` set, which
-    /// self-drains via its `DrainProcedure` (the v2 mechanism — no `LifecycleWriter` write).
-    /// Defaults to no-op via the single-arg factory for legacy callers / test fixtures.
-    private final Consumer<NodeId> drainCommandSink;
-    /// Membership v2 (B5b) — read counterpart to [#drainCommandSink]: the leader's set of
-    /// commanded-but-not-yet-departed DRAIN targets (wired to `DrainCommandRegistry::drainTargets`
-    /// in `AetherNode`). The disruption-budget guard counts these in-flight drains so sequential
-    /// drains cannot be admitted in lockstep into a quorum-losing cascade. Because a drain does NO
-    /// lifecycle/KV write, the target stays SWIM-present until it physically halts, so live
-    /// `presentMembers()` alone cannot see a previously-commanded drain. Defaults to an empty set
-    /// via the single-arg factory for legacy callers / test fixtures. The registry is leader-owned
-    /// and drains are leader-routed, so this read reflects the authoritative pending set.
-    private final Supplier<Set<NodeId>> pendingDrainsSupplier;
+    /// Membership v2 (B5b) — the leader's DRAIN channel: the command sink the operator `drain` / `shutdown` routes
+    /// enqueue the target into (wired to `DrainCommandRegistry::requestDrain` in `AetherNode`, so the leader's
+    /// cluster-sync ping carries the target in its global `drainNodes` set, which self-drains via its `DrainProcedure`;
+    /// no `LifecycleWriter` write), and its read counterpart, the commanded-but-not-yet-departed DRAIN targets
+    /// (`DrainCommandRegistry::drainTargets`). The disruption-budget guard counts these in-flight drains so sequential
+    /// drains cannot be admitted in lockstep into a quorum-losing cascade. Because a drain does NO lifecycle/KV write,
+    /// the target stays SWIM-present until it physically halts, so live `presentMembers()` alone cannot see a
+    /// previously-commanded drain. The registry is leader-owned and drains are leader-routed, so the read reflects the
+    /// authoritative pending set. A null port becomes [DrainPort#none()]; the single-arg legacy factory wires an inert [DrainPort#registry] (no-op sink, empty pending set).
+    private final DrainPort drainPort;
     /// #1720: the slice `minAvailable` floor guard for operator drain and shutdown, absent for legacy callers and
     /// fixtures that wire no slice ownership (they keep the budget-only admission they always had).
     private final Option<SliceFloor> sliceFloor;
@@ -101,6 +98,102 @@ public final class NodeLifecycleRoutes implements RouteSource {
         public static SliceFloor sliceFloor(BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> violations,
                                             OperatorWarningSink warnings) {
             return new SliceFloor(violations, warnings);
+        }
+    }
+
+    /// The leader's DRAIN channel as one value (C6a-0): `request` enqueues a drain target into the leader's
+    /// `DrainCommandRegistry`, `pending` reads the commanded-but-not-yet-departed targets. [#registry] carries the
+    /// registry's two accessors, [#none()] is the no-op for fixtures that wire no registry.
+    public sealed interface DrainPort {
+        /// Enqueues the drain target; the leader's cluster-sync ping then carries it.
+        @Contract
+        void request(NodeId node);
+
+        /// The commanded-but-not-yet-departed drain targets.
+        Set<NodeId> pending();
+
+        /// The registry-backed port; a null sink is a no-op, a null pending supplier reads an empty set.
+        static DrainPort registry(Consumer<NodeId> sink, Supplier<Set<NodeId>> pending) {
+            return Registry.registry(sink, pending);
+        }
+
+        /// The no-op port: requests are dropped, nothing is pending.
+        static DrainPort none() {
+            return None.INSTANCE;
+        }
+
+        record Registry(Consumer<NodeId> sink, Supplier<Set<NodeId>> pendingSource) implements DrainPort {
+            /// NLR's null defaults: a null sink is a no-op, a null pending supplier reads an empty set.
+            public Registry {
+                sink = sink == null
+                       ? _ -> {}
+                       : sink;
+                pendingSource = pendingSource == null
+                                ? Set::of
+                                : pendingSource;
+            }
+
+            static Registry registry(Consumer<NodeId> sink, Supplier<Set<NodeId>> pending) {
+                return new Registry(sink, pending);
+            }
+
+            @Override
+            @Contract
+            public void request(NodeId node) {
+                sink.accept(node);
+            }
+
+            @Override
+            public Set<NodeId> pending() {
+                return pendingSource.get();
+            }
+        }
+
+        enum None implements DrainPort {
+            INSTANCE;
+            @Override
+            @Contract
+            public void request(NodeId node) {}
+            @Override
+            public Set<NodeId> pending() {
+                return Set.of();
+            }
+        }
+    }
+
+    /// 409: the operator drain targets the current leader (or the node handling the request, which by construction is the
+    /// believed or just-elected leader). The leader has no row in the readiness view (it never pings itself) and a drain
+    /// commanded on it is not carried out, so a leader is not drained: the operator moves leadership first. The product has
+    /// no step-down command; stopping the leader's process from outside makes the cluster elect another leader.
+    public record LeaderCannotBeDrained(String nodeId) implements HttpStatusAware {
+        @Override
+        public String message() {
+            return "Cannot drain node " + nodeId + LeaderRefusal.DRAIN_REASON
+                 + " Move leadership first: stop this node's process"
+                 + " from outside the cluster (the service manager or the container runtime) so the cluster elects another"
+                 + " leader, then drain this node once it is no longer the leader. `aether nodes shutdown` is refused for the leader too.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// 409: the operator shutdown targets the current leader (or the node handling the request). A shutdown is commanded
+    /// through the same drain channel and half-applies on the leader exactly as a drain does, so it is refused alike.
+    public record LeaderCannotBeShutDown(String nodeId) implements HttpStatusAware {
+        @Override
+        public String message() {
+            return "Cannot shut down node " + nodeId + LeaderRefusal.SHUTDOWN_REASON
+                 + " Move leadership first: stop this"
+                 + " node's process from outside the cluster (the service manager or the container runtime) so the cluster elects"
+                 + " another leader; this node can then be drained or shut down through the API once it is no longer the leader.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 
@@ -132,23 +225,19 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private NodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier,
-                                Consumer<NodeId> drainCommandSink,
-                                Supplier<Set<NodeId>> pendingDrainsSupplier,
+                                DrainPort drainPort,
                                 Option<SliceFloor> sliceFloor) {
         this.sliceFloor = sliceFloor;
         this.nodeSupplier = nodeSupplier;
-        this.drainCommandSink = drainCommandSink == null
-                                ? _ -> {}
-                                : drainCommandSink;
-        this.pendingDrainsSupplier = pendingDrainsSupplier == null
-                                     ? Set::of
-                                     : pendingDrainsSupplier;
+        this.drainPort = drainPort == null
+                         ? DrainPort.none()
+                         : drainPort;
     }
 
     public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new NodeLifecycleRoutes(nodeSupplier,
-                                       _ -> {},
-                                       Set::of,
+                                       DrainPort.registry(_ -> {},
+                                                          Set::of),
                                        Option.none());
     }
 
@@ -158,7 +247,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier,
                                                           Consumer<NodeId> drainCommandSink,
                                                           Supplier<Set<NodeId>> pendingDrainsSupplier) {
-        return new NodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier, Option.none());
+        return new NodeLifecycleRoutes(nodeSupplier,
+                                       DrainPort.registry(drainCommandSink, pendingDrainsSupplier),
+                                       Option.none());
     }
 
     /// #1720 — production factory: as above, plus the slice `minAvailable` floor guard.
@@ -166,7 +257,15 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                           Consumer<NodeId> drainCommandSink,
                                                           Supplier<Set<NodeId>> pendingDrainsSupplier,
                                                           SliceFloor sliceFloor) {
-        return new NodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier, Option.some(sliceFloor));
+        return withDrainPort(nodeSupplier, DrainPort.registry(drainCommandSink, pendingDrainsSupplier), sliceFloor);
+    }
+
+    /// C6a-0 — the port-taking factory: the leader's drain channel as one [DrainPort] in place of the sink / supplier
+    /// pair, plus the slice `minAvailable` floor guard. A null port is the no-op [DrainPort#none()].
+    public static NodeLifecycleRoutes withDrainPort(Supplier<ManageableNode> nodeSupplier,
+                                                    DrainPort drainPort,
+                                                    SliceFloor sliceFloor) {
+        return new NodeLifecycleRoutes(nodeSupplier, drainPort, Option.some(sliceFloor));
     }
 
     /// `version` (#1543 part C) is the software version the node advertises in its `version` label; empty when
@@ -350,7 +449,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     /// Membership v2 (B5b) — operator drain. After the disruption-budget guard and the presence
     /// guard, the target is enqueued into the leader's `DrainCommandRegistry` via
-    /// `drainCommandSink`; the leader's cluster-sync ping then carries the target in its global
+    /// `drainPort`; the leader's cluster-sync ping then carries the target in its global
     /// `drainNodes` set and
     /// the target self-drains via its `DrainProcedure`. The CTM grace-terminate backstop reaps the
     /// container if it never self-exits. No `LifecycleWriter` write happens here.
@@ -365,17 +464,18 @@ public final class NodeLifecycleRoutes implements RouteSource {
     ///
     /// #1720 — the slice `minAvailable` floor is checked in this same critical section, so it is serialised
     /// against concurrent operator drains by the SAME monitor (this method's `synchronized`, on the one routes
-    /// instance) and reads the pending set the sink has just updated: `drainCommandSink.accept` runs inside
+    /// instance) and reads the pending set the sink has just updated: `drainPort.request` runs inside
     /// `enqueueOperatorDrain`, under the lock, before the next admission can evaluate. Two requests therefore never
     /// pass against one "pending drains" snapshot. Pinned by `NodeLifecycleRoutesSliceFloorTest`'s concurrent
     /// admission test.
     private synchronized Result<TransitionResult> admitOperatorDrain(NodeId node, boolean requireReady, boolean force) {
-        return checkDisruptionBudgetForTarget(node.id(),
-                                              node).flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
-                                             .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
-                                             .map(budget -> enqueueOperatorDrain(node,
-                                                                                 budget.message(),
-                                                                                 requireReady));
+        return refuseLeader(node, requireReady).flatMap(_ -> checkDisruptionBudgetForTarget(node.id(),
+                                                                                            node))
+                           .flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
+                           .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
+                           .map(budget -> enqueueOperatorDrain(node,
+                                                               budget.message(),
+                                                               requireReady));
     }
 
     /// #1720: refuse, 409, an operator drain or shutdown that would leave a hosted slice below its `minAvailable`
@@ -403,7 +503,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
             return Result.success(org.pragmatica.lang.Unit.unit());
         }
 
-        remaining.removeAll(pendingDrainsSupplier.get());
+        remaining.removeAll(drainPort.pending());
         remaining.remove(node);
         var breaches = floor.violations().apply(node, remaining);
         var operation = drain
@@ -491,9 +591,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     /// Whether a drain of `node` is already commanded or reported by the node itself.
     public boolean drainUnderWay(NodeId node) {
-        return pendingDrainsSupplier.get()
-                                    .contains(node) || readLifecycleState(node).filter(state -> state == NodeReportedState.DRAINING)
-                                                                         .isPresent();
+        return drainPort.pending()
+                        .contains(node) || readLifecycleState(node).filter(NodeReportedState::isDraining)
+                                                             .isPresent();
     }
 
     /// Whether `cause` is the slice floor holding a drain back: the one refusal a replacement reports as "blocked".
@@ -550,6 +650,33 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                .equals(nodeId) && !MEMBERSHIP_DEAD.equals(entry.getValue()));
     }
 
+    /// A drain or a shutdown of the current leader, or of the node handling the request, is refused before anything else is
+    /// read or dispatched. Every management request for these routes is forwarded to the node the receiver believes is the
+    /// leader (`ManagementServer.tryForwardIfNotOwner`), so a target equal to the handling node is the leader or a node that
+    /// was just elected and has not yet applied its own election: its `leader()` may still name the old leader. Both are
+    /// decided from state this node holds, so the leader's own route and a follower's route answer alike. With no leader
+    /// elected and a target other than this node, nothing matches and today's answer stands (404 when a drain target has no
+    /// reported state).
+    private Result<org.pragmatica.lang.Unit> refuseLeader(NodeId node, boolean drain) {
+        return isLeaderOrSelf(node)
+               ? refusalOfLeader(node, drain)
+               : Result.success(org.pragmatica.lang.Unit.unit());
+    }
+
+    private static Result<org.pragmatica.lang.Unit> refusalOfLeader(NodeId node, boolean drain) {
+        return drain
+               ? new LeaderCannotBeDrained(node.id()).result()
+               : new LeaderCannotBeShutDown(node.id()).result();
+    }
+
+    private boolean isLeaderOrSelf(NodeId node) {
+        var current = nodeSupplier.get();
+
+        return node.equals(current.self()) || current.leader()
+                                                     .filter(node::equals)
+                                                     .isPresent();
+    }
+
     private Result<org.pragmatica.lang.Unit> checkDrainReadiness(NodeId node, boolean requireReady) {
         return requireReady
                ? readLifecycleState(node).toResult(LIFECYCLE_NOT_FOUND)
@@ -568,7 +695,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private TransitionResult enqueueOperatorDrain(NodeId node, String guardNote, boolean requireReady) {
-        drainCommandSink.accept(node);
+        drainPort.request(node);
         var result = requireReady
                      ? drainInitiatedResult(node.id(), guardNote)
                      : shutdownInitiatedResult(node.id(), guardNote);
@@ -631,7 +758,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
         var available = new java.util.HashSet<>(node.membershipFsm().coreCountedMembers());
 
         available.retainAll(voters);
-        available.removeAll(pendingDrainsSupplier.get());
+        available.removeAll(drainPort.pending());
         available.remove(nodeId);
         var minimum = voters.size() / 2 + 1;
 

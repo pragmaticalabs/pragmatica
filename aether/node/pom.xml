@@ -31,6 +31,13 @@
             <artifactId>http-security</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>http-security</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
         <!-- Internal -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
@@ -70,6 +77,13 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>swim</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>swim</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
 
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
@@ -90,6 +104,13 @@
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>aether-stream</artifactId>
             <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-stream</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
         </dependency>
 
         <dependency>
@@ -335,6 +356,12 @@
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>test-logging</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- PollUntil: the shared bounded wait for tests (FlakeScanTest) -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>testing</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

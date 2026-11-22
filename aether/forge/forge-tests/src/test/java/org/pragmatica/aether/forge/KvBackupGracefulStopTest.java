@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.io.IOException;
@@ -33,10 +32,11 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// Know 3b01e624f1 (ruling 1): a GRACEFUL whole-cluster stop flushes the KV backup before it completes, so a stream created inside the backup's
 /// debounce window (500 ms quiet) is in the restored state with the SAME incarnation. Without the flush the restore predates the stream's config,
@@ -67,6 +67,7 @@ class KvBackupGracefulStopTest {
 
     private final HttpOperations http = jdkHttpOperations();
     private EmberCluster cluster;
+    private Path remote;
 
     @AfterEach
     void tearDown() {
@@ -79,19 +80,15 @@ class KvBackupGracefulStopTest {
     @Test
     void gracefulStopInsideTheQuietWindow_streamConfigSurvivesTheRestore(@TempDir Path dir) {
         startCluster(dir);
-
         var key = StreamConfigKey.streamConfigKey(STREAM_ADDRESS);
         var created = createStreamAfterTheBackupSettled(key);
-
         var insideMs = insideMs(created);
 
         LifecycleAwait.settled("cluster stop", cluster, cluster.stop());
         assertThat(insideMs).as("control: the stop was issued inside the 500 ms quiet window").isLessThan(300L);
-
         startAndAwaitReady();
-
         assertThat(committedIncarnation(key)).as("the stream config committed inside the quiet window is in the restored state, same life")
-                                             .isEqualTo(created.incarnation());
+                  .isEqualTo(created.incarnation());
     }
 
     /// Probe P-A of the c1 design: a KV revision is a function of the applied log, so two nodes sampled at the same revision hold the same
@@ -102,14 +99,15 @@ class KvBackupGracefulStopTest {
     void sameRevision_holdsSameBackedUpEntries_onEveryNode(@TempDir Path dir) {
         startCluster(dir);
         LockSupport.parkNanos(Duration.ofSeconds(12).toNanos());
-
         var samples = new java.util.TreeMap<Long, java.util.Map<String, java.util.Set<java.util.Map<AetherKey, AetherValue>>>>();
         var deadline = System.nanoTime() + Duration.ofSeconds(8).toNanos();
         var next = 0;
 
         while (System.nanoTime() < deadline) {
             if (next < 4 && System.nanoTime() > deadline - Duration.ofSeconds(8 - next).toNanos()) {
-                httpPost(cluster.getLeaderManagementPort().or(anyMgmtPort()), "/api/v1/streams/probe/p" + next + "/1.0.0", "{\"partitions\":1}");
+                httpPost(cluster.getLeaderManagementPort().or(anyMgmtPort()),
+                         "/api/v1/streams/probe/p" + next + "/1.0.0",
+                         "{\"partitions\":1}");
                 next++;
             }
 
@@ -118,24 +116,127 @@ class KvBackupGracefulStopTest {
 
         var sharedRevisions = samples.values().stream().filter(byNode -> byNode.size() >= 2).count();
 
-        assertThat(sharedRevisions).as("control: revisions were observed on at least two nodes").isGreaterThanOrEqualTo(3L);
-        assertThat(samples.values().stream().flatMap(byNode -> byNode.values().stream()).flatMap(java.util.Set::stream).distinct().count())
-                .as("control: the entries changed across revisions").isGreaterThanOrEqualTo(3L);
-        assertThat(samples).allSatisfy((revision, byNode) -> assertThat(byNode.values().stream().flatMap(java.util.Set::stream).distinct().count())
-                                                       .as("revision " + revision + " seen on " + byNode.keySet()).isEqualTo(1L));
+        assertThat(sharedRevisions).as("control: revisions were observed on at least two nodes")
+                  .isGreaterThanOrEqualTo(3L);
+        assertThat(samples.values()
+                          .stream()
+                          .flatMap(byNode -> byNode.values()
+                                                   .stream())
+                          .flatMap(java.util.Set::stream)
+                          .distinct()
+                          .count()).as("control: the entries changed across revisions")
+                  .isGreaterThanOrEqualTo(3L);
+        assertThat(samples).allSatisfy((revision, byNode) -> assertThat(byNode.values()
+                                                                              .stream()
+                                                                              .flatMap(java.util.Set::stream)
+                                                                              .distinct()
+                                                                              .count()).as("revision " + revision
+                                                                                          + " seen on " + byNode.keySet())
+                                                                       .isEqualTo(1L));
+    }
+
+    private void awaitBackupSettled() {
+        var deadline = System.nanoTime() + WAIT_TIMEOUT.toNanos();
+        var last = "no sample";
+
+        while (System.nanoTime() < deadline) {
+            last = backupDifference();
+            if (last.isEmpty()) {
+                return;
+            }
+
+            LockSupport.parkNanos(POLL_INTERVAL.toNanos());
+        }
+
+        throw new AssertionError("the KV backup did not settle within " + WAIT_TIMEOUT + ": " + last);
+    }
+
+    /// Empty when the remote document names exactly the backed-up keys of the leader's store; otherwise what differs.
+    private String backupDifference() {
+        var leader = cluster.currentLeader();
+        var node = cluster.allNodes()
+                          .stream()
+                          .filter(candidate -> leader.map(id -> id.equals(candidate.self().id()))
+                                                     .or(false))
+                          .findFirst();
+
+        if (node.isEmpty()) {
+            return "no leader node";
+        }
+
+        var store = node.get().kvStore();
+        java.util.Map<AetherKey, AetherValue> stored;
+
+        synchronized (store) {
+            stored = backedUpEntries(store.snapshot());
+        }
+
+        var document = remoteDocument();
+
+        if (document.isEmpty()) {
+            return "the remote has no backup document yet";
+        }
+
+        var lines = document.lines().toList();
+        var missing = stored.keySet()
+                            .stream()
+                            .map(AetherKey::asString)
+                            .filter(key -> lines.stream()
+                                                .noneMatch(line -> line.endsWith(" " + key)))
+                            .toList();
+        var declared = lines.stream().filter(line -> line.startsWith("entries=")).findFirst().orElse("entries=?");
+
+        return missing.isEmpty() && declared.equals("entries=" + stored.size())
+               ? ""
+               : "store has " + stored.size()
+                + " backed-up keys, remote document says " + declared
+                + ", keys missing from it: " + missing;
+    }
+
+    private String remoteDocument() {
+        var refs = gitOutput("for-each-ref", "--format=%(refname)", "refs/heads").lines().findFirst();
+
+        return refs.isPresent()
+               ? gitOutput("show", refs.get() + ":kv-backup.txt")
+               : "";
+    }
+
+    private String gitOutput(String... args) {
+        var command = new ArrayList<String>();
+
+        command.add("git");
+        command.add("--git-dir=" + remote);
+        command.addAll(List.of(args));
+        try {
+            var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            var output = new String(process.getInputStream().readAllBytes(),
+                                    java.nio.charset.StandardCharsets.UTF_8);
+
+            return process.waitFor() == 0
+                   ? output
+                   : "";
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+
+            return "";
+        }
     }
 
     private record Created(long incarnation, long startedNanos) {}
 
     private Created createStreamAfterTheBackupSettled(StreamConfigKey key) {
-        // control 1: the backup settles, so the only unflushed change is the one made below
-        LockSupport.parkNanos(Duration.ofSeconds(12).toNanos());
+        // control 1: the backup settles, so the only unflushed change is the one made below. Settled = the remote's backup document
+        // holds exactly the backed-up keys of the leader's store: the debounced flush (KvBackupService.tick, quiet 500 ms / cap 5 s)
+        // has landed, so no pending flush can carry the change made below and mask a missing stop flush.
+        awaitBackupSettled();
         assertThat(committedIncarnation(key)).as("control: the stream does not exist yet").isEqualTo(-1L);
-
-        var response = httpPost(cluster.getLeaderManagementPort().or(anyMgmtPort()), "/api/v1/streams/probe/quiet/1.0.0", "{\"partitions\":1}");
+        var response = httpPost(cluster.getLeaderManagementPort().or(anyMgmtPort()),
+                                "/api/v1/streams/probe/quiet/1.0.0",
+                                "{\"partitions\":1}");
 
         assertThat(response).as("create response").doesNotContain("\"error\"");
-
         var t0 = System.nanoTime();
         var committed = committedIncarnation(key);
 
@@ -164,8 +265,10 @@ class KvBackupGracefulStopTest {
                 backedUp = backedUpEntries(store.snapshot());
             }
 
-            samples.computeIfAbsent(revision, _ -> new java.util.HashMap<>())
-                   .computeIfAbsent(node.self().id(), _ -> new java.util.HashSet<>())
+            samples.computeIfAbsent(revision,
+                                    _ -> new java.util.HashMap<>())
+                   .computeIfAbsent(node.self().id(),
+                                    _ -> new java.util.HashSet<>())
                    .add(backedUp);
         }
     }
@@ -175,7 +278,9 @@ class KvBackupGracefulStopTest {
         var result = new java.util.HashMap<AetherKey, AetherValue>();
 
         all.forEach((key, value) -> {
-            if (key instanceof AetherKey aetherKey && value instanceof AetherValue aetherValue && BackupEntryCodec.isBackedUp(aetherKey)) {
+            if (key instanceof AetherKey aetherKey
+                && value instanceof AetherValue aetherValue
+                && BackupEntryCodec.isBackedUp(aetherKey)) {
                 result.put(aetherKey, aetherValue);
             }
         });
@@ -184,19 +289,25 @@ class KvBackupGracefulStopTest {
     }
 
     private void startCluster(Path dir) {
-        var configProvider = ConfigurationProvider.builder().withSystemProperties("aether.").withEnvironment("AETHER_").build();
-        var remote = dir.resolve("kv-backup-remote.git");
+        var configProvider = ConfigurationProvider.builder()
+                                                  .withSystemProperties("aether.")
+                                                  .withEnvironment("AETHER_")
+                                                  .build();
 
+        remote = dir.resolve("kv-backup-remote.git");
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "scd", Option.some(configProvider));
         cluster.withDataBaseDir(dir);
         runGit(dir, "init", "--quiet", "--bare", remote.toString());
-        cluster.withKvBackup(dir.resolve("kv-backup-nodes"), remote.toString(), org.pragmatica.aether.config.BackupConfig.RestoreMode.AUTO);
+        cluster.withKvBackup(dir.resolve("kv-backup-nodes"),
+                             remote.toString(),
+                             org.pragmatica.aether.config.BackupConfig.RestoreMode.AUTO);
         startAndAwaitReady();
     }
 
     private void startAndAwaitReady() {
         LifecycleAwait.settled("cluster start", cluster, cluster.start());
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesAreMembers);
     }
@@ -206,32 +317,47 @@ class KvBackupGracefulStopTest {
         var seen = new java.util.TreeSet<Long>();
 
         for (var node : cluster.allNodes()) {
-            node.kvStore().getTyped(key, StreamConfigValue.class).onPresent(value -> seen.add(value.config().incarnation()));
+            node.kvStore()
+                .getTyped(key, StreamConfigValue.class)
+                .onPresent(value -> seen.add(value.config().incarnation()));
         }
 
-        return seen.isEmpty() ? -1L : seen.first();
+        return seen.isEmpty()
+               ? -1L
+               : seen.first();
     }
 
     private int anyMgmtPort() {
-        return cluster.status().nodes().getFirst().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .getFirst()
+                      .mgmtPort();
     }
 
     private boolean allNodesHealthy() {
-        return cluster.status().nodes().stream().allMatch(node -> healthOk(node.mgmtPort()));
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .allMatch(node -> healthOk(node.mgmtPort()));
     }
 
     private boolean healthOk(int port) {
-        return get(port).map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true")).or(false);
+        return get(port).map(r -> r.statusCode() == 200 && r.body()
+                                                            .contains("\"quorum\":true"))
+                  .or(false);
     }
 
     private boolean allNodesAreMembers() {
-        return get(cluster.getLeaderManagementPort().or(anyMgmtPort())).map(r -> r.statusCode() == 200 && hasFullMembership(r.body())).or(false);
+        return get(cluster.getLeaderManagementPort().or(anyMgmtPort())).map(r -> r.statusCode() == 200 && hasFullMembership(r.body()))
+                  .or(false);
     }
 
     private static boolean hasFullMembership(String body) {
         var matcher = NODE_COUNT_FIELD.matcher(body);
 
-        return body.contains("\"quorum\":true") && matcher.find() && Integer.parseInt(matcher.group(1)) >= NODES;
+        return body.contains("\"quorum\":true")
+               && matcher.find()
+               && Integer.parseInt(matcher.group(1)) >= NODES;
     }
 
     private org.pragmatica.lang.Result<HttpResult<String>> get(int port) {
@@ -241,7 +367,8 @@ class KvBackupGracefulStopTest {
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
 
-        return http.sendString(request).await();
+        return http.sendString(request)
+                   .await();
     }
 
     private String httpPost(int port, String path, String body) {
@@ -252,7 +379,10 @@ class KvBackupGracefulStopTest {
                                  .timeout(Duration.ofSeconds(15))
                                  .build();
 
-        return http.sendString(request).await().map(HttpResult::body).or(ERROR_FALLBACK);
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private static void runGit(Path cwd, String... args) {

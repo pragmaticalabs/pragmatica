@@ -1,12 +1,10 @@
 package org.pragmatica.jbct.maven;
 
-import org.pragmatica.jbct.lint.JbctLinter;
-import org.pragmatica.jbct.lint.layer.LayerCoverage;
+import org.pragmatica.jbct.lint.cst.RunOutcome.DensityLimit;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 import org.pragmatica.jbct.score.DensityGate;
-import org.pragmatica.jbct.score.ScoreCalculator;
-import org.pragmatica.jbct.score.ScoreReport;
-import org.pragmatica.jbct.score.ScoreResult;
-import org.pragmatica.jbct.score.SourceScan;
+import org.pragmatica.lang.Option;
 
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -28,6 +26,8 @@ public class ScoreMojo extends AbstractJbctMojo {
     @Parameter(property = "jbct.includeTests", defaultValue = "false")
     protected boolean includeTests;
 
+    private static final String MAX_DENSITY_FLAG = "-D" + DensityGate.MAX_DENSITY_PROPERTY;
+
     @Parameter(property = DensityGate.MAX_DENSITY_PROPERTY)
     Double maxDensity;
 
@@ -48,43 +48,8 @@ public class ScoreMojo extends AbstractJbctMojo {
             throw new MojoExecutionException(DensityGate.REMOVED_BASELINE_MESSAGE);
         }
 
-        var jbctConfig = loadConfig();
-        var context = createLintContext(jbctConfig);
-        var linter = JbctLinter.jbctLinter(context);
-        var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
+        var limit = Option.option(maxDensity).map(max -> DensityLimit.densityLimit(max, MAX_DENSITY_FLAG));
 
-        if (filesToProcess.isEmpty()) {
-            reportNothingToCheck("score", includeTests);
-
-            return;
-        }
-
-        getLog().info("Measuring " + filesToProcess.size() + " Java file(s)");
-        var scan = SourceScan.sourceScan(filesToProcess,
-                                         linter::lint,
-                                         message -> getLog().error("Parse error in " + message));
-        var score = ScoreCalculator.calculate(scan);
-
-        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(getLog()::info);
-        outputScore(score);
-        var coverage = score.coverage();
-        // A coverage gap outranks the density check and fails even with no maxDensity set: the goal
-        // announced `Measuring N Java file(s)` and then reported a ratio over fewer, returning BUILD
-        // SUCCESS over files it never read (#977).
-        if (coverage.isPartial()) {
-            coverage.gapReport("score").onPresent(getLog()::error);
-
-            throw new MojoFailureException("JBCT score failed: " + coverage.unparseable()
-                                          + " file(s) could not be read or parsed and were NOT analysed,"
-                                          + " so the reported density does not cover them");
-        }
-
-        if (maxDensity != null && DensityGate.exceeds(score.totalDensityPerKloc(), maxDensity)) {
-            throw new MojoFailureException(DensityGate.breachMessage(score.totalDensityPerKloc(), maxDensity));
-        }
-    }
-
-    private void outputScore(ScoreResult score) {
-        ScoreReport.terminalLines(score).forEach(line -> getLog().info(line));
+        perform(resolvePlan(includeTests), Invocation.score(Surface.MAVEN, limit));
     }
 }

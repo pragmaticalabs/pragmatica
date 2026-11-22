@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.management.route.LeaderRefusal;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandler;
@@ -190,6 +191,23 @@ final class ScriptedDrainHttp implements HttpOperations {
                               + "\"detail\":\"Conflict: Disruption budget exceeded: draining " + nodeId
                               + " would leave 1 core-scoped operational nodes, minimum is 2 (role=core; worker drains bypass this guard)\","
                               + "\"instance\":\"/api/v1/nodes/drain/" + nodeId + "\",\"requestId\":\"r-1\"}");
+    }
+
+    /// The server's typed refusal of a drain of the leader, built from the wording both sides share.
+    static Step leaderDrainRefused(String nodeId) {
+        return leaderRefusal(nodeId, "Cannot drain node " + nodeId + LeaderRefusal.DRAIN_REASON, "drain");
+    }
+
+    /// The server's typed refusal of a shutdown of the leader, built from the wording both sides share.
+    static Step leaderShutdownRefused(String nodeId) {
+        return leaderRefusal(nodeId, "Cannot shut down node " + nodeId + LeaderRefusal.SHUTDOWN_REASON, "shutdown");
+    }
+
+    private static Step leaderRefusal(String nodeId, String message, String route) {
+        return new Step.Reply(409,
+                              "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,"
+                              + "\"detail\":\"Conflict: " + message + " Move leadership first.\",\"instance\":\"/api/v1/nodes/" + route + "/" + nodeId
+                              + "\"}");
     }
 
     static Step otherConflict(String nodeId) {

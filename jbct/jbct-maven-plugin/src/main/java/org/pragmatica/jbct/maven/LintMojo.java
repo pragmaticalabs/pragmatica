@@ -1,15 +1,7 @@
 package org.pragmatica.jbct.maven;
 
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.JbctLinter;
-import org.pragmatica.jbct.lint.layer.LayerCoverage;
-import org.pragmatica.jbct.shared.AnalysisCoverage;
-import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Invocation;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Surface;
 
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -37,94 +29,6 @@ public class LintMojo extends AbstractJbctMojo {
             return;
         }
 
-        var jbctConfig = loadConfig();
-        var context = createLintContext(jbctConfig);
-        var linter = JbctLinter.jbctLinter(context);
-        var filesToProcess = collectJavaFiles(jbctConfig.files(), includeTests);
-
-        if (filesToProcess.isEmpty()) {
-            reportNothingToCheck("lint", includeTests);
-
-            return;
-        }
-
-        getLog().info("Linting " + filesToProcess.size() + " Java file(s)");
-        var allDiagnostics = new ArrayList<Diagnostic>();
-        var errors = new AtomicInteger(0);
-        var warnings = new AtomicInteger(0);
-        var infos = new AtomicInteger(0);
-        var parseErrors = new AtomicInteger(0);
-
-        for (var file : filesToProcess) {
-            processFile(file, linter, allDiagnostics, errors, warnings, infos, parseErrors);
-        }
-
-        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(getLog()::info);
-        var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
-        // Print diagnostics
-        for (var d : allDiagnostics) {
-            switch (d.severity()) {
-                case ERROR -> getLog().error(formatDiagnostic(d));
-                case WARNING -> getLog().warn(formatDiagnostic(d));
-                case INFO -> getLog().info(formatDiagnostic(d));
-            }
-        }
-        // Print summary. `Linting N Java file(s)` above announces what was COLLECTED; this line
-        // carries what was ANALYSED, because that is the denominator the counts were taken over (#977).
-        coverage.gapReport("lint").onPresent(getLog()::error);
-        getLog().info("Lint results (checked " + coverage.render()
-                     + "): " + errors.get()
-                     + " error(s), " + warnings.get()
-                     + " warning(s), " + infos.get()
-                     + " info(s)");
-        // Fail build if needed. Every reason is named: the old message reported the LINT ERROR count
-        // for a failure caused by a parse error, so a build stopped by files it could not read said
-        // `JBCT lint found 0 error(s)` — true, and the opposite of an explanation.
-        var failures = new ArrayList<String>();
-
-        if (coverage.isPartial()) {
-            failures.add(coverage.unparseable() + " file(s) could not be read or parsed and were NOT analysed");
-        }
-
-        if (errors.get() > 0) {
-            failures.add(errors.get() + " lint error(s)");
-        }
-
-        if (jbctConfig.lint().failOnWarning() && warnings.get() > 0) {
-            failures.add(warnings.get() + " warning(s) (failOnWarning is enabled)");
-        }
-
-        if (!failures.isEmpty()) {
-            throw new MojoFailureException("JBCT lint failed: " + String.join(", ", failures));
-        }
-    }
-
-    private void processFile(Path file,
-                             JbctLinter linter,
-                             List<Diagnostic> allDiagnostics,
-                             AtomicInteger errors,
-                             AtomicInteger warnings,
-                             AtomicInteger infos,
-                             AtomicInteger parseErrors) {
-        SourceFile.sourceFile(file)
-                  .flatMap(linter::lint)
-                  .onSuccess(diagnostics -> {
-                                 allDiagnostics.addAll(diagnostics);
-                                 for (var d : diagnostics) {
-                                     switch (d.severity()) {
-                                         case ERROR -> errors.incrementAndGet();
-                                         case WARNING -> warnings.incrementAndGet();
-                                         case INFO -> infos.incrementAndGet();
-                                     }
-                                 }
-                             })
-                  .onFailure(cause -> {
-                                 parseErrors.incrementAndGet();
-                                 getLog().error("Parse error in " + file + ": " + cause.message());
-                             });
-    }
-
-    private String formatDiagnostic(Diagnostic d) {
-        return "[" + d.ruleId() + "] " + d.file() + ":" + d.line() + ":" + d.column() + " - " + d.message();
+        perform(resolvePlan(includeTests), Invocation.lint(Surface.MAVEN));
     }
 }

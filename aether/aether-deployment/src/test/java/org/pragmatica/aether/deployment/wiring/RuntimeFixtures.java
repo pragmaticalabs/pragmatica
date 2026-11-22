@@ -310,7 +310,7 @@ final class RuntimeFixtures {
 
     /// A config facade with nothing in it, for notifications whose content the test does not read.
     static org.pragmatica.aether.slice.ConfigFacade noConfig() {
-        return org.pragmatica.aether.deployment.node.NodeDeploymentManager.NO_OP_CONFIG;
+        return org.pragmatica.aether.deployment.wiring.DeploymentConfigFacades.NO_OP_CONFIG;
     }
 
     static final SliceInvokerFacade FACADE = new SliceInvokerFacade() {

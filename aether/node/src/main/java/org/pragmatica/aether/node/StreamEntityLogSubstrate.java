@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.stream.EntityRingWindow;
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
@@ -87,24 +88,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                                       .attempts(20)
                                                       .strategy(BackoffStrategy.fixed().interval(TimeSpan.timeSpan(100).millis()));
 
-    private static final int ENTITY_MAX_EVENT_SIZE_BYTES = 4 * 1024 * 1024;
+    /// The entity ring window and the entity max event size live in [EntityRingWindow].
     private static final String AUTO_OFFSET_RESET_EARLIEST = "earliest";
-    /// Ring capacity per entity partition — index slots allocated UP FRONT at `INDEX_ENTRY_SIZE` (24)
-    /// bytes each, so this is a direct per-partition memory cost, multiplied by a keyspace's partition
-    /// count (64 by default). At 10k that is ~240 KB per partition and ~15 MB for a default keyspace;
-    /// the `RetentionPolicy` default of 100k would be ~154 MB for the same keyspace, which is why this
-    /// deliberately does not inherit it.
-    ///
-    /// It no longer bounds recovery on the node that sealed the history (#1240): records the ring evicts are
-    /// sealed by the segment sealer and [#read] serves them from there. It still bounds recovery on a node
-    /// taking the partition over, which reads no other node's segments — there the fold refuses once the
-    /// checkpoint lags further behind than this node's ring reaches.
-    private static final long ENTITY_RING_CAPACITY = 10_000L;
-    /// Data-region CAP, not an up-front allocation: the ring grows one segment at a time toward it.
-    private static final long ENTITY_RING_BYTES = 64L * 1024 * 1024;
-    /// Age bound, deliberately far out and deliberately FINITE: entity state has no reason to expire on a
-    /// clock, but `evictByAge` computes `now - maxAgeMs`, so `Long.MAX_VALUE` would underflow.
-    private static final long ENTITY_RING_MAX_AGE_MS = 365L * 24 * 60 * 60 * 1000;
     private static final TimeSpan AT_ONCE = TimeSpan.timeSpan(0).millis();
 
     /// How a writer reclaims the checkpoint blocks its pointer swaps displace (PR-3c, spec 6.4 item 1): how long a displaced block outlives
@@ -280,12 +265,12 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                                    ReplicationFactors replication) {
         return StreamConfig.streamConfig(EntityPartitionArc.arcName(keyspace),
                                          partitionCount,
-                                         RetentionPolicy.retentionPolicy(ENTITY_RING_CAPACITY,
-                                                                         ENTITY_RING_BYTES,
-                                                                         ENTITY_RING_MAX_AGE_MS,
+                                         RetentionPolicy.retentionPolicy(EntityRingWindow.CAPACITY,
+                                                                         EntityRingWindow.MAX_BYTES,
+                                                                         EntityRingWindow.MAX_AGE_MS,
                                                                          TierAwareRetention.tierAwareRetention()),
                                          AUTO_OFFSET_RESET_EARLIEST,
-                                         ENTITY_MAX_EVENT_SIZE_BYTES,
+                                         EntityRingWindow.MAX_EVENT_SIZE_BYTES,
                                          ConsistencyMode.EVENTUAL,
                                          replication.replicationFactor(),
                                          replication.confirmationFactor(),
@@ -693,6 +678,12 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// the publish decides what may be deleted ([#reclaimDisplaced]). A block a pointer in this node's view names is not deleted: checked again
     /// when the delete runs ([#deleteUnlessNamed]). A crash between the put and the publish, or between the publish and a scheduled delete,
     /// leaks the blocks written since the last confirmed swap; nothing sweeps them (L-12).
+    ///
+    /// A restart re-saves only when the committed claim is below its candidate, this node holds no private durable copy of the
+    /// committed block, or the candidate's content (lineage, claim, snapshot; all but the nonce) differs from the committed block's (#3480). At an equal claim with such a copy the save writes nothing and resolves successfully: a re-save would put a
+    /// block of its own (every put carries a fresh nonce), displace the committed one at an equal claim, and park it in [#deferred], which a
+    /// further restart or a handover before the next advance loses, leaking the block. A new owner holds no such copy, so it still writes a
+    /// durable block of its own; a shared or cache copy does not count ([StorageInstance#holdsPrivateDurableCopy]).
     @Override
     public Promise<Unit> saveCheckpoint(String keyspace,
                                         int partition,
@@ -701,8 +692,54 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                         Option<byte[]> lineage) {
         var key = EntityCheckpointKey.entityCheckpointKey(keyspace, partition);
         var replaced = committedPointer(key);
+        var frame = CheckpointFrame.frame(keyspace, partition, throughOffset, snapshot, lineage);
 
-        return storage.put(CheckpointFrame.frame(keyspace, partition, throughOffset, snapshot, lineage))
+        return alreadyHeldAt(replaced, throughOffset, frame).flatMap(held -> writeUnlessHeld(held,
+                                                                                             key,
+                                                                                             replaced,
+                                                                                             frame,
+                                                                                             throughOffset));
+    }
+
+    private Promise<Boolean> alreadyHeldAt(Option<ClaimedBlock> committed, long throughOffset, byte[] frame) {
+        return committed.filter(block -> block.through() == throughOffset)
+                        .map(block -> heldOnAPrivateDurableTier(block, frame))
+                        .or(Promise.success(false));
+    }
+
+    /// FER: a check that fails answers "not held", which degrades forward to the re-save this path did before the skip existed; the
+    /// guarantee kept is that a save is never dropped on an unanswered check, at the cost of the deferral leak the skip avoids.
+    /// The pointer names only the block and its claim, so content equality (A5: lineage, claim and snapshot, all but the per-put nonce)
+    /// is read from the local copy; an unreadable or absent block, or a v1 block with no nonce, compares unequal and is re-saved.
+    private Promise<Boolean> heldOnAPrivateDurableTier(ClaimedBlock committed, byte[] frame) {
+        return storage.holdsPrivateDurableCopy(committed.block())
+                      .flatMap(held -> held
+                                       ? sameContentAsCommitted(committed, frame)
+                                       : Promise.success(false))
+                      .recover(_ -> false);
+    }
+
+    private Promise<Boolean> sameContentAsCommitted(ClaimedBlock committed, byte[] frame) {
+        return storage.get(committed.block())
+                      .map(block -> block.filter(bytes -> CheckpointFrame.sameContent(bytes, frame))
+                                         .isPresent());
+    }
+
+    private Promise<Unit> writeUnlessHeld(boolean held,
+                                          EntityCheckpointKey key,
+                                          Option<ClaimedBlock> replaced,
+                                          byte[] frame,
+                                          long throughOffset) {
+        return held
+               ? Promise.unitPromise()
+               : writeThenPublish(key, replaced, frame, throughOffset);
+    }
+
+    private Promise<Unit> writeThenPublish(EntityCheckpointKey key,
+                                           Option<ClaimedBlock> replaced,
+                                           byte[] frame,
+                                           long throughOffset) {
+        return storage.put(frame)
                       .flatMap(blockId -> publishThenReclaim(key,
                                                              replaced,
                                                              ClaimedBlock.claimedBlock(blockId, throughOffset)));
@@ -958,6 +995,41 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                 EntityFoldCheckpointValue.class)
                       .fold(() -> Promise.success(Option.none()),
                             pointer -> fetchCheckpointBlock(pointer));
+    }
+
+    @Override
+    public Promise<CheckpointLoad> loadCheckpointOutcome(String keyspace, int partition) {
+        return kvStore.getTyped(EntityCheckpointKey.entityCheckpointKey(keyspace, partition),
+                                EntityFoldCheckpointValue.class)
+                      .fold(() -> Promise.success(CheckpointLoad.absent()),
+                            pointer -> fetchCheckpointOutcome(pointer));
+    }
+
+    private Promise<CheckpointLoad> fetchCheckpointOutcome(EntityFoldCheckpointValue pointer) {
+        return BlockId.fromHex(pointer.blockIdHex()).fold(_ -> Promise.success(unreadable(pointer,
+                                                                                          UnreadableCause.UNDECODABLE)),
+                                                          blockId -> readCheckpointBlock(pointer, blockId));
+    }
+
+    /// The failed read is TYPED, not absorbed (design-out of the silent collapse): `FETCH_FAILED` carries it to the caller, which decides.
+    private Promise<CheckpointLoad> readCheckpointBlock(EntityFoldCheckpointValue pointer, BlockId blockId) {
+        return storage.get(blockId)
+                      .map(bytes -> bytes.fold(() -> unreadable(pointer, UnreadableCause.BLOCK_LOST),
+                                               block -> loadedCheckpoint(pointer, block)))
+                      .recover(_ -> unreadable(pointer, UnreadableCause.FETCH_FAILED));
+    }
+
+    private static CheckpointLoad loadedCheckpoint(EntityFoldCheckpointValue pointer, byte[] block) {
+        return CheckpointLoad.loaded(CheckpointFrame.unframe(pointer.throughOffset(), block));
+    }
+
+    private static CheckpointLoad unreadable(EntityFoldCheckpointValue pointer, UnreadableCause cause) {
+        LOG.warn("Entity checkpoint block {} (through offset {}) is unreadable: {}",
+                 pointer.blockIdHex(),
+                 pointer.throughOffset(),
+                 cause);
+
+        return CheckpointLoad.unreadable(cause, pointer.blockIdHex());
     }
 
     /// A pointer whose block cannot be fetched resolves to [Option#none] — "no usable checkpoint" — rather

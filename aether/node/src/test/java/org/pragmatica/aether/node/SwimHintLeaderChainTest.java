@@ -47,6 +47,7 @@ import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.swim.TransportObservation;
 
@@ -94,7 +95,7 @@ class SwimHintLeaderChainTest {
                                            8,
                                            timeSpan(40).millis())
                                .withJoinGrace(timeSpan(0).millis());
-        protocol = SwimProtocol.swimProtocol(config, new NullTransport(), new NullListener(), SELF, SELF_ADDR,
+        protocol = SwimTestProtocols.swimProtocol(config, new NullTransport(), new NullListener(), SELF, SELF_ADDR,
                                              () -> false, liveTransport::contains)
                                .unwrap();
         protocol.addObservationListener(observations::add);

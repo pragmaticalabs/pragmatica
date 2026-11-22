@@ -44,6 +44,9 @@ public record BackupWarning(Code code, String detail) {
         BACKUP_RESTORE_BLOCKED,
         /// #1968: a blocked restore ended: the backup was read and decided, or this node stopped leading or is stopping.
         BACKUP_RESTORE_UNBLOCKED,
+        /// #3303: the restore was refused deterministically (the same entry is refused on every attempt); it stops, unretried, until
+        /// the cluster runs a build that fixes the refusal.
+        BACKUP_RESTORE_REJECTED,
         /// #1533: `[backup]` has no remote, so a restore reads only the deciding leader's local repository.
         BACKUP_RESTORE_SOURCE_LOCAL,
         /// #1533: the restore withheld the previous cluster's entity checkpoints; entity state restarts empty.
@@ -73,7 +76,7 @@ public record BackupWarning(Code code, String detail) {
             return BackupWarning::log;
         }
 
-        /// The node's sink: the restore-blocked, dropped-checkpoints and forked conditions are raised as
+        /// The node's sink: the restore-blocked, restore-rejected, dropped-checkpoints and forked conditions are raised as
         /// `OperatorWarning` cluster events through `operatorWarnings` (which also logs them); every other
         /// code is logged as by [#logging].
         static Sink operatorWarnings(OperatorWarningSink operatorWarnings) {
@@ -96,6 +99,7 @@ public record BackupWarning(Code code, String detail) {
             case BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED -> Option.some(OperatorWarningCode.BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED);
             case BACKUP_RESTORE_BLOCKED -> Option.some(OperatorWarningCode.BACKUP_RESTORE_BLOCKED);
             case BACKUP_RESTORE_UNBLOCKED -> Option.some(OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED);
+            case BACKUP_RESTORE_REJECTED -> Option.some(OperatorWarningCode.BACKUP_RESTORE_REJECTED);
             case BACKUP_FORKED -> Option.some(OperatorWarningCode.BACKUP_FORKED);
             case BACKUP_CONFIG_MISSING -> Option.some(OperatorWarningCode.BACKUP_CONFIG_MISSING);
             case BACKUP_CONFIG_RESTORED -> Option.some(OperatorWarningCode.BACKUP_CONFIG_RESTORED);

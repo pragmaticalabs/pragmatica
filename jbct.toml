@@ -3,6 +3,7 @@ maxLineLength = 120
 indentSize = 4
 
 [lint]
+mode = "infrastructure"
 failOnWarning = false
 
 [files]
@@ -20,7 +21,10 @@ excludes = [
     "**/pg/maven/GenerateMojo.java",
     "**/aether/pg/parser/PgSqlParser.java",
     "**/jbct/parser/Java25Parser.java",
-    "**/src/main/java/org/pragmatica/jbct/parser/v6/**"
+    "**/src/main/java/org/pragmatica/jbct/parser/v6/**",
+    # A java.net.http.HttpClient subclass for tests (#3558): the abstract JDK API mandates the Optional,
+    # CompletableFuture, void and throws signatures that RET-01, BND-01 and EX-01 refuse.
+    "**/testlogging/RefusingHttpClient.java"
 ]
 
 [lint.rules]

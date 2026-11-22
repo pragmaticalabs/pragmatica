@@ -27,4 +27,29 @@ public sealed interface ConfigError extends Cause {
                                      layers.stream().map(Cause::message).collect(Collectors.joining("\n")));
         }
     }
+
+    /// A `[lint] mode`, `--mode` or `-Djbct.mode` value that names no [JbctMode].
+    record ModeUnknown(String raw, String message) implements ConfigError {
+        public static ModeUnknown modeUnknown(String raw) {
+            return new ModeUnknown(raw, "Unknown JBCT mode \"" + raw + "\": expected " + JbctMode.ALLOWED);
+        }
+    }
+
+    /// A source root whose root-reading structure rules are enabled but whose configuration names no
+    /// `[project] basePackage`. Declared here; raised by the structure rules' run (#2526).
+    ///
+    /// @param sourceRoot the refused source root
+    /// @param suggestion the common package prefix of the root's main files, advice only
+    /// @param toml       the `jbct.toml` the key belongs in
+    record BasePackageRequired(Path sourceRoot, String suggestion, Path toml, String message) implements ConfigError {
+        public static BasePackageRequired basePackageRequired(Path sourceRoot, String suggestion, Path toml) {
+            return new BasePackageRequired(sourceRoot,
+                                           suggestion,
+                                           toml,
+                                           "structure rules need [project] basePackage for " + sourceRoot
+                                          + ": add basePackage = \"" + suggestion
+                                          + "\" to the [project] table of " + toml
+                                          + ", or set [lint] mode = \"infrastructure\"");
+        }
+    }
 }

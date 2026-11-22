@@ -2,7 +2,7 @@ name: FSM2 engine (Ember shards)
 
 # The Ember corpus on the FSM2 deployment engine (FSM replacement plan F1 item 7, review FIX F1). Every EmberCluster reads the
 # global selector -Daether.deployment.engine (EngineSelector), so this is ci.yml's ember-shard job with the selector set to fsm2.
-# LEGACY stays the default everywhere else; FSM2 is test-only until the flip (plan D.3).
+# FSM2 is now the default engine (plan F6, #2767), so this run duplicates the default ember shards until the selector is removed (F7).
 #
 # Not a required check: until the FSM2 parity phases (F2-F5) land, reds here are the FSM2 gap list, not regressions. It runs on
 # workflow_dispatch (pick the ref) and on a pull request carrying the `run-fsm2` label (re-run on each push while the label stays).
@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6]
     env:
       SHARDS: ${{ strategy.job-total }}
       SHARD: ${{ matrix.shard }}
@@ -54,14 +54,22 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.m2/repository
-          key: m2-full-${{ hashFiles('**/pom.xml') }}
+          key: m2-full-v4-${{ hashFiles('**/pom.xml') }}
           # Fallback order: newest m2-full (any pom generation), then the newest setup-java maven cache of the base branch (the
           # pre-#3297 key; GitHub caches are scoped by ref, so a merge-group run reads only its own ref and the base branch, and an
           # m2-full saved on a PR ref is invisible to it). If neither exists (first run ever, or after eviction: 7 days unused or
           # the 10 GB limit) the job resolves from Central with the #3280 retries; that case is not hidden, it is the residual exposure.
           restore-keys: |
+            m2-full-v4-
+            m2-full-v3-
+            m2-full-v2-
+            m2-full-v1-
             m2-full-
             setup-java-Linux-x64-maven-
+
+      # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am

@@ -15,7 +15,8 @@ and constants, e.g. "SharedPools `code`, 2 keys, 2 scopes, MaxAcquires 3: no vio
 |---|---|---|---|
 | `SharedPools` | node-shared resource pools: acquire, release, `closeAll` (#2978) | `aether/resource/api/.../resource/package-info.java` | `SharedPools.java`, `SpiResourceProvider.java` |
 | `Stalled` | owner catch-up all-stalled warning, level-triggered (#2967) | `aether/aether-stream/.../replication/package-info.java` | `PartitionBackfill.java` |
-| `Fsm2Leader` | FSM2 leader: open-warning set, leader fence, `Rebuild` inherit, publish after commit (#2763, #2834, #3085; finding #3160) | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Lifecycle.java`, `Warnings.java`, `Reconcile.java`, `Failures.java`, `Outbox.java`, `ClusterFsm.java` |
+| `RabiaSlot`, `RabiaEpoch`, `RabiaAdopt` | Rabia: slot sequence, in-log reconfiguration, state adoption (#3164) | `integrations/consensus/.../rabia/package-info.java` | `RabiaEngine.java`, `PhaseData.java` |
+| `Fsm2Leader` | FSM2 leader: open-warning set, leader fence, `Rebuild` inherit and rule O, publish after commit (#2763, #2834, #3085, #3274) | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Lifecycle.java`, `Warnings.java`, `Reconcile.java`, `Failures.java`, `Outbox.java`, `ClusterFsm.java` |
 
 Scope (owner ruling 2026-11-13): protocols with a written race or ordering ruling (consensus, FSM2 leader and
 reconcile, stream ownership, catch-up and ISR, SharedPools, quorum re-admission). Not mandated elsewhere.
@@ -59,9 +60,14 @@ reconcile, stream ownership, catch-up and ISR, SharedPools, quorum re-admission)
 - a tag that is not `<Module>:<Part>`;
 - a duplicate `Part` or config variant (both positions are named);
 - a missing `head` or `tail`, or no config;
-- an action fragment that does not define its own name, or that `tail` never references.
+- an action fragment that does not define its own name, or that `tail` never references;
+- a reference no fragment of the module defines (#3311): an operator application `Name(`, or a capitalised bare name,
+  that is not defined (`==`), declared (`CONSTANT`, `VARIABLE`, `EXTENDS`), bound (a parameter, `\A`, `\E`, `CHOOSE`,
+  a set or function constructor) or a keyword or standard-module operator. Every such reference is named with its
+  Java line. The check is lexical, not scoped: a name bound anywhere in the module counts as bound everywhere, so it
+  can miss a reference but never reports a defined one; a lowercase bare name is left to SANY.
 
-Syntax and semantic errors are SANY's and TLC's. `check.sh` annotates every `line N, col M ... of module <Module>`
+Other syntax and semantic errors are SANY's and TLC's. `check.sh` annotates every `line N, col M ... of module <Module>`
 position in TLC's output with the Java source line it came from (`<Module>.map.tsv`), so a counterexample reads as
 a sequence of Java locations.
 
@@ -78,10 +84,18 @@ list: any one of them; `-` for a `pass` row). `run.sh` is red when:
 
 An expected failure (`expect` = `fail`) must cite an open issue or be a known-bad variant of a fixed defect; when the issue is fixed, flip the row to `pass`.
 
+## Pinned state counts: `pinned-counts.tsv`
+
+One row per pinned `pass` row: module, variant, profile (`small` or `full`), the distinct-state count TLC must find,
+and why. `run.sh` at that profile is red when the row passes with any other count. Use it where a spec extends a
+model by a mode switch: the old mode must reach exactly its old states, and an edit that leaks into it can REMOVE
+states, which no verdict shows (#3443: a LATE exclusion read at STAMP = "off" removed the traces the two CAS
+controls rest on, so they passed; the pins hold the Fsm2Leader off-mode `LATE = FALSE` pass rows at their base counts).
+
 ## Running
 
 ```
-tools/tla/run.sh [small|full|sim] [module-regex]      # every config with its expected verdict
+tools/tla/run.sh [small|full|sim] [module-regex] [variant-regex]   # the configs with their expected verdicts
 tools/tla/runselftest.sh                              # run.sh's own verdict logic, on a fixture with wrong expectations
 tools/tla/check.sh <Module> <Variant> <source roots...>  # one config
 tools/tla/selftest.sh <Module> <source root>           # the extractor's own checks, on a copy of the root
@@ -115,7 +129,7 @@ It pins `tla2tools.jar` (version and sha256 in the workflow), runs `selftest.sh`
 
 Environment: `TLA_JAR` (default `~/tools/tla/tla2tools.jar`), `TLC_WORKERS`, `TLC_OPTS`, `TLA_OUT` (default
 `target/tla/<Module>` for `check.sh`, `target/tla` for `run.sh`), `TLC_CONST` (`check.sh`: space-separated
-`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
+`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it), `PINS_TSV` (`run.sh`: a different pinned-counts table). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
 is `<out>/<Module>_<Variant>.log`; the console gets the verdict, the counterexample as actions with their Java
 positions, and the state counts.
 

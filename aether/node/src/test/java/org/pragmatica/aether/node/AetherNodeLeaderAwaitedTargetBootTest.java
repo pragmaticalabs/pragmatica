@@ -7,7 +7,7 @@ package org.pragmatica.aether.node;
 import java.time.Duration;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
-import org.pragmatica.aether.api.ClusterEvent;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext;
@@ -81,12 +81,13 @@ class AetherNodeLeaderAwaitedTargetBootTest {
         ResourceProvider.clear();
     }
 
+    // LEGACY on purpose (#2767): the subject is the legacy ClusterDeploymentManager's warning sink, active only under LEGACY.
     @Test
     @Timeout(value = 120, unit = SECONDS)
     void bootedNodeLeader_raisesAwaitingTargetOnItsOwnEventSurface_whenTheTargetPutNeverCommits() throws Exception {
         var self = NodeId.nodeId("awaited-target-boot-" + UUID.randomUUID()).unwrap();
 
-        node = AetherNode.aetherNode(minimalConfig(self, tempDir), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(self, tempDir, DeploymentEngine.LEGACY), () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
         node.start()
@@ -140,23 +141,17 @@ class AetherNodeLeaderAwaitedTargetBootTest {
     @Timeout(value = 120, unit = SECONDS)
     void bootedNode_whoseStorageDegradedWhileBuilding_showsTheStorageWarningOnItsAggregator() {
         var self = NodeId.nodeId("storage-bind-" + UUID.randomUUID()).unwrap();
-        node = AetherNode.aetherNode(minimalConfig(self, tempDir), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(self, tempDir, DeploymentEngine.FSM2), () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
         node.start().await(START_BOUND).onFailure(cause -> fail("start() must succeed: " + cause.message()));
 
-        await().atMost(Duration.ofSeconds(40)).untilAsserted(() -> assertThat(storageWarningCode(node.eventAggregator().lastRaisedOperatorWarning()))
-                .startsWith("storage-"));
+        // A storage warning was RAISED on the aggregator, whatever was raised after it (#3403: the single most-recent slot was
+        // overwritten by kv-dispatch-lagging).
+        RaisedWarnings.awaitCodePrefix(node.eventAggregator(), "storage-", Duration.ofSeconds(40));
     }
 
-    private static String storageWarningCode(Option<ClusterEvent> raised) {
-        return raised.filter(ClusterEvent.OperatorWarning.class::isInstance)
-                     .map(ClusterEvent.OperatorWarning.class::cast)
-                     .map(warning -> String.valueOf(warning.details().get("code")))
-                     .or("none");
-    }
-
-    private static AetherNodeConfig minimalConfig(NodeId self, Path storageRoot) {
+    private static AetherNodeConfig minimalConfig(NodeId self, Path storageRoot, DeploymentEngine engine) {
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
         return AetherNodeConfig.builder()
@@ -174,6 +169,7 @@ class AetherNodeLeaderAwaitedTargetBootTest {
                                .environment(Option.none())
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
-                               .build();
+                               .build()
+                               .withDeploymentEngine(engine);
     }
 }

@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.topic;
 import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.stream.DeclarationDefaults;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.lang.parse.TimeSpan;
 
@@ -110,19 +111,19 @@ class DurableTopicSubstrateTest {
         assertThat(config.confirmationFactor()).isEqualTo(3);
         assertThat(config.autoOffsetReset()).isEqualTo("earliest");
         assertThat(config.retention().maxAgeMs()).isEqualTo(TimeSpan.timeSpan("7d").unwrap().toMillis());
-        // Count/byte caps are RING-SIZING inputs (buildRing hands them to OffHeapRingBuffer as
-        // allocation sizes), so they must stay at the platform defaults — an unbounded value here
-        // is an infinite-allocation request, which is exactly how this pin was minted.
+        // The count stays a ring-sizing default (undeclared); the bytes are the declaration default (#3334).
         assertThat(config.retention().maxCount()).isEqualTo(sizingDefaults.maxCount());
-        assertThat(config.retention().maxBytes()).isEqualTo(sizingDefaults.maxBytes());
+        assertThat(config.retention().maxBytes()).isEqualTo(DeclarationDefaults.defaultMaxBytes(4));
     }
 
-    /// NT-132 (#2201 Q6 = B, review R32-04): a topic's retention is its age, so its policy declares the age ONLY. Its count and
-    /// bytes are ring sizing; declared, they would cut a 7-day topic's sealed history at 100,000 events and 256 MiB.
+    /// NT-132 (#2201 Q6 = B, review R32-04), amended by #3334: a topic's retention declares its age and the default
+    /// byte bound, never the count (its DLQ declares the same dimensions since #3334 G26): declared, the count would cut a 7-day topic's sealed history at 100,000 events.
     @Test
-    void topicAndDlqRetention_declareTheAgeOnly() {
-        assertThat(DurableTopicSubstrate.topicStreamConfig(ADDRESS, spec(4, 3, "7d")).retention().declared()).isEqualTo(RetentionDimensions.AGE);
-        assertThat(DurableTopicSubstrate.dlqStreamConfig(ADDRESS, spec(4, 3, "7d")).retention().declared()).isEqualTo(RetentionDimensions.AGE);
+    void topicRetention_declaresAgeAndBytesNeverCount_dlqDeclaresTheSame() {
+        var declared = RetentionDimensions.retentionDimensions(false, true, true);
+
+        assertThat(DurableTopicSubstrate.topicStreamConfig(ADDRESS, spec(4, 3, "7d")).retention().declared()).isEqualTo(declared);
+        assertThat(DurableTopicSubstrate.dlqStreamConfig(ADDRESS, spec(4, 3, "7d")).retention().declared()).isEqualTo(declared);
     }
 
     @Test

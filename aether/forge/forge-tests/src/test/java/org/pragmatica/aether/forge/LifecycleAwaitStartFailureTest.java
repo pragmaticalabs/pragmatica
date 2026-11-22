@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 
+
 /// #915 review round 2 — the pin for the ONE-ARGUMENT [LifecycleAwait#snapshot(EmberCluster)].
 ///
 /// `LifecycleAwaitTest` supplies its inputs directly and therefore only ever drives the two-argument
@@ -44,7 +45,6 @@ class LifecycleAwaitStartFailureTest {
             assertThat(heldByAnotherProcess.isBound()).describedAs("the whole test rests on this port being taken before the "
                                                                   + "cluster asks for it")
                       .isTrue();
-
             var cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "la-sf");
 
             try {
@@ -56,7 +56,6 @@ class LifecycleAwaitStartFailureTest {
                 assertThat(cluster.status().nodes()).describedAs("#913's abort clears the live registry BEFORE the caller sees "
                                                                 + "the failure; that emptiness is why the capture exists")
                           .isEmpty();
-
                 var snapshot = LifecycleAwait.snapshot(cluster);
 
                 assertThat(snapshot).describedAs("the accessor must read the retained capture — rendering NO_STATE here is "

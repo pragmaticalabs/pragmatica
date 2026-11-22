@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+
 /// #915 — the pin for [LifecycleAwait]. No cluster is started here.
 ///
 /// The defect being closed is a DIAGNOSTIC one, and a diagnostic cannot be pinned by a test that only
@@ -84,14 +85,17 @@ class LifecycleAwaitTest {
         var collided = Promise.<Unit> failure(new TestCause("Failed to bind to port 3003: Address already in use"));
         var other = Promise.<Unit> failure(new TestCause("quorum not reached"));
 
-        assertThatThrownBy(() -> LifecycleAwait.settled("start cluster", unstartedCluster(), SHORT_BOUND, collided))
-            .hasMessageContaining("bind collision on port 3003")
-            .hasMessageContaining("fixed test-port block, see check-test-ports.py");
-        assertThatThrownBy(() -> LifecycleAwait.settled("start cluster", unstartedCluster(), SHORT_BOUND, other))
-            .hasMessageContaining("quorum not reached")
-            .hasMessageNotContaining("check-test-ports.py");
-        assertThat(LifecycleAwait.bindAttribution("Transport failure: java.net.BindException: Address already in use"))
-            .contains("a port the transport did not name");
+        assertThatThrownBy(() -> LifecycleAwait.settled("start cluster",
+                                                        unstartedCluster(),
+                                                        SHORT_BOUND,
+                                                        collided)).hasMessageContaining("bind collision on port 3003")
+                          .hasMessageContaining("fixed test-port block, see check-test-ports.py");
+        assertThatThrownBy(() -> LifecycleAwait.settled("start cluster",
+                                                        unstartedCluster(),
+                                                        SHORT_BOUND,
+                                                        other)).hasMessageContaining("quorum not reached")
+                          .hasMessageNotContaining("check-test-ports.py");
+        assertThat(LifecycleAwait.bindAttribution("Transport failure: java.net.BindException: Address already in use")).contains("a port the transport did not name");
     }
 
     /// A lifecycle step that FAILED and one that never settled both leave the step undone, and both
@@ -125,9 +129,8 @@ class LifecycleAwaitTest {
                                                        unstartedCluster(),
                                                        SHORT_BOUND,
                                                        neverSettles)).doesNotThrowAnyException();
-
         assertThat(System.currentTimeMillis() - startedAtMs).describedAs("the never-settling arm must have been ended by the BOUND — "
-                                                                       + "not throwing must not mean not returning")
+                                                                        + "not throwing must not mean not returning")
                   .isGreaterThanOrEqualTo(SHORT_BOUND.duration().toMillis())
                   .isLessThan(SHORT_BOUND.duration().toMillis() + SLACK_MS);
     }
@@ -156,13 +159,16 @@ class LifecycleAwaitTest {
     @Test
     void aPopulatedRegistry_rendersEveryNodeLine_withObservedStateAndPorts() {
         var live = new EmberCluster.ClusterStatus(List.of(node("p921-1", 27700, 27740, EmberCluster.STATE_ACTIVE, true),
-                                                          node("p921-2", 27701, 27741, EmberCluster.STATE_INACTIVE, false)),
+                                                          node("p921-2",
+                                                               27701,
+                                                               27741,
+                                                               EmberCluster.STATE_INACTIVE,
+                                                               false)),
                                                   "p921-1");
 
-        assertThat(LifecycleAwait.snapshot(live, Option.none()))
-                  .isEqualTo("  leader=p921-1\n"
-                            + "  p921-1 state=active leader=true port=27700 mgmt=27740\n"
-                            + "  p921-2 state=inactive leader=false port=27701 mgmt=27741");
+        assertThat(LifecycleAwait.snapshot(live, Option.none())).isEqualTo("  leader=p921-1\n"
+                                                                          + "  p921-1 state=active leader=true port=27700 mgmt=27740\n"
+                                                                          + "  p921-2 state=inactive leader=false port=27701 mgmt=27741");
     }
 
     /// Review round 1, BLOCKING 2 — the branch #913 made the COMMON one.
@@ -173,15 +179,17 @@ class LifecycleAwaitTest {
     /// [ClusterSnapshot#NO_STATE].
     @Test
     void aClearedRegistryAfterAFailedStart_rendersWhatTheStartFailureRetained() {
-        var captured = new EmberCluster.StartFailure(
-            new EmberCluster.ClusterStatus(List.of(node("p921-1", 27700, 27740, EmberCluster.STATE_INACTIVE, false)),
-                                           "none"),
-            Map.of("p921-1", "Address already in use"));
-
+        var captured = new EmberCluster.StartFailure(new EmberCluster.ClusterStatus(List.of(node("p921-1",
+                                                                                                 27700,
+                                                                                                 27740,
+                                                                                                 EmberCluster.STATE_INACTIVE,
+                                                                                                 false)),
+                                                                                    "none"),
+                                                     Map.of("p921-1", "Address already in use"));
         var rendered = LifecycleAwait.snapshot(emptyStatus(), Option.some(captured));
 
         assertThat(rendered).describedAs("an empty dump on a failed start is the defect #913's NO_STATE exists to name")
-                            .isNotEqualTo(ClusterSnapshot.NO_STATE);
+                  .isNotEqualTo(ClusterSnapshot.NO_STATE);
         assertThat(rendered).contains("p921-1 state=inactive leader=false port=27700 mgmt=27740");
         assertThat(rendered).contains("start failures: {p921-1=Address already in use}");
         assertThat(rendered).contains("captured when the start failed");

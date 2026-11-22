@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -114,8 +114,7 @@ class ResidualPinsTest {
         var w1 = node("worker-1");
         var w2 = node("worker-2");
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
-                       .seams(seams -> seams.withCommunityPolicies(Map.of())
-                                            .withMemberSource(Map.of(w1, "east", w2, "east")))
+                       .seams(seams -> seams.withMemberSource(Map.of(w1, "east", w2, "east")))
                        .activate();
 
         w.h.deliverTogether(new ClusterInput.WorkerJoin(w1, w.admit(w1, 21L)),

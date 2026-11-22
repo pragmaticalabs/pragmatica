@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.net.URI;
@@ -16,10 +15,6 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
@@ -33,9 +28,15 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// E-15 (phase-3 design 9.3; FSM replacement plan 3.3, F4; #2763), FSM2 only: a core halted on quorum loss, then relaunched. Default harness,
 /// self-fence active: the precondition is the core's own QUORUM_LOSS drain (exit 2, `AetherNode.EXIT_DRAINED`, design 5.3.5 arm A) after it is
@@ -61,7 +62,9 @@ class Fsm2E15RelaunchTest {
 
     @AfterEach
     void tearDown() {
-        Option.option(cluster).onPresent(running -> LifecycleAwait.bestEffort("E15 cluster stop", running, running.stop()));
+        Option.option(cluster).onPresent(running -> LifecycleAwait.bestEffort("E15 cluster stop",
+                                                                              running,
+                                                                              running.stop()));
     }
 
     @Test
@@ -86,7 +89,10 @@ class Fsm2E15RelaunchTest {
         awaitTrue("C17b removed C's slice rows before the relaunch", WAIT, () -> rowsOf(victim).isEmpty());
         // The drain exit is recorded after the victim's stop resolved (#3173/#3174); snapshotting before that would leave `drained`
         // empty and let the drain code pass as the relaunched process's refusal below.
-        awaitTrue("the drain exit is recorded", WAIT, () -> cluster.exitCodeOf(victim.id()).isPresent());
+        awaitTrue("the drain exit is recorded",
+                  WAIT,
+                  () -> cluster.exitCodeOf(victim.id())
+                               .isPresent());
         var drained = cluster.exitCodeOf(victim.id());
         // The start promise of a refused process never resolves (the node stops during its start; EmberSameIdentityRelaunchTest), so awaiting it
         // only times out (dev11: the test's 10 min bound). The arm observes from the launch; the refusal's evidence is the relaunched process's
@@ -94,12 +100,20 @@ class Fsm2E15RelaunchTest {
         var launch = cluster.relaunchNode(victim.id(), true);
 
         observe(victim, departed, violations);
-        assertThat(violations).as("C's record stayed DEPARTED(e, p1) and none of C's rows was counted after the relaunch").isEmpty();
-        awaitTrue("the relaunched old-NodeId process exits (refused)", WAIT, () -> cluster.exitCodeOf(victim.id()).filter(code -> drained.filter(code::equals).isEmpty()).isPresent());
-        log("relaunched " + victim.id() + " exit code=" + cluster.exitCodeOf(victim.id()) + " (drain exit " + drained + ")");
-        assertThat(launch.await(TimeSpan.timeSpan(1).seconds()).fold(Cause::message, _ -> "launched"))
-            .as("the relaunched old-NodeId process never completes a start")
-            .isNotEqualTo("launched");
+        assertThat(violations).as("C's record stayed DEPARTED(e, p1) and none of C's rows was counted after the relaunch")
+                  .isEmpty();
+        awaitTrue("the relaunched old-NodeId process exits (refused)",
+                  WAIT,
+                  () -> cluster.exitCodeOf(victim.id())
+                               .filter(code -> drained.filter(code::equals)
+                                                      .isEmpty())
+                               .isPresent());
+        log("relaunched " + victim.id()
+           + " exit code=" + cluster.exitCodeOf(victim.id())
+           + " (drain exit " + drained
+           + ")");
+        assertThat(launch.await(TimeSpan.timeSpan(1).seconds()).fold(Cause::message, _ -> "launched")).as("the relaunched old-NodeId process never completes a start")
+                  .isNotEqualTo("launched");
         awaitTrue("3 ACTIVE on the others", WAIT, () -> active() == 3);
     }
 
@@ -109,16 +123,22 @@ class Fsm2E15RelaunchTest {
         cluster.withDeploymentEngine(DeploymentEngine.FSM2);
         cluster.withComputeProviderDecorator(Fsm2EngineMarkerMixedClusterTest.BlockedProvisioning::new);
         LifecycleAwait.settled("E15 cluster start", cluster, cluster.start());
-        awaitTrue("a leader", WAIT, () -> cluster.currentLeader().isPresent());
+        awaitTrue("a leader",
+                  WAIT,
+                  () -> cluster.currentLeader()
+                               .isPresent());
         publish();
         awaitTrue("3 ACTIVE", WAIT, () -> active() == 3);
         var victim = hostOfAnInstance();
 
         log("silencing " + victim.id());
         cluster.getNode(victim.id()).onPresent(node -> node.blackhole(true));
-        awaitTrue("the silenced core drains itself on quorum loss", FENCE_BOUND, () -> cluster.exitCodeOf(victim.id()).isPresent());
+        awaitTrue("the silenced core drains itself on quorum loss",
+                  FENCE_BOUND,
+                  () -> cluster.exitCodeOf(victim.id())
+                               .isPresent());
         assertThat(cluster.exitCodeOf(victim.id())).as("PRECONDITION (design 5.3.5 arm A): exit 2 on the QUORUM_LOSS self-fence")
-                                                    .isEqualTo(Option.some(AetherNode.EXIT_DRAINED));
+                  .isEqualTo(Option.some(AetherNode.EXIT_DRAINED));
         awaitTrue("C's departure is committed", WAIT, () -> departure(victim).isPresent());
         log("C departed: " + departure(victim));
 
@@ -137,18 +157,23 @@ class Fsm2E15RelaunchTest {
             if (now.isEmpty() || !sameDeparture(now.unwrap(), departed)) {
                 violations.add(Instant.now() + " C's record is " + now + ", expected DEPARTED " + departed);
             }
+
             var rows = rowsOf(victim);
 
             if (cleared && !rows.isEmpty()) {
                 violations.add(Instant.now() + " a row of C's after C17b: " + rows);
             }
+
             cleared = cleared || rows.isEmpty();
             sleep(250L);
         }
     }
 
     private static boolean sameDeparture(AetherValue.NodeDepartureValue now, AetherValue.NodeDepartureValue departed) {
-        return now.state() == AetherValue.DepartureState.DEPARTED && now.epoch() == departed.epoch() && now.process().equals(departed.process());
+        return now.state() == AetherValue.DepartureState.DEPARTED
+               && now.epoch() == departed.epoch()
+               && now.process()
+                     .equals(departed.process());
     }
 
     private Option<AetherValue.NodeDepartureValue> departure(NodeId node) {
@@ -168,9 +193,7 @@ class Fsm2E15RelaunchTest {
         snapshot().forEach((key, value) -> {
             switch (key) {
                 case AetherKey.SliceObservedKey row when row.nodeId().equals(node) -> rows.add(row.toString());
-                case AetherKey.SliceDesiredKey row when row.nodeId().equals(node)
-                                                       && value instanceof AetherValue.SliceDesiredValue desired
-                                                       && desired.goal() != AetherValue.SliceGoal.UNLOADED -> rows.add(row.toString());
+                case AetherKey.SliceDesiredKey row when row.nodeId().equals(node) && value instanceof AetherValue.SliceDesiredValue desired && desired.goal() != AetherValue.SliceGoal.UNLOADED -> rows.add(row.toString());
                 default -> {}
             }
         });
@@ -183,16 +206,22 @@ class Fsm2E15RelaunchTest {
 
         return new EquivalenceKv(snapshot()).instances()
                                             .stream()
-                                            .filter(instance -> instance.base().equals(echo().base()) && instance.state().equals("ACTIVE"))
+                                            .filter(instance -> instance.base()
+                                                                        .equals(echo().base()) && instance.state()
+                                                                                                          .equals("ACTIVE"))
                                             .map(EquivalenceKv.Instance::node)
-                                            .filter(id -> !id.id().equals(leader))
-                                            .sorted((left, right) -> left.id().compareTo(right.id()))
+                                            .filter(id -> !id.id()
+                                                             .equals(leader))
+                                            .sorted((left, right) -> left.id()
+                                                                         .compareTo(right.id()))
                                             .findFirst()
                                             .orElseThrow();
     }
 
     private long active() {
-        return new EquivalenceKv(snapshot()).active().getOrDefault(echo().base(), 0L);
+        return new EquivalenceKv(snapshot()).active()
+                                            .getOrDefault(echo().base(),
+                                                          0L);
     }
 
     private static Artifact echo() {
@@ -219,7 +248,7 @@ class Fsm2E15RelaunchTest {
 
         log("publish -> " + response);
         assertThat(response).as("SETUP: publish accepted (the slice artifact must be installed in the run's maven.repo.local: run `install`, not `verify`)")
-                             .contains("\"status\":\"applied\"");
+                  .contains("\"status\":\"applied\"");
     }
 
     private URI mgmt(String path) {
@@ -231,9 +260,10 @@ class Fsm2E15RelaunchTest {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private Map<AetherKey, AetherValue> snapshot() {
         var aether = new HashMap<AetherKey, AetherValue>();
-        var reader = cluster.currentLeader().flatMap(cluster::getNode).or(() -> cluster.allNodes().getFirst());
+        var reader = cluster.currentLeader().flatMap(cluster::getNode).or(() -> cluster.allNodes()
+                                                                                       .getFirst());
 
-        ((Map<Object, Object>) (Map) reader.kvStore().snapshot()).forEach((key, value) -> {
+        ((Map<Object, Object>)(Map) reader.kvStore().snapshot()).forEach((key, value) -> {
             if (key instanceof AetherKey aetherKey && value instanceof AetherValue aetherValue) {
                 aether.put(aetherKey, aetherValue);
             }

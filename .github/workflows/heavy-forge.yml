@@ -54,7 +54,25 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      # #3338: restore-only, the full-set cache saved by CI's forge-tests (setup-java's own cache is saved by whichever job
+      # finishes first and may lack plugin dependencies such as plexus-utils for the jbct plugin).
+      - name: Restore Maven repository (full-set cache, saved by CI forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-v4-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            m2-full-v4-
+            m2-full-v3-
+            m2-full-v2-
+            m2-full-v1-
+            m2-full-
+            setup-java-Linux-x64-maven-
+
+      # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -132,7 +150,25 @@ jobs:
         with:
           java-version: '25'
           distribution: 'zulu'
-          cache: 'maven'
+
+      # #3338: restore-only, the full-set cache saved by CI's forge-tests (setup-java's own cache is saved by whichever job
+      # finishes first and may lack plugin dependencies such as plexus-utils for the jbct plugin).
+      - name: Restore Maven repository (full-set cache, saved by CI forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-v4-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            m2-full-v4-
+            m2-full-v3-
+            m2-full-v2-
+            m2-full-v1-
+            m2-full-
+            setup-java-Linux-x64-maven-
+
+      # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am

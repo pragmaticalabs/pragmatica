@@ -37,7 +37,12 @@ abstract class PgSchedulerTestBase {
     static final long DEADLINE_MS = 30_000;
 
     final List<PgScheduler> started = new ArrayList<>();
-    final List<Promise<Unit>> gates = new ArrayList<>();
+    // Written by scheduler threads (handlers call hang() while firings are in flight) and read by the test thread's
+    // teardown: every access goes through `gateLock`. Once `stopping` is set a gate is created already open, so a
+    // handler that fires after the teardown's opening pass never waits on a gate nobody will open.
+    private final Object gateLock = new Object();
+    private final List<Promise<Unit>> gates = new ArrayList<>();
+    private boolean stopping;
     PgSqlConnector admin;
 
     @BeforeAll
@@ -53,7 +58,7 @@ abstract class PgSchedulerTestBase {
 
     @AfterEach
     void stopSchedulers() {
-        gates.forEach(PgSchedulerFixture::open);
+        openGates().forEach(PgSchedulerFixture::open);
         started.forEach(s -> s.close()
                               .await());
     }
@@ -82,9 +87,23 @@ abstract class PgSchedulerTestBase {
     Promise<Unit> hang() {
         Promise<Unit> gate = Promise.promise();
 
-        gates.add(gate);
+        synchronized (gateLock) {
+            if (stopping) {
+                PgSchedulerFixture.open(gate);
+            } else {
+                gates.add(gate);
+            }
+        }
 
         return gate;
+    }
+
+    private List<Promise<Unit>> openGates() {
+        synchronized (gateLock) {
+            stopping = true;
+
+            return List.copyOf(gates);
+        }
     }
 
     long count() {

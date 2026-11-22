@@ -307,6 +307,41 @@ class DockerDestroyTest {
         assertThat(http.requests()).as("a held core is not sent a shutdown").noneMatch(r -> r.equals("POST /api/v1/nodes/shutdown/" + B));
     }
 
+    /// #3348: the API never drains or shuts down the leader, so a destroy cannot drain it. The leader's typed refusal is HELD, not a
+    /// failure: exit 0, the teardown goes ahead (its instance is deleted by the cleanup), the leader is named apart from quorum holds
+    /// and is not sent a shutdown. Before the leader refusal existed a drain of the leader was half-applied instead of refused.
+    @Test
+    void destroy_theLeaderRefusedTheDrain_isHeldAsLeader_andTheTeardownGoesAhead() {
+        var http = new ScriptedDrainHttp(drainAccepted(A), notFound(A)).withDrainSequence(drainAccepted(A), ScriptedDrainHttp.leaderDrainRefused(B));
+
+        var result = destroyWith(http, List.of(A, B));
+
+        assertThat(code(result)).isEqualTo(ExitCode.SUCCESS);
+        assertThat(removerCalls).as("the teardown went ahead").containsExactly(CLUSTER.value());
+        assertThat(stderr()).doesNotContain("REFUSING");
+        assertThat(stdout()).contains("is the current leader or the node handling the request").contains("its instance is deleted below")
+                            .contains("Outcome: drained 1, held for quorum 0, failed 0, leader held (" + B + ")");
+        assertThat(http.requests()).as("a held leader is not sent a shutdown").noneMatch(r -> r.equals("POST /api/v1/nodes/shutdown/" + B));
+    }
+
+    /// The same refusal answered to a SHUTDOWN is held too (control for the shutdown route); a conflict with other text still fails.
+    @Test
+    void shutdown_answeredWithTheLeaderRefusal_isHeld_andOtherConflictStillFails() {
+        ClusterHttpClient.HTTP_OPS_REF.set(new ScriptedDrainHttp(ScriptedDrainHttp.otherConflict(A), notFound(A))
+            .withShutdownResponse(ScriptedDrainHttp.leaderShutdownRefused(A)));
+        ClusterHttpClient.setEndpointOverride("http://127.0.0.1:49999");
+
+        var held = new ClusterDestroyCommand().drainAndShutdown(List.of(A), false).shutdowns().getFirst();
+
+        assertThat(held.heldForQuorum()).isTrue();
+        assertThat(held.failure()).isFalse();
+
+        ClusterHttpClient.HTTP_OPS_REF.set(new ScriptedDrainHttp(ScriptedDrainHttp.otherConflict(A), notFound(A))
+            .withShutdownResponse(ScriptedDrainHttp.otherConflict(A)));
+
+        assertThat(new ClusterDestroyCommand().drainAndShutdown(List.of(A), false).shutdowns().getFirst().failure()).isTrue();
+    }
+
     @Test
     void destroy_aNonBudgetConflict_stillRefuses() {
         var http = new ScriptedDrainHttp(drainAccepted(A), notFound(A)).withDrainSequence(drainAccepted(A), ScriptedDrainHttp.otherConflict(B));

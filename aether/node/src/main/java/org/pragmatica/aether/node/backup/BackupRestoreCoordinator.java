@@ -12,6 +12,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -30,6 +31,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
@@ -105,11 +108,19 @@ public final class BackupRestoreCoordinator {
     static final long CHUNK_BYTES = 8L * 1024 * 1024;
 
     private final NodeId self;
+    private final DeploymentEngine runningEngine;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
     private final Option<Source> source;
     private final BackupWarning.Sink warnings;
     private final RetryScheduler scheduler;
+    /// The restore pre-check seam: judges each normalised backed-up entry before the chunks are split, and is re-run over a refused
+    /// key's entry before a deterministic refusal is recorded. Production: [#restorePreCheck].
+    private final Predicate<Map.Entry<AetherKey, AetherValue>> preCheck;
+
+    /// The leader tenure the row-6/row-9 rejection write was made under ([#submitRejected]); none until the first.
+    private final AtomicReference<Option<LeaderValue>> rejectedTenure = new AtomicReference<>(Option.none());
+
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean done = new AtomicBoolean(false);
     /// What the last announced `backup-restore-blocked` warning said, as the pair its text is a function of; none when not blocked.
@@ -117,6 +128,10 @@ public final class BackupRestoreCoordinator {
     private final AtomicReference<Option<Announced>> blocked = new AtomicReference<>(Option.none());
     private final AtomicBoolean missingReported = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> pendingRetry = new AtomicReference<>();
+
+    private static final String INCOMPATIBLE_RELEASE_NOTE = "The backup holds a record this release cannot decode; a backup written by an incompatible release"
+                                                          + " (a backup written by rc4 read by rc5 is one) is one known cause, a damaged backup is another. ";
+
     private final AtomicReference<TimeSpan> nextBackoff = new AtomicReference<>(INITIAL_BACKOFF);
 
     /// Where a backup-enabled node restores from: the backup service (its repository, codec and worker)
@@ -134,12 +149,28 @@ public final class BackupRestoreCoordinator {
         }
     }
 
+    /// What [#onFailure] does after a failed pass (#3303, ruling c4f392d286): retry quietly, warn and retry, or warn and stop.
+    enum FailureAction {
+        RETRY,
+        WARN_RETRY,
+        WARN_STOP
+    }
+
     /// Why a pass did not finish.
     public sealed interface RestoreError extends Cause {
+        /// The action this failure takes. Abstract, with no default: a variant that does not place itself does not compile.
+        FailureAction onFailure();
+
         /// The restore waits and the cluster stays gated; see [BackupRestoreCoordinator]. Carries the step that failed and the
         /// underlying cause, and nothing more: whether a retry or a source fix clears it is not knowable here (a missing or
         /// undecodable object may or may not be repairable at the source), so the warning states the exits without predicting (#3300).
         record Blocked(Step step, Cause origin, String message) implements RestoreError, Cause.Wrapped {
+            /// Every step is retried; a changed (step, marker) pair is announced first.
+            @Override
+            public FailureAction onFailure() {
+                return FailureAction.RETRY;
+            }
+
             /// The steps of reading a backup, in the order a pass runs them. Each names only what the code can tell apart.
             public enum Step {
                 SOURCE_UNREACHABLE("source unreachable: preparing the local repository or fetching the backup ref failed"),
@@ -174,73 +205,163 @@ public final class BackupRestoreCoordinator {
             }
         }
 
-        /// A decision or restore transaction was refused (a leader change, or another writer won).
-        record Refused(String transactionId, String message) implements RestoreError {
-            static final Fn1<Refused, String> FACTORY = Causes.forOneValue("restore transaction %s was not accepted",
-                                                                           Refused::new);
+        /// A decision or restore transaction was refused (a leader change, or another writer won). `refusal` is the applier's
+        /// [KVCommand.Refusal] (none for a batch, [#submitAll]); `entry` is the backed-up entry the refusal names, when the refused
+        /// transaction wrote one, which is what the pre-check re-run judges.
+        record Refused(String transactionId,
+                       Option<KVCommand.Refusal> refusal,
+                       Option<Map.Entry<AetherKey, AetherValue>> entry,
+                       String message) implements RestoreError {
+            static Refused refused(String transactionId,
+                                   Option<KVCommand.Refusal> refusal,
+                                   Option<Map.Entry<AetherKey, AetherValue>> entry) {
+                return new Refused(transactionId,
+                                   refusal,
+                                   entry,
+                                   "restore transaction " + transactionId
+                                  + " was not accepted" + refusal.map(Refused::describe)
+                                                                 .or(""));
+            }
+
+            private static String describe(KVCommand.Refusal refusal) {
+                return " (refused by the " + refusal.kind()
+                     + " check" + refusal.key()
+                                         .map(key -> " at key " + keyName(key))
+                                         .or("")
+                     + ")";
+            }
+
+            /// DISTINCT, ARM and UNIT refuse the same mutations on every attempt: warn and stop. LEADER, WITNESS and EXPECTED may
+            /// pass after a re-read, and UNKNOWN (a newer peer's kind) is retried; no kind at all is retried too.
+            @Override
+            public FailureAction onFailure() {
+                return refusal.map(KVCommand.Refusal::kind)
+                              .map(Refused::actionOf)
+                              .or(FailureAction.RETRY);
+            }
+
+            private static FailureAction actionOf(KVCommand.RefusalKind kind) {
+                return switch (kind) {
+                    case DISTINCT, ARM, UNIT -> FailureAction.WARN_STOP;
+                    case LEADER, WITNESS, EXPECTED, UNKNOWN -> FailureAction.RETRY;
+                };
+            }
         }
 
         enum General implements RestoreError {
-            NO_COMMITTED_LEADER("no committed leader to authorize the restore transaction yet"),
-            NOT_THE_COMMITTED_LEADER("the committed leader record names another node, or this node no longer leads"),
-            NOTHING_TO_RESUME("an interrupted restore is recorded, but this leader has no [backup] to resume it from"),
-            BACKUP_VANISHED("an interrupted restore is recorded, but the backup it was reading is gone");
+            NO_COMMITTED_LEADER("no committed leader to authorize the restore transaction yet", FailureAction.RETRY),
+            NOT_THE_COMMITTED_LEADER("the committed leader record names another node, or this node no longer leads",
+                                     FailureAction.RETRY),
+            NOTHING_TO_RESUME("an interrupted restore is recorded, but this leader has no [backup] to resume it from",
+                              FailureAction.RETRY),
+            BACKUP_VANISHED("an interrupted restore is recorded, but the backup it was reading is gone",
+                            FailureAction.RETRY);
             private final String message;
-            General(String message) {
+            private final FailureAction action;
+            General(String message, FailureAction action) {
                 this.message = message;
+                this.action = action;
             }
             @Override
             public String message() {
                 return message;
             }
+            @Override
+            public FailureAction onFailure() {
+                return action;
+            }
         }
     }
 
     private BackupRestoreCoordinator(NodeId self,
+                                     DeploymentEngine runningEngine,
                                      KVStore<AetherKey, AetherValue> kvStore,
                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                      Option<Source> source,
                                      BackupWarning.Sink warnings,
-                                     RetryScheduler scheduler) {
+                                     RetryScheduler scheduler,
+                                     Predicate<Map.Entry<AetherKey, AetherValue>> preCheck) {
         this.self = self;
+        this.runningEngine = runningEngine;
         this.kvStore = kvStore;
         this.applier = applier;
         this.source = source;
         this.warnings = warnings;
         this.scheduler = scheduler;
+        this.preCheck = preCheck;
     }
 
     /// The production coordinator: the node's warning sink and the process-wide scheduler. A backup with no remote
     /// is announced here, once, because its restore source is only the local repository of whichever node
     /// leads the cold start.
     public static BackupRestoreCoordinator backupRestoreCoordinator(NodeId self,
+                                                                    DeploymentEngine runningEngine,
                                                                     KVStore<AetherKey, AetherValue> kvStore,
                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                                     Option<Source> source,
                                                                     BackupWarning.Sink warnings) {
         var coordinator = new BackupRestoreCoordinator(self,
+                                                       runningEngine,
                                                        kvStore,
                                                        applier,
                                                        source,
                                                        warnings,
-                                                       SharedScheduler::schedule);
+                                                       SharedScheduler::schedule,
+                                                       BackupRestoreCoordinator::restorePreCheck);
 
         source.filter(present -> !present.service()
                                          .repository()
                                          .hasRemote())
               .onPresent(_ -> coordinator.warnLocalSource());
+        source.onPresent(present -> coordinator.probeGit(present.service()));
 
         return coordinator;
     }
 
     /// Test factory with explicit warning sink and scheduler seams.
     static BackupRestoreCoordinator backupRestoreCoordinator(NodeId self,
+                                                             DeploymentEngine runningEngine,
                                                              KVStore<AetherKey, AetherValue> kvStore,
                                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                              Option<Source> source,
                                                              BackupWarning.Sink warnings,
                                                              RetryScheduler scheduler) {
-        return new BackupRestoreCoordinator(self, kvStore, applier, source, warnings, scheduler);
+        return backupRestoreCoordinator(self,
+                                        runningEngine,
+                                        kvStore,
+                                        applier,
+                                        source,
+                                        warnings,
+                                        scheduler,
+                                        BackupRestoreCoordinator::restorePreCheck);
+    }
+
+    /// Test factory with an explicit pre-check seam as well.
+    static BackupRestoreCoordinator backupRestoreCoordinator(NodeId self,
+                                                             DeploymentEngine runningEngine,
+                                                             KVStore<AetherKey, AetherValue> kvStore,
+                                                             Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                             Option<Source> source,
+                                                             BackupWarning.Sink warnings,
+                                                             RetryScheduler scheduler,
+                                                             Predicate<Map.Entry<AetherKey, AetherValue>> preCheck) {
+        return new BackupRestoreCoordinator(self, runningEngine, kvStore, applier, source, warnings, scheduler, preCheck);
+    }
+
+    /// #3303 the restore pre-check, production judge: whether the applier would admit a normalised backed-up entry over the applied
+    /// state. It admits every entry until A6d fills it with the applier's own predicate (R-IFF); the seam is [#chunks] and the
+    /// re-run in [#onFailure].
+    static boolean restorePreCheck(Map.Entry<AetherKey, AetherValue> entry) {
+        return true;
+    }
+
+    /// The three-valued reads need git 2.43. Probed once, on the worker, when the coordinator is built; a git that is too old, or cannot be asked,
+    /// is warned about here, in the log, rather than discovered as a blocked restore. [guess: log WARN; no new Code, BW/OWC are RA-5a's]
+    @Contract
+    private void probeGit(KvBackupService service) {
+        service.onWorker(() -> GitBackupRepository.required(service.repository().readGitVersion()))
+               .withFailure(cause -> LOG.warn("[backup] {}",
+                                              cause.message()));
     }
 
     @Contract
@@ -295,10 +416,15 @@ public final class BackupRestoreCoordinator {
     /// it stops leading, stops, or restarts (a restart is a stop first). The next leader that cannot read the backup raises it again.
     @Contract
     private void recoverRestoreBlocked() {
+        closeBlocked("this node no longer leads (or is stopping), so its blocked backup restore no longer holds the cluster;"
+                    + " a leader that still cannot read the backup raises backup-restore-blocked again");
+    }
+
+    /// Emits `backup-restore-unblocked` with `why` when this node has a `backup-restore-blocked` standing, and forgets it.
+    @Contract
+    private void closeBlocked(String why) {
         if (blocked.getAndSet(Option.none()).isPresent()) {
-            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
-                                                      "this node no longer leads (or is stopping), so its blocked backup restore no longer holds the cluster;"
-                                                     + " a leader that still cannot read the backup raises backup-restore-blocked again"));
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED, why));
         }
     }
 
@@ -443,17 +569,16 @@ public final class BackupRestoreCoordinator {
         var repository = service.repository();
 
         return repository.prepare()
-                         .flatMap(_ -> repository.fetchRestoreRef())
+                         .flatMap(_ -> repository.restoreRef())
                          .mapError(RestoreError.Blocked.at(Step.SOURCE_UNREACHABLE))
                          .flatMap(ref -> ref.map(present -> loadRef(service, present).map(Option::some))
                                             .or(() -> success(Option.none())));
     }
 
     private Result<Loaded> loadRef(KvBackupService service, String ref) {
-        return service.repository()
-                      .commitOf(ref)
-                      .mapError(RestoreError.Blocked.at(Step.REF_UNRESOLVED))
-                      .flatMap(commit -> load(service, commit, ref));
+        return GitBackupRepository.required(service.repository().readCommitId(ref))
+                                  .mapError(RestoreError.Blocked.at(Step.REF_UNRESOLVED))
+                                  .flatMap(commit -> load(service, commit, ref));
     }
 
     /// An interrupted restore's own commit, re-fetched so a new leader holds it too.
@@ -461,7 +586,7 @@ public final class BackupRestoreCoordinator {
         var repository = service.repository();
 
         return repository.prepare()
-                         .flatMap(_ -> repository.fetchRestoreRef())
+                         .flatMap(_ -> repository.restoreRef())
                          .mapError(RestoreError.Blocked.at(Step.SOURCE_UNREACHABLE))
                          .flatMap(ref -> ref.toResult(RestoreError.Blocked.blocked(Step.BACKUP_VANISHED,
                                                                                    RestoreError.General.BACKUP_VANISHED)))
@@ -470,11 +595,10 @@ public final class BackupRestoreCoordinator {
 
     /// Each step maps its own failure, so the [RestoreError.Blocked] names the step that failed, whichever method ran it.
     private Result<Loaded> load(KvBackupService service, String commit, String ref) {
-        return service.repository()
-                      .documentAt(commit)
-                      .mapError(RestoreError.Blocked.at(Step.COMMIT_UNREADABLE))
-                      .flatMap(text -> decoded(service, text))
-                      .flatMap(document -> loaded(service, commit, ref, document));
+        return GitBackupRepository.required(service.repository().readFile(commit, GitBackupRepository.FILE))
+                                  .mapError(RestoreError.Blocked.at(Step.COMMIT_UNREADABLE))
+                                  .flatMap(text -> decoded(service, text))
+                                  .flatMap(document -> loaded(service, commit, ref, document));
     }
 
     private static Result<BackupDocument> decoded(KvBackupService service, String text) {
@@ -541,6 +665,7 @@ public final class BackupRestoreCoordinator {
                                   .stream()
                                   .filter(entry -> !(entry.getKey() instanceof ClusterIncarnationKey))
                                   .flatMap(entry -> normalised(entry).stream())
+                                  .filter(preCheck)
                                   .filter(entry -> !kvStore.get(entry.getKey())
                                                            .equals(Option.some(entry.getValue())))
                                   .map(entry -> codec.map(present -> present.entrySize(entry.getKey(),
@@ -693,16 +818,24 @@ public final class BackupRestoreCoordinator {
                                         Option.<AetherValue> some(marker.restored()));
     }
 
-    /// Phase-3 design 8.2 (W-34): the deployment engine marker ends as the backup has it. A leader without `[backup]` has no restore gate,
-    /// so it can mint the incarnation and the marker while this restore is `IN_PROGRESS` (the incarnation is excluded from the chunks).
-    /// A pre-phase-3 backup carries no marker: the locally minted one is removed here, in the same batch, so the restored cluster reads
-    /// "incarnation present, marker absent", i.e. LEGACY. A phase-3 backup's marker replaces any other. No mutation when they already agree,
-    /// so a finish whose marker already matches is the finish without the marker arm.
+    /// Phase-3 design 8.2 (W-34), FSM replacement plan 3.2 delta (a): a backup's marker replaces any other. A backup that carries no
+    /// engine marker restores into the running engine, never into "marker absent": the local marker stays when a leader without
+    /// `[backup]` minted one while this restore was `IN_PROGRESS` (the incarnation is excluded from the chunks), and otherwise this node mints
+    /// the marker of the engine it runs, in the same batch. Removing it instead would leave an FSM2 cluster reading "incarnation present,
+    /// marker absent", i.e. LEGACY, and every node refusing the mismatch. No mutation when they already agree, so a finish whose marker
+    /// already matches is the finish without the marker arm.
     private Option<KVCommand.Mutation<AetherKey, AetherValue>> engineMarker(Option<AetherValue> backedUp) {
-        return kvStore.get(DeploymentEngineKey.deploymentEngineKey())
-                      .equals(backedUp)
+        var local = kvStore.get(DeploymentEngineKey.deploymentEngineKey());
+        var target = backedUp.orElse(() -> local.orElse(this::runningMarker));
+
+        return local.equals(target)
                ? Option.none()
-               : Option.some(mutation(DeploymentEngineKey.deploymentEngineKey(), backedUp));
+               : Option.some(mutation(DeploymentEngineKey.deploymentEngineKey(), target));
+    }
+
+    /// The marker of the engine this node runs, minted by this node now: what a genesis mint would have written.
+    private Option<AetherValue> runningMarker() {
+        return Option.some(new DeploymentEngineValue(runningEngine, self, System.currentTimeMillis()));
     }
 
     /// The marker mutation rides on [ClusterIncarnation#replaceCommands]' put transaction, which carries no guard of its own
@@ -733,20 +866,67 @@ public final class BackupRestoreCoordinator {
                       .flatMap(this::submit);
     }
 
+    /// A refused transaction fails as [RestoreError.Refused] carrying the applier's [KVCommand.Refusal], so its kind picks the action.
     private Promise<Unit> submit(KVCommand<AetherKey> command) {
-        var transactionId = ((KVCommand.LeaderTransaction<?, ?>) command).transactionId();
+        var transaction = (KVCommand.LeaderTransaction<?, ?>) command;
 
         return applier.apply(List.of(command))
-                      .flatMap(results -> accepted(results, transactionId)
+                      .flatMap(results -> accepted(results,
+                                                   transaction.transactionId())
                                           ? Promise.unitPromise()
-                                          : RestoreError.Refused.FACTORY.apply(transactionId).promise());
+                                          : refused(transaction, results).promise());
+    }
+
+    private static RestoreError.Refused refused(KVCommand.LeaderTransaction<?, ?> transaction, List<Object> results) {
+        var refusal = refusalOf(results, transaction.transactionId());
+
+        return RestoreError.Refused.refused(transaction.transactionId(),
+                                            refusal,
+                                            refusal.flatMap(present -> refusedEntry(transaction, present)));
+    }
+
+    private static Option<KVCommand.Refusal> refusalOf(List<Object> results, String transactionId) {
+        return Option.from(results.stream()
+                                  .filter(KVCommand.TransactionResult.class::isInstance)
+                                  .map(KVCommand.TransactionResult.class::cast)
+                                  .filter(result -> result.transactionId()
+                                                          .equals(transactionId))
+                                  .findFirst()).flatMap(KVCommand.TransactionResult::refusal);
+    }
+
+    /// The backed-up entry the refused transaction wrote at the refusal's key; none for a key it did not write.
+    private static Option<Map.Entry<AetherKey, AetherValue>> refusedEntry(KVCommand.LeaderTransaction<?, ?> transaction,
+                                                                          KVCommand.Refusal refusal) {
+        return Option.from(transaction.mutations()
+                                      .stream()
+                                      .filter(mutation -> refusal.key()
+                                                                 .equals(Option.some(mutation.key())))
+                                      .findFirst()).flatMap(BackupRestoreCoordinator::entryOf);
+    }
+
+    private static Option<Map.Entry<AetherKey, AetherValue>> entryOf(KVCommand.Mutation<?, ?> mutation) {
+        return mutation.key() instanceof AetherKey key
+               ? mutation.replacement()
+                         .filter(AetherValue.class::isInstance)
+                         .map(value -> Map.entry(key,
+                                                 (AetherValue) value))
+               : Option.none();
+    }
+
+    private static String keyName(Object key) {
+        return key instanceof AetherKey aetherKey
+               ? aetherKey.asString()
+               : String.valueOf(key);
     }
 
     private Promise<Unit> submitAll(List<KVCommand<AetherKey>> commands) {
         return applier.apply(commands)
                       .flatMap(results -> ClusterIncarnation.replaceAccepted(results, commands)
                                           ? Promise.unitPromise()
-                                          : RestoreError.Refused.FACTORY.apply(transactionIds(commands)).promise());
+                                          : RestoreError.Refused.refused(transactionIds(commands),
+                                                                         Option.none(),
+                                                                         Option.none())
+                                                                .promise());
     }
 
     private static String transactionIds(List<KVCommand<AetherKey>> commands) {
@@ -815,10 +995,30 @@ public final class BackupRestoreCoordinator {
                  decision.commit());
     }
 
+    /// ONE switch over the failure's action (#3303, ruling c4f392d286). A cause that is not a [RestoreError] (an applier or worker
+    /// failure) is retried.
+    @Contract
+    private void onFailure(Cause cause) {
+        onFailure(cause,
+                  cause instanceof RestoreError error
+                  ? error.onFailure()
+                  : FailureAction.RETRY);
+    }
+
+    /// Package-private so a test can drive an action no variant of this build carries yet (WARN_RETRY).
+    @Contract
+    void onFailure(Cause cause, FailureAction action) {
+        switch (action) {
+            case RETRY -> retryAfter(cause);
+            case WARN_RETRY -> warnThenRetry(cause);
+            case WARN_STOP -> stopOn(cause);
+        }
+    }
+
     /// The decision is read once: the latch key and the advice come from the same read. A failure that lands after a committed decision
     /// other than `IN_PROGRESS` is stale (the next pass finishes at once), so it announces nothing and leaves the latch alone.
     @Contract
-    private void onFailure(Cause cause) {
+    private void retryAfter(Cause cause) {
         var decision = RestoreGate.decision(kvStore);
 
         if (cause instanceof RestoreError.Blocked blockedCause && !settled(decision) && announce(blockedCause, decision)) {
@@ -826,12 +1026,152 @@ public final class BackupRestoreCoordinator {
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_BLOCKED,
                                                       cause.message()
                                                      + "; this cluster will not start fresh on its own, and writes to cluster state"
-                                                     + " stay refused while the restore is blocked. " + blockedAdvice(decision)));
+                                                     + " stay refused while the restore is blocked. " + incompatibleReleaseNote(blockedCause) + blockedAdvice(decision)));
         } else {
             LOG.debug("Backup restore: transient failure: {} — will retry", cause.message());
         }
 
         scheduleRetry();
+    }
+
+    @Contract
+    private void warnThenRetry(Cause cause) {
+        warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_REJECTED, cause.message()));
+        scheduleRetry();
+    }
+
+    /// A deterministic refusal: the pre-check is re-run once over the refused key's entry. Withheld now (the applied state moved since
+    /// the chunks were cut), the restore continues and the next pass leaves it out; still admitted, the refusal is recorded (row 6, or
+    /// row 9 over a recorded one) and the restore stops, warned, never retried. The decision is read once, as in [#retryAfter]: a failure
+    /// that lands after a committed decision other than `IN_PROGRESS` is stale (a second pass was in flight), so it warns and records nothing.
+    @Contract
+    private void stopOn(Cause cause) {
+        if (settled(RestoreGate.decision(kvStore))) {
+            LOG.debug("Backup restore: stale refusal after a committed decision ignored: {}", cause.message());
+
+            return;
+        }
+
+        switch (cause) {
+            case RestoreError.Refused refused when withheldNow(refused) -> continueWithout(refused);
+            case RestoreError.Refused refused -> recordAndStop(refused);
+            default -> warnRejected(cause, false);
+        }
+    }
+
+    @Contract
+    private void continueWithout(RestoreError.Refused refused) {
+        LOG.debug("Backup restore: {}; the pre-check now withholds that entry, so the restore continues without it",
+                  refused.message());
+        scheduleRetry();
+    }
+
+    /// The warning follows the write whatever its result: a failed record leaves the restore stopped all the same, and its text says
+    /// whether the committed marker records the refused key ([#recordsRefusedKey]), read after the write settled.
+    @Contract
+    private void recordAndStop(RestoreError.Refused refused) {
+        refused.refusal()
+               .fold(Promise::unitPromise, this::submitRejected)
+               .onResultRun(() -> warnRejected(refused,
+                                               recordsRefusedKey(refused)));
+    }
+
+    private boolean recordsRefusedKey(RestoreError.Refused refused) {
+        var key = refused.refusal().flatMap(BackupRestoreCoordinator::refusedKey);
+
+        return key.isPresent() && RestoreGate.decision(kvStore)
+                                             .filter(marker -> marker.rejection()
+                                                                     .equals(key))
+                                             .isPresent();
+    }
+
+    private static Option<String> refusedKey(KVCommand.Refusal refusal) {
+        return refusal.key()
+                      .map(BackupRestoreCoordinator::keyName);
+    }
+
+    private boolean withheldNow(RestoreError.Refused refused) {
+        return refused.entry()
+                      .filter(preCheck.negate())
+                      .isPresent();
+    }
+
+    /// A restore that stops has no retry to resume a `backup-restore-blocked` raised earlier in the same tenure, so that warning is closed first.
+    @Contract
+    private void warnRejected(Cause cause, boolean recorded) {
+        closeBlocked("the backup restore is no longer blocked: the backup was read, and its restore stopped on a refusal (see backup-restore-rejected)");
+        warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_REJECTED,
+                                                  cause.message()
+                                                 + "; this build's restore refuses that entry the same way on every attempt, so the restore stops"
+                                                 + " and is not retried, and writes to cluster state stay refused. " + markerNote(recorded)));
+    }
+
+    private static String markerNote(boolean recorded) {
+        return recorded
+               ? "The restore marker records the refused key; the restore resumes from it on a build that fixes the refusal"
+               : "The restore marker does not record the refused key (no record was written by this pass); the restore resumes from the marker"
+                + " on a build that fixes the refusal";
+    }
+
+    /// #3303 rows 6 and 9 (ruling (4)): records the refusal's key on the committed `IN_PROGRESS` marker, (c) -> (c,r) or (c,r) -> (c,r,k'),
+    /// at most once per leader tenure: once a write is accepted (or is in flight) under a [LeaderValue], a second call under it writes
+    /// nothing, so `deactivate` needs no reset. A write that is refused or fails gives the tenure back, so a later call in it writes again.
+    /// A marker already refused at the same key, a marker being abandoned, a settled decision or a refusal with no key write nothing, and
+    /// consume nothing. A call that finds the tenure claimed returns at once, before an in-flight first write has landed.
+    Promise<Unit> submitRejected(KVCommand.Refusal refusal) {
+        return leaderValue().async()
+                          .flatMap(leaderValue -> rejectOnce(leaderValue, refusal));
+    }
+
+    private Promise<Unit> rejectOnce(LeaderValue leaderValue, KVCommand.Refusal refusal) {
+        return rejectionWrite(leaderValue, refusal).fold(Promise::unitPromise,
+                                                         write -> claimAndSubmit(leaderValue, write));
+    }
+
+    /// The claim is taken before the write goes out (a second caller in flight writes nothing) and handed back when the write is not
+    /// accepted. The failure passes through unchanged: the claim is not a recovery.
+    private Promise<Unit> claimAndSubmit(LeaderValue leaderValue, KVCommand<AetherKey> write) {
+        var claim = Option.some(leaderValue);
+        var prior = rejectedTenure.getAndSet(claim);
+
+        return prior.equals(claim)
+               ? Promise.unitPromise()
+               : submit(write).onFailureRun(() -> rejectedTenure.compareAndSet(claim, prior));
+    }
+
+    private Option<KVCommand<AetherKey>> rejectionWrite(LeaderValue leaderValue, KVCommand.Refusal refusal) {
+        var key = refusedKey(refusal);
+
+        return RestoreGate.decision(kvStore)
+                          .filter(marker -> inProgress(marker) && !marker.abandon())
+                          .filter(marker -> key.isPresent() && !marker.rejection()
+                                                                      .equals(key))
+                          .map(marker -> transaction(RestoreGate.RESTORE_TRANSACTION_PREFIX + "rejected:",
+                                                     leaderValue,
+                                                     List.of(markerWitness(marker)),
+                                                     List.of(mutation(BackupRestoreKey.backupRestoreKey(),
+                                                                      Option.some(rejected(marker, key))))));
+    }
+
+    /// The same restore, refused at `key`.
+    private static BackupRestoreValue rejected(BackupRestoreValue marker, Option<String> key) {
+        return BackupRestoreValue.backupRestoreValue(BackupRestoreOutcome.IN_PROGRESS,
+                                                     marker.lineageId(),
+                                                     marker.incarnation(),
+                                                     marker.revision(),
+                                                     marker.commit(),
+                                                     key,
+                                                     false,
+                                                     0L);
+    }
+
+    /// #3310: on the decode step the fact held is that a record of the backup does not decode here; a backup written by an incompatible release
+    /// (rc4 into rc5 is one, a flag day with no legacy decoders) is one known cause, a damaged backup is another. The code does not identify the writing release, so none is claimed.
+    /// Other steps carry no such sentence. It is a function of the step, which the announced pair already holds.
+    private static String incompatibleReleaseNote(RestoreError.Blocked cause) {
+        return cause.step() == Step.DOCUMENT_UNDECODABLE
+               ? INCOMPATIBLE_RELEASE_NOTE
+               : "";
     }
 
     /// A committed decision other than `IN_PROGRESS` (`UNKNOWN` included, which is not terminal): there is no restore to continue, so nothing is blocked.
@@ -865,13 +1205,27 @@ public final class BackupRestoreCoordinator {
     }
 
     /// A committed `IN_PROGRESS` marker pins its commit, and a resumed restore never reads `[backup] restore` again, so a restart
-    /// with it, on some of the nodes while others keep running, leaves the blocked restore standing.
+    /// with it, on some of the nodes while others keep running, leaves the blocked restore standing. A marker that records a refusal
+    /// (#3303 rows 6, 9) has no `fresh` exit at all: it resumes only on a build that fixes the refusal.
     private String markedAdvice(BackupRestoreValue marker) {
+        return marker.rejection()
+                     .fold(() -> pinnedAdvice(marker),
+                           key -> rejectedAdvice(marker, key));
+    }
+
+    private String pinnedAdvice(BackupRestoreValue marker) {
         return "A restore of commit " + marker.commit()
              + " is in progress and that commit is pinned, so restarting some of the nodes while others keep running with [backup] restore = \"fresh\" does not abandon it."
              + " It resumes on a retry once what the failed step names is readable again at the backup source (" + sourceDescription()
              + "). If it cannot be repaired there, the exit is to stop ALL nodes and cold-start them with [backup] restore = \"fresh\":"
              + " that discards the partly restored state and is a whole-cluster stop";
+    }
+
+    private String rejectedAdvice(BackupRestoreValue marker, String key) {
+        return "A restore of commit " + marker.commit()
+             + " is in progress, pinned, and was refused at key " + key
+             + "; it resumes on a build that fixes the refusal, once what the failed step names is readable again at the backup source (" + sourceDescription()
+             + ")";
     }
 
     private String sourceDescription() {

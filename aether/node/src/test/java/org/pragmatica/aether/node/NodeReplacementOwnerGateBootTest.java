@@ -13,7 +13,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
@@ -88,12 +87,7 @@ class NodeReplacementOwnerGateBootTest {
     }
 
     private boolean startedSeen() {
-        return node.eventAggregator()
-                   .lastRaisedOperatorWarning()
-                   .filter(ClusterEvent.OperatorWarning.class::isInstance)
-                   .map(ClusterEvent.OperatorWarning.class::cast)
-                   .filter(warning -> STARTED.equals(warning.details().get("code")))
-                   .isPresent();
+        return !RaisedWarnings.withCode(node.eventAggregator(), STARTED).isEmpty();
     }
 
     private AetherNode bootedNode() {

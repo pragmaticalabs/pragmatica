@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.io.IOException;
@@ -12,12 +11,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.IntPredicate;
 
+
 /// Picks the port block an F4 arm binds (f4fixC: a fixed `33000 + 400 * index` turned a leftover holder on the host into a round ERROR).
 /// Every port the arm will bind (cluster, management and application offsets, one per node plus a margin) is bind-checked; a taken block moves
 /// the arm to the next block, and when none is free the round ends in an ERROR naming the ports. The block is never assumed free.
 final class EquivalencePorts {
     /// Offsets of the three port ranges `emberCluster(nodes, base, base + 100, base + 200, ...)` binds.
     static final int[] OFFSETS = {0, 100, 200};
+
     /// Block spacing: the three ranges above fit in 300 ports.
     static final int STEP = 400;
     static final int TRIES = 8;
@@ -41,9 +42,14 @@ final class EquivalencePorts {
             if (busy.isEmpty()) {
                 return base;
             }
+
             taken.addAll(busy);
         }
-        throw new IllegalStateException("no free port block in %d tries from base %d (step %d); busy ports: %s".formatted(tries, start, step, taken));
+
+        throw new IllegalStateException("no free port block in %d tries from base %d (step %d); busy ports: %s".formatted(tries,
+                                                                                                                          start,
+                                                                                                                          step,
+                                                                                                                          taken));
     }
 
     private static List<Integer> busyPorts(int base, int nodes, IntPredicate canBind) {
@@ -58,6 +64,7 @@ final class EquivalencePorts {
                 }
             }
         }
+
         return busy;
     }
 

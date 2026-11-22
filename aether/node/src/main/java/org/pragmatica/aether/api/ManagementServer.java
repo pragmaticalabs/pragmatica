@@ -14,7 +14,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 import java.util.stream.Collectors;
@@ -92,7 +91,9 @@ import org.pragmatica.aether.http.handler.security.RoutePermissionRegistry;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.aether.http.security.AdminGrant.RequestScope;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.http.security.Authenticated;
 import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.config.ApiKeyEntry;
@@ -109,6 +110,7 @@ import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.metrics.observability.AetherMetrics;
 import org.pragmatica.aether.http.AetherVersioningMetricsSink;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.concurrent.PublishSlot;
 import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.ManageableNode;
@@ -218,8 +220,7 @@ public interface ManagementServer {
                                              Option<ClusterNetwork> clusterNetwork,
                                              Option<Serializer> serializer,
                                              Option<Deserializer> deserializer,
-                                             Consumer<NodeId> drainCommandSink,
-                                             Supplier<Set<NodeId>> pendingDrainsSupplier,
+                                             NodeLifecycleRoutes.DrainPort drainPort,
                                              NodeLifecycleRoutes.SliceFloor sliceFloor) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
@@ -244,8 +245,7 @@ public interface ManagementServer {
                                         clusterNetwork,
                                         serializer,
                                         deserializer,
-                                        drainCommandSink,
-                                        pendingDrainsSupplier,
+                                        drainPort,
                                         sliceFloor);
     }
 }
@@ -269,6 +269,9 @@ class ManagementServerImpl implements ManagementServer {
     private final ObservabilityRegistry observability;
     private final HttpRequestObserver requestObserver;
     private final Option<TlsConfig> tls;
+    /// The validator the assembly built from the configured mode, called inside every request's scope in every mode: with
+    /// security on it matches credentials, with security off it is the OFF validator (it serves every caller and mints
+    /// the grant for the `security-off` principal). `securityEnabled` says only whether the result is enforced and audited.
     private final SecurityValidator securityValidator;
     /// The node's config-declared keys, so `GET /api/v1/cluster/keys` can report every credential
     /// this node accepts rather than only the cluster-held ones. A supplier, not a snapshot, so a
@@ -292,8 +295,6 @@ class ManagementServerImpl implements ManagementServer {
     private static final TimeSpan UNBUDGETED_REPLY_WINDOW = TimeSpan.timeSpan(10).seconds();
 
     private final ForwardReplyResender replyResender = ForwardReplyResender.forwardReplyResender();
-    private final Consumer<NodeId> drainCommandSink;
-    private final Supplier<Set<NodeId>> pendingDrainsSupplier;
     private final NodeLifecycleRoutes.SliceFloor sliceFloor;
     private final NodeLifecycleRoutes nodeLifecycleRoutes;
 
@@ -343,9 +344,65 @@ class ManagementServerImpl implements ManagementServer {
                          Option<org.pragmatica.consensus.net.ClusterNetwork> clusterNetwork,
                          Option<org.pragmatica.serialization.Serializer> serializer,
                          Option<org.pragmatica.serialization.Deserializer> deserializer,
-                         Consumer<NodeId> drainCommandSink,
-                         Supplier<Set<NodeId>> pendingDrainsSupplier,
+                         NodeLifecycleRoutes.DrainPort drainPort,
                          NodeLifecycleRoutes.SliceFloor sliceFloor) {
+        this(port,
+             nodeSupplier,
+             entityCheckpointDriver,
+             alertManager,
+             configRegistry,
+             traceStore,
+             logLevelRegistry,
+             dynamicConfigManager,
+             scheduledTaskRegistry,
+             scheduledTaskManager,
+             sliceInvoker,
+             scheduledTaskStateRegistry,
+             tls,
+             securityValidator,
+             securityEnabled,
+             configuredApiKeys,
+             bossGroup,
+             workerGroup,
+             httpProtocol,
+             forwardingTimeouts,
+             clusterNetwork,
+             serializer,
+             deserializer,
+             drainPort,
+             sliceFloor,
+             ManagementRouter::managementRouter);
+    }
+
+    /// Test seam (the package-private assembly hook, a no-op in production): `routerAssembly` builds the router from the
+    /// route sources this server declares. Production passes [ManagementRouter#managementRouter]; a test may add a probe
+    /// route, and dispatch still runs through this server's own security gate and request scope.
+    ManagementServerImpl(int port,
+                         Supplier<ManageableNode> nodeSupplier,
+                         EntityCheckpointDriver entityCheckpointDriver,
+                         AlertManager alertManager,
+                         ObservabilityConfigRegistry configRegistry,
+                         InvocationTraceStore traceStore,
+                         LogLevelRegistry logLevelRegistry,
+                         Option<DynamicConfigManager> dynamicConfigManager,
+                         ScheduledTaskRegistry scheduledTaskRegistry,
+                         ScheduledTaskManager scheduledTaskManager,
+                         SliceInvoker sliceInvoker,
+                         ScheduledTaskStateRegistry scheduledTaskStateRegistry,
+                         Option<TlsConfig> tls,
+                         SecurityValidator securityValidator,
+                         boolean securityEnabled,
+                         Supplier<Map<String, ApiKeyEntry>> configuredApiKeys,
+                         Option<EventLoopGroup> bossGroup,
+                         Option<EventLoopGroup> workerGroup,
+                         HttpProtocol httpProtocol,
+                         ForwardingTimeouts forwardingTimeouts,
+                         Option<org.pragmatica.consensus.net.ClusterNetwork> clusterNetwork,
+                         Option<org.pragmatica.serialization.Serializer> serializer,
+                         Option<org.pragmatica.serialization.Deserializer> deserializer,
+                         NodeLifecycleRoutes.DrainPort drainPort,
+                         NodeLifecycleRoutes.SliceFloor sliceFloor,
+                         Fn1<ManagementRouter, RouteSource[]> routerAssembly) {
         this.sliceFloor = sliceFloor;
         this.port = port;
         this.nodeSupplier = nodeSupplier;
@@ -365,10 +422,6 @@ class ManagementServerImpl implements ManagementServer {
         this.forwardSerializer = serializer;
         this.forwardDeserializer = deserializer;
         this.forwardingTimeouts = forwardingTimeouts;
-        this.drainCommandSink = drainCommandSink;
-        this.pendingDrainsSupplier = pendingDrainsSupplier == null
-                                     ? Set::of
-                                     : pendingDrainsSupplier;
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
         this.thresholdEvaluator = AlertThresholdEvaluator.alertThresholdEvaluator(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
@@ -398,10 +451,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
         routeSources.add(DeployRoutes.deployRoutes(nodeSupplier));
         routeSources.add(AbTestRoutes.abTestRoutes(nodeSupplier));
-        this.nodeLifecycleRoutes = NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier,
-                                                                           drainCommandSink,
-                                                                           pendingDrainsSupplier,
-                                                                           sliceFloor);
+        this.nodeLifecycleRoutes = NodeLifecycleRoutes.withDrainPort(nodeSupplier, drainPort, sliceFloor);
         routeSources.add(nodeLifecycleRoutes);
         routeSources.add(NodeReplacementRoutes.nodeReplacementRoutes(nodeSupplier));
         routeSources.add(UpgradeRunRoutes.upgradeRunRoutes(nodeSupplier));
@@ -458,10 +508,10 @@ class ManagementServerImpl implements ManagementServer {
         // NotImplementedRoutes, and ManagementRouteCoverageTest fails if a route loses its handler.
         routeSources.add(org.pragmatica.aether.api.routes.NotImplementedRoutes.notImplementedRoutes());
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
-        this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
+        this.router = routerAssembly.apply(routeSources.toArray(RouteSource[]::new));
         // #520 — the publication gate inside MavenProtocolRoutes must see the SAME posture this
         // server gates management auth on. `securityEnabled` is `config.appHttp().managementSecurityEnabled()`
-        // (see AetherNode), so `false` means the management plane's `security_mode = NONE`: no SecurityContext is
+        // (see ManagementAssembly), so `false` means the management plane's `security_mode = NONE`: no SecurityContext is
         // ever bound and OPERATOR is structurally unholdable. Passing it here unifies the two
         // half-overlapping dev switches instead of leaving the route with its own env-only bypass.
         this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier, () -> securityEnabled));
@@ -1236,27 +1286,78 @@ class ManagementServerImpl implements ManagementServer {
 
             return;
         }
+        // The request scope opens before the validation and closes when `run` returns or throws, so an ADMIN grant
+        // minted by the validator is live for this request's dispatch and dead after it. It opens in EVERY mode: with
+        // security off the grant comes from the OFF validator, never from a code path that skips validation.
+        RequestScope.requestScope().run(() -> dispatchSecuredManagementRequest(ctx,
+                                                                               instrumented,
+                                                                               path,
+                                                                               method,
+                                                                               startTime));
+    }
 
-        if (securityEnabled) {
-            var auth = validateManagementSecurity(ctx, instrumented, path, method);
+    /// The local path, run inside the request's scope: validate, then dispatch with the [Authenticated] the validation
+    /// returned, passed as an argument down to the router. With security off the validation is the OFF validator's: it
+    /// serves every caller and a refusal fails closed.
+    @SuppressWarnings("JBCT-PAT-01")
+    private void dispatchSecuredManagementRequest(HttpRequest ctx,
+                                                  InstrumentedResponseWriter instrumented,
+                                                  String path,
+                                                  HttpMethod method,
+                                                  long startTime) {
+        var methodName = method.name();
+        var auth = validateRequestSecurity(ctx, instrumented, path, method);
 
-            if (auth.isFailure()) {
-                recordRequestMetrics(methodName, path, instrumented, startTime);
-
-                return;
-            }
-
-            auth.onSuccess(sc -> ScopedValue.where(SecurityContextHolder.scopedValue(),
-                                                   sc)
-                                            .run(() -> dispatchManagementRequest(ctx,
-                                                                                 instrumented,
-                                                                                 methodName,
-                                                                                 startTime)));
+        if (auth.isFailure()) {
+            recordRequestMetrics(methodName, path, instrumented, startTime);
 
             return;
         }
 
-        dispatchManagementRequest(ctx, instrumented, methodName, startTime);
+        auth.onSuccess(authenticated -> dispatchAuthenticated(ctx, instrumented, methodName, startTime, authenticated));
+    }
+
+    private Result<Authenticated> validateRequestSecurity(HttpRequest ctx,
+                                                          ResponseWriter response,
+                                                          String path,
+                                                          HttpMethod method) {
+        return securityEnabled
+               ? validateManagementSecurity(ctx, response, path, method)
+               : validateOffManagement(ctx, response, path, method);
+    }
+
+    /// Security off: the validator the assembly built for this mode answers, so a grant comes from `validate` as in every
+    /// mode. No enforcement (the OFF caller is served every route), no access audit and no holder binding: the request is
+    /// anonymous to the routes, and only the grant says the plane is open.
+    private Result<Authenticated> validateOffManagement(HttpRequest ctx,
+                                                        ResponseWriter response,
+                                                        String path,
+                                                        HttpMethod method) {
+        return securityValidator.validate(toManagementRequestContext(ctx, path),
+                                          SecurityPolicy.apiKeyRequired())
+                                .onFailure(cause -> handleManagementSecurityFailure(response,
+                                                                                    cause,
+                                                                                    path,
+                                                                                    method.name(),
+                                                                                    ctx.requestId()));
+    }
+
+    /// With security on the validated context is bound for the dispatch (#1983); with it off the context is empty and
+    /// nothing is bound.
+    private void dispatchAuthenticated(HttpRequest ctx,
+                                       InstrumentedResponseWriter instrumented,
+                                       String methodName,
+                                       long startTime,
+                                       Authenticated authenticated) {
+        if (securityEnabled) {
+            ScopedValue.where(SecurityContextHolder.scopedValue(),
+                              authenticated.context())
+                       .run(() -> dispatchManagementRequest(ctx, instrumented, methodName, startTime, authenticated));
+
+            return;
+        }
+
+        dispatchManagementRequest(ctx, instrumented, methodName, startTime, authenticated);
     }
 
     /// Package-visible so the WIRING is pinnable, not merely [#answersPartitionLocally] in isolation —
@@ -1280,13 +1381,27 @@ class ManagementServerImpl implements ManagementServer {
                                    InstrumentedResponseWriter instrumented,
                                    String methodName,
                                    long startTime) {
+        dispatchManagementRequest(ctx,
+                                  instrumented,
+                                  methodName,
+                                  startTime,
+                                  Authenticated.authenticated(SecurityContext.securityContext()));
+    }
+
+    /// Dispatches with the request's [Authenticated]: the router hands it to a granted route. The 4-argument overload
+    /// above passes an ungranted one, for tests that validate nothing; no production path uses it.
+    private void dispatchManagementRequest(HttpRequest ctx,
+                                           InstrumentedResponseWriter instrumented,
+                                           String methodName,
+                                           long startTime,
+                                           Authenticated authenticated) {
         var path = ctx.path();
 
         if (tryForwardToRouteOwner(ctx, instrumented, methodName, startTime)) {
             return;
         }
 
-        if (router.handle(ctx, instrumented)) {
+        if (router.handle(ctx, instrumented, authenticated)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
 
             return;
@@ -1847,46 +1962,79 @@ class ManagementServerImpl implements ManagementServer {
                                                        Serializer ser) {
         var serverCtx = ForwardedRequestContext.forwardedRequestContext(context);
         var responseCapture = ForwardedResponseWriter.forwardedResponseWriter();
+        // The forwarded request's own scope, opened on this node as on the node that took the client call, in every mode:
+        // the receiving node validates again, and a grant it mints is live for this dispatch only.
+        RequestScope.requestScope().run(() -> dispatchSecuredManagementForward(context,
+                                                                               request,
+                                                                               network,
+                                                                               ser,
+                                                                               serverCtx,
+                                                                               responseCapture));
+    }
 
-        if (securityEnabled) {
-            var method = Result.lift(Causes::fromThrowable,
-                                     () -> HttpMethod.valueOf(context.method().toUpperCase(Locale.ROOT)))
-                               .option();
+    /// The forwarded path, run inside the request's scope: validate (the OFF validator when security is off), then
+    /// dispatch with the [Authenticated] the validation returned. A refusal is relayed to the forwarding node.
+    @SuppressWarnings("JBCT-PAT-01")
+    private void dispatchSecuredManagementForward(HttpRequestContext context,
+                                                  HttpForwardRequest request,
+                                                  ClusterNetwork network,
+                                                  Serializer ser,
+                                                  ForwardedRequestContext serverCtx,
+                                                  ForwardedResponseWriter responseCapture) {
+        var method = Result.lift(Causes::fromThrowable,
+                                 () -> HttpMethod.valueOf(context.method().toUpperCase(Locale.ROOT)))
+                           .option();
 
-            if (method.isEmpty()) {
-                sendManagementForwardError(network, request, "Unsupported HTTP method: " + context.method());
-
-                return;
-            }
-
-            var validated = validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap());
-
-            if (validated.isFailure()) {
-                responseCapture.completion()
-                               .onSuccess(responseData -> sendManagementForwardSuccess(network,
-                                                                                       request,
-                                                                                       ser,
-                                                                                       responseData))
-                               .onFailure(cause -> sendManagementForwardFailure(network, request, "", cause));
-
-                return;
-            }
-            // #1983: the context this owner just validated is bound for the dispatch, exactly as the node that took the
-            // client call binds it (handleRequest), so a handler reading the principal or its role sees the caller whether
-            // the request arrived locally or forwarded. Discarding it left every reader on ANONYMOUS.
-            validated.onSuccess(sc -> ScopedValue.where(SecurityContextHolder.scopedValue(),
-                                                        sc)
-                                                 .run(() -> dispatchValidatedManagementForward(context,
-                                                                                               request,
-                                                                                               network,
-                                                                                               ser,
-                                                                                               serverCtx,
-                                                                                               responseCapture)));
+        if (method.isEmpty()) {
+            sendManagementForwardError(network, request, "Unsupported HTTP method: " + context.method());
 
             return;
         }
 
-        dispatchValidatedManagementForward(context, request, network, ser, serverCtx, responseCapture);
+        var validated = validateRequestSecurity(serverCtx, responseCapture, context.path(), method.unwrap());
+
+        if (validated.isFailure()) {
+            responseCapture.completion()
+                           .onSuccess(responseData -> sendManagementForwardSuccess(network, request, ser, responseData))
+                           .onFailure(cause -> sendManagementForwardFailure(network, request, "", cause));
+
+            return;
+        }
+        // #1983: the context this owner just validated is bound for the dispatch, exactly as the node that took the
+        // client call binds it (handleRequest), so a handler reading the principal or its role sees the caller whether
+        // the request arrived locally or forwarded. Discarding it left every reader on ANONYMOUS. With security off
+        // nothing is bound, as on the local path.
+        validated.onSuccess(authenticated -> dispatchAuthenticatedForward(context,
+                                                                          request,
+                                                                          network,
+                                                                          ser,
+                                                                          serverCtx,
+                                                                          responseCapture,
+                                                                          authenticated));
+    }
+
+    private void dispatchAuthenticatedForward(HttpRequestContext context,
+                                              HttpForwardRequest request,
+                                              ClusterNetwork network,
+                                              Serializer ser,
+                                              ForwardedRequestContext serverCtx,
+                                              ForwardedResponseWriter responseCapture,
+                                              Authenticated authenticated) {
+        if (securityEnabled) {
+            ScopedValue.where(SecurityContextHolder.scopedValue(),
+                              authenticated.context())
+                       .run(() -> dispatchValidatedManagementForward(context,
+                                                                     request,
+                                                                     network,
+                                                                     ser,
+                                                                     serverCtx,
+                                                                     responseCapture,
+                                                                     authenticated));
+
+            return;
+        }
+
+        dispatchValidatedManagementForward(context, request, network, ser, serverCtx, responseCapture, authenticated);
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -1895,7 +2043,8 @@ class ManagementServerImpl implements ManagementServer {
                                                     ClusterNetwork network,
                                                     Serializer ser,
                                                     ForwardedRequestContext serverCtx,
-                                                    ForwardedResponseWriter responseCapture) {
+                                                    ForwardedResponseWriter responseCapture,
+                                                    Authenticated authenticated) {
         // #1039 receive-side owner guard. A forwarded request is dispatched by `router.handle` right
         // below and never re-enters `dispatchManagementRequest`, so `tryForwardIfNotPartitionOwner`
         // does NOT run on this node — without this check a receiver that disagrees with the sender
@@ -1914,7 +2063,7 @@ class ManagementServerImpl implements ManagementServer {
             return;
         }
 
-        if (router.handle(serverCtx, responseCapture)) {
+        if (router.handle(serverCtx, responseCapture, authenticated)) {
             responseCapture.completion()
                            .onSuccess(responseData -> sendManagementForwardSuccess(network, request, ser, responseData))
                            .onFailure(cause -> sendManagementForwardFailure(network, request, "", cause));
@@ -2237,23 +2386,28 @@ class ManagementServerImpl implements ManagementServer {
                                                                                     ManagementRoute.STREAMS_GROUP_CREATE,
                                                                                     ManagementRoute.STREAMS_GROUP_DELETE);
 
-    private Result<SecurityContext> validateManagementSecurity(HttpRequest ctx,
-                                                               ResponseWriter response,
-                                                               String path,
-                                                               HttpMethod method) {
+    private Result<Authenticated> validateManagementSecurity(HttpRequest ctx,
+                                                             ResponseWriter response,
+                                                             String path,
+                                                             HttpMethod method) {
         var httpContext = toManagementRequestContext(ctx, path);
         var policy = SecurityPolicy.apiKeyRequired();
         var methodName = method.name();
         var permission = resolvePermission(methodName, path);
 
         return securityValidator.validate(httpContext, policy)
-                                .flatMap(sc -> enforceAndAuditDenial(sc, permission, methodName, path))
+                                .flatMap(authenticated -> enforceAndAuditDenial(authenticated,
+                                                                                permission,
+                                                                                methodName,
+                                                                                path))
                                 .onFailure(cause -> handleManagementSecurityFailure(response,
                                                                                     cause,
                                                                                     path,
                                                                                     methodName,
                                                                                     ctx.requestId()))
-                                .onSuccess(sc -> logManagementAccess(sc, methodName, path));
+                                .onSuccess(authenticated -> logManagementAccess(authenticated.context(),
+                                                                                methodName,
+                                                                                path));
     }
 
     /// #299: per-operation authorization. Resolve the minimum role by EXACT route match
@@ -2325,11 +2479,17 @@ class ManagementServerImpl implements ManagementServer {
                                          : b);
     }
 
-    private Result<SecurityContext> enforceAndAuditDenial(SecurityContext sc,
-                                                          RoutePermission permission,
-                                                          String method,
-                                                          String path) {
-        return RoleEnforcer.enforce(sc, permission).onFailure(_ -> auditAccessDenied(sc, method, path, permission));
+    /// Enforces on the validated context and keeps the [Authenticated] whole: a grant is minted only at the credential
+    /// match, never here.
+    private Result<Authenticated> enforceAndAuditDenial(Authenticated authenticated,
+                                                        RoutePermission permission,
+                                                        String method,
+                                                        String path) {
+        var sc = authenticated.context();
+
+        return RoleEnforcer.enforce(sc, permission)
+                           .onFailure(_ -> auditAccessDenied(sc, method, path, permission))
+                           .map(_ -> authenticated);
     }
 
     private void auditAccessDenied(SecurityContext sc, String method, String path, RoutePermission permission) {

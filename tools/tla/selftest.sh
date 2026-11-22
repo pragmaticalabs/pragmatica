@@ -11,7 +11,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 jar=${TLA_JAR:-$HOME/tools/tla/tla2tools.jar}
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 fail=0
-fresh() { rm -rf "$work/src"; mkdir -p "$work/src"; cp -R "$root/." "$work/src/"; }
+fresh() { rm -rf "$work/src" "$work/out"; mkdir -p "$work/src"; cp -R "$root/." "$work/src/"; }
 extract() { python3 "$here/extract.py" --module "$module" --out "$work/out" --base "$work/src" "$work/src" 2>&1; }
 expect() { # expect <name> <exit> <pattern> <output>
   if [[ $2 == "$5" ]] && grep -qE "$3" <<<"$4"; then echo "PASS $1: $(grep -E "$3" <<<"$4" | head -1)"
@@ -27,19 +27,28 @@ sed -i.bak "${close}d" "$v"; out=$(extract); expect unclosed 2 'is not closed' "
 fresh; awk -v c="$close" 'NR == c { print "/// ```tla OtherModule:probe"; print "/// Probe == TRUE"; print "/// ```"; next } { print }' "$v" > "$v.new" && mv "$v.new" "$v"
 out=$(extract); expect unclosed-other 2 'is not closed' "$out" $?
 
-fresh; sed -i.bak "${first}s/:\([A-Za-z_]*\)\$/ \1/" "$v"; out=$(extract); expect badtag 2 'is not <Module>:<Part>' "$out" $?
+fresh; sed -i.bak "${first}s/:\([A-Za-z_][A-Za-z0-9_]*\)\$/ \1/" "$v"; out=$(extract); expect badtag 2 'is not <Module>:<Part>' "$out" $?
 
-fresh; name=$(sed -n "${first}p" "$v" | sed -E 's/.*:([A-Za-z_]+)$/\1/')
+fresh; name=$(sed -n "${first}p" "$v" | sed -E 's/.*:([A-Za-z_][A-Za-z0-9_]*)$/\1/')
 sed -i.bak "${first}s/:${name}\$/:${name}Orphan/" "$v"; out=$(extract); expect undefined 2 'does not define an operator' "$out" $?
 
 fresh; sed -i.bak "${first},${close}s/^\( *\)\/\/\/ ${name}\([ (=]\)/\1\/\/\/ ${name}Orphan\2/" "$v"
 sed -i.bak "${first}s/:${name}\$/:${name}Orphan/" "$v"; out=$(extract); expect orphan 2 'never referenced' "$out" $?
 
-fresh; sed -i.bak "$((first + 1)),${close}s/^\( *\)\/\/\/ ${name}\([ (=].*\)==/\1\/\/\/ ${name}\2== UndefinedProbe \\/\\\\ /" "$v"
+#3311: an operator application, or a capitalised bare name, that no fragment defines is the extractor's error, named with
+# its source line (the release-branch shape: `tail` applied Notify(n) after the Notify fragment was removed).
+for probe in 'UndefinedRefProbe(1)' 'UndefinedRefBare'; do
+  fresh; sed -i.bak "$((first + 1)),${close}s/^\( *\)\/\/\/ ${name}\([ (=].*\)==/\1\/\/\/ ${name}\2== ${probe} \\/\\\\ /" "$v"
+  want=$(grep -n "${probe%%(*}" "$v" | cut -d: -f1)
+  out=$(extract); expect "undefined-ref ${probe}" 2 "${victim##*/}:$want: $module:${name} references ${probe%%(*}, which no $module fragment defines" "$out" $?
+done
+
+# A lowercase bare name is not the extractor's (bound variables are lowercase): SANY rejects it, at the edited Java line.
+fresh; sed -i.bak "$((first + 1)),${close}s/^\( *\)\/\/\/ ${name}\([ (=].*\)==/\1\/\/\/ ${name}\2== undefinedProbe \\/\\\\ /" "$v"
 extract >/dev/null; out=$( (cd "$work/out" && java -cp "$jar" tla2sany.SANY "$module.tla") 2>&1); rc=$?
 pos=$(grep -oE 'line [0-9]+, col [0-9]+' <<<"$out" | head -1 | grep -oE '[0-9]+' | head -1)
 src=$(python3 "$here/extract.py" --module "$module" --out "$work/out" --base "$work/src" --locate "${pos:-1}" "$work/src")
-want=$(grep -n 'UndefinedProbe' "$v" | cut -d: -f1)
+want=$(grep -n 'undefinedProbe' "$v" | cut -d: -f1)
 grep -q 'Unknown operator' <<<"$out" && [[ $src == *"${victim##*/}:$want" ]] \
   && echo "PASS semantic: SANY rejects it at generated line $pos = $src (the edited line)" || { echo "FAIL semantic: src=$src want=$want $out"; fail=1; }
 

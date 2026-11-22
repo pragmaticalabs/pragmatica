@@ -29,6 +29,7 @@ import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMembershipListener;
 import org.pragmatica.swim.SwimMessage;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 
 import java.net.InetSocketAddress;
@@ -83,7 +84,7 @@ class CoreSwimHealthDetectorHintEmissionTest {
     private static void driveToRunning(CoreSwimHealthDetector det) {
         var ctx = det.contextForTest();
         ctx.dispatch(new SwimHealthEvents.StartRequested());
-        var swim = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, new StubTransport(),
+        var swim = SwimTestProtocols.swimProtocol(SwimConfig.DEFAULT, new StubTransport(),
                                               noopListener(), SELF,
                                               new InetSocketAddress("127.0.0.1", 9101)).unwrap();
         ctx.dispatch(new SwimHealthEvents.ProtocolReady(swim, new StubTransport(), GossipEncryptor.none()));

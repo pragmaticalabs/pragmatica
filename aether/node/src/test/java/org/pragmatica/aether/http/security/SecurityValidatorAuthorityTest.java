@@ -7,11 +7,24 @@ package org.pragmatica.aether.http.security;
 import java.util.List;
 import java.util.Map;
 
+import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.lang.NullReturn;
+import org.pragmatica.lang.Result;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -29,6 +42,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SecurityValidatorAuthorityTest {
     private static final HttpRequestContext REQUEST =
         HttpRequestContext.httpRequestContext("/api/test", "GET", Map.of(), Map.<String, List<String>> of(), new byte[0], "req-573");
+    private static final String KV_KEY_ID = "ak_3303a3a0";
+    private static final String KV_PLAINTEXT = "aether_kv_mint_plaintext_key";
+    private static final HttpRequestContext KV_REQUEST =
+        HttpRequestContext.httpRequestContext("/api/v1/whoami", "GET", Map.of(), Map.of("X-API-Key", List.of(KV_PLAINTEXT)), "req-3303");
 
     /// THE regression. A denying validator must refuse a role-bearing route rather than grant it.
     @Test
@@ -55,8 +72,8 @@ class SecurityValidatorAuthorityTest {
                          .validate(REQUEST, new SecurityPolicy.Public())
                          .onFailure(cause -> Assertions.fail("public route must pass: "
                                                                                    + cause.message()))
-                         .onSuccess(ctx -> assertThat(ctx.roles()).as("a public caller carries NO roles")
-                                                     .isEmpty());
+                         .onSuccess(authenticated -> assertThat(authenticated.context().roles()).as("a public caller carries NO roles")
+                                                                   .isEmpty());
     }
 
     /// Failing (not succeeding-with-empty) is load-bearing: `KvStoreApiKeyValidator` consults its
@@ -79,6 +96,75 @@ class SecurityValidatorAuthorityTest {
                          .validate(REQUEST, new SecurityPolicy.RoleRequired(Role.ADMIN.value()))
                          .onFailure(cause -> Assertions.fail("permitAll must grant: "
                                                                                    + cause.message()))
-                         .onSuccess(ctx -> assertThat(ctx.roles()).contains(Role.ADMIN));
+                         .onSuccess(authenticated -> assertThat(authenticated.context().roles()).contains(Role.ADMIN));
+    }
+
+    /// The KV credential match is a mint site, and it mints on the stored key's authorization role alone: an ADMIN key
+    /// yields a grant, a VIEWER key none, although both carry the same `roles()`. Mutation: minting at every match turns
+    /// the VIEWER case red.
+    @Test
+    void kvStoredKey_adminRoleMintsAGrant_viewerRoleMintsNone() {
+        assertThat(kvGrantFor(AuthorizationRole.ADMIN)).as("an ADMIN key matched in the KV store mints a grant")
+                                                       .isTrue();
+        assertThat(kvGrantFor(AuthorizationRole.VIEWER)).as("a VIEWER key matched in the KV store mints none")
+                                                        .isFalse();
+    }
+
+    private static boolean kvGrantFor(AuthorizationRole authorizationRole) {
+        var keyValue = ApiKeyValue.apiKeyValue(KV_KEY_ID, KvStoreApiKeyValidator.hashKey(KV_PLAINTEXT), 0L, authorizationRole.name());
+
+        return kvValidate(keyValue).onFailure(cause -> Assertions.fail("the stored key must authenticate: " + cause.message()))
+                                   .map(authenticated -> authenticated.grant().isPresent())
+                                   .or(false);
+    }
+
+    /// An EXPIRED ADMIN key is not valid for auth, so the KV match never happens and no grant is minted. Mutation: dropping
+    /// the `isValidForAuth` filter in the KV validator turns this red.
+    @Test
+    void kvStoredKey_expiredAdminKey_mintsNoGrant() {
+        var expired = ApiKeyValue.apiKeyValue(KV_KEY_ID, KvStoreApiKeyValidator.hashKey(KV_PLAINTEXT), 1L, 2L, "EXPIRED", -1L, 0L, AuthorizationRole.ADMIN.name());
+
+        assertThat(kvValidate(expired).isFailure()).as("an EXPIRED ADMIN key authenticates nothing, so it mints no grant")
+                                                   .isTrue();
+    }
+
+    /// A REVOKED ADMIN key past its grace period is not valid for auth, so no grant is minted. Mutation: dropping the
+    /// `isValidForAuth` filter in the KV validator turns this red.
+    @Test
+    void kvStoredKey_revokedAdminKey_mintsNoGrant() {
+        var revoked = ApiKeyValue.apiKeyValue(KV_KEY_ID, KvStoreApiKeyValidator.hashKey(KV_PLAINTEXT), 1L, -1L, "REVOKED", 2L, 0L, AuthorizationRole.ADMIN.name());
+
+        assertThat(kvValidate(revoked).isFailure()).as("a REVOKED ADMIN key past its grace period authenticates nothing, so it mints no grant")
+                                                   .isTrue();
+    }
+
+    private static Result<Authenticated> kvValidate(ApiKeyValue keyValue) {
+        var kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+
+        kvStore.process(kvStore.createBatch(List.of(putKey(keyValue))));
+
+        return new KvStoreApiKeyValidator(SecurityValidator.denyUnlessPublicValidator(), () -> kvStore)
+            .validate(KV_REQUEST, SecurityPolicy.apiKeyRequired());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static KVCommand<AetherKey> putKey(ApiKeyValue keyValue) {
+        return (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Put<>(ApiKeyKey.apiKeyKey(KV_KEY_ID), keyValue);
+    }
+
+    private static Serializer stubSerializer() {
+        return new Serializer() {
+            @Override public <T> void write(ByteBuf byteBuf, T object) {}
+        };
+    }
+
+    private static Deserializer stubDeserializer() {
+        return new Deserializer() {
+            // The validator never deserializes in this test; null is the inert answer of a stub that is never read.
+            @NullReturn
+            @Override public <T> T read(ByteBuf byteBuf) {
+                return null;
+            }
+        };
     }
 }

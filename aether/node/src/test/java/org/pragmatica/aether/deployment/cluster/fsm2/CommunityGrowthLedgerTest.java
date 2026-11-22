@@ -60,8 +60,7 @@ class CommunityGrowthLedgerTest {
 
     private static MbWorld eastUnder(String policy) {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
-                       .seams(seams -> seams.withCommunityPolicies(Map.of())
-                                            .withMemberSource(Map.of(W1, "east", W2, "east", W3, "east", W4, "east", W5, "east")));
+                       .seams(seams -> seams.withMemberSource(Map.of(W1, "east", W2, "east", W3, "east", W4, "east", W5, "east")));
 
         w.h.seedQuietly(ClusterConfigKey.CURRENT, config(policy, 1L));
 

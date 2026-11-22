@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.StopReport;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Cause;
@@ -288,7 +289,7 @@ class EmberClusterTeardownWiringTest {
         return (AetherNode) Proxy.newProxyInstance(AetherNode.class.getClassLoader(),
                                                    new Class<?>[]{AetherNode.class},
                                                    (proxy, method, args) -> switch (method.getName()) {
-            case "stop" -> stop.get();
+            case "stop" -> stop.get().map(_ -> StopReport.clean());
             case "self" -> id;
             case "isReady" -> false;
             case "leader" -> Option.empty();

@@ -89,6 +89,15 @@ public interface ClusterTopologyManager extends TopologyManager {
     void onClusterPhaseChanged(ClusterPhase newPhase);
     void activate();
     void deactivate();
+
+    /// The tenure of this node's current activation: a positive value that changes on every activation, or 0 while the
+    /// manager is not active (after `activate` returns; during the activation window the value may lag). The
+    /// drain-ledger consumers compare it to decide whether a drain entry belongs to the activation that issued it.
+    /// Default 0, so implementations that never activate (test fakes) are untouched.
+    default long drainTenure() {
+        return 0;
+    }
+
     TopologyObserver observer();
 
     record CircuitBreakerState(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
@@ -125,6 +134,16 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Put — bounded by consensus latency, not zero; a node behind on apply answers the previous
     /// value until then. Absent key means enabled (the pre-#685 default).
     boolean isAutoHealEnabled();
+    /// Spec §8.4 — whether `subject` may NOT act on its own now because the operator disabled auto-heal: a worker source/role, a
+    /// community, or the core surplus ([#coreSubject], #3324). Held while the subject's committed scaling value equals the one recorded
+    /// at disable time; a hold is raised once as an operator warning and announced as resumed when it ends. Abstract, not defaulted: an
+    /// implementation that answered "never held" by default would silently lift the gate.
+    boolean scalingHeld(String subject);
+
+    /// #3324 — the subject the auto-heal hold of the core surplus drain is asked and raised for; its scaling value is the committed core count.
+    static String coreSubject() {
+        return "core";
+    }
 
     /// Whether a node of `role` from the source named `sourceName` is CLOUD-backed in the committed configuration. Cloud node ids carry no
     /// cluster (the server name `<cluster>-<nodeId>` does), Docker ids do: the id shape of a replacement follows the source of the node

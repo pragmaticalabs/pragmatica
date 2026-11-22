@@ -1,0 +1,2 @@
+### Fixed (2026-11-21 - #3303: restore stops on a deterministic refusal)
+- **A backup restore that is refused for a deterministic reason no longer retries forever.** Each failure now carries a `FailureAction` (retry, warn and retry, warn and stop); a deterministic refusal records `BACKUP_RESTORE_REJECTED` once per leader tenure and ends the pass. An unknown failure still retries. [verified: BackupRestoreCoordinatorRejectedTest]

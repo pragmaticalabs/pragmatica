@@ -32,17 +32,23 @@ public sealed interface Lifecycle {
     /// raises after it is announced when the WARNINGS row recording it commits (`Warnings.accepted`), as a step's is.
     ///
     /// ```tla Fsm2Leader:Activate
-    /// \* CI-1 Activate, then Rebuild(Snapshot) in the same dispatch: ClusterFsm.java; Lifecycle.java.
-    /// \* code, pre3085: rows from the snapshot (Indexer), Warnings.inherit (Warnings.java) seeds the family sets and marks dirty.
-    /// \* pre2834: Lifecycle.rebuild has no inherit; family sets start empty.
+    /// \* CI-1 Activate, then Rebuild(Snapshot) in the same dispatch: ClusterFsm.java; Lifecycle.java:65.
+    /// \* The snapshot's leader value is the committed one (m.leader = snapshot.leader()), so a node elected before its
+    /// \* LeaderKey commits activates suspended.
+    /// \* code, pre3085: rows from the snapshot (Indexer), Warnings.inherit (Warnings.java:361) seeds the family
+    /// \* sets with the open rows and marks dirty (#3274: inherit is rule O over the snapshot). The marker replay (`rp`) is a #3175
+    /// \* leftover: no mode sets a marker, so it publishes nothing, and mutant "noreplay" changes no state a code-mode property
+    /// \* reads (its row is removed). Mutant "noinherit": family sets start empty. pre2834: Lifecycle.rebuild has no inherit; family
+    /// \* sets start empty.
     /// Activate(n) ==
-    ///   /\ fsm[n] = "Dormant" /\ (kvLeader = n \/ MUT = "twoleaders")   \* the mutant names the node itself as leader, whatever is committed
-    ///   /\ LET w == IF Persists /\ MUT # "noinherit" THEN kv ELSE {}
+    ///   /\ fsm[n] = "Dormant" /\ (elected = n \/ MUT = "twoleaders")   \* the mutant names the node itself as leader, whatever is committed
+    ///   /\ LET w == IF Persists /\ MUT # "noinherit" THEN OpenOf(kv) ELSE {}
+    ///          rp == MODE = "code" /\ MUT \notin {"noinherit", "noreplay"}
     ///      IN /\ fsm' = [fsm EXCEPT ![n] = "Active"]
     ///         /\ inc' = [inc EXCEPT ![n] = inc[n] + 1]
     ///         /\ view' = [view EXCEPT ![n] = IF MUT = "twoleaders" THEN <<n, term>> ELSE Current]
     ///         /\ warned' = [warned EXCEPT ![n] = w]
-    ///         /\ rows' = [rows EXCEPT ![n] = IF Persists THEN kv ELSE {}]
+    ///         /\ rows' = [rows EXCEPT ![n] = IF Persists THEN kv ELSE NoRows]
     ///         /\ dirty' = [dirty EXCEPT ![n] = Persists]
     ///         /\ flushQ' = [flushQ EXCEPT ![n] = FALSE]
     ///         /\ wInfl' = [wInfl EXCEPT ![n] = FALSE]
@@ -50,8 +56,12 @@ public sealed interface Lifecycle {
     ///         /\ gIntent' = [gIntent EXCEPT ![n] = FALSE]
     ///         /\ fired' = [fired EXCEPT ![n] = {}]
     ///         /\ held' = [held EXCEPT ![n] = <<>>]
+    ///         /\ lnd' = [lnd EXCEPT ![n] = 0]
     ///         /\ redo' = [redo EXCEPT ![n] = {}]
-    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, shown, net, settles, condBudget,
+    ///         /\ pend' = [pend EXCEPT ![n] = FALSE]   \* the snapshot is the committed set: no put is pending
+    ///         /\ closedOff' = [closedOff EXCEPT ![n] = {}]
+    ///         /\ shown' = IF rp THEN Pubd(shown, ReplaySeq(Subjects, kv)) ELSE shown
+    ///   /\ UNCHANGED <<notes, ovars, trans, ncommit, kvW, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, net, settles, condBudget,
     ///                  faultBudget>>
     /// ```
     static ClusterModel rebuild(Ctx ctx, long incarnation, Snapshot snapshot) {
@@ -139,13 +149,17 @@ public sealed interface Lifecycle {
     /// Naming another node: stay suspended (the CI-1 `Deactivate` follows). While suspended nothing is submitted.
     ///
     /// ```tla Fsm2Leader:SeeLeader
-    /// \* CI-16 LeaderChange input: Lifecycle.java onLeader (a resume requests a reconcile; Tick models it).
+    /// \* CI-16 LeaderChange input: Lifecycle.java:164 onLeader (a resume requests a reconcile; Tick models
+    /// \* it). The step ends in Apply; nothing is held in any mode, so a resume publishes nothing (#3274: no publish step).
+    /// \* Log order: the node has taken the notification of every row committed before the LeaderKey (rows = kv).
     /// SeeLeader(n) ==
     ///   /\ fsm[n] = "Active" /\ view[n] # Current
+    ///   /\ rows[n] = kv
     ///   /\ view' = [view EXCEPT ![n] = Current]
-    ///   /\ Apply(n, warned[n], rows[n], dirty[n], wInfl[n], gInfl[n], gIntent[n], FALSE, flushQ[n], shown, held[n])
-    ///   /\ UNCHANGED <<term, kvLeader, kv, kvDesired, target, observed, cond, fsm, inc, fired, net, settles,
-    ///                  condBudget, faultBudget, redo>>
+    ///   /\ Apply(n, warned[n], rows[n], dirty[n], wInfl[n], gInfl[n], gIntent[n], FALSE, flushQ[n], shown, held[n], lnd[n],
+    ///            Current)
+    ///   /\ UNCHANGED <<nvars, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, fired, net,
+    ///                  settles, condBudget, faultBudget, redo>>
     /// ```
     static ClusterModel onLeader(ClusterModel m, Ctx ctx, LeaderValue value) {
         var wasSuspended = isSuspended(m, ctx);

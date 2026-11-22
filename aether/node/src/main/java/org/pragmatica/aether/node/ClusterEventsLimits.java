@@ -11,7 +11,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.StreamEventLimits;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
-import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
@@ -57,14 +57,26 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
     public static final long DEFAULT_MAX_EVENT_SIZE_BYTES = 64L * 1024;
 
     public static Result<ClusterEventsLimits> clusterEventsLimits(Fn1<Option<String>, String> environment) {
-        return Result.all(limit(environment, MAX_COUNT_VARIABLE, DEFAULT_MAX_COUNT, OffHeapRingBuffer.MAX_CAPACITY).flatMap(ClusterEventsLimits::withinReadWindow),
-                          limit(environment, MAX_BYTES_VARIABLE, DEFAULT_MAX_BYTES, Long.MAX_VALUE),
+        var maxBytes = limit(environment, MAX_BYTES_VARIABLE, DEFAULT_MAX_BYTES, Long.MAX_VALUE);
+        var eventSize = limit(environment,
+                              MAX_EVENT_SIZE_BYTES_VARIABLE,
+                              DEFAULT_MAX_EVENT_SIZE_BYTES,
+                              StreamEventLimits.MAX_EVENT_SIZE_BYTES);
+        var count = limit(environment, MAX_COUNT_VARIABLE, DEFAULT_MAX_COUNT, indexableCount(maxBytes, eventSize));
+
+        return Result.all(count.flatMap(ClusterEventsLimits::withinReadWindow),
+                          maxBytes,
                           limit(environment, MAX_AGE_MS_VARIABLE, DEFAULT_MAX_AGE_MS, Long.MAX_VALUE),
-                          limit(environment,
-                                MAX_EVENT_SIZE_BYTES_VARIABLE,
-                                DEFAULT_MAX_EVENT_SIZE_BYTES,
-                                StreamEventLimits.MAX_EVENT_SIZE_BYTES))
+                          eventSize)
                      .map(ClusterEventsLimits::new);
+    }
+
+    /// The count the ring can index (#1549): its bound moves with the ring's first data region, which follows the configured
+    /// event size ([RingGeometry#maxCapacity]; S2b). A bound or event size that is itself refused is replaced by its default
+    /// here, because the boot is refused for it and this value only words the count's own message.
+    private static long indexableCount(Result<Long> maxBytes, Result<Long> eventSize) {
+        return RingGeometry.maxCapacity(RingGeometry.firstSegmentBytes(maxBytes.or(DEFAULT_MAX_BYTES),
+                                                                       eventSize.or(DEFAULT_MAX_EVENT_SIZE_BYTES)));
     }
 
     /// Bounded on count, bytes (off-heap hard cap) and age, mode ANY.

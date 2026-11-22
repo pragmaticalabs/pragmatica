@@ -201,7 +201,7 @@ class KvBackupServiceTest {
             put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
             scheduler.runUntilIdle();
 
-            assertThat(remoteHasBranch(remote)).isFalse();
+            assertThat(remoteBranchExists(remote)).isFalse();
             assertThat(temp.resolve("local").toFile().exists()).isFalse();
         }
 
@@ -255,7 +255,7 @@ class KvBackupServiceTest {
             service.onLeaderChange(leaderChange(true));
             scheduler.runUntilIdle(3);
 
-            assertThat(remoteHasBranch(remote)).isFalse();
+            assertThat(remoteBranchExists(remote)).isFalse();
             incarnation(1);
             scheduler.runUntilIdle();
             assertThat(commitCount(remote)).isEqualTo(1);
@@ -819,6 +819,57 @@ class KvBackupServiceTest {
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(8);
         }
 
+        // --- #3464: the floor is read through the three-valued reads; an unreadable history is a failure, never a low floor ---
+
+        /// The control: a readable history yields the highest incarnation recorded for the lineage.
+        @Test
+        void highestRecorded_overARealHistory_isTheMaximumRecorded() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 7, INCARNATION_ID, 30), recordedSubject(LINEAGE, 7, 30));
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 5, INCARNATION_ID, 40), recordedSubject(LINEAGE, 5, 40));
+
+            assertThat(shimmedService(remote, Map.of()).highestRecordedForLineage(LINEAGE, 1)
+                                                       .unwrap()).isEqualTo(7L);
+        }
+
+        @Test
+        void highestRecorded_whenGitFailsToListTheHistory_isAFailure_notTheFloor() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 7, INCARNATION_ID, 30), recordedSubject(LINEAGE, 7, 30));
+            var service = shimmedService(remote, GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "log", GitBackupRepositoryTest.SHIM_FAILS));
+
+            assertThat(service.highestRecordedForLineage(LINEAGE, 1)
+                              .isFailure()).isTrue();
+        }
+
+        /// Lost output: git exits 0 with nothing. The old read took that for an empty history and returned the floor, below the recorded 7.
+        @Test
+        void highestRecorded_whenTheHistoryComesBackEmpty_isAFailure_notTheFloor() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 7, INCARNATION_ID, 30), recordedSubject(LINEAGE, 7, 30));
+            var service = shimmedService(remote,
+                                         GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "log", GitBackupRepositoryTest.SHIM_PRINTS_NOTHING));
+
+            assertThat(service.highestRecordedForLineage(LINEAGE, 1)
+                              .isFailure()).isTrue();
+        }
+
+        /// A commit whose subject is a backup's but names no header is decoded from its document; when `git show` cannot read it, that is a failure.
+        @Test
+        void highestRecorded_whenAnUnnamedSubjectCommitCannotBeShown_isAFailure() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), "kv backup damaged");
+            var service = shimmedService(remote, GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "show", GitBackupRepositoryTest.SHIM_FAILS));
+            var failure = service.highestRecordedForLineage(LINEAGE, 1)
+                                 .fold(cause -> cause.message(), _ -> "succeeded");
+
+            assertThat(failure).as("the cause is the unreadable read, not a decode of an empty document").contains("git could not be read");
+        }
+
         /// #1625 meets #1532: the declared incarnation is a new incarnation, so it carries a fresh
         /// incarnation id — reusing the superseded one would make incarnations 9 and 10 compare equal.
         @Test
@@ -1275,7 +1326,7 @@ class KvBackupServiceTest {
             var stopped = settle(node.service().stopFlushed(DEADLINE, KvBackupService.Replica.PARTIAL));
 
             assertThat(stopped.isSuccess()).isTrue();
-            assertThat(remoteHasBranch(remote)).as("a partial replica never writes the backup").isFalse();
+            assertThat(remoteBranchExists(remote)).as("a partial replica never writes the backup").isFalse();
             assertThat(node.warnings()).isEmpty();
         }
 
@@ -1435,6 +1486,349 @@ class KvBackupServiceTest {
         }
     }
 
+    /// #3464: the write paths read git through the three-valued reads. A read git cannot answer fails the flush, which retries; it never reads as
+    /// "absent", so nothing is committed, reset or reported over a state that could not be read. Each test arms its shim only after a control phase.
+    @Nested
+    class WriteReads {
+        /// A queued local commit, then `show-ref` fails: the flush commits nothing and the head stays the queued commit. The old read never ran
+        /// `show-ref` (it took `rev-parse HEAD`) and committed.
+        @Test
+        void aFlushOverAnUnreadableLocalBranch_commitsNothing_andFails() {
+            var armed = temp.resolve("armed");
+            var service = shimmedLeaderService(Option.some(temp.resolve("late.git").toString()),
+                                               1,
+                                               GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "show-ref", failsWhileArmed(armed, "*")));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(localCommitCount()).as("control: the leadership flush and the change, both queued").isEqualTo(2);
+            var queued = localHeadId();
+
+            writeFile(armed, "");
+            put(service, ConfigKey.forKey("b"), ConfigValue.configValue("b", "2"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(localHeadId()).as("nothing committed over an unreadable local branch").isEqualTo(queued);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.COMMIT_FAILED);
+        }
+
+        /// A re-run after a refused push finds its declaration committed locally; when `ls-tree` cannot list the local head, the re-run fails as
+        /// unreadable and the head stays: an unreadable tree is not a tree without the declaration.
+        @Test
+        void declareGenesis_reRunOverAnUnlistableLocalHead_failsAsUnreadable_andKeepsTheHead() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var armed = temp.resolve("armed");
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 3, INCARNATION_ID, 40));
+            var service = shimmedLeaderService(Option.some(remote),
+                                               1,
+                                               GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "ls-tree", failsWhileArmed(armed, "*\" HEAD\"")));
+            var hook = installRefusingHook(remote);
+
+            var first = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
+                                     .declare(commands -> applyAndNotify(service, commands)));
+
+            assertThat(first.isFailure()).as("control: the remote refused the push").isTrue();
+            deleteFile(hook);
+            var head = localHeadId();
+
+            writeFile(armed, "");
+            var second = settle(BackupGenesis.backupGenesis(service, LEADER_NODE)
+                                      .declare(commands -> applyAndNotify(service, commands)));
+
+            assertThat(failureOf(second).message()).contains("git could not be read");
+            assertThat(localHeadId()).as("the head is kept").isEqualTo(head);
+        }
+
+        /// The local declaration, when `show` cannot read it, is a failure, never "no declaration".
+        @Test
+        void localDeclaration_whenGitCannotShowIt_isAFailure_notNone() {
+            var armed = temp.resolve("armed");
+            var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), Option.none(), "backup", TimeSpan.timeSpan(30).seconds());
+
+            repository.prepare()
+                      .flatMap(_ -> repository.commitFile(GitBackupRepository.DECLARATION, LINEAGE + " 2\n", "declare"))
+                      .onFailure(cause -> Assertions.fail(cause.message()));
+            var service = shimmedService(Option.none(),
+                                         GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "show", failsWhileArmed(armed, "*")));
+
+            assertThat(service.localDeclaration()
+                              .unwrap()
+                              .isPresent()).as("control: the committed declaration reads").isTrue();
+            writeFile(armed, "");
+
+            assertThat(failureOf(service.localDeclaration()).message()).contains("git could not be read");
+        }
+
+        /// The remote head's declaration, when `show` cannot read it, fails the flush: no write and no gate is decided on a declaration that could
+        /// not be read. Disarmed (the control), the same declaration authorizes the write.
+        @Test
+        void aRemoteDeclarationGitCannotShow_failsTheFlush_andNeitherWritesNorGates() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var armed = temp.resolve("armed");
+
+            seedRemote(remote, BackupHeader.backupHeader("another-cluster", 1, INCARNATION_ID, 40));
+            seedDeclaration(remote, LINEAGE + " 2\n");
+            writeFile(armed, "");
+            var service = shimmedLeaderService(Option.some(remote),
+                                               2,
+                                               GitBackupRepositoryTest.gitShim(temp.resolve("bin"),
+                                                                               "show",
+                                                                               failsWhileArmed(armed, "*:" + GitBackupRepository.DECLARATION)));
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.COMMIT_FAILED);
+            assertThat(remoteDocument(remote).header()
+                                             .lineageId()).as("nothing written").isEqualTo("another-cluster");
+
+            deleteFile(armed);
+            scheduler.runUntilIdle();
+
+            assertThat(remoteDocument(remote).header()
+                                             .lineageId()).as("control: the declaration authorizes the write").isEqualTo(LINEAGE);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// A queued local commit, then another writer moves the remote; when `merge-base` cannot say whether the local branch contains the remote
+        /// head, the queued commit survives: only a definite "not contained" (exit 1) resets the local branch onto the remote head.
+        @Test
+        void aQueuedCommit_survivesAnUnreadableAncestry() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var armed = temp.resolve("armed");
+            var service = shimmedLeaderService(Option.some(remote),
+                                               1,
+                                               GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "merge-base", failsWhileArmed(armed, "*")));
+            var hook = installRefusingHook(remote);
+
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle(10);
+            deleteFile(hook);
+
+            assertThat(localCommitCount()).as("control: the leadership flush landed, the change is queued").isEqualTo(2);
+            assertThat(commitCount(remote)).isEqualTo(1);
+            var queued = localHeadId();
+
+            seedRemoteOnTop(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 1));
+            writeFile(armed, "");
+            put(service, ConfigKey.forKey("b"), ConfigValue.configValue("b", "2"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(localHeadId()).as("the queued commit survives").isEqualTo(queued);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.COMMIT_FAILED);
+        }
+
+        /// Every push rejected (a stale server-side lock), and the tracking ref's commit cannot be read: the flush fails, never a rejection against a
+        /// stand-in head (which a second unreadable read would match, reading a race as a repeated refusal).
+        @Test
+        void aRejectedPush_whoseHeadCannotBeRead_failsTheFlush_notARejection() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var armed = temp.resolve("armed");
+            var service = shimmedLeaderService(Option.some(remote),
+                                               1,
+                                               GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "rev-parse", failsWhileArmed(armed, "*")));
+
+            assertThat(commitCount(remote)).as("control: the leadership flush landed").isEqualTo(1);
+            writeFile(Path.of(remote).resolve("refs/heads/backup.lock"), "");
+            writeFile(armed, "");
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(commitCount(remote)).as("every push was rejected").isEqualTo(1);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.COMMIT_FAILED);
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .doesNotContain(Code.BACKUP_PUSH_FAILING);
+        }
+
+        /// A remote with no backup branch when it was read leaves no tracking ref; a rejected push against it is a rejection at the no-remote-head
+        /// identity (two pushers creating the branch at once is a race like any other), never a failed read.
+        @Test
+        void aRejectedPush_toARemoteWithNoBranchYet_isARejection_notAFailedRead() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            writeFile(Path.of(remote).resolve("refs/heads/backup.lock"), "");
+            var service = leaderService(Option.some(remote));
+
+            scheduler.runUntilIdle(10);
+
+            assertThat(remoteBranchExists(remote)).as("every push was rejected").isFalse();
+            assertThat(service.status()).isNotEqualTo(KvBackupService.Status.COMMIT_FAILED);
+            assertThat(warnings).extracting(BackupWarning::code)
+                                .doesNotContain(Code.BACKUP_COMMIT_FAILED);
+        }
+
+        /// A local commit the remote does not have, on top of the remote head (local STRICTLY ahead, ancestry readable: `merge-base` exits 0): the
+        /// flush must not reset it away. Pins the contained arm of the ancestry read; the commit's own subject tells it from a recommitted one.
+        @Test
+        void aLocalCommitAheadOfTheRemote_survivesTheFlush_andIsPushed() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            assertThat(commitCount(remote)).as("control: the leadership flush landed").isEqualTo(1);
+            commitLocalOnly();
+            put(service, ConfigKey.forKey("b"), ConfigValue.configValue("b", "2"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(remoteSubjects(remote)).as("the local-only commit was not reset away").contains("local-only");
+            assertThat(commitCount(remote)).as("leadership flush, local-only, b").isEqualTo(3);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// The opposite: another writer moved the remote past what the local branch holds (not contained: `merge-base` exits 1), so the flush resets
+        /// the local-only commit away and writes on top of the remote head.
+        @Test
+        void aRemoteHeadTheLocalBranchDoesNotContain_resetsTheLocalCommitAway() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            commitLocalOnly();
+            seedRemoteOnTop(remote, BackupHeader.backupHeader(LINEAGE, 1, INCARNATION_ID, 1));
+            put(service, ConfigKey.forKey("b"), ConfigValue.configValue("b", "2"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(remoteSubjects(remote)).as("the local-only commit was reset away").doesNotContain("local-only");
+            assertThat(commitCount(remote)).as("leadership flush, the other writer, b on top").isEqualTo(3);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// A remote whose head cannot be fetched is UNREACHABLE (the kept guess: a failed remote read is a push that cannot land yet, not a local
+        /// head to push from): nothing is pushed while the fetch fails, though a push would have worked; the first reachable flush carries the queue.
+        @Test
+        void aRemoteThatCannotBeRead_isUnreachable_andNothingIsPushed_untilItCan() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var armed = temp.resolve("armed");
+            var service = shimmedLeaderService(Option.some(remote),
+                                               1,
+                                               GitBackupRepositoryTest.gitShim(temp.resolve("bin"), "fetch", failsWhileArmed(armed, "*")));
+
+            assertThat(commitCount(remote)).as("control: the leadership flush landed").isEqualTo(1);
+            writeFile(armed, "");
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle(10);
+
+            assertThat(commitCount(remote)).as("nothing was pushed while the remote head could not be read").isEqualTo(1);
+            assertThat(localCommitCount()).as("the change is queued").isEqualTo(2);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.PUSH_FAILING);
+
+            deleteFile(armed);
+            scheduler.runUntilIdle();
+
+            assertThat(commitCount(remote)).as("control: the reachable flush pushed the queue").isEqualTo(2);
+            assertThat(service.status()).isEqualTo(KvBackupService.Status.CURRENT);
+        }
+
+        /// With no remote the local head's declaration is read with its document (#3464): a foreign-lineage head is gated unless its declaration
+        /// authorizes this cluster, so a declaration read as "none" would gate a write the operator declared.
+        @Test
+        void theLocalHeadsDeclaration_authorizesTheWrite_whenThereIsNoRemote() {
+            var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), Option.none(), "backup", TimeSpan.timeSpan(30).seconds());
+            var foreign = CODEC.encode(40,
+                                       Map.of(ClusterIncarnationKey.clusterIncarnationKey(),
+                                              ClusterIncarnationValue.clusterIncarnationValue("another-cluster", 1, INCARNATION_ID)))
+                               .unwrap();
+
+            repository.prepare()
+                      .flatMap(_ -> repository.commitFile(GitBackupRepository.FILE, foreign, "foreign head"))
+                      .flatMap(_ -> repository.commitFile(GitBackupRepository.DECLARATION, LINEAGE + " 1\n", "declare"))
+                      .onFailure(cause -> Assertions.fail(cause.message()));
+            var service = leaderService(Option.none());
+
+            assertThat(CODEC.decode(git(temp.resolve("local"), "show", "HEAD:" + GitBackupRepository.FILE))
+                            .unwrap()
+                            .header()
+                            .lineageId()).as("the declared cluster wrote over the foreign head").isEqualTo(LINEAGE);
+            assertThat(service.status()).isNotEqualTo(KvBackupService.Status.GATED);
+        }
+
+        /// A rejection names the remote head it lost against: the commit the remote-tracking ref points at, which is neither the local head
+        /// (a queued commit makes them differ), nor `HEAD`, nor the no-remote-head stand-in. A caller that decides again compares exactly this value.
+        @Test
+        void aRejectedPush_isRecordedAgainstTheRemoteTrackingHeadsCommit() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+
+            commitLocalOnly();
+            service.repository()
+                   .restoreRef()
+                   .onFailure(cause -> Assertions.fail(cause.message()));
+            var tracked = git(temp.resolve("local"), "rev-parse", "refs/remotes/origin/backup").strip();
+
+            assertThat(tracked).as("the tracking ref and the local head differ").isNotEqualTo(localHeadId());
+            assertThat(pushNotLanded(service, GitBackupRepository.BackupRepositoryError.PushRejected.FACTORY.apply("not a fast-forward"))
+                               .rejectedAt()).isEqualTo(Option.some(tracked));
+        }
+
+        /// A remote that had no backup branch when it was read leaves no tracking ref; a rejection against it is recorded at the stand-in identity
+        /// `no remote head`, which is a value of its own (neither blank nor a commit id), so that two such rejections compare equal.
+        @Test
+        void aRejectedPush_toARemoteWithNoTrackingRef_isRecordedAtTheNoRemoteHeadStandIn() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+
+            writeFile(Path.of(remote).resolve("refs/heads/backup.lock"), "");
+            var service = leaderService(Option.some(remote));
+
+            assertThat(pushNotLanded(service, GitBackupRepository.BackupRepositoryError.PushRejected.FACTORY.apply("not a fast-forward"))
+                               .rejectedAt()).isEqualTo(Option.some("no remote head"));
+        }
+
+        /// A plain push failure (the remote is down, a hook refuses) is not a rejection: no remote head is named, so the stop path does not read
+        /// it as a lost race and does not decide again.
+        @Test
+        void aPlainPushFailure_isNotARejection_soItNamesNoRemoteHead() {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var service = leaderService(Option.some(remote));
+            var outcome = pushNotLanded(service, GitBackupRepository.BackupRepositoryError.GitFailed.FACTORY.apply("push", 1, "refused by policy"));
+
+            assertThat(outcome.kind()).isEqualTo(KvBackupService.OutcomeKind.PUSH_FAILED);
+            assertThat(outcome.rejectedAt()).as("a push failure carries no remote head").isEqualTo(Option.none());
+            assertThat(outcome.detail().isPresent()).isTrue();
+        }
+    }
+
+    private void commitLocalOnly() {
+        git(temp.resolve("local"), "-c", "user.email=s@x", "-c", "user.name=local", "commit", "--allow-empty", "--quiet", "-m", "local-only");
+    }
+
+    private static String remoteSubjects(String remote) {
+        return git(Path.of(remote), "log", "--format=%s", "backup");
+    }
+
+    /// [KvBackupService]'s private `pushNotLanded`: what a failed push becomes. The stop path's loop is the only consumer of its `rejectedAt`, and
+    /// no push can be made to fail with a chosen cause and a chosen remote head, so the decision is called directly.
+    private static KvBackupService.Outcome pushNotLanded(KvBackupService service, Cause cause) {
+        try {
+            var method = KvBackupService.class.getDeclaredMethod("pushNotLanded", Cause.class);
+
+            method.setAccessible(true);
+            return (KvBackupService.Outcome) ((Result<?>) method.invoke(service, cause)).unwrap();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /// A shim behaviour that fails as git does (`fatal: shim` on stderr, exit 128) while `armed` exists and the arguments match the shell `pattern`,
+    /// so one service runs real git until the test arms it.
+    private static String failsWhileArmed(Path armed, String pattern) {
+        return "if [ -e '" + armed + "' ]; then case \"$*\" in " + pattern + ") echo 'fatal: shim' >&2; exit 128;; esac; fi";
+    }
+
+    /// [#leaderService] over a shimmed git (see [#shimmedService]).
+    private KvBackupService shimmedLeaderService(Option<String> remote, long incarnation, Map<String, String> environment) {
+        var service = shimmedService(remote, environment);
+
+        incarnation(incarnation);
+        service.onLeaderChange(leaderChange(true));
+        scheduler.advance(TIMING.quietMillis());
+
+        return service;
+    }
+
+    private String localHeadId() {
+        return git(temp.resolve("local"), "rev-parse", "HEAD").strip();
+    }
+
     // --- helpers ---
 
     private KvBackupService leaderService(Option<String> remote) {
@@ -1585,6 +1979,23 @@ class KvBackupServiceTest {
         return KvBackupService.kvBackupService(kvStore, CODEC, repository, scheduler, scheduler::now, warnings::add, TIMING);
     }
 
+    /// A service whose git runs with `environment` (a shimmed `git` on the PATH).
+    private KvBackupService shimmedService(String remote, Map<String, String> environment) {
+        return shimmedService(Option.some(remote), environment);
+    }
+
+    private KvBackupService shimmedService(Option<String> remote, Map<String, String> environment) {
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"),
+                                                                 remote,
+                                                                 "backup",
+                                                                 TimeSpan.timeSpan(30).seconds(),
+                                                                 environment);
+
+        repository.prepare()
+                  .onFailure(cause -> Assertions.fail(cause.message()));
+        return KvBackupService.kvBackupService(kvStore, CODEC, repository, scheduler, scheduler::now, warnings::add, TIMING);
+    }
+
     private void incarnation(long incarnation) {
         applyOnly(ClusterIncarnationKey.clusterIncarnationKey(),
                   ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, incarnation, INCARNATION_ID));
@@ -1732,7 +2143,7 @@ class KvBackupServiceTest {
         var seeder = temp.resolve("seeder-" + header.revision());
 
         git(temp, "clone", "--quiet", remote, seeder.toString());
-        commitDocument(seeder, header, remoteHasBranch(remote), message);
+        commitDocument(seeder, header, remoteBranchExists(remote), message);
     }
 
     private static String recordedSubject(String lineageId, long incarnation, long revision) {
@@ -1784,7 +2195,7 @@ class KvBackupServiceTest {
         return Integer.parseInt(git(temp.resolve("local"), "rev-list", "--count", "HEAD").strip());
     }
 
-    private static boolean remoteHasBranch(String remote) {
+    private static boolean remoteBranchExists(String remote) {
         return !git(Path.of(remote), "branch", "--list", "backup").isBlank();
     }
 

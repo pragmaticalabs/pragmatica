@@ -1,0 +1,3 @@
+# infrastructure by declaration (#2525, Q13): the example serves two API versions at once
+[lint]
+mode = "infrastructure"

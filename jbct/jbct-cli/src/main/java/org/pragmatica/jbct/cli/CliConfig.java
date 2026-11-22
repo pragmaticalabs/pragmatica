@@ -17,17 +17,27 @@ import org.pragmatica.lang.Option;
 public sealed interface CliConfig {
     int CONFIG_ERROR_EXIT = 2;
 
-    /// Load the layered configuration, printing the refusal to `err` when it fails.
-    static Option<JbctConfig> load(Option<Path> explicitConfigPath, PrintStream err) {
-        return ConfigLoader.load(explicitConfigPath,
-                                 Option.none())
-                           .onFailure(cause -> err.println("Error: " + cause.message()))
-                           .option();
+    /// Load the configuration that applies to a checked path, printing the refusal to `err` when it fails.
+    ///
+    /// The `jbct.toml` chain starts at the path's module directory ([ConfigLoader#loadForSourceRoot]), never at the
+    /// working directory. The lint, check, score and format commands no longer use this: they hand
+    /// their paths to the shared root resolver (P2c). Only `obligations` and `shape-census` still load one configuration for the
+    /// first path they are given.
+    static Option<JbctConfig> load(Option<Path> explicitConfigPath, Path checkedPath, PrintStream err) {
+        return load(explicitConfigPath, Option.none(), checkedPath, err);
     }
 
-    /// Load the layered configuration, printing the refusal to `System.err` when it fails.
-    static Option<JbctConfig> load(Option<Path> explicitConfigPath) {
-        return load(explicitConfigPath, System.err);
+    /// Load the configuration for a checked path with the command's `--mode` folded last (C7): after the `jbct.toml`
+    /// chain and after `--config`, so it wins over both. An unknown value is refused the same
+    /// way a bad config layer is.
+    static Option<JbctConfig> load(Option<Path> explicitConfigPath,
+                                   Option<String> explicitMode,
+                                   Path checkedPath,
+                                   PrintStream err) {
+        return ConfigLoader.loadForSourceRoot(explicitConfigPath, checkedPath)
+                           .flatMap(config -> config.overrideMode(explicitMode))
+                           .onFailure(cause -> err.println("Error: " + cause.message()))
+                           .option();
     }
 
     record unused() implements CliConfig {}

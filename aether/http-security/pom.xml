@@ -66,4 +66,24 @@
         </dependency>
     </dependencies>
 
+    <build>
+        <plugins>
+            <!-- Attach the test sources as a consumable test-jar so the modules whose tests write under an ADMIN grant
+                 (node, and the slice scope) reuse TestAdminGrants instead of minting by hand. The jar carries one test
+                 HELPER that goes through the public authenticator and a request scope; it widens no production mint.
+                 Precedent: the aether-stream test-jar. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
 </project>

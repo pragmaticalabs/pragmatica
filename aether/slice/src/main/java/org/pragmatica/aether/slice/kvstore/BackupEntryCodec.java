@@ -34,7 +34,9 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.LogLevelKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ObservabilityConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
@@ -59,7 +61,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ObservabilityConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
@@ -136,9 +140,11 @@ public record BackupEntryCodec(SliceCodec codec) {
 
     private static final Comparator<Map.Entry<AetherKey, AetherValue>> BY_KEY = Comparator.comparing(BackupEntryCodec::keyString);
 
-    /// One binding per backed-up key type: the value type it holds and the parser accepting only its own
-    /// prefix. Kept exhaustive by `BackupEntryCodecTest`, which requires a round-tripping fixture for
-    /// every [ClusterStateKey][AetherKey.ClusterStateKey] type — a type missing here fails that test.
+    /// One binding per key type a backup can hold or must name when refusing: the value type it holds and the
+    /// parser accepting only its own prefix. `BackupEntryCodecTest` requires a round-tripping fixture for every
+    /// backed-up [ClusterStateKey][AetherKey.ClusterStateKey] type. The two artifact keys (#420) are bound but not
+    /// backed up: `decodeKey` finds an old document's artifact line here, then refuses it `KeyNotBackedUp`
+    /// instead of failing it as an unknown key.
     private static final List<KeyBinding> BINDINGS = List.of(KeyBinding.keyBinding(SliceTargetKey.class,
                                                                                    SliceTargetValue.class,
                                                                                    SliceTargetKey::sliceTargetKey),
@@ -210,6 +216,13 @@ public record BackupEntryCodec(SliceCodec codec) {
                                                              KeyBinding.keyBinding(EntityCheckpointKey.class,
                                                                                    EntityFoldCheckpointValue.class,
                                                                                    EntityCheckpointKey::entityCheckpointKey),
+
+    // The PREFIXED parsers, never fromIdentity: that one is prefix-less and accepts the
+    // other entity keys' full strings, so every entity key would parse as AmbiguousKey.
+    KeyBinding.keyBinding(EntitySeedOfferKey.class, EntitySeedOfferValue.class, EntitySeedOfferKey::entitySeedOfferKey),
+                                                             KeyBinding.keyBinding(EntityArcWaiverKey.class,
+                                                                                   EntityArcWaiverValue.class,
+                                                                                   EntityArcWaiverKey::entityArcWaiverKey),
                                                              KeyBinding.keyBinding(ScheduledTaskPauseKey.class,
                                                                                    ScheduledTaskPauseValue.class,
                                                                                    ScheduledTaskPauseKey::scheduledTaskPauseKey),

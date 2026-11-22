@@ -17,12 +17,9 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpOperations;
@@ -118,7 +115,9 @@ class ScheduledSingleFireHostingTest {
                                 .coreCountedMembers()
                                 .size() == CORES);
         workers = IntStream.range(0, WORKERS)
-                           .mapToObj(_ -> LifecycleAwait.nodeSettled("admit worker in setUp()", cluster, cluster.addWorkerNode()))
+                           .mapToObj(_ -> LifecycleAwait.nodeSettled("admit worker in setUp()",
+                                                                     cluster,
+                                                                     cluster.addWorkerNode()))
                            .toList();
         await().atMost(FORM_TIMEOUT)
              .pollInterval(POLL)
@@ -178,26 +177,24 @@ class ScheduledSingleFireHostingTest {
         deploy(SCHEDULED_BLUEPRINT, SCHEDULED_SLICE, INSTANCES);
         await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL).until(() -> activeHosts().size() == INSTANCES);
         log.info("SSF: deployed on {} (cores={})", activeHosts(), coreMembers());
-
         var scaled = scaleToWorkersOnly();
 
-        assertThat(scaled).as("scale of %s to %s", SCHEDULED_SLICE, WORKERS_ONLY)
-                  .doesNotContain("\"error\"");
+        assertThat(scaled).as("scale of %s to %s", SCHEDULED_SLICE, WORKERS_ONLY).doesNotContain("\"error\"");
         awaitNoCoreHosts();
-
         var hosts = activeHosts();
         var cores = coreMembers();
         var leaderId = cluster.currentLeader().or("");
 
         assertThat(hosts).as("precondition: exactly %d ACTIVE hosts after the WORKERS_ONLY migration", INSTANCES)
                   .hasSize(INSTANCES);
-        assertThat(hosts).as("precondition: every host must be a worker (workers=%s)", workers)
+        assertThat(hosts).as("precondition: every host must be a worker (workers=%s)",
+                             workers)
                   .allMatch(workers::contains);
-        assertThat(hosts).as("precondition: no core node may host the slice (cores=%s)", cores)
+        assertThat(hosts).as("precondition: no core node may host the slice (cores=%s)",
+                             cores)
                   .doesNotContainAnyElementsOf(cores);
-        assertThat(hosts.stream()
-                        .map(NodeId::id)
-                        .toList()).as("precondition: the leader must not host the slice (leader=%s)", leaderId)
+        assertThat(hosts.stream().map(NodeId::id).toList()).as("precondition: the leader must not host the slice (leader=%s)",
+                                                               leaderId)
                   .doesNotContain(leaderId);
 
         return hosts;
@@ -208,11 +205,11 @@ class ScheduledSingleFireHostingTest {
             await().atMost(PLACEMENT_TIMEOUT)
                  .pollInterval(POLL)
                  .until(() -> {
-                     var hosts = activeHosts();
+                            var hosts = activeHosts();
 
-                     return hosts.size() == INSTANCES && hosts.stream()
-                                                             .noneMatch(coreMembers()::contains);
-                 });
+                            return hosts.size() == INSTANCES && hosts.stream()
+                                                                     .noneMatch(coreMembers()::contains);
+                        });
         } catch (ConditionTimeoutException timeout) {
             // Fall through to the precondition assertions, which name the offending hosts.
             log.warn("SSF: placement did not converge to workers-only within {}s: hosts={} cores={}",
@@ -231,7 +228,7 @@ class ScheduledSingleFireHostingTest {
             await().atMost(FIRE_WINDOW)
                  .pollInterval(POLL)
                  .until(() -> firesObserved(hosts, callsBefore, executionsBefore) || taskState().map(ScheduledTaskStateValue::consecutiveFailures)
-                                                                                                .or(0) >= EXPECTED_FIRES);
+                                                                                              .or(0) >= EXPECTED_FIRES);
         } catch (ConditionTimeoutException timeout) {
             log.warn("SSF: neither {} fires nor {} failures within {}s",
                      EXPECTED_FIRES,
@@ -241,8 +238,7 @@ class ScheduledSingleFireHostingTest {
     }
 
     private boolean firesObserved(Set<NodeId> hosts, long callsBefore, int executionsBefore) {
-        var executions = taskState().map(ScheduledTaskStateValue::totalExecutions)
-                                    .or(0) - executionsBefore;
+        var executions = taskState().map(ScheduledTaskStateValue::totalExecutions).or(0) - executionsBefore;
 
         return heartbeatCallsOn(hosts) - callsBefore >= EXPECTED_FIRES && executions >= EXPECTED_FIRES;
     }
@@ -292,22 +288,20 @@ class ScheduledSingleFireHostingTest {
         return cluster.allNodes()
                       .stream()
                       .map(AetherNode::self)
-                      .filter(node -> leader().kvStore()
-                                            .getTyped(new NodeArtifactKey(node, scheduledArtifact), NodeArtifactValue.class)
-                                            .filter(value -> value.state() == SliceState.ACTIVE)
-                                            .isPresent())
+                      .filter(node -> SliceStates.isActive(leader(),
+                                                           node,
+                                                           scheduledArtifact))
                       .collect(Collectors.toSet());
     }
 
     private Set<NodeId> coreMembers() {
-        return Set.copyOf(leader().membershipFsm()
-                                  .coreCountedMembers());
+        return Set.copyOf(leader().membershipFsm().coreCountedMembers());
     }
 
     private String scaleToWorkersOnly() {
         var body = "{\"artifact\":\"%s\",\"instances\":%d,\"placement\":\"%s\"}".formatted(SCHEDULED_SLICE,
-                                                                                            INSTANCES,
-                                                                                            WORKERS_ONLY);
+                                                                                           INSTANCES,
+                                                                                           WORKERS_ONLY);
 
         return post(leaderMgmtPort(), "/api/v1/scale", body, "application/json");
     }

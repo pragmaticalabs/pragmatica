@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionDimensions;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.stream.segment.StreamRetentionSource.EnforcedRetention;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -65,10 +66,27 @@ class DeclaredRetentionEnforcerTest {
 
     private SegmentIndex sealed(String stream, int segments, long eventTime) {
         var index = new SegmentIndex();
+
+        sealPartition(index, stream, 0, segments, eventTime);
+
+        return index;
+    }
+
+    private void sealPartition(SegmentIndex index, String stream, int partition, int segments, long eventTime) {
         var sink = storageSegmentSink(storage, index);
 
         for (var offset = 0; offset < segments; offset++) {
-            sink.seal(sealedSegment(stream, 0, offset, offset, 1, eventTime, eventTime, encoded(offset, eventTime))).await();
+            sink.seal(sealedSegment(stream, partition, offset, offset, 1, eventTime, eventTime, encoded(offset, eventTime))).await();
+        }
+    }
+
+    /// Partition 0 holds `hot` one-event segments, each of partitions 1 to 3 holds `others`.
+    private SegmentIndex fourPartitions(int hot, int others, long eventTime) {
+        var index = new SegmentIndex();
+
+        sealPartition(index, STREAM, 0, hot, eventTime);
+        for (var partition = 1; partition < 4; partition++) {
+            sealPartition(index, STREAM, partition, others, eventTime);
         }
 
         return index;
@@ -171,7 +189,7 @@ class DeclaredRetentionEnforcerTest {
     @Test
     void aStreamTheSourceDoesNotAnswer_isWithheld_raisedOnce_andReclaimedOnceThePolicyAppears() {
         var index = sealed(STREAM, 3, System.currentTimeMillis() - 2 * DAY);
-        var answers = new ConcurrentHashMap<String, RetentionPolicy>();
+        var answers = new ConcurrentHashMap<String, EnforcedRetention>();
         var enforcer = enforcer(index, stream -> Option.option(answers.get(stream)), Option.none());
 
         for (var pass = 0; pass < 12; pass++) {
@@ -183,7 +201,7 @@ class DeclaredRetentionEnforcerTest {
         assertThat(codes()).containsExactly(OperatorWarningCode.STREAM_RETENTION_WITHHELD);
         assertThat(warnings.getFirst().subject()).isEqualTo("node node-1 stream orders");
 
-        answers.put(STREAM, RetentionPolicy.retentionPolicy());
+        answers.put(STREAM, EnforcedRetention.enforcedRetention(RetentionPolicy.retentionPolicy(), 1));
         enforcer.enforceNow().await();
 
         assertThat(remaining(index, STREAM)).as("the node default age reclaims the 2-day-old segments").isZero();
@@ -218,7 +236,7 @@ class DeclaredRetentionEnforcerTest {
         var enforcer = enforcer(index,
                                 _ -> answered.getAndIncrement() == 0
                                      ? Option.none()
-                                     : Option.some(RetentionPolicy.retentionPolicy()),
+                                     : Option.some(EnforcedRetention.enforcedRetention(RetentionPolicy.retentionPolicy(), 1)),
                                 Option.none());
 
         enforcer.enforceNow().await();
@@ -226,6 +244,54 @@ class DeclaredRetentionEnforcerTest {
 
         settle();
         assertThat(warnings).isEmpty();
+    }
+
+    /// T-33 (#3334, ST 3.1 O2): with 4 partitions each applies a QUARTER of `max_bytes`. Partition 0 takes 3 x its share
+    /// and is reclaimed to its share plus one segment; partitions 1 to 3, under their share, are untouched. Today's rule
+    /// (the whole `max_bytes` on each partition) reclaims nothing here.
+    @Test
+    void bytesShare_atFourPartitions_reclaimsTheHotPartitionToItsShare_andLeavesTheOthers() {
+        var stored = sealed(STREAM, 1, System.currentTimeMillis()).listSegments(STREAM, 0).getFirst().originalSize();
+        var index = fourPartitions(9, 2, System.currentTimeMillis());
+        var bytes = RetentionPolicy.retentionPolicy(UNBOUNDED, 12L * stored, UNBOUNDED).withDeclared(RetentionDimensions.BYTES);
+
+        enforcer(index, StreamRetentionSource.fixed(bytes, 4), Option.none()).enforceNow().await();
+
+        assertThat(index.listSegments(STREAM, 0)).as("share is 3 segments of bytes: 6 oldest go").hasSize(3);
+        assertThat(index.listSegments(STREAM, 0).getFirst().startOffset()).isEqualTo(6);
+        for (var partition = 1; partition < 4; partition++) {
+            assertThat(index.listSegments(STREAM, partition)).as("partition " + partition + " is under its share").hasSize(2);
+        }
+    }
+
+    /// The count bound is shared the same way (ST 2.4 item 17): `max_count` 12 over 4 partitions keeps 3 events each.
+    @Test
+    void countShare_atFourPartitions_reclaimsTheHotPartitionToItsShare_andLeavesTheOthers() {
+        var index = fourPartitions(9, 2, System.currentTimeMillis());
+        var count = RetentionPolicy.retentionPolicy(12, UNBOUNDED, UNBOUNDED).withDeclared(RetentionDimensions.COUNT);
+
+        enforcer(index, StreamRetentionSource.fixed(count, 4), Option.none()).enforceNow().await();
+
+        assertThat(index.listSegments(STREAM, 0)).hasSize(3);
+        for (var partition = 1; partition < 4; partition++) {
+            assertThat(index.listSegments(STREAM, partition)).hasSize(2);
+        }
+    }
+
+    /// T-32: under `all`, over the byte bound but under the age bound reclaims nothing; past both reclaims.
+    @Test
+    void modeAll_overBytesUnderAge_reclaimsNothing_pastBoth_reclaims() {
+        var stored = sealed(STREAM, 1, System.currentTimeMillis()).listSegments(STREAM, 0).getFirst().originalSize();
+        var policy = RetentionPolicy.retentionPolicy(UNBOUNDED, 3L * stored, HOUR, RetentionMode.ALL)
+                                    .withDeclared(RetentionDimensions.retentionDimensions(false, true, true));
+        var young = sealed(STREAM, 10, System.currentTimeMillis());
+        var old = sealed(STREAM, 10, System.currentTimeMillis() - 2 * HOUR);
+
+        enforcer(young, StreamRetentionSource.fixed(policy), Option.none()).enforceNow().await();
+        enforcer(old, StreamRetentionSource.fixed(policy), Option.none()).enforceNow().await();
+
+        assertThat(remaining(young, STREAM)).as("over the byte bound, under the age bound").isEqualTo(10);
+        assertThat(remaining(old, STREAM)).as("past both: reclaimed to the byte bound").isEqualTo(3);
     }
 
     /// NT-117: a rebuilt ref counts 0 bytes until learned; age learning records the size in the same block read (one read

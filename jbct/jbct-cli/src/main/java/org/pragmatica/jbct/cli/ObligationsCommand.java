@@ -91,7 +91,7 @@ public class ObligationsCommand implements Callable<Integer> {
             return USAGE_ERROR;
         }
 
-        var loadedConfig = CliConfig.load(Option.option(configPath));
+        var loadedConfig = CliConfig.load(Option.option(configPath), paths.getFirst(), System.err);
 
         if (loadedConfig.isEmpty()) {
             return CliConfig.CONFIG_ERROR_EXIT;

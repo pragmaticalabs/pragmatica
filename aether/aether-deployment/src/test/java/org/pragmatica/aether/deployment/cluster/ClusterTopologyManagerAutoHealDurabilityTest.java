@@ -208,7 +208,7 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
         var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
         assertThat(record.enabled()).isFalse();
         assertThat(record.disabledAtConfigVersion()).isEqualTo(2L);
-        assertThat(record.disabledAtScaling()).containsExactlyInAnyOrderEntriesOf(Map.of("worker primary/core", 3, "worker primary/worker", 2));
+        assertThat(record.disabledAtScaling()).containsExactlyInAnyOrderEntriesOf(Map.of("core", 3, "worker primary/core", 3, "worker primary/worker", 2));
     }
 
     /// v2711 finding 4: a node whose applied configuration lags the committed one (v2 decided, this node still on v1) must not record v1's
@@ -316,12 +316,14 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
 
         var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
         assertThat(record.disabledAtConfigVersion()).isEqualTo(7L);
-        assertThat(record.disabledAtScaling()).containsExactlyInAnyOrderEntriesOf(Map.of("worker pool/core", 3,
+        assertThat(record.disabledAtScaling()).containsExactlyInAnyOrderEntriesOf(Map.of("core", 3,
+                                                                                         "worker pool/core", 3,
                                                                                          "worker pool/worker", 1,
                                                                                          "community stable", 4));
     }
 
-    /// v2711 survivor 6: a duplicated (source, role) records its first entry's count, as the desired-count lookup does.
+    /// v2711 survivor 6: a duplicated (source, role) records its first entry's count, as the desired-count lookup does; the `core` subject (#3324)
+    /// records the configuration's whole core count (both entries).
     @Test
     void disable_recordsTheFirstEntryOfADuplicatedSourceRole() {
         commitConfig(configWith(Option.none(),
@@ -333,7 +335,7 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
         ctm.setAutoHealEnabled(false, "operator: maintenance").await().unwrap();
 
         var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
-        assertThat(record.disabledAtScaling()).containsExactlyEntriesOf(Map.of("worker pool/core", 3));
+        assertThat(record.disabledAtScaling()).containsExactlyInAnyOrderEntriesOf(Map.of("core", 8, "worker pool/core", 3));
     }
 
     /// v2711 survivor 6: an enable records no configuration version and no scaling, even when a configuration is committed.

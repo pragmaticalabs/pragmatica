@@ -44,6 +44,18 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.STORAGE_WAL_RETIRED.closesAcrossNodes()).as("raised by the node that holds the open warning").isFalse();
     }
 
+    /// #3303 RA-5a: the wire name, subject and level of the stopped-restore warning are what operators alert on; none has a recovery code
+    /// (the stopped restore has no runtime step that could publish one).
+    @Test
+    void backupRestoreRejected_pinsItsCodeSubsystemLevelAndNoRecovery() {
+        var rejected = OperatorWarningCode.BACKUP_RESTORE_REJECTED;
+
+        assertThat(rejected.code()).isEqualTo("backup-restore-rejected");
+        assertThat(rejected.subsystem()).isEqualTo("kv-backup");
+        assertThat(rejected.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(rejected.recoveryOf()).isEqualTo(Option.none());
+    }
+
     @Test
     void codes_areUnique() {
         var byCode = Arrays.stream(OperatorWarningCode.values())
@@ -87,6 +99,25 @@ class OperatorWarningCodeTest {
         assertThat(resumed.subsystem()).isEqualTo("workflow");
         assertThat(resumed.level()).isEqualTo(WarningLevel.INFO);
         assertThat(resumed.recoveryOf()).isEqualTo(Option.none());
+    }
+
+    /// #3345: the hold's closer is a recovery of the at-risk warning, raised by the leader (its event layer opens the warning first, so
+    /// it does not close across nodes); the loss-accepted record is a standalone INFO event that closes nothing and that nothing closes.
+    @Test
+    void dhtDepartureHoldCodes_arePinned() {
+        var holdEnded = OperatorWarningCode.DHT_DEPARTURE_HOLD_ENDED;
+        var lossAccepted = OperatorWarningCode.DHT_DEPARTURE_LOSS_ACCEPTED;
+
+        assertThat(holdEnded.code()).isEqualTo("dht-departure-hold-ended");
+        assertThat(holdEnded.subsystem()).isEqualTo("dht");
+        assertThat(holdEnded.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(holdEnded.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK));
+        assertThat(holdEnded.closesAcrossNodes()).isFalse();
+        assertThat(lossAccepted.code()).isEqualTo("dht-departure-loss-accepted");
+        assertThat(lossAccepted.subsystem()).isEqualTo("dht");
+        assertThat(lossAccepted.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(lossAccepted.recoveryOf()).isEqualTo(Option.none());
+        assertThat(lossAccepted.hasRecovery()).isFalse();
     }
 
     /// #2062: the operator clear is a RECOVERY of the unconfirmed warning, announced at INFO; a higher level would open a new alert while closing one.
@@ -402,6 +433,9 @@ class OperatorWarningCodeTest {
         // #3193, added on purpose: a live worker whose own directive was retired halts (EXIT_DRAINED); the halt ends the process, so nothing
         // is left to publish a recovery, and the only end is a fresh WorkerJoin, which is a new admission.
         OperatorWarningCode.OWN_DIRECTIVE_RETIRED,
+        // #3303 RA-5a, added on purpose: a restore stopped by a deterministic refusal ends only when the cluster runs a build that fixes
+        // the refusal (a restart, so a new event log slice); the stopped restore has no runtime step that could publish a recovery.
+        OperatorWarningCode.BACKUP_RESTORE_REJECTED,
         OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
         OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,
         OperatorWarningCode.STORAGE_STREAM_DISK_SPACE_UNREADABLE,

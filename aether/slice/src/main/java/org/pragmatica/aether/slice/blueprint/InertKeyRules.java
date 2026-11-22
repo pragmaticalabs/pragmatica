@@ -5,6 +5,7 @@ package org.pragmatica.aether.slice.blueprint;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
@@ -30,6 +31,31 @@ public sealed interface InertKeyRules {
                          inertOffsetReset(config))
                      .flatMap(Option::stream)
                      .toList();
+    }
+
+    /// The storage-declaration sub-sections (#3334) that parse into `StreamConfig.declaration` but that no runtime code reads
+    /// yet, each with why it has no effect and the release step that wires it. Inert until then (#3269 inert gate, CTO ruling
+    /// 2026-11-20 over brief S2a1-6a1 Content 2): the parser still resolves them, and deploy validation and activation refuse
+    /// them. A table leaves this map in the PR that adds its reader; `[truncation]` is not listed, because its only
+    /// accepted policy, `window`, is today's behaviour and `until_consumed` is refused by its own gate (T-146).
+    Map<String, String> INERT_DECLARATION_TABLES = Map.of("retention",
+                                                          "the stream's retention still comes from today's keys (`retention`, "
+                                                         + "`retention_value`, `retention_mode`, `max_age`, `max_count`, `max_bytes`) "
+                                                         + "until release step S2a3 enforces the [retention] declaration (#3334). "
+                                                         + "Remove the [retention] sub-section and declare retention with today's keys "
+                                                         + "until S2a3.",
+                                                          "hot",
+                                                          "the ring is still sized from today's retention until release step S2b sizes "
+                                                         + "it from the [hot] window (#3334). Remove the [hot] sub-section until S2b.");
+
+    /// The keys of `section` under an [#INERT_DECLARATION_TABLES] sub-section, in sorted order: read from the section's keys,
+    /// the one [StreamSection#hasTable] rule, so the TOML view and the provider view refuse the same keys.
+    static List<InertKey> inertDeclarationKeys(StreamSection section) {
+        return section.keys()
+                      .stream()
+                      .sorted()
+                      .flatMap(key -> inertDeclarationKey(section, key).stream())
+                      .toList();
     }
 
     /// `consistency = "strong"`: no write path honours it (#1262).
@@ -75,6 +101,19 @@ public sealed interface InertKeyRules {
                                  lower(defaults.readPreference())))
                      .flatMap(Option::stream)
                      .toList();
+    }
+
+    private static Option<InertKey> inertDeclarationKey(StreamSection section, String key) {
+        return Option.from(INERT_DECLARATION_TABLES.entrySet()
+                                                   .stream()
+                                                   .filter(table -> key.startsWith(table.getKey() + "."))
+                                                   .findFirst()).map(table -> declarationKey(key,
+                                                                                             section.string(key).or(""),
+                                                                                             table.getValue()));
+    }
+
+    private static InertKey declarationKey(String key, String value, String reason) {
+        return new InertKey(key, value, key + " = '" + value + "' has no runtime effect yet — " + reason);
     }
 
     private static InertKey inertEncryption(String keyId) {

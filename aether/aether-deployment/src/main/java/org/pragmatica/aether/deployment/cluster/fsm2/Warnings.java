@@ -310,8 +310,23 @@ public sealed interface Warnings {
     }
 
     // -- the mirror and rule O -------------------------------------------------------------------------------------
-    /// The mirror takes a committed row. A closed row of any writer drops the key's recovery text: the close it was waiting for is written.
+    /// The mirror takes a committed row only if its revision is above the one it holds for the key (#3203, the model's `Mirror` in
+    /// mode "cand"): a late settle, a refusal or a put carrying an older row never regresses it. Revisions grow by one per key with
+    /// every committed write, so an equal revision is the same row. A closed row it takes drops the key's recovery text: the close it
+    /// was waiting for is written.
     static ClusterModel indexRow(ClusterModel m, FsmWarningKey key, FsmWarningValue value) {
+        return newer(m, key, value)
+               ? taken(m, key, value)
+               : m;
+    }
+
+    private static boolean newer(ClusterModel m, FsmWarningKey key, FsmWarningValue value) {
+        return m.warningRows.get(key)
+                            .map(held -> value.revision() > held.revision())
+                            .or(true);
+    }
+
+    private static ClusterModel taken(ClusterModel m, FsmWarningKey key, FsmWarningValue value) {
         m.warningRows = m.warningRows.put(key, value);
         if (!value.open()) {
             m.closeText = m.closeText.remove(key);
@@ -327,6 +342,25 @@ public sealed interface Warnings {
         return m;
     }
 
+    /// ```tla Fsm2Leader:OnPut
+    /// \* A committed FsmWarningKey put reaches the node (Indexer -> onPut, Warnings.java): the mirror follows (abstracted to a
+    /// \* whole-set sync) and the set is marked dirty. Rule O on a row this incarnation did not write (its writer stamp kvW is not
+    /// \* <<n, inc[n]>>, Warnings.own): an open row joins the family set (applied / joined); a closed row changes no family set
+    /// \* (its effect is on the recovery text, abstracted).
+    /// \* No notification here (#3274: rule E at the settlement is the only emitter). pend: the put has now reached the node.
+    /// \* Mutants: "emitonput" also notifies the changed rows' newest transitions; "nomirror" leaves the mirror unchanged.
+    /// OnPut(n) ==
+    ///   /\ fsm[n] = "Active" /\ (rows[n] # kv \/ pend[n])
+    ///   /\ pend' = [pend EXCEPT ![n] = FALSE]
+    ///   /\ LET P == {s \in Subjects : rows[n][s] # kv[s] /\ kv[s] # Nil}
+    ///          ad == IF MODE = "code" /\ MUT # "noruleo" THEN {s \in P : kv[s].open /\ kvW[s] # <<n, inc[n]>>} ELSE {}
+    ///          ch == {s \in Subjects : rows[n][s].open # kv[s].open /\ \E t \in trans : t.s = s}
+    ///      IN /\ notes' = IF MUT = "emitonput" THEN notes \cup {Note(notes, Last(x).c, x, kv[x].open) : x \in ch} ELSE notes
+    ///         /\ Apply(n, warned[n] \cup ad, IF MUT = "nomirror" THEN rows[n] ELSE Mirror(rows[n], kv), IF MODE = "code" THEN TRUE ELSE dirty[n], wInfl[n], gInfl[n], gIntent[n],
+    ///               FALSE, flushQ[n], shown, held[n], lnd[n], view[n])
+    ///   /\ UNCHANGED <<ovars, trans, ncommit, kvW, term, kvLeader, elected, lkPend, kv, kvDesired, target, observed, cond, fsm, inc, view, fired, net,
+    ///                  settles, condBudget, faultBudget, redo>>
+    /// ```
     /// #3274: a committed row put: `indexRow`, then rule O per member. Every row indexed while Active marks the set dirty, own or not.
     static ClusterModel onPut(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
         indexRow(m, key, value);
@@ -562,14 +596,15 @@ public sealed interface Warnings {
         return m;
     }
 
-    /// An accepted WARNINGS transaction: each mutation's committed pair gives its notification (rule E), and the mirror takes the
-    /// mutations now, before the applier's notifications arrive.
+    /// An accepted WARNINGS transaction: the mirror takes the mutations now, before the applier's notifications arrive. It notifies
+    /// nothing (#3203, CTO ruling B): rule E runs on the committed put ([#committedNotice]), so a deposed writer's late settlement
+    /// cannot reach the operator out of commit order.
     static ClusterModel accepted(ClusterModel m, Ctx ctx, TxDraft draft) {
         if (draft.kind() != SubmitKind.WARNINGS) {
             return m;
         }
 
-        draft.mutations().forEach(mutation -> landed(notified(m, ctx, mutation), mutation));
+        draft.mutations().forEach(mutation -> landed(m, mutation));
 
         return m;
     }
@@ -601,35 +636,44 @@ public sealed interface Warnings {
     }
 
     // -- rule E ----------------------------------------------------------------------------------------------------
-    /// Rule E: the opener with the replacement's message when the replacement holds a (member, value) the expected does not; the recovery
-    /// when the expected is open and the replacement closed; nothing otherwise. A code with no family notifies nothing.
-    private static ClusterModel notified(ClusterModel m, Ctx ctx, KVCommand.Mutation<AetherKey, AetherValue> mutation) {
-        if (! (mutation.key() instanceof FsmWarningKey key) || !TABLE.containsKey(key.code())) {
-            return m;
+    /// A notification rule E gives: the code (the key's opener code, or its family's recovery code), the subject and the row's message.
+    record Notice(String code, String subject, String message) {
+        public static Notice notice(String code, String subject, String message) {
+            return new Notice(code, subject, message);
         }
-
-        var family = TABLE.get(key.code());
-        var expected = rowOf(mutation.expected());
-        var replacement = rowOf(mutation.replacement());
-        var before = expected.map(row -> rowHeld(family, row)).or(Map.of());
-        var after = replacement.map(row -> rowHeld(family, row)).or(Map.of());
-
-        if (after.entrySet()
-                 .stream()
-                 .anyMatch(entry -> !Option.option(before.get(entry.getKey())).equals(Option.some(entry.getValue())))) {
-            replacement.onPresent(row -> ctx.warn(key.code(), key.subject(), row.message()));
-        } else if (!before.isEmpty() && after.isEmpty()) {
-            replacement.onPresent(row -> ctx.warn(FAMILIES.get(key.code()),
-                                                  key.subject(),
-                                                  row.message()));
-        }
-
-        return m;
     }
 
-    private static Option<FsmWarningValue> rowOf(Option<AetherValue> value) {
-        return value.filter(FsmWarningValue.class::isInstance)
-                    .map(FsmWarningValue.class::cast);
+    /// Rule E over a committed put of a WARNINGS row (#3203, CTO ruling B): `before` is the row the put replaced at its KV index, `after`
+    /// the committed row. The opener with the row's message when `after` holds a (member, value) `before` does not; the recovery when
+    /// `before` is open and `after` closed; nothing otherwise, and nothing for a code with no family. It reads committed state only, so
+    /// every node derives the same notice at one index; the node publishes it through its committed-event gate (one publisher per
+    /// index, `ClusterEventAggregator.emitCommitted`), so notices reach the operator in commit order.
+    static Option<Notice> committedNotice(FsmWarningKey key, Option<FsmWarningValue> before, FsmWarningValue after) {
+        return Option.option(TABLE.get(key.code())).flatMap(family -> transition(family, key, before, after));
+    }
+
+    private static Option<Notice> transition(Family family,
+                                             FsmWarningKey key,
+                                             Option<FsmWarningValue> before,
+                                             FsmWarningValue after) {
+        var held = before.map(row -> rowHeld(family, row)).or(Map.of());
+        var holds = rowHeld(family, after);
+
+        if (opens(held, holds)) {
+            return Option.some(Notice.notice(key.code(), key.subject(), after.message()));
+        }
+
+        return ! held.isEmpty() && holds.isEmpty()
+               ? Option.some(Notice.notice(FAMILIES.get(key.code()),
+                                           key.subject(),
+                                           after.message()))
+               : Option.none();
+    }
+
+    private static boolean opens(Map<String, String> held, Map<String, String> holds) {
+        return holds.entrySet()
+                    .stream()
+                    .anyMatch(entry -> !Option.option(held.get(entry.getKey())).equals(Option.some(entry.getValue())));
     }
 
     /// The mutations that make the committed rows say what the family state says, in key order. Rows compare by content, never by

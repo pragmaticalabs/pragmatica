@@ -31,6 +31,7 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
     private final AtomicLong syncFailureCount = new AtomicLong();
     private final AtomicInteger pendingBatches = new AtomicInteger();
     private final LongAdder totalDecisionLatencyNs = new LongAdder();
+    private final AtomicLong durationSamples = new AtomicLong();
     private final LongAdder applyTimeouts = new LongAdder();
     private final AtomicReference<LongSupplier> oldestPendingBatchAgeProbe = new AtomicReference<>(() -> 0L);
     private final AtomicReference<LongSupplier> consecutiveEmptySlotsProbe = new AtomicReference<>(() -> 0L);
@@ -48,8 +49,14 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
 
     @Override
     @Contract
-    public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long durationNs) {
+    public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue) {
         decisionsCount.incrementAndGet();
+    }
+
+    @Override
+    @Contract
+    public void recordDecisionDuration(NodeId nodeId, Phase phase, long durationNs) {
+        durationSamples.incrementAndGet();
         totalDecisionLatencyNs.add(durationNs);
     }
 
@@ -136,7 +143,8 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 oldestPendingBatchAgeProbe.get().getAsLong(),
                                 applyTimeouts.sum(),
                                 consecutiveEmptySlotsProbe.get().getAsLong(),
-                                firstChoiceBatchIdProbe.get().get());
+                                firstChoiceBatchIdProbe.get().get(),
+                                durationSamples.get());
     }
 
     public RabiaMetrics snapshotAndReset() {
@@ -153,6 +161,7 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 oldestPendingBatchAgeProbe.get().getAsLong(),
                                 applyTimeouts.sumThenReset(),
                                 consecutiveEmptySlotsProbe.get().getAsLong(),
-                                firstChoiceBatchIdProbe.get().get());
+                                firstChoiceBatchIdProbe.get().get(),
+                                durationSamples.getAndSet(0));
     }
 }

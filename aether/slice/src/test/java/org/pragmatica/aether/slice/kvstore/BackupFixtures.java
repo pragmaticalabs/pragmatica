@@ -48,7 +48,9 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.LogLevelKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ObservabilityConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
@@ -74,7 +76,11 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue.OfferEntry;
 import org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ObservabilityConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
@@ -163,14 +169,6 @@ final class BackupFixtures {
         return List.of(new Fixture(SliceTargetKey.sliceTargetKey(base),
                                    SliceTargetValue.sliceTargetValue(v1, 3, Option.some(owner))),
                        new Fixture(AppBlueprintKey.appBlueprintKey(owner), AppBlueprintValue.appBlueprintValue(blueprint(), true)),
-                       new Fixture(AetherKey.ArtifactContentKey.artifactContentKey(ArtifactBase.artifactBase("org.example:orders-slice").unwrap(),
-                                                                                   "1.0.0",
-                                                                                   "sources.jar"),
-                                   new AetherValue.ArtifactContentValue(1234L, "d41d8cd98f00b204e9800998ecf8427e", "da39a3ee5e6b4b0d3255bfef95601890afd80709", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 1_700_000_000_000L)),
-                       new Fixture(AetherKey.ArtifactVersionsKey.artifactVersionsKey(ArtifactBase.artifactBase("org.example:orders-slice").unwrap()),
-                                   new AetherValue.ArtifactVersionsValue(List.of(new AetherValue.ArtifactVersionEntry("1.0.0", true),
-                                                                                 new AetherValue.ArtifactVersionEntry("1.1.0", false)),
-                                                                     AetherValue.ArtifactVersionsValue.DEFAULT_MAX_LIVE)),
                        new Fixture(DeploymentOutcomeKey.deploymentOutcomeKey(owner),
                                    DeploymentOutcomeValue.failed(List.of("org.example:orders-slice:1.2.3", AWKWARD), AWKWARD, 1_700_000_000_000L)),
                        new Fixture(VersionRoutingKey.versionRoutingKey(base), VersionRoutingValue.versionRoutingValue(v1, v2)),
@@ -234,7 +232,8 @@ final class BackupFixtures {
                                                                                         2,
                                                                                         StreamCompression.ZSTD,
                                                                                         Option.some("kms-key-1"),
-                                                                                        42L),
+                                                                                        42L,
+                                                                                        Option.none()),
                                                                        1_700_000_000_000L)),
                        new Fixture(ApiKeyKey.apiKeyKey("key-1"), ApiKeyValue.apiKeyValue("key-1", "sha256:abc=", 60_000)),
                        new Fixture(ApiKeyAuditKey.apiKeyAuditKey("audit-1"), ApiKeyAuditValue.apiKeyAuditValue("key-1", "REVOKED", AWKWARD)),
@@ -244,6 +243,14 @@ final class BackupFixtures {
                                    BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of(NamedAddress.namedAddress("stock", topic)))),
                        new Fixture(EntityCheckpointKey.entityCheckpointKey("orders/by-customer", 5),
                                    EntityFoldCheckpointValue.entityFoldCheckpointValue(4_242L, "00ff10ab")),
+                       new Fixture(EntitySeedOfferKey.entitySeedOfferKey("orders/by-customer", 5),
+                                   EntitySeedOfferValue.entitySeedOfferValue(3L,
+                                                                             4L,
+                                                                             9L,
+                                                                             "00ff10ab",
+                                                                             List.of(OfferEntry.offerEntry(6, 120L, 2L), OfferEntry.offerEntry(7, 0L, 0L)))),
+                       new Fixture(EntityArcWaiverKey.entityArcWaiverKey("orders/by-customer", 6),
+                                   EntityArcWaiverValue.entityArcWaiverValue(4L, WaiverCase.BLOCK_LOST, List.of("00ff10ab", "ab10ff00"))),
                        new Fixture(ClusterIncarnationKey.clusterIncarnationKey(),
                                    ClusterIncarnationValue.clusterIncarnationValue("01K4ZT9Q6W3X8Y2B7C5D1E0F9G", 3, "01K4ZTA0000000000000000000")),
                        new Fixture(DeploymentEngineKey.deploymentEngineKey(),

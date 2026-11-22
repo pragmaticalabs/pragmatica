@@ -16,6 +16,7 @@ import org.junit.platform.commons.support.AnnotationSupport;
 import org.opentest4j.AssertionFailedError;
 import org.opentest4j.TestAbortedException;
 
+
 /// Implements [KnownRed]. The decisions are [#classify] and [#problem], pure functions, so they can be pinned without a test engine.
 public final class KnownRedExtension implements InvocationInterceptor {
     public enum Verdict {
@@ -27,7 +28,10 @@ public final class KnownRedExtension implements InvocationInterceptor {
         TRIPWIRE_FLIPPED
     }
 
-    private static final Set<Class<?>> CATCH_ALL = Set.of(Throwable.class, Exception.class, RuntimeException.class, Error.class);
+    private static final Set<Class<?>> CATCH_ALL = Set.of(Throwable.class,
+                                                          Exception.class,
+                                                          RuntimeException.class,
+                                                          Error.class);
 
     /// `failure == null` means the invocation passed.
     public static Verdict classify(KnownRed known, Throwable failure) {
@@ -35,7 +39,9 @@ public final class KnownRedExtension implements InvocationInterceptor {
             return Verdict.TRIPWIRE_FLIPPED;
         }
 
-        return matches(known, failure) ? Verdict.ABSORBED : Verdict.REAL_FAILURE;
+        return matches(known, failure)
+               ? Verdict.ABSORBED
+               : Verdict.REAL_FAILURE;
     }
 
     /// Why this annotation cannot be trusted to absorb only its own failure; null when it is usable.
@@ -49,20 +55,26 @@ public final class KnownRedExtension implements InvocationInterceptor {
         }
 
         if (CATCH_ALL.contains(known.exception())) {
-            return "exception " + known.exception().getSimpleName() + " is a catch-all: it would absorb almost any failure";
+            return "exception " + known.exception()
+                                       .getSimpleName()
+                 + " is a catch-all: it would absorb almost any failure";
         }
 
         return null;
     }
 
     static boolean matches(KnownRed known, Throwable failure) {
-        return known.exception().isInstance(failure) && messages(failure).stream().anyMatch(message -> message.contains(known.messageContains()));
+        return known.exception()
+                    .isInstance(failure) && messages(failure).stream()
+                                                    .anyMatch(message -> message.contains(known.messageContains()));
     }
 
     private static List<String> messages(Throwable failure) {
         var found = new ArrayList<String>();
 
-        for (var t = failure; t != null && found.size() < 10; t = t.getCause() == t ? null : t.getCause()) {
+        for (var t = failure; t != null && found.size() < 10; t = t.getCause() == t
+                                                                  ? null
+                                                                  : t.getCause()) {
             found.add(String.valueOf(t.getMessage()));
         }
 
@@ -70,13 +82,17 @@ public final class KnownRedExtension implements InvocationInterceptor {
     }
 
     @Override
-    public void interceptTestMethod(Invocation<Void> invocation, ReflectiveInvocationContext<Method> invocationContext, ExtensionContext extensionContext) throws Throwable {
+    public void interceptTestMethod(Invocation<Void> invocation,
+                                    ReflectiveInvocationContext<Method> invocationContext,
+                                    ExtensionContext extensionContext) throws Throwable {
         guard(invocation, invocationContext.getExecutable());
     }
 
     /// `@RepeatedTest`, `@ParameterizedTest` and `@TestTemplate` invoke the body through the template path: each invocation is guarded.
     @Override
-    public void interceptTestTemplateMethod(Invocation<Void> invocation, ReflectiveInvocationContext<Method> invocationContext, ExtensionContext extensionContext) throws Throwable {
+    public void interceptTestTemplateMethod(Invocation<Void> invocation,
+                                            ReflectiveInvocationContext<Method> invocationContext,
+                                            ExtensionContext extensionContext) throws Throwable {
         guard(invocation, invocationContext.getExecutable());
     }
 
@@ -92,7 +108,10 @@ public final class KnownRedExtension implements InvocationInterceptor {
         var problem = problem(known);
 
         if (problem != null) {
-            throw new AssertionFailedError("malformed @KnownRed on " + method.getDeclaringClass().getSimpleName() + "." + method.getName() + ": " + problem);
+            throw new AssertionFailedError("malformed @KnownRed on " + method.getDeclaringClass()
+                                                                             .getSimpleName()
+                                          + "." + method.getName()
+                                          + ": " + problem);
         }
 
         Throwable failure = null;
@@ -106,17 +125,24 @@ public final class KnownRedExtension implements InvocationInterceptor {
         }
 
         switch (classify(known, failure)) {
-            case ABSORBED -> throw new TestAbortedException("known red " + known.ticket() + ": " + failure.getClass().getSimpleName() + ": " + firstLine(failure.getMessage()), failure);
+            case ABSORBED -> throw new TestAbortedException("known red " + known.ticket() + ": " + failure.getClass().getSimpleName() + ": " + firstLine(failure.getMessage()),
+                                                            failure);
             case REAL_FAILURE -> throw failure;
             case TRIPWIRE_FLIPPED -> throw new AssertionFailedError(known.ticket() + " is green: the fix has landed, remove @KnownRed from this test");
         }
     }
 
     private static String firstLine(String message) {
-        var text = message == null ? "" : message.strip();
+        var text = message == null
+                   ? ""
+                   : message.strip();
         var end = text.indexOf('\n');
-        var line = end < 0 ? text : text.substring(0, end);
+        var line = end < 0
+                   ? text
+                   : text.substring(0, end);
 
-        return line.length() > 160 ? line.substring(0, 160) : line;
+        return line.length() > 160
+               ? line.substring(0, 160)
+               : line;
     }
 }

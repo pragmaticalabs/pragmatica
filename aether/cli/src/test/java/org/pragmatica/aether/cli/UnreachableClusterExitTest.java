@@ -6,7 +6,6 @@ package org.pragmatica.aether.cli;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,8 +32,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// [AetherCliEndpointPrecedenceTest] does) because the exit code is what the operator's script
 /// sees, and `main` reaches it through `System.exit`. stdout and stderr are captured separately:
 /// the claim is "the cause is on stderr and the table is NOT on stdout", which a merged stream
-/// cannot distinguish. The endpoint is a loopback port that was bound and released just before
-/// the run, so the connection is refused at once rather than timing out.
+/// cannot distinguish. The endpoint is a DeadEndpoint (#3558): it accepts and closes every connection unanswered, so the
+/// transport failure is by construction, at once, and does not rest on what the kernel does with a closed port under load.
 ///
 /// The sibling list commands share the one producer (`fetch`) and the one consumer
 /// (`printQuery`), so they are pinned here too: one shape, one fix.
@@ -55,19 +54,26 @@ class UnreachableClusterExitTest {
     Path home;
 
     private String unreachable;
+    private DeadEndpoint deadEndpoint;
     private HttpServer scripted;
 
     @BeforeEach
-    void releasedLoopbackPort() throws IOException {
-        try (var socket = new ServerSocket(0)) {
-            unreachable = "127.0.0.1:" + socket.getLocalPort();
-        }
+    void deadEndpoint() throws IOException {
+        deadEndpoint = DeadEndpoint.start();
+        unreachable = "127.0.0.1:" + deadEndpoint.port();
     }
 
     @AfterEach
-    void stopScripted() {
-        if (scripted != null) {
-            scripted.stop(0);
+    void stopScripted() throws IOException {
+        try {
+            if (deadEndpoint != null) {
+                deadEndpoint.close();
+            }
+        } finally {
+            // a failing close must not leave the scripted server running; a null deadEndpoint means setup failed
+            if (scripted != null) {
+                scripted.stop(0);
+            }
         }
     }
 

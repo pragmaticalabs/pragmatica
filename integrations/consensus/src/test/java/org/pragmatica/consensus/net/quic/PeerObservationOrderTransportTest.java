@@ -26,6 +26,7 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
 import org.pragmatica.consensus.topology.TransportObservation.PeerReconnected;
+import org.pragmatica.consensus.topology.TransportView;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -232,5 +233,28 @@ class PeerObservationOrderTransportTest {
         awaitTrue(() -> sequences.size() == 3, AWAIT, () -> "the re-attach was observed; " + sequences);
 
         assertThat(sequences).as("one link's transport-ordered observations").containsExactly("joined:1", "disconnected:2", "reconnected:3");
+    }
+
+    /// #3047: the sequenced view the election re-asserts takes its sequence from the observations' counter, above the
+    /// last observation and below the next, and lists the connected link with this node.
+    @Test
+    void sequencedView_takesAFreshSequenceFromTheObservationCounter() {
+        var followerRouter = MessageRouter.mutable();
+        var sequences = new CopyOnWriteArrayList<Long>();
+
+        followerRouter.addRoute(PeerJoined.class, (Consumer<PeerJoined>) joined -> sequences.add(joined.sequence()));
+        followerRouter.addRoute(PeerDisconnected.class, (Consumer<PeerDisconnected>) gone -> sequences.add(gone.sequence()));
+        followerRouter.addRoute(Send.class, (Consumer<Send>) _ -> {});
+        var follower = startedNetwork(new TripwireTopology(FOLLOWER, false, TimeSpan.timeSpan(30).seconds()), followerRouter, networks);
+        var leader = startedNetwork(new TripwireTopology(LEADER, false, TimeSpan.timeSpan(30).seconds()), MessageRouter.mutable(), networks);
+
+        follower.dialForTests(infoOf(LEADER, leader), false);
+        awaitTrue(() -> sequences.size() == 1, AWAIT, () -> "the join was observed; " + sequences);
+        var view = follower.sequencedView().or(TransportView.transportView(List.of(), -1L));
+        follower.peerStateForTests(LEADER).evict(System.nanoTime()).onPresent(connection -> connection.close().await(AWAIT));
+        awaitTrue(() -> sequences.size() == 2, AWAIT, () -> "the eviction was observed; " + sequences);
+
+        assertThat(view.topology()).as("the connected link and this node").containsExactlyElementsOf(ALL);
+        assertThat(view.sequence()).as("above the join, below the eviction").isEqualTo(sequences.get(0) + 1).isEqualTo(sequences.get(1) - 1);
     }
 }

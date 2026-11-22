@@ -2,14 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -19,8 +12,15 @@ import java.util.Set;
 import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
 
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+
 
 /// #1339 — after a partition's owner dies, a WRITE to that partition succeeds again. The owner FIELD re-resolving
 /// is not that: ownership is a committed record, written only by the leader, and the cloud run that filed the
@@ -84,34 +84,37 @@ class StreamOwnerKillWritesResumeTest extends AbstractMultiPartitionStream {
     @Test
     void ownerKilled_everyPartitionAcceptsAWriteAgain() {
         await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allPartitionsPlaced);
-
         var leader = cluster.currentLeader().or("");
-        var ownedByLeader = IntStream.range(0, PARTITIONS).filter(partition -> ownerId(partition).equals(leader)).boxed().toList();
-        var target = ownedByLeader.isEmpty() ? ownerId(0) : leader;
+        var ownedByLeader = IntStream.range(0, PARTITIONS)
+                                     .filter(partition -> ownerId(partition).equals(leader))
+                                     .boxed()
+                                     .toList();
+        var target = ownedByLeader.isEmpty()
+                     ? ownerId(0)
+                     : leader;
         var survivorPort = portOtherThan(target);
 
         assertThat(target).describedAs("a kill target identified before the kill").isNotBlank();
-        System.getLogger(getClass().getName())
-              .log(System.Logger.Level.INFO,
-                   "#1339 kill target {0}: leader={1}, partitions owned by the leader={2} ({3})",
-                   target,
-                   leader,
-                   ownedByLeader,
-                   ownedByLeader.isEmpty() ? "leader owns none: partition 0's owner is killed instead"
-                                           : "leader owns a partition: the leaderless-removal shape");
-
+        System.getLogger(getClass().getName()).log(System.Logger.Level.INFO,
+                                                   "#1339 kill target {0}: leader={1}, partitions owned by the leader={2} ({3})",
+                                                   target,
+                                                   leader,
+                                                   ownedByLeader,
+                                                   ownedByLeader.isEmpty()
+                                                   ? "leader owns none: partition 0's owner is killed instead"
+                                                   : "leader owns a partition: the leaderless-removal shape");
         // Control, taken before the kill: every partition accepts and serves a write, so a partition empty of
         // post-kill events afterwards is the kill's doing and not an unwritable fixture.
         for (var seq = 0L; seq < PRE_KILL_EVENTS; seq++) {
-            assertThat(publish(survivorPort, seq, PUBLISH_TIMEOUT)).describedAs("pre-kill publish %d acked", seq).isTrue();
+            assertThat(publish(survivorPort, seq, PUBLISH_TIMEOUT)).describedAs("pre-kill publish %d acked", seq)
+                      .isTrue();
         }
-        assertThat(partitionsCarryingSeqAtOrAbove(survivorPort, 0L)).describedAs("control: every partition holds a pre-kill event")
-                                                                    .hasSize(PARTITIONS);
 
+        assertThat(partitionsCarryingSeqAtOrAbove(survivorPort, 0L)).describedAs("control: every partition holds a pre-kill event")
+                  .hasSize(PARTITIONS);
         LifecycleAwait.nodeBestEffort("kill node " + target + " in ownerKilled_everyPartitionAcceptsAWriteAgain()",
                                       cluster,
                                       cluster.blackhole(target));
-
         var seq = FIRST_POST_KILL_SEQ;
         var deadline = deadline(FAILOVER_TIMEOUT);
         var served = new HashSet<Integer>();
@@ -121,6 +124,7 @@ class StreamOwnerKillWritesResumeTest extends AbstractMultiPartitionStream {
                 publish(survivorPort, seq++, PUBLISH_TIMEOUT);
                 LockSupport.parkNanos(PUBLISH_PACE_NANOS);
             }
+
             served.clear();
             served.addAll(partitionsCarryingSeqAtOrAbove(survivorPort, FIRST_POST_KILL_SEQ));
         }
@@ -128,7 +132,7 @@ class StreamOwnerKillWritesResumeTest extends AbstractMultiPartitionStream {
         assertThat(served).describedAs("#1339: every partition accepted a write after the owner of %s was killed (owners now: %s)",
                                        target,
                                        owners())
-                          .hasSize(PARTITIONS);
+                  .hasSize(PARTITIONS);
     }
 
     private List<String> owners() {

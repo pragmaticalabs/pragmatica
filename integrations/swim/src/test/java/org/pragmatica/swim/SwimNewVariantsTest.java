@@ -304,7 +304,7 @@ class SwimNewVariantsTest {
             var transport = new StubTransport();
             var listener = new NoOpMembershipListener();
             observations = new RecordingObservationSink();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
             protocol.addObservationListener(observations);
         }

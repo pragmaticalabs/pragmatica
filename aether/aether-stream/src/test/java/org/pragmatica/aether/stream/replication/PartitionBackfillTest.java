@@ -1417,7 +1417,7 @@ class PartitionBackfillTest {
 
     /// #333: a NON-owner backfills from the DETERMINISTIC HRW OWNER (computed locally from the member
     /// view), NOT the blind local registry `CAUGHT_UP` set. Peer watermark state is never propagated
-    /// cross-node (production registry uses `WatermarkStore.NOOP`), so a registry-selected source can be
+    /// cross-node (production registry persists no peer watermarks), so a registry-selected source can be
     /// stale/behind and drive a false `CAUGHT_UP`-with-a-hole, after which every live batch is rejected as
     /// a gap forever. Pulling from the owner (whose reported tail is the true watermark) closes the wedge —
     /// the same owner-forward principle the read path uses.
@@ -2215,7 +2215,7 @@ class PartitionBackfillTest {
 
     /// #336 fresh-owner blind-registry probe fallback. When a node that was NOT previously a replica becomes
     /// HRW owner (empty ring, `localWatermark == -1`) the local-registry `aheadSurvivor` reads every peer at
-    /// the `-1` registration default (peer watermarks are never propagated — `WatermarkStore.NOOP`), so it
+    /// the `-1` registration default (peer watermarks are never propagated), so it
     /// would false-self-promote `CAUGHT_UP@-1` on an empty ring while a survivor holds the whole partition
     /// (effective RF=1, empty owner). The fix probes the blind survivors' REAL tails and catches up from the
     /// max reachable one; an unreachable survivor routes to the bounded-wait escape (never a false-ready
@@ -2233,7 +2233,7 @@ class PartitionBackfillTest {
         @Test
         void backfill_freshOwnerEmptyRing_blindSurvivor_probesRealTail_catchesUpNotFalseReady() {
             // Self is a FRESH HRW owner: empty local ring (localWatermark=-1) and the survivor's real tail
-            // (24) is INVISIBLE in the local registry (registration default -1, WatermarkStore.NOOP).
+            // (24) is INVISIBLE in the local registry (registration default -1: peer watermarks are never propagated).
             // aheadSurvivor sees -1 (not ahead) and would false-self-promote CAUGHT_UP@-1 on the empty ring;
             // the probe reveals the real tail 24 → the owner catches up and reaches CAUGHT_UP@24.
             registry.registerReplica(STREAM, PARTITION, OWNER);      // self, fresh, empty ring, SYNCING@-1

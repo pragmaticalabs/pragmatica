@@ -35,6 +35,13 @@
             <artifactId>node</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-stream</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>cluster</artifactId>
         </dependency>

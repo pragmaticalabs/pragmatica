@@ -346,6 +346,9 @@ public interface SystemTags {
         pin(table, 707, "org.pragmatica.aether.slice.RetentionPolicy");
         pin(table, 708, "org.pragmatica.aether.slice.SliceState");
         pin(table, 709, "org.pragmatica.aether.slice.StreamCompression");
+        // Known limit of the #3334 flag day: this tag did not move when `StreamConfig` gained `declaration`, so an OLD node decodes a
+        // bare new `StreamConfig` silently (the trailing declaration byte is ignored; probe, v3361). Safe while `StreamConfigValue`
+        // (tag 2920) is the only wire carrier of a `StreamConfig`; a mixed-version cluster is not supported.
         pin(table, 710, "org.pragmatica.aether.slice.StreamConfig");
         pin(table, 711, "org.pragmatica.aether.slice.TierAwareRetention");
         pin(table, 712, "org.pragmatica.aether.slice.RetentionDimensions");
@@ -386,12 +389,16 @@ public interface SystemTags {
         // or reader. The pin STAYS so the tag is never reused.
         pin(table, 1096, "org.pragmatica.aether.slice.kvstore.AetherKey.CloudCredentialsKey");
         pin(table, 1097, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey");
+        // RETIRED 2026-11-21 (#3530): `ClusterPhaseKey` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1098, "org.pragmatica.aether.slice.kvstore.AetherKey.ClusterPhaseKey");
         pin(table, 1099, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey");
         pin(table, 1100, "org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey");
         pin(table, 1101, "org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey");
         pin(table, 1102, "org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey");
         pin(table, 1103, "org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey");
+        // RETIRED 2026-11-21 (#3530): `DrainDeadlineKey` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1104, "org.pragmatica.aether.slice.kvstore.AetherKey.DrainDeadlineKey");
         pin(table, 1105, "org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey");
         pin(table, 1106, "org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey");
@@ -399,6 +406,8 @@ public interface SystemTags {
         pin(table, 1108, "org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey");
         pin(table, 1109, "org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey");
         pin(table, 1110, "org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey");
+        // RETIRED 2026-11-21 (#3530): `JoinDeadlineKey` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1111, "org.pragmatica.aether.slice.kvstore.AetherKey.JoinDeadlineKey");
         pin(table, 1112, "org.pragmatica.aether.slice.kvstore.AetherKey.LogLevelKey");
         pin(table, 1113, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey");
@@ -429,6 +438,8 @@ public interface SystemTags {
         pin(table, 1134, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey");
         pin(table, 1135, "org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey");
         pin(table, 1136, "org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey");
+        // RETIRED 2026-11-21 (#3530): `WorkerSliceDirectiveKey` was deleted — no writer since #1535, no reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1137, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey");
         // AetherValue  [base 1600]
         // RETIRED 2026-09-27 (#1530): `AbTestRoutingValue` was deleted — no production writer or reader. The
@@ -447,12 +458,16 @@ public interface SystemTags {
         pin(table, 1609, "org.pragmatica.aether.slice.kvstore.AetherValue.CloudCredentialsValue");
         pin(table, 1610, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue");
         pin(table, 1611, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase");
+        // RETIRED 2026-11-21 (#3530): `ClusterPhaseValue` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1612, "org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhaseValue");
         pin(table, 1613, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue");
         pin(table, 1614, "org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue");
         pin(table, 1615, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue");
         pin(table, 1616, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue");
         pin(table, 1617, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue");
+        // RETIRED 2026-11-21 (#3530): `DrainDeadlineValue` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1618, "org.pragmatica.aether.slice.kvstore.AetherValue.DrainDeadlineValue");
         pin(table, 1619, "org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue");
         pin(table, 1620, "org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue");
@@ -460,6 +475,8 @@ public interface SystemTags {
         pin(table, 1622, "org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue");
         pin(table, 1623, "org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue");
         pin(table, 1624, "org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue");
+        // RETIRED 2026-11-21 (#3530): `JoinDeadlineValue` was deleted — no production writer or reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1625, "org.pragmatica.aether.slice.kvstore.AetherValue.JoinDeadlineValue");
         pin(table, 1626, "org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue");
         pin(table, 1627, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue");
@@ -476,7 +493,10 @@ public interface SystemTags {
         pin(table, 1635, "org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue");
         pin(table, 1636, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue");
         pin(table, 1637, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus");
-        pin(table, 1638, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue");
+        // #834: tag 1638 was SchemaVersionValue's, before it gained `reachedBy`. It stays the tag of that old shape (decode-only, see
+        // LegacySchemaVersionValue): a snapshot or persisted state written by an older build decodes as one unit, so one old-shape row
+        // under a tag that now meant the new shape would fail the whole restore. The current shape took 2984, its reach enum 2985.
+        pin(table, 1638, "org.pragmatica.aether.slice.kvstore.LegacySchemaVersionValue");
         pin(table, 1639, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue");
         pin(table, 1640, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue");
         pin(table, 1641, "org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus");
@@ -487,13 +507,26 @@ public interface SystemTags {
         pin(table, 1644, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageRefValue");
         pin(table, 1645, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue");
         pin(table, 1646, "org.pragmatica.aether.slice.kvstore.AetherValue.StorageStatusValue.TierStatus");
-        pin(table, 1647, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue");
-        pin(table, 1648, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue");
+        // RETIRED 2026-11-18 (#3333, flag day, know 38cad36811): `StreamConfigValue` moved to 2920 when `StreamConfig` gained
+        // its `declaration` component (#3334), so a node of an older build fails the new value on an unknown tag instead of
+        // misparsing it under a shape it does not know. First recorded renumber exception, pre-GA, no decoder kept (ST-RP-8).
+        // The pin STAYS, under a name that resolves to no class, so the tag is never reused.
+        pin(table, 1647, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValueRetiredRc6");
+        // RETIRED 2026-11-20 (#3334 S1a-1a, flag day, know 38cad36811): `StreamCursorCheckpointValue` moved to 2930 when the
+        // `AssignmentToken` it embeds gained `member`, so a node of an older build fails the new value on an unknown tag instead of
+        // misparsing it under a shape it does not know. Pre-GA, no decoder kept (ST-RP-8). The pin STAYS, under a name that
+        // resolves to no class, so the tag is never reused.
+        pin(table, 1648, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValueRetiredRc6");
         // RETIRED 2026-09-27 (#1530): `StreamMetadataValue` was deleted — no production writer or reader. The
         // pin STAYS so the tag is never reused.
         pin(table, 1649, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue");
-        pin(table, 1650, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue");
-        pin(table, 1651, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken");
+        // RETIRED 2026-11-20 (#3334 S1a-1a, flag day, know 38cad36811): `ConsumerAssignmentValue` and its `AssignmentToken` moved
+        // to 2928 and 2929 when they gained `member`; same reason and same terms as 1648 above. The pins STAY, under names that
+        // resolve to no class, so the tags are never reused.
+        pin(table, 1650, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValueRetiredRc6");
+        pin(table,
+            1651,
+            "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentTokenRetiredRc6");
         pin(table, 1652, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue");
         pin(table, 1653, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue");
         pin(table, 1654, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue");
@@ -503,6 +536,8 @@ public interface SystemTags {
         pin(table, 1655, "org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue");
         pin(table, 1656, "org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry");
         pin(table, 1657, "org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue");
+        // RETIRED 2026-11-21 (#3530): `WorkerSliceDirectiveValue` was deleted — no writer since #1535, no reader. The
+        // pin STAYS so the tag is never reused.
         pin(table, 1658, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue");
         pin(table, 1659, "org.pragmatica.aether.slice.kvstore.CommunityState");
         // entity owner-forwarding (#596)  [base 1660]
@@ -627,7 +662,11 @@ public interface SystemTags {
         pin(table, 2116, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactVersionEntry");
         // first-committed content digest per artifact file (#1778)
         pin(table, 2117, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey");
-        pin(table, 2118, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+        // RETIRED 2026-11-20 (#420, flag day, know 38cad36811): `ArtifactContentValue` moved to 2990 when it gained its `blocks`
+        // manifest, so a node of an older build fails the new value on an unknown tag instead of silently dropping the tail
+        // (know d2ce3461aa: block 2990..2999). Pre-GA, no decoder kept. The pin STAYS, under a name that resolves to no class,
+        // so the tag is never reused.
+        pin(table, 2118, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValueRetiredRc6");
         // the DHT replication a worker's projection carries (#1777 track 1) — next free after 2118
         pin(table, 2119, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication");
         // #1777 R1b: the committed DHT replication change, the members' reports, and the operator events
@@ -786,6 +825,56 @@ public interface SystemTags {
         // #2981 step 1: the node lease renewal row. Inside the impl2981s1 reservation 2910..2911 of wire-tag-ranges.txt.
         pin(table, 2910, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey");
         pin(table, 2911, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeLeaseValue");
+        // #3334 S2a1-1: the stream declaration model and the flag-day tag of `StreamConfigValue` (old tag 1647, retired above).
+        // Inside the S2a1-1 sub-allocation 2920..2925 of the rc6-streams-wire reservation in wire-tag-ranges.txt.
+        pin(table, 2920, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue");
+        pin(table, 2921, "org.pragmatica.aether.slice.StreamDeclaration");
+        pin(table, 2922, "org.pragmatica.aether.slice.RetentionDeclaration");
+        pin(table, 2923, "org.pragmatica.aether.slice.TruncationDeclaration");
+        pin(table, 2924, "org.pragmatica.aether.slice.HotWindowDeclaration");
+        pin(table, 2925, "org.pragmatica.aether.slice.TruncationPolicy");
+        // #3334 S2a1-3: the retention-changed cluster event. Inside the S2a1-3 sub-allocation 2926..2927 (2927 unused).
+        pin(table, 2926, "org.pragmatica.aether.api.ClusterEvent.StreamRetentionChanged");
+        // #3334 S1a-1a: the flag-day tags of the consumer assignment and cursor checkpoint values (old tags 1650, 1651, 1648,
+        // retired above). Inside the S1a-1a sub-allocation 2928..2930 of the rc6-streams-wire reservation in wire-tag-ranges.txt.
+        pin(table, 2928, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue");
+        pin(table, 2929, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken");
+        pin(table, 2930, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue");
+        // #3345: the HELD report carried on the pong. Inside the dht-3345-3347 reservation 2960..2961 of wire-tag-ranges.txt.
+        pin(table, 2960, "org.pragmatica.cluster.metrics.HeldReport");
+        pin(table, 2961, "org.pragmatica.cluster.metrics.HeldEnd");
+        // #3413: the drain row's key. Inside the drain-3413 reservation 2962..2979 of wire-tag-ranges.txt (know d2ce3461aa);
+        // 2963..2979 stay for the rest of the drain row.
+        pin(table, 2962, "org.pragmatica.aether.slice.kvstore.AetherKey.DrainCommandKey");
+        // #834: SchemaVersionValue with `reachedBy`, and the reach enum: block 2984..2985 of wire-tag-allocations.md (RQ-TAGS-3; 2980..2983
+        // belong to #2625); the range is reserved in wire-tag-ranges.txt first.
+        pin(table, 2984, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue");
+        pin(table, 2985, "org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach");
+        // #3303 RA-2: the transaction refusal and its kind. Block 2986..2989 of wire-tag-allocations.md, reserved in
+        // wire-tag-ranges.txt as restore-authority-3303; 2988..2989 stay for RA-4a/4b.
+        pin(table, 2986, "org.pragmatica.cluster.state.kvstore.KVCommand.Refusal");
+        pin(table, 2987, "org.pragmatica.cluster.state.kvstore.KVCommand.RefusalKind");
+        // #420 flag day: the artifact-content binding with its block manifest, and the flag-day tag of `ArtifactContentValue` (old tag
+        // 2118, retired above). Inside the 2990..2999 reservation of wire-tag-ranges.txt (know d2ce3461aa).
+        pin(table, 2990, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+        // #3458 M-1b: the named removal cause a refused read carries. Inside the 3010..3017 reservation of wire-tag-ranges.txt (stream-mem);
+        // 3017 is its last free tag, so the next stream-mem wire addition reserves a block first.
+        pin(table, 3017, "org.pragmatica.aether.slice.stream.RemovalCause");
+        // #3303 A3a: the entity seed-offer and arc-waiver keys. Inside the arc-3303 reservation 3018..3037 of wire-tag-ranges.txt (know f3033886ee).
+        pin(table, 3018, "org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey");
+        pin(table, 3019, "org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey");
+        // #3303 A3b: the seed-offer and arc-waiver values, with the offer's nested entry and the waiver's cause enum. Same reservation.
+        pin(table, 3020, "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue");
+        pin(table, 3021, "org.pragmatica.aether.slice.kvstore.AetherValue.EntitySeedOfferValue.OfferEntry");
+        pin(table, 3022, "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue");
+        pin(table, 3023, "org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase");
+        // #3303 S4b: the partition-state value with its election and state enum, and its key (the key class lands with the
+        // next step; a pin names a class by string, so it needs no class yet). Inside the 3070..3109 reservation of
+        // wire-tag-ranges.txt.
+        pin(table, 3070, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue");
+        pin(table, 3071, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue.Election");
+        pin(table, 3072, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue.PartitionState");
+        pin(table, 3073, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionStateKey");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

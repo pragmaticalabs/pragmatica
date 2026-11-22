@@ -147,7 +147,7 @@ public final class WebSocketAuthenticator {
     private boolean validateApiKeyAndRespond(WebSocketSession session, String apiKey, Runnable onAuthSuccess) {
         var headers = Map.of("x-api-key", List.of(apiKey));
         var context = HttpRequestContext.httpRequestContext("/ws", "GET", Map.of(), headers, "ws-auth");
-        var result = securityValidator.validate(context, SecurityPolicy.apiKeyRequired());
+        var result = securityValidator.context(context, SecurityPolicy.apiKeyRequired());
 
         if (result.isSuccess()) {
             acceptSession(session,

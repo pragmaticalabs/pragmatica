@@ -32,6 +32,7 @@ import org.pragmatica.swim.SwimMembershipListener;
 import org.pragmatica.swim.SwimMessage;
 import org.pragmatica.swim.SwimMessage.AppGossip;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -79,7 +80,7 @@ class CoreSwimHealthDetectorGossipChannelTest {
                                                                  () -> Epoch.epoch(0L, 7L, 3L),
                                                                  () -> true,
                                                                  PeerObservationStore.peerObservationStore());
-        swim = SwimProtocol.swimProtocol(SwimConfig.DEFAULT,
+        swim = SwimTestProtocols.swimProtocol(SwimConfig.DEFAULT,
                                          new StubTransport(),
                                          noopListener(),
                                          SELF,

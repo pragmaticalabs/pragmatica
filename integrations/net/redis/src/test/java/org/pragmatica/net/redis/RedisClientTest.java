@@ -2,12 +2,17 @@ package org.pragmatica.net.redis;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -119,13 +124,21 @@ class RedisClientTest {
         assertThat(server.received()).hasSize(1);
     }
 
+    /// Claim: client creation over a refused connect fails typed ConnectionFailed. The refusal is scripted (#3558),
+    /// and the count pins that start passes the factory through to the connection: a real connect to port 1 is
+    /// refused by the kernel too, so the type alone cannot tell the scripted channel from a real one.
     @Test
-    void unreachableServerFailsClientCreation() throws IOException {
-        try (var unreachable = UnreachablePort.hold()) {
-            var cfg = RedisConfig.redisConfig("127.0.0.1", unreachable.port()).unwrap();
+    void refusedConnectFailsClientCreation() {
+        var cfg = RedisConfig.redisConfig("127.0.0.1", 1).unwrap();
+        var made = new AtomicInteger();
+        var result = RedisClient.start(cfg,
+                                       Option.none(),
+                                       () -> new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()),
+                                       ScriptedConnect.counted(ScriptedConnect.refused(), made))
+                                .await(WAIT);
 
-            assertThat(kind(RedisClient.redisClient(cfg).await(WAIT))).isEqualTo("ConnectionFailed");
-        }
+        assertThat(kind(result)).isEqualTo("ConnectionFailed");
+        assertThat(made.get()).as("channels made by the injected factory").isPositive();
     }
 
     @Test

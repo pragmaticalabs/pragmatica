@@ -23,7 +23,6 @@ import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionAssignme
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionCursor;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
@@ -293,10 +292,6 @@ public final class StreamRoutes implements RouteSource {
                     .intValue();
     }
 
-    private static final RetentionPolicy MANAGEMENT_API_RETENTION = RetentionPolicy.retentionPolicy(10_000,
-                                                                                                    4 * 1024 * 1024L,
-                                                                                                    60 * 60 * 1000L);
-
     /// Publish auto-create guard. A stream ALREADY materialized locally carries its own committed
     /// `StreamConfig` — an app/blueprint-declared stream keeps its replication factors — so the management
     /// publish path must leave it INTACT rather than fabricate and commit a MANAGEMENT DEFAULT over it (which
@@ -335,7 +330,7 @@ public final class StreamRoutes implements RouteSource {
                                                                                                                                              .kvStore(),
                                                                                                                                  StreamConfig.streamConfig(unreserved,
                                                                                                                                                            DEFAULT_PARTITIONS,
-                                                                                                                                                           MANAGEMENT_API_RETENTION,
+                                                                                                                                                           StreamApiRoutes.defaultRetention(DEFAULT_PARTITIONS),
                                                                                                                                                            "latest")));
     }
 

@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.io.IOException;
@@ -14,9 +13,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.forge.EquivalenceComparison.Arm;
 import org.pragmatica.aether.slice.SliceState;
@@ -33,8 +29,13 @@ import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 
 /// F4 instrument validation, offline (FSM replacement plan 3.3; #2763): before any counted run, every control of the comparison, the monitor
 /// and the oracle must fire on a synthetic but engine-shaped record, and a clean record must read clean. A control that cannot fire here can
@@ -53,9 +54,15 @@ class EquivalenceInstrumentTest {
     private static Map<AetherKey, AetherValue> shared(int target) {
         var kv = new HashMap<AetherKey, AetherValue>();
 
-        kv.put(AetherKey.SliceTargetKey.sliceTargetKey(SLICE.base()), AetherValue.SliceTargetValue.sliceTargetValue(SLICE.version(), target));
+        kv.put(AetherKey.SliceTargetKey.sliceTargetKey(SLICE.base()),
+               AetherValue.SliceTargetValue.sliceTargetValue(SLICE.version(), target));
         kv.put(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BLUEPRINT),
-               new AetherValue.DeploymentOutcomeValue(AetherValue.DeploymentOutcomeStatus.SUCCEEDED, List.of(), "", 1L, 2L, "a1"));
+               new AetherValue.DeploymentOutcomeValue(AetherValue.DeploymentOutcomeStatus.SUCCEEDED,
+                                                      List.of(),
+                                                      "",
+                                                      1L,
+                                                      2L,
+                                                      "a1"));
 
         return kv;
     }
@@ -64,7 +71,8 @@ class EquivalenceInstrumentTest {
         var kv = shared(3);
 
         for (var index = 0; index < active; index++) {
-            kv.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            kv.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE),
+                   AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
         }
 
         return kv;
@@ -76,9 +84,18 @@ class EquivalenceInstrumentTest {
         for (var index = 0; index < active; index++) {
             var generation = new AetherValue.Generation(1L, index + 1L);
 
-            kv.put(AetherKey.SliceDesiredKey.sliceDesiredKey(CORES.get(index), SLICE), new AetherValue.SliceDesiredValue(AetherValue.SliceGoal.ACTIVE, generation, 0L));
+            kv.put(AetherKey.SliceDesiredKey.sliceDesiredKey(CORES.get(index), SLICE),
+                   new AetherValue.SliceDesiredValue(AetherValue.SliceGoal.ACTIVE, generation, 0L));
             kv.put(AetherKey.SliceObservedKey.sliceObservedKey(CORES.get(index), SLICE),
-                   new AetherValue.SliceObservedValue(AetherValue.SliceObservedState.ACTIVE, 1L, generation, new AetherValue.ProcessIncarnation(1L, 7L), Option.none(), false, 0, List.of(), 0L));
+                   new AetherValue.SliceObservedValue(AetherValue.SliceObservedState.ACTIVE,
+                                                      1L,
+                                                      generation,
+                                                      new AetherValue.ProcessIncarnation(1L, 7L),
+                                                      Option.none(),
+                                                      false,
+                                                      0,
+                                                      List.of(),
+                                                      0L));
         }
 
         return kv;
@@ -91,7 +108,10 @@ class EquivalenceInstrumentTest {
         for (var second = 0; second <= 25; second++) {
             var active = Math.min(3, second);
 
-            samples.add(new EquivalenceMonitor.Sample(second * 1_000L, new EquivalenceKv(fsm2 ? fsm2Kv(active) : legacyKv(active))));
+            samples.add(new EquivalenceMonitor.Sample(second * 1_000L,
+                                                      new EquivalenceKv(fsm2
+                                                                        ? fsm2Kv(active)
+                                                                        : legacyKv(active))));
         }
 
         return samples;
@@ -99,7 +119,9 @@ class EquivalenceInstrumentTest {
 
     private static Arm arm(String engine, boolean fsm2) {
         return new Arm(engine,
-                       new EquivalenceKv(fsm2 ? fsm2Kv(3) : legacyKv(3)),
+                       new EquivalenceKv(fsm2
+                                         ? fsm2Kv(3)
+                                         : legacyKv(3)),
                        Set.copyOf(CORES),
                        deploySamples(fsm2),
                        10,
@@ -122,14 +144,25 @@ class EquivalenceInstrumentTest {
             var fsm2Divergences = EquivalenceComparison.compare(legacy, fsm2, MONITOR);
             var controlDivergences = EquivalenceComparison.compare(legacy, control, MONITOR);
 
-            assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, controlDivergences, List.of())).as(controlDivergences.toString()).isEmpty();
+            assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences,
+                                                                  controlDivergences,
+                                                                  List.of())).as(controlDivergences.toString())
+                      .isEmpty();
         }
 
         /// The family list is pinned by literal, not against itself: shrinking it (O4 is absent by design: its control is the scripted batch) would
         /// otherwise hide a family from `silentFamilies`. Mutation: drop any family from `FAMILIES`; this goes red.
         @Test
         void families_arePinnedByLiteral() {
-            assertThat(EquivalenceDivergentControl.FAMILIES).containsExactly("O1", "O2", "O3", "O5", "O6", "MON-i", "MON-ii", "MON-iii", "MON-iv");
+            assertThat(EquivalenceDivergentControl.FAMILIES).containsExactly("O1",
+                                                                             "O2",
+                                                                             "O3",
+                                                                             "O5",
+                                                                             "O6",
+                                                                             "MON-i",
+                                                                             "MON-ii",
+                                                                             "MON-iii",
+                                                                             "MON-iv");
         }
 
         /// An FSM2 arm that ALREADY diverges on a family must not credit a control that only repeats that divergence: here FSM2 is under-placed (O2)
@@ -138,10 +171,19 @@ class EquivalenceInstrumentTest {
         @Test
         void aControl_repeatingOnlyAnFsm2DivergenceIsSilent_onAnFsm2ArmThatAlreadyDiverges() {
             var legacy = arm("legacy", false);
-            var underPlaced = new Arm("fsm2", new EquivalenceKv(fsm2Kv(2)), Set.copyOf(CORES), deploySamples(true), 10, 4_000L, Map.of());
+            var underPlaced = new Arm("fsm2",
+                                      new EquivalenceKv(fsm2Kv(2)),
+                                      Set.copyOf(CORES),
+                                      deploySamples(true),
+                                      10,
+                                      4_000L,
+                                      Map.of());
             var fsm2Divergences = EquivalenceComparison.compare(legacy, underPlaced, MONITOR);
             var echoed = fsm2Divergences.stream()
-                                        .map(divergence -> new EquivalenceComparison.Divergence(divergence.family(), divergence.detail().replace("fsm2", "control")))
+                                        .map(divergence -> new EquivalenceComparison.Divergence(divergence.family(),
+                                                                                                divergence.detail()
+                                                                                                          .replace("fsm2",
+                                                                                                                   "control")))
                                         .toList();
 
             assertThat(fsm2Divergences).extracting(EquivalenceComparison.Divergence::family).contains("O2");
@@ -152,23 +194,42 @@ class EquivalenceInstrumentTest {
         /// the LEGACY `o2` call, the LEGACY `residue` call, the LEGACY monitor check; each goes red in its test.
         @Test
         void aLegacyUnderPlacement_isO2() {
-            var divergences = EquivalenceComparison.compare(new Arm("legacy", new EquivalenceKv(legacyKv(2)), Set.copyOf(CORES), deploySamples(false), 10, 4_000L, Map.of()),
+            var divergences = EquivalenceComparison.compare(new Arm("legacy",
+                                                                    new EquivalenceKv(legacyKv(2)),
+                                                                    Set.copyOf(CORES),
+                                                                    deploySamples(false),
+                                                                    10,
+                                                                    4_000L,
+                                                                    Map.of()),
                                                             arm("fsm2", true),
                                                             MONITOR);
 
-            assertThat(divergences).extracting(EquivalenceComparison.Divergence::describe).singleElement().asString().startsWith("O2: legacy ");
+            assertThat(divergences).extracting(EquivalenceComparison.Divergence::describe)
+                      .singleElement()
+                      .asString()
+                      .startsWith("O2: legacy ");
         }
 
         @Test
         void aLegacyResidueRow_isO3() {
             var kv = legacyKv(3);
 
-            kv.put(new AetherKey.NodeArtifactKey(node("gone"), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.FAILED));
-            var divergences = EquivalenceComparison.compare(new Arm("legacy", new EquivalenceKv(kv), Set.copyOf(CORES), deploySamples(false), 10, 4_000L, Map.of()),
+            kv.put(new AetherKey.NodeArtifactKey(node("gone"), SLICE),
+                   AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.FAILED));
+            var divergences = EquivalenceComparison.compare(new Arm("legacy",
+                                                                    new EquivalenceKv(kv),
+                                                                    Set.copyOf(CORES),
+                                                                    deploySamples(false),
+                                                                    10,
+                                                                    4_000L,
+                                                                    Map.of()),
                                                             arm("fsm2", true),
                                                             MONITOR);
 
-            assertThat(divergences).extracting(EquivalenceComparison.Divergence::describe).singleElement().asString().startsWith("O3: legacy residue ");
+            assertThat(divergences).extracting(EquivalenceComparison.Divergence::describe)
+                      .singleElement()
+                      .asString()
+                      .startsWith("O3: legacy residue ");
         }
 
         @Test
@@ -176,11 +237,24 @@ class EquivalenceInstrumentTest {
             var samples = new ArrayList<>(deploySamples(false));
             var overshoot = legacyKv(3);
 
-            overshoot.put(new AetherKey.NodeArtifactKey(node("n4"), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            overshoot.put(new AetherKey.NodeArtifactKey(node("n4"), SLICE),
+                          AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
             samples.add(new EquivalenceMonitor.Sample(40_000L, new EquivalenceKv(overshoot)));
-            var divergences = EquivalenceComparison.compare(new Arm("legacy", new EquivalenceKv(legacyKv(3)), Set.copyOf(CORES), samples, 10, 4_000L, Map.of()), arm("fsm2", true), MONITOR);
+            var divergences = EquivalenceComparison.compare(new Arm("legacy",
+                                                                    new EquivalenceKv(legacyKv(3)),
+                                                                    Set.copyOf(CORES),
+                                                                    samples,
+                                                                    10,
+                                                                    4_000L,
+                                                                    Map.of()),
+                                                            arm("fsm2", true),
+                                                            MONITOR);
 
-            assertThat(divergences).extracting(EquivalenceComparison.Divergence::describe).singleElement().asString().contains("MON-i").contains("legacy");
+            assertThat(divergences).extracting(EquivalenceComparison.Divergence::describe)
+                      .singleElement()
+                      .asString()
+                      .contains("MON-i")
+                      .contains("legacy");
         }
 
         /// The control is judged against what FSM2 already shows: a family FSM2 already diverges on must still show the control's own finding.
@@ -199,7 +273,11 @@ class EquivalenceInstrumentTest {
             var legacy = withVerdict(arm("legacy", false), AetherValue.DeploymentOutcomeStatus.FAILED);
             var fsm2 = withVerdict(arm("fsm2", true), AetherValue.DeploymentOutcomeStatus.ROLLED_BACK);
             var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
-            var silent = EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR), EquivalenceComparison.compare(legacy, control, MONITOR), List.of());
+            var silent = EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR),
+                                                                    EquivalenceComparison.compare(legacy,
+                                                                                                  control,
+                                                                                                  MONITOR),
+                                                                    List.of());
 
             assertThat(silent).doesNotContain("O1");
         }
@@ -228,27 +306,42 @@ class EquivalenceInstrumentTest {
             var rolledBack = withVerdict(arm("fsm2", true), AetherValue.DeploymentOutcomeStatus.ROLLED_BACK);
             var fsm2Succeeded = withVerdict(arm("fsm2", true), AetherValue.DeploymentOutcomeStatus.SUCCEEDED);
 
-            assertThat(EquivalenceComparison.compare(failed, rolledBack, MONITOR, "E01")).extracting(EquivalenceComparison.Divergence::family).contains("O1");
-            assertThat(EquivalenceComparison.compare(failed, rolledBack, MONITOR)).extracting(EquivalenceComparison.Divergence::family).contains("O1");
-            assertThat(EquivalenceComparison.compare(failed, fsm2Succeeded, MONITOR, "E09")).extracting(EquivalenceComparison.Divergence::family).contains("O1");
-            assertThat(EquivalenceComparison.compare(succeeded, rolledBack, MONITOR, "E09")).extracting(EquivalenceComparison.Divergence::family).contains("O1");
+            assertThat(EquivalenceComparison.compare(failed, rolledBack, MONITOR, "E01")).extracting(EquivalenceComparison.Divergence::family)
+                      .contains("O1");
+            assertThat(EquivalenceComparison.compare(failed, rolledBack, MONITOR)).extracting(EquivalenceComparison.Divergence::family)
+                      .contains("O1");
+            assertThat(EquivalenceComparison.compare(failed, fsm2Succeeded, MONITOR, "E09")).extracting(EquivalenceComparison.Divergence::family)
+                      .contains("O1");
+            assertThat(EquivalenceComparison.compare(succeeded, rolledBack, MONITOR, "E09")).extracting(EquivalenceComparison.Divergence::family)
+                      .contains("O1");
         }
 
         /// The E-09 O4 allow-list (CTO R2): a slot made only of rollback transitions is excluded on E-09; a slot that mixes one in with anything
         /// else (the ROLLED_BACK terminal batch, which also promotes a goal) and every load-side transition stay counted; no other scenario excludes.
         @Test
         void e09RollbackAllowList_excludesPureRollbackSlotsOnly() {
-            var slots = Map.of(1L, List.of("SliceObservedKey put LOADING slice-observed/n1/a"),
-                               2L, List.of("SliceObservedKey put ACTIVE slice-observed/n1/a"),
-                               3L, List.of("SliceDesiredKey put UNLOADED slice-desired/n1/a",
-                                           "SliceDesiredKey put ACTIVE slice-desired/n1/b",
-                                           "DeploymentOutcomeKey put ROLLED_BACK deployment-outcome/x"),
-                               4L, List.of("SliceObservedKey put UNLOADING slice-observed/n1/a"),
-                               5L, List.of("SliceObservedKey put UNLOADED slice-observed/n1/a"),
-                               6L, List.of("SliceObservedKey remove - slice-observed/n1/a"),
-                               7L, List.of("SliceDesiredKey remove - slice-desired/n1/a"),
-                               8L, List.of("SliceTargetKey remove - slice-target/a", "SliceTargetKey remove - slice-target/b"),
-                               9L, List.of("SliceDesiredKey put UNLOADED slice-desired/n1/b", "SliceDesiredKey put UNLOADED slice-desired/n2/b"));
+            var slots = Map.of(1L,
+                               List.of("SliceObservedKey put LOADING slice-observed/n1/a"),
+                               2L,
+                               List.of("SliceObservedKey put ACTIVE slice-observed/n1/a"),
+                               3L,
+                               List.of("SliceDesiredKey put UNLOADED slice-desired/n1/a",
+                                       "SliceDesiredKey put ACTIVE slice-desired/n1/b",
+                                       "DeploymentOutcomeKey put ROLLED_BACK deployment-outcome/x"),
+                               4L,
+                               List.of("SliceObservedKey put UNLOADING slice-observed/n1/a"),
+                               5L,
+                               List.of("SliceObservedKey put UNLOADED slice-observed/n1/a"),
+                               6L,
+                               List.of("SliceObservedKey remove - slice-observed/n1/a"),
+                               7L,
+                               List.of("SliceDesiredKey remove - slice-desired/n1/a"),
+                               8L,
+                               List.of("SliceTargetKey remove - slice-target/a",
+                                       "SliceTargetKey remove - slice-target/b"),
+                               9L,
+                               List.of("SliceDesiredKey put UNLOADED slice-desired/n1/b",
+                                       "SliceDesiredKey put UNLOADED slice-desired/n2/b"));
 
             assertThat(EquivalenceComparison.o4Counted(slots, "E09")).isEqualTo(3L);
             assertThat(EquivalenceComparison.o4Counted(slots, "E01")).isEqualTo(9L);
@@ -260,17 +353,32 @@ class EquivalenceInstrumentTest {
         /// and removes place nothing.
         @Test
         void placement_comparesPerArtifactNodeCountsAcrossEngines() {
-            var legacyOneNode = Map.of(1L, List.of("NodeArtifactKey put LOAD node-artifact/l1/a", "NodeArtifactKey put LOAD node-artifact/l1/b"),
-                                       2L, List.of("NodeArtifactKey put UNLOAD node-artifact/l2/a", "NodeArtifactKey remove - node-artifact/l3/a"));
-            var legacyThreeNodes = Map.of(1L, List.of("NodeArtifactKey put LOAD node-artifact/l1/a", "NodeArtifactKey put LOAD node-artifact/l2/a"),
-                                          2L, List.of("NodeArtifactKey put LOADING node-artifact/l3/a", "NodeArtifactKey put FAILED node-artifact/l1/b"),
-                                          3L, List.of("NodeArtifactKey put LOAD node-artifact/l2/b", "NodeArtifactKey put LOAD node-artifact/l3/b"));
-            var fsm2ThreeNodes = Map.of(1L, List.of("SliceDesiredKey put LOADED slice-desired/f1/a",
-                                                    "SliceDesiredKey put LOADED slice-desired/f2/a",
-                                                    "SliceDesiredKey put LOADED slice-desired/f3/a",
-                                                    "DeploymentOutcomeKey put IN_PROGRESS deployment-outcome/x"),
-                                        2L, List.of("SliceObservedKey put LOADING slice-observed/f1/b", "SliceObservedKey put LOADING slice-observed/f2/b"),
-                                        3L, List.of("SliceObservedKey put FAILED slice-observed/f3/b", "SliceObservedKey put UNLOADED slice-observed/f4/b"));
+            var legacyOneNode = Map.of(1L,
+                                       List.of("NodeArtifactKey put LOAD node-artifact/l1/a",
+                                               "NodeArtifactKey put LOAD node-artifact/l1/b"),
+                                       2L,
+                                       List.of("NodeArtifactKey put UNLOAD node-artifact/l2/a",
+                                               "NodeArtifactKey remove - node-artifact/l3/a"));
+            var legacyThreeNodes = Map.of(1L,
+                                          List.of("NodeArtifactKey put LOAD node-artifact/l1/a",
+                                                  "NodeArtifactKey put LOAD node-artifact/l2/a"),
+                                          2L,
+                                          List.of("NodeArtifactKey put LOADING node-artifact/l3/a",
+                                                  "NodeArtifactKey put FAILED node-artifact/l1/b"),
+                                          3L,
+                                          List.of("NodeArtifactKey put LOAD node-artifact/l2/b",
+                                                  "NodeArtifactKey put LOAD node-artifact/l3/b"));
+            var fsm2ThreeNodes = Map.of(1L,
+                                        List.of("SliceDesiredKey put LOADED slice-desired/f1/a",
+                                                "SliceDesiredKey put LOADED slice-desired/f2/a",
+                                                "SliceDesiredKey put LOADED slice-desired/f3/a",
+                                                "DeploymentOutcomeKey put IN_PROGRESS deployment-outcome/x"),
+                                        2L,
+                                        List.of("SliceObservedKey put LOADING slice-observed/f1/b",
+                                                "SliceObservedKey put LOADING slice-observed/f2/b"),
+                                        3L,
+                                        List.of("SliceObservedKey put FAILED slice-observed/f3/b",
+                                                "SliceObservedKey put UNLOADED slice-observed/f4/b"));
 
             assertThat(EquivalenceComparison.placement(legacyOneNode)).isEqualTo("[a=1 nodes, b=1 nodes]");
             assertThat(EquivalenceComparison.placement(fsm2ThreeNodes)).isEqualTo("[a=3 nodes, b=3 nodes]");
@@ -281,16 +389,32 @@ class EquivalenceInstrumentTest {
         private static Arm withVerdict(Arm arm, AetherValue.DeploymentOutcomeStatus status) {
             var kv = new HashMap<>(arm.quiescent().entries());
 
-            kv.put(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BLUEPRINT), new AetherValue.DeploymentOutcomeValue(status, List.of(), "", 1L, 2L, "a1"));
+            kv.put(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BLUEPRINT),
+                   new AetherValue.DeploymentOutcomeValue(status, List.of(), "", 1L, 2L, "a1"));
 
-            return new Arm(arm.engine(), new EquivalenceKv(kv), arm.liveNodes(), arm.samples(), arm.o4Batches(), arm.o5PlacementMs(), arm.o6());
+            return new Arm(arm.engine(),
+                           new EquivalenceKv(kv),
+                           arm.liveNodes(),
+                           arm.samples(),
+                           arm.o4Batches(),
+                           arm.o5PlacementMs(),
+                           arm.o6());
         }
 
         @Test
         void underPlacement_isO2_andAFlippedVerdict_isO1() {
             var legacy = arm("legacy", false);
-            var short1 = new Arm("fsm2", new EquivalenceKv(fsm2Kv(2)), Set.copyOf(CORES), deploySamples(true), 10, 4_000L, Map.of());
-            var families = EquivalenceComparison.compare(legacy, short1, MONITOR).stream().map(EquivalenceComparison.Divergence::family).toList();
+            var short1 = new Arm("fsm2",
+                                 new EquivalenceKv(fsm2Kv(2)),
+                                 Set.copyOf(CORES),
+                                 deploySamples(true),
+                                 10,
+                                 4_000L,
+                                 Map.of());
+            var families = EquivalenceComparison.compare(legacy, short1, MONITOR)
+                                                .stream()
+                                                .map(EquivalenceComparison.Divergence::family)
+                                                .toList();
 
             assertThat(families).containsExactly("O2");
         }
@@ -301,12 +425,24 @@ class EquivalenceInstrumentTest {
             var kv = fsm2Kv(3);
             var gone = node("gone");
 
-            kv.put(AetherKey.SliceDesiredKey.sliceDesiredKey(gone, SLICE), new AetherValue.SliceDesiredValue(AetherValue.SliceGoal.UNLOADED, new AetherValue.Generation(1L, 9L), 0L));
+            kv.put(AetherKey.SliceDesiredKey.sliceDesiredKey(gone, SLICE),
+                   new AetherValue.SliceDesiredValue(AetherValue.SliceGoal.UNLOADED,
+                                                     new AetherValue.Generation(1L, 9L),
+                                                     0L));
             var tombstoneOnly = new Arm("fsm2", new EquivalenceKv(kv), Set.copyOf(CORES), List.of(), 1, 1L, Map.of());
 
             assertThat(EquivalenceComparison.residue(tombstoneOnly)).isEmpty();
-            kv.put(AetherKey.SliceDesiredKey.sliceDesiredKey(gone, SLICE), new AetherValue.SliceDesiredValue(AetherValue.SliceGoal.ACTIVE, new AetherValue.Generation(1L, 9L), 0L));
-            assertThat(EquivalenceComparison.residue(new Arm("fsm2", new EquivalenceKv(kv), Set.copyOf(CORES), List.of(), 1, 1L, Map.of()))).hasSize(1);
+            kv.put(AetherKey.SliceDesiredKey.sliceDesiredKey(gone, SLICE),
+                   new AetherValue.SliceDesiredValue(AetherValue.SliceGoal.ACTIVE,
+                                                     new AetherValue.Generation(1L, 9L),
+                                                     0L));
+            assertThat(EquivalenceComparison.residue(new Arm("fsm2",
+                                                             new EquivalenceKv(kv),
+                                                             Set.copyOf(CORES),
+                                                             List.of(),
+                                                             1,
+                                                             1L,
+                                                             Map.of()))).hasSize(1);
         }
 
         /// The tombstone exemption ends with the 120 s grace: a tombstone of a departed node issued exactly 120 s before the snapshot is exempt, one
@@ -317,9 +453,28 @@ class EquivalenceInstrumentTest {
             var kv = fsm2Kv(3);
             var gone = node("gone");
 
-            kv.put(AetherKey.SliceDesiredKey.sliceDesiredKey(gone, SLICE), new AetherValue.SliceDesiredValue(AetherValue.SliceGoal.UNLOADED, new AetherValue.Generation(1L, 9L), 1_000L));
-            var atBound = new Arm("fsm2", new EquivalenceKv(kv), Set.copyOf(CORES), List.of(), 1, 1L, Map.of(), List.of(), 1_000L + EquivalenceComparison.TOMBSTONE_GRACE_MS);
-            var past = new Arm("fsm2", new EquivalenceKv(kv), Set.copyOf(CORES), List.of(), 1, 1L, Map.of(), List.of(), 1_001L + EquivalenceComparison.TOMBSTONE_GRACE_MS);
+            kv.put(AetherKey.SliceDesiredKey.sliceDesiredKey(gone, SLICE),
+                   new AetherValue.SliceDesiredValue(AetherValue.SliceGoal.UNLOADED,
+                                                     new AetherValue.Generation(1L, 9L),
+                                                     1_000L));
+            var atBound = new Arm("fsm2",
+                                  new EquivalenceKv(kv),
+                                  Set.copyOf(CORES),
+                                  List.of(),
+                                  1,
+                                  1L,
+                                  Map.of(),
+                                  List.of(),
+                                  1_000L + EquivalenceComparison.TOMBSTONE_GRACE_MS);
+            var past = new Arm("fsm2",
+                               new EquivalenceKv(kv),
+                               Set.copyOf(CORES),
+                               List.of(),
+                               1,
+                               1L,
+                               Map.of(),
+                               List.of(),
+                               1_001L + EquivalenceComparison.TOMBSTONE_GRACE_MS);
 
             assertThat(EquivalenceComparison.residue(atBound)).isEmpty();
             assertThat(EquivalenceComparison.residue(past)).hasSize(1);
@@ -329,20 +484,34 @@ class EquivalenceInstrumentTest {
         /// placement to credit it. Mutation: plant `1L` whenever FSM2 is negative (the old fallback); `control.o5PlacementMs()` goes red.
         @Test
         void o5_isNotMeasured_whenNeitherArmPlaces_andNothingIsPlanted() {
-            var legacy = new Arm("legacy", new EquivalenceKv(legacyKv(0)), Set.copyOf(CORES), deploySamples(false), 1, -1L, Map.of());
-            var fsm2 = new Arm("fsm2", new EquivalenceKv(fsm2Kv(0)), Set.copyOf(CORES), deploySamples(true), 1, -1L, Map.of());
+            var legacy = new Arm("legacy",
+                                 new EquivalenceKv(legacyKv(0)),
+                                 Set.copyOf(CORES),
+                                 deploySamples(false),
+                                 1,
+                                 - 1L,
+                                 Map.of());
+            var fsm2 = new Arm("fsm2",
+                               new EquivalenceKv(fsm2Kv(0)),
+                               Set.copyOf(CORES),
+                               deploySamples(true),
+                               1,
+                               - 1L,
+                               Map.of());
             var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
             var notMeasured = EquivalenceComparison.notMeasured(legacy, fsm2);
 
             assertThat(control.o5PlacementMs()).isEqualTo(-1L);
             assertThat(notMeasured).contains("O5");
-            assertThat(EquivalenceComparison.compare(legacy, control, MONITOR)).extracting(EquivalenceComparison.Divergence::family).doesNotContain("O5");
+            assertThat(EquivalenceComparison.compare(legacy, control, MONITOR)).extracting(EquivalenceComparison.Divergence::family)
+                      .doesNotContain("O5");
             assertThat(EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR),
                                                                   EquivalenceComparison.compare(legacy, control, MONITOR),
                                                                   notMeasured)).doesNotContain("O5");
             assertThat(EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR),
                                                                   EquivalenceComparison.compare(legacy, control, MONITOR),
-                                                                  List.of())).as("measured, the unplanted family would be silent").contains("O5");
+                                                                  List.of())).as("measured, the unplanted family would be silent")
+                      .contains("O5");
         }
 
         /// E-03 shape: the undeploy leaves no outcome and no target in either arm, so O1 and O2 compared nothing. Neither control plants a fallback
@@ -350,11 +519,26 @@ class EquivalenceInstrumentTest {
         /// `doesNotContain` goes red.
         @Test
         void o1AndO2_areNotMeasured_whenThereIsNoOutcomeAndNoTarget_andNothingIsPlanted() {
-            var legacy = new Arm("legacy", new EquivalenceKv(Map.of()), Set.copyOf(CORES), deploySamples(false), 1, 4_000L, Map.of());
-            var fsm2 = new Arm("fsm2", new EquivalenceKv(Map.of()), Set.copyOf(CORES), deploySamples(true), 1, 4_000L, Map.of());
+            var legacy = new Arm("legacy",
+                                 new EquivalenceKv(Map.of()),
+                                 Set.copyOf(CORES),
+                                 deploySamples(false),
+                                 1,
+                                 4_000L,
+                                 Map.of());
+            var fsm2 = new Arm("fsm2",
+                               new EquivalenceKv(Map.of()),
+                               Set.copyOf(CORES),
+                               deploySamples(true),
+                               1,
+                               4_000L,
+                               Map.of());
             var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
             var notMeasured = EquivalenceComparison.notMeasured(legacy, fsm2);
-            var controlFamilies = EquivalenceComparison.compare(legacy, control, MONITOR).stream().map(EquivalenceComparison.Divergence::family).toList();
+            var controlFamilies = EquivalenceComparison.compare(legacy, control, MONITOR)
+                                                       .stream()
+                                                       .map(EquivalenceComparison.Divergence::family)
+                                                       .toList();
 
             assertThat(notMeasured).containsExactly("O1", "O2");
             assertThat(controlFamilies).doesNotContain("O1", "O2");
@@ -367,12 +551,25 @@ class EquivalenceInstrumentTest {
         /// only where the real comparison had something to compare.
         @Test
         void o2_isMeasuredWithAnUnplacedTarget_andItsControlStillFires() {
-            var legacy = new Arm("legacy", new EquivalenceKv(shared(3)), Set.copyOf(CORES), deploySamples(false), 1, 4_000L, Map.of());
-            var fsm2 = new Arm("fsm2", new EquivalenceKv(shared(3)), Set.copyOf(CORES), deploySamples(true), 1, 4_000L, Map.of());
+            var legacy = new Arm("legacy",
+                                 new EquivalenceKv(shared(3)),
+                                 Set.copyOf(CORES),
+                                 deploySamples(false),
+                                 1,
+                                 4_000L,
+                                 Map.of());
+            var fsm2 = new Arm("fsm2",
+                               new EquivalenceKv(shared(3)),
+                               Set.copyOf(CORES),
+                               deploySamples(true),
+                               1,
+                               4_000L,
+                               Map.of());
             var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
 
             assertThat(EquivalenceComparison.notMeasured(legacy, fsm2)).doesNotContain("O2");
-            assertThat(EquivalenceComparison.compare(legacy, control, MONITOR)).extracting(EquivalenceComparison.Divergence::family).contains("O2");
+            assertThat(EquivalenceComparison.compare(legacy, control, MONITOR)).extracting(EquivalenceComparison.Divergence::family)
+                      .contains("O2");
             // FSM2's own under-placement already supplies an O2 finding; only the plant (a different target) makes the control's finding new.
             // Mutation: remove the unplaced-target plant (K10); the control repeats FSM2's finding and `silentFamilies` names O2.
             assertThat(EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR),
@@ -387,18 +584,32 @@ class EquivalenceInstrumentTest {
         @Test
         void aOneArmOnlyFsm2Divergence_isDiverge_notVoid() {
             var legacy = arm("legacy", false);
-            var neverPlaces = new Arm("fsm2", new EquivalenceKv(fsm2Kv(3)), Set.copyOf(CORES), deploySamples(true), 10, -1L, Map.of());
+            var neverPlaces = new Arm("fsm2",
+                                      new EquivalenceKv(fsm2Kv(3)),
+                                      Set.copyOf(CORES),
+                                      deploySamples(true),
+                                      10,
+                                      - 1L,
+                                      Map.of());
             var noOutcome = withoutKeys(arm("fsm2", true), AetherKey.DeploymentOutcomeKey.class);
             var noTarget = withoutKeys(arm("fsm2", true), AetherKey.SliceTargetKey.class);
 
             assertThat(oneArmFindings(legacy, neverPlaces)).as("FSM2 never places").contains("O5");
-            assertThat(oneArmFindings(neverPlacesLegacy(), arm("fsm2", true))).as("LEGACY never places, FSM2 does").contains("O5");
+            assertThat(oneArmFindings(neverPlacesLegacy(),
+                                      arm("fsm2", true))).as("LEGACY never places, FSM2 does")
+                      .contains("O5");
             assertThat(oneArmFindings(legacy, noOutcome)).as("FSM2 has no outcome").contains("O1");
             assertThat(oneArmFindings(legacy, noTarget)).as("FSM2 has no target").doesNotContain("O2");
         }
 
         private static Arm neverPlacesLegacy() {
-            return new Arm("legacy", new EquivalenceKv(legacyKv(3)), Set.copyOf(CORES), deploySamples(false), 10, -1L, Map.of());
+            return new Arm("legacy",
+                           new EquivalenceKv(legacyKv(3)),
+                           Set.copyOf(CORES),
+                           deploySamples(false),
+                           10,
+                           - 1L,
+                           Map.of());
         }
 
         /// The families the REAL comparison reports for the one-arm arm, restricted to those whose control stayed silent; the real comparison
@@ -406,11 +617,17 @@ class EquivalenceInstrumentTest {
         private static List<String> oneArmFindings(Arm legacy, Arm fsm2) {
             var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
             var real = EquivalenceComparison.compare(legacy, fsm2, MONITOR);
-            var silent = EquivalenceDivergentControl.silentFamilies(real, EquivalenceComparison.compare(legacy, control, MONITOR), EquivalenceComparison.notMeasured(legacy, fsm2));
+            var silent = EquivalenceDivergentControl.silentFamilies(real,
+                                                                    EquivalenceComparison.compare(legacy,
+                                                                                                  control,
+                                                                                                  MONITOR),
+                                                                    EquivalenceComparison.notMeasured(legacy, fsm2));
 
             assertThat(silent).as("every measured control fires").isEmpty();
 
-            return real.stream().map(EquivalenceComparison.Divergence::family).toList();
+            return real.stream()
+                       .map(EquivalenceComparison.Divergence::family)
+                       .toList();
         }
 
         private static Arm withoutKeys(Arm arm, Class<?> keyType) {
@@ -418,7 +635,13 @@ class EquivalenceInstrumentTest {
 
             kv.keySet().removeIf(keyType::isInstance);
 
-            return new Arm(arm.engine(), new EquivalenceKv(kv), arm.liveNodes(), arm.samples(), arm.o4Batches(), arm.o5PlacementMs(), arm.o6());
+            return new Arm(arm.engine(),
+                           new EquivalenceKv(kv),
+                           arm.liveNodes(),
+                           arm.samples(),
+                           arm.o4Batches(),
+                           arm.o5PlacementMs(),
+                           arm.o6());
         }
 
         /// The monitor is not measured below the sample floor, in either arm, and the control plants no tail on an arm without samples.
@@ -427,31 +650,75 @@ class EquivalenceInstrumentTest {
         void monitor_isNotMeasured_belowTheSampleFloor_andNothingIsPlanted() {
             var legacy = arm("legacy", false);
             var blind = new Arm("fsm2", fsm2Arm().quiescent(), Set.copyOf(CORES), List.of(), 10, 4_000L, Map.of());
-            var floorMinusOne = new Arm("fsm2", fsm2Arm().quiescent(), Set.copyOf(CORES), deploySamples(true).subList(0, EquivalenceMonitor.MIN_SAMPLES - 1), 10, 4_000L, Map.of());
-            var atFloor = new Arm("fsm2", fsm2Arm().quiescent(), Set.copyOf(CORES), deploySamples(true).subList(0, EquivalenceMonitor.MIN_SAMPLES), 10, 4_000L, Map.of());
+            var floorMinusOne = new Arm("fsm2",
+                                        fsm2Arm().quiescent(),
+                                        Set.copyOf(CORES),
+                                        deploySamples(true).subList(0, EquivalenceMonitor.MIN_SAMPLES - 1),
+                                        10,
+                                        4_000L,
+                                        Map.of());
+            var atFloor = new Arm("fsm2",
+                                  fsm2Arm().quiescent(),
+                                  Set.copyOf(CORES),
+                                  deploySamples(true).subList(0, EquivalenceMonitor.MIN_SAMPLES),
+                                  10,
+                                  4_000L,
+                                  Map.of());
 
             assertThat(EquivalenceComparison.notMeasured(legacy, blind)).contains("MON-i", "MON-ii", "MON-iii", "MON-iv");
             assertThat(EquivalenceComparison.notMeasured(legacy, floorMinusOne)).contains("MON-i");
             assertThat(EquivalenceComparison.notMeasured(legacy, atFloor)).doesNotContain("MON-i");
             assertThat(EquivalenceComparison.notMeasured(blind, legacy)).as("either arm").contains("MON-i");
             assertThat(EquivalenceDivergentControl.of(blind, legacy, MONITOR).samples()).isEmpty();
-            assertThat(EquivalenceDivergentControl.silentFamilies(List.of(), List.of(), EquivalenceComparison.notMeasured(legacy, blind))).doesNotContain("MON-i", "MON-ii", "MON-iii", "MON-iv");
+            assertThat(EquivalenceDivergentControl.silentFamilies(List.of(),
+                                                                  List.of(),
+                                                                  EquivalenceComparison.notMeasured(legacy, blind))).doesNotContain("MON-i",
+                                                                                                                                    "MON-ii",
+                                                                                                                                    "MON-iii",
+                                                                                                                                    "MON-iv");
         }
 
         /// A family is not measured only when BOTH arms compared nothing for it: one arm with data is a comparison. Mutations: `&&` -> `||` in the
         /// O1, O2 or O5 branch of `notMeasured`, or the legacy-side floor `<` -> `<=`; the matching assertion goes red.
         @Test
         void aFamily_isMeasuredWhenOnlyOneArmHasData() {
-            var legacy = new Arm("legacy", new EquivalenceKv(legacyKv(3)), Set.copyOf(CORES), deploySamples(false), 1, -1L, Map.of());
-            var empty = new Arm("fsm2", new EquivalenceKv(Map.of()), Set.copyOf(CORES), deploySamples(true), 1, 4_000L, Map.of());
-            var placed = new Arm("fsm2", new EquivalenceKv(fsm2Kv(3)), Set.copyOf(CORES), deploySamples(true), 1, 4_000L, Map.of());
-            var legacyAtFloor = new Arm("legacy", new EquivalenceKv(legacyKv(3)), Set.copyOf(CORES), deploySamples(false).subList(0, EquivalenceMonitor.MIN_SAMPLES), 1, 4_000L, Map.of());
+            var legacy = new Arm("legacy",
+                                 new EquivalenceKv(legacyKv(3)),
+                                 Set.copyOf(CORES),
+                                 deploySamples(false),
+                                 1,
+                                 - 1L,
+                                 Map.of());
+            var empty = new Arm("fsm2",
+                                new EquivalenceKv(Map.of()),
+                                Set.copyOf(CORES),
+                                deploySamples(true),
+                                1,
+                                4_000L,
+                                Map.of());
+            var placed = new Arm("fsm2",
+                                 new EquivalenceKv(fsm2Kv(3)),
+                                 Set.copyOf(CORES),
+                                 deploySamples(true),
+                                 1,
+                                 4_000L,
+                                 Map.of());
+            var legacyAtFloor = new Arm("legacy",
+                                        new EquivalenceKv(legacyKv(3)),
+                                        Set.copyOf(CORES),
+                                        deploySamples(false).subList(0, EquivalenceMonitor.MIN_SAMPLES),
+                                        1,
+                                        4_000L,
+                                        Map.of());
 
-            assertThat(EquivalenceComparison.notMeasured(legacy, empty)).as("outcomes and target on one side only").doesNotContain("O1", "O2");
+            assertThat(EquivalenceComparison.notMeasured(legacy, empty)).as("outcomes and target on one side only")
+                      .doesNotContain("O1", "O2");
             assertThat(EquivalenceComparison.notMeasured(empty, legacy)).as("either side").doesNotContain("O1", "O2");
-            assertThat(EquivalenceComparison.notMeasured(legacy, placed)).as("placement on one side only").doesNotContain("O5");
+            assertThat(EquivalenceComparison.notMeasured(legacy, placed)).as("placement on one side only")
+                      .doesNotContain("O5");
             assertThat(EquivalenceComparison.notMeasured(placed, legacy)).as("either side").doesNotContain("O5");
-            assertThat(EquivalenceComparison.notMeasured(legacyAtFloor, placed)).as("legacy exactly at the sample floor").doesNotContain("MON-i");
+            assertThat(EquivalenceComparison.notMeasured(legacyAtFloor, placed)).as("legacy exactly at the sample floor")
+                      .doesNotContain("MON-i");
         }
 
         private static Arm fsm2Arm() {
@@ -463,8 +730,8 @@ class EquivalenceInstrumentTest {
         void requireSamples_failsTheArmBelowTheFloor() {
             EquivalenceMonitor.requireSamples("fsm2", EquivalenceMonitor.MIN_SAMPLES);
             assertThatThrownBy(() -> EquivalenceMonitor.requireSamples("fsm2", EquivalenceMonitor.MIN_SAMPLES - 1)).isInstanceOf(IllegalStateException.class)
-                                                                                                                     .hasMessageContaining("fsm2")
-                                                                                                                     .hasMessageContaining("monitor samples");
+                              .hasMessageContaining("fsm2")
+                              .hasMessageContaining("monitor samples");
         }
 
         /// A non-quiescent arm (o4 = -1) is a VOID of the round, not an O4 DIVERGE (vf4a 7). Mutations: `voids` returning empty; dropping a
@@ -473,13 +740,29 @@ class EquivalenceInstrumentTest {
         void aNonQuiescentArm_isAVoid_notAnO4Divergence() {
             var legacy = arm("legacy", false);
             var fsm2 = arm("fsm2", true);
-            var fsm2NotQuiescent = new Arm("fsm2", fsm2.quiescent(), fsm2.liveNodes(), fsm2.samples(), -1, 4_000L, Map.of());
-            var legacyNotQuiescent = new Arm("legacy", legacy.quiescent(), legacy.liveNodes(), legacy.samples(), -1, 4_000L, Map.of());
+            var fsm2NotQuiescent = new Arm("fsm2",
+                                           fsm2.quiescent(),
+                                           fsm2.liveNodes(),
+                                           fsm2.samples(),
+                                           - 1,
+                                           4_000L,
+                                           Map.of());
+            var legacyNotQuiescent = new Arm("legacy",
+                                             legacy.quiescent(),
+                                             legacy.liveNodes(),
+                                             legacy.samples(),
+                                             - 1,
+                                             4_000L,
+                                             Map.of());
 
             assertThat(EquivalenceComparison.compare(legacy, fsm2NotQuiescent, MONITOR)).isEmpty();
             assertThat(EquivalenceComparison.compare(legacyNotQuiescent, fsm2, MONITOR)).isEmpty();
-            assertThat(EquivalenceComparison.voids(legacy, fsm2NotQuiescent)).singleElement().asString().contains("O4 void count", "fsm2=-1");
-            assertThat(EquivalenceComparison.voids(legacyNotQuiescent, fsm2)).singleElement().asString().contains("legacy=-1");
+            assertThat(EquivalenceComparison.voids(legacy, fsm2NotQuiescent)).singleElement()
+                      .asString()
+                      .contains("O4 void count", "fsm2=-1");
+            assertThat(EquivalenceComparison.voids(legacyNotQuiescent, fsm2)).singleElement()
+                      .asString()
+                      .contains("legacy=-1");
             assertThat(EquivalenceComparison.voids(legacy, fsm2)).isEmpty();
         }
 
@@ -489,7 +772,13 @@ class EquivalenceInstrumentTest {
         void twoQuiescentArms_withZeroBatches_areNoVoid() {
             var legacy = arm("legacy", false);
             var fsm2 = arm("fsm2", true);
-            var legacyZero = new Arm("legacy", legacy.quiescent(), legacy.liveNodes(), legacy.samples(), 0, 4_000L, Map.of());
+            var legacyZero = new Arm("legacy",
+                                     legacy.quiescent(),
+                                     legacy.liveNodes(),
+                                     legacy.samples(),
+                                     0,
+                                     4_000L,
+                                     Map.of());
             var fsm2Zero = new Arm("fsm2", fsm2.quiescent(), fsm2.liveNodes(), fsm2.samples(), 0, 4_000L, Map.of());
 
             assertThat(EquivalenceComparison.voids(legacyZero, fsm2Zero)).isEmpty();
@@ -503,10 +792,14 @@ class EquivalenceInstrumentTest {
             var loading = new HashMap<AetherKey, AetherValue>();
 
             for (var index = 0; index < 3; index++) {
-                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE),
+                            AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
             }
-            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
-            var events = List.of(new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(900L, SLICE.base(), 0));
+
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())),
+                                  new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3),
+                                 new EquivalenceMonitor.TargetEvent(900L, SLICE.base(), 0));
             var empty = new EquivalenceKv(Map.of());
             var clean = new Arm("legacy", empty, Set.copyOf(CORES), List.of(), 10, 4_000L, Map.of());
             var stepWithEvents = new Arm("fsm2", empty, Set.copyOf(CORES), samples, 10, 4_000L, Map.of(), events, 0L);
@@ -515,20 +808,39 @@ class EquivalenceInstrumentTest {
             var legacyWithoutEvents = new Arm("legacy", empty, Set.copyOf(CORES), samples, 10, 4_000L, Map.of());
             var cleanOther = new Arm("fsm2", empty, Set.copyOf(CORES), List.of(), 10, 4_000L, Map.of());
 
-            assertThat(EquivalenceComparison.compare(clean, stepWithoutEvents, MONITOR)).as("control: no events, the step is a breach").extracting(EquivalenceComparison.Divergence::family).containsExactly("MON-i");
-            assertThat(EquivalenceComparison.compare(clean, stepWithEvents, MONITOR)).as("the other arm's events reach the monitor").isEmpty();
-            assertThat(EquivalenceComparison.compare(legacyWithoutEvents, cleanOther, MONITOR)).as("control: legacy, no events").extracting(EquivalenceComparison.Divergence::family).containsExactly("MON-i");
-            assertThat(EquivalenceComparison.compare(legacyWithEvents, cleanOther, MONITOR)).as("legacy's events reach the monitor").isEmpty();
+            assertThat(EquivalenceComparison.compare(clean, stepWithoutEvents, MONITOR)).as("control: no events, the step is a breach")
+                      .extracting(EquivalenceComparison.Divergence::family)
+                      .containsExactly("MON-i");
+            assertThat(EquivalenceComparison.compare(clean, stepWithEvents, MONITOR)).as("the other arm's events reach the monitor")
+                      .isEmpty();
+            assertThat(EquivalenceComparison.compare(legacyWithoutEvents, cleanOther, MONITOR)).as("control: legacy, no events")
+                      .extracting(EquivalenceComparison.Divergence::family)
+                      .containsExactly("MON-i");
+            assertThat(EquivalenceComparison.compare(legacyWithEvents, cleanOther, MONITOR)).as("legacy's events reach the monitor")
+                      .isEmpty();
         }
 
         @Test
         void o4AndO5Gates_holdAtTheirBounds_andTripPastThem() {
             var legacy = arm("legacy", false);
-            var atBound = new Arm("fsm2", legacy.quiescent(), legacy.liveNodes(), legacy.samples(), 12, 4_000L + 30_000L, Map.of());
-            var past = new Arm("fsm2", legacy.quiescent(), legacy.liveNodes(), legacy.samples(), 13, 4_000L + 30_001L, Map.of());
+            var atBound = new Arm("fsm2",
+                                  legacy.quiescent(),
+                                  legacy.liveNodes(),
+                                  legacy.samples(),
+                                  12,
+                                  4_000L + 30_000L,
+                                  Map.of());
+            var past = new Arm("fsm2",
+                               legacy.quiescent(),
+                               legacy.liveNodes(),
+                               legacy.samples(),
+                               13,
+                               4_000L + 30_001L,
+                               Map.of());
 
             assertThat(EquivalenceComparison.compare(legacy, atBound, MONITOR)).isEmpty();
-            assertThat(EquivalenceComparison.compare(legacy, past, MONITOR)).extracting(EquivalenceComparison.Divergence::family).containsExactly("O4", "O5");
+            assertThat(EquivalenceComparison.compare(legacy, past, MONITOR)).extracting(EquivalenceComparison.Divergence::family)
+                      .containsExactly("O4", "O5");
         }
     }
 
@@ -536,13 +848,24 @@ class EquivalenceInstrumentTest {
     /// (vf4cfable R07-R19) is reachable offline. Each test names the mutation it kills.
     @Nested
     class RoundFindings {
-        private final Map<DeploymentEngine, Boolean> fired = Map.of(DeploymentEngine.LEGACY, true, DeploymentEngine.FSM2, true);
+        private final Map<DeploymentEngine, Boolean> fired = Map.of(DeploymentEngine.LEGACY,
+                                                                    true,
+                                                                    DeploymentEngine.FSM2,
+                                                                    true);
+
         private final Map<DeploymentEngine, Boolean> fsm2Fired = Map.of(DeploymentEngine.FSM2, true);
-        private final Map<DeploymentEngine, String> placements = Map.of(DeploymentEngine.LEGACY, "[a=3 nodes]", DeploymentEngine.FSM2, "[a=3 nodes]");
+
+        private final Map<DeploymentEngine, String> placements = Map.of(DeploymentEngine.LEGACY,
+                                                                        "[a=3 nodes]",
+                                                                        DeploymentEngine.FSM2,
+                                                                        "[a=3 nodes]");
+
         private final List<EquivalenceOracle.Verdict> oracle = List.of(oracleOver(legacyKv(3)));
 
         private EquivalenceOracle.Verdict oracleOver(Map<AetherKey, AetherValue> kv) {
-            return EquivalenceOracle.check(new EquivalenceKv(kv), LeaderValue.leaderValue(CORES.getFirst(), 4L), Set.copyOf(CORES));
+            return EquivalenceOracle.check(new EquivalenceKv(kv),
+                                           LeaderValue.leaderValue(CORES.getFirst(), 4L),
+                                           Set.copyOf(CORES));
         }
 
         private EquivalenceRoundFindings assemble(Arm legacy,
@@ -553,7 +876,15 @@ class EquivalenceInstrumentTest {
                                                   List<EquivalenceOracle.Verdict> oracleResults,
                                                   Map<DeploymentEngine, String> placed,
                                                   String scenario) {
-            return EquivalenceRoundFindings.assemble(legacy, fsm2, o4, monitorLive, o6, oracleResults, placed, MONITOR, scenario);
+            return EquivalenceRoundFindings.assemble(legacy,
+                                                     fsm2,
+                                                     o4,
+                                                     monitorLive,
+                                                     o6,
+                                                     oracleResults,
+                                                     placed,
+                                                     MONITOR,
+                                                     scenario);
         }
 
         private EquivalenceRoundFindings clean() {
@@ -569,7 +900,9 @@ class EquivalenceInstrumentTest {
             assertThat(findings.voids()).isEmpty();
             assertThat(findings.divergences()).isEmpty();
             assertThat(findings.notMeasured()).isEmpty();
-            assertThat(findings.controlDivergences()).as("the control comparison is carried, not dropped").extracting(EquivalenceComparison.Divergence::family).contains("O1", "O2", "O3", "O5", "O6", "MON-i");
+            assertThat(findings.controlDivergences()).as("the control comparison is carried, not dropped")
+                      .extracting(EquivalenceComparison.Divergence::family)
+                      .contains("O1", "O2", "O3", "O5", "O6", "MON-i");
         }
 
         /// R07: a non-quiescent arm is a void, never a PASS. Mutation: the `voids.addAll(EquivalenceComparison.voids(..))` removed.
@@ -577,7 +910,14 @@ class EquivalenceInstrumentTest {
         void aNonQuiescentArm_isVoid() {
             var fsm2 = arm("fsm2", true);
             var notQuiescent = new Arm("fsm2", fsm2.quiescent(), fsm2.liveNodes(), fsm2.samples(), -1, 4_000L, Map.of());
-            var findings = assemble(arm("legacy", false), notQuiescent, fired, fired, fsm2Fired, oracle, placements, "E01");
+            var findings = assemble(arm("legacy", false),
+                                    notQuiescent,
+                                    fired,
+                                    fired,
+                                    fsm2Fired,
+                                    oracle,
+                                    placements,
+                                    "E01");
 
             assertThat(findings.verdict()).isEqualTo(EquivalenceVerdict.VOID);
             assertThat(findings.voids()).singleElement().asString().contains("O4 void count");
@@ -589,9 +929,25 @@ class EquivalenceInstrumentTest {
             var mismatch = Map.of(DeploymentEngine.LEGACY, "[a=1 nodes]", DeploymentEngine.FSM2, "[a=3 nodes]");
             var missing = Map.of(DeploymentEngine.LEGACY, "[a=3 nodes]");
 
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, oracle, mismatch, "E01").voids()).singleElement().asString().contains("O4-placement-mismatch");
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                fired,
+                                fired,
+                                fsm2Fired,
+                                oracle,
+                                mismatch,
+                                "E01").voids()).singleElement()
+                      .asString()
+                      .contains("O4-placement-mismatch");
             assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, oracle, missing, "E01").verdict()).isEqualTo(EquivalenceVerdict.VOID);
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, oracle, Map.of(), "E01").verdict()).isEqualTo(EquivalenceVerdict.VOID);
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                fired,
+                                fired,
+                                fsm2Fired,
+                                oracle,
+                                Map.of(),
+                                "E01").verdict()).isEqualTo(EquivalenceVerdict.VOID);
         }
 
         /// R10, R17-R19: a control that did not fire, or that was never recorded, is silent, per engine. The O6 probe is FSM2-only by design
@@ -602,14 +958,70 @@ class EquivalenceInstrumentTest {
             var legacyUnfired = Map.of(DeploymentEngine.LEGACY, false, DeploymentEngine.FSM2, true);
             var fsm2Unfired = Map.of(DeploymentEngine.FSM2, false);
 
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), legacyUnfired, fired, fsm2Fired, oracle, placements, "E01").silent()).containsExactly("O4-scripted-batch(LEGACY)");
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, legacyUnfired, fsm2Fired, oracle, placements, "E01").silent()).containsExactly("MONITOR-live-plant(LEGACY)");
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Unfired, oracle, placements, "E01").silent()).containsExactly("O6-live-probe(FSM2)");
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), Map.of(DeploymentEngine.LEGACY, true), fired, fsm2Fired, oracle, placements, "E01").silent()).containsExactly("O4-scripted-batch(FSM2)");
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, Map.of(DeploymentEngine.FSM2, true), fsm2Fired, oracle, placements, "E01").silent()).containsExactly("MONITOR-live-plant(LEGACY)");
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, Map.of(), oracle, placements, "E01").silent()).containsExactly("O6-live-probe(FSM2)");
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), Map.of(), Map.of(), Map.of(), oracle, placements, "E01").verdict()).isEqualTo(EquivalenceVerdict.VOID);
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, oracle, placements, "E01").silent()).isEmpty();
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                legacyUnfired,
+                                fired,
+                                fsm2Fired,
+                                oracle,
+                                placements,
+                                "E01").silent()).containsExactly("O4-scripted-batch(LEGACY)");
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                fired,
+                                legacyUnfired,
+                                fsm2Fired,
+                                oracle,
+                                placements,
+                                "E01").silent()).containsExactly("MONITOR-live-plant(LEGACY)");
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                fired,
+                                fired,
+                                fsm2Unfired,
+                                oracle,
+                                placements,
+                                "E01").silent()).containsExactly("O6-live-probe(FSM2)");
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                Map.of(DeploymentEngine.LEGACY, true),
+                                fired,
+                                fsm2Fired,
+                                oracle,
+                                placements,
+                                "E01").silent()).containsExactly("O4-scripted-batch(FSM2)");
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                fired,
+                                Map.of(DeploymentEngine.FSM2, true),
+                                fsm2Fired,
+                                oracle,
+                                placements,
+                                "E01").silent()).containsExactly("MONITOR-live-plant(LEGACY)");
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                fired,
+                                fired,
+                                Map.of(),
+                                oracle,
+                                placements,
+                                "E01").silent()).containsExactly("O6-live-probe(FSM2)");
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                Map.of(),
+                                Map.of(),
+                                Map.of(),
+                                oracle,
+                                placements,
+                                "E01").verdict()).isEqualTo(EquivalenceVerdict.VOID);
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                fired,
+                                fired,
+                                fsm2Fired,
+                                oracle,
+                                placements,
+                                "E01").silent()).isEmpty();
         }
 
         /// The oracle: no result, or a result whose D-8 (e) controls did not fire, is silent; a result with a disagreement is a divergence.
@@ -617,10 +1029,31 @@ class EquivalenceInstrumentTest {
         @Test
         void theOracle_isSilentWithoutResultsOrControls_andItsDisagreementsAreDivergences() {
             var unfired = new EquivalenceOracle.Verdict(List.of(), List.of(), false, true, 0, false);
-            var underPlaced = assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, List.of(oracleOver(legacyKv(2))), placements, "E01");
+            var underPlaced = assemble(arm("legacy", false),
+                                       arm("fsm2", true),
+                                       fired,
+                                       fired,
+                                       fsm2Fired,
+                                       List.of(oracleOver(legacyKv(2))),
+                                       placements,
+                                       "E01");
 
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, List.of(), placements, "E01").silent()).containsExactly("ORACLE-controls");
-            assertThat(assemble(arm("legacy", false), arm("fsm2", true), fired, fired, fsm2Fired, List.of(unfired), placements, "E01").silent()).containsExactly("ORACLE-controls");
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                fired,
+                                fired,
+                                fsm2Fired,
+                                List.of(),
+                                placements,
+                                "E01").silent()).containsExactly("ORACLE-controls");
+            assertThat(assemble(arm("legacy", false),
+                                arm("fsm2", true),
+                                fired,
+                                fired,
+                                fsm2Fired,
+                                List.of(unfired),
+                                placements,
+                                "E01").silent()).containsExactly("ORACLE-controls");
             assertThat(underPlaced.verdict()).isEqualTo(EquivalenceVerdict.DIVERGE);
             assertThat(underPlaced.divergences()).singleElement().asString().startsWith("ORACLE: ");
         }
@@ -646,14 +1079,28 @@ class EquivalenceInstrumentTest {
             var fsm2 = Comparison.withVerdict(arm("fsm2", true), AetherValue.DeploymentOutcomeStatus.ROLLED_BACK);
 
             assertThat(assemble(legacy, fsm2, fired, fired, fsm2Fired, oracle, placements, "E09").verdict()).isEqualTo(EquivalenceVerdict.PASS);
-            assertThat(assemble(legacy, fsm2, fired, fired, fsm2Fired, oracle, placements, "E01").divergences()).singleElement().asString().startsWith("O1: ");
+            assertThat(assemble(legacy, fsm2, fired, fired, fsm2Fired, oracle, placements, "E01").divergences()).singleElement()
+                      .asString()
+                      .startsWith("O1: ");
         }
 
         /// A family measured in neither arm is reported, and its control is not required to fire. Mutation: `notMeasured` not passed to `silentFamilies`.
         @Test
         void aFamilyNotMeasured_isReported_andNotRequiredToFire() {
-            var legacy = new Arm("legacy", new EquivalenceKv(legacyKv(3)), Set.copyOf(CORES), deploySamples(false), 10, -1L, Map.of());
-            var fsm2 = new Arm("fsm2", new EquivalenceKv(fsm2Kv(3)), Set.copyOf(CORES), deploySamples(true), 10, -1L, Map.of());
+            var legacy = new Arm("legacy",
+                                 new EquivalenceKv(legacyKv(3)),
+                                 Set.copyOf(CORES),
+                                 deploySamples(false),
+                                 10,
+                                 - 1L,
+                                 Map.of());
+            var fsm2 = new Arm("fsm2",
+                               new EquivalenceKv(fsm2Kv(3)),
+                               Set.copyOf(CORES),
+                               deploySamples(true),
+                               10,
+                               - 1L,
+                               Map.of());
             var findings = assemble(legacy, fsm2, fired, fired, fsm2Fired, oracle, placements, "E01");
 
             assertThat(findings.notMeasured()).containsExactly("O5");
@@ -667,14 +1114,24 @@ class EquivalenceInstrumentTest {
         void theMonitor_reachesTheComparison() {
             var overshoot = legacyKv(3);
 
-            overshoot.put(new AetherKey.NodeArtifactKey(node("n4"), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            overshoot.put(new AetherKey.NodeArtifactKey(node("n4"), SLICE),
+                          AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
             var samples = new ArrayList<>(deploySamples(true));
 
             samples.add(new EquivalenceMonitor.Sample(40_000L, new EquivalenceKv(overshoot)));
             var fsm2 = arm("fsm2", true);
             var breached = new Arm("fsm2", fsm2.quiescent(), fsm2.liveNodes(), samples, 10, 4_000L, Map.of());
 
-            assertThat(assemble(arm("legacy", false), breached, fired, fired, fsm2Fired, oracle, placements, "E01").divergences()).singleElement().asString().contains("MON-i");
+            assertThat(assemble(arm("legacy", false),
+                                breached,
+                                fired,
+                                fired,
+                                fsm2Fired,
+                                oracle,
+                                placements,
+                                "E01").divergences()).singleElement()
+                      .asString()
+                      .contains("MON-i");
         }
     }
 
@@ -696,15 +1153,31 @@ class EquivalenceInstrumentTest {
                 order.add(engine);
                 bases.add(base);
                 if (engine == DeploymentEngine.LEGACY) {
-                    recording.oracle().add(EquivalenceOracle.check(new EquivalenceKv(legacyKv(3)), LeaderValue.leaderValue(CORES.getFirst(), 4L), Set.copyOf(CORES)));
+                    recording.oracle()
+                             .add(EquivalenceOracle.check(new EquivalenceKv(legacyKv(3)),
+                                                          LeaderValue.leaderValue(CORES.getFirst(),
+                                                                                  4L),
+                                                          Set.copyOf(CORES)));
                 }
-                recording.o4Controls().put(engine, !unfired.contains("o4:" + engine));
-                recording.monitorLive().put(engine, !unfired.contains("monitor:" + engine));
+
+                recording.o4Controls()
+                         .put(engine,
+                              !unfired.contains("o4:" + engine));
+                recording.monitorLive()
+                         .put(engine,
+                              !unfired.contains("monitor:" + engine));
                 if (engine == DeploymentEngine.FSM2) {
-                    recording.o6Live().put(engine, !unfired.contains("o6:" + engine));
+                    recording.o6Live()
+                             .put(engine,
+                                  !unfired.contains("o6:" + engine));
                 }
-                recording.placements().put(engine, "[a=3 nodes]");
-                return engine == DeploymentEngine.LEGACY ? legacy : fsm2;
+
+                recording.placements()
+                         .put(engine, "[a=3 nodes]");
+
+                return engine == DeploymentEngine.LEGACY
+                       ? legacy
+                       : fsm2;
             };
         }
 
@@ -719,7 +1192,10 @@ class EquivalenceInstrumentTest {
         }
 
         private static List<String> verdictLines(Path file) throws IOException {
-            return Files.readAllLines(file).stream().filter(line -> line.contains("VERDICT ")).toList();
+            return Files.readAllLines(file)
+                        .stream()
+                        .filter(line -> line.contains("VERDICT "))
+                        .toList();
         }
 
         /// RT4 (verdict hard-coded PASS) and RT5/RT6 (report file name): agreeing arms are PASS, written to `<scenario>-round<NN>.txt` under the
@@ -790,10 +1266,12 @@ class EquivalenceInstrumentTest {
             var inner = stub(arm("legacy", false), arm("fsm2", true), Set.of());
 
             Files.writeString(file, "x VERDICT PASS\n");
-            round("E01", 2, dir).run("", (engine, base, recording) -> {
-                seenAtStart.add(Files.exists(file));
-                return inner.run(engine, base, recording);
-            });
+            round("E01", 2, dir).run("",
+                                     (engine, base, recording) -> {
+                                         seenAtStart.add(Files.exists(file));
+
+                                         return inner.run(engine, base, recording);
+                                     });
             assertThat(seenAtStart).containsExactly(false, false);
         }
 
@@ -804,10 +1282,12 @@ class EquivalenceInstrumentTest {
             var boom = new IllegalStateException("arm boom");
 
             Files.writeString(file, "x VERDICT PASS\n");
-            assertThatThrownBy(() -> round("E01", 0, dir).run("", (engine, base, recording) -> {
-                order.add(engine);
-                throw boom;
-            })).isSameAs(boom);
+            assertThatThrownBy(() -> round("E01", 0, dir).run("",
+                                                              (engine, base, recording) -> {
+                                                                  order.add(engine);
+
+                                                                  throw boom;
+                                                              })).isSameAs(boom);
             assertThat(order).containsExactly(DeploymentEngine.LEGACY);
             assertThat(verdictLines(file)).singleElement().isEqualTo("VERDICT ERROR");
             assertThat(Files.readAllLines(file)).anyMatch(line -> line.contains("arm LEGACY ERROR"));
@@ -820,8 +1300,12 @@ class EquivalenceInstrumentTest {
             var inner = stub(arm("legacy", false), arm("fsm2", true), Set.of());
 
             Files.writeString(file, "x VERDICT PASS\n");
-            assertThatThrownBy(() -> round("E01", 0, dir).run("", (engine, base, recording) -> engine == DeploymentEngine.LEGACY ? null : inner.run(engine, base, recording)))
-                .isInstanceOf(RuntimeException.class);
+            assertThatThrownBy(() -> round("E01", 0, dir).run("",
+                                                              (engine, base, recording) -> engine == DeploymentEngine.LEGACY
+                                                                                           ? null
+                                                                                           : inner.run(engine,
+                                                                                                       base,
+                                                                                                       recording))).isInstanceOf(RuntimeException.class);
             assertThat(verdictLines(file)).singleElement().isEqualTo("VERDICT ERROR");
         }
 
@@ -848,7 +1332,8 @@ class EquivalenceInstrumentTest {
             var samples = new ArrayList<EquivalenceMonitor.Sample>();
             var overshoot = legacyKv(3);
 
-            overshoot.put(new AetherKey.NodeArtifactKey(node("n4"), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            overshoot.put(new AetherKey.NodeArtifactKey(node("n4"), SLICE),
+                          AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
             samples.add(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(legacyKv(0))));
             samples.add(new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(overshoot)));
             assertThat(MONITOR.check(samples)).isEmpty();
@@ -864,12 +1349,18 @@ class EquivalenceInstrumentTest {
             var loading = new HashMap<AetherKey, AetherValue>();
 
             for (var index = 0; index < 3; index++) {
-                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE),
+                            AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
             }
-            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
-            var events = List.of(new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(900L, SLICE.base(), 0));
 
-            assertThat(MONITOR.check(samples)).as("samples alone cannot see the step").extracting(EquivalenceMonitor.Violation::invariant).containsExactly("i");
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())),
+                                  new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3),
+                                 new EquivalenceMonitor.TargetEvent(900L, SLICE.base(), 0));
+
+            assertThat(MONITOR.check(samples)).as("samples alone cannot see the step")
+                      .extracting(EquivalenceMonitor.Violation::invariant)
+                      .containsExactly("i");
             assertThat(MONITOR.check(samples, events)).as("the ring saw the step").isEmpty();
         }
 
@@ -879,12 +1370,17 @@ class EquivalenceInstrumentTest {
             var loading = new HashMap<AetherKey, AetherValue>();
 
             for (var index = 0; index < 3; index++) {
-                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE),
+                            AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
             }
-            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(20_000L, new EquivalenceKv(loading)));
-            var events = List.of(new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(900L, SLICE.base(), 0));
 
-            assertThat(MONITOR.check(samples, events)).extracting(EquivalenceMonitor.Violation::invariant).containsExactly("i");
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())),
+                                  new EquivalenceMonitor.Sample(20_000L, new EquivalenceKv(loading)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3),
+                                 new EquivalenceMonitor.TargetEvent(900L, SLICE.base(), 0));
+
+            assertThat(MONITOR.check(samples, events)).extracting(EquivalenceMonitor.Violation::invariant)
+                      .containsExactly("i");
         }
 
         /// An event stamped exactly at a sample's time is applied before that sample: the stamp is a lower bound of the commit time, so an event is
@@ -894,11 +1390,15 @@ class EquivalenceInstrumentTest {
             var loading = new HashMap<AetherKey, AetherValue>();
 
             for (var index = 0; index < 3; index++) {
-                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE),
+                            AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
             }
-            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
 
-            assertThat(MONITOR.check(samples, List.of(new EquivalenceMonitor.TargetEvent(1_000L, SLICE.base(), 3)))).isEmpty();
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())),
+                                  new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
+
+            assertThat(MONITOR.check(samples,
+                                     List.of(new EquivalenceMonitor.TargetEvent(1_000L, SLICE.base(), 3)))).isEmpty();
         }
 
         /// A ring event that repeats the current target is no step and opens no window. Mutation: record the step for every event (the guard
@@ -907,11 +1407,15 @@ class EquivalenceInstrumentTest {
         void aRingEventRepeatingTheTarget_opensNoScaleWindow() {
             var overshoot = legacyKv(3);
 
-            overshoot.put(new AetherKey.NodeArtifactKey(node("n4"), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
-            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(shared(3))), new EquivalenceMonitor.Sample(16_000L, new EquivalenceKv(overshoot)));
-            var events = List.of(new EquivalenceMonitor.TargetEvent(0L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(15_000L, SLICE.base(), 3));
+            overshoot.put(new AetherKey.NodeArtifactKey(node("n4"), SLICE),
+                          AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(shared(3))),
+                                  new EquivalenceMonitor.Sample(16_000L, new EquivalenceKv(overshoot)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(0L, SLICE.base(), 3),
+                                 new EquivalenceMonitor.TargetEvent(15_000L, SLICE.base(), 3));
 
-            assertThat(MONITOR.check(samples, events)).extracting(EquivalenceMonitor.Violation::invariant).containsExactly("i");
+            assertThat(MONITOR.check(samples, events)).extracting(EquivalenceMonitor.Violation::invariant)
+                      .containsExactly("i");
         }
 
         /// Two ring puts of one target 20 s apart, with no sample between them that shows the target change (vf4cfable N4, M6/M07): the first opens
@@ -923,12 +1427,17 @@ class EquivalenceInstrumentTest {
             var overshoot = shared(3);
 
             for (var index = 1; index <= 4; index++) {
-                overshoot.put(new AetherKey.NodeArtifactKey(node("n" + index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+                overshoot.put(new AetherKey.NodeArtifactKey(node("n" + index), SLICE),
+                              AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
             }
-            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(25_000L, new EquivalenceKv(overshoot)));
-            var events = List.of(new EquivalenceMonitor.TargetEvent(100L, SLICE.base(), 3), new EquivalenceMonitor.TargetEvent(20_000L, SLICE.base(), 3));
 
-            assertThat(MONITOR.check(samples, events)).extracting(EquivalenceMonitor.Violation::invariant).containsExactly("i");
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())),
+                                  new EquivalenceMonitor.Sample(25_000L, new EquivalenceKv(overshoot)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(100L, SLICE.base(), 3),
+                                 new EquivalenceMonitor.TargetEvent(20_000L, SLICE.base(), 3));
+
+            assertThat(MONITOR.check(samples, events)).extracting(EquivalenceMonitor.Violation::invariant)
+                      .containsExactly("i");
         }
 
         /// Events handed over out of `atMs` order are applied in time order (M7): the early put is applied at the 1 s sample, the late removal is
@@ -939,10 +1448,14 @@ class EquivalenceInstrumentTest {
             var loading = new HashMap<AetherKey, AetherValue>();
 
             for (var index = 0; index < 3; index++) {
-                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+                loading.put(new AetherKey.NodeArtifactKey(CORES.get(index), SLICE),
+                            AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
             }
-            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())), new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
-            var events = List.of(new EquivalenceMonitor.TargetEvent(20_000L, SLICE.base(), 0), new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3));
+
+            var samples = List.of(new EquivalenceMonitor.Sample(0L, new EquivalenceKv(Map.of())),
+                                  new EquivalenceMonitor.Sample(1_000L, new EquivalenceKv(loading)));
+            var events = List.of(new EquivalenceMonitor.TargetEvent(20_000L, SLICE.base(), 0),
+                                 new EquivalenceMonitor.TargetEvent(300L, SLICE.base(), 3));
 
             assertThat(MONITOR.check(samples, events)).isEmpty();
         }
@@ -959,16 +1472,24 @@ class EquivalenceInstrumentTest {
             ring.invalidate(tag, 0);
             ring.append(tag, 0, "put", List.of(new KVCommand.Put<>(key, target)), 1);
             ring.append(tag, 1, "remove", List.of(new KVCommand.Remove<>(key)), 2);
-            ring.append(tag, 2,
+            ring.append(tag,
+                        2,
                         "tx",
                         List.of(new KVCommand.LeaderTransaction<>(key,
                                                                   "t1",
                                                                   LeaderValue.leaderValue(CORES.getFirst(), 4L),
                                                                   List.of(),
-                                                                  List.of(new KVCommand.Mutation<AetherKey, AetherValue>(other, Option.none(), Option.none()),
-                                                                          new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.some(target), Option.none())))),
+                                                                  List.of(new KVCommand.Mutation<AetherKey, AetherValue>(other,
+                                                                                                                         Option.none(),
+                                                                                                                         Option.none()),
+                                                                          new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                                                         Option.some(target),
+                                                                                                                         Option.none())))),
                         3);
-            var events = ring.entries().stream().flatMap(entry -> Fsm2EquivalenceRoundTest.targetTransitions(entry, 7L).stream()).toList();
+            var events = ring.entries()
+                             .stream()
+                             .flatMap(entry -> Fsm2EquivalenceRoundTest.targetTransitions(entry, 7L).stream())
+                             .toList();
 
             assertThat(events).containsExactly(new EquivalenceMonitor.TargetEvent(7L, SLICE.base(), 3),
                                                new EquivalenceMonitor.TargetEvent(7L, SLICE.base(), 0),
@@ -981,12 +1502,17 @@ class EquivalenceInstrumentTest {
             var departed = fsm2Kv(3);
 
             departed.put(new AetherKey.NodeDepartureKey(CORES.getFirst()),
-                         new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED, 1L, new AetherValue.ProcessIncarnation(1L, 1L), Option.none(), 0L));
+                         new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED,
+                                                            1L,
+                                                            new AetherValue.ProcessIncarnation(1L, 1L),
+                                                            Option.none(),
+                                                            0L));
             samples.add(new EquivalenceMonitor.Sample(26_000L, new EquivalenceKv(departed)));
             samples.add(new EquivalenceMonitor.Sample(31_000L, new EquivalenceKv(departed)));
             assertThat(MONITOR.check(samples)).as("held exactly one tick").isEmpty();
             samples.add(new EquivalenceMonitor.Sample(31_001L, new EquivalenceKv(departed)));
-            assertThat(MONITOR.check(samples)).extracting(EquivalenceMonitor.Violation::invariant).containsExactly("iii");
+            assertThat(MONITOR.check(samples)).extracting(EquivalenceMonitor.Violation::invariant)
+                      .containsExactly("iii");
         }
     }
 
@@ -1088,8 +1614,8 @@ class EquivalenceInstrumentTest {
             var gapped = List.of(gappedCursor("n1"), gappedCursor("n2"), gappedCursor("n3"));
 
             assertThatThrownBy(() -> Fsm2EquivalenceRoundTest.RingCursor.requireCovered(gapped)).isInstanceOf(IllegalStateException.class)
-                                                                                                 .hasMessageContaining("dropped entries on every node")
-                                                                                                 .hasMessageContaining("n3");
+                              .hasMessageContaining("dropped entries on every node")
+                              .hasMessageContaining("n3");
             var clean = new Fsm2EquivalenceRoundTest.RingCursor("n4");
 
             clean.read(ring(0));

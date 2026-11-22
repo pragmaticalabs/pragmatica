@@ -25,6 +25,7 @@ import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMembershipListener;
 import org.pragmatica.swim.SwimMessage;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -69,6 +70,7 @@ class CoreSwimHealthDetectorTest {
         Serializer serializer = Mockito.mock(Serializer.class);
         Deserializer deserializer = Mockito.mock(Deserializer.class);
         detector = CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig, serializer, deserializer);
+        detector.protocolFactoryForTest(SwimTestProtocols::swimProtocol);
         // Drive the FSM to Running so the membership-callback assertions exercise the
         // production-active code path with a live SwimProtocol behind the listener.
         driveToRunning(detector);
@@ -77,7 +79,7 @@ class CoreSwimHealthDetectorTest {
     private static void driveToRunning(CoreSwimHealthDetector det) {
         var ctx = det.contextForTest();
         ctx.dispatch(new SwimHealthEvents.StartRequested());
-        var swim = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, new StubTransport(),
+        var swim = SwimTestProtocols.swimProtocol(SwimConfig.DEFAULT, new StubTransport(),
                                               noopListener(), SELF,
                                               new InetSocketAddress("127.0.0.1", 9101)).unwrap();
         ctx.dispatch(new SwimHealthEvents.ProtocolReady(swim, new StubTransport(), GossipEncryptor.none()));
@@ -185,6 +187,7 @@ class CoreSwimHealthDetectorTest {
             var freshDetector = CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig,
                                                                               serializer, deserializer);
 
+            freshDetector.protocolFactoryForTest(SwimTestProtocols::swimProtocol);
             var received = new CopyOnWriteArrayList<SwimObservation>();
             Consumer<SwimObservation> listener = received::add;
 
@@ -280,6 +283,7 @@ class CoreSwimHealthDetectorTest {
                                                                               Mockito.mock(Serializer.class),
                                                                               Mockito.mock(Deserializer.class));
 
+            freshDetector.protocolFactoryForTest(SwimTestProtocols::swimProtocol);
             freshDetector.reportSelfQuorum(QuorumReport.LOST);
             try {
                 freshDetector.start(org.pragmatica.lang.Option.none(), GossipEncryptor.none())
