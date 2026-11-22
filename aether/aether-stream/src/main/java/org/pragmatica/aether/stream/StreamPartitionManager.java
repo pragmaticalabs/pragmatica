@@ -44,6 +44,7 @@ import org.pragmatica.aether.slice.HotWindowDeclaration;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamDeclaration;
+import org.pragmatica.aether.slice.StreamStorage;
 import org.pragmatica.aether.slice.TruncationDeclaration;
 import org.pragmatica.aether.slice.fence.OwnershipDomain;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -2068,12 +2069,27 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// was bypassable: a re-create of a materialized-but-uncommitted stream republishes the INCOMING config
     /// (`ensureConfigCommitted` → `republishExistingConfig`), so an RF=1 re-create after a failed RF=3 commit
     /// committed `replicas = 1`.
+    ///
+    /// #3458 M-1: the storage mode is re-checked HERE too. A config re-published from a decoded value (the committed config of
+    /// a stream, adopted or re-materialized) may carry `UNKNOWN`, the decode-only sentinel for a mode a newer build wrote;
+    /// writing it back would turn it into a mode a newer build reads as one of its own. Every production `StreamConfigValue`
+    /// is built in [#putCommand], which only this method's commit modes reach.
     private Result<Unit> publishStreamConfig(StreamConfig config, StreamEntry entry, CommitMode commitMode) {
-        return checkReplicationMinimum(config).flatMap(_ -> clusterNode.fold(() -> latchCommitted(entry),
-                                                                             node -> commitMode.publish(this,
-                                                                                                        node,
-                                                                                                        config,
-                                                                                                        entry)));
+        return checkReplicationMinimum(config).flatMap(_ -> checkStorageKnown(config))
+                                      .flatMap(_ -> clusterNode.fold(() -> latchCommitted(entry),
+                                                                     node -> commitMode.publish(this,
+                                                                                                node,
+                                                                                                config,
+                                                                                                entry)));
+    }
+
+    private static Result<Unit> checkStorageKnown(StreamConfig config) {
+        return config.declaration()
+                     .flatMap(StreamDeclaration::storage)
+                     .filter(storage -> storage == StreamStorage.UNKNOWN)
+                     .isPresent()
+               ? new StreamError.StreamStorageUnknown(config.name()).result()
+               : success(unit());
     }
 
     private Result<Unit> latchCommitted(StreamEntry entry) {

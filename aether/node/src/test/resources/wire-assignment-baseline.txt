@@ -21,7 +21,7 @@
 # no skip metadata, so an old reader desynchronises rather than ignoring the change).
 # Rename only, same type and position = byte-neutral, pinned so a same-typed name swap is
 # visible in this diff. See WireAssignmentTripwireTest for the derivation from the generator.
-GENERATION 11
+GENERATION 12
 ENUM org.pragmatica.aether.api.ClusterEvent$Severity INFO=0,WARNING=1,CRITICAL=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$NotAppliedReason ROUTE_NOT_FOUND=0,BUDGET_EXHAUSTED=1,UNDECODABLE_REQUEST=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$Pipeline APP=0,MANAGEMENT=1,UNKNOWN=2
@@ -31,6 +31,7 @@ ENUM org.pragmatica.aether.slice.ExecutionMode SINGLE=0,ALL=1,UNKNOWN=2
 ENUM org.pragmatica.aether.slice.RetentionMode ALL=0,ANY=1,UNKNOWN=2
 ENUM org.pragmatica.aether.slice.SliceState LOAD=0,LOADING=1,LOADED=2,ACTIVATE=3,ACTIVATING=4,ROUTING=5,ACTIVE=6,DEACTIVATE=7,DEACTIVATING=8,FAILED=9,UNLOAD=10,UNLOADING=11,UNKNOWN=12
 ENUM org.pragmatica.aether.slice.StreamCompression NONE=0,LZ4=1,ZSTD=2,UNKNOWN=3
+ENUM org.pragmatica.aether.slice.StreamStorage PERSISTENT=0,MEMORY=1,UNKNOWN=2
 ENUM org.pragmatica.aether.slice.TruncationPolicy WINDOW=0,UNTIL_CONSUMED=1,UNKNOWN=2
 ENUM org.pragmatica.aether.slice.blueprint.SecurityOverridePolicy STRENGTHEN_ONLY=0,FULL=1,NONE=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.delegation.TaskGroup METRICS=0,SCALING=1,STRATEGIES=2,DEPLOYMENT=3,STORAGE=4,STREAMING=5,UNKNOWN=6
@@ -177,7 +178,7 @@ SHAPE org.pragmatica.aether.slice.RetentionDeclaration (maxAgeMs:org.pragmatica.
 SHAPE org.pragmatica.aether.slice.RetentionDimensions (count:boolean,bytes:boolean,age:boolean)
 SHAPE org.pragmatica.aether.slice.RetentionPolicy (maxCount:long,maxBytes:long,maxAgeMs:long,mode:org.pragmatica.aether.slice.RetentionMode,tierAwareRetention:org.pragmatica.lang.Option<org.pragmatica.aether.slice.TierAwareRetention>,declared:org.pragmatica.aether.slice.RetentionDimensions)
 SHAPE org.pragmatica.aether.slice.StreamConfig (name:java.lang.String,partitions:int,retention:org.pragmatica.aether.slice.RetentionPolicy,autoOffsetReset:java.lang.String,maxEventSizeBytes:long,consistencyMode:org.pragmatica.aether.slice.ConsistencyMode,replicationFactor:int,confirmationFactor:int,compression:org.pragmatica.aether.slice.StreamCompression,encryptionKeyId:org.pragmatica.lang.Option<java.lang.String>,incarnation:long,declaration:org.pragmatica.lang.Option<org.pragmatica.aether.slice.StreamDeclaration>)
-SHAPE org.pragmatica.aether.slice.StreamDeclaration (retention:org.pragmatica.lang.Option<org.pragmatica.aether.slice.RetentionDeclaration>,truncation:org.pragmatica.lang.Option<org.pragmatica.aether.slice.TruncationDeclaration>,hot:org.pragmatica.lang.Option<org.pragmatica.aether.slice.HotWindowDeclaration>,expectedIngressBytesPerSecond:org.pragmatica.lang.Option<java.lang.Long>)
+SHAPE org.pragmatica.aether.slice.StreamDeclaration (retention:org.pragmatica.lang.Option<org.pragmatica.aether.slice.RetentionDeclaration>,truncation:org.pragmatica.lang.Option<org.pragmatica.aether.slice.TruncationDeclaration>,hot:org.pragmatica.lang.Option<org.pragmatica.aether.slice.HotWindowDeclaration>,expectedIngressBytesPerSecond:org.pragmatica.lang.Option<java.lang.Long>,storage:org.pragmatica.lang.Option<org.pragmatica.aether.slice.StreamStorage>)
 SHAPE org.pragmatica.aether.slice.TierAwareRetention (postSealBufferMs:long,postSealMaxCount:long)
 SHAPE org.pragmatica.aether.slice.TruncationDeclaration (policy:org.pragmatica.lang.Option<org.pragmatica.aether.slice.TruncationPolicy>,groupIdleExpiryMs:org.pragmatica.lang.Option<java.lang.Long>)
 SHAPE org.pragmatica.aether.slice.blueprint.Blueprint (id:org.pragmatica.aether.slice.blueprint.BlueprintId,slices:java.util.List<org.pragmatica.aether.slice.blueprint.SliceSpec>,deploymentConfig:org.pragmatica.lang.Option<org.pragmatica.aether.slice.blueprint.DeploymentConfig>,securityOverrides:org.pragmatica.aether.slice.blueprint.SecurityOverrides)
@@ -633,6 +634,7 @@ TAG  org.pragmatica.aether.slice.SliceState 708
 TAG  org.pragmatica.aether.slice.StreamCompression 709
 TAG  org.pragmatica.aether.slice.StreamConfig 710
 TAG  org.pragmatica.aether.slice.StreamDeclaration 2921
+TAG  org.pragmatica.aether.slice.StreamStorage 3010
 TAG  org.pragmatica.aether.slice.TierAwareRetention 711
 TAG  org.pragmatica.aether.slice.TruncationDeclaration 2923
 TAG  org.pragmatica.aether.slice.TruncationPolicy 2925
@@ -832,7 +834,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanStatus 1641
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanValue 1642
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue 1645
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StorageStatusValue$TierStatus 1646
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamConfigValue 2920
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamConfigValue 3014
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamCursorCheckpointValue 2930
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionOwnershipValue 1652
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$StreamPartitionRecoveryValue 1714
