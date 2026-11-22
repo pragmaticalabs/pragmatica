@@ -67,7 +67,6 @@ import org.slf4j.LoggerFactory;
 final class SerialExecutor {
     private static final Logger LOG = LoggerFactory.getLogger(SerialExecutor.class);
     private static final long CALL_WAIT_NANOS = 50_000L;
-
     /// Set while the thread runs a task of a quiescing executor; read only by quiescing executors.
     private static final ThreadLocal<Boolean> IN_QUIESCING_TASK = ThreadLocal.withInitial(() -> false);
 

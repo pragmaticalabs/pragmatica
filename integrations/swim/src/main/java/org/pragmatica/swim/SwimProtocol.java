@@ -4230,7 +4230,8 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// The one waiting path of every test seam: run `action` as a task and return its value.
     private <T> T callForTest(Supplier<T> action) {
-        return stateExecutor.call(action).unwrap();
+        return stateExecutor.call(action)
+                            .unwrap();
     }
 
     private static Unit runForTest(Runnable action) {
