@@ -44,7 +44,7 @@ import static org.pragmatica.dht.DepartureDirectRuns.takeover;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// #3345: every ring edge of [DHTTopologyListener] (a join, a recovery out of DEPARTING, a removal) re-plans a running departure
+/// #3345: every ring edge of [DHTTopologyListener] (a join, a recovery out of DEPARTING, a removal, a departing edge) re-plans a running departure
 /// push. The push runs through a real [DHTRebalancer] whose only view-change source is the listener; its key's first deliverer
 /// never answers, and the edge, raised at that first send, gives the key a deliverer that acks. Without the re-plan the key is
 /// still owed at the deadline.
@@ -80,6 +80,19 @@ class DepartureTopologyEdgeTest {
         var next = delivererOf(ring, key, Set.of(LOCAL, first));
 
         assertRePlannedTo(ring, key, next, listener -> listener.onNodeRemoved(nodeRemoved(first)));
+    }
+
+    /// The departing edge reaches the rebalancer through the rebalance step alone (#3415 prunes with a recorded ring change, not
+    /// through the removal path), so the step carries the re-plan trigger: a drain of the first deliverer re-plans the key.
+    @Test
+    @Timeout(20)
+    void onNodeDeparting_duringADeparturePush_rePlansTheKeyToTheNextNode() {
+        var ring = fiveNodeRing();
+        var key = soleKey(ring, "edge-depart");
+        var first = delivererOf(ring, key, Set.of(LOCAL));
+        var next = delivererOf(ring, key, Set.of(LOCAL, first));
+
+        assertRePlannedTo(ring, key, next, listener -> listener.onNodeDeparting(first));
     }
 
     /// The first deliverer of `key` is silent; at its first send `edge` runs (on another thread, as membership does), after which
