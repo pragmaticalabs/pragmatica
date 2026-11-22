@@ -675,7 +675,7 @@ class ViewApplicationTableTest {
         node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, INITIAL_VIEW, 3L));
 
         var deadline = System.nanoTime() + 5_000_000_000L;
-        while (!node.state().equals("Led") && System.nanoTime() < deadline) {
+        while (!(node.state() + " " + node.leader()).equals("Led N1") && System.nanoTime() < deadline) {
             Thread.onSpinWait();
         }
         assertThat(node.state() + " " + node.leader()).as("the rescheduled tick elected").isEqualTo("Led N1");
