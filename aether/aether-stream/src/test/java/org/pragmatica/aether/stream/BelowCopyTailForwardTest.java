@@ -407,6 +407,11 @@ class BelowCopyTailForwardTest {
         }
 
         @Override
+        public Promise<Long> publishRemote(NodeId governorId, String streamName, int partition, byte[] payload, long timestamp) {
+            return Promise.success(-1L);
+        }
+
+        @Override
         public void onReadForwardResponse(ReadForwardResponse response) {}
 
         @Override
