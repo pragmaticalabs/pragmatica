@@ -49,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The scans prove their own reach: each asserts a minimum file count and that it examined aether sources, and a
 /// planted tree that reaches almost nothing must fail that check.
 class SwimDeliveryGuardTest {
-    private static final Pattern CONSTRUCTION = Pattern.compile("SwimProtocol\\.swimProtocol\\b|SwimProtocol::swimProtocol\\b|new\\s+SwimProtocol\\(");
+    private static final Pattern CONSTRUCTION = Pattern.compile("SwimProtocol\\.swimProtocol\\b|SwimProtocol" + "::swimProtocol\\b|new\\s+" + "SwimProtocol\\(");
     private static final Pattern DRIVES_SWIM = Pattern.compile("SwimProtocol");
     private static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules");
     private static final String FACTORY_FILE = "integrations/swim/src/test/java/org/pragmatica/swim/SwimTestProtocols.java";
