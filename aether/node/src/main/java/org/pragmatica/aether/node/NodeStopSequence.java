@@ -12,7 +12,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
 import org.pragmatica.aether.node.StopReport.StepFailure;
 
 import org.slf4j.Logger;
@@ -101,7 +100,7 @@ sealed interface NodeStopSequence {
         }
     }
 
-        /// Runs every step in order and resolves with the report of what failed: [StopReport#clean] when nothing did,
+    /// Runs every step in order and resolves with the report of what failed: [StopReport#clean] when nothing did,
     /// otherwise every failure, in step order. It never fails for a step's returned failure.
     static Promise<StopReport> run(Steps steps) {
         return runFrom(steps.ordered(), List.of()).map(StopReport::of);
@@ -121,17 +120,19 @@ sealed interface NodeStopSequence {
         return step.action()
                    .get()
                    .fold(result -> runFrom(rest,
-                                           withOutcomeOf(step.name(), result, failures)));
+                                           withOutcomeOf(step.name(),
+                                                         result,
+                                                         failures)));
     }
 
     /// `failures` plus the failure of a settled step, logged; `failures` itself when it succeeded.
     private static List<StepFailure> withOutcomeOf(String name, Result<Unit> result, List<StepFailure> failures) {
-        return result.fold(cause -> appended(failures, logged(name, cause)),
-                           _ -> failures);
+        return result.fold(cause -> appended(failures, logged(name, cause)), _ -> failures);
     }
 
     private static List<StepFailure> appended(List<StepFailure> failures, StepFailure failure) {
-        return Stream.concat(failures.stream(), Stream.of(failure))
+        return Stream.concat(failures.stream(),
+                             Stream.of(failure))
                      .toList();
     }
 

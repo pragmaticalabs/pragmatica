@@ -962,9 +962,8 @@ public final class EmberCluster {
         var registered = registeredNow();
         var stopPromises = nodes.values()
                                 .stream()
-                                .map(node -> stopped(node)
-                                                 .timeout(NODE_TIMEOUT)
-                                                 .recover(_ -> Unit.unit()))
+                                .map(node -> stopped(node).timeout(NODE_TIMEOUT)
+                                                    .recover(_ -> Unit.unit()))
                                 .toList();
 
         return clearThenSettle(settledWithLateArrivals(stopPromises, registered),
@@ -1083,10 +1082,9 @@ public final class EmberCluster {
     private Promise<Unit> stopFailedHeldBackNode(String nodeIdStr, AetherNode node, Cause cause) {
         log.error("Held-back node {} failed to start: {}", nodeIdStr, cause.message());
 
-        return stopped(node)
-                   .timeout(NODE_TIMEOUT)
-                   .recover(_ -> Unit.unit())
-                   .flatMap(_ -> cause.promise());
+        return stopped(node).timeout(NODE_TIMEOUT)
+                      .recover(_ -> Unit.unit())
+                      .flatMap(_ -> cause.promise());
     }
 
     private static Promise<Unit> allHeldBackStartedOrFail(List<Result<Unit>> results) {
@@ -1139,9 +1137,8 @@ public final class EmberCluster {
         var registered = registeredNow();
         var stopPromises = succeeded.stream()
                                     .map(r -> Option.option(nodes.get(r.nodeId()))
-                                                    .map(node -> stopped(node)
-                                                                     .timeout(NODE_TIMEOUT)
-                                                                     .recover(_ -> Unit.unit()))
+                                                    .map(node -> stopped(node).timeout(NODE_TIMEOUT)
+                                                                        .recover(_ -> Unit.unit()))
                                                     .or(Promise.success(Unit.unit())))
                                     .toList();
 

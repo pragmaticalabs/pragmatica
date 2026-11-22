@@ -856,11 +856,12 @@ public record Main(String[] args) {
 
             return;
         }
-
         // #3565: a stop whose steps all ran succeeds with a report, failures included: the node IS stopped. A failed
         // promise means the sequence itself could not complete.
-        result.onSuccess(report -> log.info("Node stopped{}", report.logSuffix()))
-              .onFailure(cause -> log.error("Node stop() could not complete: {}", cause.message()));
+        result.onSuccess(report -> log.info("Node stopped{}",
+                                            report.logSuffix()))
+              .onFailure(cause -> log.error("Node stop() could not complete: {}",
+                                            cause.message()));
     }
 
     /// Best-effort diagnostic: a failed dump is logged and never blocks the halt it was meant to explain.

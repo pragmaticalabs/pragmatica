@@ -50,8 +50,8 @@ public sealed interface StopReport {
     /// The failures as one line (`step: cause; step: cause`), empty for a clean stop. For logs.
     default String summary() {
         return failures().stream()
-                         .map(StepFailure::describe)
-                         .collect(Collectors.joining("; "));
+                       .map(StepFailure::describe)
+                       .collect(Collectors.joining("; "));
     }
 
     /// The tail of the "stopped" log line: empty for a clean stop, else the failure count and [#summary].
