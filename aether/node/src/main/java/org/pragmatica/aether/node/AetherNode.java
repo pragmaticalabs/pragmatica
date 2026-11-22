@@ -2055,6 +2055,9 @@ public interface AetherNode extends ManageableNode {
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
                 presenceSampler.stop();
+                // #3557: the membership FSM's per-member timers (join grace, eviction backstop, DEPARTING timeout, rejoin
+                // re-offer) are on the same JVM-global scheduler; closing cancels them and turns a task already running into a no-op.
+                membershipFsm.close();
                 // #590: cancel the core-absence tick. Forge runs many nodes in ONE JVM on a shared
                 // scheduler, so a tick left armed after stop() outlives its node.
                 coreAbsenceDetector.stop();
