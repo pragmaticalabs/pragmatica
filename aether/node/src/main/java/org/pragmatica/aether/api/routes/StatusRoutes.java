@@ -53,10 +53,8 @@ import org.pragmatica.aether.node.lifecycle.NodeState;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.http.routing.PathParameter;
@@ -420,7 +418,8 @@ public final class StatusRoutes implements RouteSource {
         return new LiveNodeEntry(nodeId.id(), address, role, swimAlive, reportedState);
     }
 
-    private NodesResponse buildNodesResponse() {
+    /// Package-visible for `StatusRoutesNodesListTest` (#3411: a node that hosts only slices is listed).
+    NodesResponse buildNodesResponse() {
         var node = nodeSupplier.get();
         var metrics = node.metricsCollector().allMetrics();
         var topology = node.topologyManager();
@@ -431,10 +430,9 @@ public final class StatusRoutes implements RouteSource {
         for (NodeId nodeId : metrics.keySet()) {
             nodeIds.add(nodeId.id());
         }
-
-        node.kvStore().forEach(SliceNodeKey.class,
-                               SliceNodeValue.class,
-                               (key, _) -> nodeIds.add(key.nodeId().id()));
+        // #3411: the engine's per-node slice rows (no engine writes a `SliceNodeKey` row), so a node hosting only slices is listed.
+        node.sliceRows().forEachRow(node.kvStore(),
+                                    (nodeId, _, _) -> nodeIds.add(nodeId.id()));
         var roleOverrides = collectRoleOverrides(node);
         var leaderId = node.leader().map(NodeId::id);
         var enrichedNodes = nodeIds.stream()

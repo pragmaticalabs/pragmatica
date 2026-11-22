@@ -752,6 +752,29 @@ class MembershipFsmTest {
             assertThat(pruned).as("pruned once on the DEPARTING edge").containsExactly(A);
             assertThat(recovered).as("re-added once on the recovery edge — symmetric").containsExactly(A);
         }
+
+        /// #3415: the DHT listener's recovery re-add restores only what it pruned on the departing edge, so a core that
+        /// reaches MEMBER for the FIRST time through DEPARTING (drained while still OBSERVED, then refuted by a newer
+        /// incarnation) reaches the ring by its join instead: the recovery emits the JOINED edge that becomes `NodeJoined`.
+        @Test
+        void drainWhileObservedThenNewerIncarnation_emitsJoinedAtRecovery() {
+            var manager = activeManager();
+            var edges = new ArrayList<MembershipDeltaEdge>();
+            var recovered = new ArrayList<NodeId>();
+
+            manager.onMembershipDelta(edges::add);
+            manager.onDepartingRecovery(recovered::add);
+            manager.onMemberDescriptor(labeledInfo(A, "host-a", 6001, Map.of(NodeInfo.LABEL_ROLE, "core")));
+            manager.onDrainRequested(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+            assertThat(edges).as("never MEMBER yet, so no JOINED edge").isEmpty();
+            manager.onSwimHealthy(A, 2L);
+            assertThat(manager.memberStates()).containsEntry(A, "Member");
+            assertThat(recovered).containsExactly(A);
+            assertThat(edges).as("the first MEMBER entry, reached by recovery, is the member's join")
+                             .extracting(MembershipDeltaEdge::kind)
+                             .containsExactly(MembershipDeltaEdge.Kind.JOINED);
+        }
     }
 
     /// M10 (Wave 7) + gate RCA fix (2026-06-11) — the join-grace reaper: a tracked member that

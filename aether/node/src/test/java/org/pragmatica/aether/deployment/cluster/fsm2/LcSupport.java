@@ -14,7 +14,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.consensus.NodeId;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;

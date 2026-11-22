@@ -40,7 +40,6 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -72,7 +71,7 @@ class AetherNodeKvDispatcherFailureStopBootTest {
     Path tempDir;
 
     private final AtomicReference<AetherNode> nodeRef = new AtomicReference<>();
-    private final AtomicReference<Promise<Unit>> stopPromise = new AtomicReference<>();
+    private final AtomicReference<Promise<StopReport>> stopPromise = new AtomicReference<>();
     private final AtomicReference<String> stoppedOn = new AtomicReference<>();
     private final CountDownLatch stopRequested = new CountDownLatch(1);
     private final AtomicBoolean armed = new AtomicBoolean();

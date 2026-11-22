@@ -55,7 +55,28 @@ public record FirewallName(String value) {
     /// re-parses the derived name for the maximal and hyphen-run pairs, so the totality claim is pinned
     /// rather than asserted.
     public static FirewallName forSource(ClusterName cluster, SourceName source) {
-        return new FirewallName(trimToLabel("aether-" + cluster.value() + "-" + source.value()));
+        return new FirewallName(trimToLabel(clusterPrefix(cluster) + source.value()));
+    }
+
+    /// Whether `name` is a name [#forSource] can derive for `cluster` with SOME source. The one place that
+    /// knows how the cut shapes the name, so callers never rebuild the prefix by hand (#3292).
+    ///
+    /// While `aether-<cluster>-` is shorter than [#MAX_LENGTH] a source always adds at least one character
+    /// and the cut keeps the whole prefix, so the name starts with it; the closing hyphen stays, which keeps
+    /// `aether-prod-eux` from matching cluster `prod`. From [#MAX_LENGTH] on, the cut leaves nothing of the
+    /// source, so every source yields the SAME name — the trimmed cut of the prefix — and only equality
+    /// matches. Two clusters sharing their first 62 characters collide there; the match errs towards
+    /// refusing, never towards adopting.
+    public static boolean isDerivedFor(String name, ClusterName cluster) {
+        var prefix = clusterPrefix(cluster);
+
+        return prefix.length() < MAX_LENGTH
+               ? name.startsWith(prefix)
+               : name.equals(trimToLabel(prefix));
+    }
+
+    private static String clusterPrefix(ClusterName cluster) {
+        return "aether-" + cluster.value() + "-";
     }
 
     /// Truncate to [#MAX_LENGTH], then drop EVERY trailing hyphen the cut may have exposed — a label may

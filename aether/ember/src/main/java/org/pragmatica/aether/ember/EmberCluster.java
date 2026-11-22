@@ -32,7 +32,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -962,9 +962,8 @@ public final class EmberCluster {
         var registered = registeredNow();
         var stopPromises = nodes.values()
                                 .stream()
-                                .map(node -> node.stop()
-                                                 .timeout(NODE_TIMEOUT)
-                                                 .recover(_ -> Unit.unit()))
+                                .map(node -> stopped(node).timeout(NODE_TIMEOUT)
+                                                    .recover(_ -> Unit.unit()))
                                 .toList();
 
         return clearThenSettle(settledWithLateArrivals(stopPromises, registered),
@@ -1083,10 +1082,9 @@ public final class EmberCluster {
     private Promise<Unit> stopFailedHeldBackNode(String nodeIdStr, AetherNode node, Cause cause) {
         log.error("Held-back node {} failed to start: {}", nodeIdStr, cause.message());
 
-        return node.stop()
-                   .timeout(NODE_TIMEOUT)
-                   .recover(_ -> Unit.unit())
-                   .flatMap(_ -> cause.promise());
+        return stopped(node).timeout(NODE_TIMEOUT)
+                      .recover(_ -> Unit.unit())
+                      .flatMap(_ -> cause.promise());
     }
 
     private static Promise<Unit> allHeldBackStartedOrFail(List<Result<Unit>> results) {
@@ -1139,9 +1137,8 @@ public final class EmberCluster {
         var registered = registeredNow();
         var stopPromises = succeeded.stream()
                                     .map(r -> Option.option(nodes.get(r.nodeId()))
-                                                    .map(node -> node.stop()
-                                                                     .timeout(NODE_TIMEOUT)
-                                                                     .recover(_ -> Unit.unit()))
+                                                    .map(node -> stopped(node).timeout(NODE_TIMEOUT)
+                                                                        .recover(_ -> Unit.unit()))
                                                     .or(Promise.success(Unit.unit())))
                                     .toList();
 
@@ -1268,11 +1265,28 @@ public final class EmberCluster {
                                                              node).onResult(promise::resolve)).timeout(NODE_TIMEOUT);
     }
 
+    /// `node.stop()` as a plain "the node is stopped" outcome (#3565): the stop succeeds with a report once every step has
+    /// settled, so a report carrying step failures (a listener close that timed out) still means STOPPED. It is logged here and
+    /// never read as "did not stop"; only a stop that FAILS (the sequence could not complete) is a node that did not stop.
+    /// Strategy: FER (degrade forward) -- the step failures are dropped from the outcome because every step ran and the node is stopped;
+    /// the WARN line here, the step's own WARN in `NodeStopSequence` and the report itself keep them legible. Pinned by
+    /// `EmberClusterStopBoundTest#clusterStop_succeeds_whenANodeStopCompletedWithFailures_theNodeCountsAsStopped`.
+    private static Promise<Unit> stopped(AetherNode node) {
+        return node.stop()
+                   .onSuccess(report -> Option.option(report)
+                                              .filter(r -> !r.isClean())
+                                              .onPresent(r -> log.warn("Node {} stopped with {} step failure(s): {}",
+                                                                       node.self().id(),
+                                                                       r.failures().size(),
+                                                                       r.summary())))
+                   .mapToUnit();
+    }
+
     /// Start `node.stop()` and keep it in [#inFlightStops] until it resolves. The returned promise is the node's own, never
     /// failed by a bound: bound a COPY with [#bounded], so a stop that resolves after its bound is still seen.
     private Promise<Unit> trackedStop(String nodeId, AetherNode node) {
         var token = new Object();
-        var raw = node.stop();
+        var raw = stopped(node);
 
         inFlightStops.put(token, new InFlightStop(nodeId, raw));
 
@@ -1864,7 +1878,7 @@ public final class EmberCluster {
                                           Option.some(emberEnvironment()),
                                           AutoHealConfig.DEFAULT,
                                           observability,
-                                          ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
+                                          DeploymentAtomicity.ALL_OR_NOTHING,
                                           activationGated,
                                           nodeTimeouts,
                                           Option.some(certificateProvider),

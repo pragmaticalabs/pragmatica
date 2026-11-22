@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;

@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
+import org.pragmatica.aether.deployment.wiring.DeploymentConfigFacades;
 import org.pragmatica.aether.slice.ConfigFacade;
 
 import org.junit.jupiter.api.Disabled;
@@ -62,7 +62,7 @@ class ConfigNotificationManagerSharedThreadTest {
 
         manager.register(SLICE_A, new Object(), getClass().getClassLoader(), BlockingFactory.class.getName(), List.of("database"));
         manager.register(SLICE_B, new Object(), getClass().getClassLoader(), RecordingFactory.class.getName(), List.of("database"));
-        manager.notifyChange("database.pool", _ -> NodeDeploymentManager.NO_OP_CONFIG);
+        manager.notifyChange("database.pool", _ -> DeploymentConfigFacades.NO_OP_CONFIG);
         return manager;
     }
 

@@ -13,7 +13,6 @@ import java.util.function.Supplier;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
-import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.deployment.node.machine.LegCommand;
 import org.pragmatica.aether.deployment.node.machine.LocalOutcome;
 import org.pragmatica.aether.deployment.node.machine.LocalStep;
@@ -255,8 +254,8 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
                 .map(ProviderBasedConfigService::providerBasedConfigService)
                 .<ConfigService> map(service -> service)
                 .orElse(ConfigService::instance)
-                .map(NodeDeploymentManager::configServiceToFacade)
-                .or(NodeDeploymentManager.NO_OP_CONFIG);
+                .map(DeploymentConfigFacades::configServiceToFacade)
+                .or(DeploymentConfigFacades.NO_OP_CONFIG);
     }
 
     private Promise<LocalOutcome> publishRoutes(Artifact artifact) {

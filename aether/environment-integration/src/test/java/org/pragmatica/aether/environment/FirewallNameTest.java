@@ -6,6 +6,7 @@ package org.pragmatica.aether.environment;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -136,6 +137,55 @@ class FirewallNameTest {
                          : mapped;
 
             return LEGACY_EDGE_TRIM.matcher(capped).replaceAll("");
+        }
+    }
+
+    @Nested
+    class DerivedForTests {
+
+        /// #3292: whatever [FirewallName#forSource] derives, for any source, `isDerivedFor` must recognise for the
+        /// same cluster — over every legal cluster length, two shapes, and sources that are short, maximal and
+        /// hyphen-heavy. Length 55 is where `aether-<cluster>-` is exactly 63 characters.
+        @Test
+        void isDerivedFor_recognisesEveryDerivedName_acrossClusterLengthsAndSources() {
+            var misses = new ArrayList<String>();
+
+            for (int length = 1; length <= FirewallName.MAX_LENGTH; length++) {
+                for (var cluster : List.of("c".repeat(length), hyphenated(length))) {
+                    for (var source : List.of("s", "hetzner-eu", "s" + "-".repeat(30) + "t", "s" + "t".repeat(62))) {
+                        var name = forSource(cluster(cluster), source(source)).value();
+
+                        if (!FirewallName.isDerivedFor(name, cluster(cluster))) {
+                            misses.add(length + "/" + source.length() + ":" + name);
+                        }
+                    }
+                }
+            }
+
+            assertThat(misses).isEmpty();
+        }
+
+        @Test
+        void isDerivedFor_keepsTheClosingHyphen_whileThePrefixFits() {
+            assertThat(FirewallName.isDerivedFor("aether-prod-eu-x", cluster("prod"))).isTrue();
+            assertThat(FirewallName.isDerivedFor("aether-prodx", cluster("prod"))).isFalse();
+        }
+
+        /// From 63 characters on the source is cut away entirely, so only the exact trimmed cut matches.
+        @Test
+        void isDerivedFor_atTheCutBoundary_matchesOnlyTheTrimmedCut() {
+            var cluster = cluster("c".repeat(55));
+            var cut = "aether-" + "c".repeat(55);
+
+            assertThat(FirewallName.isDerivedFor(cut, cluster)).isTrue();
+            assertThat(FirewallName.isDerivedFor(cut + "-", cluster)).isFalse();
+            assertThat(FirewallName.isDerivedFor(cut + "-x", cluster)).isFalse();
+        }
+
+        private static String hyphenated(int length) {
+            return length == 1
+                   ? "c"
+                   : "c-".repeat(length).substring(0, length - 1) + "z";
         }
     }
 

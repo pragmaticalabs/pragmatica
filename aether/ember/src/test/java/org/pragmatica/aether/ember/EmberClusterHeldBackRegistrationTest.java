@@ -7,6 +7,7 @@ package org.pragmatica.aether.ember;
 import java.lang.reflect.Proxy;
 
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.StopReport;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -85,7 +86,7 @@ class EmberClusterHeldBackRegistrationTest {
                                                    new Class<?>[]{AetherNode.class},
                                                    (proxy, method, args) -> switch (method.getName()) {
             case "start" -> start;
-            case "stop" -> Promise.success(unit());
+            case "stop" -> Promise.success(StopReport.clean());
             case "self" -> id;
             case "isReady" -> false;
             case "leader" -> Option.empty();

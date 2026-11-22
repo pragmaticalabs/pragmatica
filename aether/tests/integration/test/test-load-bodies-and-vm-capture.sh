@@ -67,8 +67,14 @@ FLOGS="$WORK/failure-logs"
 ( export PATH="$WORK/bin:$PATH" CALLS="$WORK/curl.calls" TARGET_HOST=localhost AETHER_FAILURE_LOGS_DIR="$FLOGS" SUITE_TAG=03-scaling TEST_TAG=Scale_down \
          API_KEY=k APP_ENDPOINT=http://178.105.27.245:8070
   source "${INTEG_DIR}/lib/load.sh" > /dev/null 2>&1
-  start_load 20 2 GET /api/echo/health > /dev/null 2>&1
-  sleep 3
+  # Wait on the EVENT the assertions need, never a fixed sleep: under CPU contention a 2s load window produced < 4 ticks (#3421).
+  # The window is only an upper bound here (stop_load kills the loop); the bodies file is $$-scoped, written by the loop's ticks.
+  start_load 20 60 GET /api/echo/health > /dev/null 2>&1
+  FB="/tmp/load_failure_bodies_$$.txt"; wait_deadline=$((SECONDS + 60))
+  until [ "$(grep -c . "$FB" 2>/dev/null || echo 0)" -ge 4 ] && grep -q 'Quorum disappeared' "$FB" && grep -q 'Route table propagating' "$FB"; do
+      [ "$SECONDS" -ge "$wait_deadline" ] && break
+      sleep 0.1
+  done
   stop_load > "$WORK/stop.out" 2> "$WORK/stop.err" )
 LF="$FLOGS/03-scaling/load-failures-Scale_down.log"
 n_lines=$(grep -c . "$LF" 2>/dev/null || echo 0)

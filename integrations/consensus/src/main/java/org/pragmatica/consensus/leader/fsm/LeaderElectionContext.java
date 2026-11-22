@@ -637,6 +637,22 @@ public final class LeaderElectionContext {
         return proposalHandler;
     }
 
+    /// Local-election mode (#3092 I3): no consensus proposal handler is wired, so no commit ever carries a sequence and
+    /// [#committedViewSequence()] never advances. The same condition `LeaderManager` reads to pick its local paths.
+    public boolean isLocalMode() {
+        return proposalHandler.isEmpty();
+    }
+
+    /// The leader a local-mode election picks: the first node of the applied eligible view, none for an empty one.
+    /// The one local election rule, read by `LeaderManager`'s local view paths and by an election tick in local mode.
+    public Option<NodeId> localLeaderCandidate() {
+        var topology = currentTopology();
+
+        return topology.isEmpty()
+               ? Option.none()
+               : Option.some(topology.getFirst());
+    }
+
     public List<NodeId> expectedCluster() {
         return installedVoters.get()
                               .or(expectedCluster);
@@ -827,8 +843,9 @@ public final class LeaderElectionContext {
     }
 
     /// Removes exactly `node` from the stored view, view-free (#3044): the one write that carries no sequenced view.
-    /// It is applied iff the node is present, is not this node, and is not the last node left (an empty view is
-    /// never stored, and removing self would skew [#rankOfSelf(Option)]). It never adds a node and never moves the
+    /// It is applied iff the node is present, is not this node, and is not the last node left (a view-free removal
+    /// never empties the view: only a sequenced transport view may, #3092 I1; removing self would skew
+    /// [#rankOfSelf(Option)]). It never adds a node and never moves the
     /// sequence, so only a newer transport view undoes it. The check and the write are one atomic step with every
     /// other view write. Returns `true` iff the node was removed.
     public boolean removeFromView(NodeId node) {
@@ -899,8 +916,9 @@ public final class LeaderElectionContext {
         record Remove(NodeId node) implements ViewCandidate {}
     }
 
-    /// The stored view and the sequence of the last sequenced event that wrote it. An empty view is never stored
-    /// (the previous one is kept), but its sequence still advances the fence. A removal keeps the sequence.
+    /// The stored view and the sequence of the last sequenced event that wrote it. A removal keeps the sequence.
+    /// #3092 I1: an applied replace stores its view as it is, an empty one included, so no reader sees a view the
+    /// transport has replaced (an evicted leader kept under an empty view was re-adopted by every local reader).
     private record SequencedTopology(List<NodeId> topology, long sequence) {
         static final SequencedTopology INITIAL = new SequencedTopology(List.of(),
                                                                        ClusterFsmEvent.TopologyChange.NO_SEQUENCE);
@@ -912,8 +930,7 @@ public final class LeaderElectionContext {
             };
         }
 
-        /// Replace: `true` unless the candidate is dropped (a newer empty view counts as applied: its sequence advances
-        /// the fence). Remove: `true` iff the node was removed.
+        /// Replace: `true` unless the candidate is dropped. Remove: `true` iff the node was removed.
         boolean applies(ViewCandidate candidate, NodeId self) {
             return switch (candidate) {
                 case ViewCandidate.Replace replace -> !replace.isDroppedAgainst(this);
@@ -922,16 +939,10 @@ public final class LeaderElectionContext {
         }
 
         private SequencedTopology replacedBy(ViewCandidate.Replace candidate) {
-            if (candidate.isDroppedAgainst(this)) {
-                return this;
-            }
-
-            var replacement = candidate.topology().isEmpty()
-                              ? topology
-                              : candidate.topology();
-
-            return new SequencedTopology(replacement,
-                                         Math.max(sequence, candidate.sequence()));
+            return candidate.isDroppedAgainst(this)
+                   ? this
+                   : new SequencedTopology(candidate.topology(),
+                                           Math.max(sequence, candidate.sequence()));
         }
 
         private SequencedTopology without(NodeId node, NodeId self) {

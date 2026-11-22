@@ -17,7 +17,8 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.SchemaHold;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
@@ -234,7 +235,7 @@ class SchemaActivationGateTest {
         }
     }
 
-    /// #805 item 1. The gate and `SchemaRoutes.heldSlices` share [#blocksSliceActivation], but until
+    /// #805 item 1. The gate and `SchemaRoutes.heldSlices` share [SchemaHold#blocksSliceActivation], but until
     /// this fix they fed it from two different sources: the gate from the node-local `blueprints`
     /// mirror (owner AND a `schemaRequired` pre-filter), the route from the committed
     /// `SliceTargetValue` with no pre-filter. The mirror is rebuilt from KV notifications and
@@ -573,10 +574,10 @@ class SchemaActivationGateTest {
     /// applies NO filter the route does not — which is the regression #805 names, and the thing a
     /// reintroduced mirror pre-filter would break.
     private boolean routeReportsHeld() {
-        return ClusterDeploymentState.blocksSliceActivation(SliceState.LOADED,
-                                                             ClusterDeploymentState.resolveSliceOwner(kvStore, SLICE),
-                                                             schemaRecord(OWNED_DATASOURCE),
-                                                             kvStore);
+        return SchemaHold.blocksSliceActivation(SliceState.LOADED,
+                                                SchemaHold.resolveSliceOwner(kvStore, SLICE),
+                                                schemaRecord(OWNED_DATASOURCE),
+                                                kvStore);
     }
 
     private SchemaVersionValue schemaRecord(String datasource) {

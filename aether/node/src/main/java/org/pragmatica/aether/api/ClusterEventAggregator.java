@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -290,6 +291,11 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     static final long OPERATOR_WARNING_RETRY_MS = 5_000L;
 
     private volatile Option<ClusterEvent> lastRaisedOperatorWarning = Option.none();
+
+    /// How many admitted operator warnings [#raisedOperatorWarnings] keeps; the oldest is dropped past it.
+    private static final int RAISED_HISTORY_LIMIT = 256;
+
+    private final ConcurrentLinkedDeque<ClusterEvent> raisedOperatorWarnings = new ConcurrentLinkedDeque<>();
 
     /// A key with no call for this long is evicted by [#evictIdleThrottleWindows] (#1617 R3). Twice the
     /// window, so a key is never evicted while its window could still hold a call back.
@@ -1156,7 +1162,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
 
         var event = warningEvent(warning, window.suppressedBefore());
 
-        lastRaisedOperatorWarning = Option.some(event);
+        recordRaised(event);
         if (replayed.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
             shortenWindow(key, window);
@@ -1378,7 +1384,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
 
     private void publishRecovery(String closedKey, ClusterEvent event, Settle settle) {
         operatorWarningThrottle.remove(closedKey);
-        lastRaisedOperatorWarning = Option.some(event);
+        recordRaised(event);
         redelivery.deliver(stampedOrAsIs(event), _ -> settle.lost(), settle::landed);
     }
 
@@ -1387,6 +1393,25 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                                                 severityOf(warning.code().level()),
                                                 warning.message(),
                                                 operatorWarningDetails(warning, suppressedSince));
+    }
+
+    private void recordRaised(ClusterEvent event) {
+        lastRaisedOperatorWarning = Option.some(event);
+        raisedOperatorWarnings.addLast(event);
+        trimRaisedHistory();
+    }
+
+    private void trimRaisedHistory() {
+        while (raisedOperatorWarnings.size() > RAISED_HISTORY_LIMIT) {
+            raisedOperatorWarnings.pollFirst();
+        }
+    }
+
+    /// Observability: the operator-warning events this node admitted for publication, oldest first, bounded to the last
+    /// 256 (RAISED_HISTORY_LIMIT). Unlike [#lastRaisedOperatorWarning] a later warning does not hide an earlier one, so a
+    /// reader asking "was a warning with code X raised" is not overwritten by an unrelated producer (#3403).
+    public List<ClusterEvent> raisedOperatorWarnings() {
+        return List.copyOf(raisedOperatorWarnings);
     }
 
     /// Observability: the operator-warning event this node most recently admitted for publication,

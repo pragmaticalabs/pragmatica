@@ -1915,8 +1915,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private ConfigFacade buildConfigFacade(Artifact artifact) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
-                                     .map(org.pragmatica.aether.deployment.node.NodeDeploymentManager::configServiceToFacade)
-                                     .or(org.pragmatica.aether.deployment.node.NodeDeploymentManager.NO_OP_CONFIG);
+                                     .map(org.pragmatica.aether.deployment.wiring.DeploymentConfigFacades::configServiceToFacade)
+                                     .or(org.pragmatica.aether.deployment.wiring.DeploymentConfigFacades.NO_OP_CONFIG);
         }
 
         @SuppressWarnings("JBCT-EX-01")

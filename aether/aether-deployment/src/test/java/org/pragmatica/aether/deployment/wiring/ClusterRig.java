@@ -15,7 +15,7 @@ import java.util.function.BooleanSupplier;
 
 import org.pragmatica.aether.config.TimeoutsConfig.ClusterTimeouts;
 import org.pragmatica.aether.config.WorkerConfig.SwimSettings;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.AbsenceBounds;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterEffect;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterFsm;

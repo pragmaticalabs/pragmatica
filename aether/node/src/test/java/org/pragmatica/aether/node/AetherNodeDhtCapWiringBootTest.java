@@ -13,7 +13,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
@@ -142,15 +141,10 @@ class AetherNodeDhtCapWiringBootTest {
         throw new AssertionError("no put was refused after 20 x " + VALUE_BYTES + " bytes against a cap of " + CAP_BYTES);
     }
 
-    /// The aggregators last raised operator warning is the in-memory end of the nodes sink: no stream, so no owner election needed.
+    /// The aggregators raised-warning history is the in-memory end of the nodes sink: no stream, so no owner election needed.
+    /// History, not the single most-recent slot: another warning raised afterwards must not hide this one (#3403).
     private boolean fullRaisedWithSubject(String subject) {
-        return node.eventAggregator()
-                   .lastRaisedOperatorWarning()
-                   .filter(ClusterEvent.OperatorWarning.class::isInstance)
-                   .map(ClusterEvent.OperatorWarning.class::cast)
-                   .filter(event -> FULL_CODE.equals(event.details().get("code")))
-                   .filter(event -> subject.equals(event.details().get("subject")))
-                   .isPresent();
+        return RaisedWarnings.raised(node.eventAggregator(), FULL_CODE, subject);
     }
 
     private void boot(AetherNodeConfig config) {
