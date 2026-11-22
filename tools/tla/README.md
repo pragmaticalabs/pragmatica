@@ -113,10 +113,20 @@ sampling, not a proof**: a `pass` row means no violation among the sampled trace
 row still FAILS (a bug the sampler cannot find in the budget turns that row red). Every row of every profile prints its
 wall time, which is the reference for a timing budget.
 
-### On demand in CI
+### In CI
 
-The `TLA+ models` workflow (`.github/workflows/tla-models.yml`) runs only when triggered, never on a pull request,
-a push or a schedule, and it is not a required check:
+The `TLA+ models` workflow (`.github/workflows/tla-models.yml`) runs on demand, on a push to `release-1.0.0-rc6` that
+touches `tools/tla/**` or a Java file carrying a fragment, and on a schedule (daily, small profile, every module). It
+never runs on a pull request and is not a required check; a red run is a flake-priority issue.
+
+- **The `paths:` list is generated.** `tools/tla/fragment-paths.py --sync` rewrites the block between its BEGIN and END
+  markers from `extract.py`'s own discovery (every Java file with a fragment, outside `tools/tla/`, which the glob
+  covers). `fragment-paths.py --check` names every fragment file missing from the list and every stale entry; the
+  workflow runs it, and `test_fragment_paths.py` (a fragment file missing turns it red) before the models. A PR that
+  adds a fragment to a new file runs `--sync`.
+- **The schedule is dormant while the default branch is stale.** GitHub fires `schedule:` only from the default
+  branch's copy of the workflow (today `release-1.0.0-rc5`). Until the default branch moves, the push trigger is what
+  runs the models. A scheduled run checks out `RELEASE_BRANCH` (the `env:` of the workflow), not the default branch.
 
 ```
 gh workflow run tla-models.yml -f profile=small -f modules='.*'
