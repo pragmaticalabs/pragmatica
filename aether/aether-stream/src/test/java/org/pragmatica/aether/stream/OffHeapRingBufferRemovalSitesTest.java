@@ -158,7 +158,7 @@ class OffHeapRingBufferRemovalSitesTest {
         var allow = new AtomicBoolean(false);
         var freed = new AtomicLong();
 
-        try (var ring = memoryRingWithBudget(allow::get, freed::get)) {
+        try (var ring = memoryRingWithBudget(_ -> allow.get(), freed::get)) {
             append(ring, 100, 10_000);
 
             var frozenAt = ring.allocatedBytes();
