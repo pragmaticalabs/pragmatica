@@ -23,6 +23,7 @@ import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testing.PollUntil;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
@@ -42,6 +43,7 @@ class WorkerJoiningDuringCoreJoinLearnsLeaderTest {
     private static final int APP_OFFSET = 80;
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(180).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
+    private static final Duration POLL_INTERVAL = Duration.ofMillis(250);
     private static final long READY_BOUND_MS = 120_000L;
     private static final long LEADER_VIEW_BOUND_MS = 30_000L;
     private static final long DRAIN_BOUND_MS = 10_000L;
@@ -142,15 +144,13 @@ class WorkerJoiningDuringCoreJoinLearnsLeaderTest {
     }
 
     private void awaitCondition(String what, long boundMs, BooleanSupplier condition, Supplier<String> detail) {
-        var started = System.currentTimeMillis();
-        var deadline = started + boundMs;
-        while (!condition.getAsBoolean()) {
-            if (System.currentTimeMillis() > deadline) {
-                throw new AssertionError("timed out after " + boundMs + " ms waiting: " + what + "; " + detail.get());
-            }
+        var report = PollUntil.pollUntil(condition::getAsBoolean,
+                                         Boolean::booleanValue,
+                                         Duration.ofMillis(boundMs),
+                                         POLL_INTERVAL);
 
-            sleep(250);
-        }
+        assertThat(report.met()).as(() -> report.describe(what) + "; " + detail.get())
+                                .isTrue();
     }
 
     /// The HTTP answer of a drain POST; status -1 means no answer was received (connection failure).
@@ -227,13 +227,5 @@ class WorkerJoiningDuringCoreJoinLearnsLeaderTest {
         }
 
         throw new AssertionError("no DrainProcedure reachable from node " + node.self().id());
-    }
-
-    private static void sleep(long ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
     }
 }
