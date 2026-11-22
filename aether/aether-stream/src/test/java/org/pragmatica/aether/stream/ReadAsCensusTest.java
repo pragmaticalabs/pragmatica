@@ -4,229 +4,352 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import javax.tools.Diagnostic;
+import javax.tools.DiagnosticCollector;
+import javax.tools.JavaFileObject;
+import javax.tools.SimpleJavaFileObject;
+import javax.tools.ToolProvider;
 import java.io.IOException;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import com.sun.source.tree.AnnotatedTypeTree;
+import com.sun.source.tree.ArrayTypeTree;
+import com.sun.source.tree.ClassTree;
+import com.sun.source.tree.CompilationUnitTree;
+import com.sun.source.tree.IdentifierTree;
+import com.sun.source.tree.IntersectionTypeTree;
+import com.sun.source.tree.MemberReferenceTree;
+import com.sun.source.tree.MemberSelectTree;
+import com.sun.source.tree.MethodInvocationTree;
+import com.sun.source.tree.NewArrayTree;
+import com.sun.source.tree.NewClassTree;
+import com.sun.source.tree.ParameterizedTypeTree;
+import com.sun.source.tree.Tree;
+import com.sun.source.tree.UnionTypeTree;
+import com.sun.source.tree.VariableTree;
+import com.sun.source.tree.WildcardTree;
+import com.sun.source.util.JavacTask;
+import com.sun.source.util.SourcePositions;
+import com.sun.source.util.TreePathScanner;
+import com.sun.source.util.Trees;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// The [ReadAs] census (M-2r-1, ruling 7): the constructor is called exactly twice in the main sources of every aether module
-/// (the `COPY` constant and the mint), and the type appears in no field, no record header and no type argument. The one
-/// exception to the last pin is the mint's own signature: the loan takes an `Fn1<Result<T>, ReadAs>`, the shape the ruling fixed,
-/// so a type argument is allowed in `ReadAs.java` and nowhere else, and so is the `COPY` constant (a constant, not a held value).
+/// (the `COPY` constant and the mint), and the type is held nowhere: not by a field, not by a record component, not by an array
+/// and not as a type argument. The one exception is `ReadAs.java` itself (CTO ruling s54): the mint's signature is
+/// `Fn1<Result<T>, ReadAs>`, the shape the ruling fixed, and `COPY` is a constant, not a held value.
 ///
-/// The census reads TOKENS, not lines: comments, string and char literals are dropped and whitespace (a line break inside a
-/// generic included) is not a token, so a wildcard (`? extends ReadAs>`, `? super ReadAs>`) or a generic split over lines is seen
-/// as the plain type argument is. A `ReadAs` token is a type argument when a `>` follows it, or when it sits between generic
-/// separators (`<`/`,`/`extends`/`super` before, `,`/`<` after); a field when a modifier precedes it and a name and `;`/`=`
-/// follow; a record component when it lies inside the parentheses of a `record` header.
+/// The census reads the SYNTAX TREE, not text. Three rounds of token rules each missed a spelling (an annotation between the
+/// tokens, a qualified name, an array, a declaration with no modifier, an array inside a generic, an annotated type argument), so
+/// the invariant is now one: every tree node that carries a type is visited, and the type is `ReadAs` when the node names it,
+/// whatever its spelling. The nodes are the declared type of a field or record component, the element type of an array type or
+/// an array creation, every type argument of a parameterized type, a generic method call or a constructor call (wildcard bounds
+/// and annotations are looked through), and the class of a `new` expression or of a `::new` reference (the construction count).
+///
+/// Parse-only trees, not attributed ones, by choice: the census spans the main sources of every aether module, so attribution
+/// would need the classpath and the generated sources of all of them, a build of its own. The price is that the name is matched,
+/// simple or qualified, instead of resolved; the census therefore also pins that exactly one type named `ReadAs` is declared in
+/// those sources, so a second one cannot be mistaken for it. A source that does not parse fails the test; a file is never skipped.
 class ReadAsCensusTest {
     private static final Path AETHER_ROOT = Path.of("..");
     private static final String READ_AS = "ReadAs";
     private static final String EXEMPT_FILE = "ReadAs.java";
-    private static final Set<String> MODIFIERS = Set.of("private", "public", "protected", "static", "final", "volatile");
-    private static final Set<String> BEFORE_TYPE_ARGUMENT = Set.of("<", ",", "extends", "super");
-    private static final Set<String> AFTER_TYPE_ARGUMENT = Set.of(">", ",", "<");
+
+    private record Census(long constructions, long declarations, List<String> offences) {}
 
     @Test
     void readAs_overTheMainSources_isConstructedTwiceAndHeldNowhere() throws IOException {
-        var constructions = 0L;
-        var offences = new ArrayList<String>();
+        List<Path> sources;
 
         try (Stream<Path> files = Files.walk(AETHER_ROOT)) {
-            for (var file : files.filter(RingHeaderCensusTest::isAetherMainJava).toList()) {
-                var tokens = tokens(Files.readString(file));
-
-                constructions += constructions(tokens);
-                offences.addAll(heldOffences(file.getFileName().toString(), tokens));
-            }
+            sources = files.filter(RingHeaderCensusTest::isAetherMainJava).toList();
         }
 
-        assertThat(constructions).as("'new ReadAs(' in aether/*/src/main").isEqualTo(2L);
-        assertThat(offences).isEmpty();
+        var census = censusOfFiles(sources);
+
+        assertThat(sources).as("the main sources the census parsed").hasSizeGreaterThan(100);
+        assertThat(census.constructions()).as("'new ReadAs(' in aether/*/src/main").isEqualTo(2L);
+        assertThat(census.declarations()).as("types named ReadAs declared in aether/*/src/main").isEqualTo(1L);
+        assertThat(census.offences()).isEmpty();
     }
 
-    /// Positive controls: each shape fires, whatever the spacing, and the mint's own type argument is the one allowed.
+    /// Positive controls: every spelling of a held ReadAs is an offence, however it is written.
     @Test
-    void heldOffences_firesOnAFieldARecordHeaderAndEveryShapeOfTypeArgument() {
-        assertThat(offences("X.java", "    private ReadAs role;")).hasSize(1);
-        assertThat(offences("X.java", "    private\n        final\n        ReadAs role;")).hasSize(1);
-        assertThat(offences("X.java", "record Held(String name, ReadAs role) {}")).hasSize(1);
-        assertThat(offences("X.java", "record Held(String name,\n        ReadAs role) {}")).hasSize(1);
-        assertThat(offences("X.java", "    List<ReadAs> roles;")).isNotEmpty();
-        assertThat(offences("X.java", "    List<? extends ReadAs> roles;")).as("wildcard extends").hasSize(1);
-        assertThat(offences("X.java", "    List<? super ReadAs> roles;")).as("wildcard super").hasSize(1);
-        assertThat(offences("X.java", "    Map<ReadAs, String> roles;")).as("first argument").hasSize(1);
-        assertThat(offences("X.java", "    Function<String,\n        ReadAs> mint;")).as("multi-line generic").hasSize(1);
-        assertThat(offences("X.java", "    Map<String, List<\n  ? extends\n  ReadAs\n>> roles;")).as("nested, multi-line wildcard").hasSize(1);
-        assertThat(offences("X.java", "Fn1<Result<T>, ReadAs> use")).hasSize(1);
-        assertThat(offences("ReadAs.java", "Fn1<Result<T>, ReadAs> use")).isEmpty();
-        assertThat(offences("ReadAs.java", "    public static final ReadAs COPY = new ReadAs(\"\", -1, 0L);")).isEmpty();
-        assertThat(offences("X.java", "    public static final ReadAs COPY = null;")).hasSize(1);
+    void offences_firesOnEveryShapeOfAHeldReadAs() {
+        var shapes = List.of("private ReadAs role;",
+                             "private\n        final\n        ReadAs role;",
+                             "ReadAs role;",
+                             "private @Deprecated ReadAs role;",
+                             "private final @Deprecated ReadAs role;",
+                             "private org.pragmatica.aether.stream.ReadAs role;",
+                             "private ReadAs[] roles;",
+                             "private ReadAs[][] grid;",
+                             "private ReadAs roles[];",
+                             "void put(ReadAs... roles) {}",
+                             "ReadAs[] mint() { return null; }",
+                             "List<ReadAs> roles;",
+                             "List<? extends ReadAs> roles;",
+                             "List<? super ReadAs> roles;",
+                             "Map<ReadAs, String> roles;",
+                             "Function<String,\n        ReadAs> mint;",
+                             "Map<String, List<\n  ? extends\n  ReadAs\n>> roles;",
+                             "List<ReadAs[]> roles;",
+                             "List<@Deprecated ReadAs> roles;",
+                             "List<org.pragmatica.aether.stream.ReadAs> roles;",
+                             "List<? extends @Deprecated org.pragmatica.aether.stream.ReadAs[]> roles;",
+                             "<T extends Comparable<ReadAs>> void put(T role) {}",
+                             "void put(Fn1<Result<T>, ReadAs> use) {}",
+                             "List<ReadAs> mint() { return null; }",
+                             "void run() { List<ReadAs> local = null; }",
+                             "void run() { var all = (List<ReadAs>) other; }",
+                             "void run() { var is = other instanceof ReadAs[]; }",
+                             "void run() { Holder.<ReadAs>of(); }",
+                             "void run() { var all = new ReadAs[3]; }",
+                             "void run() { var all = new ReadAs[] {ReadAs.COPY}; }",
+                             "void run() { var all = new ArrayList<ReadAs>(); }",
+                             "static final ReadAs COPY = null;",
+                             "record Held(String name, ReadAs role) {}",
+                             "record Held(String name,\n        ReadAs role) {}",
+                             "record Held<T>(T name, @Deprecated ReadAs role) {}");
+
+        for (var shape : shapes) {
+            assertThat(offences("X.java", inClass(shape))).as(shape).hasSize(1);
+        }
     }
 
-    /// Negative controls: a parameter, a cast, a comment, a string and a block comment are not held values.
+    /// Negative controls: a parameter, a return type, a local, a cast, a static call, a comment and a literal hold nothing, and
+    /// neither does a type whose name only contains `ReadAs`.
     @Test
-    void heldOffences_ignoresParametersCastsCommentsAndLiterals() {
-        assertThat(offences("X.java", "    Result<Long> read(long offset, ReadAs readAs) {")).isEmpty();
-        assertThat(offences("X.java", "    var role = (ReadAs) other;")).isEmpty();
-        assertThat(offences("X.java", "    // List<ReadAs> roles;")).isEmpty();
-        assertThat(offences("X.java", "    var text = \"List<? extends ReadAs> roles\";")).isEmpty();
-        assertThat(offences("X.java", "    /* private ReadAs role;\n       List<ReadAs> roles; */")).isEmpty();
-        assertThat(constructions(tokens("var a = new ReadAs(1); // new ReadAs(2)\nvar b = \"new ReadAs(3)\"; var c = new\n  ReadAs(4);"))).isEqualTo(2L);
+    void offences_ignoresUseWithoutHolding() {
+        var shapes = List.of("Result<Long> read(long offset, ReadAs readAs) { return null; }",
+                             "ReadAs mint() { return ReadAs.COPY; }",
+                             "void run() { ReadAs local = ReadAs.COPY; }",
+                             "void run() { var role = (ReadAs) other; }",
+                             "void run() { var role = other instanceof ReadAs r; }",
+                             "void run() { run((ReadAs r) -> 1); }",
+                             "<T extends ReadAs> void put(T role) {}",
+                             "// List<ReadAs> roles;",
+                             "String text = \"List<? extends ReadAs> roles\";",
+                             "/* private ReadAs role;\n       List<ReadAs> roles; */",
+                             "String block = \"\"\"\n    List<ReadAs> roles;\n    \"\"\";",
+                             "private MyReadAs role;",
+                             "List<ReadAsView> roles;",
+                             "private Other.ReadAsView[] roles;");
+
+        for (var shape : shapes) {
+            assertThat(offences("X.java", inClass(shape))).as(shape).isEmpty();
+        }
+    }
+
+    /// The exemption is the file `ReadAs.java` and nothing else: the same declarations are offences in any other file.
+    @Test
+    void offences_exemptsExactlyReadAsJava() {
+        var declarations = "public static final ReadAs COPY = new ReadAs(\"\", -1, 0L);\n"
+                           + "<T> Promise<T> loan(Fn1<Result<T>, ReadAs> use) { return null; }";
+
+        assertThat(offences("ReadAs.java", inClass(declarations))).isEmpty();
+        assertThat(offences("Other.java", inClass(declarations))).hasSize(2);
+        assertThat(offences("MyReadAs.java", inClass(declarations))).hasSize(2);
+    }
+
+    /// Constructions are counted by syntax: a qualified name, an annotation and a constructor reference are constructions, a
+    /// comment and a string are not, and the exempt file is counted too.
+    @Test
+    void constructions_countsEveryShapeOfNewReadAs() throws IOException {
+        var source = inClass("""
+                             void run() {
+                                 var a = new ReadAs(1); // new ReadAs(2)
+                                 var b = "new ReadAs(3)";
+                                 var c = new
+                                     ReadAs(4);
+                                 var d = new org.pragmatica.aether.stream.ReadAs(5);
+                                 var e = new @Deprecated ReadAs(6);
+                                 java.util.function.Supplier<ReadAs> f = ReadAs::new;
+                                 var g = new ReadAsView(7);
+                             }
+                             """);
+
+        assertThat(censusOfSource("X.java", source).constructions()).isEqualTo(5L);
+        assertThat(censusOfSource("ReadAs.java", source).constructions()).isEqualTo(5L);
+    }
+
+    /// A source that does not parse is an error, never a silent skip: an unparsed file would hide any shape in it.
+    @Test
+    void census_ofASourceThatDoesNotParse_fails() {
+        var broken = inClass("private ReadAs role");
+
+        assertThatThrownBy(() -> censusOfSource("X.java", broken))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("parse");
+    }
+
+    private static String inClass(String members) {
+        return "class X {\n" + members + "\n}\n";
     }
 
     private static List<String> offences(String fileName, String source) {
-        return heldOffences(fileName, tokens(source));
+        try {
+            return censusOfSource(fileName, source).offences();
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
     }
 
-    private static long constructions(List<String> tokens) {
-        return IntStream.range(0, tokens.size() - 2)
-                        .filter(i -> tokens.get(i).equals("new") && tokens.get(i + 1).equals(READ_AS) && tokens.get(i + 2).equals("("))
-                        .count();
+    private static Census censusOfSource(String fileName, String source) throws IOException {
+        var object = new SimpleJavaFileObject(URI.create("string:///" + fileName), JavaFileObject.Kind.SOURCE) {
+            @Override
+            public CharSequence getCharContent(boolean ignoreEncodingErrors) {
+                return source;
+            }
+        };
+
+        return census(List.of(object));
     }
 
-    private static List<String> heldOffences(String fileName, List<String> tokens) {
-        var exempt = fileName.equals(EXEMPT_FILE);
-        var offences = new ArrayList<String>();
+    private static Census censusOfFiles(List<Path> files) throws IOException {
+        var compiler = ToolProvider.getSystemJavaCompiler();
 
-        for (var i = 0; i < tokens.size(); i++) {
-            if (!tokens.get(i).equals(READ_AS)) {
-                continue;
+        try (var fileManager = compiler.getStandardFileManager(null, null, StandardCharsets.UTF_8)) {
+            var objects = new ArrayList<JavaFileObject>();
+
+            fileManager.getJavaFileObjectsFromPaths(files).forEach(objects::add);
+
+            return census(objects);
+        }
+    }
+
+    private static Census census(List<? extends JavaFileObject> sources) throws IOException {
+        var compiler = ToolProvider.getSystemJavaCompiler();
+        var diagnostics = new DiagnosticCollector<JavaFileObject>();
+        var task = (JavacTask) compiler.getTask(null, null, diagnostics, List.of("-proc:none"), null, sources);
+        var units = task.parse();
+        var scanner = new ReadAsScanner(Trees.instance(task).getSourcePositions());
+
+        for (var unit : units) {
+            scanner.scan(unit, null);
+        }
+
+        var errors = diagnostics.getDiagnostics()
+                                .stream()
+                                .filter(diagnostic -> diagnostic.getKind() == Diagnostic.Kind.ERROR)
+                                .map(diagnostic -> diagnostic.getSource() + ":" + diagnostic.getLineNumber() + " " + diagnostic.getMessage(null))
+                                .toList();
+
+        assertThat(errors).as("every source must parse").isEmpty();
+        return new Census(scanner.constructions, scanner.declarations, scanner.offences);
+    }
+
+    /// The node `type` is `ReadAs` itself, whatever its spelling: simple or qualified, annotated, or the bound of a wildcard.
+    private static boolean denotesReadAs(Tree type) {
+        return switch (type) {
+            case IdentifierTree identifier -> identifier.getName().contentEquals(READ_AS);
+            case MemberSelectTree select -> select.getIdentifier().contentEquals(READ_AS);
+            case AnnotatedTypeTree annotated -> denotesReadAs(annotated.getUnderlyingType());
+            case WildcardTree wildcard -> denotesReadAs(wildcard.getBound());
+            case UnionTypeTree union -> union.getTypeAlternatives().stream().anyMatch(ReadAsCensusTest::denotesReadAs);
+            case IntersectionTypeTree intersection -> intersection.getBounds().stream().anyMatch(ReadAsCensusTest::denotesReadAs);
+            case null, default -> false;
+        };
+    }
+
+    private static final class ReadAsScanner extends TreePathScanner<Void, Void> {
+        private final SourcePositions positions;
+        private final List<String> offences = new ArrayList<>();
+        private CompilationUnitTree unit;
+        private boolean exempt;
+        private long constructions;
+        private long declarations;
+
+        ReadAsScanner(SourcePositions positions) {
+            this.positions = positions;
+        }
+
+        @Override
+        public Void visitCompilationUnit(CompilationUnitTree node, Void unused) {
+            var path = node.getSourceFile().toUri().getPath();
+
+            unit = node;
+            exempt = path.substring(path.lastIndexOf('/') + 1).equals(EXEMPT_FILE);
+            return super.visitCompilationUnit(node, unused);
+        }
+
+        @Override
+        public Void visitClass(ClassTree node, Void unused) {
+            declarations += node.getSimpleName().contentEquals(READ_AS) ? 1 : 0;
+            return super.visitClass(node, unused);
+        }
+
+        /// A variable whose parent is a class is a field, or a record component (the parser lists it among the members).
+        @Override
+        public Void visitVariable(VariableTree node, Void unused) {
+            if (getCurrentPath().getParentPath().getLeaf() instanceof ClassTree && denotesReadAs(node.getType())) {
+                offend("field or record component", node);
             }
 
-            if (inRecordHeader(tokens, i) || (!exempt && (isTypeArgument(tokens, i) || isField(tokens, i)))) {
-                offences.add(fileName + ": " + context(tokens, i));
+            return super.visitVariable(node, unused);
+        }
+
+        @Override
+        public Void visitArrayType(ArrayTypeTree node, Void unused) {
+            if (denotesReadAs(node.getType())) {
+                offend("array", node);
             }
+
+            return super.visitArrayType(node, unused);
         }
 
-        return offences;
-    }
-
-    private static boolean isTypeArgument(List<String> tokens, int at) {
-        return tokenAt(tokens, at + 1).equals(">")
-               || (BEFORE_TYPE_ARGUMENT.contains(tokenAt(tokens, at - 1)) && AFTER_TYPE_ARGUMENT.contains(tokenAt(tokens, at + 1)));
-    }
-
-    private static boolean isField(List<String> tokens, int at) {
-        return MODIFIERS.contains(tokenAt(tokens, at - 1)) && isIdentifier(tokenAt(tokens, at + 1)) && Set.of(";", "=").contains(tokenAt(tokens, at + 2));
-    }
-
-    /// The token lies between the parentheses of the nearest `record Name(` or `record Name<...>(` before it.
-    private static boolean inRecordHeader(List<String> tokens, int at) {
-        var depth = 0;
-
-        for (var i = at - 1; i >= 0; i--) {
-            var token = tokens.get(i);
-
-            if (token.equals(")")) {
-                depth++;
-            } else if (token.equals("(") && depth > 0) {
-                depth--;
-            } else if (token.equals("(")) {
-                return isRecordNameBefore(tokens, i);
-            } else if (token.equals(";") || token.equals("{") || token.equals("}")) {
-                return false;
+        @Override
+        public Void visitNewArray(NewArrayTree node, Void unused) {
+            if (denotesReadAs(node.getType())) {
+                offend("array creation", node);
             }
+
+            return super.visitNewArray(node, unused);
         }
 
-        return false;
-    }
-
-    private static boolean isRecordNameBefore(List<String> tokens, int openParen) {
-        var name = openParen - 1;
-
-        if (tokenAt(tokens, name).equals(">")) {
-            name = skipGenericsBackwards(tokens, name) - 1;
+        @Override
+        public Void visitParameterizedType(ParameterizedTypeTree node, Void unused) {
+            node.getTypeArguments().stream().filter(ReadAsCensusTest::denotesReadAs).forEach(argument -> offend("type argument", argument));
+            return super.visitParameterizedType(node, unused);
         }
 
-        return tokenAt(tokens, name - 1).equals("record") && isIdentifier(tokenAt(tokens, name));
-    }
+        @Override
+        public Void visitMethodInvocation(MethodInvocationTree node, Void unused) {
+            node.getTypeArguments().stream().filter(ReadAsCensusTest::denotesReadAs).forEach(argument -> offend("type argument", argument));
+            return super.visitMethodInvocation(node, unused);
+        }
 
-    private static int skipGenericsBackwards(List<String> tokens, int close) {
-        var depth = 0;
+        @Override
+        public Void visitNewClass(NewClassTree node, Void unused) {
+            constructions += denotesReadAs(node.getIdentifier()) ? 1 : 0;
+            node.getTypeArguments().stream().filter(ReadAsCensusTest::denotesReadAs).forEach(argument -> offend("type argument", argument));
+            return super.visitNewClass(node, unused);
+        }
 
-        for (var i = close; i >= 0; i--) {
-            depth += tokens.get(i).equals(">") ? 1 : tokens.get(i).equals("<") ? -1 : 0;
-            if (depth == 0) {
-                return i;
+        @Override
+        public Void visitMemberReference(MemberReferenceTree node, Void unused) {
+            constructions += node.getMode() == MemberReferenceTree.ReferenceMode.NEW && denotesReadAs(node.getQualifierExpression()) ? 1 : 0;
+            return super.visitMemberReference(node, unused);
+        }
+
+        private void offend(String kind, Tree node) {
+            if (exempt) {
+                return;
             }
+
+            var file = unit.getSourceFile().getName();
+            var line = unit.getLineMap().getLineNumber(positions.getStartPosition(unit, node));
+
+            offences.add(file.substring(file.lastIndexOf('/') + 1) + ":" + line + " " + kind);
         }
-
-        return 0;
-    }
-
-    private static String tokenAt(List<String> tokens, int index) {
-        return index >= 0 && index < tokens.size() ? tokens.get(index) : "";
-    }
-
-    private static boolean isIdentifier(String token) {
-        return !token.isEmpty() && Character.isJavaIdentifierStart(token.charAt(0));
-    }
-
-    private static String context(List<String> tokens, int at) {
-        return String.join(" ", tokens.subList(Math.max(0, at - 4), Math.min(tokens.size(), at + 4)));
-    }
-
-    /// Java source as tokens: identifiers and numbers whole, every other non-space character alone; comments, string and char
-    /// literals and text blocks are dropped, so only code remains and a line break is no different from a space.
-    private static List<String> tokens(String source) {
-        var tokens = new ArrayList<String>();
-        var i = 0;
-
-        while (i < source.length()) {
-            var c = source.charAt(i);
-
-            if (source.startsWith("//", i)) {
-                i = skipTo(source, "\n", i + 2);
-            } else if (source.startsWith("/*", i)) {
-                i = skipTo(source, "*/", i + 2) + 2;
-            } else if (source.startsWith("\"\"\"", i)) {
-                i = skipTo(source, "\"\"\"", i + 3) + 3;
-            } else if (c == '"' || c == '\'') {
-                i = skipLiteral(source, i);
-            } else if (Character.isJavaIdentifierPart(c)) {
-                var end = i;
-
-                while (end < source.length() && Character.isJavaIdentifierPart(source.charAt(end))) {
-                    end++;
-                }
-
-                tokens.add(source.substring(i, end));
-                i = end;
-            } else {
-                if (!Character.isWhitespace(c)) {
-                    tokens.add(String.valueOf(c));
-                }
-
-                i++;
-            }
-        }
-
-        return tokens;
-    }
-
-    private static int skipTo(String source, String terminator, int from) {
-        var found = source.indexOf(terminator, from);
-
-        return found < 0 ? source.length() : found;
-    }
-
-    private static int skipLiteral(String source, int open) {
-        var quote = source.charAt(open);
-        var i = open + 1;
-
-        while (i < source.length() && source.charAt(i) != quote) {
-            i += source.charAt(i) == '\\' ? 2 : 1;
-        }
-
-        return i + 1;
     }
 }

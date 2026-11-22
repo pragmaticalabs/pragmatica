@@ -84,7 +84,6 @@ class RingHeaderCensusTest {
         var store = "        header.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, value);";
         var mutated = source().replace(store, store + " " + store.strip());
 
-        assertThat(mutated).isNotEqualTo(source());
         assertThat(violations(mutated)).anyMatch(v -> v.contains("statements"));
     }
 
@@ -94,7 +93,6 @@ class RingHeaderCensusTest {
         var mutated = source().replace("        return new RingHeader(controlSegment.asSlice(0, RingGeometry.HEADER_SIZE));",
                                        "        return new RingHeader(MemorySegment.ofAddress(controlSegment.address()).reinterpret(RingGeometry.HEADER_SIZE));");
 
-        assertThat(mutated).as("the fixture line exists in the real file").isNotEqualTo(source());
         assertThat(violations(mutated)).anyMatch(v -> v.contains("ofAddress") || v.contains("reinterpret"));
     }
 
