@@ -164,7 +164,7 @@ class OffHeapRingBufferPublishedRTest {
 
     /// A seed publishes R BEFORE it stores the head (a reader that saw the head at the base while the tail was still 0 would
     /// pass both range checks for an unwritten slot): a reader that loads the head and then the tail never sees the head at the
-    /// seed base with a tail at or below it. A race pin, so it can fail to catch a mutant on a lucky run but never fails the
+    /// seed base with a tail at or below it (a refused read, `-1`, after the ring closed is not a sample). A race pin, so it can fail to catch a mutant on a lucky run but never fails the
     /// code: 3,000 seeds, each overlapped with a reader sampling the ring. Mutant (part 4): the head stored before the publish.
     @Test
     void seedHead_publishesRBeforeTheHead_toAConcurrentReader() throws Exception {
@@ -228,7 +228,7 @@ class OffHeapRingBufferPublishedRTest {
 
             var tail = ring.tailOffset();
 
-            if (head >= SEED_BASE && tail <= head) {
+            if (head >= SEED_BASE && tail >= 0 && tail <= head) {
                 violations.incrementAndGet();
             }
 
