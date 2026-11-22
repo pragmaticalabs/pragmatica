@@ -221,4 +221,4 @@ LeaderAdmission	integrations/consensus/src/main/java	mutnohold	fail	VotingInView
 LeaderAdmission	integrations/consensus/src/main/java	mutnoholdp	fail	PassiveInView	-	vacuity control (mutant): the I2 site holds nothing (Passive)
 LeaderAdmission	integrations/consensus/src/main/java	mutnoholdr	fail	NotNamedFailed	-	vacuity control (mutant): a removal's named node is kept (voting)
 LeaderAdmission	integrations/consensus/src/main/java	mutseqgate	fail	LocalProgress	-	vacuity control (mutant): a local commit behind the cluster sequence gate
-LeaderAdmission	integrations/consensus/src/main/java	interleave	fail	PassiveInView	-	FINDING (issue pending): the push's admission check and write split by a concurrent view write
+LeaderAdmission	integrations/consensus/src/main/java	interleave	fail	PassiveInView	-	FINDING (#3587, know 45a9e2fdd9): Passive's push admission check and write split by a concurrent view write (Fsm.dispatch runs on the caller thread; the KV and QUIC threads both dispatch); flip to pass when LeaderManager serialises dispatch

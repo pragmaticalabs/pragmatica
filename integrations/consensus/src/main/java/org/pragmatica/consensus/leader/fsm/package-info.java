@@ -25,7 +25,8 @@
 /// \* "voting": a core node in the voting states (QuorumWaiting/AwaitingKvSync = "waiting", Electing/ReElecting =
 /// \* "electing", Led = "led"). Nodes: the NodeCount eligible candidates (this node is not one). Local: local mode (no
 /// \* commits; a tick elects). Interleave: the push's admission check and its write are two steps a concurrent view
-/// \* write may run between (Fsm.dispatch runs on the caller thread; FALSE = every dispatch is one atomic step).
+/// \* write may run between (Fsm.dispatch runs on the caller thread; FALSE = every dispatch is one atomic step). The
+/// \* code as it stands carries the split (#3587, know 45a9e2fdd9): config `interleave` is a FINDING, expected to fail.
 /// \* MaxSeq bounds view sequences, MaxCommits the LeaderKey commits, EnvSteps the view writes and removals. Env: the
 /// \* environment events enabled in a run ("view", "stale", "remove", "commit").
 /// \* Fixed: the fixes the modelled code carries (the code as it stands carries AllFixes). A config that drops one
@@ -195,9 +196,9 @@
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
 ///           Interleave = FALSE
-///           MaxSeq = 4
+///           MaxSeq = 5
 ///           MaxCommits = 3
-///           EnvSteps = 4
+///           EnvSteps = 5
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
@@ -209,9 +210,9 @@
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
 ///           Interleave = FALSE
-///           MaxSeq = 4
+///           MaxSeq = 5
 ///           MaxCommits = 3
-///           EnvSteps = 4
+///           EnvSteps = 5
 ///           Env = {"view", "remove", "commit"}
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
@@ -223,9 +224,9 @@
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
 ///           Interleave = FALSE
-///           MaxSeq = 4
+///           MaxSeq = 5
 ///           MaxCommits = 3
-///           EnvSteps = 4
+///           EnvSteps = 5
 ///           Env = {"view", "stale", "commit"}
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
@@ -237,9 +238,9 @@
 /// CONSTANTS Role = "passive"
 ///           Local = FALSE
 ///           Interleave = FALSE
-///           MaxSeq = 4
+///           MaxSeq = 5
 ///           MaxCommits = 3
-///           EnvSteps = 4
+///           EnvSteps = 5
 ///           Env = {"view", "stale", "remove", "commit"}
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
@@ -251,9 +252,9 @@
 /// CONSTANTS Role = "voting"
 ///           Local = FALSE
 ///           Interleave = FALSE
-///           MaxSeq = 4
+///           MaxSeq = 5
 ///           MaxCommits = 3
-///           EnvSteps = 4
+///           EnvSteps = 5
 ///           Env = {"view", "stale", "remove", "commit"}
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
@@ -264,9 +265,9 @@
 /// CONSTANTS Role = "voting"
 ///           Local = TRUE
 ///           Interleave = FALSE
-///           MaxSeq = 4
+///           MaxSeq = 5
 ///           MaxCommits = 3
-///           EnvSteps = 4
+///           EnvSteps = 5
 ///           Env = {"view", "stale", "remove"}
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
