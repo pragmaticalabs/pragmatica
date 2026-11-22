@@ -323,7 +323,7 @@ class BelowCopyTailForwardTest {
         var arms = List.of(Arm.GOVERNOR_NOT_BEHIND, Arm.NEAREST_NO_REGISTRY, Arm.NEAREST_NOT_COVERING);
 
         for (var arm : arms) {
-            for (var notLocal : List.of(true, false)) {
+            for (var notLocal : firstReadsOf(arm)) {
                 var calls = new AtomicInteger();
                 LocalReader<String> scripted = (_, _, _, _) -> scriptedRead(calls.getAndIncrement(), notLocal);
                 var client = CountingClient.serving("committed-served");
@@ -335,6 +335,13 @@ class BelowCopyTailForwardTest {
                 assertThat(client.targets).as(label).isEmpty();
             }
         }
+    }
+
+    /// The GOVERNOR arm forwards only on `PARTITION_NOT_LOCAL`; an empty first read is its answer. NEAREST forwards on both.
+    private static List<Boolean> firstReadsOf(Arm arm) {
+        return arm == Arm.GOVERNOR_NOT_BEHIND
+               ? List.of(true)
+               : List.of(true, false);
     }
 
     private static Promise<List<String>> scriptedRead(int call, boolean firstIsNotLocal) {
