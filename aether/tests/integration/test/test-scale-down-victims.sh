@@ -97,22 +97,39 @@ if grep -q 'VICTIM=\[\]' "$WORK/out.v4" && grep -q 'WARN SCALE_LOAD_TARGET_VICTI
 else fail "V4 out=$(head -c 240 "$WORK/out.v4")"; fi
 
 # V5: the load loop honours the override
+# The stub answers slower (STUB_CURL_DELAY) than the 0.5 s poll interval, so the hit count can rise by at most one between two
+# polls: the count a wait SAW when it returned then equals its threshold, and a threshold off by one is visible (#3424).
 cat > "$WORK/bin/curl" <<'STUB'
 #!/bin/bash
+sleep "${STUB_CURL_DELAY:-0}"  # sleep-ok: paces the stub so the hit count rises slower than the poll interval
 echo "${*: -1}" >> "$HITS"; printf '200'
 STUB
 chmod +x "$WORK/bin/curl"
+hits_ge() { [ "$(grep -c . "$1" 2>/dev/null || echo 0)" -ge "$2" ]; }   # <hits file> <n>: the loop has recorded >= n requests
+# Waits poll the hits file the assertions read, with a deadline; never a fixed sleep (#3424: a starved 1-4 s window ended without a tick after the write).
+# Each wait writes what it saw to $WORK/seen.<label>.<step> ("rc:hits at return"); the V5/V6 verdicts read them.
+seen() { echo "$?:$(grep -c . "$HITS" 2>/dev/null)" > "$WORK/seen.$1.$2"; }   # call right after a poll_until: records its rc and the hit count
 loop_run() {  # <label> <write override? 0|1>
-    : > "$WORK/hits.$1"; rm -f /tmp/load_endpoint_override_$$
-    ( export PATH="$WORK/bin:$PATH" HITS="$WORK/hits.$1" TARGET_HOST=localhost API_KEY=k APP_ENDPOINT=http://orig:8070
+    : > "$WORK/hits.$1"; rm -f /tmp/load_endpoint_override_$$ "$WORK"/seen.$1.*
+    ( export PATH="$WORK/bin:$PATH" HITS="$WORK/hits.$1" TARGET_HOST=localhost API_KEY=k APP_ENDPOINT=http://orig:8070 STUB_CURL_DELAY=0.6
       source "${INTEG_DIR}/lib/load.sh" > /dev/null 2>&1
-      start_load 10 3 GET /api/echo/health > /dev/null 2>&1
-      sleep 1
-      [ "$2" = "1" ] && printf 'http://victim:8075' > "/tmp/load_endpoint_override_$$"
-      sleep 3
+      start_load 10 60 GET /api/echo/health > /dev/null 2>&1   # 60 s is only an upper bound: stop_load ends the loop
+      poll_until 60 hits_ge "$HITS" 1; seen $1 first
+      if [ "$2" = "1" ]; then
+          printf 'http://victim:8075' > "/tmp/load_endpoint_override_$$"
+          poll_until 60 grep -q 'http://victim:8075' "$HITS"; seen $1 victim
+      else
+          poll_until 60 hits_ge "$HITS" 12; seen $1 ticks   # no override: give the loop the ticks the override arm gets, then judge
+      fi
       stop_load > /dev/null 2>&1 )
 }
 loop_run vl1 1; loop_run vl0 0
+# The waits themselves: each returned 0 (its target was reached), and the no-override wait saw >= 12 requests at return.
+# A poll aimed at a file nobody writes returns 1; a threshold of 11 returns with 11 seen.
+seen_rc() { cut -d: -f1 "$WORK/seen.$1.$2" 2>/dev/null; }; seen_n() { cut -d: -f2 "$WORK/seen.$1.$2" 2>/dev/null; }
+if [ "$(seen_rc vl1 first)" = "0" ] && [ "$(seen_rc vl1 victim)" = "0" ] && [ "$(seen_rc vl0 first)" = "0" ] && [ "$(seen_rc vl0 ticks)" = "0" ] && [ "$(seen_n vl0 ticks)" -ge 12 ] 2>/dev/null; then
+    ok "V5w the V5 waits reached their targets (rc 0 each), and the no-override arm saw $(seen_n vl0 ticks) >= 12 requests before it was judged"
+else fail "V5w seen: vl1 first=$(cat "$WORK/seen.vl1.first" 2>/dev/null) victim=$(cat "$WORK/seen.vl1.victim" 2>/dev/null) vl0 first=$(cat "$WORK/seen.vl0.first" 2>/dev/null) ticks=$(cat "$WORK/seen.vl0.ticks" 2>/dev/null)"; fi
 if grep -q 'http://orig:8070' "$WORK/hits.vl1" && grep -q 'http://victim:8075' "$WORK/hits.vl1" && ! grep -q 'victim' "$WORK/hits.vl0" && grep -q 'orig' "$WORK/hits.vl0"; then
     ok "V5 the load loop switches to the override mid-run; without the file every request hits the original endpoint"
 else fail "V5 with=$(sort "$WORK/hits.vl1" | uniq -c | tr '\n' ' ') without=$(sort "$WORK/hits.vl0" | uniq -c | tr '\n' ' ')"; fi
@@ -123,23 +140,41 @@ rm -f /tmp/load_endpoint_override_$$
 # re-resolve finds the new owner. Re-applying the override every tick sent it straight back to the dead victim.
 cat > "$WORK/bin/curl" <<'STUB'
 #!/bin/bash
-url="${*: -1}"; echo "$url" >> "$HITS"
+sleep "${STUB_CURL_DELAY:-0}"  # sleep-ok: paces the stub so the hit count rises slower than the poll interval
+url="${*: -1}"; echo "$url" >> "${STUB_HITS_TO:-$HITS}"
 case "$url" in http://victim:8075*) printf '503' ;; *) printf '200' ;; esac
 STUB
 chmod +x "$WORK/bin/curl"
-reresolve_run() {  # <label>
-    : > "$WORK/hits.$1"; rm -f /tmp/load_endpoint_override_$$
-    ( export PATH="$WORK/bin:$PATH" HITS="$WORK/hits.$1" TARGET_HOST=localhost API_KEY=k APP_ENDPOINT=http://orig:8070 ENV_TYPE=cloud
+# stop_load (proc_reap) ends the loop AND the curl call it already forked, and returns only when both are gone: no stub answers or
+# records after it returned (#3424). The same reaper runs from the EXIT/signal trap, so no exit path leaves a process behind.
+reresolve_run() {  # <label> [deadline of each wait, s: default 60] [file the stub records into: default the hits file]
+    : > "$WORK/hits.$1"; rm -f /tmp/load_endpoint_override_$$ "$WORK"/seen.$1.* "$WORK/n.$1"
+    ( export PATH="$WORK/bin:$PATH" HITS="$WORK/hits.$1" TARGET_HOST=localhost API_KEY=k APP_ENDPOINT=http://orig:8070 ENV_TYPE=cloud STUB_CURL_DELAY=0.6 STUB_HITS_TO="${3:-$WORK/hits.$1}"
       source "${INTEG_DIR}/lib/load.sh" > /dev/null 2>&1
       slice_owner_for() { echo node-new; }; cloud_public_ip() { echo newhost; }
-      start_load 10 4 GET /api/echo/health "" "g:a:v" > /dev/null 2>&1
-      sleep 1
+      start_load 10 60 GET /api/echo/health "" "g:a:v" > /dev/null 2>&1   # 60 s is only an upper bound: stop_load ends the loop
+      poll_until "${2:-60}" hits_ge "$HITS" 1; seen $1 first
       printf 'http://victim:8075' > "/tmp/load_endpoint_override_$$"
-      sleep 4
+      poll_until "${2:-60}" grep -q 'http://newhost:8070' "$HITS"; seen $1 owner
+      n=$(grep -c . "$HITS" 2>/dev/null); n=${n:-0}   # `|| echo 0` made "0\n0" on an empty file and broke the arithmetic below
+      echo "$n" > "$WORK/n.$1"
+      poll_until "${2:-60}" hits_ge "$HITS" $((n + 8)); seen $1 stays   # STAYS on the new owner: 8 more requests after the first one there
       stop_load > /dev/null 2>&1 )
 }
 reresolve_run rr
 last=$(tail -1 "$WORK/hits.rr")
+if [ "$(seen_rc rr first)" = "0" ] && [ "$(seen_rc rr owner)" = "0" ] && [ "$(seen_rc rr stays)" = "0" ] && [ "$(( $(seen_n rr stays) - $(cat "$WORK/n.rr") ))" -ge 8 ] 2>/dev/null; then
+    ok "V6w the V6 waits reached their targets (rc 0 each), and the load saw $(( $(seen_n rr stays) - $(cat "$WORK/n.rr") )) >= 8 further requests after the first one on the new owner"
+else fail "V6w seen: first=$(cat "$WORK/seen.rr.first" 2>/dev/null) owner=$(cat "$WORK/seen.rr.owner" 2>/dev/null) stays=$(cat "$WORK/seen.rr.stays" 2>/dev/null) n=$(cat "$WORK/n.rr" 2>/dev/null)"; fi
+# V6x: the FAILING path must not leak the load loop. The stub records into ANOTHER file, so the hits file the waits read stays
+# EMPTY (every wait times out in 2 s) and the arithmetic on its count used to abort the subshell before stop_load (#3424).
+# A leaked loop keeps recording into the other file after the run returns.
+reresolve_run rx 2 "$WORK/hits.rx.elsewhere"
+a=$(grep -c . "$WORK/hits.rx.elsewhere"); sleep 2  # sleep-ok: a fixed window IS the probe - a leaked loop keeps recording during it
+b=$(grep -c . "$WORK/hits.rx.elsewhere")
+if [ "$a" = "$b" ] && [ "$a" -gt 0 ] && [ "$(seen_rc rx first)" = "1" ] && [ "$(seen_rc rx stays)" = "1" ] && [ ! -s "$WORK/hits.rx" ]; then
+    ok "V6x failing path (hits file empty, every wait rc 1): the load loop is gone when the run returns (it had made $a requests, 0 more in 2 s)"
+else fail "V6x loop still recording ($a -> $b requests) or the failing path was not reached: first=$(cat "$WORK/seen.rx.first" 2>/dev/null) stays=$(cat "$WORK/seen.rx.stays" 2>/dev/null)"; fi
 if grep -q 'http://victim:8075' "$WORK/hits.rr" && grep -q 'http://newhost:8070' "$WORK/hits.rr" && [ "${last%%/api*}" = "http://newhost:8070" ]; then
     ok "V6 aimed at a victim that fails, the load RE-RESOLVES to the new owner and STAYS there (the override is applied once, not every tick)"
 else fail "V6 hits=$(sort "$WORK/hits.rr" | uniq -c | tr '\n' ' ') last=${last}"; fi

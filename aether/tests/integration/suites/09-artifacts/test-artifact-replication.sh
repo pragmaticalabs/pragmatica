@@ -87,10 +87,19 @@ test_push_to_primary() {
 }
 
 test_wait_for_replication() {
-    # Allow time for DHT replication
-    log_info "Waiting 10s for DHT replication"
-    sleep 10
-    log_pass "Replication wait complete"
+    # Wait on the artifact resolving from the second node, not a fixed sleep (#3424); it used to pass unconditionally.
+    if poll_until 30 _resolvable_on_second_node; then
+        log_pass "Replication visible on second node after ${POLL_UNTIL_ELAPSED}s"
+    else
+        log_fail "Artifact not resolvable from second node within 30s"
+        return 1
+    fi
+}
+
+_resolvable_on_second_node() {
+    local s
+    s=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" -H "X-API-Key: ${API_KEY}" "${NODE2_ENDPOINT}${ARTIFACT_PATH}")
+    [ "$s" -ge 200 ] && [ "$s" -lt 300 ] 2>/dev/null
 }
 
 test_resolve_from_second_node() {

@@ -50,9 +50,15 @@ test_push_artifact() {
     return 1
 }
 
+_artifact_resolvable() {
+    local s
+    s=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}${ARTIFACT_PATH}")
+    [ "$s" -ge 200 ] && [ "$s" -lt 300 ] 2>/dev/null
+}
+
 test_resolve_artifact() {
-    # Allow time for DHT replication
-    sleep 2
+    # Wait on the artifact being resolvable (DHT replication), not a fixed sleep (#3424)
+    poll_until 30 _artifact_resolvable
     local status
     status=$(curl -s --max-time 120 -o "$RESOLVE_FILE" -w "%{http_code}" \
         -H "X-API-Key: ${API_KEY}" \

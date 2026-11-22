@@ -332,9 +332,11 @@ _capture_at_demotion_body() {
             printf 'voter %s (%s) rc=%s lines=%s\n' "$id" "$ip" "$rc" "$(wc -l < "${dir}/voter-${id}.log" | tr -d ' ')" >> "${dir}/capture-manifest.txt" 2>/dev/null || true
         ) &
         pids="${pids} $!"
+        proc_track "$!"
     done
     # shellcheck disable=SC2086
     [ -n "$pids" ] && wait $pids 2>/dev/null
+    for _wp in $pids; do proc_untrack "$_wp"; done
     _failcap_note "[INFO]  demotion capture of [$(printf '%s' "$removed" | tr '\n' ' ')] -> ${dir}"
     return 0
 }

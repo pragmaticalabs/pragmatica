@@ -48,14 +48,21 @@ _inject_trace() {
     printf '%s' "$req_id"
 }
 
+_injected_traces_visible() {
+    local t
+    t=$(api_get "/api/v1/traces?limit=200") || return 1
+    printf '%s' "$t" | grep -qF "$TRACE_REQ_ID_1" && printf '%s' "$t" | grep -qF "$TRACE_REQ_ID_2" && printf '%s' "$t" | grep -qF "$TRACE_REQ_ID_3"
+}
+
 test_generate_traceable_requests() {
     TRACE_REQ_ID_1=$(_inject_trace "$TRACE_OP_1" 100 0) || return 1
     TRACE_REQ_ID_2=$(_inject_trace "$TRACE_OP_2" 250 1) || return 1
     TRACE_REQ_ID_3=$(_inject_trace "$TRACE_OP_3" 500 2) || return 1
-    # Brief wait so the entries are observable from /api/v1/traces. Inject is
-    # synchronous on the receiving node so this is mostly a tolerance for HTTP
-    # layer scheduling; per the spec it must be visible within 1s.
-    sleep 1
+    # Wait until the three entries are observable from /api/v1/traces, not a fixed sleep (#3424); a timeout fails HERE.
+    if ! poll_until 15 _injected_traces_visible; then
+        log_fail "Injected traces not visible on /api/v1/traces within 15s: req1=${TRACE_REQ_ID_1} req2=${TRACE_REQ_ID_2} req3=${TRACE_REQ_ID_3}"
+        return 1
+    fi
     log_pass "Injected 3 synthetic traces: req1=${TRACE_REQ_ID_1} req2=${TRACE_REQ_ID_2} req3=${TRACE_REQ_ID_3}"
 }
 

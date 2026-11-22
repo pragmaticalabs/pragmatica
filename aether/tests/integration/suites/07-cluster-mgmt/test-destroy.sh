@@ -50,8 +50,14 @@ test_destroy_cluster() {
     fi
 }
 
+_cluster_endpoint_gone() {
+    local s
+    s=$(http_status "${CLUSTER_ENDPOINT}/health/live")
+    [ "$s" = "000" ] || [ "$s" = "" ]
+}
+
 test_cluster_gone() {
-    sleep 10
+    poll_until 30 _cluster_endpoint_gone   # wait on the endpoint going away, not a fixed sleep (#3424)
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/health/live")
     if [ "$status" = "000" ] || [ "$status" = "" ]; then
