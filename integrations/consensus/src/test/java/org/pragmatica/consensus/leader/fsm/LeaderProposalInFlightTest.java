@@ -31,6 +31,7 @@ import java.util.function.Supplier;
 
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// #1797: the in-flight proposal guard is held from submit until the proposal COMMITS (the FSM leaves
 /// `Electing` / `ReElecting` on the committed `LeaderKey`) or the proposal timeout releases it — never
@@ -73,7 +74,7 @@ class LeaderProposalInFlightTest {
                                                  LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                  LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                  () -> true,
-                                                 kvLeader,
+                                                 () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                  LONG,
                                                  LONG).dormant());
     }

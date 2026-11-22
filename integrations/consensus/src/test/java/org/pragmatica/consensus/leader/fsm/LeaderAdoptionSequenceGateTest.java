@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// Leader-adoption gating (FIX 1 + FIX-1 refinement). Adoption of a COMMITTED `LeaderKey` is:
 ///   - **sequence-gated WITHIN an election** (`Electing` / `ReElecting`): a node that decided to
@@ -59,7 +60,7 @@ class LeaderAdoptionSequenceGateTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         () -> true,
-                                                        kvLeader::get,
+                                                        () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                         LONG,
                                                         LONG);
                     return ctx.dormant();

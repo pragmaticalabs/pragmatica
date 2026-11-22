@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// R6 verification: `QuorumWaiting` is part of the always-listening KV poll path. On entry it
 /// pulls the cluster KV-Store via `currentLeaderFromKvSupplier`; the periodic re-check ALSO
@@ -75,7 +76,7 @@ class QuorumWaitingKvPollTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         consensusReady::get,
-                                                        kvLeader::get,
+                                                        () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                         KV_SYNC_GRACE_DELAY,
                                                         LONG_OBSERVATION_INTERVAL);
                     return ctx.dormant();
