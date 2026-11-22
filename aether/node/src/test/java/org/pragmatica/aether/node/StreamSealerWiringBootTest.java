@@ -114,7 +114,7 @@ class StreamSealerWiringBootTest {
                           .containsOnlyOnce("private Unit closeStreamPartitions(Unit sealed) { streamPartitionManager.close(); streamReplicationShutdown.run();")
                           .containsOnlyOnce("streamPartitionManager.close();")
                           .containsOnlyOnce("return backupFlushed.flatMap(() -> streamsStopped); }")
-                          .containsOnlyOnce("return quorumLeft.map(this::stopDeploymentWiring) .flatMap(() -> stopNodeComponents(backupFlushed)) .flatMap(() -> NodeStopSequence.run(");
+                          .containsOnlyOnce("return NodeStopSequence.run(NodeStopSequence.Steps.steps(() -> quorumLeft, this::stopDeploymentWiring, () -> stopNodeComponents(backupFlushed), this::releaseWatchesThenDeactivate,");
     }
 
     @Test
