@@ -314,7 +314,7 @@ class BelowCopyTailForwardTest {
 
     // ---- the forwardToOwner fallback stays un-armed ------------------------------------------------------------------
 
-    /// The first local read is `PARTITION_NOT_LOCAL` or empty, the HRW owner is self (so the owner forward soft-fails to a
+    /// The first local read is `PARTITION_NOT_LOCAL` (or empty, on the NEAREST arms), the HRW owner is self (so the owner forward soft-fails to a
     /// second local read), a committed owner names ANOTHER node, and the second local read is `BelowCopyTail`. That second read
     /// follows a forward decision, so it is not armed: zero forwards, the `BelowCopyTail` surfaces. An armed fallback would
     /// forward to the committed owner.
