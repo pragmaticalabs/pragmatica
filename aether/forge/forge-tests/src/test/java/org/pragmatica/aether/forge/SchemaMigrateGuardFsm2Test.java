@@ -2,19 +2,13 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.List;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
@@ -31,10 +25,18 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.lang.io.TimeSpan;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// #3411: under FSM2 (the default engine) the `/schema/migrate` re-arm of a COMPLETED record must be refused while slices of the record's
 /// owning blueprint are serving (#760 guard). The guard used to count `SliceNodeKey` rows, which no engine writes, so it
@@ -61,10 +63,17 @@ class SchemaMigrateGuardFsm2Test {
     void setUp() {
         var base = EquivalencePorts.freeBase(FIRST_BLOCK, NODES);
 
-        cluster = emberCluster(NODES, base, base + EquivalencePorts.OFFSETS[1], base + EquivalencePorts.OFFSETS[2], "sg3411");
+        cluster = emberCluster(NODES,
+                               base,
+                               base + EquivalencePorts.OFFSETS[1],
+                               base + EquivalencePorts.OFFSETS[2],
+                               "sg3411");
         cluster.withDeploymentEngine(DeploymentEngine.FSM2);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-        await().atMost(WAIT_TIMEOUT).pollInterval(Duration.ofMillis(500)).until(() -> cluster.currentLeader().isPresent());
+        await().atMost(WAIT_TIMEOUT)
+             .pollInterval(Duration.ofMillis(500))
+             .until(() -> cluster.currentLeader()
+                                 .isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(Duration.ofMillis(500)).until(this::allNodesHealthy);
     }
 
@@ -83,48 +92,72 @@ class SchemaMigrateGuardFsm2Test {
         deployBlueprint();
         await().atMost(DEPLOY_TIMEOUT).pollInterval(Duration.ofMillis(250)).until(() -> activeRows(artifact) == NODES);
         commitCompletedSchema(owner);
-
         for (var node : cluster.status().nodes()) {
             var response = post(node.mgmtPort(), "/api/v1/schema/migrate/" + DATASOURCE);
-            assertThat(response).as("node %s: the re-arm of a COMPLETED schema serving %d ACTIVE slices", node.id(), NODES)
-                                .contains(REFUSAL);
+
+            assertThat(response).as("node %s: the re-arm of a COMPLETED schema serving %d ACTIVE slices",
+                                    node.id(),
+                                    NODES)
+                      .contains(REFUSAL);
         }
+
         assertThat(schemaStatus()).as("a refused re-arm leaves the record COMPLETED").isEqualTo(SchemaStatus.COMPLETED);
     }
 
     private void commitCompletedSchema(BlueprintId owner) {
-        var record = SchemaVersionValue.schemaVersionValue(DATASOURCE, 1, "V1__init", SchemaStatus.COMPLETED, TestArtifacts.ECHO_SLICE, owner);
+        var record = SchemaVersionValue.schemaVersionValue(DATASOURCE,
+                                                           1,
+                                                           "V1__init",
+                                                           SchemaStatus.COMPLETED,
+                                                           TestArtifacts.ECHO_SLICE,
+                                                           owner);
         var put = new KVCommand.Put<AetherKey, AetherValue>(SchemaVersionKey.schemaVersionKey(DATASOURCE), record);
 
-        assertThat(leader().<Object>apply(List.of(put)).await(REQUEST).isSuccess()).as("SETUP: commit the COMPLETED record").isTrue();
+        assertThat(leader().<Object> apply(List.of(put)).await(REQUEST).isSuccess()).as("SETUP: commit the COMPLETED record")
+                  .isTrue();
         await().atMost(DEPLOY_TIMEOUT)
-               .until(() -> cluster.allNodes().stream().allMatch(node -> node.kvStore().get(SchemaVersionKey.schemaVersionKey(DATASOURCE)).isPresent()));
+             .until(() -> cluster.allNodes()
+                                 .stream()
+                                 .allMatch(node -> node.kvStore()
+                                                       .get(SchemaVersionKey.schemaVersionKey(DATASOURCE))
+                                                       .isPresent()));
     }
 
     private SchemaStatus schemaStatus() {
         return leader().kvStore()
-                       .get(SchemaVersionKey.schemaVersionKey(DATASOURCE))
-                       .map(value -> ((SchemaVersionValue) value).status())
-                       .or(SchemaStatus.UNKNOWN);
+                     .get(SchemaVersionKey.schemaVersionKey(DATASOURCE))
+                     .map(value -> ((SchemaVersionValue) value).status())
+                     .or(SchemaStatus.UNKNOWN);
     }
 
     private long activeRows(Artifact artifact) {
-        return cluster.allNodes().stream().filter(node -> isActive(node, artifact)).count();
+        return cluster.allNodes()
+                      .stream()
+                      .filter(node -> isActive(node, artifact))
+                      .count();
     }
 
     private static boolean isActive(AetherNode node, Artifact artifact) {
         return node.kvStore()
-                   .get(AetherKey.SliceObservedKey.sliceObservedKey(node.self(), artifact))
+                   .get(AetherKey.SliceObservedKey.sliceObservedKey(node.self(),
+                                                                    artifact))
                    .map(value -> value instanceof SliceObservedValue row && row.state() == SliceObservedState.ACTIVE)
                    .or(false);
     }
 
     private AetherNode leader() {
-        return cluster.currentLeader().flatMap(cluster::getNode).or(() -> cluster.allNodes().getFirst());
+        return cluster.currentLeader()
+                      .flatMap(cluster::getNode)
+                      .or(() -> cluster.allNodes()
+                                       .getFirst());
     }
 
     private boolean allNodesHealthy() {
-        return cluster.status().nodes().stream().allMatch(node -> send(get(node.mgmtPort(), "/api/v1/health")).contains("\"quorum\":true"));
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .allMatch(node -> send(get(node.mgmtPort(),
+                                                 "/api/v1/health")).contains("\"quorum\":true"));
     }
 
     private void deployBlueprint() {
@@ -143,19 +176,31 @@ class SchemaMigrateGuardFsm2Test {
                                        .timeout(Duration.ofSeconds(10))
                                        .build());
 
-        assertThat(response).describedAs("SETUP: blueprint deployment").doesNotContain("\"error\"").contains("\"status\":\"applied\"");
+        assertThat(response).describedAs("SETUP: blueprint deployment")
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     private String post(int port, String path) {
-        return send(HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).POST(HttpRequest.BodyPublishers.noBody())
-                               .timeout(Duration.ofSeconds(10)).build());
+        return send(HttpRequest.newBuilder()
+                               .uri(URI.create("http://localhost:" + port + path))
+                               .POST(HttpRequest.BodyPublishers.noBody())
+                               .timeout(Duration.ofSeconds(10))
+                               .build());
     }
 
     private static HttpRequest get(int port, String path) {
-        return HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).GET().timeout(Duration.ofSeconds(10)).build();
+        return HttpRequest.newBuilder()
+                          .uri(URI.create("http://localhost:" + port + path))
+                          .GET()
+                          .timeout(Duration.ofSeconds(10))
+                          .build();
     }
 
     private String send(HttpRequest request) {
-        return http.sendString(request).await().map(result -> result.statusCode() + " " + result.body()).or("request failed");
+        return http.sendString(request)
+                   .await()
+                   .map(result -> result.statusCode() + " " + result.body())
+                   .or("request failed");
     }
 }

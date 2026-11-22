@@ -257,10 +257,10 @@ class CoreAbsenceFenceOrderingTest {
              .untilAsserted(() -> assertThat(fenceWarnings()).as("a 'core-absence-fence' warning was raised on the isolated worker; raised codes: %s",
                                                                  workerEvents.raisedOperatorWarnings()
                                                                              .stream()
-                                                                             .map(event -> event.details().get("code"))
+                                                                             .map(event -> event.details()
+                                                                                                .get("code"))
                                                                              .toList())
-                                                            .isNotEmpty());
-
+                                            .isNotEmpty());
         var warning = fenceWarnings().getFirst();
 
         assertThat(warning.severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
