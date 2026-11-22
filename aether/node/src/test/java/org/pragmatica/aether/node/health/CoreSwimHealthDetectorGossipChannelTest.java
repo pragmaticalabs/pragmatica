@@ -85,7 +85,7 @@ class CoreSwimHealthDetectorGossipChannelTest {
                                          SELF,
                                          new InetSocketAddress("127.0.0.1", 9101))
                            .unwrap();
-        swim.addSeedMember(PEER, PEER_ADDRESS);
+        swim.driveForTest(() -> swim.addSeedMember(PEER, PEER_ADDRESS));
     }
 
     private void start() {

@@ -74,7 +74,7 @@ class QuorumReportWiringTest {
                 .await()
                 .onFailure(cause -> fail("start() failed: " + cause.message()));
         swim = runningProtocol();
-        swim.announceJoin(self, "wiring", ANNOUNCED_INCARNATION, List.of());
+        swim.driveForTest(() -> swim.announceJoin(self, "wiring", ANNOUNCED_INCARNATION, List.of()));
         membership = MembershipFsm.membershipFsm(FsmObserver.noop(),
                                                  System::currentTimeMillis,
                                                  Long.MAX_VALUE,

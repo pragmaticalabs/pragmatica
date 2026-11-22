@@ -103,7 +103,7 @@ class SwimRetiredIdentityDeathTest {
                                    .unwrap();
 
         protocol.addObservationListener(observations);
-        protocol.setBootTokens(tokens);
+        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
 
         return protocol;
     }
@@ -115,7 +115,7 @@ class SwimRetiredIdentityDeathTest {
         var tokens = BootTokens.bootTokens(0x5E1FL);
         var protocol = protocol(booting, observations, tokens);
 
-        protocol.addSeedMember(NODE_A, ADDR_A);
+        protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
         tokens.admit(NODE_A, TOKEN);
         tokens.admit(NODE_A, OTHER_TOKEN);
 
@@ -136,7 +136,7 @@ class SwimRetiredIdentityDeathTest {
         var clusterObservations = new CopyOnWriteArrayList<Object>();
 
         protocol.addTransportObservationEmitter(clusterObservations::add);
-        protocol.addSeedMember(NODE_A, ADDR_A);
+        protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
         tokens.admit(NODE_A, TOKEN);
         tokens.admit(NODE_A, OTHER_TOKEN);
         assertThat(tokens.admit(NODE_A, OTHER_TOKEN)).isEqualTo(BootTokens.Admission.RETIRED);
@@ -232,9 +232,9 @@ class SwimRetiredIdentityDeathTest {
                                    .unwrap();
 
         protocol.addObservationListener(observations);
-        protocol.setBootTokens(tokens);
+        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
         try {
-            protocol.addSeedMember(NODE_A, ADDR_A);
+            protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
             tokens.admit(NODE_A, TOKEN);
             tokens.admit(NODE_A, OTHER_TOKEN);
 
@@ -254,7 +254,7 @@ class SwimRetiredIdentityDeathTest {
         var tokens = BootTokens.bootTokens(0x5E1FL);
         var protocol = protocol(booting, observations, tokens);
 
-        protocol.addSeedMember(NODE_A, ADDR_A);
+        protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
         protocol.start();
         try {
             tokens.admit(NODE_A, TOKEN);
@@ -268,7 +268,7 @@ class SwimRetiredIdentityDeathTest {
             Thread.sleep(PAST_RESIDENCY.toMillis());
             assertThat(protocol.members()).as("positive control: the residency sweep ran").doesNotContainKey(NODE_A);
 
-            protocol.addSeedMember(NODE_A, ADDR_A);
+            protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
             Thread.sleep(200);
 
             assertThat(protocol.members()).as("a retired identity is never re-seeded").doesNotContainKey(NODE_A);
@@ -288,7 +288,7 @@ class SwimRetiredIdentityDeathTest {
         var observations = new RecordingObservationSink();
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL));
 
-        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -349,7 +349,7 @@ class SwimRetiredIdentityDeathTest {
         var tokens = BootTokens.bootTokens(0x5E1FL);
         var protocol = protocol(booting, observations, tokens);
 
-        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -380,7 +380,7 @@ class SwimRetiredIdentityDeathTest {
         var observations = new RecordingObservationSink();
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL));
 
-        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -388,7 +388,7 @@ class SwimRetiredIdentityDeathTest {
             assertThat(protocol.members()).as("positive control: swept").doesNotContainKey(PHANTOM);
             assertThat(departures(observations, PHANTOM)).isEmpty();
 
-            protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT));
+            protocol.driveForTest(() -> protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT)));
 
             assertThat(departures(observations, PHANTOM)).as("replayed on the refutation, gate still shut").hasSize(1);
         } finally {
@@ -407,7 +407,7 @@ class SwimRetiredIdentityDeathTest {
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL), transport);
 
         transport.protocol = protocol;
-        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -442,7 +442,7 @@ class SwimRetiredIdentityDeathTest {
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL), transport);
 
         transport.protocol = protocol;
-        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -478,7 +478,7 @@ class SwimRetiredIdentityDeathTest {
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL), transport);
 
         transport.protocol = protocol;
-        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
@@ -508,14 +508,14 @@ class SwimRetiredIdentityDeathTest {
         var observations = new RecordingObservationSink();
         var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL));
 
-        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
             Thread.sleep(PAST_RESIDENCY.toMillis());
             assertThat(protocol.members()).as("positive control: swept, deferral kept").doesNotContainKey(PHANTOM);
 
-            protocol.setMembershipEligibility(peer -> !peer.equals(PHANTOM));
+            protocol.driveForTest(() -> protocol.setMembershipEligibility(peer -> !peer.equals(PHANTOM)));
             booting.set(false);
             Thread.sleep(AFTER_GATE_CLOSE.toMillis());
 

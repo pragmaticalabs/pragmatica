@@ -115,10 +115,10 @@ class SwimFalseDeadRejoinTest {
         awaitHealthyOnObserver();
         observerVerdictPrivate.set(true);
         pairCut.set(true);
-        observer.recordTransportHint(LIVE,
-                                     new TransportObservation.PeerUnreachable(LIVE,
-                                                                              Causes.cause("link to the live node lost"),
-                                                                              TransportObservation.HintOrigin.LINK_LOST));
+        observer.driveForTest(() -> observer.recordTransportHint(LIVE,
+                                                                 new TransportObservation.PeerUnreachable(LIVE,
+                                                                                                          Causes.cause("link to the live node lost"),
+                                                                                                          TransportObservation.HintOrigin.LINK_LOST)));
 
         await().atMost(30, TimeUnit.SECONDS)
                .untilAsserted(() -> assertThat(verdictSnapshot.get()).as("instrument: the observer alone declared the live node dead")
@@ -245,8 +245,8 @@ class SwimFalseDeadRejoinTest {
     }
 
     private static void seed(SwimProtocol protocol, NodeId a, int aPort, NodeId b, int bPort) {
-        protocol.addSeedMember(a, new InetSocketAddress("127.0.0.1", aPort));
-        protocol.addSeedMember(b, new InetSocketAddress("127.0.0.1", bPort));
+        protocol.driveForTest(() -> protocol.addSeedMember(a, new InetSocketAddress("127.0.0.1", aPort)));
+        protocol.driveForTest(() -> protocol.addSeedMember(b, new InetSocketAddress("127.0.0.1", bPort)));
     }
 
     private SwimProtocol node(NodeId id, int port, long incarnation) {
@@ -269,13 +269,13 @@ class SwimFalseDeadRejoinTest {
                                    .unwrap();
 
         transport.start(port, protocol::onMessage);
-        protocol.announceJoin(NodeInfo.nodeInfo(id,
+        protocol.driveForTest(() -> protocol.announceJoin(NodeInfo.nodeInfo(id,
                                                 NodeAddress.nodeAddress("127.0.0.1", port).unwrap(),
                                                 Map.of(NodeInfo.LABEL_ROLE, "core")),
                               "c",
                               incarnation,
                               1000L + port,
-                              List.of());
+                              List.of()));
         protocol.start();
         started.add(protocol);
         rememberNode(id, protocol);

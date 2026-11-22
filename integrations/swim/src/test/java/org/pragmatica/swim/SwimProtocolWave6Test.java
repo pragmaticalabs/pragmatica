@@ -194,7 +194,7 @@ class SwimProtocolWave6Test {
                 var faultyEdgeAt = System.currentTimeMillis();
                 // Second-hand (gossip) FAULTY needs local transport-down corroboration to
                 // drive the FAULTY edge (P1 death-path co-confirmation).
-                residencyProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
+                residencyProtocol.driveForTest(() -> residencyProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST)));
                 residencyProtocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 2L, List.of(updateOf(NODE_A, MemberState.FAULTY, 1L))));
                 assertThat(residencyProtocol.members().get(NODE_A).state()).isEqualTo(MemberState.FAULTY);
 
@@ -219,7 +219,7 @@ class SwimProtocolWave6Test {
 
         @Test
         void processAckProbe_mismatchedFrom_ignoredAsAliveEvidence_probeStillPending() {
-            protocol.addSeedMember(NODE_A, ADDR_A);
+            protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
             protocol.probeOnceForTest();
             var seq = lastPingTo(ADDR_A).sequence();
 
@@ -235,7 +235,7 @@ class SwimProtocolWave6Test {
 
         @Test
         void handleAck_unsolicitedAck_noLongerPromotesSender() {
-            protocol.addSeedMember(NODE_A, ADDR_A);
+            protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
 
             protocol.deliverForTest(ADDR_A, Ack.ack(NODE_A, 9_999L, List.of()));
 
@@ -260,7 +260,7 @@ class SwimProtocolWave6Test {
                                     timeSpan(10).seconds());
             var timingProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                              .unwrap();
-            timingProtocol.addSeedMember(NODE_A, ADDR_A);
+            timingProtocol.driveForTest(() -> timingProtocol.addSeedMember(NODE_A, ADDR_A));
             timingProtocol.probeOnceForTest();
 
             await().atMost(Duration.ofSeconds(3))
@@ -455,7 +455,7 @@ class SwimProtocolWave6Test {
             gossipFrom(NODE_B, ADDR_B, 1L, updateOf(NODE_A, MemberState.ALIVE, 0L));
             // Second-hand (gossip) FAULTY needs local transport-down corroboration to drive
             // the FAULTY edge (P1 death-path co-confirmation).
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST)));
             gossipFrom(NODE_B, ADDR_B, 2L, updateOf(NODE_A, MemberState.FAULTY, 1L));
 
             assertThat(observations.byType(SwimObservation.FaultyObserved.class)).hasSize(1);
@@ -494,7 +494,7 @@ class SwimProtocolWave6Test {
                 sweepProtocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 1L, List.of(updateOf(NODE_A, MemberState.ALIVE, 0L))));
                 // Second-hand (gossip) FAULTY needs local transport-down corroboration to
                 // drive the FAULTY edge (P1 death-path co-confirmation).
-                sweepProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
+                sweepProtocol.driveForTest(() -> sweepProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST)));
                 sweepProtocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 2L, List.of(updateOf(NODE_A, MemberState.FAULTY, 1L))));
                 assertThat(observations.byType(SwimObservation.DepartedObserved.class))
                     .as("the death broadcast already fired at the FAULTY edge")
@@ -533,7 +533,7 @@ class SwimProtocolWave6Test {
             var observations = new RecordingObservationSink();
             graced.addObservationListener(observations);
 
-            graced.addSeedMember(NODE_A, ADDR_A);
+            graced.driveForTest(() -> graced.addSeedMember(NODE_A, ADDR_A));
             graced.start();
             try {
                 // Sleep well past the suspect-timeout (100ms) but far inside join-grace (2s).
@@ -572,7 +572,7 @@ class SwimProtocolWave6Test {
             var observations = new RecordingObservationSink();
             graced.addObservationListener(observations);
 
-            graced.addSeedMember(NODE_A, ADDR_A);
+            graced.driveForTest(() -> graced.addSeedMember(NODE_A, ADDR_A));
             assertThat(graced.members().get(NODE_A).state()).isEqualTo(MemberState.OBSERVED);
 
             graced.start();

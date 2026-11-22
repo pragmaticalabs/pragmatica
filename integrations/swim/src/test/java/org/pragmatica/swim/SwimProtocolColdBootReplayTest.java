@@ -90,7 +90,7 @@ class SwimProtocolColdBootReplayTest {
                                    .unwrap();
 
         protocol.addObservationListener(observations);
-        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3))
@@ -202,7 +202,7 @@ class SwimProtocolColdBootReplayTest {
                                    .unwrap();
 
         protocol.addObservationListener(observations);
-        protocol.addSeedMember(GENUINE, GENUINE_ADDR);
+        protocol.driveForTest(() -> protocol.addSeedMember(GENUINE, GENUINE_ADDR));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3))
@@ -241,7 +241,7 @@ class SwimProtocolColdBootReplayTest {
                                    .unwrap();
 
         protocol.addObservationListener(observations);
-        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3))
@@ -291,10 +291,10 @@ class SwimProtocolColdBootReplayTest {
             assertThat(protocol.transportVetoedForTest(GENUINE)).as("the HEALTHY edge clears the deferral").isFalse();
 
             linkUp.set(false);
-            protocol.recordTransportHint(GENUINE,
+            protocol.driveForTest(() -> protocol.recordTransportHint(GENUINE,
                                          new TransportObservation.PeerUnreachable(GENUINE,
                                                                                   Causes.cause("link closed"),
-                                                                                  TransportObservation.HintOrigin.LINK_LOST));
+                                                                                  TransportObservation.HintOrigin.LINK_LOST)));
             Thread.sleep(60);
 
             assertThat(departures(observations, GENUINE)).as("an established peer is not departed by a replay").isEmpty();
@@ -318,7 +318,7 @@ class SwimProtocolColdBootReplayTest {
                                    .unwrap();
 
         protocol.addObservationListener(observations);
-        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.driveForTest(() -> protocol.addSeedMember(PHANTOM, PHANTOM_ADDR));
         protocol.start();
         try {
             await().atMost(Duration.ofSeconds(3))

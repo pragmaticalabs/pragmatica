@@ -150,7 +150,7 @@ class SwimProtocolTombstoneTest {
         // is cleared so cleanup removes (and tombstones) it on the next tick. The
         // second-hand (gossip) FAULTY needs local transport-down corroboration to drive
         // the death path (P1 death-path co-confirmation).
-        protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
+        protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST)));
         var faultyA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
@@ -173,7 +173,7 @@ class SwimProtocolTombstoneTest {
             protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 3L, List.of(gossipSuspect)));
 
             // (b) bare channel re-seed (no incarnation => 0): refused.
-            protocol.addSeedMember(NODE_A, ADDR_A);
+            protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
 
             assertThat(protocol.members().containsKey(NODE_A))
                 .as("Tombstoned proven-healthy id must NOT be re-created by gossip or re-seed")
@@ -297,7 +297,7 @@ class SwimProtocolTombstoneTest {
                 .isTrue();
 
             // (a) bare channel re-seed (stale Hello re-completes, no incarnation => 0): refused.
-            protocol.addSeedMember(NODE_A, ADDR_A);
+            protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
             assertThat(protocol.members().containsKey(NODE_A))
                 .as("Tombstoned never-HEALTHY id must NOT be re-created by bare re-seed")
                 .isFalse();
@@ -327,7 +327,7 @@ class SwimProtocolTombstoneTest {
         // contract is deferred to the deadline, never skipped).
         var graced = longGraceProtocol();
         try {
-            graced.addSeedMember(NODE_A, ADDR_A);
+            graced.driveForTest(() -> graced.addSeedMember(NODE_A, ADDR_A));
             assertThat(graced.members().get(NODE_A).state()).isEqualTo(MemberState.OBSERVED);
             assertThat(graced.everSeenHealthyForTest(NODE_A)).isFalse();
 
@@ -382,7 +382,7 @@ class SwimProtocolTombstoneTest {
                 .isTrue();
 
             // Bare re-seed refused — oscillation ends.
-            graced.addSeedMember(NODE_A, ADDR_A);
+            graced.driveForTest(() -> graced.addSeedMember(NODE_A, ADDR_A));
             assertThat(graced.members().containsKey(NODE_A))
                 .as("After expiry+tombstone, bare re-seed must be refused")
                 .isFalse();
@@ -429,7 +429,7 @@ class SwimProtocolTombstoneTest {
 
         // Second-hand (gossip) FAULTY needs local transport-down corroboration to drive
         // the death path (P1 death-path co-confirmation).
-        protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
+        protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST)));
         var faultyA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
@@ -544,7 +544,7 @@ class SwimProtocolTombstoneTest {
         // Transport-down corroboration is set, but the gossiped FAULTY is dropped earlier by the
         // OBSERVED guard (the member is a not-yet-confirmed OBSERVED placeholder), so no FAULTY edge
         // and no tombstone-gate evaluation occurs.
-        coldBoot.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
+        coldBoot.driveForTest(() -> coldBoot.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST)));
         var faultyA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         coldBoot.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 

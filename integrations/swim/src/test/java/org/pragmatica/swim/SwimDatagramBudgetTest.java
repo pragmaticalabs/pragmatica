@@ -110,7 +110,7 @@ class SwimDatagramBudgetTest {
                                             NodeInfo.LABEL_INSTANCE_TYPE, "ccx33"));
 
         fresh.start();
-        fresh.announceJoin(info, "c", 1L, 77L, List.of());
+        fresh.driveForTest(() -> fresh.announceJoin(info, "c", 1L, 77L, List.of()));
         try {
             await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(selfUpdates(fresh))
                 .isNotEmpty()

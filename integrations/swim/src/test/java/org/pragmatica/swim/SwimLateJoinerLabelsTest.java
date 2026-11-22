@@ -95,8 +95,8 @@ class SwimLateJoinerLabelsTest {
         transport.start(port, protocol::onMessage);
         protocol.start();
         seeds.forEach(seed -> seedAddresses.add(new InetSocketAddress("127.0.0.1", seed)));
-        seeds.forEach(seed -> protocol.addSeedMember(new NodeId(seedName(seed)), new InetSocketAddress("127.0.0.1", seed)));
-        protocol.announceJoin(selfInfo(id, port), "c", 1L, 1000L + port, seedAddresses);
+        seeds.forEach(seed -> protocol.driveForTest(() -> protocol.addSeedMember(new NodeId(seedName(seed)), new InetSocketAddress("127.0.0.1", seed))));
+        protocol.driveForTest(() -> protocol.announceJoin(selfInfo(id, port), "c", 1L, 1000L + port, seedAddresses));
         started.add(protocol);
 
         return protocol;

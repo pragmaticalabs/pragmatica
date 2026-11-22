@@ -90,7 +90,7 @@ class SwimDeathRecordTest {
                                              booting::get)
                                .unwrap();
         protocol.addObservationListener(observations);
-        protocol.setBootTokens(tokens);
+        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
     }
 
     @AfterEach
@@ -111,10 +111,10 @@ class SwimDeathRecordTest {
     /// stays resident FAULTY.
     private void driveToFaultyResident(long token) {
         gossip(1L, updateOfA(MemberState.ALIVE, 0, token));
-        protocol.recordTransportHint(NODE_A,
+        protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A,
                                      new TransportObservation.PeerUnreachable(NODE_A,
                                                                               Causes.cause("test peer down"),
-                                                                              TransportObservation.HintOrigin.LINK_LOST));
+                                                                              TransportObservation.HintOrigin.LINK_LOST)));
         gossip(2L, updateOfA(MemberState.FAULTY, DEATH_INCARNATION, token));
 
         assertThat(protocol.members().get(NODE_A).state()).as("precondition: NODE_A FAULTY-resident")
@@ -187,7 +187,7 @@ class SwimDeathRecordTest {
     private void driveToReSeededObserved() {
         driveToDeathPastTombstoneTtl(TOKEN_A);
         protocol.stop();
-        protocol.addSeedMember(NODE_A, ADDR_A);
+        protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
         assertThat(protocol.members().get(NODE_A).state()).as("precondition: re-seeded OBSERVED")
                                                            .isEqualTo(MemberState.OBSERVED);
         observations.all.clear();

@@ -418,9 +418,9 @@ class SwimAnnounceSourcePinTest {
     void pin_isDroppedWithTheMembersScope_andTheNextAddressIsAFirstContact() {
         protocol = tickingProtocol();
         pinnedMemberA();
-        protocol.setMembershipEligibility(peer -> !peer.equals(NODE_A));
+        protocol.driveForTest(() -> protocol.setMembershipEligibility(peer -> !peer.equals(NODE_A)));
         await().atMost(Duration.ofSeconds(3)).until(() -> protocol.addressPinForTest(NODE_A).isEmpty());
-        protocol.setMembershipEligibility(_ -> true);
+        protocol.driveForTest(() -> protocol.setMembershipEligibility(_ -> true));
 
         protocol.deliverForTest(A_MOVED, announceA());
 
@@ -499,7 +499,7 @@ class SwimAnnounceSourcePinTest {
     @Test
     void ack_alwaysCarriesThisProcessesIdentityFirst() {
         protocol = manualProtocol();
-        protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of());
+        protocol.driveForTest(() -> protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of()));
 
         protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 1L, List.of()));
 
@@ -517,7 +517,7 @@ class SwimAnnounceSourcePinTest {
     @Test
     void ack_carriesThisProcessesIdentityOnce_evenWhenTheBufferedGossipHasIt() {
         protocol = tickingProtocol();
-        protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of());
+        protocol.driveForTest(() -> protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of()));
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
             transport.sentMessages.clear();
@@ -536,7 +536,7 @@ class SwimAnnounceSourcePinTest {
     @Test
     void ack_keepsTheIdentity_andFitsTheDatagramBudget_whenGossipFillsIt() {
         protocol = manualProtocol();
-        protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of());
+        protocol.driveForTest(() -> protocol.announceJoin(infoOf(SELF_ID, 9000), "", 1L, 555L, List.of()));
         var gossip = new java.util.ArrayList<MembershipUpdate>();
 
         for (int i = 0; i < 8; i++) {
@@ -567,7 +567,7 @@ class SwimAnnounceSourcePinTest {
         var longId = new NodeId("s".repeat(700));
 
         protocol = wire(SwimProtocol.swimProtocol(manualConfig(), transport, listener, longId, SELF_ADDR, () -> false).unwrap());
-        protocol.announceJoin(infoOf(longId, 9000), "", 1L, 555L, List.of());
+        protocol.driveForTest(() -> protocol.announceJoin(infoOf(longId, 9000), "", 1L, 555L, List.of()));
 
         protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 2L, List.of()));
 
@@ -729,7 +729,7 @@ class SwimAnnounceSourcePinTest {
         protocol.deliverForTest(A_REAL, announceA());
         assertThat(protocol.addressCandidatesForTest()).isEqualTo(1);
 
-        protocol.setMembershipEligibility(_ -> false);
+        protocol.driveForTest(() -> protocol.setMembershipEligibility(_ -> false));
 
         await().atMost(Duration.ofSeconds(5))
                .untilAsserted(() -> assertThat(protocol.addressCandidatesForTest())
@@ -851,10 +851,10 @@ class SwimAnnounceSourcePinTest {
 
         protocol.deliverForTest(B_ADDR, new Ping(NODE_B, 1L, List.of(aliveA)));
         assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
-        protocol.recordTransportHint(NODE_A,
+        protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A,
                                      new TransportObservation.PeerUnreachable(NODE_A,
                                                                               Causes.cause("test peer down"),
-                                                                              TransportObservation.HintOrigin.LINK_LOST));
+                                                                              TransportObservation.HintOrigin.LINK_LOST)));
         protocol.deliverForTest(B_ADDR,
                            new Ping(NODE_B, 2L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 2, A_REAL))));
         await().atMost(Duration.ofSeconds(3))

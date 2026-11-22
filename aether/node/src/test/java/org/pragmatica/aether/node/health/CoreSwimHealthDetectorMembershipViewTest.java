@@ -70,7 +70,7 @@ class CoreSwimHealthDetectorMembershipViewTest {
         swim = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, transport, noopListener(), SELF, new InetSocketAddress("127.0.0.1", 9101))
                            .unwrap();
         ctx.dispatch(new SwimHealthEvents.ProtocolReady(swim, transport, GossipEncryptor.none()));
-        detector.announceJoin(self, "c", 1L, 7L, List.of(SEED));
+        swim.driveForTest(() -> detector.announceJoin(self, "c", 1L, 7L, List.of(SEED)));
         swim.deliverForTest(KNOWN_SWIM,
                        Ack.ack(KNOWN, 0L, List.of(MembershipUpdate.membershipUpdate(KNOWN, MemberState.ALIVE, 1, KNOWN_SWIM))));
         assertThat(swim.members()).as("precondition: one live member is known").containsKey(KNOWN);

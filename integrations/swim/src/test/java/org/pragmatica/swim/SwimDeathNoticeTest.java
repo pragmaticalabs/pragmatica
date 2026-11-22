@@ -90,7 +90,7 @@ class SwimDeathNoticeTest {
                                              SELF_ADDR,
                                              () -> false)
                                .unwrap();
-        protocol.setBootTokens(BootTokens.bootTokens(SELF_TOKEN));
+        protocol.driveForTest(() -> protocol.setBootTokens(BootTokens.bootTokens(SELF_TOKEN)));
     }
 
     @BeforeEach
@@ -122,10 +122,10 @@ class SwimDeathNoticeTest {
     /// `(1, TOKEN_A)` is written at the edge. Not started: NODE_A stays resident FAULTY.
     private void driveToFaultyResident() {
         ping(NODE_B, 1L, List.of(updateOf(NODE_A, MemberState.ALIVE, 0, TOKEN_A)));
-        protocol.recordTransportHint(NODE_A,
+        protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A,
                                      new TransportObservation.PeerUnreachable(NODE_A,
                                                                               Causes.cause("test peer down"),
-                                                                              TransportObservation.HintOrigin.LINK_LOST));
+                                                                              TransportObservation.HintOrigin.LINK_LOST)));
         ping(NODE_B, 2L, List.of(updateOf(NODE_A, MemberState.FAULTY, 1L, TOKEN_A)));
 
         assertThat(protocol.deathRecordForTest(NODE_A).isPresent()).as("precondition: record written").isTrue();
@@ -447,7 +447,7 @@ class SwimDeathNoticeTest {
     void deathNotice_maxPiggybackOne_identityAndNoticeBothSent() {
         protocol.stop();
         createHolder(1);
-        protocol.announceJoin(INFO_SELF, "", 1L, SELF_TOKEN, List.of());
+        protocol.driveForTest(() -> protocol.announceJoin(INFO_SELF, "", 1L, SELF_TOKEN, List.of()));
         ping(NODE_B, 1L, List.of(updateOf(NODE_B, MemberState.ALIVE, 1L, TOKEN_B)));
         protocol.putDeathRecordForTest(NODE_A, 1L, TOKEN_A, System.currentTimeMillis());
 
@@ -465,7 +465,7 @@ class SwimDeathNoticeTest {
     /// notice the second no longer fits: trailing gossip is trimmed, never the notice or the identity.
     @Test
     void deathNotice_shortBudget_gossipTrimmedNotNotice() {
-        protocol.announceJoin(INFO_SELF, "", 1L, SELF_TOKEN, List.of());
+        protocol.driveForTest(() -> protocol.announceJoin(INFO_SELF, "", 1L, SELF_TOKEN, List.of()));
         var first = longId('x', 543);
         var second = longId('y', 543);
 
@@ -488,7 +488,7 @@ class SwimDeathNoticeTest {
 
     @Test
     void deathNotice_overBudgetNotice_identityNeverEvicted() {
-        protocol.announceJoin(INFO_SELF, "", 1L, SELF_TOKEN, List.of());
+        protocol.driveForTest(() -> protocol.announceJoin(INFO_SELF, "", 1L, SELF_TOKEN, List.of()));
         var overlong = longId('z', 1250);
 
         protocol.putDeathRecordForTest(overlong, 1L, TOKEN_A, System.currentTimeMillis());
@@ -537,7 +537,7 @@ class SwimDeathNoticeTest {
                                              ADDR_A,
                                              () -> false)
                                .unwrap();
-        claimant.announceJoin(INFO_A, "", 1L, TOKEN_A, List.of());
+        claimant.driveForTest(() -> claimant.announceJoin(INFO_A, "", 1L, TOKEN_A, List.of()));
 
         claimant.deliverForTest(SELF_ADDR, new Ping(SELF_ID, 11L, List.of()));
         ping(NODE_A, 21L, ackOf(claimantTransport, 11L).piggyback());

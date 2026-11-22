@@ -91,8 +91,8 @@ class PhantomSeedMembershipTest {
                                          booting::get)
                            .unwrap();
         swim.addObservationListener(observation -> MembershipAssembly.routeSwimEdgeToMembershipFsm(observation, membership));
-        swim.addSeedMember(PHANTOM, PHANTOM_ADDR);
-        swim.addSeedMember(GENUINE, GENUINE_ADDR);
+        swim.driveForTest(() -> swim.addSeedMember(PHANTOM, PHANTOM_ADDR));
+        swim.driveForTest(() -> swim.addSeedMember(GENUINE, GENUINE_ADDR));
     }
 
     @AfterEach
@@ -107,7 +107,7 @@ class PhantomSeedMembershipTest {
 
         swim.start();
         // QUIC dials the seed's address and 6nphj answers: Hello identity mismatch.
-        swim.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, RECYCLED_HOLDER));
+        swim.driveForTest(() -> swim.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, RECYCLED_HOLDER)));
 
         await().atMost(Duration.ofSeconds(3))
                .until(() -> enteredDeparting.contains(PHANTOM));

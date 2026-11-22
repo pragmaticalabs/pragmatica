@@ -24,6 +24,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -101,6 +102,40 @@ final class SerialExecutor {
         }
 
         return Result.success(result.get());
+    }
+
+    /// TEST seams only: wait until the executor is quiet, meaning no task is queued and none is running, so every
+    /// follow-up a task enqueued from inside (a listener re-entering the protocol) has run as well. [#call] returns
+    /// after its own task only; when another thread is the drainer, tasks queued behind it can still be pending.
+    /// Quiet is a moment, not a latch: a submission by another thread (the probe tick) after that moment is not
+    /// waited for, and a timer-driven task that is not yet queued is not waited for. Same restriction as [#call]:
+    /// from inside a task it would wait on itself, so it fails with [SwimError.General#CALL_FROM_INSIDE_TASK].
+    /// Production code never calls it.
+    Result<Unit> awaitQuiet() {
+        return isConfined()
+               ? SwimError.General.CALL_FROM_INSIDE_TASK.result()
+               : awaitQuietOutsideTask();
+    }
+
+    private Result<Unit> awaitQuietOutsideTask() {
+        while (!isQuiet()) {
+            drainWhileOwned();
+            parkUnlessQuiet();
+        }
+
+        return Result.unitResult();
+    }
+
+    private void parkUnlessQuiet() {
+        if (!isQuiet()) {
+            LockSupport.parkNanos(CALL_WAIT_NANOS);
+        }
+    }
+
+    /// Queue first, drainer second: a task polled before the queue read is still running, so the drainer is still
+    /// set when it is read (the reverse order could see a null drainer, then a task taken and running, and report quiet).
+    private boolean isQuiet() {
+        return queue.isEmpty() && drainer.get() == null;
     }
 
     /// `true` when the calling thread is inside a task of this executor.

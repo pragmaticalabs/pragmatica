@@ -17,6 +17,7 @@ package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -24,8 +25,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
 
+import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -80,13 +86,13 @@ class SwimStateConfinementTest {
         var faulty = ConcurrentHashMap.<NodeId>newKeySet();
         var protocol = protocol(new FaultyRecordingListener(faulty));
 
-        protocol.setBootTokens(tokens);
-        protocol.setMembershipEligibility(_ -> true);
-        protocol.reportSelfQuorum(QuorumReport.LOST);
-        protocol.announceJoin(SELF_INFO, "cluster", 1L, 0x5E1FL, List.of(ADDR_B));
-        protocol.announceJoin(SELF_INFO, "cluster", 1L, List.of());
-        protocol.addSeedMember(NODE_A, ADDR_A);
-        protocol.addSeedMember(NODE_B, ADDR_B);
+        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
+        protocol.driveForTest(() -> protocol.setMembershipEligibility(_ -> true));
+        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.LOST));
+        protocol.driveForTest(() -> protocol.announceJoin(SELF_INFO, "cluster", 1L, 0x5E1FL, List.of(ADDR_B)));
+        protocol.driveForTest(() -> protocol.announceJoin(SELF_INFO, "cluster", 1L, List.of()));
+        protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
+        protocol.driveForTest(() -> protocol.addSeedMember(NODE_B, ADDR_B));
         assertThat(protocol.start().isSuccess()).as("control: the tick runs").isTrue();
 
         runConcurrently(protocol, tokens);
@@ -125,6 +131,7 @@ class SwimStateConfinementTest {
 
         holder.start();
         assertThat(held.await(WAIT_MS, TimeUnit.MILLISECONDS)).as("control: the holder owns the executor").isTrue();
+        // ASYNC-DELIVERY: pins the production contract, a bare entry point on a held executor returns before the write is applied
         protocol.addSeedMember(NODE_A, ADDR_A);
         assertThat(protocol.members().containsKey(NODE_A)).as("returned while queued behind the holder, not applied yet")
                                                           .isFalse();
@@ -186,6 +193,124 @@ class SwimStateConfinementTest {
         assertThat(protocol.offExecutorMutationsForTest()).isZero();
     }
 
+    /// #3568, one invariant for every entry point: while another thread holds the executor, the production call made
+    /// bare returns before it is applied (control, the window of #3560), and the same call through `driveForTest`
+    /// waits and returns only once it is applied. One case per entry point, so a seam that stops waiting reddens six
+    /// named cases, and a seventh entry point would have to be added to [EntryPoint] to be driven at all.
+    @TestFactory
+    Stream<DynamicTest> everyEntryPoint_whileTheExecutorIsHeld_bareReturnsUnapplied_driveForTestWaitsUntilApplied() {
+        return Arrays.stream(EntryPoint.values())
+                     .map(entry -> DynamicTest.dynamicTest(entry.name(), () -> entryWaitsUntilApplied(entry)));
+    }
+
+    private static void entryWaitsUntilApplied(EntryPoint entry) throws InterruptedException {
+        var bare = protocol(new SilentListener());
+
+        entry.prepare().accept(bare);
+        var bareHold = hold(bare);
+        entry.enter().accept(bare);
+        assertThat(entry.applied().test(bare)).as("control: the bare entry point returned before it was applied").isFalse();
+        bareHold.release();
+        assertThat(entry.applied().test(bare)).as("control: the holder's drain applied it afterwards").isTrue();
+
+        var protocol = protocol(new SilentListener());
+
+        entry.prepare().accept(protocol);
+        var held = hold(protocol);
+        var driver = new Thread(() -> protocol.driveForTest(() -> entry.enter().accept(protocol)), "drive-" + entry.name());
+
+        driver.start();
+        await().atMost(Duration.ofSeconds(10))
+               .until(() -> driver.getState() == Thread.State.TIMED_WAITING || !driver.isAlive());
+        assertThat(driver.isAlive()).as("driveForTest waits for the held executor instead of returning").isTrue();
+        assertThat(entry.applied().test(protocol)).as("not applied while the holder runs").isFalse();
+        held.release();
+        driver.join(WAIT_MS);
+
+        assertThat(driver.isAlive()).as("driveForTest returned after the holder released").isFalse();
+        assertThat(entry.applied().test(protocol)).as("applied by the time driveForTest returned").isTrue();
+        assertThat(protocol.offExecutorMutationsForTest()).isZero();
+    }
+
+    private static Held hold(SwimProtocol protocol) throws InterruptedException {
+        var held = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var holder = new Thread(() -> protocol.onStateExecutorForTest(() -> hold(held, release)), "entry-holder");
+
+        holder.start();
+        assertThat(held.await(WAIT_MS, TimeUnit.MILLISECONDS)).as("control: the holder owns the executor").isTrue();
+
+        return new Held(holder, release);
+    }
+
+    private record Held(Thread holder, CountDownLatch gate) {
+        void release() throws InterruptedException {
+            gate.countDown();
+            holder.join(WAIT_MS);
+        }
+    }
+
+    private static BootTokens refusedTokens() {
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+
+        tokens.admit(NODE_A, TOKEN);
+        tokens.admit(NODE_A, OTHER_TOKEN);
+        tokens.admit(NODE_A, TOKEN);
+        return tokens;
+    }
+
+    /// The six public entry points that only enqueue: the production call, what must be in place before it, and the
+    /// state that shows it was applied. The `enter` lambdas are the one deliberate bare call site of each entry point.
+    private enum EntryPoint {
+        ADD_SEED_MEMBER(_ -> {},
+                        // ASYNC-DELIVERY: the table row runs the call bare in the control and inside driveForTest in the seam case
+                        protocol -> protocol.addSeedMember(NODE_A, ADDR_A),
+                        protocol -> protocol.members().containsKey(NODE_A)),
+        RECORD_TRANSPORT_HINT(protocol -> protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(alive(NODE_A, 0)))),
+                              // ASYNC-DELIVERY: the table row runs the call bare in the control and inside driveForTest in the seam case
+                              protocol -> protocol.recordTransportHint(NODE_A,
+                                                                       new PeerUnreachable(NODE_A, Causes.cause("test"), HintOrigin.LINK_LOST)),
+                              protocol -> protocol.members().get(NODE_A).state() == MemberState.SUSPECT),
+        ANNOUNCE_JOIN(_ -> {},
+                      // ASYNC-DELIVERY: the table row runs the call bare in the control and inside driveForTest in the seam case
+                      protocol -> protocol.announceJoin(SELF_INFO, "cluster", 7L, List.of()),
+                      protocol -> protocol.selfIncarnation() == 7L),
+        SET_BOOT_TOKENS(_ -> {},
+                        // ASYNC-DELIVERY: the table row runs the call bare in the control and inside driveForTest in the seam case
+                        protocol -> protocol.setBootTokens(refusedTokens()),
+                        protocol -> protocol.bootTokenRefusals() > 0),
+        SET_MEMBERSHIP_ELIGIBILITY(protocol -> protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE),
+                                   // ASYNC-DELIVERY: the table row runs the call bare in the control and inside driveForTest in the seam case
+                                   protocol -> protocol.setMembershipEligibility(_ -> false),
+                                   protocol -> !protocol.members().containsKey(NODE_A)),
+        REPORT_SELF_QUORUM(protocol -> protocol.driveForTest(() -> protocol.announceJoin(SELF_INFO, "cluster", 1L, List.of())),
+                           // ASYNC-DELIVERY: the table row runs the call bare in the control and inside driveForTest in the seam case
+                           protocol -> protocol.reportSelfQuorum(QuorumReport.LOST),
+                           protocol -> protocol.selfIncarnation() == 2L);
+
+        private final Consumer<SwimProtocol> prepare;
+        private final Consumer<SwimProtocol> enter;
+        private final Predicate<SwimProtocol> applied;
+
+        EntryPoint(Consumer<SwimProtocol> prepare, Consumer<SwimProtocol> enter, Predicate<SwimProtocol> applied) {
+            this.prepare = prepare;
+            this.enter = enter;
+            this.applied = applied;
+        }
+
+        Consumer<SwimProtocol> prepare() {
+            return prepare;
+        }
+
+        Consumer<SwimProtocol> enter() {
+            return enter;
+        }
+
+        Predicate<SwimProtocol> applied() {
+            return applied;
+        }
+    }
+
     /// The sensor is live: a write reached off the executor is counted. Drives the gossip chain handleMessage ->
     /// handlePing -> processPiggyback -> applyUpdate -> applyExistingMember -> adoptGossipedLabels off the executor;
     /// the label adoption's member write (storeScopedMember) is the only write the labelled ping adds over the
@@ -209,6 +334,7 @@ class SwimStateConfinementTest {
     }
 
     private static void nestedSubmission(SwimProtocol protocol, AtomicBoolean seenInside) {
+        // ASYNC-DELIVERY: runs inside a task, where a waiting seam would fail; it pins that a nested submission runs after the task
         protocol.addSeedMember(NODE_A, ADDR_A);
         seenInside.set(protocol.members().containsKey(NODE_A));
     }
@@ -264,18 +390,20 @@ class SwimStateConfinementTest {
             protocol.deliverForTest(ADDR_A, new WhoAmIReply(SELF_ADDR));
             protocol.deliverForTest(ADDR_C, new IdentityRefused(NODE_C, SELF_ID, "test"));
             protocol.deliverForTest(ADDR_A, AppGossip.appGossip(NODE_A, 7, new byte[]{1}));
-            protocol.recordTransportHint(NODE_A, new PeerReachable(NODE_A));
-            protocol.recordTransportHint(NODE_A, new PeerResponsive(NODE_A));
-            protocol.recordTransportHint(NODE_C,
+            // The drivers call the entry points bare on purpose: this test pins their production contract under contention,
+            // and a waiting seam would serialize the four drivers behind each other's quiet wait. Each call carries the marker.
+            protocol.recordTransportHint(NODE_A, new PeerReachable(NODE_A)); // ASYNC-DELIVERY: concurrency pin
+            protocol.recordTransportHint(NODE_A, new PeerResponsive(NODE_A)); // ASYNC-DELIVERY: concurrency pin
+            protocol.recordTransportHint(NODE_C, // ASYNC-DELIVERY: concurrency pin
                                          new PeerUnreachable(NODE_C, Causes.cause("test"), HintOrigin.PEER_UNRESPONSIVE));
-            protocol.recordTransportHint(NODE_C, new PeerUnreachable(NODE_C, Causes.cause("test"), HintOrigin.LINK_LOST));
-            protocol.recordTransportHint(NODE_C, new IdentityRefuted(NODE_C, NODE_A));
-            protocol.setMembershipEligibility(peer -> !NODE_C.equals(peer) || evenRound);
-            protocol.addSeedMember(NODE_C, ADDR_C);
-            protocol.reportSelfQuorum(round % 2 == 0
+            protocol.recordTransportHint(NODE_C, new PeerUnreachable(NODE_C, Causes.cause("test"), HintOrigin.LINK_LOST)); // ASYNC-DELIVERY: concurrency pin
+            protocol.recordTransportHint(NODE_C, new IdentityRefuted(NODE_C, NODE_A)); // ASYNC-DELIVERY: concurrency pin
+            protocol.setMembershipEligibility(peer -> !NODE_C.equals(peer) || evenRound); // ASYNC-DELIVERY: concurrency pin
+            protocol.addSeedMember(NODE_C, ADDR_C); // ASYNC-DELIVERY: concurrency pin
+            protocol.reportSelfQuorum(round % 2 == 0 // ASYNC-DELIVERY: concurrency pin
                                       ? QuorumReport.LOST
                                       : QuorumReport.HELD);
-            protocol.announceJoin(SELF_INFO, "cluster", 1L, List.of());
+            protocol.announceJoin(SELF_INFO, "cluster", 1L, List.of()); // ASYNC-DELIVERY: concurrency pin
             tokens.admit(NODE_C, round % 2 == 0
                                  ? TOKEN
                                  : OTHER_TOKEN);

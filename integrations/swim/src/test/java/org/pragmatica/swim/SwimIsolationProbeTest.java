@@ -128,7 +128,7 @@ class SwimIsolationProbeTest {
         transport = new AddressedTransport();
         protocol = SwimProtocol.swimProtocol(config(), transport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
                                .unwrap();
-        protocol.setBootTokens(BootTokens.bootTokens(SELF_TOKEN));
+        protocol.driveForTest(() -> protocol.setBootTokens(BootTokens.bootTokens(SELF_TOKEN)));
         protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.FAULTY);
         protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.FAULTY);
     }
@@ -187,12 +187,12 @@ class SwimIsolationProbeTest {
     /// token, answers with the death notice, and the node refutes to incarnation 2.
     @Test
     void isolationProbe_peerHoldingTheNodeDead_answersWithNotice_nodeRefutes() {
-        protocol.announceJoin(INFO_SELF, "", 1L, SELF_TOKEN, List.of());
+        protocol.driveForTest(() -> protocol.announceJoin(INFO_SELF, "", 1L, SELF_TOKEN, List.of()));
         protocol.latchSelfIsolationForTest(() -> true);
         var holderTransport = new RecordingTransport();
         holder = SwimProtocol.swimProtocol(config(), holderTransport, new RecordingListener(), NODE_A, ADDR_A, () -> false)
                              .unwrap();
-        holder.setBootTokens(BootTokens.bootTokens(TOKEN_A));
+        holder.driveForTest(() -> holder.setBootTokens(BootTokens.bootTokens(TOKEN_A)));
         holder.putDeathRecordForTest(SELF_ID, 1L, SELF_TOKEN, System.currentTimeMillis());
 
         protocol.probeRoundForTest();
@@ -225,7 +225,7 @@ class SwimIsolationProbeTest {
     void isolationProbe_allPeersSwept_announcesToASeed() {
         var seed = new InetSocketAddress("127.0.0.1", 9100);
 
-        protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
+        protocol.driveForTest(() -> protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed)));
         protocol.joinAcknowledgedForTest();
         protocol.latchSelfIsolationForTest(() -> true);
         protocol.removeMemberForTest(NODE_A);
@@ -245,8 +245,8 @@ class SwimIsolationProbeTest {
         var seed = new InetSocketAddress("127.0.0.1", 9101);
         var seedNode = new NodeId("seed-only");
 
-        protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of());
-        protocol.addSeedMember(seedNode, seed);
+        protocol.driveForTest(() -> protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of()));
+        protocol.driveForTest(() -> protocol.addSeedMember(seedNode, seed));
         protocol.joinAcknowledgedForTest();
         protocol.latchSelfIsolationForTest(() -> true);
         protocol.removeMemberForTest(NODE_A);
@@ -266,7 +266,7 @@ class SwimIsolationProbeTest {
     void isolationProbe_peersRemain_noAnnounceToASeed() {
         var seed = new InetSocketAddress("127.0.0.1", 9100);
 
-        protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
+        protocol.driveForTest(() -> protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed)));
         protocol.joinAcknowledgedForTest();
         protocol.latchSelfIsolationForTest(() -> true);
         transport.sent.clear();
@@ -282,7 +282,7 @@ class SwimIsolationProbeTest {
     void isolationProbe_onlyAnUnprobableNonFaultyPeerHeld_noAnnounceToASeed() {
         var seed = new InetSocketAddress("127.0.0.1", 9100);
 
-        protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
+        protocol.driveForTest(() -> protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed)));
         protocol.joinAcknowledgedForTest();
         protocol.latchSelfIsolationForTest(() -> true);
         protocol.removeMemberForTest(NODE_A);
@@ -304,10 +304,10 @@ class SwimIsolationProbeTest {
         protocol.removeMemberForTest(NODE_A);
         protocol.removeMemberForTest(NODE_B);
         protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(faultyClaim(MemberState.ALIVE, 0L))));
-        protocol.recordTransportHint(NODE_A,
+        protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A,
                                      new TransportObservation.PeerUnreachable(NODE_A,
                                                                               Causes.cause("test peer down"),
-                                                                              TransportObservation.HintOrigin.LINK_LOST));
+                                                                              TransportObservation.HintOrigin.LINK_LOST)));
         protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyClaim(MemberState.FAULTY, 1L))));
         protocol.latchSelfIsolationForTest(() -> true);
         transport.sent.clear();
@@ -328,7 +328,7 @@ class SwimIsolationProbeTest {
     /// inside the tick.
     @Test
     void isolationProbe_latchedAlone_noSeedsKnown_doesNotThrowAndSendsNothing() {
-        protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of());
+        protocol.driveForTest(() -> protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of()));
         protocol.latchSelfIsolationForTest(() -> true);
         protocol.removeMemberForTest(NODE_A);
         protocol.removeMemberForTest(NODE_B);
@@ -380,7 +380,7 @@ class SwimIsolationProbeTest {
                                               () -> false)
                                 .unwrap();
 
-        alone.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
+        alone.driveForTest(() -> alone.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed)));
         alone.joinAcknowledgedForTest();
         alone.putMemberForTest(NODE_A, ADDR_A, MemberState.FAULTY);
         alone.latchSelfIsolationForTest(() -> true);

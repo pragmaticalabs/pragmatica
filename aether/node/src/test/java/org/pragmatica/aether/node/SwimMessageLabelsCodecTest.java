@@ -215,7 +215,7 @@ class SwimMessageLabelsCodecTest {
                                      Map.of(NodeInfo.LABEL_ROLE, "core", NodeInfo.LABEL_HOSTNAME, "h".repeat(1870)));
 
         protocol.start();
-        protocol.announceJoin(info, "c", 1L, 5L, List.of());
+        protocol.driveForTest(() -> protocol.announceJoin(info, "c", 1L, 5L, List.of()));
         try {
             await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
                 transport.sent.clear();

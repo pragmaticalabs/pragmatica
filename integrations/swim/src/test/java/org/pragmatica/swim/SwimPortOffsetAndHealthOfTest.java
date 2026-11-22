@@ -172,7 +172,7 @@ class SwimPortOffsetAndHealthOfTest {
             // proof. With no HealthyObserved edge emitted yet, healthOf falls back to the live
             // members map, where a non-ALIVE member maps to UNKNOWN. The swimHealthGate (QUIC)
             // then awaits a real probe-ack before treating the peer as healthy.
-            protocol.addSeedMember(NODE_A, new InetSocketAddress("10.0.0.5", 9100));
+            protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, new InetSocketAddress("10.0.0.5", 9100)));
 
             assertThat(protocol.healthOf(NODE_A))
                 .as("OBSERVED seed must be UNKNOWN before the first edge emit")

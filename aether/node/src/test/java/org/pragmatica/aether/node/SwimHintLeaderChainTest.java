@@ -228,7 +228,7 @@ class SwimHintLeaderChainTest {
 
     private void deliver(TransportObservation hint) {
         hints.add(hint);
-        protocol.recordTransportHint(hint.peer(), hint);
+        protocol.driveForTest(() -> protocol.recordTransportHint(hint.peer(), hint));
     }
 
     private void stall(Wiring wiring, int ticks) {

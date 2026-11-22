@@ -280,7 +280,7 @@ class SwimDeathPathCoConfirmationTest {
         void linkLostHint_thenLinkReconnected_loneFirstHandFaultyHeldAtDefaultWindow() {
             seenHealthy(protocol, NODE_A, ADDR_A);
             // Eviction: link down, QUIC onPeerLeft -> LINK_LOST hint initiates SUSPECT under the floor.
-            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, linkLost(NODE_A)));
             assertThat(stateOf(NODE_A)).isEqualTo(MemberState.SUSPECT);
             assertThat(windowOf(NODE_A))
                 .as("While the evicted link is down the LINK_LOST hint floors the window")
@@ -288,7 +288,7 @@ class SwimDeathPathCoConfirmationTest {
 
             // Re-dial completes: the link is CONNECTED again and QUIC onPeerReconnected -> PeerReachable.
             liveTransport.add(NODE_A);
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A)));
             assertThat(windowOf(NODE_A))
                 .as("After the reconnect the suspicion runs on the default window, not the 3s floor")
                 .isEqualTo(SUSPECT_TIMEOUT_MS);
@@ -319,7 +319,7 @@ class SwimDeathPathCoConfirmationTest {
         @Test
         void linkLostHint_linkConnectedBeforeReachableEvent_floorAndVetoWithheld() {
             seenHealthy(protocol, NODE_A, ADDR_A);
-            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, linkLost(NODE_A)));
             assertThat(windowOf(NODE_A)).isEqualTo(FLOOR_MS);
 
             // Out-of-order delivery: the new link is already CONNECTED but PeerReachable has not been
@@ -350,7 +350,7 @@ class SwimDeathPathCoConfirmationTest {
         @Test
         void linkLostHint_linkStillDown_floorsAndVetoes() {
             seenHealthy(protocol, NODE_A, ADDR_A);
-            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, linkLost(NODE_A)));
             var hintedAt = System.currentTimeMillis();
             assertThat(windowOf(NODE_A)).isEqualTo(FLOOR_MS);
 
@@ -375,11 +375,11 @@ class SwimDeathPathCoConfirmationTest {
             seenHealthy(protocol, NODE_A, ADDR_A);
             // Hung peer: the QUIC link stays CONNECTED throughout, but the peer misses pongs.
             liveTransport.add(NODE_A);
-            protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A)));
             var hintedAt = System.currentTimeMillis();
             assertThat(stateOf(NODE_A)).isEqualTo(MemberState.SUSPECT);
             // A reachable event (catch-up or reconnect) says nothing about a connected-but-silent peer.
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A)));
             assertThat(windowOf(NODE_A))
                 .as("A PEER_UNRESPONSIVE hint floors the window with the link CONNECTED and survives PeerReachable")
                 .isEqualTo(FLOOR_MS);
@@ -402,13 +402,13 @@ class SwimDeathPathCoConfirmationTest {
         void bothOriginsRecorded_thenLinkReconnected_retractsOnlyLinkLost() {
             seenHealthy(protocol, NODE_A, ADDR_A);
             // A hung peer is reported by missed pongs AND its stalled link is evicted: both origins land.
-            protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A));
-            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A)));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, linkLost(NODE_A)));
             assertThat(windowOf(NODE_A)).isEqualTo(FLOOR_MS);
 
             // The re-dial succeeds: that disproves the link loss, not the missed pongs.
             liveTransport.add(NODE_A);
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A)));
 
             assertThat(windowOf(NODE_A))
                 .as("A later LINK_LOST hint must not overwrite a PEER_UNRESPONSIVE one, and its retraction must keep it")
@@ -418,11 +418,11 @@ class SwimDeathPathCoConfirmationTest {
         @Test
         void linkLostHint_retractedWhileConnected_staysRetractedWhenLinkDropsBeforeNextLoss() {
             seenHealthy(protocol, NODE_A, ADDR_A);
-            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, linkLost(NODE_A)));
             assertThat(windowOf(NODE_A)).isEqualTo(FLOOR_MS);
 
             liveTransport.add(NODE_A);
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A)));
             // The live-link gate alone would re-apply the floor the moment the link drops; the
             // retraction removed the hint itself, so only a NEW link-loss report floors again.
             liveTransport.remove(NODE_A);
@@ -430,7 +430,7 @@ class SwimDeathPathCoConfirmationTest {
                 .as("PeerReachable while connected retracts the LINK_LOST hint, not merely masks it")
                 .isEqualTo(SUSPECT_TIMEOUT_MS);
 
-            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, linkLost(NODE_A)));
             assertThat(windowOf(NODE_A))
                 .as("The retraction is not a latch: the next link loss floors the window again")
                 .isEqualTo(FLOOR_MS);
@@ -441,9 +441,9 @@ class SwimDeathPathCoConfirmationTest {
             seenHealthy(protocol, NODE_A, ADDR_A);
             // Eviction #2 of the replacement link is delivered, then the delayed PeerReachable of
             // reconnect #1 arrives while the link is DOWN (#1061 R-d, review S2).
-            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, linkLost(NODE_A)));
             var hintedAt = System.currentTimeMillis();
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A)));
             assertThat(windowOf(NODE_A))
                 .as("A late PeerReachable must not erase a current link-loss hint")
                 .isEqualTo(FLOOR_MS);
@@ -466,11 +466,11 @@ class SwimDeathPathCoConfirmationTest {
         void peerUnresponsiveHint_thenPeerResponsive_retractsFloorAndVeto() {
             seenHealthy(protocol, NODE_A, ADDR_A);
             liveTransport.add(NODE_A);
-            protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A)));
             assertThat(windowOf(NODE_A)).isEqualTo(FLOOR_MS);
 
             // A ClusterSync pong arrives: contrary evidence of the same kind (#1061 R-b).
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerResponsive(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerResponsive(NODE_A)));
             assertThat(stateOf(NODE_A))
                 .as("The retraction never reports life")
                 .isEqualTo(MemberState.SUSPECT);
@@ -499,10 +499,10 @@ class SwimDeathPathCoConfirmationTest {
         @Test
         void peerResponsive_whileLinkDown_keepsLinkLostHint() {
             seenHealthy(protocol, NODE_A, ADDR_A);
-            protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A));
-            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A)));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, linkLost(NODE_A)));
 
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerResponsive(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerResponsive(NODE_A)));
 
             assertThat(windowOf(NODE_A))
                 .as("A pong retracts only PEER_UNRESPONSIVE; the down link's LINK_LOST hint still floors")
@@ -512,13 +512,13 @@ class SwimDeathPathCoConfirmationTest {
         @Test
         void peerReachable_neverPromotesToAlive_onlyProbeAckDoes() {
             seenHealthy(protocol, NODE_A, ADDR_A);
-            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, linkLost(NODE_A)));
             var suspectedAt = protocol.suspectTimestampForTest(NODE_A).or(-1L);
             var healthyEdgesBefore = forPeer(SwimObservation.HealthyObserved.class, NODE_A).size();
 
             liveTransport.add(NODE_A);
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A)));
+            protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A)));
 
             assertThat(stateOf(NODE_A))
                 .as("PeerReachable retracts link evidence; it never moves the peer toward ALIVE")
@@ -550,14 +550,14 @@ class SwimDeathPathCoConfirmationTest {
                 // A second ALIVE member widens the enforced window past the base timeout (cluster-size
                 // term), so a retraction line printing the base timeout cannot pass by coincidence.
                 seenHealthy(protocol, NODE_B, ADDR_B);
-                protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+                protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, linkLost(NODE_A)));
 
                 assertThat(capture.messages())
                     .as("The suspicion-start line prints the window the expiry check enforces (3s floor), not the dogpile window")
                     .anyMatch(line -> line.contains("suspect node-a accused by node-self; effective window " + FLOOR_MS + "ms"));
 
                 liveTransport.add(NODE_A);
-                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+                protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A)));
                 var enforced = windowOf(NODE_A);
 
                 assertThat(enforced)
@@ -569,13 +569,13 @@ class SwimDeathPathCoConfirmationTest {
                                       && line.contains("effective suspect window now " + enforced + "ms"));
 
                 // PEER_UNRESPONSIVE only: a PeerReachable has no LINK_LOST hint to retract and logs nothing.
-                protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A));
-                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+                protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A)));
+                protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A)));
                 assertThat(capture.messages().stream().filter(line -> line.contains("LINK_LOST death hint retracted")))
                     .as("No LINK_LOST retraction is journaled when no LINK_LOST hint was recorded")
                     .hasSize(1);
 
-                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerResponsive(NODE_A));
+                protocol.driveForTest(() -> protocol.recordTransportHint(NODE_A, new TransportObservation.PeerResponsive(NODE_A)));
                 assertThat(capture.messages())
                     .as("The pong retraction line prints the window now enforced")
                     .anyMatch(line -> line.contains("PEER_UNRESPONSIVE death hint retracted")

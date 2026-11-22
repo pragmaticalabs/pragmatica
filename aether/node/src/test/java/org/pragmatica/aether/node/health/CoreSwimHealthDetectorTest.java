@@ -280,6 +280,7 @@ class CoreSwimHealthDetectorTest {
                                                                               Mockito.mock(Serializer.class),
                                                                               Mockito.mock(Deserializer.class));
 
+            // ASYNC-DELIVERY: no protocol exists before start(); the detector only stores the report, nothing is enqueued to wait for
             freshDetector.reportSelfQuorum(QuorumReport.LOST);
             try {
                 freshDetector.start(org.pragmatica.lang.Option.none(), GossipEncryptor.none())
@@ -291,8 +292,8 @@ class CoreSwimHealthDetectorTest {
                 assertThat(freshDetector.lifecycleState()).isInstanceOf(SwimHealthState.Running.class);
                 var protocol = ((SwimHealthState.Running) freshDetector.lifecycleState()).swim();
 
-                protocol.announceJoin(self, "replay", 1L, List.of());
-                freshDetector.reportSelfQuorum(QuorumReport.HELD);
+                protocol.driveForTest(() -> protocol.announceJoin(self, "replay", 1L, List.of()));
+                protocol.driveForTest(() -> freshDetector.reportSelfQuorum(QuorumReport.HELD));
 
                 assertThat(protocol.selfIncarnation())
                     .as("the replayed report makes its clearing a change, advertised with one incarnation bump")

@@ -190,7 +190,7 @@ class SwimBootTokenTest {
         var tokens = BootTokens.bootTokens(0x5E1FL);
 
         tokens.attachLedger(IdentityLedger.identityLedger(directory.resolve("ledger"), IdentityLedger.DurableWriter.fileOps()));
-        protocol.setBootTokens(tokens);
+        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
 
         announce(5, TOKEN);
 
@@ -210,7 +210,7 @@ class SwimBootTokenTest {
 
     @Test
     void selfSuspicion_aboutAnotherProcess_isNotRefuted() {
-        protocol.announceJoin(NodeInfo.nodeInfo(SELF_ID, new NodeAddress("127.0.0.1", 9000)), "", 1, TOKEN, List.of());
+        protocol.driveForTest(() -> protocol.announceJoin(NodeInfo.nodeInfo(SELF_ID, new NodeAddress("127.0.0.1", 9000)), "", 1, TOKEN, List.of()));
 
         protocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 1, List.of(MembershipUpdate.membershipUpdate(SELF_ID,
                                                                                                     MemberState.SUSPECT,
@@ -234,12 +234,12 @@ class SwimBootTokenTest {
     void seedMember_forRetiredIdentity_isNotAdmitted() {
         var tokens = BootTokens.bootTokens(0x5E1FL);
 
-        protocol.setBootTokens(tokens);
+        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
         tokens.admit(NODE_A, TOKEN);
         tokens.admit(NODE_A, OTHER_TOKEN);
 
-        protocol.addSeedMember(NODE_A, ADDR_A);
-        protocol.addSeedMember(NODE_B, ADDR_B);
+        protocol.driveForTest(() -> protocol.addSeedMember(NODE_A, ADDR_A));
+        protocol.driveForTest(() -> protocol.addSeedMember(NODE_B, ADDR_B));
 
         assertThat(protocol.members()).as("a retired identity is not re-seeded").doesNotContainKey(NODE_A);
         assertThat(protocol.members()).as("control: an unrelated seed is admitted").containsKey(NODE_B);
@@ -254,8 +254,8 @@ class SwimBootTokenTest {
         var probing = SwimProtocol.swimProtocol(probingConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
                                   .unwrap();
 
-        probing.setBootTokens(tokens);
-        probing.addSeedMember(NODE_A, ADDR_A);
+        probing.driveForTest(() -> probing.setBootTokens(tokens));
+        probing.driveForTest(() -> probing.addSeedMember(NODE_A, ADDR_A));
         probing.start();
         try {
             var sequence = awaitPingSequence(transport);
@@ -327,7 +327,7 @@ class SwimBootTokenTest {
         tokens.attachLedger(ledger);
         tokens.preload(ledger.open(true).facts(), false);
         gate.set(new CountDownLatch(1));
-        protocol.setBootTokens(tokens);
+        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
 
         announce(5, TOKEN);
         announce(6, OTHER_TOKEN);
@@ -410,7 +410,7 @@ class SwimBootTokenTest {
         var reasons = new java.util.concurrent.CopyOnWriteArrayList<String>();
 
         tokens.onSelfRefused(reasons::add);
-        protocol.setBootTokens(tokens);
+        protocol.driveForTest(() -> protocol.setBootTokens(tokens));
 
         protocol.deliverForTest(ADDR_B, SwimMessage.IdentityRefused.identityRefused(NODE_B, NODE_A, "not you"));
         assertThat(reasons).as("a refusal about another NodeId is not ours").isEmpty();

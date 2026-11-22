@@ -148,20 +148,20 @@ class SwimQuorumReportTest {
     void selfReport_bumpsIncarnationOncePerChange_andRidesTheSelfAlive() {
         announceSelf();
 
-        protocol.reportSelfQuorum(QuorumReport.LOST);
-        protocol.reportSelfQuorum(QuorumReport.LOST);
+        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.LOST));
+        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.LOST));
         assertThat(protocol.selfIncarnation()).as("one bump for one change; a repeat is a no-op").isEqualTo(2L);
         assertThat(lastSelfAdvertised()).extracting(MembershipUpdate::incarnation).isEqualTo(2L);
         assertThat(lastSelfAdvertised().labels()).containsEntry("quorum", "lost");
 
-        protocol.reportSelfQuorum(QuorumReport.HELD);
+        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.HELD));
         assertThat(protocol.selfIncarnation()).isEqualTo(3L);
         assertThat(lastSelfAdvertised().labels()).doesNotContainKey("quorum");
     }
 
     @Test
     void selfReport_beforeAnnounce_isKeptAndCarriedOnceAnnounced() {
-        protocol.reportSelfQuorum(QuorumReport.LOST);
+        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.LOST));
         assertThat(protocol.selfIncarnation()).as("no incarnation to bump before announce").isZero();
 
         announceSelf();
@@ -197,21 +197,21 @@ class SwimQuorumReportTest {
     void selfReport_observer_isAdvertisedAsItsOwnValue_withABumpPerChange() {
         announceSelf();
 
-        protocol.reportSelfQuorum(QuorumReport.OBSERVER);
+        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.OBSERVER));
         assertThat(protocol.selfIncarnation()).isEqualTo(2L);
         assertThat(lastSelfAdvertised().labels()).containsEntry("quorum", "observer");
 
-        protocol.reportSelfQuorum(QuorumReport.LOST);
+        protocol.driveForTest(() -> protocol.reportSelfQuorum(QuorumReport.LOST));
         assertThat(protocol.selfIncarnation()).as("observer -> lost is a change: one bump").isEqualTo(3L);
         assertThat(lastSelfAdvertised().labels()).containsEntry("quorum", "lost");
     }
 
     private void announceSelf() {
-        protocol.announceJoin(NodeInfo.nodeInfo(SELF_ID, new NodeAddress("127.0.0.1", 9200), CORE_LABELS),
+        protocol.driveForTest(() -> protocol.announceJoin(NodeInfo.nodeInfo(SELF_ID, new NodeAddress("127.0.0.1", 9200), CORE_LABELS),
                               "",
                               1L,
                               TOKEN,
-                              List.of());
+                              List.of()));
     }
 
     private void recordReportAtHealthy(SwimObservation observation, Map<Long, Boolean> sink) {

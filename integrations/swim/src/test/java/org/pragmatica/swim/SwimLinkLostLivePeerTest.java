@@ -184,7 +184,7 @@ class SwimLinkLostLivePeerTest {
         var pingsBefore = transport.pingsTo(ADDR_A);
         var stateAtHint = protocol.members().get(LEADER).state();
 
-        protocol.recordTransportHint(LEADER, peerUnresponsiveHint());
+        protocol.driveForTest(() -> protocol.recordTransportHint(LEADER, peerUnresponsiveHint()));
 
         assertThat(stateAtHint).as("instrument: the leader is FAULTY when the second hint lands")
                   .isEqualTo(MemberState.FAULTY);
@@ -206,7 +206,7 @@ class SwimLinkLostLivePeerTest {
              .until(() -> transport.pingsTo(ADDR_A) >= 1);
         var pingsBefore = transport.pingsTo(ADDR_A);
 
-        protocol.recordTransportHint(LEADER, linkLostHint());
+        protocol.driveForTest(() -> protocol.recordTransportHint(LEADER, linkLostHint()));
 
         assertThat(transport.pingsTo(ADDR_A)).as("a hint that is not current death evidence sends no hint-time probe (the next round-robin probe of the leader is 4 periods away)")
                   .isEqualTo(pingsBefore);
@@ -344,12 +344,14 @@ class SwimLinkLostLivePeerTest {
                 if (autoHint.get() && peer.equals(LEADER) && hinted.compareAndSet(false, true)) {
                     hintedAt.set(System.currentTimeMillis());
                     pingIndexAtHint.set(pings.size());
+                    // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task; it must not wait (the wait would fail from inside a task)
                     protocol.get()
                             .recordTransportHint(LEADER,
                                                  new TransportObservation.PeerUnreachable(LEADER,
                                                                                           Causes.cause("QUIC link evicted by the leader after NodeRemoved"),
                                                                                           TransportObservation.HintOrigin.LINK_LOST));
                     if (secondHint.get()) {
+                        // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task; it must not wait (the wait would fail from inside a task)
                         protocol.get()
                                 .recordTransportHint(LEADER,
                                                      new TransportObservation.PeerUnreachable(LEADER,

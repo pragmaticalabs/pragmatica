@@ -291,7 +291,7 @@ class SwimAppGossipTest {
 
         @Test
         void onMessage_fromAMemberPrunedOutOfTheMembershipScope_isDropped() {
-            protocol.setMembershipEligibility(id -> !id.equals(peer(0)));
+            protocol.driveForTest(() -> protocol.setMembershipEligibility(id -> !id.equals(peer(0))));
             member(1, MemberState.ALIVE);
 
             arrives(peer(0), CHANNEL, new byte[]{1});

@@ -551,7 +551,7 @@ class SwimHealthFsmTest {
                                                   noopListener(), SELF,
                                                   new InetSocketAddress("127.0.0.1", 9101)).unwrap();
         for (var peer : peers) {
-            protocol.addSeedMember(peer, new InetSocketAddress("127.0.0.99", 9101));
+            protocol.driveForTest(() -> protocol.addSeedMember(peer, new InetSocketAddress("127.0.0.99", 9101)));
         }
         return protocol;
     }

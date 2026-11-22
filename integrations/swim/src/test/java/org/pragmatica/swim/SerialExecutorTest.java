@@ -26,11 +26,13 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 
@@ -59,6 +61,85 @@ class SerialExecutorTest {
         assertThat(innerRan.get()).isFalse();
         assertThat(inner.get().isFailure()).isTrue();
         inner.get().onFailure(cause -> assertThat(cause).isSameAs(SwimError.General.CALL_FROM_INSIDE_TASK));
+    }
+
+    @Test
+    void awaitQuiet_onAnIdleExecutor_returnsAtOnce() {
+        var executor = SerialExecutor.serialExecutor();
+
+        assertThat(executor.awaitQuiet().isSuccess()).isTrue();
+    }
+
+    @Test
+    void awaitQuiet_fromInsideATask_failsWithTypedCauseInsteadOfWaiting() {
+        var executor = SerialExecutor.serialExecutor();
+        var inner = new AtomicReference<Result<Unit>>();
+
+        executor.execute(() -> inner.set(executor.awaitQuiet()));
+        assertThat(inner.get().isFailure()).isTrue();
+        inner.get().onFailure(cause -> assertThat(cause).isSameAs(SwimError.General.CALL_FROM_INSIDE_TASK));
+    }
+
+    /// #3568 A1: `call` returns after its own task, but when another thread is the drainer the follow-up that task
+    /// queued is still pending. Control: the call has returned while the follow-up is still running. `awaitQuiet` is
+    /// then seen waiting on it (a no-op wait returns at once), and returns only after the follow-up finished.
+    @Test
+    void awaitQuiet_whileAFollowUpOfACompletedCallIsStillRunning_waitsForTheFollowUp() throws InterruptedException {
+        var executor = SerialExecutor.serialExecutor();
+        var release = new CountDownLatch(1);
+        var followUpStarted = new CountDownLatch(1);
+        var followUpGate = new CountDownLatch(1);
+        var followUpDone = new AtomicBoolean();
+        var callReturned = new AtomicBoolean();
+        var holder = holdDrainer(executor, release);
+        var caller = Thread.ofPlatform().start(() -> callQueueingAFollowUp(executor, followUpStarted, followUpGate, followUpDone, callReturned));
+
+        awaitTimedWaitingOrDone(caller);
+        assertThat(caller.isAlive()).as("control: the call is queued behind the holder, which is the drainer").isTrue();
+        release.countDown();
+        assertThat(followUpStarted.await(WAIT_SECONDS, TimeUnit.SECONDS)).as("the holder drained the call's task and started the follow-up").isTrue();
+        caller.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(callReturned.get()).as("control: the call returned after its own task").isTrue();
+        assertThat(followUpDone.get()).as("control: the follow-up it queued is still running").isFalse();
+
+        var quietWaiter = Thread.ofPlatform().start(() -> executor.awaitQuiet());
+
+        awaitTimedWaitingOrDone(quietWaiter);
+        assertThat(quietWaiter.isAlive()).as("awaitQuiet waits for the running follow-up").isTrue();
+        followUpGate.countDown();
+        quietWaiter.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        holder.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(quietWaiter.isAlive()).as("awaitQuiet returned once the follow-up finished").isFalse();
+        assertThat(followUpDone.get()).isTrue();
+    }
+
+    private static void callQueueingAFollowUp(SerialExecutor executor,
+                                              CountDownLatch followUpStarted,
+                                              CountDownLatch followUpGate,
+                                              AtomicBoolean followUpDone,
+                                              AtomicBoolean callReturned) {
+        executor.call(() -> queueFollowUp(executor, followUpStarted, followUpGate, followUpDone));
+        callReturned.set(true);
+    }
+
+    private static int queueFollowUp(SerialExecutor executor,
+                                     CountDownLatch followUpStarted,
+                                     CountDownLatch followUpGate,
+                                     AtomicBoolean followUpDone) {
+        executor.execute(() -> runFollowUp(followUpStarted, followUpGate, followUpDone));
+
+        return 1;
+    }
+
+    private static void runFollowUp(CountDownLatch followUpStarted, CountDownLatch followUpGate, AtomicBoolean followUpDone) {
+        followUpStarted.countDown();
+        hold(new CountDownLatch(1), followUpGate);
+        followUpDone.set(true);
+    }
+
+    private static void awaitTimedWaitingOrDone(Thread thread) {
+        await().atMost(Duration.ofSeconds(WAIT_SECONDS))
+               .until(() -> thread.getState() == Thread.State.TIMED_WAITING || !thread.isAlive());
     }
 
     /// F1: an [AssertionError] from a task (a listener's assertion) used to escape the drain before the drainer was

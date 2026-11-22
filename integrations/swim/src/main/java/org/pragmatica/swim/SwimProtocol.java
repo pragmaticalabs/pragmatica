@@ -4197,8 +4197,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Test-only: one [#latchSelfIsolation] with `allPeersFaulty` as the check, run on [#stateExecutor] and
     /// waited for, so a test can hold the check-to-write window open (#1990) and read the outcome.
     boolean latchSelfIsolationForTest(BooleanSupplier allPeersFaulty) {
-        return stateExecutor.call(() -> latchSelfIsolation(allPeersFaulty))
-                            .unwrap();
+        return callForTest(() -> latchSelfIsolation(allPeersFaulty));
     }
 
     /// Test-only (#3529 confinement sensor): member/suspicion writes that ran off [#stateExecutor] so far.
@@ -4214,19 +4213,52 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Test-only (#3529): run `action` on [#stateExecutor], serially with the tick and every message, and wait
-    /// for it ([SerialExecutor#call], the strict test-only wait). Every state-writing test seam goes through it, so
-    /// a test reads its own seam write on return even while the tick drains; a test also uses it to hold the
-    /// executor (and so every mutation) at a chosen point. Never call it from inside a task (a listener callback).
+    /// for it ([SerialExecutor#call], the strict test-only wait) and then for the executor to go quiet
+    /// ([SerialExecutor#awaitQuiet]): a follow-up task the action's listeners queued has run too, even when another
+    /// thread was the drainer. Every state-writing test seam goes through it, so a test reads its own seam write on
+    /// return even while the tick drains; a test also uses it to hold the executor (and so every mutation) at a
+    /// chosen point. Quiet is a moment: a tick queued after it is not waited for. Never call it from inside a task
+    /// (a listener callback).
     @Contract
     void onStateExecutorForTest(Runnable action) {
-        stateExecutor.call(() -> runForTest(action)).unwrap();
+        callForTest(() -> runForTest(action));
     }
 
-    /// Test-only (#3560): deliver `message` from `sender` and wait until it has been applied, so a test may assert
-    /// on the next line. Production [#onMessage] only enqueues when another thread is draining (the probe tick), so
-    /// a bare `onMessage` followed by an assertion reads the state before the message ran. Public only because tests
-    /// of other modules drive a started protocol; never use it from inside a task (a listener or transport callback):
-    /// it waits ([SerialExecutor#call]) and would fail there.
+    /// The one waiting path of every test seam (#3568): run `action` as a task, then wait until the executor is quiet.
+    private <T> T callForTest(Supplier<T> action) {
+        var value = stateExecutor.call(action)
+                                 .unwrap();
+
+        awaitQuietForTest();
+        return value;
+    }
+
+    @Contract
+    private void awaitQuietForTest() {
+        stateExecutor.awaitQuiet()
+                     .unwrap();
+    }
+
+    /// Test-only (#3568): call one public entry point (`addSeedMember`, `recordTransportHint`, `announceJoin`,
+    /// `setBootTokens`, `setMembershipEligibility`, `reportSelfQuorum`, or the detector method that reaches one) on
+    /// the calling thread, then wait until it and every follow-up it queued have run on [#stateExecutor]. The entry
+    /// points only enqueue when another thread is draining (the probe tick), so a bare call followed by an assertion
+    /// reads the state before the call was applied, the race of #3560. A test passes the production call itself:
+    /// `protocol.driveForTest(() -> protocol.addSeedMember(id, address))`, so what runs is production code and the
+    /// seam only adds the wait. `SwimDeliveryGuardTest` fails the build on a bare entry-point call in a test that
+    /// drives a protocol. Never call it from inside a task (a listener or transport callback): the wait fails there,
+    /// after `entry` already ran.
+    @Contract
+    public void driveForTest(Runnable entry) {
+        entry.run();
+        awaitQuietForTest();
+    }
+
+    /// Test-only (#3560): deliver `message` from `sender` and wait until it has been applied (and the executor is
+    /// quiet, [#onStateExecutorForTest]), so a test may assert on the next line. Production [#onMessage] only enqueues
+    /// when another thread is draining (the probe tick), so a bare `onMessage` followed by an assertion reads the state
+    /// before the message ran. Public only because tests of other modules drive a started protocol; never use it from
+    /// inside a task (a listener or transport callback): it waits ([SerialExecutor#call]) and would fail there.
     @Contract
     public void deliverForTest(InetSocketAddress sender, SwimMessage message) {
         onStateExecutorForTest(() -> handleMessage(sender, message));
@@ -4382,8 +4414,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// to drive selection deterministically without scheduler timing. Returns the selected
     /// target (if any) so a test can assert which member was chosen.
     Option<SwimMember> probeOnceForTest() {
-        return stateExecutor.call(this::probeOnce)
-                            .unwrap();
+        return callForTest(this::probeOnce);
     }
 
     private Option<SwimMember> probeOnce() {

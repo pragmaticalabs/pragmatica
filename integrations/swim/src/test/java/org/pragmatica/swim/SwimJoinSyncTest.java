@@ -76,8 +76,8 @@ class SwimJoinSyncTest {
 
         var joiner = node("joiner-b", 29102, true);
 
-        joiner.addSeedMember(SEED, new InetSocketAddress("127.0.0.1", 29101));
-        joiner.announceJoin(selfInfo("joiner-b", 29102), "c", 1L, 1002L, List.of(new InetSocketAddress("127.0.0.1", 29101)));
+        joiner.driveForTest(() -> joiner.addSeedMember(SEED, new InetSocketAddress("127.0.0.1", 29101)));
+        joiner.driveForTest(() -> joiner.announceJoin(selfInfo("joiner-b", 29102), "c", 1L, 1002L, List.of(new InetSocketAddress("127.0.0.1", 29101))));
 
         await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
             assertThat(joiner.members()).as("B's view").containsKey(new NodeId("member-a"));
@@ -96,12 +96,12 @@ class SwimJoinSyncTest {
         var self = selfInfo("joiner-b", 29102);
 
         seed.putMemberForTest(X, X_ADDR, MemberState.ALIVE);
-        joiner.setMembershipEligibility(peer -> peer.equals(SEED));
+        joiner.driveForTest(() -> joiner.setMembershipEligibility(peer -> peer.equals(SEED)));
         joiner.requestMembershipView(self, "c", List.of(SEED_ADDR));
 
         await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> assertThat(seed.members()).as("the seed received the ANNOUNCE")
                                                                                           .containsKey(new NodeId("joiner-b")));
-        joiner.setMembershipEligibility(_ -> true);
+        joiner.driveForTest(() -> joiner.setMembershipEligibility(_ -> true));
         sleepQuietly(500);
 
         assertThat(joiner.members()).as("a scope that grew, with no re-ask, recovers nothing").doesNotContainKey(X);
@@ -209,10 +209,10 @@ class SwimJoinSyncTest {
                                  .unwrap();
 
         joiner.deliverForTest(SEED_ADDR, new Ping(SEED, 1L, List.of(MembershipUpdate.membershipUpdate(subject, MemberState.ALIVE, 0, X_ADDR))));
-        joiner.recordTransportHint(subject,
+        joiner.driveForTest(() -> joiner.recordTransportHint(subject,
                                    new TransportObservation.PeerUnreachable(subject,
                                                                             Causes.cause("test peer down"),
-                                                                            TransportObservation.HintOrigin.LINK_LOST));
+                                                                            TransportObservation.HintOrigin.LINK_LOST)));
         joiner.deliverForTest(SEED_ADDR, new Ping(SEED, 2L, List.of(MembershipUpdate.membershipUpdate(subject, MemberState.FAULTY, 1, X_ADDR))));
         assertThat(joiner.members().get(subject).state()).as("precondition: subject FAULTY").isEqualTo(MemberState.FAULTY);
 

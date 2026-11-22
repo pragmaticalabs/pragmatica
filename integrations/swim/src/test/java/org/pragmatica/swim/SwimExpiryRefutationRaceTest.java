@@ -154,7 +154,7 @@ class SwimExpiryRefutationRaceTest {
                                                  _ -> false)
                                    .unwrap();
 
-        protocol.setMembershipEligibility(hook::eligible);
+        protocol.driveForTest(() -> protocol.setMembershipEligibility(hook::eligible));
         protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
         protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
         protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(update(MemberState.SUSPECT, 0))));
