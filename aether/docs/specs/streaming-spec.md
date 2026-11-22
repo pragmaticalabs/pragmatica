@@ -960,14 +960,17 @@ public final class OffHeapRingBuffer {
 ### 6.2 Memory Layout Constants
 
 ```java
-// Header offsets
+// Header words: held by RingHeader, the only code that names them (offset 8 is unused: there is no tail word)
 private static final long HEADER_HEAD_OFFSET = 0;
-private static final long HEADER_TAIL_OFFSET = 8;
 private static final long HEADER_EVENT_COUNT = 16;
 private static final long HEADER_DATA_WRITE_POS = 24;
 private static final long HEADER_DATA_SIZE = 32;
 private static final long HEADER_CAPACITY = 40;
+private static final long HEADER_DATA_TAIL_POS = 48;
 private static final long HEADER_SIZE = 64;
+
+// The tail is not a header word: it is a field of the immutable value R (RemovalLedger), which RingHeader holds in one
+// volatile field. R also records what was removed below the tail and why.
 
 // Index entry layout
 private static final long INDEX_ENTRY_SIZE = 16;
@@ -993,13 +996,8 @@ public static OffHeapRingBuffer offHeapRingBuffer(long capacity,
     var indexSize = INDEX_ENTRY_SIZE * capacity;
     var totalSize = HEADER_SIZE + indexSize + dataRegionSize;
     var segment = arena.allocate(totalSize, 64); // 64-byte alignment for cache lines
-    // Initialize header
-    segment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, -1L);  // no events yet
-    segment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, 0L);
-    segment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, 0L);
-    segment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, 0L);
-    segment.set(ValueLayout.JAVA_LONG, HEADER_DATA_SIZE, dataRegionSize);
-    segment.set(ValueLayout.JAVA_LONG, HEADER_CAPACITY, capacity);
+    // Initialize header (RingHeader.initialize); R is EMPTY from construction
+    header.initialize(dataRegionSize, capacity);  // head -1 (no events yet), count 0, positions 0, size, capacity
     return new OffHeapRingBuffer(segment, capacity, dataRegionSize);
 }
 ```
@@ -1042,10 +1040,8 @@ public Result<Long> append(byte[] serializedEvent, long timestamp) {
     segment.set(ValueLayout.JAVA_LONG, indexPos + INDEX_DATA_OFFSET, dataPos);
     segment.set(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH, serializedEvent.length);
 
-    // Update header atomically
-    segment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, newOffset);
-    segment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, dataWritePos() + serializedEvent.length);
-    segment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, eventCount() + 1);
+    // Update header (RingHeader.appended: refused when newOffset is below the tail of R)
+    header.appended(newOffset, serializedEvent.length);
 
     return Result.success(newOffset);
 }
@@ -1096,15 +1092,17 @@ record RawEvent(long offset, byte[] data) {}
 ### 6.6 Eviction
 
 ```java
-/// Evict the oldest event from the buffer.
-/// Advances tailOffset and decrements eventCount.
-private void evictOldest() {
-    var tail = tailOffset();
-    if (tail > headOffset()) {
-        return; // buffer empty
+/// Evict the oldest `count` events from the buffer.
+/// Moves the tail by publishing ONE new value R (tail and removal cause together), and decrements eventCount.
+/// Refused (before any hand-over to the eviction listener) when the new tail is above head + 1.
+private void evictOldest(long count, RemovalCause cause) {
+    var tail = header.ledger().tail();
+    var to = tail + count;
+    if (to > headOffset() + 1) {
+        return; // refused: RingStateViolated
     }
-    segment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, tail + 1);
-    segment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, eventCount() - 1);
+    header.setEventCount(eventCount() - count);
+    header.publish(header.ledger().removed(to, cause)); // volatile store of R, then storeStoreFence, then slots are overwritten
 }
 ```
 
