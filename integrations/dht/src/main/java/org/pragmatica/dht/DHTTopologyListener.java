@@ -166,7 +166,7 @@ public final class DHTTopologyListener {
     ///     /\ phase[o] # "halted"
     ///     /\ x \notin pruned[o]
     ///     /\ \/ x \in drainers /\ phase[x] \in {"draining", "pushing"}
-    ///        \/ x \in stale /\ x \notin flapped[o] /\ (Flap = "self" \/ (Flap = "peer" /\ o # x))
+    ///        \/ x \in stale /\ x \notin flapped[o] /\ (Flap = "self" \/ (Flap \in {"peer", "settle"} /\ o # x))
     ///     /\ pruned' = [pruned EXCEPT ![o] = @ \cup {x}]
     ///     /\ flapped' = IF x \in stale THEN [flapped EXCEPT ![o] = @ \cup {x}] ELSE flapped
     ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, store, phase, leaving, rfAt, pages, claimed, strayNack,

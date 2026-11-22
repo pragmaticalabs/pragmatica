@@ -115,7 +115,7 @@
 /// CONSTANTS N, RF, MaxDrain, MaxStale, Waves, Deadline, HaltFair, Flap, Fixed
 ///
 /// AllFixes == {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself"}
-/// ASSUME Fixed \subseteq AllFixes /\ Flap \in {"none", "peer", "self"}
+/// ASSUME Fixed \subseteq AllFixes /\ Flap \in {"none", "peer", "self", "settle"}
 /// Fix(f) == f \in Fixed
 ///
 /// Nodes == 1..N
@@ -249,7 +249,10 @@
 ///
 /// \* Once every drainer has halted no copy can move or vanish (no pages remain, survivors never halt): the run is over. Every
 /// \* config stops exploring there (CONSTRAINT Active in `common`); the state itself is still checked.
-/// Active == \E d \in drainers : phase[d] # "halted"
+/// \* Flap = "settle" keeps the run open while a flapped stale entry is still out of a live node's ring, so FlapRestored sees the
+/// \* recovery (or its absence) instead of the cut ending the run first.
+/// Active == \/ \E d \in drainers : phase[d] # "halted"
+///           \/ Flap = "settle" /\ \E o \in Nodes, x \in stale : phase[o] # "halted" /\ x \in pruned[o]
 ///
 /// Next ==
 ///     \/ \E d \in Nodes : Command(d) \/ Plan(d) \/ Halt(d)
@@ -259,11 +262,12 @@
 ///
 /// \* A commanded drainer plans and halts once its push resolves; every live node eventually receives the drain set and sees
 /// \* every drainer enter DEPARTING and, once halted, removed; a page that can be delivered or retargeted eventually is. A
-/// \* stale entry's flap is not fair: it may never happen.
+/// \* stale entry's flap is not fair: it may never happen, but a flap that happened is recovered (the entry reaches MEMBER again).
 /// Fairness ==
 ///     /\ \A d \in Nodes : WF_vars(Command(d)) /\ WF_vars(Plan(d)) /\ WF_vars(HaltFair /\ Halt(d))
 ///     /\ \A n \in Nodes : WF_vars(LearnDrain(n))
 ///     /\ \A o, x \in Nodes : WF_vars(x \in drainers /\ DepartingEdge(o, x)) /\ WF_vars(Removed(o, x))
+///     /\ \A o, x \in Nodes : WF_vars(Recover(o, x))
 ///     /\ \A d, t \in Nodes : WF_vars(Deliver(d, t)) /\ WF_vars(Retarget(d, t))
 ///
 /// Spec == Init /\ [][Next]_vars /\ Fairness
@@ -305,6 +309,19 @@
 ///
 /// \* Every drainer's push resolves and it halts.
 /// DrainCompletes == <>AllHalted
+///
+/// \* The ring view only ever restores a node that is still alive: once a halted drainer is out of a live node's ring (the
+/// \* DEPARTING edge or NodeRemoved pruned it), nothing puts it back. The code: onNodeRemoved drops the recorded prune, so a later
+/// \* onNodeRecovered restores nothing. A node that halts loses its ring view (Halt resets it) and is exempt. No data invariant
+/// \* sees this: a re-added dead node only adds ring states already reachable before Removed fires, so it is an action property.
+/// HaltedStaysRemoved ==
+///     [][\A o, x \in Nodes : (x \in drainers /\ phase[x] = "halted" /\ x \in pruned[o] /\ phase'[o] # "halted") => x \in pruned'[o]]_vars
+///
+/// \* A stale entry that flapped is restored to every live node's ring: a prune is not permanent (#3415). Without Recover the
+/// \* ring of a surviving node keeps the entry out forever and no copy is ever placed on it again; no safety invariant sees it,
+/// \* the data is only placed on fewer nodes. A node that halted stops acting and is exempt.
+/// FlapRestored ==
+///     \A o, x \in Nodes : (x \in stale /\ x \in pruned[o]) ~> (phase[o] = "halted" \/ x \notin pruned[o])
 /// ```
 ///
 /// ```tlacfg DHTDepartureDrain:common
@@ -337,6 +354,24 @@
 ///           Flap = "peer"
 ///           Fixed <- AllFixes
 /// PROPERTY DrainCompletes
+/// ```
+///
+/// ```tlacfg DHTDepartureDrain:flaplive
+/// CONSTANTS Waves = FALSE
+///           Deadline = FALSE
+///           HaltFair = TRUE
+///           Flap = "settle"
+///           Fixed <- AllFixes
+/// PROPERTY FlapRestored
+/// ```
+///
+/// ```tlacfg DHTDepartureDrain:removed
+/// CONSTANTS Waves = FALSE
+///           Deadline = FALSE
+///           HaltFair = TRUE
+///           Flap = "peer"
+///           Fixed <- AllFixes
+/// PROPERTY HaltedStaysRemoved
 /// ```
 ///
 /// ```tlacfg DHTDepartureDrain:noexhaust
