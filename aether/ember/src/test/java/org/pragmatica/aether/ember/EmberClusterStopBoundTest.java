@@ -60,16 +60,26 @@ class EmberClusterStopBoundTest {
     @Timeout(40)
     void clusterStop_succeeds_whenANodeStopCompletedWithFailures_theNodeCountsAsStopped() {
         var cluster = emberCluster(3, PORT, PORT + 100, "sb");
-        var listenerCloseTimedOut = StopReport.completedWithFailures(List.of(StepFailure.stepFailure("App HTTP server",
+        var listenerCloseTimedOut = StopReport.of(List.of(StepFailure.stepFailure("App HTTP server",
                                                                                                     Causes.cause("Promise timed out after 2000ms"))));
 
         adopt(cluster, "sb-1", PORT, () -> Promise.success(unit()));
         adoptReporting(cluster, "sb-2", PORT + 1, () -> Promise.success(listenerCloseTimedOut));
 
-        var outcome = cluster.stop().await(PAST_THE_BOUND);
+        var capture = StreamTripwireSupport.captureLogs();
 
-        assertThat(outcome.isSuccess()).as("a stop completed with failures is a stopped node, got %s", outcome).isTrue();
-        assertThat(cluster.allNodes()).as("the registry is cleared").isEmpty();
+        try {
+            var outcome = cluster.stop().await(PAST_THE_BOUND);
+
+            assertThat(outcome.isSuccess()).as("a stop completed with failures is a stopped node, got %s", outcome).isTrue();
+            assertThat(cluster.allNodes()).as("the registry is cleared").isEmpty();
+            assertThat(StreamTripwireSupport.logLines(capture, Level.WARN)).as("the dropped step failure is logged (FER, #3565)")
+                                                                           .anyMatch(line -> line.startsWith("WARN")
+                                                                                             && line.contains("Node sb-2 stopped with 1 step failure(s)")
+                                                                                             && line.contains("App HTTP server: Promise timed out after 2000ms"));
+        } finally {
+            capture.close();
+        }
     }
 
     /// The other side of the line: a stop that FAILS (the sequence could not complete) is a node that did not stop.

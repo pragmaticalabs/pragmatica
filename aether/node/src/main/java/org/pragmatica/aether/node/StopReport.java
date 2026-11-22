@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 
 /// What a node's stop did once every step of it had settled (#3565).
@@ -38,7 +40,19 @@ public sealed interface StopReport {
     }
 
     /// Every step settled; these (at least one, in step order) failed. The node is stopped.
-    record CompletedWithFailures(List<StepFailure> failures) implements StopReport {}
+    ///
+    /// An empty list is unrepresentable: the compact constructor refuses it (an invariant guard, unreachable through
+    /// [#completedWithFailures] and [#of], which test the list first), so a report with no failure can never claim to be one.
+    record CompletedWithFailures(List<StepFailure> failures) implements StopReport {
+        public CompletedWithFailures {
+            if (failures.isEmpty()) {
+                throw new IllegalArgumentException(NO_FAILURES_MESSAGE);
+            }
+            failures = List.copyOf(failures);
+        }
+    }
+
+    String NO_FAILURES_MESSAGE = "CompletedWithFailures requires at least one step failure";
 
     /// The failures of the steps that failed, in step order; empty when [#isClean].
     List<StepFailure> failures();
@@ -65,14 +79,17 @@ public sealed interface StopReport {
         return new Clean();
     }
 
-    static StopReport completedWithFailures(List<StepFailure> failures) {
-        return new CompletedWithFailures(List.copyOf(failures));
+    /// A report carrying `failures`; fails for an empty list, which is a [Clean] stop, not a stop that completed with failures.
+    static Result<CompletedWithFailures> completedWithFailures(List<StepFailure> failures) {
+        return failures.isEmpty()
+               ? Causes.cause(NO_FAILURES_MESSAGE).result()
+               : Result.success(new CompletedWithFailures(failures));
     }
 
     /// The report of a finished sequence: clean when no step failed.
     static StopReport of(List<StepFailure> failures) {
         return failures.isEmpty()
                ? clean()
-               : completedWithFailures(failures);
+               : new CompletedWithFailures(failures);
     }
 }

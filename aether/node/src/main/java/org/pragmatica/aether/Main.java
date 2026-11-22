@@ -55,6 +55,7 @@ import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.IdentityLedgerWiring;
+import org.pragmatica.aether.node.StopReport;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.node.OwnRestoreWatchdog;
 import org.pragmatica.aether.node.StorageFactory;
@@ -858,10 +859,18 @@ public record Main(String[] args) {
         }
         // #3565: a stop whose steps all ran succeeds with a report, failures included: the node IS stopped. A failed
         // promise means the sequence itself could not complete.
-        result.onSuccess(report -> log.info("Node stopped{}",
-                                            report.logSuffix()))
+        result.onSuccess(Main::logStopReport)
               .onFailure(cause -> log.error("Node stop() could not complete: {}",
                                             cause.message()));
+    }
+
+    /// A clean stop is INFO; a stop that completed with step failures is WARN with the failures in the line (#3565).
+    private static void logStopReport(StopReport report) {
+        if (report.isClean()) {
+            log.info("Node stopped");
+        } else {
+            log.warn("Node stopped{}", report.logSuffix());
+        }
     }
 
     /// Best-effort diagnostic: a failed dump is logged and never blocks the halt it was meant to explain.
