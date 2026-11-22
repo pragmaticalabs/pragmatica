@@ -989,6 +989,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                                                                                                                                                                                                                                                             .isEmpty())) {
             return;
         }
+
         if (!admittedToView(ctx, committed, "Passive")) {
             return;
         }
@@ -1011,9 +1012,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// it adopts and announces nothing new on a repeat, never resurrects a leader the I2 site dropped while the view
     /// still lacks it, and admits the committed leader on the view write that brings it into view.
     private static void observeCommittedLeaderFromKv(LeaderElectionContext ctx) {
-        ctx.currentLeaderFromKvSupplier()
-           .get()
-           .onPresent(committed -> observeCommittedLeader(ctx, committed));
+        ctx.currentLeaderFromKvSupplier().get().onPresent(committed -> observeCommittedLeader(ctx, committed));
     }
 
     // --- Shared action helpers ---
