@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
@@ -400,7 +401,7 @@ class WarningsCommittedRowsTest {
     }
 
     private static SchemaVersionValue schema(SchemaStatus status) {
-        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", BLUEPRINT, 2, FsmHarness.START_WALL);
+        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", BLUEPRINT, 2, FsmHarness.START_WALL, SchemaReach.MIGRATED);
     }
 
     /// Hold-test row SCHEMA_UNKNOWN: admitted while the status is UNKNOWN; refused when the record is gone, and closed with "the status
@@ -580,11 +581,14 @@ class WarningsCommittedRowsTest {
 
         assertThat(write).hasSize(1);
         Warnings.accepted(m, ctx, TxDraft.draft(WARNINGS, HOLD_KEY, write));
-        assertThat(write.getFirst()
-                        .replacement()
-                        .map(FsmWarningValue.class::cast)
-                        .map(FsmWarningValue::members)).isEqualTo(Option.some(Map.of(CORE_1.id(), "sig-own")));
-        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(Warnings.SCHEMA_HOLD, ORDERS.asString(), "own hold"));
+        var replacement = write.getFirst()
+                               .replacement()
+                               .map(FsmWarningValue.class::cast);
+
+        assertThat(replacement.map(FsmWarningValue::members)).isEqualTo(Option.some(Map.of(CORE_1.id(), "sig-own")));
+        assertThat(ctx.effects()).as("#3203: the settlement notifies nothing").isEmpty();
+        assertThat(replacement.flatMap(row -> Warnings.committedNotice(HOLD_KEY, Option.some(theirs), row)))
+                  .isEqualTo(Option.some(Warnings.Notice.notice(Warnings.SCHEMA_HOLD, ORDERS.asString(), "own hold")));
     }
 
     /// A new SCHEMA_HOLD signature on a held member is a new opener: the raise passes and takes the text. Red when the opener check
@@ -644,16 +648,11 @@ class WarningsCommittedRowsTest {
         assertThat(m.openText.get(KEY)).isEqualTo(Option.some("o2"));
     }
 
-    // -- rule E: a function of one accepted committed pair --------------------------------------------------------------------------------
-    private static List<ClusterEffect> notified(Option<FsmWarningValue> expected, FsmWarningValue replacement, FsmWarningKey key) {
-        var ctx = ctx();
-        var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
-                                                                      expected.map(AetherValue.class::cast),
-                                                                      Option.some(replacement));
-
-        Warnings.accepted(model(), ctx, TxDraft.draft(WARNINGS, key, List.of(mutation)));
-
-        return ctx.effects();
+    // -- rule E: a function of one committed pair (#3203: the committed put, Warnings.committedNotice) --------------------------------------
+    private static List<ClusterEffect> notified(Option<FsmWarningValue> before, FsmWarningValue after, FsmWarningKey key) {
+        return Warnings.committedNotice(key, before, after)
+                       .map(notice -> List.<ClusterEffect>of(new ClusterEffect.Warn(notice.code(), notice.subject(), notice.message())))
+                       .or(List.of());
     }
 
     private static FsmWarningValue strays(boolean open, String message, NodeId... nodes) {

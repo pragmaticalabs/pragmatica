@@ -8,15 +8,19 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
+import org.junit.jupiter.api.Test;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
 
 /// #964: makes a change to the WIRE ASSIGNMENT — a type's tag, an enum's constant ordering, or a
 /// record's component shape — impossible to make by accident.
@@ -95,8 +99,31 @@ class WireAssignmentTripwireTest {
 
     /// THE ONE-WORD SWITCH. See the class docstring.
     private static final Mode MODE = Mode.TRIPWIRE;
-
     private static final String BASELINE_RESOURCE = "/wire-assignment-baseline.txt";
+    /// Prefix of the baseline line recording the wire generation; `scripts/wire-generation-check.sh` reads the same line.
+    private static final String GENERATION_PREFIX = "GENERATION ";
+
+    /// A baseline line is a `SEMANTIC` declaration CANDIDATE when its first token is `SEMANTIC` in any case, with or without leading
+    /// whitespace (#3303): a semantic wire break is a change in how replicas JUDGE an existing wire value that moves no TAG, SHAPE
+    /// or ENUM line. A candidate is not an assignment, so [#baselineAssignments] skips it; `scripts/wire-generation-check.sh`
+    /// reads it, and [WireAssignmentBaselineWriter] carries it over a re-record. ASCII-only, as the script's `LC_ALL=C` grep.
+    private static final Pattern SEMANTIC_CANDIDATE = Pattern.compile("[ \\t\\u000B\\f\\r]*semantic(?:[ \\t\\u000B\\f\\r]|\\z)",
+                                                                      Pattern.CASE_INSENSITIVE);
+
+    /// The form a candidate must have: `SEMANTIC <value> <one-line old->new judgement>`. The same form the script enforces;
+    /// `wire-semantic-line-cases.tsv` pins both readers to one verdict per line. UNIX_LINES: only `\n` ends a line, so a CR is an
+    /// ordinary character here as it is to the script.
+    static final Pattern SEMANTIC_FORM = Pattern.compile("^SEMANTIC \\S+ \\S.*->.*\\S$", Pattern.UNIX_LINES);
+    /// Verdicts of the one form rule, as the case table names them.
+    static final String VERDICT_IGNORED = "ignored";
+    static final String VERDICT_VALID = "valid";
+    static final String VERDICT_REFUSED = "refused";
+    /// The case table both readers are pinned to: one `<verdict><TAB><line>` per row, `\r`, `\t` and `\s` (space) escaped.
+    static final String SEMANTIC_CASES_RESOURCE = "/wire-semantic-line-cases.tsv";
+
+    /// The exact number of data rows in the table (comments and blanks excluded); the selftest pins the same number, so a
+    /// deleted row goes red in both readers. Adding a row means raising it in both places.
+    static final long SEMANTIC_CASE_ROWS = 34;
 
     /// The types this tripwire CANNOT pin structurally, named rather than left as an unwritten
     /// limitation (#1450).
@@ -110,27 +137,97 @@ class WireAssignmentTripwireTest {
     /// Encoded as an assertion rather than prose so that the blind spot cannot GROW quietly. A new
     /// non-record registered type reddens `theStructuralBlindSpot_didNotGrow` by name, instead of
     /// joining the set silently behind a tripwire that still reports success.
-    private static final List<String> STRUCTURALLY_UNPINNABLE =
-        List.of("[B",
-                "java.lang.Boolean", "java.lang.Byte", "java.lang.Character", "java.lang.Double",
-                "java.lang.Float", "java.lang.Integer", "java.lang.Long", "java.lang.Short",
-                "java.lang.String",
-                "java.net.InetSocketAddress", "java.util.List", "java.util.Map", "java.util.Set",
-                "org.pragmatica.lang.Unit", "org.pragmatica.lang.io.TimeSpan");
+    private static final List<String> STRUCTURALLY_UNPINNABLE = List.of("[B",
+                                                                        "java.lang.Boolean",
+                                                                        "java.lang.Byte",
+                                                                        "java.lang.Character",
+                                                                        "java.lang.Double",
+                                                                        "java.lang.Float",
+                                                                        "java.lang.Integer",
+                                                                        "java.lang.Long",
+                                                                        "java.lang.Short",
+                                                                        "java.lang.String",
+                                                                        "java.net.InetSocketAddress",
+                                                                        "java.util.List",
+                                                                        "java.util.Map",
+                                                                        "java.util.Set",
+                                                                        "org.pragmatica.lang.Unit",
+                                                                        "org.pragmatica.lang.io.TimeSpan");
 
     /// Held as a resource rather than as string literals in this file so that accepting an intended
     /// change is a diff a reviewer can read line by line, which is the whole mechanism.
     private static List<String> baseline() {
-        try (var stream = WireAssignmentTripwireTest.class.getResourceAsStream(BASELINE_RESOURCE)) {
-            assertTrue(stream != null, BASELINE_RESOURCE + " is missing — the tripwire has nothing to compare against");
+        return baselineAssignments(baselineText());
+    }
 
-            return new String(stream.readAllBytes(), StandardCharsets.UTF_8).lines()
-                                                                            .filter(line -> !line.isBlank())
-                                                                            .filter(line -> !line.startsWith("#"))
-                                                                            .toList();
+    /// The assignment lines of a baseline text: no blank, comment, `GENERATION` or `SEMANTIC` candidate line.
+    static List<String> baselineAssignments(String text) {
+        return text.lines()
+                   .filter(line -> !line.isBlank())
+                   .filter(line -> !line.startsWith("#"))
+                   .filter(line -> !line.startsWith(GENERATION_PREFIX))
+                   .filter(line -> !isSemanticCandidate(line))
+                   .toList();
+    }
+
+    private static String baselineText() {
+        return resourceText(BASELINE_RESOURCE);
+    }
+
+    private static String resourceText(String resource) {
+        try (var stream = WireAssignmentTripwireTest.class.getResourceAsStream(resource)) {
+            assertTrue(stream != null, resource + " is missing — the tripwire has nothing to compare against");
+
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /// The baseline's `GENERATION` lines: the wire generation it was recorded under, kept out of [#baseline] because it
+    /// is not an assignment.
+    private static List<String> recordedGenerationLines() {
+        return baselineText().lines()
+                           .filter(line -> line.startsWith(GENERATION_PREFIX))
+                           .toList();
+    }
+
+    /// Whether the line's first token is `SEMANTIC` in any case, after optional leading whitespace.
+    static boolean isSemanticCandidate(String line) {
+        return SEMANTIC_CANDIDATE.matcher(line).lookingAt();
+    }
+
+    /// The `SEMANTIC` candidate lines of a baseline text, in file order. Split on `\n` only, so a CR stays on its line and
+    /// the form refuses it, as the script does.
+    static List<String> semanticCandidates(String text) {
+        return Stream.of(text.split("\n", -1))
+                     .filter(WireAssignmentTripwireTest::isSemanticCandidate)
+                     .toList();
+    }
+
+    /// The candidates of a baseline text that are not of the declared form.
+    static List<String> malformedSemanticLines(String text) {
+        return semanticCandidates(text).stream()
+                                 .filter(line -> !SEMANTIC_FORM.matcher(line).matches())
+                                 .toList();
+    }
+
+    /// The verdict of the one form rule for a single line: not a candidate, a valid declaration, or refused as malformed.
+    static String semanticVerdict(String line) {
+        return isSemanticCandidate(line)
+               ? formVerdict(line)
+               : VERDICT_IGNORED;
+    }
+
+    private static String formVerdict(String line) {
+        return SEMANTIC_FORM.matcher(line).matches()
+               ? VERDICT_VALID
+               : VERDICT_REFUSED;
+    }
+
+    /// The `GENERATION` line [WireAssignmentBaselineWriter] records: this binary's [JoinGenerationGuard#WIRE_GENERATION].
+    static String generationLine() {
+        return GENERATION_PREFIX + JoinGenerationGuard.WIRE_GENERATION;
     }
 
     /// The current assignment, rendered in the baseline's own format.
@@ -142,10 +239,11 @@ class WireAssignmentTripwireTest {
     /// #1450 surface: the record body is a positional concatenation, so the component list IS the
     /// layout and any edit to it changes what a peer decodes under an unchanged tag.
     static List<String> currentAssignment() {
-        return allCodecs().flatMap(codec -> describe(codec.type(), codec.tag()))
-                          .distinct()
-                          .sorted()
-                          .toList();
+        return allCodecs().flatMap(codec -> describe(codec.type(),
+                                                     codec.tag()))
+                        .distinct()
+                        .sorted()
+                        .toList();
     }
 
     /// Every codec whose byte format this repository owns.
@@ -198,8 +296,11 @@ class WireAssignmentTripwireTest {
     /// cast in the generated `readBody` is all that stands between the two.
     private static String shape(Class<?> type) {
         return Stream.of(type.getRecordComponents())
-                     .map(component -> component.getName() + ":" + component.getGenericType().getTypeName())
-                     .collect(Collectors.joining(",", "(", ")"));
+                     .map(component -> component.getName() + ":" + component.getGenericType()
+                                                                            .getTypeName())
+                     .collect(Collectors.joining(",",
+                                                 "(",
+                                                 ")"));
     }
 
     @Test
@@ -214,8 +315,7 @@ class WireAssignmentTripwireTest {
                        """
                        GATE mode: %d recorded wire assignment(s) are gone or changed. Post-GA the discipline is \
                        ADD ONLY — never replace or remove — so these cannot be re-recorded away:
-                       %s"""
-                       .formatted(removed.size(), String.join("\n", removed)));
+                       %s""".formatted(removed.size(), String.join("\n", removed)));
 
             return;
         }
@@ -259,6 +359,109 @@ class WireAssignmentTripwireTest {
                      """);
     }
 
+    /// The baseline records the generation this binary runs (#3303 RA-2): a wire change that re-records the baseline
+    /// without bumping [JoinGenerationGuard#WIRE_GENERATION] leaves this line equal to the base's, which the CI check
+    /// `scripts/wire-generation-check.sh` refuses; a bump without a re-record reddens this test.
+    @Test
+    void baseline_recordsThisBinarysWireGeneration() {
+        assertEquals(List.of(generationLine()),
+                     recordedGenerationLines(),
+                     "The baseline must carry exactly one GENERATION line equal to JoinGenerationGuard.WIRE_GENERATION;"
+                    + " re-record it with WireAssignmentBaselineWriter");
+    }
+
+    /// Every `SEMANTIC` candidate line of the baseline has the form `SEMANTIC <value> <one-line old->new judgement>`; the CI
+    /// check refuses a malformed one, and this fails it at build time with the line named.
+    @Test
+    void baseline_semanticLinesHaveTheDeclaredForm() {
+        var malformed = malformedSemanticLines(baselineText());
+
+        assertTrue(malformed.isEmpty(),
+                   "Malformed SEMANTIC line(s); the form is: SEMANTIC <value> <one-line old->new judgement>:\n" + String.join("\n",
+                                                                                                                              malformed));
+    }
+
+    /// A fixture baseline WITH `SEMANTIC` declarations: the assignment comparison must not see them (the real baseline has none
+    /// until the first semantic break, so only a fixture examines the skip). Malformed candidates are skipped here too, so the
+    /// form test names them instead of the assignment comparison failing on them.
+    @Test
+    void baselineAssignments_skipSemanticCandidatesOfAnyForm() {
+        var text = String.join("\n",
+                               "# comment",
+                               "GENERATION 4",
+                               "SEMANTIC a.A.epoch stale-if-below -> stale-if-below-or-equal",
+                               "TAG a.A 1",
+                               "semantic a.B.mode accept-if-any -> accept-if-all",
+                               "  SEMANTIC a.B.mode",
+                               "",
+                               "SHAPE a.A (x:int)",
+                               "SEMANTIC a.A.epoch changed the rule",
+                               "ENUM a.E X=0,Y=1",
+                               "SEMANTICS a.C kept as an assignment line");
+
+        assertEquals(List.of("TAG a.A 1",
+                             "SHAPE a.A (x:int)",
+                             "ENUM a.E X=0,Y=1",
+                             "SEMANTICS a.C kept as an assignment line"),
+                     baselineAssignments(text));
+    }
+
+    /// The same fixture through the form rule: candidates in file order, and exactly the malformed ones refused.
+    @Test
+    void semanticCandidates_areFoundInFileOrderAndOnlyMalformedOnesRefused() {
+        var valid = "SEMANTIC a.A.epoch stale-if-below -> stale-if-below-or-equal";
+        var text = String.join("\n",
+                               "GENERATION 4",
+                               valid,
+                               "TAG a.A 1",
+                               "semantic a.B.mode accept-if-any -> accept-if-all",
+                               "  SEMANTIC a.B.mode",
+                               "# SEMANTIC a.C ignored -> comment",
+                               "SEMANTIC a.A.epoch changed the rule",
+                               "SEMANTICS a.C not a candidate",
+                               "SEMANTIC a.D x -> y\r");
+
+        assertEquals(List.of(valid,
+                             "semantic a.B.mode accept-if-any -> accept-if-all",
+                             "  SEMANTIC a.B.mode",
+                             "SEMANTIC a.A.epoch changed the rule",
+                             "SEMANTIC a.D x -> y\r"),
+                     semanticCandidates(text));
+        assertEquals(List.of("semantic a.B.mode accept-if-any -> accept-if-all",
+                             "  SEMANTIC a.B.mode",
+                             "SEMANTIC a.A.epoch changed the rule",
+                             "SEMANTIC a.D x -> y\r"),
+                     malformedSemanticLines(text));
+        assertEquals(List.of(), malformedSemanticLines(valid + "\n"));
+    }
+
+    /// The form pin run through the shared case table: every row's verdict is what [#semanticVerdict] returns. The script's
+    /// selftest runs the SAME rows through `wire-generation-check.sh`, so the two readers accept and refuse one set.
+    @Test
+    void semanticVerdicts_matchTheSharedCaseTable() {
+        var rows = resourceText(SEMANTIC_CASES_RESOURCE).split("\n");
+        var mismatches = Stream.of(rows)
+                               .filter(row -> !row.isBlank() && !row.startsWith("#"))
+                               .filter(row -> !semanticCaseMatches(row))
+                               .toList();
+        var dataRows = Stream.of(rows).filter(row -> !row.isBlank() && !row.startsWith("#")).count();
+
+        assertEquals(SEMANTIC_CASE_ROWS,
+                     dataRows,
+                     "The case table must have exactly " + SEMANTIC_CASE_ROWS
+                    + " data rows (a deleted row would un-pin the form)");
+        assertTrue(mismatches.isEmpty(),
+                   "Rows whose verdict differs from the Java reader:\n" + String.join("\n", mismatches));
+    }
+
+    private static boolean semanticCaseMatches(String row) {
+        var tab = row.indexOf('\t');
+        var line = row.substring(tab + 1).replace("\\r", "\r").replace("\\t", "\t").replace("\\s", " ");
+
+        return row.substring(0, tab)
+                  .equals(semanticVerdict(line));
+    }
+
     /// The tripwire's own instrument check. A baseline that had drifted into emptiness, or a
     /// `registeredTypes()` that returned nothing, would make the comparison above pass while examining
     /// nothing at all — the green-on-zero-files failure mode, in a different medium.
@@ -272,7 +475,6 @@ class WireAssignmentTripwireTest {
                    "No ENUM lines were derived, so the enum-ordinal surface this test exists for is unpinned");
         assertTrue(baseline().size() > 100,
                    "The recorded baseline has only %d lines — it cannot be pinning the registry".formatted(baseline().size()));
-
         // The number that caught the gap: 26 enum codecs were generated across the repository, and
         // deriving from the node registries alone pinned 24. 25 since #722 deleted `GenerationReason`
         // (counted as `*Codec.java` under every module's generated-sources carrying the enum
@@ -282,9 +484,7 @@ class WireAssignmentTripwireTest {
 
         assertTrue(pinnedEnums >= 25,
                    ("Only %d enums are pinned. 25 enum codecs are generated under aether/ and integrations/;"
-                    + " an enum with a generated codec and no pin is exactly what this test exists to catch.")
-                   .formatted(pinnedEnums));
-
+                   + " an enum with a generated codec and no pin is exactly what this test exists to catch.").formatted(pinnedEnums));
         // #1450's floor, stated in the same shape. The space is the registered set derived by
         // `allCodecs()`: 313 tagged types on the branch that added this, of which 271 are records,
         // 26 enums and 16 neither (see `theStructuralBlindSpot_didNotGrow` for that last group by
@@ -293,9 +493,7 @@ class WireAssignmentTripwireTest {
 
         assertTrue(pinnedShapes >= 265,
                    ("Only %d record shapes are pinned out of 271 registered records. A record with a"
-                    + " generated codec and no SHAPE line is the #1450 blind spot reopening.")
-                   .formatted(pinnedShapes));
-
+                   + " generated codec and no SHAPE line is the #1450 blind spot reopening.").formatted(pinnedShapes));
         // The shape-specific green-on-zero mode: `getRecordComponents()` yielding nothing would emit
         // 271 lines reading `()`, comparing equal to a baseline recorded the same way and pinning no
         // layout at all. 5 registered records are genuinely component-less (marker keys and
@@ -304,17 +502,18 @@ class WireAssignmentTripwireTest {
 
         assertTrue(emptyShapes <= 20,
                    ("%d of %d pinned shapes have no components. 5 do legitimately; a jump means the"
-                    + " component derivation returned nothing and the SHAPE column is pinning air.")
-                   .formatted(emptyShapes, pinnedShapes));
+                   + " component derivation returned nothing and the SHAPE column is pinning air.").formatted(emptyShapes,
+                                                                                                              pinnedShapes));
     }
 
     @Test
     void theStructuralBlindSpot_didNotGrow() {
         var unpinnable = allCodecs().filter(codec -> structurallyUnpinnable(codec.type()))
-                                    .map(codec -> codec.type().getName())
-                                    .distinct()
-                                    .sorted()
-                                    .toList();
+                                  .map(codec -> codec.type()
+                                                     .getName())
+                                  .distinct()
+                                  .sorted()
+                                  .toList();
 
         assertEquals(String.join("\n", STRUCTURALLY_UNPINNABLE),
                      String.join("\n", unpinnable),
@@ -331,7 +530,7 @@ class WireAssignmentTripwireTest {
     /// A type whose byte layout reflection cannot state: neither a record (components) nor an enum
     /// (constants), so its codec body is hand-written and nothing here can pin it.
     private static boolean structurallyUnpinnable(Class<?> type) {
-        return !type.isEnum() && !type.isRecord();
+        return ! type.isEnum() && !type.isRecord();
     }
 
     /// Every `@Codec` enum in the system registries must carry the sentinel, and it must be LAST.
@@ -343,18 +542,18 @@ class WireAssignmentTripwireTest {
     @Test
     void everyRegisteredEnum_endsWithTheUnknownSentinel() {
         var offenders = allCodecs().map(SliceCodec.TypeCodec::type)
-                              .filter(Class::isEnum)
-                              .distinct()
-                              .filter(type -> !endsWithSentinel(type))
-                              .map(Class::getName)
-                              .sorted()
-                              .toList();
+                                 .filter(Class::isEnum)
+                                 .distinct()
+                                 .filter(type -> !endsWithSentinel(type))
+                                 .map(Class::getName)
+                                 .sorted()
+                                 .toList();
 
         assertTrue(offenders.isEmpty(),
                    """
                    These registered enums cannot represent a value they do not know, so an ordinal from a \
-                   peer running a newer copy is dropped rather than surfaced (#964): %s"""
-                   .formatted(String.join(", ", offenders)));
+                   peer running a newer copy is dropped rather than surfaced (#964): %s""".formatted(String.join(", ",
+                                                                                                                 offenders)));
     }
 
     private static boolean endsWithSentinel(Class<?> type) {

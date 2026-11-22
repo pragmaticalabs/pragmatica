@@ -8,11 +8,11 @@ import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.RetentionDimensions;
-import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.slice.stream.DeclarationDefaults;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
@@ -102,6 +102,8 @@ public interface DurableTopicSubstrate {
     }
 
     TimeSpan DLQ_RETENTION_DEFAULT = TimeSpan.timeSpan("14d").unwrap();
+    /// A dead-letter stream's byte floor: 64 MiB (ST §2.2, G26).
+    long DLQ_MIN_BYTES = 64L * 1024 * 1024;
 
     private static Result<Unit> activate(StreamPartitionManager manager, String topicAddress, DurableTopicSpec spec) {
         return StreamCreateOutcome.tolerateAlreadyExists(manager.createDeclaredStream(topicStreamConfig(topicAddress,
@@ -112,7 +114,7 @@ public interface DurableTopicSubstrate {
     static StreamConfig topicStreamConfig(String topicAddress, DurableTopicSpec spec) {
         return StreamConfig.streamConfig(DurableTopicNames.topicStream(topicAddress),
                                          spec.partitions(),
-                                         timeBoundedRetention(spec.retention()),
+                                         topicRetention(spec.retention(), spec.partitions()),
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
@@ -125,7 +127,8 @@ public interface DurableTopicSubstrate {
     static StreamConfig dlqStreamConfig(String topicAddress, DurableTopicSpec spec) {
         return StreamConfig.streamConfig(DurableTopicNames.dlqStream(topicAddress),
                                          1,
-                                         timeBoundedRetention(DLQ_RETENTION_DEFAULT),
+                                         dlqRetention(DLQ_RETENTION_DEFAULT,
+                                                      DeclarationDefaults.defaultMaxBytes(spec.partitions())),
                                          "earliest",
                                          StreamConfig.DEFAULT.maxEventSizeBytes(),
                                          StreamConfig.DEFAULT.consistencyMode(),
@@ -135,15 +138,36 @@ public interface DurableTopicSubstrate {
                                          none());
     }
 
-    /// A topic's retention is a max age: it declares the age only (#2201 Q6 = B). The count and bytes are the ring's
-    /// sizing defaults, never a declaration, so they do not cut the topic's sealed history (review R32-04).
-    private static RetentionPolicy timeBoundedRetention(TimeSpan retention) {
+    /// A topic's retention is its max age plus the declaration default byte bound (#3334): the age is the topic's own
+    /// (7 d by default), the bytes are `DeclarationDefaults.defaultMaxBytes(partitions)`, the same default a TOML stream
+    /// gets. Both are DECLARED so `RetentionEnforcer` cuts by them; the count stays the ring's sizing default, undeclared,
+    /// so it does not cut a topic's sealed history (review R32-04).
+    private static RetentionPolicy topicRetention(TimeSpan retention, int partitions) {
         var sizingDefaults = RetentionPolicy.retentionPolicy();
 
         return RetentionPolicy.retentionPolicy(sizingDefaults.maxCount(),
-                                               sizingDefaults.maxBytes(),
+                                               DeclarationDefaults.defaultMaxBytes(partitions),
                                                retention.toMillis(),
-                                               RetentionMode.ANY)
-                              .withDeclared(RetentionDimensions.AGE);
+                                               DeclarationDefaults.DEFAULT_MODE)
+                              .withDeclared(RetentionDimensions.retentionDimensions(false, true, true));
+    }
+
+    /// A dead-letter stream's retention is its age (14 d) AND a byte bound of 10 % of its source topic's byte bound, at
+    /// least 64 MiB (ST §2.2 row `topic:*.dlq`, G26, #3334): both DECLARED so `RetentionEnforcer` cuts by them, under
+    /// the default mode (ANY; the design row names no mode for a `.dlq`, a guess); the count stays the ring's sizing
+    /// default, undeclared.
+    private static RetentionPolicy dlqRetention(TimeSpan retention, long sourceMaxBytes) {
+        var sizingDefaults = RetentionPolicy.retentionPolicy();
+
+        return RetentionPolicy.retentionPolicy(sizingDefaults.maxCount(),
+                                               dlqMaxBytes(sourceMaxBytes),
+                                               retention.toMillis(),
+                                               DeclarationDefaults.DEFAULT_MODE)
+                              .withDeclared(RetentionDimensions.retentionDimensions(false, true, true));
+    }
+
+    /// The byte bound of a dead-letter stream whose source holds `sourceMaxBytes`: `max(10 % of the source, 64 MiB)`.
+    static long dlqMaxBytes(long sourceMaxBytes) {
+        return Math.max(sourceMaxBytes / 10, DLQ_MIN_BYTES);
     }
 }

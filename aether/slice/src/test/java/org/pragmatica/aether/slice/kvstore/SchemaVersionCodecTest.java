@@ -5,6 +5,7 @@ package org.pragmatica.aether.slice.kvstore;
 
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.serialization.SliceCodec;
@@ -81,6 +82,25 @@ class SchemaVersionCodecTest {
 
                 assertThat(roundTrip(original)).as("status %s must survive the round-trip", status)
                                                .isEqualTo(original);
+            }
+        }
+
+        /// #834: `reachedBy` is what the republish guard reads back on a follower; a codec that dropped or reordered it would
+        /// silently turn an undone or baselined version into a forward-migrated one.
+        @Test
+        void schemaVersionValue_roundTrips_forEveryReach() {
+            for (var reach : SchemaReach.values()) {
+                var original = SchemaVersionValue.schemaVersionValue(DATASOURCE,
+                                                                     1,
+                                                                     "V001__init.sql",
+                                                                     SchemaStatus.COMPLETED,
+                                                                     "org.example:orders-app:1.0.0",
+                                                                     OWNER,
+                                                                     0,
+                                                                     reach);
+
+                assertThat(roundTrip(original).reachedBy()).as("reach %s must survive the round-trip", reach)
+                                                           .isEqualTo(reach);
             }
         }
     }

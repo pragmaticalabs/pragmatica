@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// #2688: the same sanctioned form requires the wait between PASSIVE and the quiesce to be the leader deactivation's delivery on the executor the
 /// leader manager was given (the literal `"LeaderManager"` at both sites, so a one-sided rename that yields a fresh, empty executor is caught), the
-/// deactivation to be recorded on the toggles' route, and the components' stops to run only in the continuation after `quorumLeft` (rc5's order:
+/// deactivation to be recorded on the toggles' route, and the components' stops to run only as the step after `quorumLeft` and the FSM2 close in `NodeStopSequence`'s list (rc5's order:
 /// quiesce, FSM2 close, then the components), never in the synchronous part of `stop()` before it.
 class StopSequencePinTest {
     private static final Path NODE_SOURCE = Path.of("src", "main", "java", "org", "pragmatica", "aether", "node", "AetherNode.java");
@@ -37,13 +37,13 @@ class StopSequencePinTest {
     private static final Pattern INSTALLED = Pattern.compile("leaderManager\\(\\)\\s*\\.installReactExecutor\\(reactors\\.executor\\(\"LeaderManager\"\\)\\)");
     private static final Pattern LEADER_EXECUTOR = Pattern.compile("reactors\\.executor\\(\"LeaderManager\"\\)");
     private static final Pattern RECORDED = Pattern.compile("MessageRouter\\.Entry\\.route\\(LeaderNotification\\.LeaderChange\\.class,\\s*leaderDeactivation::onLeaderChange\\)");
-    private static final Pattern CHAIN_HEAD = Pattern.compile("return quorumLeft\\.map\\(this::stopDeploymentWiring\\)\\s*\\.flatMap\\(\\(\\) -> stopNodeComponents\\(backupFlushed\\)\\)");
-    private static final String STOP = "public Promise<Unit> stop() {";
-    private static final String FSM2_CLOSE = "private Unit stopDeploymentWiring(Unit unit) {";
+    private static final Pattern CHAIN_HEAD = Pattern.compile("return NodeStopSequence\\.run\\(NodeStopSequence\\.Steps\\.steps\\(\\(\\) -> quorumLeft,\\s*this::stopDeploymentWiring,\\s*\\(\\) -> stopNodeComponents\\(backupFlushed\\),\\s*this::releaseWatchesThenDeactivate,");
+    private static final String STOP = "public Promise<StopReport> stop() {";
+    private static final String FSM2_CLOSE = "private Unit stopDeploymentWiring() {";
     private static final String COMPONENTS = "private Promise<Unit> stopNodeComponents(Promise<Unit> backupFlushed) {";
     private static final String COMPONENTS_END = "return backupFlushed.flatMap(() -> streamsStopped);";
     /// The whole stop, in the order the ruling fixes (route(passive) -> drained -> quiesce -> FSM2 close -> the remaining teardown ->
-    /// backupFlushed -> streamsStopped -> NodeStopSequence), as the landmarks `stop()` must show, in this order, with nothing of the
+    /// backupFlushed -> streamsStopped -> the rest of NodeStopSequence), as the landmarks `stop()` must show, in this order, with nothing of the
     /// teardown among them. The FSM2 close and the components' statements are checked in their own methods below.
     private static final List<String> STOP_LANDMARKS = List.of("reactors.markStopping();",
                                                                "periodicTasks.cancel();",
@@ -52,15 +52,16 @@ class StopSequencePinTest {
                                                                "deploymentWiring.leaveQuorum(() -> router.route(ClusterStateNotification.passive()),",
                                                                "() -> leaderDeactivation.delivered(",
                                                                "router::quiesce);",
-                                                               "return quorumLeft.map(this::stopDeploymentWiring)",
-                                                               ".flatMap(() -> stopNodeComponents(backupFlushed))",
-                                                               ".flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,",
+                                                               "return NodeStopSequence.run(NodeStopSequence.Steps.steps(() -> quorumLeft,",
+                                                               "this::stopDeploymentWiring,",
+                                                               "() -> stopNodeComponents(backupFlushed),",
+                                                               "this::releaseWatchesThenDeactivate,",
                                                                "managementServer.map(ManagementServer::stop)",
                                                                "appHttpServer::stop,",
                                                                "sliceInvoker::stop,",
                                                                "this::closeSharedResources,",
                                                                "this::shutdownStorage,",
-                                                               "clusterNode::stop)))");
+                                                               "clusterNode::stop))");
 
     /// The occurrences of `quiesce` in `source` and of the sanctioned form of the stop.
     private record Scan(long length, long quiesces, long sanctioned) {}
@@ -180,7 +181,17 @@ class StopSequencePinTest {
     void theFsm2Close_isTheNodesStepBetweenTheQuiesceAndTheComponents() {
         var source = read(NODE_SOURCE);
 
-        assertThat(fsm2Close(source)).isEqualTo(FSM2_CLOSE + " deploymentWiring.stop(); return unit; }");
+        assertThat(fsm2Close(source)).isEqualTo(FSM2_CLOSE + " deploymentWiring.stop(); return Unit.unit(); }");
+    }
+
+    /// #3557: the node's stop closes the membership FSM, once, among the components' stops. Without it the FSM's per-member timers
+    /// outlive the node on the JVM-global scheduler. Mutant: delete the `membershipFsm.close();` statement and this goes red.
+    @Test
+    void theMembershipFsm_isClosedOnceByTheComponentsStop() {
+        var source = read(NODE_SOURCE);
+
+        assertThat(count(Pattern.compile(Pattern.quote("membershipFsm.close();")), componentStops(source))).isEqualTo(1L);
+        assertThat(count(Pattern.compile(Pattern.quote("membershipFsm.close();")), source)).isEqualTo(1L);
     }
 
     /// The joins at the end of the components' stop: the backup's flush, then the sealer's (rc5's order), and nothing after them.
@@ -217,7 +228,7 @@ class StopSequencePinTest {
     }
 
     private static String skeleton(String planted) {
-        return STOP + " reactors.markStopping(); " + planted + " var quorumLeft = x; return quorumLeft.map(y); } " + FSM2_CLOSE + " deploymentWiring.stop(); return unit; } "
+        return STOP + " reactors.markStopping(); " + planted + " var quorumLeft = x; return NodeStopSequence.run(y); } " + FSM2_CLOSE + " deploymentWiring.stop(); return Unit.unit(); } "
                + COMPONENTS + " controlLoop.stop(); metricsScheduler.stop(); " + COMPONENTS_END + " }";
     }
 

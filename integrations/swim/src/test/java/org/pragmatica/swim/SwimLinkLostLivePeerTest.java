@@ -241,7 +241,7 @@ class SwimLinkLostLivePeerTest {
 
     private void build(Map<NodeId, Boolean> answersAfterHint) {
         transport.answersAfterHint.putAll(answersAfterHint);
-        protocol = SwimProtocol.swimProtocol(config,
+        protocol = SwimTestProtocols.swimProtocol(config,
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,

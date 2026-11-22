@@ -16,6 +16,7 @@ import org.awaitility.core.ConditionTimeoutException;
 
 import static org.awaitility.Awaitility.await;
 
+
 /// Pins auto-heal OFF for a whole Ember cluster.
 ///
 /// The auto-heal switch is ONE replicated value (`AetherKey.AutoHealStateKey.SINGLETON`), and since #1390
@@ -35,11 +36,12 @@ final class AutoHealPin {
 
         try {
             await().atMost(PIN_WINDOW)
-                   .pollInterval(Duration.ofMillis(500))
-                   .until(() -> attempt(cluster, reason, lastRefusal));
+                 .pollInterval(Duration.ofMillis(500))
+                 .until(() -> attempt(cluster, reason, lastRefusal));
         } catch (ConditionTimeoutException timeout) {
             throw new AssertionError("auto-heal pin failed: not every node reads auto-heal OFF within " + PIN_WINDOW
-                                     + "; last refusal: " + lastRefusal.get(), timeout);
+                                    + "; last refusal: " + lastRefusal.get(),
+                                     timeout);
         }
     }
 
@@ -48,10 +50,7 @@ final class AutoHealPin {
             return true;
         }
 
-        Option.from(cluster.allNodes()
-                           .stream()
-                           .filter(AetherNode::isLeader)
-                           .findFirst())
+        Option.from(cluster.allNodes().stream().filter(AetherNode::isLeader).findFirst())
               .flatMap(AetherNode::clusterTopologyManager)
               .onPresent(ctm -> ctm.setAutoHealEnabled(false, reason)
                                    .await(WRITE_WAIT)

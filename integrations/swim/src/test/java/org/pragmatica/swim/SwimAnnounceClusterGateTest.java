@@ -73,7 +73,7 @@ class SwimAnnounceClusterGateTest {
                                                String announcedName,
                                                boolean admitted,
                                                String because) {
-        var protocol = SwimProtocol.swimProtocol(configNamed(expectedName),
+        var protocol = SwimTestProtocols.swimProtocol(configNamed(expectedName),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,

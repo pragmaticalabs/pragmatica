@@ -94,7 +94,7 @@ class SwimRetiredIdentityDeathTest {
                                          RecordingObservationSink observations,
                                          BootTokens tokens,
                                          RecordingTransport transport) {
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  transport,
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -222,7 +222,7 @@ class SwimRetiredIdentityDeathTest {
     void retiredNeverHealthyMember_withALiveLink_isDepartedPastTheTransportVeto() {
         var observations = new RecordingObservationSink();
         var tokens = BootTokens.bootTokens(0x5E1FL);
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,

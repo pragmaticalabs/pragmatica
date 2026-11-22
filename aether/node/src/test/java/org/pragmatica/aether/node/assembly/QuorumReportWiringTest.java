@@ -35,6 +35,7 @@ import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -70,6 +71,7 @@ class QuorumReportWiringTest {
                                                                  topologyConfig,
                                                                  Mockito.mock(Serializer.class),
                                                                  Mockito.mock(Deserializer.class));
+        detector.protocolFactoryForTest(SwimTestProtocols::swimProtocol);
         detector.start(Option.none(), GossipEncryptor.none())
                 .await()
                 .onFailure(cause -> fail("start() failed: " + cause.message()));

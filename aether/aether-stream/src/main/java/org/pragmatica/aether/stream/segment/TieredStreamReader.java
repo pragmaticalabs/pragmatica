@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.segment;
 
 import java.util.List;
 
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Option;
@@ -98,7 +99,7 @@ final class TieredReader implements TieredStreamReader {
 
         return first == fromOffset
                ? Promise.success(events)
-               : new StreamError.CursorExpired(fromOffset, first).promise();
+               : new StreamError.CursorExpired(fromOffset, first, RemovalCause.RETENTION).promise();
     }
 
     private static int boundedCount(long fromOffset, long contiguousEnd, int maxEvents) {
@@ -117,7 +118,7 @@ final class TieredReader implements TieredStreamReader {
     /// with every ref of the partition reclaimed.
     private Promise<List<RawEvent>> unheld(String streamName, int partition, long fromOffset, long nextSealed) {
         return fromOffset <= index.lastSealedOffset(streamName, partition)
-               ? new StreamError.CursorExpired(fromOffset, nextSealed).promise()
+               ? new StreamError.CursorExpired(fromOffset, nextSealed, RemovalCause.RETENTION).promise()
                : new SegmentError.SealedRangeMissing(streamName, partition, fromOffset, nextSealed).promise();
     }
 

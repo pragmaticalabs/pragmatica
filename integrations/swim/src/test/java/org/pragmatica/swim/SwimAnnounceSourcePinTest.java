@@ -342,7 +342,7 @@ class SwimAnnounceSourcePinTest {
         protocol.stop();
 
         var restartedTransport = new RecordingTransport();
-        protocol = wire(SwimProtocol.swimProtocol(manualConfig(), restartedTransport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
+        protocol = wire(SwimTestProtocols.swimProtocol(manualConfig(), restartedTransport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
         protocol.onMessage(A_REAL, announceA());
         var thisLife = restartedTransport.sentMessages.stream()
                                                       .filter(sent -> sent.message() instanceof Ping)
@@ -566,7 +566,7 @@ class SwimAnnounceSourcePinTest {
     void ack_keepsTheIdentity_evenWhenItAloneExceedsTheBudget() {
         var longId = new NodeId("s".repeat(700));
 
-        protocol = wire(SwimProtocol.swimProtocol(manualConfig(), transport, listener, longId, SELF_ADDR, () -> false).unwrap());
+        protocol = wire(SwimTestProtocols.swimProtocol(manualConfig(), transport, listener, longId, SELF_ADDR, () -> false).unwrap());
         protocol.announceJoin(infoOf(longId, 9000), "", 1L, 555L, List.of());
 
         protocol.onMessage(B_ADDR, new Ping(NODE_B, 2L, List.of()));
@@ -787,7 +787,7 @@ class SwimAnnounceSourcePinTest {
     }
 
     private SwimProtocol manualProtocol() {
-        return wire(SwimProtocol.swimProtocol(manualConfig(), transport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
+        return wire(SwimTestProtocols.swimProtocol(manualConfig(), transport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
     }
 
     private static SwimConfig manualConfig() {
@@ -801,7 +801,7 @@ class SwimAnnounceSourcePinTest {
                                            timeSpan(100).millis(),
                                            8,
                                            timeSpan(20).millis()).withJoinGrace(timeSpan(40).millis());
-        var ticking = wire(SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
+        var ticking = wire(SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false).unwrap());
 
         ticking.start();
 

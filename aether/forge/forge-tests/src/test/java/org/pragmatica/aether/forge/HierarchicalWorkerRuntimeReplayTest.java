@@ -7,11 +7,7 @@ package org.pragmatica.aether.forge;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
@@ -25,8 +21,16 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+
 
 /// Repeated committed activation, a refused community reassignment (H11), the retirement of a worker whose directive is removed,
 /// and a fresh join assigned to another community traverse consensus, scoped metadata and production node routing.
@@ -36,91 +40,120 @@ import static org.awaitility.Awaitility.await;
 @Execution(ExecutionMode.SAME_THREAD)
 class HierarchicalWorkerRuntimeReplayTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(120).seconds();
+
     private final EmberCluster cluster = EmberCluster.emberCluster(3, 3660, 3760, 3860, "runtime-replay");
 
-    @AfterEach void stop() {
+    @AfterEach
+    void stop() {
         LifecycleAwait.bestEffort("stop runtime replay", cluster, cluster.stop());
     }
 
-    @Test void repeatedActivationRefusedReassignmentRetirementAndFreshJoinHaveOneRuntimeOwner() {
+    @Test
+    void repeatedActivationRefusedReassignmentRetirementAndFreshJoinHaveOneRuntimeOwner() {
         LifecycleAwait.settled("start runtime replay", cluster, cluster.start());
-        await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().isPresent());
+        await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader()
+                                                             .isPresent());
         var workerId = LifecycleAwait.nodeSettled("admit runtime replay worker", cluster, cluster.addWorkerNode());
         var worker = cluster.getNode(workerId.id()).unwrap();
         var key = new AetherKey.ActivationDirectiveKey(workerId);
-        await().atMost(BUDGET.duration()).until(() -> worker.kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).isPresent()
-            && announcerHolder(worker).get() != null);
+
+        await().atMost(BUDGET.duration())
+             .until(() -> worker.kvStore()
+                                .getTyped(key, AetherValue.ActivationDirectiveValue.class)
+                                .isPresent() && announcerHolder(worker).get() != null);
         var original = announcerHolder(worker).get();
         var originalTimer = timer(original);
         var tasks = worker.periodicTasks().armedCount();
         var listeners = observationListenerCount(worker);
+
         assertThat(tasks).isPositive();
         assertThat(originalTimer.isScheduled()).isTrue();
-
         for (int index = 0; index < 3; index++) {
             var prior = leader().kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).unwrap();
             var repeated = new AetherValue.ActivationDirectiveValue(prior.role(), prior.communityId(), "replay-" + index);
+
             commit(List.of(new KVCommand.Mutation<>(key, Option.some(prior), Option.some(repeated))));
-            await().atMost(BUDGET.duration()).until(() -> worker.kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class)
-                .filter(repeated::equals).isPresent() && !worker.kvStore().hasPendingNotifications());
+            await().atMost(BUDGET.duration())
+                 .until(() -> worker.kvStore()
+                                    .getTyped(key, AetherValue.ActivationDirectiveValue.class)
+                                    .filter(repeated::equals)
+                                    .isPresent() && !worker.kvStore()
+                                                           .hasPendingNotifications());
             assertThat(announcerHolder(worker).get()).isSameAs(original);
             assertThat(timer(original)).isSameAs(originalTimer);
             assertThat(worker.periodicTasks().armedCount()).isEqualTo(tasks);
             assertThat(observationListenerCount(worker)).isEqualTo(listeners);
         }
-
         // H11 (#1840): a directive naming another community is refused at commit on every replica, and a
         // refused transaction applies none of its mutations, so no runtime is swapped.
         var prior = leader().kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).unwrap();
         var communityKey = new AetherKey.CommunityKey("runtime-reassigned");
-        var originalCommunity = leader().kvStore().getTyped(new AetherKey.CommunityKey(prior.communityId()), AetherValue.CommunityValue.class).unwrap();
+        var originalCommunity = leader().kvStore()
+                                      .getTyped(new AetherKey.CommunityKey(prior.communityId()),
+                                                AetherValue.CommunityValue.class)
+                                      .unwrap();
         var reassigned = new AetherValue.ActivationDirectiveValue(prior.role(), communityKey.communityId(), "");
-        assertThat(tryCommit(List.of(new KVCommand.Mutation<>(communityKey, Option.none(), Option.some(originalCommunity)),
-            new KVCommand.Mutation<>(key, Option.some(prior), Option.some(reassigned))))).as("reassignment transaction accepted").isFalse();
+
+        assertThat(tryCommit(List.of(new KVCommand.Mutation<>(communityKey,
+                                                              Option.none(),
+                                                              Option.some(originalCommunity)),
+                                     new KVCommand.Mutation<>(key,
+                                                              Option.some(prior),
+                                                              Option.some(reassigned))))).as("reassignment transaction accepted")
+                  .isFalse();
         assertThat(leader().kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).unwrap()).isEqualTo(prior);
-        assertThat(leader().kvStore().get(communityKey).isEmpty()).as("the refused transaction created no community").isTrue();
-        await().atMost(BUDGET.duration()).until(() -> worker.kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class)
-            .filter(prior::equals).isPresent() && !worker.kvStore().hasPendingNotifications());
+        assertThat(leader().kvStore().get(communityKey).isEmpty()).as("the refused transaction created no community")
+                  .isTrue();
+        await().atMost(BUDGET.duration())
+             .until(() -> worker.kvStore()
+                                .getTyped(key, AetherValue.ActivationDirectiveValue.class)
+                                .filter(prior::equals)
+                                .isPresent() && !worker.kvStore()
+                                                       .hasPendingNotifications());
         assertThat(announcerHolder(worker).get()).isSameAs(original);
         assertThat(original.communityId()).isEqualTo(prior.communityId());
         assertThat(originalTimer.isScheduled()).isTrue();
         assertThat(worker.periodicTasks().armedCount()).isEqualTo(tasks);
         assertThat(observationListenerCount(worker)).isEqualTo(listeners);
-
         // Removing a live worker's directive is a RETIREMENT, never a move (#3193, #3327): the worker halts through the
         // local drain and leaves the cluster. A worker returns only by a fresh join that is then assigned.
         commit(List.of(new KVCommand.Mutation<>(key, Option.some(prior), Option.none())));
-        await().atMost(BUDGET.duration()).until(() -> cluster.getNode(workerId.id()).isEmpty());
-        await().atMost(BUDGET.duration()).until(() -> worker.periodicTasks().armedCount() == 0);
+        await().atMost(BUDGET.duration()).until(() -> cluster.getNode(workerId.id())
+                                                             .isEmpty());
+        await().atMost(BUDGET.duration()).until(() -> worker.periodicTasks()
+                                                            .armedCount() == 0);
         assertThat(originalTimer.isScheduled()).isFalse();
         assertThat(original.isGovernor()).isFalse();
         assertThat(observationListenerCount(worker)).isLessThanOrEqualTo(listeners);
-
         // A callback already dequeued before the halt may still reach the retired instance.
         original.onMembershipChange(List.of());
         assertThat(originalTimer.isScheduled()).isFalse();
         assertThat(original.isGovernor()).isFalse();
         assertThat(((java.util.concurrent.atomic.AtomicLong) accessor(original, "sequence")).get()).isEqualTo(-1);
-
         // The fresh join: the first assignment of the next worker id is committed BEFORE the worker is admitted
         // (production commitWorkerCommunity returns when a directive exists), so it starts in the other community.
         var freshId = successor(workerId);
         var freshKey = new AetherKey.ActivationDirectiveKey(freshId);
+
         commit(List.of(new KVCommand.Mutation<>(communityKey, Option.none(), Option.some(originalCommunity)),
                        new KVCommand.Mutation<>(freshKey, Option.none(), Option.some(reassigned))));
         var admitted = LifecycleAwait.nodeSettled("admit fresh runtime replay worker", cluster, cluster.addWorkerNode());
+
         assertThat(admitted).isEqualTo(freshId);
         var fresh = cluster.getNode(admitted.id()).unwrap();
+
         await().atMost(BUDGET.duration()).until(() -> announcerHolder(fresh).get() != null);
         var replacement = announcerHolder(fresh).get();
+
         assertThat(replacement).isNotSameAs(original);
         assertThat(replacement.communityId()).isEqualTo(communityKey.communityId());
         assertThat(timer(replacement).isScheduled()).isTrue();
         assertThat(originalTimer.isScheduled()).isFalse();
         assertThat(fresh.periodicTasks().armedCount()).isEqualTo(tasks);
         assertThat(observationListenerCount(fresh)).isEqualTo(listeners);
-
-        LifecycleAwait.nodeSettled("stop fresh worker", cluster, cluster.killNode(admitted.id(), false));
+        LifecycleAwait.nodeSettled("stop fresh worker",
+                                   cluster,
+                                   cluster.killNode(admitted.id(), false));
         assertThat(fresh.periodicTasks().armedCount()).isZero();
         assertThat(timer(replacement).isScheduled()).isFalse();
         original.onMembershipChange(List.of());
@@ -147,33 +180,58 @@ class HierarchicalWorkerRuntimeReplayTest {
     private boolean tryCommit(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
         var node = leader();
         var transactionId = UUID.randomUUID().toString();
-        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(mutations.getFirst().key(), transactionId,
-            node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap(), List.of(), mutations);
-        var results = node.<Object>apply(List.of(command)).await(BUDGET).unwrap();
-        return results.stream().anyMatch(value -> value instanceof KVCommand.TransactionResult result
-            && result.transactionId().equals(transactionId) && result.accepted());
+        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(mutations.getFirst().key(),
+                                                                              transactionId,
+                                                                              node.kvStore()
+                                                                                  .getTyped(LeaderKey.INSTANCE,
+                                                                                            LeaderValue.class)
+                                                                                  .unwrap(),
+                                                                              List.of(),
+                                                                              mutations);
+        var results = node.<Object> apply(List.of(command)).await(BUDGET).unwrap();
+
+        return results.stream()
+                      .anyMatch(value -> value instanceof KVCommand.TransactionResult result
+                                         && result.transactionId()
+                                                  .equals(transactionId)
+                                         && result.accepted());
     }
 
-    private AetherNode leader() { return cluster.currentLeader().flatMap(cluster::getNode).unwrap(); }
+    private AetherNode leader() {
+        return cluster.currentLeader()
+                      .flatMap(cluster::getNode)
+                      .unwrap();
+    }
+
     @SuppressWarnings("unchecked")
     private static AtomicReference<GovernorAnnouncer> announcerHolder(AetherNode node) {
         return (AtomicReference<GovernorAnnouncer>) accessor(node, "governorAnnouncerHolder");
     }
+
     private static CancellableTask timer(GovernorAnnouncer announcer) {
         return (CancellableTask) accessor(announcer, "timer");
     }
+
     private static int observationListenerCount(AetherNode node) {
         var detector = accessor(node, "swimHealthDetector");
+
         return Result.lift(() -> {
-            var field = detector.getClass().getDeclaredField("pendingObservationListeners");
+            var field = detector.getClass()
+                                .getDeclaredField("pendingObservationListeners");
+
             field.setAccessible(true);
+
             return ((List<?>) field.get(detector)).size();
         }).unwrap();
     }
+
     private static Object accessor(Object target, String name) {
         return Result.lift(() -> {
-            var method = target.getClass().getDeclaredMethod(name);
+            var method = target.getClass()
+                               .getDeclaredMethod(name);
+
             method.setAccessible(true);
+
             return method.invoke(target);
         }).unwrap();
     }

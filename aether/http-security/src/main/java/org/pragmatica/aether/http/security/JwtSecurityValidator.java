@@ -70,8 +70,13 @@ class JwtSecurityValidator implements HttpAuthenticator {
 
     @Override
     public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
+        return authenticate(request, policy).map(Authenticated::context);
+    }
+
+    @Override
+    public Result<Authenticated> authenticate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
-            case SecurityPolicy.Public() -> success(SecurityContext.securityContext());
+            case SecurityPolicy.Public() -> success(Authenticated.authenticated(SecurityContext.securityContext()));
             case SecurityPolicy.OptionalAuth() -> validateBearerTokenIfPresented(request);
             case SecurityPolicy.BearerTokenRequired() -> validateBearerToken(request);
             case SecurityPolicy.Authenticated() -> validateBearerToken(request);
@@ -82,7 +87,7 @@ class JwtSecurityValidator implements HttpAuthenticator {
         };
     }
 
-    private Result<SecurityContext> validateBearerToken(HttpRequestContext request) {
+    private Result<Authenticated> validateBearerToken(HttpRequestContext request) {
         return extractToken(request.headers()).toResult(SecurityError.MISSING_BEARER_TOKEN)
                            .flatMap(this::validateToken);
     }
@@ -90,14 +95,14 @@ class JwtSecurityValidator implements HttpAuthenticator {
     /// #2946: only an ABSENT `Authorization` header is anonymous. A present header is a credential attempt: one that
     /// yields no token (bare scheme, empty value, unknown scheme) is refused as malformed (401 `invalid_token`), and
     /// one that yields a token is held to the full validation, so nothing is downgraded to anonymous.
-    private Result<SecurityContext> validateBearerTokenIfPresented(HttpRequestContext request) {
+    private Result<Authenticated> validateBearerTokenIfPresented(HttpRequestContext request) {
         return Option.some(request.headers())
                      .filter(JwtSecurityValidator::hasAuthorizationHeader)
                      .map(this::validatePresentedCredential)
-                     .or(() -> success(SecurityContext.securityContext()));
+                     .or(() -> success(Authenticated.authenticated(SecurityContext.securityContext())));
     }
 
-    private Result<SecurityContext> validatePresentedCredential(Map<String, List<String>> headers) {
+    private Result<Authenticated> validatePresentedCredential(Map<String, List<String>> headers) {
         return extractToken(headers).toResult(SecurityError.MALFORMED_TOKEN)
                            .flatMap(this::validateToken);
     }
@@ -108,13 +113,13 @@ class JwtSecurityValidator implements HttpAuthenticator {
                       .anyMatch("authorization"::equalsIgnoreCase);
     }
 
-    private Result<SecurityContext> validateToken(String token) {
+    private Result<Authenticated> validateToken(String token) {
         return JwtTokenParser.parseToken(token).flatMap(this::verifyAndBuildContext);
     }
 
-    private Result<SecurityContext> verifyAndBuildContext(JwtTokenParser.ParsedJwt jwt) {
+    private Result<Authenticated> verifyAndBuildContext(JwtTokenParser.ParsedJwt jwt) {
         return verifySignature(jwt).flatMap(verified -> validateClaims(verified.payload()))
-                              .flatMap(payload -> buildSecurityContext(payload));
+                              .flatMap(payload -> buildAuthenticated(payload));
     }
 
     /// #2880: the CONFIGURED mode picks the verification path; the token header never does. An `alg` the mode does not
@@ -247,17 +252,21 @@ class JwtSecurityValidator implements HttpAuthenticator {
         return new SecurityError.AudienceMismatch("Unexpected aud claim type").result();
     }
 
-    private Result<SecurityContext> buildSecurityContext(Map<String, Object> payload) {
+    /// The credential match. The grant is minted on the context carrying the token's role (the outer `map`), never on
+    /// the inner one, whose role is the factory default.
+    private Result<Authenticated> buildAuthenticated(Map<String, Object> payload) {
         var subject = Option.option(payload.get("sub")).map(Object::toString).or("unknown");
         var roleClaim = config.roleClaim();
         var authRole = extractAuthorizationRole(payload, roleClaim);
         var roles = extractRoles(payload, roleClaim);
         var claims = extractStringClaims(payload);
 
-        return SecurityContext.securityContext(subject, roles, claims).map(ctx -> SecurityContext.securityContext(ctx.principal(),
-                                                                                                                  ctx.roles(),
-                                                                                                                  ctx.claims(),
-                                                                                                                  authRole));
+        return SecurityContext.securityContext(subject, roles, claims)
+                              .map(ctx -> SecurityContext.securityContext(ctx.principal(),
+                                                                          ctx.roles(),
+                                                                          ctx.claims(),
+                                                                          authRole))
+                              .map(JwtSecurityValidator::minted);
     }
 
     private static AuthorizationRole extractAuthorizationRole(Map<String, Object> payload, String roleClaim) {
@@ -347,5 +356,10 @@ class JwtSecurityValidator implements HttpAuthenticator {
     /// Only the FIRST value of a header counts: a later value must never be promoted to the credential.
     private static Option<String> firstValue(List<String> values) {
         return Option.from(values.stream().findFirst());
+    }
+
+    /// The credential match: the matched context, with an ADMIN grant minted when its authorization role is ADMIN.
+    private static Authenticated minted(SecurityContext context) {
+        return Authenticated.authenticated(context, AdminGrant.mint(context));
     }
 }

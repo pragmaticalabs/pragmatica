@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
 import java.io.IOException;
@@ -16,6 +15,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 
 /// The round verdict mapping, offline (vf4b: the inline verdict and the ERROR rethrow had four surviving mutants; only a live round could reach
 /// them). Every mapping is one test; each names the mutation that turns it red.
@@ -60,8 +60,9 @@ class EquivalenceVerdictTest {
         var boom = new IllegalStateException("arm boom");
 
         assertThatThrownBy(() -> EquivalenceVerdict.guarded(() -> {
-            throw boom;
-        }, seen::add)).isSameAs(boom);
+                                                                throw boom;
+                                                            },
+                                                            seen::add)).isSameAs(boom);
         assertThat(seen).containsExactly(boom);
     }
 
@@ -72,8 +73,9 @@ class EquivalenceVerdictTest {
         var timeout = new AssertionError("F4 timed out waiting");
 
         assertThatThrownBy(() -> EquivalenceVerdict.guarded(() -> {
-            throw timeout;
-        }, seen::add)).isSameAs(timeout);
+                                                                throw timeout;
+                                                            },
+                                                            seen::add)).isSameAs(timeout);
         assertThat(seen).containsExactly(timeout);
     }
 

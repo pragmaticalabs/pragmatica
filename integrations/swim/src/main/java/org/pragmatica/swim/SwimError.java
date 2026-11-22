@@ -26,7 +26,8 @@ public sealed interface SwimError extends Cause {
         TRANSPORT_NOT_STARTED("Transport has not been started"),
         PROTOCOL_ALREADY_RUNNING("Protocol is already running"),
         PROTOCOL_NOT_RUNNING("Protocol is not running"),
-        NO_MEMBERS_AVAILABLE("No members available for probing");
+        NO_MEMBERS_AVAILABLE("No members available for probing"),
+        CALL_FROM_INSIDE_TASK("A waiting SerialExecutor test seam (call) from inside a task would wait on itself");
         private final String message;
         General(String message) {
             this.message = message;

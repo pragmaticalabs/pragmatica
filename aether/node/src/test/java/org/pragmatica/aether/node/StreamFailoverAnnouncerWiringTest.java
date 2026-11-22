@@ -38,6 +38,10 @@ class StreamFailoverAnnouncerWiringTest {
         assertThat(code).containsOnlyOnce(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamLineageAnnouncer::onOwnershipPut)");
         assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamLineageRestarted.class,eventAggregator::onStreamLineageRestarted)");
         assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,eventAggregator::onStreamConfigChangeNotApplied)");
+        // #3334, #3554: the retention change is raised from the manager's adopt site, through the announcer, and reaches the
+        // aggregator, which publishes it committed.
+        assertThat(code).containsOnlyOnce("streamPartitionManager.onConfigAdopted(streamIsrAnnouncer::onConfigAdopted);");
+        assertThat(code).containsOnlyOnce("MessageRouter.Entry.route(OperationalEvent.StreamRetentionChanged.class,eventAggregator::onStreamRetentionChanged)");
         // #1723: a scheduled task's unknown fire outcome and its late resolution are derived from the committed task state
         // on every node and reach the aggregator.
         assertThat(code).containsOnlyOnce("ScheduledTaskOutcomeAnnouncer.scheduledTaskOutcomeAnnouncer(delegateRouter::route);");

@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
+import org.pragmatica.aether.deployment.wiring.DeploymentConfigFacades;
 import org.pragmatica.aether.slice.ConfigFacade;
 
 import org.junit.jupiter.api.Test;
@@ -42,7 +42,7 @@ class ConfigNotificationManagerChangeTest {
     void change_reachesEverySliceWhoseSectionPrefixesTheKey_withItsOwnFacade() {
         RecordingFactory.calls.clear();
         var manager = ConfigNotificationManager.configNotificationManager();
-        var facadeA = NodeDeploymentManager.NO_OP_CONFIG;
+        var facadeA = DeploymentConfigFacades.NO_OP_CONFIG;
         var facadeB = new DistinctFacade();
 
         manager.register(SLICE_A, INSTANCE_A, getClass().getClassLoader(), RecordingFactory.class.getName(), List.of("database", "cache"));
@@ -61,9 +61,9 @@ class ConfigNotificationManagerChangeTest {
         var manager = ConfigNotificationManager.configNotificationManager();
 
         manager.register(SLICE_A, INSTANCE_A, getClass().getClassLoader(), RecordingFactory.class.getName(), List.of("database"));
-        manager.notifyChange("databases.other", _ -> NodeDeploymentManager.NO_OP_CONFIG);
-        manager.notifyChange("cache.ttl", _ -> NodeDeploymentManager.NO_OP_CONFIG);
-        manager.notifyChange("database.url", _ -> NodeDeploymentManager.NO_OP_CONFIG);
+        manager.notifyChange("databases.other", _ -> DeploymentConfigFacades.NO_OP_CONFIG);
+        manager.notifyChange("cache.ttl", _ -> DeploymentConfigFacades.NO_OP_CONFIG);
+        manager.notifyChange("database.url", _ -> DeploymentConfigFacades.NO_OP_CONFIG);
 
         await().untilAsserted(() -> assertThat(RecordingFactory.calls).hasSize(1));
         assertThat(RecordingFactory.calls.getFirst().section()).isEqualTo("database");
@@ -73,26 +73,26 @@ class ConfigNotificationManagerChangeTest {
     /// Any facade that is not the shared no-op one — identity is what the assertion needs.
     private static final class DistinctFacade implements ConfigFacade {
         @Override
-        public org.pragmatica.lang.Result<String> requireString(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.requireString(section, key); }
+        public org.pragmatica.lang.Result<String> requireString(String section, String key) { return DeploymentConfigFacades.NO_OP_CONFIG.requireString(section, key); }
         @Override
-        public org.pragmatica.lang.Result<Integer> requireInt(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.requireInt(section, key); }
+        public org.pragmatica.lang.Result<Integer> requireInt(String section, String key) { return DeploymentConfigFacades.NO_OP_CONFIG.requireInt(section, key); }
         @Override
-        public org.pragmatica.lang.Result<Long> requireLong(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.requireLong(section, key); }
+        public org.pragmatica.lang.Result<Long> requireLong(String section, String key) { return DeploymentConfigFacades.NO_OP_CONFIG.requireLong(section, key); }
         @Override
-        public org.pragmatica.lang.Result<Double> requireDouble(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.requireDouble(section, key); }
+        public org.pragmatica.lang.Result<Double> requireDouble(String section, String key) { return DeploymentConfigFacades.NO_OP_CONFIG.requireDouble(section, key); }
         @Override
-        public org.pragmatica.lang.Result<Boolean> requireBoolean(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.requireBoolean(section, key); }
+        public org.pragmatica.lang.Result<Boolean> requireBoolean(String section, String key) { return DeploymentConfigFacades.NO_OP_CONFIG.requireBoolean(section, key); }
         @Override
-        public org.pragmatica.lang.Result<List<String>> requireStringList(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.requireStringList(section, key); }
+        public org.pragmatica.lang.Result<List<String>> requireStringList(String section, String key) { return DeploymentConfigFacades.NO_OP_CONFIG.requireStringList(section, key); }
         @Override
-        public org.pragmatica.lang.Option<String> getString(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getString(section, key); }
+        public org.pragmatica.lang.Option<String> getString(String section, String key) { return DeploymentConfigFacades.NO_OP_CONFIG.getString(section, key); }
         @Override
-        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Integer>> getInt(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getInt(section, key); }
+        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Integer>> getInt(String section, String key) { return DeploymentConfigFacades.NO_OP_CONFIG.getInt(section, key); }
         @Override
-        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Long>> getLong(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getLong(section, key); }
+        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Long>> getLong(String section, String key) { return DeploymentConfigFacades.NO_OP_CONFIG.getLong(section, key); }
         @Override
-        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Double>> getDouble(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getDouble(section, key); }
+        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Double>> getDouble(String section, String key) { return DeploymentConfigFacades.NO_OP_CONFIG.getDouble(section, key); }
         @Override
-        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Boolean>> getBoolean(String section, String key) { return NodeDeploymentManager.NO_OP_CONFIG.getBoolean(section, key); }
+        public org.pragmatica.lang.Result<org.pragmatica.lang.Option<Boolean>> getBoolean(String section, String key) { return DeploymentConfigFacades.NO_OP_CONFIG.getBoolean(section, key); }
     }
 }

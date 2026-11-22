@@ -23,10 +23,12 @@ import java.util.stream.Stream;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
+import org.pragmatica.consensus.topology.TransportView;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.statemachine.Fsm;
@@ -57,6 +59,11 @@ public final class LeaderElectionContext {
     /// so the election layer doesn't conclude "lost election" while Rabia is still resolving.
     public static final TimeSpan DEFAULT_MIN_PROPOSAL_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     public static final int DEFAULT_STUCK_ELECTION_THRESHOLD = 10;
+    /// Bound on how long a view-free removal keeps a node out of the view while the transport still lists it (#3047).
+    /// A chosen value, not a measurement: the transport is re-read at most this long after any removal, so a node SWIM
+    /// wrongly removed is back within this bound. Only the removal that arms the re-read stands for the whole period; a
+    /// removal inside an armed window shares that re-read and stands for less, down to ~0.
+    public static final TimeSpan DEFAULT_REASSERT_PERIOD = TimeSpan.timeSpan(5).seconds();
     /// Grace window after [`LeaderElectionState.QuorumWaiting`] before the FSM gives up on
     /// observing a peer-committed leader and falls through to [`LeaderElectionState.Electing`] /
     /// [`LeaderElectionState.ReElecting`]. Sized to absorb the typical KV-sync propagation
@@ -242,6 +249,13 @@ public final class LeaderElectionContext {
     /// that delivery instead of electing on the grace's wall clock. Installed by the consensus wiring
     /// ([`#installKvSyncPending`]); the default reports no pending sync, which keeps the plain grace.
     private final AtomicReference<Supplier<Boolean>> kvSyncPending = new AtomicReference<>(() -> false);
+
+    /// The transport's current sequenced view (#3047), read by the re-assertion a removal arms. Absent until
+    /// [`#installTransportView`]: a host without a sequencing transport (local election, stubs) never re-asserts.
+    private final AtomicReference<Option<Supplier<Option<TransportView>>>> transportView = new AtomicReference<>(Option.none());
+
+    private final AtomicBoolean reassertionArmed = new AtomicBoolean(false);
+    private final AtomicReference<TimeSpan> reassertPeriod = new AtomicReference<>(DEFAULT_REASSERT_PERIOD);
     /// Leader pre-vote (#1748). Absent until [`#enablePreVote`]: without it a follower that loses the leader
     /// re-elects immediately, which is what local-election mode and the stubs that never wire a network need.
     private final AtomicReference<Option<LeaderPreVote>> preVote = new AtomicReference<>(Option.none());
@@ -623,6 +637,22 @@ public final class LeaderElectionContext {
         return proposalHandler;
     }
 
+    /// Local-election mode (#3092 I3): no consensus proposal handler is wired, so no commit ever carries a sequence and
+    /// [#committedViewSequence()] never advances. The same condition `LeaderManager` reads to pick its local paths.
+    public boolean isLocalMode() {
+        return proposalHandler.isEmpty();
+    }
+
+    /// The leader a local-mode election picks: the first node of the applied eligible view, none for an empty one.
+    /// The one local election rule, read by `LeaderManager`'s local view paths and by an election tick in local mode.
+    public Option<NodeId> localLeaderCandidate() {
+        var topology = currentTopology();
+
+        return topology.isEmpty()
+               ? Option.none()
+               : Option.some(topology.getFirst());
+    }
+
     public List<NodeId> expectedCluster() {
         return installedVoters.get()
                               .or(expectedCluster);
@@ -682,6 +712,14 @@ public final class LeaderElectionContext {
     /// this much, never forbid it.
     public TimeSpan kvSyncMaxWait() {
         return TimeSpan.timeSpan(kvSyncGraceDelay.millis() * KV_SYNC_MAX_WAIT_GRACES).millis();
+    }
+
+    /// Wires the transport's sequenced view (#3047), re-read `period` after a view-free removal. Production:
+    /// `ClusterNetwork#sequencedView`. Replaces the no-re-assertion default.
+    @Contract
+    public void installTransportView(Supplier<Option<TransportView>> view, TimeSpan period) {
+        transportView.set(Option.some(view));
+        reassertPeriod.set(period);
     }
 
     /// Wires the signal that this node's KV state is still catching up with the committed frontier
@@ -805,12 +843,45 @@ public final class LeaderElectionContext {
     }
 
     /// Removes exactly `node` from the stored view, view-free (#3044): the one write that carries no sequenced view.
-    /// It is applied iff the node is present, is not this node, and is not the last node left (an empty view is
-    /// never stored, and removing self would skew [#rankOfSelf(Option)]). It never adds a node and never moves the
+    /// It is applied iff the node is present, is not this node, and is not the last node left (a view-free removal
+    /// never empties the view: only a sequenced transport view may, #3092 I1; removing self would skew
+    /// [#rankOfSelf(Option)]). It never adds a node and never moves the
     /// sequence, so only a newer transport view undoes it. The check and the write are one atomic step with every
     /// other view write. Returns `true` iff the node was removed.
     public boolean removeFromView(NodeId node) {
-        return advanceView(new ViewCandidate.Remove(node));
+        var removed = advanceView(new ViewCandidate.Remove(node));
+
+        if (removed) {
+            armReassertion();
+        }
+
+        return removed;
+    }
+
+    /// #3047: a removal is the only event that can leave the view short of the transport's (SWIM removes a node whose
+    /// transport link stays up, and the transport emits nothing when it next agrees), so it arms ONE re-assertion
+    /// `reassertPeriod` later; removals inside that window share it. The delay is deliberate: re-reading at once would
+    /// undo the removal before it took effect. A host without a transport view arms nothing.
+    private void armReassertion() {
+        transportView.get().onPresent(this::scheduleReassertion);
+    }
+
+    private void scheduleReassertion(Supplier<Option<TransportView>> view) {
+        if (reassertionArmed.compareAndSet(false, true)) {
+            SharedScheduler.schedule(() -> reassert(view), reassertPeriod.get());
+        }
+    }
+
+    /// Disarms BEFORE it reads the transport, so a removal that lands after the read arms the next re-assertion. The
+    /// view goes through the FSM as a sequenced transport observation: the sequence fence admits it iff it is newer
+    /// than the stored view, and it never adds a node the transport does not list.
+    private void reassert(Supplier<Option<TransportView>> view) {
+        reassertionArmed.set(false);
+        view.get().onPresent(this::dispatchTransportView);
+    }
+
+    private void dispatchTransportView(TransportView view) {
+        fsm.dispatch(new ClusterFsmEvent.NodeAdded(self, view.topology(), view.sequence()));
     }
 
     private boolean applyTopology(List<NodeId> topology, long sequence) {
@@ -845,8 +916,9 @@ public final class LeaderElectionContext {
         record Remove(NodeId node) implements ViewCandidate {}
     }
 
-    /// The stored view and the sequence of the last sequenced event that wrote it. An empty view is never stored
-    /// (the previous one is kept), but its sequence still advances the fence. A removal keeps the sequence.
+    /// The stored view and the sequence of the last sequenced event that wrote it. A removal keeps the sequence.
+    /// #3092 I1: an applied replace stores its view as it is, an empty one included, so no reader sees a view the
+    /// transport has replaced (an evicted leader kept under an empty view was re-adopted by every local reader).
     private record SequencedTopology(List<NodeId> topology, long sequence) {
         static final SequencedTopology INITIAL = new SequencedTopology(List.of(),
                                                                        ClusterFsmEvent.TopologyChange.NO_SEQUENCE);
@@ -858,8 +930,7 @@ public final class LeaderElectionContext {
             };
         }
 
-        /// Replace: `true` unless the candidate is dropped (a newer empty view counts as applied: its sequence advances
-        /// the fence). Remove: `true` iff the node was removed.
+        /// Replace: `true` unless the candidate is dropped. Remove: `true` iff the node was removed.
         boolean applies(ViewCandidate candidate, NodeId self) {
             return switch (candidate) {
                 case ViewCandidate.Replace replace -> !replace.isDroppedAgainst(this);
@@ -868,16 +939,10 @@ public final class LeaderElectionContext {
         }
 
         private SequencedTopology replacedBy(ViewCandidate.Replace candidate) {
-            if (candidate.isDroppedAgainst(this)) {
-                return this;
-            }
-
-            var replacement = candidate.topology().isEmpty()
-                              ? topology
-                              : candidate.topology();
-
-            return new SequencedTopology(replacement,
-                                         Math.max(sequence, candidate.sequence()));
+            return candidate.isDroppedAgainst(this)
+                   ? this
+                   : new SequencedTopology(candidate.topology(),
+                                           Math.max(sequence, candidate.sequence()));
         }
 
         private SequencedTopology without(NodeId node, NodeId self) {

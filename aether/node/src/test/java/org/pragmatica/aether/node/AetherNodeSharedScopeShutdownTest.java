@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.resource.ResourceProvider;
@@ -81,7 +82,7 @@ class AetherNodeSharedScopeShutdownTest {
     }
 
     /// A shared-scope close that never resolves must not hold the rest of the stop: storage and the cluster
-    /// node still stop once `SHARED_SCOPE_CLOSE_BOUND` passes.
+    /// node still stop once `SHARED_SCOPE_CLOSE_BOUND` passes, and the stop completes with the timeout in its report (#3565).
     @Test
     @Timeout(value = 60, unit = SECONDS)
     void stop_completes_whenASharedScopeCloseNeverResolves() {
@@ -106,8 +107,15 @@ class AetherNodeSharedScopeShutdownTest {
         var stopped = node.stop().await(timeSpan(40).seconds());
         node = null;
 
-        assertThat(stopped.isSuccess()).as("stop must complete past a shared-scope close that never resolves: %s", stopped)
+        assertThat(stopped.isSuccess()).as("every step settled, so the stop SUCCEEDS with a report (#3565), not the 40 s wait of this test: %s", stopped)
                                        .isTrue();
+        assertThat(stopped.fold(_ -> List.<StopReport.StepFailure> of(), StopReport::failures))
+                .as("completed with failures: exactly the shared-scope close's own bound timeout (SHARED_SCOPE_CLOSE_BOUND, #903)")
+                .singleElement()
+                .extracting(StopReport.StepFailure::describe)
+                .asString()
+                .startsWith("Shared resource scope: ")
+                .contains("after " + AetherNode.SHARED_SCOPE_CLOSE_BOUND.millis() + "ms");
         assertThat(ReleaseProbeFactory.provisioned().getFirst().closeCount()).as("the close was attempted").isEqualTo(1);
     }
 }

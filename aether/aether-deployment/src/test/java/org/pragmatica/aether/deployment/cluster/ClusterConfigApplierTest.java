@@ -59,6 +59,11 @@ class ClusterConfigApplierTest {
         applier = ClusterConfigApplier.clusterConfigApplier(topologyManager);
     }
 
+    @Test
+    void drainTenure_nonOverridingImplementer_isZero() {
+        assertThat(topologyManager.drainTenure()).isZero();
+    }
+
     @Nested
     class CoreScale {
         @Test

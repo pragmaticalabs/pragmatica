@@ -66,11 +66,15 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice.CODECS);
         // #1155: tag 1634 keeps decoding the shape ScheduledTaskStateValue had before `boundHolder`; the current shape is 2168.
         all.add(org.pragmatica.aether.slice.kvstore.LegacyScheduledTaskStateValue.CODEC);
+        // #834: tag 1638 keeps decoding the shape SchemaVersionValue had before `reachedBy`; the current shape is 2984.
+        all.add(org.pragmatica.aether.slice.kvstore.LegacySchemaVersionValue.CODEC);
         // #1337: tag 1655 keeps decoding the shape TopicSubscriptionValue had before `tier`; the current shape is 2169.
         all.add(org.pragmatica.aether.slice.kvstore.LegacyTopicSubscriptionValue.CODEC);
         all.addAll(org.pragmatica.aether.api.ApiCodecsNode.CODECS);
         all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
+        // #3458 M-1b: the removal cause enum `ReadRefusal` carries. Aggregation is manual, so it is inert until this line exists.
+        all.addAll(org.pragmatica.aether.slice.stream.StreamCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.invoke.InvokeCodecsInvoke.CODECS);
         // #2157: tag 642 keeps decoding the shape InvokeRequest had before `caller`; the current shape is 644.
         all.add(org.pragmatica.aether.invoke.LegacyInvokeRequest.CODEC);

@@ -21,7 +21,8 @@ public record RabiaMetrics(String role,
                            long oldestPendingBatchAgeMs,
                            long applyTimeoutCount,
                            long consecutiveEmptySlotsWithPending,
-                           Option<String> firstChoiceBatchId) {
+                           Option<String> firstChoiceBatchId,
+                           long durationSamples) {
     public static final RabiaMetrics EMPTY = new RabiaMetrics("FOLLOWER",
                                                               Option.empty(),
                                                               0,
@@ -35,9 +36,11 @@ public record RabiaMetrics(String role,
                                                               0,
                                                               0,
                                                               0,
-                                                              Option.empty());
+                                                              Option.empty(),
+                                                              0);
 
-    /// The record as it was before #1117 added the pending-age and apply-timeout signals; both read zero.
+    /// The record as it was before #1117 added the pending-age and apply-timeout signals; both read zero. Every
+    /// decision carried a duration then, so the sample count equals the decision count (#2644).
     public RabiaMetrics(String role,
                         Option<String> leaderId,
                         int pendingBatches,
@@ -61,7 +64,8 @@ public record RabiaMetrics(String role,
              0L,
              0L,
              0L,
-             Option.empty());
+             Option.empty(),
+             decisionsCount);
     }
 
     /// The wire-facing counter view (#674): key names double as the Prometheus gauge names, so the
@@ -83,12 +87,14 @@ public record RabiaMetrics(String role,
                                        consecutiveEmptySlotsWithPending));
     }
 
+    /// Average over the decisions that carried a duration (#2644): a decision this node never held is counted in
+    /// `decisionsCount` but has no sample, and must not drag the average toward 0.
     public double avgDecisionLatencyMs() {
-        if (decisionsCount == 0) {
+        if (durationSamples == 0) {
             return 0.0;
         }
 
-        return (totalDecisionLatencyNs / (double) decisionsCount) / 1_000_000.0;
+        return (totalDecisionLatencyNs / (double) durationSamples) / 1_000_000.0;
     }
 
     public double syncSuccessRate() {

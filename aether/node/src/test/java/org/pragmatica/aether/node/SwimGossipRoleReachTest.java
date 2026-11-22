@@ -26,6 +26,7 @@ import org.pragmatica.swim.SwimMessage;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,7 +60,7 @@ class SwimGossipRoleReachTest {
                                                     System::currentTimeMillis,
                                                     Long.MAX_VALUE,
                                                     TimeSpan.timeSpan(1).hours());
-        protocol = SwimProtocol.swimProtocol(SwimConfig.swimConfig(), new NullTransport(), new NullListener(), SELF, SELF_ADDR)
+        protocol = SwimTestProtocols.swimProtocol(SwimConfig.swimConfig(), new NullTransport(), new NullListener(), SELF, SELF_ADDR)
                                .unwrap();
         protocol.addObservationListener(observation -> MembershipAssembly.routeSwimEdgeToMembershipFsm(observation, membershipFsm));
     }

@@ -211,7 +211,7 @@ class BlueprintPublishConflictStatusTest {
         return (RequestContext) Proxy.newProxyInstance(RequestContext.class.getClassLoader(),
                                                        new Class[]{RequestContext.class},
                                                        (proxy, method, args) -> "fromJson".equals(method.getName())
-                                                                                 ? Result.success(new SliceRoutes.BlueprintDeployRequest(COORDS))
+                                                                                 ? Result.success(new SliceRoutes.BlueprintDeployRequest(COORDS, Option.none()))
                                                                                  : method.isDefault()
                                                                                    ? InvocationHandler.invokeDefault(proxy, method, args)
                                                                                    : unsupported(method.getName()));

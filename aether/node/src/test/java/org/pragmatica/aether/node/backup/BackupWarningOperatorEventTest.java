@@ -36,6 +36,12 @@ class BackupWarningOperatorEventTest {
         assertRaisedAlone(Code.BACKUP_RESTORE_BLOCKED, OperatorWarningCode.BACKUP_RESTORE_BLOCKED);
     }
 
+    /// #3303 RA-5a: a restore stopped by a deterministic refusal is raised as its own code, not as the blocked one.
+    @Test
+    void aRejectedRestore_isRaisedAsAnOperatorWarning() {
+        assertRaisedAlone(Code.BACKUP_RESTORE_REJECTED, OperatorWarningCode.BACKUP_RESTORE_REJECTED);
+    }
+
     @Test
     void aFork_isRaisedAsAnOperatorWarning() {
         assertRaisedAlone(Code.BACKUP_FORKED, OperatorWarningCode.BACKUP_FORKED);

@@ -34,6 +34,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodePlacementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
@@ -101,7 +102,8 @@ class GapRebuildTest {
                                              "g:a:1",
                                              id,
                                              0,
-                                             FsmHarness.START_WALL));
+                                             FsmHarness.START_WALL,
+                                             SchemaReach.MIGRATED));
         h.seedQuietly(new SchemaMigrationLockKey("ds"), new SchemaMigrationLockValue("ds", CORE_1, 1L, 2L, 1L));
         h.seedQuietly(new NodeRoutesKey(CORE_1, ORDERS), new NodeRoutesValue(List.of(), Epoch.ZERO));
         h.seedQuietly(new NodePlacementKey(IDS.worker), new NodePlacementValue("east", Option.some("z1"), "i-1"));

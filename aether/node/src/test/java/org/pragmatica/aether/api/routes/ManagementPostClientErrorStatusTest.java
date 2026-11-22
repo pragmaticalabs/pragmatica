@@ -105,7 +105,7 @@ class ManagementPostClientErrorStatusTest {
     void blueprintDeploy_answers400_whenArtifactIsMissing() {
         var routes = SliceRoutes.sliceRoutes(() -> node(true));
 
-        assertThat(statusOf(routes.routes(), ManagementRoute.BLUEPRINT_DEPLOY, new SliceRoutes.BlueprintDeployRequest(null)))
+        assertThat(statusOf(routes.routes(), ManagementRoute.BLUEPRINT_DEPLOY, new SliceRoutes.BlueprintDeployRequest(null, Option.none())))
             .isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
@@ -113,7 +113,7 @@ class ManagementPostClientErrorStatusTest {
     void blueprintPublish_answers400_whenArtifactIsMissing() {
         var routes = SliceRoutes.sliceRoutes(() -> node(true));
 
-        assertThat(statusOf(routes.routes(), ManagementRoute.BLUEPRINT_PUBLISH_ARTIFACT, new SliceRoutes.BlueprintDeployRequest(null)))
+        assertThat(statusOf(routes.routes(), ManagementRoute.BLUEPRINT_PUBLISH_ARTIFACT, new SliceRoutes.BlueprintDeployRequest(null, Option.none())))
             .isEqualTo(HttpStatus.BAD_REQUEST);
     }
 

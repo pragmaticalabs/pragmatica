@@ -62,6 +62,7 @@ import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.ULID;
@@ -1569,6 +1570,26 @@ class LeaderReconcilerTest {
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
             assertThat(ctm.drainNodeCalls()).as("the paired surge node is not surplus").isEmpty();
+        }
+
+        /// #1880: a CONFIGURED member is seeded at wiring (the formation bootstrap), but only JOINS —
+        /// first reachability evidence — long after. The grace measures time since it joined, never
+        /// since the FSM first tracked it: a late joiner inside the grace must not be the victim.
+        @Test
+        void surplusDrain_configuredSeedJoiningLongAfterWiring_isYoungForTheGrace_notSelected() {
+            configuredCoreCount.set(1);
+            // Wiring: the configured topology is seeded; the node has not been reached yet.
+            membershipFsm.seed(Set.of(youngSeed1));
+            // Long after wiring the node finally joins: first reachability evidence, now.
+            agePastDrainSafetyGrace();
+            seedYoungPeers(youngSeed1);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("a configured member that joined seconds ago must not be drained, however long ago it was seeded")
+                .doesNotContain(youngSeed1);
         }
 
         @Test
@@ -3459,7 +3480,7 @@ class LeaderReconcilerTest {
         /// gossiped ALIVE update from a peer, delivered to a real `SwimProtocol` whose observations feed
         /// the fixture FSM. The role label is whatever that gossip carries.
         private void seedGossipLearnedCore(NodeId id) {
-            var protocol = SwimProtocol.swimProtocol(swimConfig(), new NullSwimTransport(), new NullSwimListener(), SELF, SWIM_SELF)
+            var protocol = SwimTestProtocols.swimProtocol(swimConfig(), new NullSwimTransport(), new NullSwimListener(), SELF, SWIM_SELF)
                                        .unwrap();
 
             protocol.addObservationListener(this::routeToFsm);

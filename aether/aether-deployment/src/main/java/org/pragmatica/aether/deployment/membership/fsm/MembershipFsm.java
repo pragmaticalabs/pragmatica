@@ -21,6 +21,7 @@ import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DownHysteresisMet;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainRequested;
@@ -165,6 +166,8 @@ public final class MembershipFsm {
 
     private final FsmObserver<MembershipState, MembershipEvent> observer;
     private final Map<NodeId, MemberTracking> members = new ConcurrentHashMap<>();
+    /// Raised by [`#close`]; read by [`#retireIfClosed`] so a tracking created after the close is retired at birth.
+    private volatile boolean closed = false;
     private final Object scopeGuard = new Object();
     private volatile Predicate<NodeId> trackingEligibility = _ -> true;
     private volatile Predicate<NodeId> joinGraceReapEligibility = _ -> true;
@@ -269,7 +272,9 @@ public final class MembershipFsm {
     /// `DHTTopologyListener.onNodeJoined` ring RE-ADD never runs. Left unhandled, a member pruned
     /// from the ring by [`#onEnteredDeparting`] that then recovers stays MISSING from the ring →
     /// under-replication. This listener restores symmetry: AetherNode wires it to the DHT topology
-    /// listener's ring RE-ADD (`DHTTopologyListener.onNodeRecovered`), mirroring the prune.
+    /// listener's ring RE-ADD (`DHTTopologyListener.onNodeRecovered`), mirroring the prune. That re-add restores
+    /// only a node the listener pruned (#3415); a member that reaches MEMBER for the FIRST time through this
+    /// recovery (drained while OBSERVED) was never JOINED, so this dispatch emits its JOINED edge and the join adds it.
     ///
     /// Scoped to the recovery edge ONLY (NOT every MEMBER entry): a normal OBSERVED→MEMBER join and
     /// a SUSPECT→MEMBER flap-recovery were never pruned, and the former already rides the
@@ -1021,10 +1026,14 @@ public final class MembershipFsm {
         return snapshot;
     }
 
-    /// Age (ms) of `id`'s membership tracking: wall-clock time since this manager FIRST began
-    /// tracking the member (its [`MemberTracking`] creation on first observation), on the
-    /// manager's injected wall clock — `none()` for an untracked id. The creation stamp is
-    /// retained across DEAD/rejoin (the tracking is never recreated), which is deliberate: the
+    /// Age (ms) of `id`'s membership: wall-clock time since this manager FIRST saw first-hand
+    /// reachability evidence for the member ([`MemberTracking#everReachable`] latching), on the
+    /// manager's injected wall clock — `none()` for an untracked id. A tracked member that has not
+    /// been reached yet (a configured seed promoted at wiring, or a descriptor-only observation) has
+    /// not joined: its age is 0, so a seed that joins long after wiring is young at its join (#1880).
+    /// This node's own tracking is never reached by itself, so its age stays 0; the grace never reads it (self is never a victim).
+    /// Member identity (tracking) and join age (the latch stamp) are set by the same latch, with no
+    /// timer. The stamp is retained across DEAD/rejoin (the latch never clears), which is deliberate: the
     /// descriptor is retained too, so a rejoining member's role is already known and the
     /// role-propagation race this age guards against does not re-open. Consumer: the
     /// `LeaderReconciler` drain-safety grace (cluster-topology-overhaul Wave 2) — a surplus-drain
@@ -1032,7 +1041,7 @@ public final class MembershipFsm {
     /// just-joined worker whose role labels are still propagating reads as a blank-role core
     /// surplus and is drained.
     public Option<Long> memberAgeMs(NodeId id) {
-        return Option.option(members.get(id)).map(tracking -> wallClockMs.getAsLong() - tracking.firstTrackedAtMs());
+        return Option.option(members.get(id)).map(tracking -> tracking.reachableAgeMs(wallClockMs.getAsLong()));
     }
 
     // --- Projections (desired connection-set for the transport executor) ---
@@ -1298,9 +1307,7 @@ public final class MembershipFsm {
     /// further notice arrives) and the report's clearing carries a further bump only when the member's incarnation moves.
     @Contract
     private void reofferIfRefusedForQuorumLoss(MemberTracking tracking, long incarnation) {
-        if (tracking.armRejoinReoffer(incarnation)) {
-            SharedScheduler.schedule(() -> reofferRefusedRejoin(tracking), REJOIN_REOFFER);
-        }
+        tracking.armRejoinReoffer(incarnation, () -> reofferRefusedRejoin(tracking));
     }
 
     @Contract
@@ -1563,7 +1570,66 @@ public final class MembershipFsm {
     /// Lazily create the per-member tracking on first observation. A DEAD entry is KEPT, so this
     /// returns the existing tracking and a higher-incarnation SwimHealthy re-arms it in place.
     private MemberTracking trackingFor(NodeId id) {
-        return members.computeIfAbsent(id, this::newTracking);
+        var tracking = members.computeIfAbsent(id, this::newTracking);
+
+        retireIfClosed(tracking);
+
+        return tracking;
+    }
+
+    /// #3557: a tracking created while or after [`#close`] ran is retired at once. `close()` raises the flag before it
+    /// walks the map, so a tracking inserted after the walk reads the raised flag here, and one inserted before it is
+    /// retired by the walk. Either way no timer of it survives.
+    private void retireIfClosed(MemberTracking tracking) {
+        if (closed) {
+            tracking.retire();
+        }
+    }
+
+    /// Owner-lifecycle close (#3557): cancel every per-member timer of every tracked member — the join grace, the
+    /// eviction backstop, the DEPARTING timeout and the rejoin re-offer — and make a task that fires or is already
+    /// running afterwards a no-op. The timers live on the JVM-wide [`SharedScheduler`], so a node that stopped without
+    /// this kept them firing against its torn-down state. Called from the node's stop path; idempotent. The FSM keeps
+    /// answering reads after close; it only stops acting on timers and new observations of its members.
+    @Contract
+    public void close() {
+        closed = true;
+        members.values().forEach(MemberTracking::retire);
+    }
+
+    /// Timers currently armed across all tracked members (#3557 observability seam, package-private): the join grace, the
+    /// eviction backstop, the DEPARTING timeout and the rejoin re-offer, each counted while its future has neither fired nor
+    /// been cancelled. Zero after [`#close`]. Read-only snapshot, no hot-path cost.
+    int pendingTimerCount() {
+        return members.values()
+                      .stream()
+                      .mapToInt(MemberTracking::pendingTimers)
+                      .sum();
+    }
+
+    /// Futures of the timers currently held across all tracked members (#3557 test seam, package-private). A test
+    /// captures them before [`#close`] and reads `isCancelled()` after it: close clears the handles that
+    /// [`#pendingTimerCount`] reads, so the count alone cannot tell a cancelled future from one whose handle was only
+    /// dropped. Read-only snapshot, no hot-path cost.
+    List<ScheduledFuture<?>> heldTimerFutures() {
+        return members.values()
+                      .stream()
+                      .flatMap(tracking -> tracking.heldTimerFutures()
+                                                   .stream())
+                      .toList();
+    }
+
+    /// Runs, now, what an already-dequeued timer task would run (#3557 test seam, package-private): `cancel(false)` cannot stop
+    /// a task the scheduler has handed to a thread, so the closed flag each task reads first is the only thing that keeps it
+    /// from acting after [`#close`]. Lets a test exercise that flag without racing the scheduler.
+    @Contract
+    void runDequeuedTimerTasks() {
+        members.values().forEach(this::runDequeuedTimerTasks);
+    }
+
+    private void runDequeuedTimerTasks(MemberTracking tracking) {
+        tracking.runTimerTasks();
+        reofferRefusedRejoin(tracking);
     }
 
     private MemberTracking newTracking(NodeId id) {
@@ -1583,7 +1649,7 @@ public final class MembershipFsm {
                                           this::emitTransition,
                                           this::emitMembershipDelta,
                                           this::reachabilityLatchedEdge,
-                                          wallClockMs.getAsLong(),
+                                          wallClockMs,
                                           departureTimeout,
                                           joinGrace,
                                           node -> joinGraceReapEligibility.test(node),
@@ -1611,14 +1677,21 @@ public final class MembershipFsm {
     /// stay internally consistent under concurrent tap threads. Every [`#dispatch`] detects a fresh
     /// edge into DEAD (was-not-Dead → is-Dead) and fires the eviction hook exactly once per death.
     private static final class MemberTracking {
-        private boolean retired;
+        /// Closed flag of this tracking (#3557): once set, no timer of this member is armed, and a timer task that was
+        /// already running reads it first and returns, because `cancel(false)` cannot stop a task in flight. Written
+        /// under [`#transitionGuard`]; volatile so the arm methods, which hold only the monitor, read it.
+        private volatile boolean retired;
 
+        /// Retire this tracking: set the closed flag, then cancel every per-member timer — the eviction backstop, the
+        /// DEPARTING timeout, the join grace and the rejoin re-offer. Called when the member leaves the tracked scope
+        /// ([`MembershipFsm#setTrackingEligibility`]) and when the owner closes ([`MembershipFsm#close`]). Idempotent.
         private void retire() {
             synchronized (transitionGuard) {
                 retired = true;
                 cancelEvictionBackstop();
                 cancelDepartureTimeout();
                 cancelJoinGrace();
+                cancelRejoinReoffer();
             }
         }
 
@@ -1658,11 +1731,16 @@ public final class MembershipFsm {
         /// fresh DEAD edge of a previously-JOINED member). Cheap payload, fired under this
         /// monitor; the upstream listener must be non-blocking.
         private final Consumer<MembershipDeltaEdge> deltaSink;
-        /// Wall-clock stamp (ms, the manager's injected clock) of this tracking's creation —
-        /// the member's first observation. Immutable: retained across DEAD/rejoin (the tracking
-        /// is never recreated), matching the descriptor-retention rationale documented on
-        /// [`MembershipFsm#memberAgeMs`]. Final → safe to read without the per-member monitor.
-        private final long firstTrackedAtMs;
+        /// The manager's injected wall clock, read once when [`#everReachable`] latches.
+        private final LongSupplier wallClockMs;
+        /// Wall-clock stamp (ms) at which [`#everReachable`] first latched — the member's join instant
+        /// for the drain-safety grace ([`MembershipFsm#memberAgeMs`], #1880); [`#NOT_REACHED`] until
+        /// then. Written once, under the per-member monitor, by [`#latchReachable`]; volatile so the
+        /// age read needs no monitor. Retained across DEAD/rejoin like the latch itself.
+        private volatile long reachableSinceMs = NOT_REACHED;
+
+        private static final long NOT_REACHED = -1L;
+
         /// Serialises one member's WHOLE logical transition — the state change AND the listener
         /// fan-out — without holding the per-member state monitor across the fan-out (#929).
         ///
@@ -1777,6 +1855,9 @@ public final class MembershipFsm {
         /// task dispatches [`JoinGraceExpiredNeverHealthy`], a state-table no-op everywhere but
         /// OBSERVED. Mutated only under the per-member monitor.
         private Option<ScheduledFuture<?>> joinGraceHandle = Option.none();
+        /// Pending rejoin re-offer (#3028 S3, #3557). `Some(future)` from the re-offer's scheduling until the next one
+        /// replaces it; cancelled by [`#retire`]. Mutated only under the per-member monitor.
+        private Option<ScheduledFuture<?>> rejoinReofferHandle = Option.none();
         /// DEPARTING timeout window — the manager's [`MembershipFsm#departureTimeout`], captured at
         /// construction. Final → monitor-free read.
         private final TimeSpan departureTimeout;
@@ -1797,7 +1878,7 @@ public final class MembershipFsm {
                                Consumer<MembershipTransitionRecord> transitionSink,
                                Consumer<MembershipDeltaEdge> deltaSink,
                                Consumer<NodeId> onReachabilityLatched,
-                               long firstTrackedAtMs,
+                               LongSupplier wallClockMs,
                                TimeSpan departureTimeout,
                                TimeSpan joinGrace,
                                Predicate<NodeId> joinGraceReapEligibility,
@@ -1815,16 +1896,20 @@ public final class MembershipFsm {
             this.transitionSink = transitionSink;
             this.deltaSink = deltaSink;
             this.onReachabilityLatched = onReachabilityLatched;
-            this.firstTrackedAtMs = firstTrackedAtMs;
+            this.wallClockMs = wallClockMs;
             this.departureTimeout = departureTimeout;
             this.joinGrace = joinGrace;
             this.joinGraceReapEligibility = joinGraceReapEligibility;
         }
 
-        /// Creation stamp (ms) of this tracking — the member's first observation on the
-        /// manager's wall clock. Final field; monitor-free read.
-        long firstTrackedAtMs() {
-            return firstTrackedAtMs;
+        /// Age (ms) of the member at `nowMs`: time since first reachability evidence, or 0 while the
+        /// member has not been reached (it has not joined). Monitor-free read.
+        long reachableAgeMs(long nowMs) {
+            var since = reachableSinceMs;
+
+            return since == NOT_REACHED
+                   ? 0L
+                   : nowMs - since;
         }
 
         /// Run a MULTI-STEP driver operation with this member's [`#transitionGuard`] held (#929).
@@ -1978,8 +2063,17 @@ public final class MembershipFsm {
         /// Folding them together is the mistake that would reintroduce quorum flap.
         private void trackReachabilityEvidence(MembershipEvent event) {
             switch (event) {
-                case PeerConnected _, SwimHealthy _, MembershipEvent.GovernorHealthy _, MembershipEvent.WorkerAdmissionHealthy _ -> everReachable = true;
+                case PeerConnected _, SwimHealthy _, MembershipEvent.GovernorHealthy _, MembershipEvent.WorkerAdmissionHealthy _ -> latchReachable();
                 default -> {}
+            }
+        }
+
+        /// Latch [`#everReachable`] and stamp the join instant, once. Runs under the per-member monitor.
+        @Contract
+        private void latchReachable() {
+            if (!everReachable) {
+                everReachable = true;
+                reachableSinceMs = wallClockMs.getAsLong();
             }
         }
 
@@ -2072,29 +2166,65 @@ public final class MembershipFsm {
 
         /// #3028 S3: records `incarnation` as a rejoin refused for quorum loss when this member is DEAD, `incarnation`
         /// exceeds the incarnation it died at. The report is not re-read here: the DEAD refusal of a newer incarnation is for quorum loss
-        /// alone, and a second read could see the report cleared and leave the refusal permanent (v3107a F1). True when the caller must schedule the
-        /// re-offer (none is pending yet), so at most one re-offer timer exists per member.
-        synchronized boolean armRejoinReoffer(long incarnation) {
-            if (! (fsm.current() instanceof MembershipState.Dead dead) || incarnation <= dead.terminalIncarnation()) {
-                return false;
+        /// alone, and a second read could see the report cleared and leave the refusal permanent (v3107a F1). Schedules
+        /// `reoffer` after [`MembershipFsm#REJOIN_REOFFER`] when none is pending yet, so at most one re-offer timer exists
+        /// per member, and retains its handle so [`#retire`] can cancel it.
+        ///
+        /// #3557: the retired check and the handle store are one monitor section. [`#retire`] raises the flag before its
+        /// cancel takes this monitor, so a re-offer is either refused here or stored before that cancel runs; no
+        /// interleaving leaves a re-offer scheduled on a retired tracking.
+        @Contract
+        synchronized void armRejoinReoffer(long incarnation, Runnable reoffer) {
+            if (retired || !(fsm.current() instanceof MembershipState.Dead dead) || incarnation <= dead.terminalIncarnation()) {
+                return;
             }
 
             refusedRejoin = Math.max(refusedRejoin, incarnation);
-            var schedule = !rejoinReofferPending;
-
-            rejoinReofferPending = true;
-
-            return schedule;
+            if (!rejoinReofferPending) {
+                rejoinReofferPending = true;
+                rejoinReofferHandle = Option.some(SharedScheduler.schedule(reoffer, REJOIN_REOFFER));
+            }
         }
 
         /// #3028 S3: the pending re-offer fires. Returns the refused incarnation to re-feed, or empty when the member
         /// left DEAD meanwhile (a rejoin through another path needs no re-offer).
         synchronized Option<Long> takeRefusedRejoin() {
             rejoinReofferPending = false;
+            rejoinReofferHandle = Option.none();
 
             return isDead()
                    ? Option.some(refusedRejoin)
                    : Option.none();
+        }
+
+        /// Armed timers of this member (#3557): the held handles whose future has neither fired nor been cancelled.
+        synchronized int pendingTimers() {
+            return (int) heldTimerFutures().stream()
+                                         .filter(future -> !future.isDone())
+                                         .count();
+        }
+
+        /// Futures of this member's held timer handles (#3557): the eviction backstop, the DEPARTING timeout, the join
+        /// grace and the rejoin re-offer, whichever is held. The one enumeration of the handles, so [`#pendingTimers`]
+        /// and [`MembershipFsm#heldTimerFutures`] cannot disagree about which timers exist.
+        synchronized List<ScheduledFuture<?>> heldTimerFutures() {
+            return Stream.of(evictionBackstopHandle, departureTimeoutHandle, joinGraceHandle, rejoinReofferHandle)
+                         .flatMap(Option::stream)
+                         .toList();
+        }
+
+        /// What the three handle-held timer tasks run when they fire (#3557 test seam, see [`MembershipFsm#runDequeuedTimerTasks`]).
+        @Contract
+        void runTimerTasks() {
+            expireJoinGrace();
+            terminalizeIfStillDeparting();
+            evictIfStillConfirmedDead();
+        }
+
+        /// Cancel the pending rejoin re-offer if scheduled, and clear the handle. Idempotent; called by [`#retire`].
+        private synchronized void cancelRejoinReoffer() {
+            rejoinReofferHandle.onPresent(future -> future.cancel(false));
+            rejoinReofferHandle = Option.none();
         }
 
         private synchronized boolean isDeparting() {
@@ -2232,7 +2362,9 @@ public final class MembershipFsm {
                 return;
             }
 
-            evictionBackstopHandle = Option.some(SharedScheduler.schedule(terminalAction, window));
+            if (!retired) {
+                evictionBackstopHandle = Option.some(SharedScheduler.schedule(terminalAction, window));
+            }
         }
 
         /// Cancel the pending terminal-eviction backstop (#131 Model C) if armed, and clear the handle.
@@ -2254,8 +2386,10 @@ public final class MembershipFsm {
         /// [`#dispatch`], so no double-arm occurs in practice.
         private synchronized void armDepartureTimeout() {
             cancelDepartureTimeout();
-            departureTimeoutHandle = Option.some(SharedScheduler.schedule(this::terminalizeIfStillDeparting,
-                                                                          departureTimeout));
+            if (!retired) {
+                departureTimeoutHandle = Option.some(SharedScheduler.schedule(this::terminalizeIfStillDeparting,
+                                                                              departureTimeout));
+            }
         }
 
         /// Cancel the pending DEPARTING timeout if armed, and clear the handle. Idempotent; called
@@ -2284,7 +2418,7 @@ public final class MembershipFsm {
         /// withdrawal still ends in exactly one death, through SWIM's FAULTY edge.
         private void terminalizeIfStillDeparting() {
             synchronized (transitionGuard) {
-                if (!isDeparting()) {
+                if (retired || !isDeparting()) {
                     return;
                 }
 
@@ -2332,7 +2466,9 @@ public final class MembershipFsm {
         @Contract
         synchronized void armJoinGrace() {
             cancelJoinGrace();
-            joinGraceHandle = Option.some(SharedScheduler.schedule(this::expireJoinGrace, joinGrace));
+            if (!retired) {
+                joinGraceHandle = Option.some(SharedScheduler.schedule(this::expireJoinGrace, joinGrace));
+            }
         }
 
         /// Cancel the pending join-grace reaper if armed, and clear the handle. Idempotent; called
@@ -2356,7 +2492,7 @@ public final class MembershipFsm {
         /// by a fired-but-not-yet-run reaper.
         private void expireJoinGrace() {
             synchronized (transitionGuard) {
-                if (!joinGraceReapEligibility.test(id)) {
+                if (retired || !joinGraceReapEligibility.test(id)) {
                     return;
                 }
 
@@ -2393,7 +2529,7 @@ public final class MembershipFsm {
         @Contract
         void evictIfStillConfirmedDead() {
             synchronized (transitionGuard) {
-                if (!coConfirmedDead()) {
+                if (retired || !coConfirmedDead()) {
                     return;
                 }
 

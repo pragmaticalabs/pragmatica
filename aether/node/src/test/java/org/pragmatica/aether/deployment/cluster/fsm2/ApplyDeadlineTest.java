@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
@@ -23,6 +23,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.lang.Option;
@@ -90,7 +91,7 @@ class ApplyDeadlineTest {
     }
 
     private static SchemaVersionValue schemaOwnedBy(SchemaStatus status, BlueprintId owner) {
-        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", owner, 2, FsmHarness.START_WALL);
+        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", owner, 2, FsmHarness.START_WALL, SchemaReach.MIGRATED);
     }
 
     private static String lastWarning(FsmHarness h) {

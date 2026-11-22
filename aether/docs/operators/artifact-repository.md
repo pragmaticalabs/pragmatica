@@ -182,7 +182,7 @@ anything is uploaded); it never drops a present version, never un-archives one, 
 frees room. Archived entries are kept FOREVER (owner ruling, #1778): one small KV entry per archived version for the life of
 the cluster, never compacted, so the archived guard never rests on the DHT marker alone. Revisit only if a real cluster
 shows the size matters. The versions
-index is part of the cluster state that a KV backup carries, because the DHT keys it indexes survive a restart.
+index is NOT carried by a KV backup (#420): after a restart the operator re-uploads artifacts, and the version listing and the archived flags are gone, so an archived version can be published again.
 
 Known limits, stated so they are not mistaken for guarantees:
 

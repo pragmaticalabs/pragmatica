@@ -82,7 +82,7 @@ class SwimDeathPathCoConfirmationTest {
             liveTransport.clear();
             // NORMAL phase (isBooting=false) so cold-boot suppression never masks the FAULTY edge.
             // transportConnected reflects this node's LIVE QUIC links (the P1 contradiction predicate).
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR,
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR,
                                                  () -> false, liveTransport::contains)
                                    .unwrap();
             protocol.addObservationListener(observations);
@@ -163,7 +163,7 @@ class SwimDeathPathCoConfirmationTest {
             var graceListener = new RecordingListener();
             var graceObservations = new RecordingObservationSink();
             var config = swimConfig().withJoinGrace(timeSpan(0).millis());
-            var graceProtocol = SwimProtocol.swimProtocol(config, graceTransport, graceListener, SELF_ID, SELF_ADDR,
+            var graceProtocol = SwimTestProtocols.swimProtocol(config, graceTransport, graceListener, SELF_ID, SELF_ADDR,
                                                           () -> false, liveTransport::contains)
                                             .unwrap();
             graceProtocol.addObservationListener(graceObservations);
@@ -205,7 +205,7 @@ class SwimDeathPathCoConfirmationTest {
                                     timeSpan(60).millis(),
                                     8,
                                     timeSpan(40).millis()).withJoinGrace(timeSpan(0).millis());
-            var tightProtocol = SwimProtocol.swimProtocol(config, tightTransport, tightListener, SELF_ID, SELF_ADDR, () -> false)
+            var tightProtocol = SwimTestProtocols.swimProtocol(config, tightTransport, tightListener, SELF_ID, SELF_ADDR, () -> false)
                                             .unwrap();
             tightProtocol.addObservationListener(tightObservations);
 
@@ -270,7 +270,7 @@ class SwimDeathPathCoConfirmationTest {
             observations = new RecordingObservationSink();
             liveTransport.clear();
             // NORMAL phase; transportConnected mirrors this node's live QUIC links, as production wires it.
-            protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR,
+            protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR,
                                                  () -> false, liveTransport::contains)
                                    .unwrap();
             protocol.addObservationListener(observations);
@@ -594,7 +594,7 @@ class SwimDeathPathCoConfirmationTest {
                                          timeSpan(500).millis(),
                                          8,
                                          timeSpan(40).millis()).withJoinGrace(timeSpan(0).millis());
-            var held = SwimProtocol.swimProtocol(shortWindow, transport, listener, SELF_ID, SELF_ADDR, () -> false, liveTransport::contains)
+            var held = SwimTestProtocols.swimProtocol(shortWindow, transport, listener, SELF_ID, SELF_ADDR, () -> false, liveTransport::contains)
                                    .unwrap();
 
             held.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
@@ -671,7 +671,7 @@ class SwimDeathPathCoConfirmationTest {
                                     timeSpan(60).millis(),
                                     8,
                                     timeSpan(40).millis()).withJoinGrace(timeSpan(0).millis());
-            var protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+            var protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
                                        .unwrap();
 
             // Two peers, both ever-HEALTHY (so their FAULTY is not cold-boot-suppressed).
@@ -729,7 +729,7 @@ class SwimDeathPathCoConfirmationTest {
                                     timeSpan(60).millis(),
                                     8,
                                     timeSpan(40).millis()).withJoinGrace(timeSpan(0).millis());
-            var protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+            var protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
                                        .unwrap();
 
             // Two known, ever-HEALTHY peers.

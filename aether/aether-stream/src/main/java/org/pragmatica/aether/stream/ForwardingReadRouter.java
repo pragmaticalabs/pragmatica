@@ -253,7 +253,7 @@ public final class ForwardingReadRouter<E> {
     private Promise<List<E>> readLocalFirstThenOwner(String streamName, int partition, long fromOffset, int maxEvents) {
         return registry.fold(() -> localOrForwardOnNotLocal(streamName, partition, fromOffset, maxEvents),
                              reg -> selfCoversPartition(reg, streamName, partition)
-                                    ? localReader.read(streamName, partition, fromOffset, maxEvents)
+                                    ? readLocalArmed(streamName, partition, fromOffset, maxEvents)
                                     : localThenForwardIfEmpty(streamName, partition, fromOffset, maxEvents));
     }
 
@@ -306,9 +306,9 @@ public final class ForwardingReadRouter<E> {
                : Promise.success(local);
     }
 
-    /// Recover ONLY the typed `PARTITION_NOT_LOCAL` local-read failure by forwarding to the owner; every
-    /// other cause propagates. Matches the enum singleton, so the discrimination is typed — no string
-    /// matching.
+    /// Recover ONLY two typed local-read failures by forwarding to the owner: `PARTITION_NOT_LOCAL` (the HRW owner,
+    /// {@link #forwardToOwner}) and {@link StreamError.BelowCopyTail} ({@link #forwardBelowCopyTail}); every other cause
+    /// propagates. Matches the enum singleton and the record type, so the discrimination is typed — no string matching.
     private Promise<List<E>> recoverNotLocal(Cause cause,
                                              String streamName,
                                              int partition,
@@ -316,7 +316,52 @@ public final class ForwardingReadRouter<E> {
                                              int maxEvents) {
         return isPartitionNotLocal(cause)
                ? forwardToOwner(streamName, partition, fromOffset, maxEvents)
+               : forwardBelowCopyTail(cause, streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// The FIRST local read of an arm that has no other recovery (M-9f): a {@link StreamError.BelowCopyTail} is forwarded
+    /// once ({@link #forwardBelowCopyTail}), any other answer is returned as it is.
+    private Promise<List<E>> readLocalArmed(String streamName, int partition, long fromOffset, int maxEvents) {
+        return localReader.read(streamName, partition, fromOffset, maxEvents)
+                          .fold(result -> result.fold(cause -> forwardBelowCopyTail(cause,
+                                                                                    streamName,
+                                                                                    partition,
+                                                                                    fromOffset,
+                                                                                    maxEvents),
+                                                      Promise::success));
+    }
+
+    /// A copy that does not hold the range asked answers {@link StreamError.BelowCopyTail}; the router that made that LOCAL
+    /// read forwards it ONCE to the owner, and the owner's answer is the read's answer. The arm sits on the first local
+    /// read of each arm, never on a read that follows a forward ({@link #forwardToOwner}'s fallback,
+    /// {@link #afterForwardFailure}) nor around {@link #route}, so a `BelowCopyTail` that came back FROM a forward is
+    /// never forwarded again. With no target, or no forward client, the original cause surfaces (`NN_RETRY`, 503); a failed
+    /// transport degrades through {@link #forwardReadToNode} to the same un-armed local answer. Any other cause propagates.
+    private Promise<List<E>> forwardBelowCopyTail(Cause cause,
+                                                  String streamName,
+                                                  int partition,
+                                                  long fromOffset,
+                                                  int maxEvents) {
+        return cause instanceof StreamError.BelowCopyTail
+               ? belowCopyTailTarget(streamName, partition).flatMap(owner -> forwardClient.map(client -> forwardReadToNode(client,
+                                                                                                                           owner,
+                                                                                                                           streamName,
+                                                                                                                           partition,
+                                                                                                                           fromOffset,
+                                                                                                                           maxEvents)))
+                                    .or(() -> cause.<List<E>> promise())
                : cause.promise();
+    }
+
+    /// The committed owner when a committed record exists, else the HRW owner (the target pattern of {@link #forwardStale}).
+    /// UNLIKE it, a committed owner that IS this node yields no target and no fall-through to HRW: the copy that answered is
+    /// the committed owner, its role view lagging by one apply. An HRW owner that is this node yields none either.
+    private Option<NodeId> belowCopyTailTarget(String streamName, int partition) {
+        return committedOwnerSource.flatMap(source -> source.committedOwner(streamName, partition))
+                                   .map(CommittedOwner::owner)
+                                   .fold(() -> ownerResolver.resolve(streamName, partition),
+                                         Option::some)
+                                   .filter(owner -> !owner.equals(selfNodeId));
     }
 
     private static boolean isPartitionNotLocal(Cause cause) {
@@ -382,7 +427,7 @@ public final class ForwardingReadRouter<E> {
 
     private Promise<List<E>> readFromReplicaOrLocal(String streamName, int partition, long fromOffset, int maxEvents) {
         return registry.map(reg -> selectAndRead(reg, streamName, partition, fromOffset, maxEvents))
-                       .or(() -> localReader.read(streamName, partition, fromOffset, maxEvents));
+                       .or(() -> readLocalArmed(streamName, partition, fromOffset, maxEvents));
     }
 
     private Promise<List<E>> selectAndRead(ReplicaRegistry reg,
@@ -403,7 +448,7 @@ public final class ForwardingReadRouter<E> {
         }
 
         if (selfCoversPartition(reg, streamName, partition)) {
-            return localReader.read(streamName, partition, fromOffset, maxEvents);
+            return readLocalArmed(streamName, partition, fromOffset, maxEvents);
         }
 
         return forwardToOwner(streamName, partition, fromOffset, maxEvents);

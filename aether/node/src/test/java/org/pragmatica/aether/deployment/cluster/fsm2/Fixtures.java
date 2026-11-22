@@ -109,7 +109,14 @@ final class Fixtures {
 
     /// #3274: a committed warning row written by another node (not this leader's stamp), as a snapshot or a late put delivers it.
     static FsmWarningValue otherNodesRow(java.util.Map<String, String> members, boolean open, String message) {
-        return FsmWarningValue.fsmWarningValue(members, open, message, 1L, CORE_2, process(1L), 1L);
+        return otherNodesRow(members, open, message, 1L);
+    }
+
+    /// #3203: [#otherNodesRow] at a given per-key revision. A later committed write of a key carries a higher revision than the row it
+    /// replaced (the writer raises it by one, and the CAS on the whole row admits one writer per revision), so a fixture that commits a
+    /// second row of a key gives it the next one: the mirror takes a row only above the revision it holds (Warnings.indexRow).
+    static FsmWarningValue otherNodesRow(java.util.Map<String, String> members, boolean open, String message, long revision) {
+        return FsmWarningValue.fsmWarningValue(members, open, message, revision, CORE_2, process(1L), 1L);
     }
 
     static Admission admission(long token) {

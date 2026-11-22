@@ -318,7 +318,8 @@ public sealed interface Schemas {
                                            value.artifactCoords(),
                                            value.owningBlueprint(),
                                            value.attemptCount(),
-                                           ctx.nowMs());
+                                           ctx.nowMs(),
+                                           value.reachedBy());
         var key = new SchemaVersionKey(datasource);
         var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
                                                                       Option.some((AetherValue) value),

@@ -116,7 +116,7 @@ class KVStoreIncarnationFenceTest {
                                                                                               Option.some(committed),
                                                                                               Option.some(new Life(22, 3))))));
 
-        assertThat(result).isEqualTo(new KVCommand.TransactionResult("reincarnate", false));
+        assertThat(result).isEqualTo(new KVCommand.TransactionResult("reincarnate", false, Option.some(KVCommand.Refusal.refusal(KVCommand.RefusalKind.ARM, Option.some(STREAM)))));
         assertThat(stored(STREAM)).isEqualTo(committed);
         assertThat(store.get(OTHER).isEmpty()).as("a refused transaction applies none of its mutations").isTrue();
     }

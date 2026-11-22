@@ -1,0 +1,2 @@
+### Changed (2026-11-20 — #3413: the leader's DRAIN channel is one `DrainPort` value)
+- **The management server takes one `NodeLifecycleRoutes.DrainPort` instead of a drain-sink / pending-supplier pair** (C6a-0, #3467). `DrainPort.registry(sink, pending)` carries the registry's two accessors, `DrainPort.none()` is the no-op; behaviour is unchanged, including the rule that a null sink or pending supplier fails open to a no-op / empty set. [verified: `NodeLifecycleRoutesDrainPortTest`, `ManagementServerDrainPortWiringTest`]

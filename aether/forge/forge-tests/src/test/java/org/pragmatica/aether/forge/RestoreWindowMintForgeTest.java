@@ -37,10 +37,11 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// #2718 — the window in which the cluster's backup restore decision has not committed, held open deterministically.
 ///
@@ -106,17 +107,21 @@ class RestoreWindowMintForgeTest {
             if ("started".equals(outcome)) {
                 return;
             }
+
             if (!isBindCollision(outcome) || attempt == START_ATTEMPTS) {
                 LifecycleAwait.settled("start of the restore-window cluster", cluster, starting);
+
                 return;
             }
-            LifecycleAwait.bestEffort("stop the cluster that lost a port between probe and bind", cluster, cluster.stop());
+
+            LifecycleAwait.bestEffort("stop the cluster that lost a port between probe and bind",
+                                      cluster,
+                                      cluster.stop());
         }
     }
 
     private static boolean isBindCollision(String startFailure) {
-        return startFailure.contains("Address already in use") || startFailure.contains("BindException")
-               || startFailure.contains("Failed to bind");
+        return startFailure.contains("Address already in use") || startFailure.contains("BindException") || startFailure.contains("Failed to bind");
     }
 
     /// The scan starts at a random candidate and wraps, so concurrent runs that probe at the same moment do not all
@@ -132,17 +137,17 @@ class RestoreWindowMintForgeTest {
                 return base;
             }
         }
+
         throw new AssertionError("no free port block between " + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE);
     }
 
     private static boolean blockIsFree(int base) {
         for (int slot = 0; slot < NODES; slot++) {
-            if (!(udpFree(base + slot) && tcpFree(base + slot)
-                  && udpFree(base + slot + CoreSwimHealthDetector.SWIM_PORT_OFFSET)
-                  && tcpFree(base + MGMT_OFFSET + slot) && tcpFree(base + APP_OFFSET + slot))) {
+            if (! (udpFree(base + slot) && tcpFree(base + slot) && udpFree(base + slot + CoreSwimHealthDetector.SWIM_PORT_OFFSET) && tcpFree(base + MGMT_OFFSET + slot) && tcpFree(base + APP_OFFSET + slot))) {
                 return false;
             }
         }
+
         return true;
     }
 
@@ -150,6 +155,7 @@ class RestoreWindowMintForgeTest {
         try (var socket = new ServerSocket()) {
             socket.setReuseAddress(false);
             socket.bind(loopback(port));
+
             return true;
         } catch (IOException e) {
             return false;
@@ -160,6 +166,7 @@ class RestoreWindowMintForgeTest {
         try (var socket = new DatagramSocket(null)) {
             socket.setReuseAddress(false);
             socket.bind(loopback(port));
+
             return true;
         } catch (IOException e) {
             return false;
@@ -180,13 +187,10 @@ class RestoreWindowMintForgeTest {
     @Test
     void aMintInsideTheRestoreWindow_isRefused503_andLandsOnceEveryNodeHoldsTheDecision() throws IOException, InterruptedException {
         assertThat(cluster.allNodes()).as("no node holds a decision while the backup cannot be read")
-                          .noneMatch(node -> RestoreGate.isOpen(node.kvStore()));
-
+                  .noneMatch(node -> RestoreGate.isOpen(node.kvStore()));
         var refused = mint("window-1");
 
-        assertThat(refused.statusCode()).as("mint inside the restore window: %s", refused.body())
-                  .isEqualTo(503);
-
+        assertThat(refused.statusCode()).as("mint inside the restore window: %s", refused.body()).isEqualTo(503);
         initBareRemote();
         await().alias("every node holds a terminal backup restore decision")
              .atMost(WAIT_TIMEOUT)
@@ -194,26 +198,23 @@ class RestoreWindowMintForgeTest {
              .until(() -> cluster.allNodes()
                                  .stream()
                                  .allMatch(node -> RestoreGate.isOpen(node.kvStore())));
-
         var accepted = mint("window-2");
 
-        assertThat(accepted.statusCode()).as("mint after the decision: %s", accepted.body())
-                  .isEqualTo(200);
+        assertThat(accepted.statusCode()).as("mint after the decision: %s", accepted.body()).isEqualTo(200);
     }
 
     private void initBareRemote() throws IOException, InterruptedException {
         var process = new ProcessBuilder("git", "init", "--quiet", "--bare", remote.toString()).redirectErrorStream(true)
-                                                                                                .start();
-        var output = new String(process.getInputStream()
-                                       .readAllBytes());
+                                                                                               .start();
+        var output = new String(process.getInputStream().readAllBytes());
 
-        assertThat(process.waitFor()).as("git init of the backup remote: %s", output)
-                  .isZero();
+        assertThat(process.waitFor()).as("git init of the backup remote: %s", output).isZero();
     }
 
     private HttpResult<String> mint(String keyId) {
         var body = "{\"keyId\":\"" + keyId
-                 + "\",\"keyHash\":\"" + "0".repeat(64)
+                 + "\",\"keyHash\":\""
+                 + "0".repeat(64)
                  + "\",\"gracePeriodMs\":0,"
                  + "\"auditAction\":\"CREATED\",\"operatorHint\":\"forge-2718\",\"authorizationRole\":\"ADMIN\"}";
         var request = HttpRequest.newBuilder()

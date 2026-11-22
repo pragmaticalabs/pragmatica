@@ -36,28 +36,28 @@ import org.opentest4j.AssertionFailedError;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.platform.engine.discovery.DiscoverySelectors.selectClass;
 
+
 /// Pins [KnownRed]: a failure with the declared signature is ABORTED (reported skipped, naming the ticket), any other failure is a REAL
 /// failure, a pass FAILS ("remove @KnownRed"); the same holds on `@RepeatedTest` and inside a `@Nested` class; a signature that would absorb
 /// everything fails the annotated test; and the annotation cannot be placed on a class, nor on a method that is not a test. Run through a real
 /// JUnit launcher on fixtures that are disabled unless this test enables them, so the surrounding build never executes them.
 class KnownRedExtensionTest {
     private static final String ENABLE = "knownred.fixtures";
-
     private static Map<String, String> outcomes;
 
     @BeforeAll
     static void runFixtures() {
         outcomes = new TreeMap<>();
-        for (var fixture : new Class<?>[]{Absorbed.class, OtherFailure.class, WrongExceptionClass.class, Passing.class, CauseChain.class,
-                                          RepeatedPassing.class, RepeatedAbsorbed.class, NestedHolder.class, BlankMessage.class, BlankMessagePassing.class,
-                                          CatchAllException.class, BlankTicket.class}) {
+        for (var fixture : new Class<?>[]{Absorbed.class, OtherFailure.class, WrongExceptionClass.class, Passing.class, CauseChain.class, RepeatedPassing.class, RepeatedAbsorbed.class, NestedHolder.class, BlankMessage.class, BlankMessagePassing.class, CatchAllException.class, BlankTicket.class}) {
             outcomes.putAll(run(fixture));
         }
     }
 
     @Test
     void failureWithTheDeclaredSignature_isAborted_andNamesTheTicket() {
-        assertThat(outcomes.get("Absorbed.failsWithTheSignature")).startsWith("ABORTED").contains("known red #9001").contains("IllegalStateException");
+        assertThat(outcomes.get("Absorbed.failsWithTheSignature")).startsWith("ABORTED")
+                  .contains("known red #9001")
+                  .contains("IllegalStateException");
     }
 
     @Test
@@ -82,33 +82,46 @@ class KnownRedExtensionTest {
 
     @Test
     void repeatedTest_passingInvocationsEachFlip() {
-        assertThat(of("RepeatedPassing.")).hasSize(2).allSatisfy(outcome -> assertThat(outcome).startsWith("FAILED").contains("remove @KnownRed"));
+        assertThat(of("RepeatedPassing.")).hasSize(2)
+                  .allSatisfy(outcome -> assertThat(outcome).startsWith("FAILED")
+                                                   .contains("remove @KnownRed"));
     }
 
     @Test
     void repeatedTest_failingInvocationsAreEachAbsorbed() {
-        assertThat(of("RepeatedAbsorbed.")).hasSize(2).allSatisfy(outcome -> assertThat(outcome).startsWith("ABORTED").contains("#9006"));
+        assertThat(of("RepeatedAbsorbed.")).hasSize(2)
+                  .allSatisfy(outcome -> assertThat(outcome).startsWith("ABORTED")
+                                                   .contains("#9006"));
     }
 
     @Test
     void nestedClass_methodLevelAnnotationFlipsOnAPass() {
-        assertThat(of("NestedHolder$Inner.")).hasSize(1).allSatisfy(outcome -> assertThat(outcome).startsWith("FAILED").contains("remove @KnownRed").contains("#9007"));
+        assertThat(of("NestedHolder$Inner.")).hasSize(1)
+                  .allSatisfy(outcome -> assertThat(outcome).startsWith("FAILED")
+                                                   .contains("remove @KnownRed")
+                                                   .contains("#9007"));
     }
 
     @Test
     void blankMessageSignature_failsTheTest_insteadOfAbsorbingEverything() {
-        assertThat(outcomes.get("BlankMessage.failsForAnyReason")).startsWith("FAILED").contains("malformed @KnownRed").contains("messageContains is blank");
+        assertThat(outcomes.get("BlankMessage.failsForAnyReason")).startsWith("FAILED")
+                  .contains("malformed @KnownRed")
+                  .contains("messageContains is blank");
         assertThat(outcomes.get("BlankMessagePassing.passes")).startsWith("FAILED").contains("malformed @KnownRed");
     }
 
     @Test
     void catchAllExceptionClass_failsTheTest() {
-        assertThat(outcomes.get("CatchAllException.failsForAnyReason")).startsWith("FAILED").contains("malformed @KnownRed").contains("catch-all");
+        assertThat(outcomes.get("CatchAllException.failsForAnyReason")).startsWith("FAILED")
+                  .contains("malformed @KnownRed")
+                  .contains("catch-all");
     }
 
     @Test
     void blankTicket_failsTheTest() {
-        assertThat(outcomes.get("BlankTicket.failsWithTheSignature")).startsWith("FAILED").contains("malformed @KnownRed").contains("ticket is blank");
+        assertThat(outcomes.get("BlankTicket.failsWithTheSignature")).startsWith("FAILED")
+                  .contains("malformed @KnownRed")
+                  .contains("ticket is blank");
     }
 
     @Test
@@ -124,25 +137,31 @@ class KnownRedExtensionTest {
             try {
                 problems.addAll(misplaced(type));
             } catch (LinkageError e) {
-                // a class whose signatures cannot link here is not a placement problem of ours
+            // a class whose signatures cannot link here is not a placement problem of ours
             }
         }
 
-        assertThat(problems).as("@KnownRed on a method the extension never intercepts (a setup method) is silently inert").isEmpty();
+        assertThat(problems).as("@KnownRed on a method the extension never intercepts (a setup method) is silently inert")
+                  .isEmpty();
         assertThat(misplaced(Misplaced.class)).as("control: the scan can see a misplaced annotation").hasSize(1);
     }
 
     private static List<String> of(String prefix) {
-        return outcomes.entrySet().stream().filter(e -> e.getKey().startsWith(prefix)).map(Map.Entry::getValue).toList();
+        return outcomes.entrySet()
+                       .stream()
+                       .filter(e -> e.getKey()
+                                     .startsWith(prefix))
+                       .map(Map.Entry::getValue)
+                       .toList();
     }
 
     private static List<String> misplaced(Class<?> type) {
         var found = new ArrayList<String>();
 
         for (Method method : type.getDeclaredMethods()) {
-            if (AnnotationSupport.isAnnotated(method, KnownRed.class)
-                && !AnnotationSupport.isAnnotated(method, Test.class)
-                && !AnnotationSupport.isAnnotated(method, TestTemplate.class)) {
+            if (AnnotationSupport.isAnnotated(method, KnownRed.class) && !AnnotationSupport.isAnnotated(method,
+                                                                                                        Test.class) && !AnnotationSupport.isAnnotated(method,
+                                                                                                                                                      TestTemplate.class)) {
                 found.add(type.getSimpleName() + "." + method.getName());
             }
         }
@@ -156,7 +175,8 @@ class KnownRedExtensionTest {
         var found = new ArrayList<Class<?>>();
 
         try (var paths = Files.walk(root)) {
-            for (var path : paths.filter(p -> p.toString().endsWith(".class")).toList()) {
+            for (var path : paths.filter(p -> p.toString()
+                                               .endsWith(".class")).toList()) {
                 var name = root.relativize(path).toString().replace('/', '.').replaceAll("\\.class$", "");
 
                 if (name.startsWith(KnownRedExtensionTest.class.getName())) {
@@ -166,7 +186,7 @@ class KnownRedExtensionTest {
                 try {
                     found.add(Class.forName(name, false, KnownRedExtensionTest.class.getClassLoader()));
                 } catch (ClassNotFoundException | LinkageError e) {
-                    // a class that cannot even load is not a placement problem of ours
+                // a class that cannot even load is not a placement problem of ours
                 }
             }
         }
@@ -177,26 +197,33 @@ class KnownRedExtensionTest {
     private static Map<String, String> run(Class<?> fixture) {
         var results = new ConcurrentHashMap<String, String>();
         var request = LauncherDiscoveryRequestBuilder.request().selectors(selectClass(fixture)).build();
-        var launcher = LauncherFactory.create(LauncherConfig.builder().enableTestExecutionListenerAutoRegistration(false).build());
+        var launcher = LauncherFactory.create(LauncherConfig.builder()
+                                                            .enableTestExecutionListenerAutoRegistration(false)
+                                                            .build());
 
         System.setProperty(ENABLE, "true");
         try {
-            launcher.execute(request, new TestExecutionListener() {
-                @Override
-                public void executionFinished(TestIdentifier identifier, TestExecutionResult result) {
-                    if (!identifier.isTest()) {
-                        return;
-                    }
+            launcher.execute(request,
+                             new TestExecutionListener() {
+                                 @Override
+                                 public void executionFinished(TestIdentifier identifier, TestExecutionResult result) {
+                                     if (!identifier.isTest()) {
+                                         return;
+                                     }
 
-                    var owner = identifier.getUniqueId().contains("[nested-class:")
-                                ? fixture.getSimpleName() + "$" + nestedName(identifier.getUniqueId())
-                                : fixture.getSimpleName();
-                    var name = owner + "." + identifier.getDisplayName().replace("()", "");
-                    var detail = result.getThrowable().map(t -> " " + t.getClass().getSimpleName() + ": " + t.getMessage()).orElse("");
+                                     var owner = identifier.getUniqueId().contains("[nested-class:")
+                                                 ? fixture.getSimpleName() + "$" + nestedName(identifier.getUniqueId())
+                                                 : fixture.getSimpleName();
+                                     var name = owner + "." + identifier.getDisplayName().replace("()", "");
+                                     var detail = result.getThrowable()
+                                                        .map(t -> " " + t.getClass()
+                                                                         .getSimpleName()
+                                                                 + ": " + t.getMessage())
+                                                        .orElse("");
 
-                    results.put(name, result.getStatus() + detail);
-                }
-            });
+                                     results.put(name, result.getStatus() + detail);
+                                 }
+                             });
         } finally {
             System.clearProperty(ENABLE);
         }
@@ -211,7 +238,6 @@ class KnownRedExtensionTest {
     }
 
     // --- fixtures: only run through the launcher above ---------------------------------------------------------------------------
-
     @EnabledIfSystemProperty(named = ENABLE, matches = "true")
     static class Absorbed {
         @Test
@@ -243,7 +269,7 @@ class KnownRedExtensionTest {
     static class Passing {
         @Test
         @KnownRed(ticket = "#9002", exception = IllegalStateException.class, messageContains = "the known signature")
-        void passes() { }
+        void passes() {}
     }
 
     @EnabledIfSystemProperty(named = ENABLE, matches = "true")
@@ -259,7 +285,7 @@ class KnownRedExtensionTest {
     static class RepeatedPassing {
         @RepeatedTest(2)
         @KnownRed(ticket = "#9006", exception = IllegalStateException.class, messageContains = "the known signature")
-        void passesTwice() { }
+        void passesTwice() {}
     }
 
     @EnabledIfSystemProperty(named = ENABLE, matches = "true")
@@ -277,7 +303,7 @@ class KnownRedExtensionTest {
         class Inner {
             @Test
             @KnownRed(ticket = "#9007", exception = IllegalStateException.class, messageContains = "the known signature")
-            void passes() { }
+            void passes() {}
         }
     }
 
@@ -294,7 +320,7 @@ class KnownRedExtensionTest {
     static class BlankMessagePassing {
         @Test
         @KnownRed(ticket = "#9008", exception = IllegalStateException.class, messageContains = "")
-        void passes() { }
+        void passes() {}
     }
 
     @EnabledIfSystemProperty(named = ENABLE, matches = "true")
@@ -319,6 +345,6 @@ class KnownRedExtensionTest {
     static class Misplaced {
         @BeforeEach
         @KnownRed(ticket = "#9010", exception = IllegalStateException.class, messageContains = "setup")
-        void setUp() { }
+        void setUp() {}
     }
 }

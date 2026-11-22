@@ -7,7 +7,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.Set;
 import java.util.function.ToDoubleFunction;
 
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.consensus.NodeId;
 

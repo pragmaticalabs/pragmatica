@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
@@ -25,7 +26,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.config.cluster.CommunityPlacement.Location;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 
 import org.junit.jupiter.api.Test;
 
@@ -268,7 +269,8 @@ class AdversarialRound2Test {
                                              "g:a:1",
                                              owner,
                                              2,
-                                             FsmHarness.START_WALL));
+                                             FsmHarness.START_WALL,
+                                             SchemaReach.MIGRATED));
         h.activate();
         assertThat(h.submits(SubmitKind.SCHEMA)).as("suspended: nothing is written").isEmpty();
         h.commitLeader(FsmHarness.SELF, 1L);
