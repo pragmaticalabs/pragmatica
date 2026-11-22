@@ -1450,7 +1450,7 @@ public final class DHTAntiEntropy {
         }
 
         network.send(response.sender(),
-                     new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId(), applied));
+                     new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId(), applied, 0L, 0L, false));
     }
 
     /// Get the count of pending digest comparisons (for testing).

@@ -21,7 +21,7 @@
 # no skip metadata, so an old reader desynchronises rather than ignoring the change).
 # Rename only, same type and position = byte-neutral, pinned so a same-typed name swap is
 # visible in this diff. See WireAssignmentTripwireTest for the derivation from the generator.
-GENERATION 11
+GENERATION 12
 ENUM org.pragmatica.aether.api.ClusterEvent$Severity INFO=0,WARNING=1,CRITICAL=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$NotAppliedReason ROUTE_NOT_FOUND=0,BUDGET_EXHAUSTED=1,UNDECODABLE_REQUEST=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$Pipeline APP=0,MANAGEMENT=1,UNKNOWN=2
@@ -482,7 +482,7 @@ SHAPE org.pragmatica.dht.DHTMessage$ExistsResponse (requestId:java.lang.String,s
 SHAPE org.pragmatica.dht.DHTMessage$GetRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,key:byte[])
 SHAPE org.pragmatica.dht.DHTMessage$GetResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,value:org.pragmatica.lang.Option<byte[]>,readiness:org.pragmatica.dht.DHTMessage$Readiness,tombstone:boolean,version:long,epochIncarnation:long,epochTerm:long,epochCounter:long)
 SHAPE org.pragmatica.dht.DHTMessage$KeyValue (key:byte[],value:byte[],version:long,epochIncarnation:long,epochTerm:long,epochCounter:long,tombstone:boolean)
-SHAPE org.pragmatica.dht.DHTMessage$MigrationDataAck (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,applied:boolean)
+SHAPE org.pragmatica.dht.DHTMessage$MigrationDataAck (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,applied:boolean,bootToken:long,storeGeneration:long,draining:boolean)
 SHAPE org.pragmatica.dht.DHTMessage$MigrationDataRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,partitionStart:int,partitionEnd:int)
 SHAPE org.pragmatica.dht.DHTMessage$MigrationDataResponse (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,entries:java.util.List<org.pragmatica.dht.DHTMessage$KeyValue>,ackRequested:boolean,refused:boolean,leaving:java.util.List<org.pragmatica.consensus.NodeId>,view:java.util.List<org.pragmatica.consensus.NodeId>)
 SHAPE org.pragmatica.dht.DHTMessage$MigrationPageRequest (requestId:java.lang.String,sender:org.pragmatica.consensus.NodeId,partition:int,after:org.pragmatica.lang.Option<byte[]>,pageBytes:long)

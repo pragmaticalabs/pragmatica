@@ -511,6 +511,8 @@ run_cluster_a_suites() {
                 for p in "${pids[@]}"; do
                     if kill -0 "$p" 2>/dev/null; then
                         new_pids+=("$p")
+                    else
+                        proc_untrack "$p"
                     fi
                 done
                 pids=("${new_pids[@]+${new_pids[@]}}")
@@ -520,6 +522,7 @@ run_cluster_a_suites() {
             if [ ${#pids[@]} -ge $max_parallel ]; then
                 for p in "${pids[@]}"; do
                     wait "$p" 2>/dev/null || failed=true
+                    proc_untrack "$p"
                 done
                 pids=()
             fi
@@ -527,11 +530,13 @@ run_cluster_a_suites() {
 
         run_suite "$suite" "a" &
         pids+=($!)
+        proc_track "$!"
     done
 
     # Wait for all remaining
     for p in "${pids[@]}"; do
         wait "$p" 2>/dev/null || failed=true
+        proc_untrack "$p"
     done
 
     [ "$failed" = false ]

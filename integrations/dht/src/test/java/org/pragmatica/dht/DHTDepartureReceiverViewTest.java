@@ -115,8 +115,10 @@ class DHTDepartureReceiverViewTest {
         cluster.departing.addAll(receiversKnow);
 
         var pushes = drainers.stream()
-                             .map(d -> cluster.members.get(d).rebalancer()
-                                              .pushOnDeparture(TimeSpan.timeSpan(50).millis(), coDeparting, DeparturePushObserver.noop()))
+                             .map(d -> DeparturePushes.push(cluster.members.get(d).rebalancer(),
+                                                         TimeSpan.timeSpan(50).millis(),
+                                                         coDeparting,
+                                                         DeparturePushObserver.noop()))
                              .toList();
 
         cluster.queueing = false;

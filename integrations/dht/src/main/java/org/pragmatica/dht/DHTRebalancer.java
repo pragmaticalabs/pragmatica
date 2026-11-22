@@ -15,7 +15,6 @@
  */
 package org.pragmatica.dht;
 
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -27,13 +26,10 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.utility.IdGenerator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Re-replicates data when a node departs to maintain replication factor.
@@ -53,10 +49,6 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// which every version already accepts one by one, so paging needs no change on the receiver.
 public final class DHTRebalancer {
     private static final Logger log = LoggerFactory.getLogger(DHTRebalancer.class);
-    /// Legacy budget of the budget-only departure-push overloads (issue #427, D4): the whole resend window of
-    /// [#pushOnDeparture(TimeSpan, DeparturePushObserver)] callers that pass it. The no-budget overloads use
-    /// [DeparturePushTuning#DEFAULT] instead (#2034).
-    public static final TimeSpan DEFAULT_DEPARTURE_PUSH_BUDGET = timeSpan(10).seconds();
 
     private final DHTNode node;
     private final DHTNetwork network;
@@ -66,6 +58,8 @@ public final class DHTRebalancer {
     /// Departure pages awaiting an applied [DHTMessage.MigrationDataAck], keyed by the page's correlation id. Registered by a
     /// [DeparturePushRun] at plan time, removed by an applied ack, a retarget or the end of the push.
     private final ConcurrentHashMap<String, DeparturePushRun.Page> pendingPushes = new ConcurrentHashMap<>();
+    /// Departure pushes in progress, told of every ring change ([#onViewChange]).
+    private final Set<DeparturePushRun> activeRuns = ConcurrentHashMap.newKeySet();
 
     private DHTRebalancer(DHTNode node, DHTNetwork network, Supplier<DHTConfig> config) {
         this.node = node;
@@ -111,96 +105,56 @@ public final class DHTRebalancer {
     /// FULL replication mode is a no-op (every node already holds everything). The promise ALWAYS succeeds — a departure push must
     /// never gate the halt.
     ///
-    /// Each page is resent to its target until an applied ack arrives, within a bounded window (#2034): a page whose keys still
-    /// have a surviving replica stops at `baseBudget`; a page carrying a key no surviving replica holds (a sole copy) continues for
-    /// `soleExtra` more. A target is replaced only when it leaves the ring. Each target's pages travel in two chains, sole and
-    /// replicated, each one page after another. See [DeparturePushRun] for the classification and the events.
+    /// Each key is owed until a holder of it sits in its deliverer set (#3345, [DeparturePushRun]): owed keys are paged to their
+    /// targets, re-planned on a change of the ring, a holder lost and each exit attempt, and the push resolves when nothing is owed
+    /// and every holder answered the pre-exit probe, or at the window's deadline with what is still owed.
     ///
-    /// @param window      absolute drain-clock deadline, event floor and halt flag
-    /// @param tuning      the windows and resend cadence
-    /// @param coDeparting nodes leaving together with this one (issue #1818); self need not be in the set
-    /// @param observer    receives the at-risk, delivered and incomplete events
+    /// @param window   absolute drain-clock deadline, event floor, halt flag and the drain's fence time
+    /// @param tuning   the resend cadence and the event wait
+    /// @param drainSet nodes named or seen draining, re-read at each re-plan (issue #1818, #3345); self need not be in it
+    /// @param observer receives the at-risk, delivered and incomplete events
     ///
-    /// @return what was left unconfirmed when the push resolved
+    /// @return what was left owed when the push resolved
     public Promise<DeparturePushReport> pushOnDeparture(DepartureWindow window,
                                                         DeparturePushTuning tuning,
-                                                        Set<NodeId> coDeparting,
+                                                        Supplier<Set<NodeId>> drainSet,
                                                         DeparturePushObserver observer) {
         var t0 = System.nanoTime();
 
         return config.get()
                      .isFullReplication()
                ? Promise.success(DeparturePushReport.COMPLETE)
-               : DeparturePushRun.departurePushRun(node,
-                                                   network,
-                                                   pendingPushes,
-                                                   config.get().effectiveReplicationFactor(node.ring().nodeCount()),
-                                                   leavingSet(coDeparting),
-                                                   t0,
-                                                   window,
-                                                   tuning,
-                                                   observer)
-                                 .run();
+               : startRun(DeparturePushRun.departurePushRun(node,
+                                                            network,
+                                                            pendingPushes,
+                                                            config.get()
+                                                                  .effectiveReplicationFactor(node.ring().nodeCount()),
+                                                            drainSet,
+                                                            t0,
+                                                            window,
+                                                            tuning,
+                                                            observer));
     }
 
-    /// Legacy form of [#pushOnDeparture(DepartureWindow, DeparturePushTuning, Set, DeparturePushObserver)] with
-    /// [DeparturePushTuning#DEFAULT], no co-departing nodes, a deadline of base + sole extra + event wait from now, never halted.
-    public Promise<Unit> pushOnDeparture(DeparturePushObserver observer) {
-        return pushOnDeparture(Set.of(), observer);
+    private Promise<DeparturePushReport> startRun(DeparturePushRun run) {
+        activeRuns.add(run);
+
+        return run.run()
+                  .onResultRun(() -> activeRuns.remove(run));
     }
 
-    /// Legacy budget-explicit form: `budget` is the whole resend window (no sole extra), an attempt waits `min(1 s, budget / 4)`,
-    /// and the push resolves by `budget` plus the event wait. With an observer whose events settle at once the event wait is zero.
-    public Promise<Unit> pushOnDeparture(TimeSpan budget, DeparturePushObserver observer) {
-        return pushOnDeparture(budget, Set.of(), observer);
+    /// The ring changed (#3345): every running departure push re-plans. Called by [DHTTopologyListener] after each ring change.
+    @Contract
+    public void onViewChange() {
+        activeRuns.forEach(DeparturePushRun::onViewChange);
     }
 
-    /// Legacy form for a node leaving TOGETHER with `coDeparting` (issue #1818): every node in that set is still in the ring but is
-    /// about to halt, so it is neither a push target nor a surviving replica. Without this, a push can land on a co-drainer that
-    /// halts with the copy, and two holders leaving together each count the other as a survivor, leaving the slot the other vacates
-    /// unstocked. Self need not be in the set. Uses [DeparturePushTuning#DEFAULT].
-    public Promise<Unit> pushOnDeparture(Set<NodeId> coDeparting, DeparturePushObserver observer) {
-        var tuning = DeparturePushTuning.DEFAULT;
-
-        return pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + tuning.baseBudget()
-                                                                                         .nanos() + tuning.soleExtra()
-                                                                                                          .nanos() + tuning.eventDeliveryWait()
-                                                                                                                           .nanos()),
-                               tuning,
-                               coDeparting,
-                               observer).mapToUnit();
-    }
-
-    /// Legacy budget-explicit form of [#pushOnDeparture(Set, DeparturePushObserver)]; see
-    /// [#pushOnDeparture(TimeSpan, DeparturePushObserver)].
-    public Promise<Unit> pushOnDeparture(TimeSpan budget, Set<NodeId> coDeparting, DeparturePushObserver observer) {
-        var tuning = DeparturePushTuning.forBudget(budget);
-
-        return pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + budget.nanos() + tuning.eventDeliveryWait()
-                                                                                                          .nanos()),
-                               tuning,
-                               coDeparting,
-                               observer).mapToUnit();
-    }
-
-    private Set<NodeId> leavingSet(Set<NodeId> coDeparting) {
-        var leaving = new HashSet<>(coDeparting);
-
-        leaving.add(node.nodeId());
-
-        return Set.copyOf(leaving);
-    }
-
-    /// Settle the departure page matching an incoming ack's correlation id (issue #427, D2; #2034). An applied ack removes the page
-    /// and delivers its keys; a nack (issue #1818) leaves it pending and settles only the current attempt, so the page is resent
-    /// after a backoff. An ack for a page no longer registered (the push ended, or the page was retargeted) is a no-op.
+    /// Route an ack to the departure page matching its correlation id (issue #427, D2; #2034, #3345). The page stays registered
+    /// until its target's removal edge or the end of its push, so a late ack within the target's tenure still counts; an ack for
+    /// a page no longer registered is a no-op.
     @Contract
     public void onMigrationDataAck(DHTMessage.MigrationDataAck ack) {
-        var settled = ack.applied()
-                      ? pendingPushes.remove(ack.requestId())
-                      : pendingPushes.get(ack.requestId());
-
-        Option.option(settled).onPresent(page -> page.settle(ack.applied()));
+        Option.option(pendingPushes.get(ack.requestId())).onPresent(page -> page.onAck(ack));
     }
 
     private PageBudget pageBudget() {
