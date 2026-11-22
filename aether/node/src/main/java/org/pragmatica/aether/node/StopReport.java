@@ -9,7 +9,9 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
+
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
 
 
 /// What a node's stop did once every step of it had settled (#3565).
@@ -44,16 +46,17 @@ public sealed interface StopReport {
     /// An empty list is unrepresentable: the compact constructor refuses it (an invariant guard, unreachable through
     /// [#completedWithFailures] and [#of], which test the list first), so a report with no failure can never claim to be one.
     record CompletedWithFailures(List<StepFailure> failures) implements StopReport {
+        @SuppressWarnings("JBCT-EX-01") // a canonical constructor cannot return Result; the guard is the invariant itself
         public CompletedWithFailures {
             if (failures.isEmpty()) {
                 throw new IllegalArgumentException(NO_FAILURES_MESSAGE);
             }
+
             failures = List.copyOf(failures);
         }
     }
 
     String NO_FAILURES_MESSAGE = "CompletedWithFailures requires at least one step failure";
-
     /// The failures of the steps that failed, in step order; empty when [#isClean].
     List<StepFailure> failures();
 
@@ -82,8 +85,8 @@ public sealed interface StopReport {
     /// A report carrying `failures`; fails for an empty list, which is a [Clean] stop, not a stop that completed with failures.
     static Result<CompletedWithFailures> completedWithFailures(List<StepFailure> failures) {
         return failures.isEmpty()
-               ? Causes.cause(NO_FAILURES_MESSAGE).result()
-               : Result.success(new CompletedWithFailures(failures));
+               ? cause(NO_FAILURES_MESSAGE).result()
+               : success(new CompletedWithFailures(failures));
     }
 
     /// The report of a finished sequence: clean when no step failed.
