@@ -674,8 +674,8 @@ class ReadRefusalTest {
         @Test
         void firstHeldAboveTheTail_isRefused_andAnEmptyCopyBuilds() {
             assertThatThrownBy(() -> new StreamError.BelowCopyTail(10L, 9L)).isInstanceOf(IllegalArgumentException.class);
-            assertThat(new StreamError.BelowCopyTail(9L, 9L).message()).contains("9");
-            assertThat(new StreamError.BelowCopyTail(5L, 9L).message()).contains("5").contains("9");
+            assertThat(new StreamError.BelowCopyTail(9L, 9L).message()).isEqualTo("Read is below the first offset this copy held: it holds from 9, tail is 9");
+            assertThat(new StreamError.BelowCopyTail(5L, 9L).message()).isEqualTo("Read is below the first offset this copy held: it holds from 5, tail is 9");
         }
 
         /// The decode reads past the new last kind: ordinal 17 is `UNKNOWN` itself, a code of 18 or more is a newer node's and also
