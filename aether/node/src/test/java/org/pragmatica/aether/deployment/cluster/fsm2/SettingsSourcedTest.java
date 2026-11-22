@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;

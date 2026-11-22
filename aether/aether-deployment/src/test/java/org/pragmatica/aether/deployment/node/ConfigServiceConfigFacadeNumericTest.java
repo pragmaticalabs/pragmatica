@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.node;
 import java.util.Map;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.deployment.wiring.DeploymentConfigFacades;
 import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
@@ -27,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// as absent). Every probe here calls through a `ConfigService` whose value is not a number and
 /// asserts no exception escapes.
 class ConfigServiceConfigFacadeNumericTest {
-    private static final ConfigFacade FACADE = NodeDeploymentManager.configServiceToFacade(serviceOver(Map.of("pool.size",
+    private static final ConfigFacade FACADE = DeploymentConfigFacades.configServiceToFacade(serviceOver(Map.of("pool.size",
                                                                                                               "twelve",
                                                                                                               "pool.ratio",
                                                                                                               "half",

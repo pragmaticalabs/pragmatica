@@ -20,6 +20,13 @@
 # Checking a different repository than the one the deploy resolves from is the original
 # defect wearing a different hat: it would report a clean preflight and then deploy
 # nothing. So this mirrors MavenLocalRepoLocator's resolution order.
+#
+# PRESENT IS NOT CURRENT (#2048). A jar left in a long-lived repository by an older slice processor passes a
+# presence check and then fails at deploy: `Slice X was compiled with a slice-processor before the route-security
+# contract (routeSecurityContract=0, current N)`. Every suite that deploys it fails for a reason unrelated to what
+# it tests. So each fixture's slice jars (the coordinate's own jars and the slice artifacts its META-INF/blueprint.toml
+# lists) are also read for the stamp the generated factory returns from routeSecurityContract(), and a stamp below the
+# tree's current contract (SliceRouterFactory.ROUTE_SECURITY_CONTRACT) is refused, naming the artifact.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,6 +57,41 @@ resolve_local_repo() {
 }
 
 REPO="$(resolve_local_repo)"
+
+# --- The contract the runtime in THIS tree requires ---------------------------------------
+# Read from the source the node compiles against, never hard-coded here. An unreadable value is a broken
+# check, not a clean one.
+CONTRACT_SRC="${SCRIPT_DIR}/../../../http-routing-adapter/src/main/java/org/pragmatica/aether/http/adapter/SliceRouterFactory.java"
+CURRENT_CONTRACT="$(sed -n 's/.*int ROUTE_SECURITY_CONTRACT = \([0-9][0-9]*\);.*/\1/p' "$CONTRACT_SRC" 2>/dev/null | head -1)"
+if [ -z "$CURRENT_CONTRACT" ]; then
+    echo "[FAIL]  cannot read ROUTE_SECURITY_CONTRACT from ${CONTRACT_SRC} — the currency check cannot run."
+    exit 2
+fi
+for tool in unzip javap; do
+    if ! command -v "$tool" > /dev/null 2>&1; then
+        echo "[FAIL]  '${tool}' is required to read the route-security stamp of the fixtures; refusing to skip the check."
+        exit 2
+    fi
+done
+
+# jar_stamps <jar>: one "<factory class> <stamp>" line per SliceRouterFactory the jar registers. A factory
+# class without routeSecurityContract() is a pre-contract class: stamp 0, which is what the runtime reads too
+# (the interface default). A method whose body is not a constant yields "unreadable".
+jar_stamps() {
+    local jar="$1" cls stamp
+    unzip -p "$jar" META-INF/services/org.pragmatica.aether.http.adapter.SliceRouterFactory 2>/dev/null \
+        | sed 's/#.*//' | tr -d '\r' | while IFS= read -r cls; do
+        cls="${cls//[[:space:]]/}"
+        [ -n "$cls" ] || continue
+        stamp="$(javap -p -c -cp "$jar" "$cls" 2>/dev/null | awk '
+            / routeSecurityContract\(\);$/ { inm = 1; found = 1; next }
+            inm && /iconst_[0-5]/ { sub(/.*iconst_/, ""); print $1; v = 1; exit }
+            inm && /(bipush|sipush)/ { print $NF; v = 1; exit }
+            inm && /return/ { exit }
+            END { if (!found) print 0; else if (!v) print "unreadable" }')"
+        printf '%s %s\n' "$cls" "${stamp:-unreadable}"
+    done
+}
 
 echo "[STEP]  Blueprint fixture preflight"
 echo "[INFO]    local repository in use: ${REPO}"
@@ -84,7 +126,27 @@ fi
 # the blueprint-jar shape separately without blocking on it.
 missing=()
 noblueprint=()
+stale=()
 present=0
+checked=0
+
+# check_stamps <coord> <jar>: record a stale or unreadable stamp for every factory in the jar.
+check_stamps() {
+    local coord="$1" jar="$2" cls stamp
+    # An empty read of a damaged archive looks exactly like a jar with no factory; test the archive first.
+    if ! unzip -tqq "$jar" > /dev/null 2>&1; then
+        stale+=("${jar}  (corrupt or truncated archive, cannot be read; fixture of ${coord})")
+        return
+    fi
+    while read -r cls stamp; do
+        [ -n "$cls" ] || continue
+        if [ "$stamp" = "unreadable" ]; then
+            stale+=("${jar}  (${cls}: routeSecurityContract() is not a constant, stamp unreadable; fixture of ${coord})")
+        elif [ "$stamp" -lt "$CURRENT_CONTRACT" ]; then
+            stale+=("${jar}  (${cls}: routeSecurityContract=${stamp}, current ${CURRENT_CONTRACT}; fixture of ${coord})")
+        fi
+    done < <(jar_stamps "$jar")
+}
 for coord in "${COORDS[@]}"; do
     group="${coord%%:*}"
     rest="${coord#*:}"
@@ -94,6 +156,29 @@ for coord in "${COORDS[@]}"; do
     if [ -d "$dir" ] && [ -n "$(find "$dir" -maxdepth 1 -name '*.jar' -print -quit 2>/dev/null)" ]; then
         present=$((present + 1))
         [ -f "${dir}/${artifact}-${version}-blueprint.jar" ] || noblueprint+=("${coord}")
+        # Currency: the coordinate's own slice jars, then the slice artifacts its blueprint lists.
+        for jar in "${dir}"/*.jar; do
+            case "$jar" in *-blueprint.jar) continue ;; esac
+            checked=$((checked + 1))
+            check_stamps "$coord" "$jar"
+        done
+        if [ -f "${dir}/${artifact}-${version}-blueprint.jar" ] \
+            && ! unzip -tqq "${dir}/${artifact}-${version}-blueprint.jar" > /dev/null 2>&1; then
+            stale+=("${dir}/${artifact}-${version}-blueprint.jar  (corrupt or truncated archive, its slice list cannot be read; fixture of ${coord})")
+        elif [ -f "${dir}/${artifact}-${version}-blueprint.jar" ]; then
+            while IFS= read -r sa; do
+                [ -n "$sa" ] || continue
+                sgroup="${sa%%:*}"; srest="${sa#*:}"; sartifact="${srest%%:*}"; sversion="${srest##*:}"
+                sjar="${REPO}/${sgroup//.//}/${sartifact}/${sversion}/${sartifact}-${sversion}.jar"
+                if [ -f "$sjar" ]; then
+                    checked=$((checked + 1))
+                    check_stamps "$coord" "$sjar"
+                else
+                    stale+=("${sjar}  (slice artifact ${sa} is listed by ${coord} but not built into the repository, so its contract cannot be read)")
+                fi
+            done < <(unzip -p "${dir}/${artifact}-${version}-blueprint.jar" META-INF/blueprint.toml 2>/dev/null \
+                         | sed -n 's/^[[:space:]]*artifact[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')
+        fi
     else
         missing+=("${coord}  ->  ${dir}")
     fi
@@ -104,6 +189,7 @@ if [ "${#noblueprint[@]}" -gt 0 ]; then
 fi
 
 echo "[INFO]    present: ${present}/${#COORDS[@]}"
+echo "[INFO]    slice jars read for route-security stamp: ${checked} (current contract ${CURRENT_CONTRACT})"
 
 if [ "${#missing[@]}" -gt 0 ]; then
     echo "[FAIL]  ${#missing[@]} fixture(s) NOT BUILT into ${REPO}:"
@@ -119,5 +205,17 @@ if [ "${#missing[@]}" -gt 0 ]; then
     exit 1
 fi
 
-echo "[PASS]  all ${present} blueprint fixtures present"
+if [ "${#stale[@]}" -gt 0 ]; then
+    echo "[FAIL]  ${#stale[@]} fixture jar(s) in ${REPO} are stale, missing or unreadable for the route-security contract:"
+    for m in "${stale[@]}"; do
+        echo "          ${m}"
+    done
+    echo ""
+    echo "        Present is not current: the node refuses such a slice at deploy (routeSecurityContract below ${CURRENT_CONTRACT})."
+    echo "        Rebuild them with:  ./build.sh        (builds test blueprints AND example fixtures)"
+    echo "        Or individually:    mvn -f examples/<module>/pom.xml clean install -DskipTests"
+    exit 1
+fi
+
+echo "[PASS]  all ${present} blueprint fixtures present and current (route-security contract ${CURRENT_CONTRACT})"
 exit 0

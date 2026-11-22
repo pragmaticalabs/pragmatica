@@ -272,7 +272,9 @@ public final class MembershipFsm {
     /// `DHTTopologyListener.onNodeJoined` ring RE-ADD never runs. Left unhandled, a member pruned
     /// from the ring by [`#onEnteredDeparting`] that then recovers stays MISSING from the ring →
     /// under-replication. This listener restores symmetry: AetherNode wires it to the DHT topology
-    /// listener's ring RE-ADD (`DHTTopologyListener.onNodeRecovered`), mirroring the prune.
+    /// listener's ring RE-ADD (`DHTTopologyListener.onNodeRecovered`), mirroring the prune. That re-add restores
+    /// only a node the listener pruned (#3415); a member that reaches MEMBER for the FIRST time through this
+    /// recovery (drained while OBSERVED) was never JOINED, so this dispatch emits its JOINED edge and the join adds it.
     ///
     /// Scoped to the recovery edge ONLY (NOT every MEMBER entry): a normal OBSERVED→MEMBER join and
     /// a SUSPECT→MEMBER flap-recovery were never pruned, and the former already rides the

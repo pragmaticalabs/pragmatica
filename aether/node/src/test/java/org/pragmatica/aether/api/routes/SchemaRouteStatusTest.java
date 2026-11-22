@@ -17,20 +17,23 @@ import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
@@ -208,8 +211,8 @@ class SchemaRouteStatusTest {
     ///
     /// #760 review BLOCKING 1: `heldSlices` used to scan ownership alone (`SliceTargetKey`/
     /// `SliceTargetValue`) with no per-node state check at all, so `seedSliceTarget` below now also
-    /// plants the LIVE `SliceNodeKey`/`SliceNodeValue` state the fixed implementation actually reads —
-    /// LOADED for the tests below, which model a slice genuinely waiting at the gate.
+    /// plants the LIVE per-node state the fixed implementation actually reads, as FSM2 writes it (`SliceObservedKey`
+    /// rows read through [SliceRowSource#observed], #3411) — LOADED for the tests below, which model a slice genuinely waiting at the gate.
     @Nested
     class HeldSlices {
         private static final String HELD_SLICE = "org.example:orders-worker";
@@ -353,10 +356,32 @@ class SchemaRouteStatusTest {
         @Test
         void migrateRoute_respondsConflict_whenCompletedRecordHasActivatingSlices() {
             seed(SchemaStatus.COMPLETED);
-            seedSliceInState(ACTIVE_SLICE, OWNER, SliceState.ACTIVATING);
+            seedSliceInState(ACTIVE_SLICE, OWNER, SliceObservedState.ACTIVATING);
 
             assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).as("a slice mid-activation is about to serve the same datasource, same as one already ACTIVE")
                       .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        /// A row of the schema's own blueprint that is not serving (LOADED waits at the gate, it occupies nothing) must not
+        /// block a re-migration: pins `SliceState.isServing` as the guard's filter, not "any row of the blueprint".
+        @Test
+        void migrateRoute_succeeds_whenOwnedSliceIsInNonServingState() {
+            seed(SchemaStatus.COMPLETED);
+            seedSliceInState(ACTIVE_SLICE, OWNER, SliceObservedState.LOADED);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("A LOADED slice of the owning blueprint serves nothing and must not block re-migration: "
+                                                                                                                    + cause.message()));
+        }
+
+        /// Rule under test: a serving row whose artifact has no owner is not counted (unowned means not provably this
+        /// blueprint's), so the migration proceeds. This is the current default; flipping it must be a deliberate change.
+        @Test
+        void migrateRoute_succeeds_whenServingSliceHasNoOwner() {
+            seed(SchemaStatus.COMPLETED);
+            seedSliceInState(ACTIVE_SLICE, Option.<BlueprintId>none(), SliceObservedState.ACTIVE);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("A serving slice with no owner must not block re-migration: "
+                                                                                                                    + cause.message()));
         }
 
         /// #760/#724 review round 2 item l pinning test — before the fix, `guardReactivation` special-
@@ -869,25 +894,43 @@ class SchemaRouteStatusTest {
     }
 
     /// Plants ownership (`SliceTargetKey`/`SliceTargetValue`) alongside the LIVE per-node state
-    /// (`SliceNodeKey`/`SliceNodeValue`) that `SchemaRoutes.heldSlices` reads post-#760-review — a
+    /// (an FSM2 `SliceObservedKey` row, #3411) that `SchemaRoutes.heldSlices` reads post-#760-review — a
     /// slice genuinely waiting at the gate.
     private void seedSliceTarget(String artifactBaseString, BlueprintId owner) {
-        seedSliceInState(artifactBaseString, owner, SliceState.LOADED);
+        seedSliceInState(artifactBaseString, owner, SliceObservedState.LOADED);
     }
 
     /// Same join as [#seedSliceTarget], but ACTIVE: a slice that already passed the gate and has no
     /// transition path back through LOADED.
     private void seedActiveSlice(String artifactBaseString, BlueprintId owner) {
-        seedSliceInState(artifactBaseString, owner, SliceState.ACTIVE);
+        seedSliceInState(artifactBaseString, owner, SliceObservedState.ACTIVE);
     }
 
-    private void seedSliceInState(String artifactBaseString, BlueprintId owner, SliceState state) {
+    /// The row is the one the FSM2 node commits (`SliceObservedKey(self, artifact)` -> `SliceObservedValue`), with an unknown
+    /// boot token (0), which the shared read takes as current.
+    private void seedSliceInState(String artifactBaseString, BlueprintId owner, SliceObservedState state) {
+        seedSliceInState(artifactBaseString, Option.some(owner), state);
+    }
+
+    private void seedSliceInState(String artifactBaseString, Option<BlueprintId> owner, SliceObservedState state) {
         var artifactBase = ArtifactBase.artifactBase(artifactBaseString).unwrap();
         var artifact = Artifact.artifact(artifactBase, SLICE_VERSION);
 
         store.put(SliceTargetKey.sliceTargetKey(artifactBase),
-                  SliceTargetValue.sliceTargetValue(SLICE_VERSION, 1, Option.some(owner)));
-        store.put(SliceNodeKey.sliceNodeKey(artifact, NODE), SliceNodeValue.sliceNodeValue(state));
+                  SliceTargetValue.sliceTargetValue(SLICE_VERSION, 1, owner));
+        store.put(SliceObservedKey.sliceObservedKey(NODE, artifact), observedRow(state));
+    }
+
+    private static SliceObservedValue observedRow(SliceObservedState state) {
+        return new SliceObservedValue(state,
+                                      1L,
+                                      new Generation(1L, 1L),
+                                      new ProcessIncarnation(1L, 0L),
+                                      Option.none(),
+                                      false,
+                                      0,
+                                      List.of(),
+                                      0L);
     }
 
     /// #760 review round 2 item a: plants an `AppBlueprintValue` whose embedded resources.toml
@@ -930,6 +973,7 @@ class SchemaRouteStatusTest {
                                                        new Class[]{ManageableNode.class},
                                                        (_, method, args) -> switch (method.getName()) {
             case "kvStore" -> kvStore;
+            case "sliceRows" -> SliceRowSource.observed(_ -> 0L);
             case "apply" -> applyBatch(args);
             case "isLeader" -> true;
             case "leader" -> Option.none();
@@ -993,6 +1037,7 @@ class SchemaRouteStatusTest {
                                                        new Class[]{ManageableNode.class},
                                                        (_, method, args) -> switch (method.getName()) {
             case "kvStore" -> kvStore;
+            case "sliceRows" -> SliceRowSource.observed(_ -> 0L);
             case "apply" -> applyBatch(args);
             case "isLeader" -> false;
             case "leader" -> currentLeader;
@@ -1017,6 +1062,7 @@ class SchemaRouteStatusTest {
                                                        new Class[]{ManageableNode.class},
                                                        (_, method, args) -> switch (method.getName()) {
             case "kvStore" -> kvStore;
+            case "sliceRows" -> SliceRowSource.observed(_ -> 0L);
             case "apply" -> applyBatch(args);
             case "isLeader" -> true;
             case "leader" -> Option.none();

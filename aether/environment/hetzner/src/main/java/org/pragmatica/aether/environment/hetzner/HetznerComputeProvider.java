@@ -600,16 +600,47 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// that carries only the cluster label (a harness partition firewall, #1500, or one an operator labelled
     /// by hand) says nothing about this source's ingress; counting it turned every replacement into a
     /// fail-closed refusal and disabled auto-heal for the whole cluster.
-    private static Promise<List<Long>> unmanagedOrMissed(List<Firewall> clusterWide,
-                                                         ClusterName cluster,
-                                                         SourceName source) {
+    private Promise<List<Long>> unmanagedOrMissed(List<Firewall> clusterWide, ClusterName cluster, SourceName source) {
         var ingress = clusterWide.stream().filter(firewall -> isIngressFirewall(firewall, cluster)).count();
 
         if (ingress == 0) {
-            return ingressUnmanaged(cluster, source);
+            return unlabelledOrUnmanaged(cluster, source);
         }
 
         return FirewallSelectorMissed.firewallSelectorMissed(cluster, source, (int) ingress).promise();
+    }
+
+    /// #3292: nothing the cluster label selects is ingress evidence, but a firewall that LOST the
+    /// `aether-cluster` label is invisible to every label selector, so "nothing selected" cannot be taken for
+    /// "nothing exists". The unselected listing is searched for the Aether name prefix (the name survives label
+    /// edits, #1714); a firewall that still carries a cluster label is another cluster's (or a harness one), so
+    /// only the unlabelled ones count. A failed listing is unknown state, so it refuses like the selector lookups.
+    private Promise<List<Long>> unlabelledOrUnmanaged(ClusterName cluster, SourceName source) {
+        return client.listFirewalls()
+                     .mapError(cause -> FirewallLookupFailed.firewallLookupFailed(cluster, source, cause))
+                     .flatMap(all -> unmanagedOrUnlabelled(all, cluster, source));
+    }
+
+    private static Promise<List<Long>> unmanagedOrUnlabelled(List<Firewall> all,
+                                                             ClusterName cluster,
+                                                             SourceName source) {
+        var unlabelled = all.stream().filter(firewall -> isUnlabelledAetherFirewall(firewall, cluster)).count();
+
+        if (unlabelled == 0) {
+            return ingressUnmanaged(cluster, source);
+        }
+
+        return FirewallClusterLabelLost.firewallClusterLabelLost(cluster, source, (int) unlabelled).promise();
+    }
+
+    private static boolean isUnlabelledAetherFirewall(Firewall firewall, ClusterName cluster) {
+        return lacksClusterLabel(firewall) && hasAetherName(firewall, cluster);
+    }
+
+    private static boolean lacksClusterLabel(Firewall firewall) {
+        return Option.option(firewall.labels())
+                     .filter(labels -> labels.containsKey(CLUSTER_LABEL))
+                     .isEmpty();
     }
 
     /// #1714: an ingress firewall is recognised by the [#SOURCE_LABEL] OR by the Aether name prefix
@@ -621,9 +652,11 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return hasSourceLabel(firewall) || hasAetherName(firewall, cluster);
     }
 
+    /// #3292: the match is [FirewallName#isDerivedFor], the derivation's own answer to "is this a name for this
+    /// cluster", so the cut at [FirewallName#MAX_LENGTH] and its hyphen trim are never rebuilt here.
     private static boolean hasAetherName(Firewall firewall, ClusterName cluster) {
         return Option.option(firewall.name())
-                     .map(name -> name.startsWith(AETHER_FIREWALL_PREFIX + cluster.value() + "-"))
+                     .map(name -> FirewallName.isDerivedFor(name, cluster))
                      .or(false);
     }
 
@@ -632,8 +665,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                      .map(labels -> labels.containsKey(SOURCE_LABEL))
                      .or(false);
     }
-
-    private static final String AETHER_FIREWALL_PREFIX = "aether-";
 
     private static Promise<List<Long>> ingressUnmanaged(ClusterName cluster, SourceName source) {
         log.warn("Hetzner provision: no Aether-managed firewall exists for cluster '{}' (source '{}') — the server is "
@@ -677,6 +708,30 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                                       SOURCE_LABEL,
                                                                       sanitizeLabelValue(sourceName.value()),
                                                                       ProvisionContext.DEFAULT_SOURCE_NAME);
+        }
+    }
+
+    /// #3292: no firewall carries this cluster's label, yet unlabelled firewalls bear this cluster's Aether name —
+    /// an Aether firewall that lost its `aether-cluster` label. Creating the server would leave it with no firewall
+    /// while that firewall's peers are firewalled, so FAIL.
+    record FirewallClusterLabelLost(ClusterName cluster, SourceName sourceName, int unlabelledCount) implements Cause {
+        static FirewallClusterLabelLost firewallClusterLabelLost(ClusterName cluster,
+                                                                 SourceName sourceName,
+                                                                 int unlabelledCount) {
+            return new FirewallClusterLabelLost(cluster, sourceName, unlabelledCount);
+        }
+
+        @Override
+        public String message() {
+            return """
+                   Refusing to provision: no firewall is labelled %s=%s, but %d firewall(s) named for cluster '%s' \
+                   carries no cluster label (source '%s'). The label was probably removed from an Aether firewall, \
+                   so the server would be created with no firewall association and accept ALL inbound traffic \
+                   while its peers are firewalled. Restore the label or remove the firewall.""".formatted(CLUSTER_LABEL,
+                                                                                                          sanitizeLabelValue(cluster.value()),
+                                                                                                          unlabelledCount,
+                                                                                                          cluster,
+                                                                                                          sourceName);
         }
     }
 

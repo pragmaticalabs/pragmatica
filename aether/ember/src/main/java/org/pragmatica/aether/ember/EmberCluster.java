@@ -32,7 +32,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -1864,7 +1864,7 @@ public final class EmberCluster {
                                           Option.some(emberEnvironment()),
                                           AutoHealConfig.DEFAULT,
                                           observability,
-                                          ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
+                                          DeploymentAtomicity.ALL_OR_NOTHING,
                                           activationGated,
                                           nodeTimeouts,
                                           Option.some(certificateProvider),

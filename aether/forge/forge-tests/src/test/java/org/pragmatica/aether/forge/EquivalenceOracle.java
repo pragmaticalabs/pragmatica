@@ -20,7 +20,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.AbsenceBounds;
 import org.pragmatica.aether.deployment.cluster.fsm2.Admission;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterEffect;

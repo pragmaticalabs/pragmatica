@@ -49,7 +49,7 @@ class V2174bDeltaTest {
     /// is never reported by anyone (the leader is still this node).
     @Test
     void activationBlocked_committedWhileSuspended_isAnnouncedAfterTheResume() {
-        var h = LcSupport.leader(org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
+        var h = LcSupport.leader(org.pragmatica.aether.deployment.cluster.DeploymentAtomicity.ALL_OR_NOTHING,
                                  0.5d,
                                  CORE_1);
 
