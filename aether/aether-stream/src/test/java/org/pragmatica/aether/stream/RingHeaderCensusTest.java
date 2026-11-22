@@ -91,9 +91,10 @@ class RingHeaderCensusTest {
     /// Mutant B.
     @Test
     void census_withAnAddressReinterpretedOverTheHeader_isRed() throws IOException {
-        var mutated = source().replace("        return new RingHeader(controlSegment.asSlice(0, headerSize));",
-                                       "        return new RingHeader(MemorySegment.ofAddress(controlSegment.address()).reinterpret(headerSize));");
+        var mutated = source().replace("        return new RingHeader(controlSegment.asSlice(0, RingGeometry.HEADER_SIZE));",
+                                       "        return new RingHeader(MemorySegment.ofAddress(controlSegment.address()).reinterpret(RingGeometry.HEADER_SIZE));");
 
+        assertThat(mutated).as("the fixture line exists in the real file").isNotEqualTo(source());
         assertThat(violations(mutated)).anyMatch(v -> v.contains("ofAddress") || v.contains("reinterpret"));
     }
 
