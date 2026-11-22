@@ -63,7 +63,7 @@ class SwimQuorumReportTest {
     void setUp() {
         transport = new RecordingTransport();
         observations = new RecordingObservationSink();
-        protocol = SwimProtocol.swimProtocol(swimConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
+        protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
                                .unwrap();
         protocol.addObservationListener(observations);
     }
@@ -229,7 +229,7 @@ class SwimQuorumReportTest {
     }
 
     private List<MembershipUpdate> relayedPeerUpdates() {
-        protocol.deliverForTest(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of()));
+        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of()));
 
         return transport.sentMessages.stream()
                                      .map(SentMessage::message)
@@ -241,7 +241,7 @@ class SwimQuorumReportTest {
     }
 
     private MembershipUpdate lastSelfAdvertised() {
-        protocol.deliverForTest(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of()));
+        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of()));
 
         return transport.sentMessages.stream()
                                      .map(SentMessage::message)
@@ -254,7 +254,7 @@ class SwimQuorumReportTest {
     }
 
     private void gossip(MembershipUpdate update) {
-        protocol.deliverForTest(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of(update)));
+        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of(update)));
     }
 
     private static MembershipUpdate update(MemberState state, long incarnation, Map<String, String> labels) {

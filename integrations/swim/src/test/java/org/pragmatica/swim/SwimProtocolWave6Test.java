@@ -91,14 +91,14 @@ class SwimProtocolWave6Test {
     void setUp() {
         transport = new RecordingTransport();
         listener = new RecordingListener();
-        protocol = SwimProtocol.swimProtocol(slowConfig(), transport, listener, SELF_ID, SELF_ADDR)
+        protocol = SwimTestProtocols.swimProtocol(slowConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                .unwrap();
     }
 
     // -- Shared drives --
 
     private void gossipFrom(NodeId sender, InetSocketAddress senderAddr, long seq, MembershipUpdate update) {
-        protocol.deliverForTest(senderAddr, Ping.ping(sender, seq, List.of(update)));
+        protocol.onMessage(senderAddr, Ping.ping(sender, seq, List.of(update)));
     }
 
     private static MembershipUpdate updateOf(NodeId node, MemberState state, long incarnation) {
@@ -135,7 +135,7 @@ class SwimProtocolWave6Test {
 
         protocol.probeOnceForTest();
         var seq = lastPingTo(ADDR_A).sequence();
-        protocol.deliverForTest(ADDR_A, Ack.ack(NODE_A, seq, List.of()));
+        protocol.onMessage(ADDR_A, Ack.ack(NODE_A, seq, List.of()));
     }
 
     @Nested
@@ -159,7 +159,7 @@ class SwimProtocolWave6Test {
             // Pull the current piggyback through the real dissemination path: an inbound
             // Ping returns an Ack carrying the buffered updates.
             transport.sentMessages.clear();
-            protocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 77L, List.of()));
+            protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 77L, List.of()));
             var piggyback = ((Ack) transport.sentMessages.getFirst().message()).piggyback();
 
             assertThat(piggyback)
@@ -186,16 +186,16 @@ class SwimProtocolWave6Test {
                                     timeSpan(100).millis(),
                                     8,
                                     timeSpan(20).millis());
-            var residencyProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            var residencyProtocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                                 .unwrap();
             residencyProtocol.start();
             try {
-                residencyProtocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 1L, List.of(updateOf(NODE_A, MemberState.ALIVE, 0L))));
+                residencyProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(updateOf(NODE_A, MemberState.ALIVE, 0L))));
                 var faultyEdgeAt = System.currentTimeMillis();
                 // Second-hand (gossip) FAULTY needs local transport-down corroboration to
                 // drive the FAULTY edge (P1 death-path co-confirmation).
                 residencyProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
-                residencyProtocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 2L, List.of(updateOf(NODE_A, MemberState.FAULTY, 1L))));
+                residencyProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 2L, List.of(updateOf(NODE_A, MemberState.FAULTY, 1L))));
                 assertThat(residencyProtocol.members().get(NODE_A).state()).isEqualTo(MemberState.FAULTY);
 
                 Thread.sleep(100L);
@@ -223,13 +223,13 @@ class SwimProtocolWave6Test {
             protocol.probeOnceForTest();
             var seq = lastPingTo(ADDR_A).sequence();
 
-            protocol.deliverForTest(ADDR_A, Ack.ack(NODE_B, seq, List.of()));
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_B, seq, List.of()));
             assertThat(protocol.members().get(NODE_A).state())
                 .as("an ack whose from does not match the probed target is not alive-evidence — stays OBSERVED")
                 .isEqualTo(MemberState.OBSERVED);
 
             // The mismatched ack must not consume the pending probe: the genuine ack still verifies.
-            protocol.deliverForTest(ADDR_A, Ack.ack(NODE_A, seq, List.of()));
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, seq, List.of()));
             assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
         }
 
@@ -237,7 +237,7 @@ class SwimProtocolWave6Test {
         void handleAck_unsolicitedAck_noLongerPromotesSender() {
             protocol.addSeedMember(NODE_A, ADDR_A);
 
-            protocol.deliverForTest(ADDR_A, Ack.ack(NODE_A, 9_999L, List.of()));
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, 9_999L, List.of()));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("an Ack matching no pending probe is not alive-evidence — stays OBSERVED (pre-fix it promoted unconditionally)")
@@ -258,7 +258,7 @@ class SwimProtocolWave6Test {
                                     timeSpan(10).seconds(),
                                     8,
                                     timeSpan(10).seconds());
-            var timingProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            var timingProtocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                              .unwrap();
             timingProtocol.addSeedMember(NODE_A, ADDR_A);
             timingProtocol.probeOnceForTest();
@@ -278,7 +278,7 @@ class SwimProtocolWave6Test {
             gossipFrom(NODE_B, ADDR_B, 5L, updateOf(NODE_A, MemberState.ALIVE, 1L));
             protocol.probeOnceForTest();
             var seq = lastPingTo(ADDR_A).sequence();
-            protocol.deliverForTest(ADDR_A, Ack.ack(NODE_A, seq, List.of()));
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, seq, List.of()));
 
             assertThat(protocol.lhmScoreForTest())
                 .as("each verified probe-ack is a healthy round — the LHM score decays by 1")
@@ -485,17 +485,17 @@ class SwimProtocolWave6Test {
                                     timeSpan(100).millis(),
                                     8,
                                     timeSpan(20).millis());
-            var sweepProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            var sweepProtocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                             .unwrap();
             var observations = new RecordingObservationSink();
             sweepProtocol.addObservationListener(observations);
             sweepProtocol.start();
             try {
-                sweepProtocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 1L, List.of(updateOf(NODE_A, MemberState.ALIVE, 0L))));
+                sweepProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(updateOf(NODE_A, MemberState.ALIVE, 0L))));
                 // Second-hand (gossip) FAULTY needs local transport-down corroboration to
                 // drive the FAULTY edge (P1 death-path co-confirmation).
                 sweepProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
-                sweepProtocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 2L, List.of(updateOf(NODE_A, MemberState.FAULTY, 1L))));
+                sweepProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 2L, List.of(updateOf(NODE_A, MemberState.FAULTY, 1L))));
                 assertThat(observations.byType(SwimObservation.DepartedObserved.class))
                     .as("the death broadcast already fired at the FAULTY edge")
                     .hasSize(1);
@@ -528,7 +528,7 @@ class SwimProtocolWave6Test {
                                     timeSpan(100).millis(),
                                     8,
                                     timeSpan(20).millis()).withJoinGrace(timeSpan(2).seconds());
-            var graced = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+            var graced = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
                                      .unwrap();
             var observations = new RecordingObservationSink();
             graced.addObservationListener(observations);
@@ -567,7 +567,7 @@ class SwimProtocolWave6Test {
                                     8,
                                     timeSpan(20).millis()).withJoinGrace(timeSpan(300).millis())
                                                           .withLhmMaxScore(1);
-            var graced = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+            var graced = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
                                      .unwrap();
             var observations = new RecordingObservationSink();
             graced.addObservationListener(observations);
@@ -625,14 +625,14 @@ class SwimProtocolWave6Test {
                                     timeSpan(300).millis(),
                                     8,
                                     timeSpan(20).millis());
-            var sloProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            var sloProtocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                           .unwrap();
 
-            sloProtocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 1L, List.of(updateOf(NODE_A, MemberState.ALIVE, 1L))));
+            sloProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(updateOf(NODE_A, MemberState.ALIVE, 1L))));
             var suspicionStart = System.currentTimeMillis();
-            sloProtocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 2L, List.of(updateOf(NODE_A, MemberState.SUSPECT, 1L))));
-            sloProtocol.deliverForTest(ADDR_C, Ping.ping(NODE_C, 3L, List.of(updateOf(NODE_A, MemberState.SUSPECT, 1L))));
-            sloProtocol.deliverForTest(ADDR_D, Ping.ping(NODE_D, 4L, List.of(updateOf(NODE_A, MemberState.SUSPECT, 1L))));
+            sloProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 2L, List.of(updateOf(NODE_A, MemberState.SUSPECT, 1L))));
+            sloProtocol.onMessage(ADDR_C, Ping.ping(NODE_C, 3L, List.of(updateOf(NODE_A, MemberState.SUSPECT, 1L))));
+            sloProtocol.onMessage(ADDR_D, Ping.ping(NODE_D, 4L, List.of(updateOf(NODE_A, MemberState.SUSPECT, 1L))));
 
             sloProtocol.start();
             try {

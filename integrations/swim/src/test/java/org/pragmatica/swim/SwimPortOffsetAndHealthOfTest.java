@@ -62,7 +62,7 @@ class SwimPortOffsetAndHealthOfTest {
             transport = new StubTransport();
             listener = new RecordingMembershipListener();
             var cfg = SwimConfig.DEFAULT.withSwimPortOffset(SWIM_OFFSET);
-            protocol = SwimProtocol.swimProtocol(cfg, transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(cfg, transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
         }
 
@@ -86,7 +86,7 @@ class SwimPortOffsetAndHealthOfTest {
             var cfg = SwimConfig.DEFAULT;
             var freshTransport = new StubTransport();
             var freshListener = new RecordingMembershipListener();
-            var fresh = SwimProtocol.swimProtocol(cfg, freshTransport, freshListener, SELF_ID, SELF_ADDR)
+            var fresh = SwimTestProtocols.swimProtocol(cfg, freshTransport, freshListener, SELF_ID, SELF_ADDR)
                                     .fold(_ -> null, v -> v);
 
             var announce = Announce.announce(NODE_A_INFO, "", 1L);
@@ -117,7 +117,7 @@ class SwimPortOffsetAndHealthOfTest {
         @BeforeEach
         void setUp() {
             var cfg = SwimConfig.DEFAULT.withSwimPortOffset(SWIM_OFFSET);
-            protocol = SwimProtocol.swimProtocol(cfg, new StubTransport(), new RecordingMembershipListener(), SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(cfg, new StubTransport(), new RecordingMembershipListener(), SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
         }
 
@@ -144,7 +144,7 @@ class SwimPortOffsetAndHealthOfTest {
             // to the gossiped hostname; the transport always delivers a resolved address, so only a
             // hand-built sender reaches this.)
             var unresolved = InetSocketAddress.createUnresolved("ignored-host", QUIC_PORT + SWIM_OFFSET);
-            protocol.deliverForTest(unresolved, Announce.announce(NODE_B_INFO, "", 1L));
+            protocol.onMessage(unresolved, Announce.announce(NODE_B_INFO, "", 1L));
 
             assertThat(protocol.members()).as("an unpinnable ANNOUNCE registers nothing").doesNotContainKey(NODE_B);
         }
@@ -161,7 +161,7 @@ class SwimPortOffsetAndHealthOfTest {
         void setUp() {
             transport = new StubTransport();
             listener = new RecordingMembershipListener();
-            protocol = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(SwimConfig.DEFAULT, transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
         }
 

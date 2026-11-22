@@ -17,6 +17,7 @@ package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -24,8 +25,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
 
+import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -78,7 +84,7 @@ class SwimStateConfinementTest {
     void everyEntryPoint_mutatesOnlyOnTheSerialExecutor() throws InterruptedException {
         var tokens = BootTokens.bootTokens(0x5E1FL);
         var faulty = ConcurrentHashMap.<NodeId>newKeySet();
-        var protocol = protocol(new FaultyRecordingListener(faulty));
+        var protocol = heldProtocol(new FaultyRecordingListener(faulty));
 
         protocol.setBootTokens(tokens);
         protocol.setMembershipEligibility(_ -> true);
@@ -118,7 +124,7 @@ class SwimStateConfinementTest {
     /// returns at once with its write queued, and the holder's drain applies it after the held task, serially.
     @Test
     void contendedSubmission_returnsAtOnceAndIsAppliedSeriallyAfterTheHolder() throws InterruptedException {
-        var protocol = protocol(new SilentListener());
+        var protocol = heldProtocol(new SilentListener());
         var held = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var holder = new Thread(() -> protocol.onStateExecutorForTest(() -> hold(held, release)), "confinement-holder");
@@ -137,17 +143,17 @@ class SwimStateConfinementTest {
 
     /// #3560, the window: a bare `onMessage` while another thread holds the executor (the probe tick draining, here
     /// held on purpose) returns with the message still queued. This is the production contract, and exactly what a
-    /// test must not assert across: the guard (`SwimDeliveryGuardTest`) refuses a bare `onMessage` in a test.
+    /// test must not assert across: the test factory builds the quiescing executor, and `SwimDeliveryGuardTest` fails
+    /// the build when a test builds a protocol any other way. This test is the one that builds the production executor.
     @Test
-    void bareOnMessage_whileTheExecutorIsHeld_returnsBeforeTheMessageIsApplied() throws InterruptedException {
-        var protocol = protocol(new SilentListener());
+    void bareOnMessage_onTheProductionExecutorWhileItIsHeld_returnsBeforeTheMessageIsApplied() throws InterruptedException {
+        var protocol = heldProtocol(new SilentListener());
         var held = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var holder = new Thread(() -> protocol.onStateExecutorForTest(() -> hold(held, release)), "delivery-holder");
 
         holder.start();
         assertThat(held.await(WAIT_MS, TimeUnit.MILLISECONDS)).as("control: the holder owns the executor").isTrue();
-        // ASYNC-DELIVERY: pins the production contract, a bare onMessage on a held executor returns before the message is applied
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(alive(NODE_A, 0))));
         assertThat(protocol.members().containsKey(NODE_A)).as("returned while queued behind the holder, not applied yet")
                                                           .isFalse();
@@ -157,16 +163,16 @@ class SwimStateConfinementTest {
         assertThat(protocol.members().containsKey(NODE_A)).as("applied by the holder's drain after it released").isTrue();
     }
 
-    /// #3560, the seam: the same scenario through `deliverForTest` does not return until the message is applied,
+    /// #3560, #3568: the same scenario on a protocol the test factory built does not return until the message is applied,
     /// so an assertion on the next line is safe. The delivering thread is seen waiting on the held executor (a
     /// seam that only enqueued would let it finish at once), and after it returns the message's effect is visible.
     @Test
-    void deliverForTest_whileTheExecutorIsHeld_waitsAndReturnsOnlyOnceTheMessageIsApplied() throws InterruptedException {
+    void onMessage_onAQuiescingProtocolWhileTheExecutorIsHeld_waitsAndReturnsOnlyOnceTheMessageIsApplied() throws InterruptedException {
         var protocol = protocol(new SilentListener());
         var held = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var holder = new Thread(() -> protocol.onStateExecutorForTest(() -> hold(held, release)), "delivery-holder");
-        var deliverer = new Thread(() -> protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(alive(NODE_A, 0)))),
+        var deliverer = new Thread(() -> protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(alive(NODE_A, 0)))),
                                    "delivery-deliverer");
 
         holder.start();
@@ -175,15 +181,127 @@ class SwimStateConfinementTest {
         await().atMost(Duration.ofSeconds(10))
                .until(() -> deliverer.getState() == Thread.State.TIMED_WAITING || !deliverer.isAlive());
 
-        assertThat(deliverer.isAlive()).as("the seam waits for the held executor instead of returning").isTrue();
+        assertThat(deliverer.isAlive()).as("onMessage waits for the held executor instead of returning").isTrue();
         assertThat(protocol.members().containsKey(NODE_A)).as("not applied while the holder runs").isFalse();
         release.countDown();
         holder.join(WAIT_MS);
         deliverer.join(WAIT_MS);
 
-        assertThat(deliverer.isAlive()).as("the seam returned after the holder released").isFalse();
-        assertThat(protocol.members().containsKey(NODE_A)).as("applied by the time the seam returned").isTrue();
+        assertThat(deliverer.isAlive()).as("onMessage returned after the holder released").isFalse();
+        assertThat(protocol.members().containsKey(NODE_A)).as("applied by the time onMessage returned").isTrue();
         assertThat(protocol.offExecutorMutationsForTest()).isZero();
+    }
+
+    /// #3568, one invariant for every entry point: while another thread holds the executor, the call on a production
+    /// executor returns before it is applied (control, the window of #3560), and the same bare call on a protocol the
+    /// test factory built waits and returns only once it is applied. One case per entry point, so an executor that stops
+    /// waiting reddens six named cases, and a seventh entry point would have to be added to [EntryPoint] to be driven at all.
+    @TestFactory
+    Stream<DynamicTest> everyEntryPoint_whileTheExecutorIsHeld_productionReturnsUnapplied_quiescingWaitsUntilApplied() {
+        return Arrays.stream(EntryPoint.values())
+                     .map(entry -> DynamicTest.dynamicTest(entry.name(), () -> entryWaitsUntilApplied(entry)));
+    }
+
+    private static void entryWaitsUntilApplied(EntryPoint entry) throws InterruptedException {
+        var bare = heldProtocol(new SilentListener());
+
+        entry.prepare().accept(bare);
+        var bareHold = hold(bare);
+        entry.enter().accept(bare);
+        assertThat(entry.applied().test(bare)).as("control: the bare entry point returned before it was applied").isFalse();
+        bareHold.release();
+        assertThat(entry.applied().test(bare)).as("control: the holder's drain applied it afterwards").isTrue();
+
+        var protocol = protocol(new SilentListener());
+
+        entry.prepare().accept(protocol);
+        var held = hold(protocol);
+        var driver = new Thread(() -> entry.enter().accept(protocol), "drive-" + entry.name());
+
+        driver.start();
+        await().atMost(Duration.ofSeconds(10))
+               .until(() -> driver.getState() == Thread.State.TIMED_WAITING || !driver.isAlive());
+        assertThat(driver.isAlive()).as("the entry point waits for the held executor instead of returning").isTrue();
+        assertThat(entry.applied().test(protocol)).as("not applied while the holder runs").isFalse();
+        held.release();
+        driver.join(WAIT_MS);
+
+        assertThat(driver.isAlive()).as("the entry point returned after the holder released").isFalse();
+        assertThat(entry.applied().test(protocol)).as("applied by the time the entry point returned").isTrue();
+        assertThat(protocol.offExecutorMutationsForTest()).isZero();
+    }
+
+    private static Held hold(SwimProtocol protocol) throws InterruptedException {
+        var held = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var holder = new Thread(() -> protocol.onStateExecutorForTest(() -> hold(held, release)), "entry-holder");
+
+        holder.start();
+        assertThat(held.await(WAIT_MS, TimeUnit.MILLISECONDS)).as("control: the holder owns the executor").isTrue();
+
+        return new Held(holder, release);
+    }
+
+    private record Held(Thread holder, CountDownLatch gate) {
+        void release() throws InterruptedException {
+            gate.countDown();
+            holder.join(WAIT_MS);
+        }
+    }
+
+    private static BootTokens refusedTokens() {
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+
+        tokens.admit(NODE_A, TOKEN);
+        tokens.admit(NODE_A, OTHER_TOKEN);
+        tokens.admit(NODE_A, TOKEN);
+        return tokens;
+    }
+
+    /// The six public entry points that only enqueue: the production call, what must be in place before it, and the
+    /// state that shows it was applied. The `enter` lambda is the one call site of each entry point.
+    private enum EntryPoint {
+        ADD_SEED_MEMBER(_ -> {},
+                        protocol -> protocol.addSeedMember(NODE_A, ADDR_A),
+                        protocol -> protocol.members().containsKey(NODE_A)),
+        RECORD_TRANSPORT_HINT(protocol -> protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(alive(NODE_A, 0)))),
+                              protocol -> protocol.recordTransportHint(NODE_A,
+                                                                       new PeerUnreachable(NODE_A, Causes.cause("test"), HintOrigin.LINK_LOST)),
+                              protocol -> protocol.members().get(NODE_A).state() == MemberState.SUSPECT),
+        ANNOUNCE_JOIN(_ -> {},
+                      protocol -> protocol.announceJoin(SELF_INFO, "cluster", 7L, List.of()),
+                      protocol -> protocol.selfIncarnation() == 7L),
+        SET_BOOT_TOKENS(_ -> {},
+                        protocol -> protocol.setBootTokens(refusedTokens()),
+                        protocol -> protocol.bootTokenRefusals() > 0),
+        SET_MEMBERSHIP_ELIGIBILITY(protocol -> protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE),
+                                   protocol -> protocol.setMembershipEligibility(_ -> false),
+                                   protocol -> !protocol.members().containsKey(NODE_A)),
+        REPORT_SELF_QUORUM(protocol -> protocol.announceJoin(SELF_INFO, "cluster", 1L, List.of()),
+                           protocol -> protocol.reportSelfQuorum(QuorumReport.LOST),
+                           protocol -> protocol.selfIncarnation() == 2L);
+
+        private final Consumer<SwimProtocol> prepare;
+        private final Consumer<SwimProtocol> enter;
+        private final Predicate<SwimProtocol> applied;
+
+        EntryPoint(Consumer<SwimProtocol> prepare, Consumer<SwimProtocol> enter, Predicate<SwimProtocol> applied) {
+            this.prepare = prepare;
+            this.enter = enter;
+            this.applied = applied;
+        }
+
+        Consumer<SwimProtocol> prepare() {
+            return prepare;
+        }
+
+        Consumer<SwimProtocol> enter() {
+            return enter;
+        }
+
+        Predicate<SwimProtocol> applied() {
+            return applied;
+        }
     }
 
     /// The sensor is live: a write reached off the executor is counted. Drives the gossip chain handleMessage ->
@@ -255,15 +373,17 @@ class SwimStateConfinementTest {
             var seq = 1_000L * index + round;
             var evenRound = round % 2 == 0;
 
-            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, seq, List.of(alive(NODE_A, round))));
-            protocol.deliverForTest(ADDR_C, new Ping(NODE_C, seq, List.of(update(NODE_B, MemberState.SUSPECT, round))));
-            protocol.deliverForTest(ADDR_A, new Ack(NODE_A, seq, List.of(alive(NODE_C, round))));
-            protocol.deliverForTest(ADDR_A, new PingReq(NODE_A, NODE_C, seq));
-            protocol.deliverForTest(ADDR_C, Announce.announce(INFO_C, "cluster", round, TOKEN));
-            protocol.deliverForTest(ADDR_A, new WhoAmI(NODE_A));
-            protocol.deliverForTest(ADDR_A, new WhoAmIReply(SELF_ADDR));
-            protocol.deliverForTest(ADDR_C, new IdentityRefused(NODE_C, SELF_ID, "test"));
-            protocol.deliverForTest(ADDR_A, AppGossip.appGossip(NODE_A, 7, new byte[]{1}));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, seq, List.of(alive(NODE_A, round))));
+            protocol.onMessage(ADDR_C, new Ping(NODE_C, seq, List.of(update(NODE_B, MemberState.SUSPECT, round))));
+            protocol.onMessage(ADDR_A, new Ack(NODE_A, seq, List.of(alive(NODE_C, round))));
+            protocol.onMessage(ADDR_A, new PingReq(NODE_A, NODE_C, seq));
+            protocol.onMessage(ADDR_C, Announce.announce(INFO_C, "cluster", round, TOKEN));
+            protocol.onMessage(ADDR_A, new WhoAmI(NODE_A));
+            protocol.onMessage(ADDR_A, new WhoAmIReply(SELF_ADDR));
+            protocol.onMessage(ADDR_C, new IdentityRefused(NODE_C, SELF_ID, "test"));
+            protocol.onMessage(ADDR_A, AppGossip.appGossip(NODE_A, 7, new byte[]{1}));
+            // The drivers call the entry points on the production executor on purpose: this test pins their production contract under contention,
+            // and a quiescing executor would serialize the four drivers behind each other's quiet wait.
             protocol.recordTransportHint(NODE_A, new PeerReachable(NODE_A));
             protocol.recordTransportHint(NODE_A, new PeerResponsive(NODE_A));
             protocol.recordTransportHint(NODE_C,
@@ -316,21 +436,23 @@ class SwimStateConfinementTest {
     }
 
     private static SwimProtocol protocol(SwimMembershipListener listener) {
-        var config = swimConfig(timeSpan(20).millis(),
-                                timeSpan(20).millis(),
-                                3,
-                                timeSpan(100).millis(),
-                                8,
-                                timeSpan(0).millis()).withJoinGrace(timeSpan(0).millis());
+        return SwimTestProtocols.swimProtocol(config(), new SilentTransport(), listener, SELF_ID, SELF_ADDR, () -> false, _ -> false)
+                                .unwrap();
+    }
 
-        return SwimProtocol.swimProtocol(config,
-                                         new SilentTransport(),
-                                         listener,
-                                         SELF_ID,
-                                         SELF_ADDR,
-                                         () -> false,
-                                         _ -> false)
-                           .unwrap();
+    /// The production executor, on purpose: the tests that hold the executor or pin the production contract.
+    private static SwimProtocol heldProtocol(SwimMembershipListener listener) {
+        return SwimTestProtocols.swimProtocolWithHeldExecutor(config(), new SilentTransport(), listener, SELF_ID, SELF_ADDR, () -> false, _ -> false)
+                                .unwrap();
+    }
+
+    private static SwimConfig config() {
+        return swimConfig(timeSpan(20).millis(),
+                        timeSpan(20).millis(),
+                        3,
+                        timeSpan(100).millis(),
+                        8,
+                        timeSpan(0).millis()).withJoinGrace(timeSpan(0).millis());
     }
 
     private record FaultyRecordingListener(Set<NodeId> faulty) implements SwimMembershipListener {

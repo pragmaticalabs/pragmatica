@@ -123,7 +123,7 @@ class SwimJoinSyncTest {
     @Test
     void announceReply_carriesLiveMembers_notAnnouncerNorFaulty() {
         var transport = new RecordingTransport();
-        var seed = SwimProtocol.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), SEED, SEED_ADDR)
+        var seed = SwimTestProtocols.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), SEED, SEED_ADDR)
                                .unwrap();
 
         seed.putMemberForTest(X, X_ADDR, MemberState.ALIVE);
@@ -145,7 +145,7 @@ class SwimJoinSyncTest {
     @Test
     void announceReply_withNothingToTell_stillSendsAnEmptySequenceZeroAck() {
         var transport = new RecordingTransport();
-        var seed = SwimProtocol.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), SEED, SEED_ADDR)
+        var seed = SwimTestProtocols.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), SEED, SEED_ADDR)
                                .unwrap();
 
         seed.putMemberForTest(new NodeId("joiner-b"), JOINER_ADDR, MemberState.ALIVE);
@@ -165,7 +165,7 @@ class SwimJoinSyncTest {
     void staleReplyEntry_doesNotResurrectFaultyMember() {
         var joiner = joinerHoldingFaulty(X);
 
-        joiner.deliverForTest(SEED_ADDR, Ack.ack(SEED, 0L, List.of(MembershipUpdate.membershipUpdate(X, MemberState.ALIVE, 0, X_ADDR))));
+        joiner.onMessage(SEED_ADDR, Ack.ack(SEED, 0L, List.of(MembershipUpdate.membershipUpdate(X, MemberState.ALIVE, 0, X_ADDR))));
 
         assertThat(joiner.members().get(X).state()).isEqualTo(MemberState.FAULTY);
         joiner.stop();
@@ -175,11 +175,11 @@ class SwimJoinSyncTest {
     @Test
     void staleReplyEntry_doesNotRegressHigherIncarnation() {
         var transport = new RecordingTransport();
-        var joiner = SwimProtocol.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), new NodeId("joiner-b"), JOINER_ADDR)
+        var joiner = SwimTestProtocols.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), new NodeId("joiner-b"), JOINER_ADDR)
                                  .unwrap();
 
-        joiner.deliverForTest(SEED_ADDR, Ack.ack(SEED, 0L, List.of(MembershipUpdate.membershipUpdate(X, MemberState.ALIVE, 5, X_ADDR))));
-        joiner.deliverForTest(SEED_ADDR, Ack.ack(SEED, 0L, List.of(MembershipUpdate.membershipUpdate(X, MemberState.SUSPECT, 3, X_ADDR))));
+        joiner.onMessage(SEED_ADDR, Ack.ack(SEED, 0L, List.of(MembershipUpdate.membershipUpdate(X, MemberState.ALIVE, 5, X_ADDR))));
+        joiner.onMessage(SEED_ADDR, Ack.ack(SEED, 0L, List.of(MembershipUpdate.membershipUpdate(X, MemberState.SUSPECT, 3, X_ADDR))));
 
         assertThat(joiner.members().get(X).state()).isEqualTo(MemberState.ALIVE);
         assertThat(joiner.members().get(X).incarnation()).isEqualTo(5L);
@@ -205,15 +205,15 @@ class SwimJoinSyncTest {
     private SwimProtocol joinerHoldingFaulty(NodeId subject) {
         var transport = new RecordingTransport();
         var config = SwimConfig.swimConfig(timeSpan(1).hours(), timeSpan(1).hours(), 3, timeSpan(1).hours(), 8, timeSpan(1).hours());
-        var joiner = SwimProtocol.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId("joiner-b"), JOINER_ADDR, () -> false)
+        var joiner = SwimTestProtocols.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId("joiner-b"), JOINER_ADDR, () -> false)
                                  .unwrap();
 
-        joiner.deliverForTest(SEED_ADDR, new Ping(SEED, 1L, List.of(MembershipUpdate.membershipUpdate(subject, MemberState.ALIVE, 0, X_ADDR))));
+        joiner.onMessage(SEED_ADDR, new Ping(SEED, 1L, List.of(MembershipUpdate.membershipUpdate(subject, MemberState.ALIVE, 0, X_ADDR))));
         joiner.recordTransportHint(subject,
                                    new TransportObservation.PeerUnreachable(subject,
                                                                             Causes.cause("test peer down"),
                                                                             TransportObservation.HintOrigin.LINK_LOST));
-        joiner.deliverForTest(SEED_ADDR, new Ping(SEED, 2L, List.of(MembershipUpdate.membershipUpdate(subject, MemberState.FAULTY, 1, X_ADDR))));
+        joiner.onMessage(SEED_ADDR, new Ping(SEED, 2L, List.of(MembershipUpdate.membershipUpdate(subject, MemberState.FAULTY, 1, X_ADDR))));
         assertThat(joiner.members().get(subject).state()).as("precondition: subject FAULTY").isEqualTo(MemberState.FAULTY);
 
         return joiner;
@@ -229,7 +229,7 @@ class SwimJoinSyncTest {
                      : manualConfig();
         var address = new InetSocketAddress("127.0.0.1", port);
         var transport = new MemoryTransport(address);
-        var protocol = SwimProtocol.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId(id), address)
+        var protocol = SwimTestProtocols.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId(id), address)
                                    .unwrap();
 
         transport.start(port, protocol::onMessage);
@@ -266,7 +266,6 @@ class SwimJoinSyncTest {
             var handler = net.get(new InetSocketAddress("127.0.0.1", target.getPort()));
 
             if (handler != null) {
-                // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task or from the wire thread; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                 handler.onMessage(self, message);
             }
         }

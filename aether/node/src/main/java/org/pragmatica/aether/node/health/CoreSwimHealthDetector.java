@@ -83,6 +83,28 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private volatile List<NodeInfo> peerDirectory = List.of();
     /// #2936: this node's last quorum report, replayed onto a protocol created after it was made.
     private volatile QuorumReport selfQuorumReport = QuorumReport.HELD;
+    /// How the detector builds the protocol it starts. Production never changes it; a test that drives the started
+    /// protocol injects the test factory so every call into it completes before it returns (#3568).
+    private volatile SwimProtocolFactory protocolFactory = SwimProtocol::swimProtocol;
+
+    /// Builds the protocol the detector starts: the full production factory shape of [SwimProtocol].
+    @FunctionalInterface
+    public interface SwimProtocolFactory {
+        Result<SwimProtocol> create(SwimConfig config,
+                                    SwimTransport transport,
+                                    SwimMembershipListener listener,
+                                    NodeId selfId,
+                                    InetSocketAddress selfAddress,
+                                    BooleanSupplier isBooting,
+                                    Predicate<NodeId> transportConnected);
+    }
+
+    /// Test-only (#3568): build the protocol [#start] creates with `factory`, so a test that drives that started
+    /// protocol uses the test protocol factory like every other test. Call it before `start`.
+    @Contract
+    public void protocolFactoryForTest(SwimProtocolFactory factory) {
+        protocolFactory = factory;
+    }
 
     /// #2936: publish this node's own [QuorumReport] on its SWIM self-ALIVE (see `SwimProtocol.reportSelfQuorum`).
     /// Kept and replayed when the protocol starts later.
@@ -800,13 +822,13 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                         .onFailure(cause -> log.error("SWIM transport failed to start: {}",
                                                       cause.message()))
                         .flatMap(_ -> afterBind.get())
-                        .flatMap(_ -> SwimProtocol.swimProtocol(swimConfig,
-                                                                transport,
-                                                                this,
-                                                                context.topologyConfig().self(),
-                                                                selfAddress,
-                                                                context.isBootingSupplier(),
-                                                                context.transportConnected()))
+                        .flatMap(_ -> protocolFactory.create(swimConfig,
+                                                             transport,
+                                                             this,
+                                                             context.topologyConfig().self(),
+                                                             selfAddress,
+                                                             context.isBootingSupplier(),
+                                                             context.transportConnected()))
                         .flatMap(SwimProtocol::start)
                         .map(protocol -> seedAndWrap(protocol, transport, encryptor))
                         .onFailure(_ -> transport.stop());

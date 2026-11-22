@@ -79,7 +79,7 @@ class SwimObservationStreamTest {
             transport = new RecordingTransport();
             listener = new RecordingListener();
             observations = new RecordingObservationSink();
-            protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
             protocol.addObservationListener(observations);
         }
@@ -92,7 +92,7 @@ class SwimObservationStreamTest {
             // escalates it OBSERVED->SUSPECT->FAULTY. In COLD_BOOT a never-HEALTHY peer's FAULTY edge
             // is suppressed to UnknownObserved (cold-boot gate).
             var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("a gossiped SUSPECT for an unknown id is born OBSERVED, not SUSPECT (#336/#241)")
@@ -125,14 +125,14 @@ class SwimObservationStreamTest {
         void coldBoot_oncePeerHealthy_thenLost_emitsFaulty() {
             // Step 1: NODE_A becomes HEALTHY via gossip
             var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
             assertThat(observations.byType(SwimObservation.HealthyObserved.class)).hasSize(1);
             assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
 
             // Step 2: peer transitions to SUSPECT via gossip
             var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
 
             assertThat(observations.byType(SwimObservation.SuspectObserved.class)).hasSize(1);
 
@@ -175,7 +175,7 @@ class SwimObservationStreamTest {
             transport = new RecordingTransport();
             listener = new RecordingListener();
             observations = new RecordingObservationSink();
-            protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
             protocol.addObservationListener(observations);
         }
@@ -184,12 +184,12 @@ class SwimObservationStreamTest {
         void transportHint_unreachable_acceleratesSuspicion() {
             // Bring NODE_A to HEALTHY first (so cold-boot suppression doesn't apply)
             var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
             assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
 
             // Drive NODE_A into SUSPECT via gossip
             var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
             assertThat(observations.byType(SwimObservation.SuspectObserved.class)).hasSize(1);
 
             // Apply transport hint: peer unreachable → suspect window biased toward 3s floor.
@@ -215,10 +215,10 @@ class SwimObservationStreamTest {
         void transportHint_reachable_neverReportsLife_swimRemainsAuthoritative() {
             // Bring NODE_A to HEALTHY then to SUSPECT
             var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
             var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
 
             var preReachableTs = protocol.suspectTimestampForTest(NODE_A);
             assertThat(preReachableTs.isPresent())
@@ -255,7 +255,7 @@ class SwimObservationStreamTest {
             transport = new RecordingTransport();
             listener = new RecordingListener();
             observations = new RecordingObservationSink();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
             protocol.addObservationListener(observations);
         }
@@ -264,7 +264,7 @@ class SwimObservationStreamTest {
         void observation_isIdempotent_onRepeatedSameState() {
             // Drive HEALTHY edge once
             var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
             assertThat(observations.byType(SwimObservation.HealthyObserved.class))
                 .as("First HEALTHY edge must emit one HealthyObserved")
@@ -272,7 +272,7 @@ class SwimObservationStreamTest {
 
             // Replay the same gossip — at same incarnation+state, must be a no-op.
             for (var i = 0; i < 5; i++) {
-                protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 100L + i, List.of(aliveUpdate)));
+                protocol.onMessage(ADDR_B, new Ping(NODE_B, 100L + i, List.of(aliveUpdate)));
             }
 
             assertThat(observations.byType(SwimObservation.HealthyObserved.class))
@@ -284,18 +284,18 @@ class SwimObservationStreamTest {
         void observations_areEdgeTriggered() {
             // HEALTHY edge → 1 observation
             var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
             // SUSPECT edge (different incarnation) → 1 observation
             var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
 
             // FAULTY edge → 1 observation. The second-hand (gossip) FAULTY needs local
             // transport-down corroboration to drive the death path (P1 death-path
             // co-confirmation) so the FaultyObserved + DepartedObserved pair fires.
             protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
             var faultyUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 2, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 3L, List.of(faultyUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(faultyUpdate)));
 
             // MemberDiscovered is a join event (feeds the QUIC dial set), not a health
             // edge — exclude it. One observation per health-state edge, EXCEPT the
@@ -326,7 +326,7 @@ class SwimObservationStreamTest {
             transport = new RecordingTransport();
             listener = new RecordingListener();
             observations = new RecordingObservationSink();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
             protocol.addObservationListener(observations);
         }
@@ -335,7 +335,7 @@ class SwimObservationStreamTest {
         void swimAuthority_overridesTransportHint_onRecovery() {
             // SWIM observes NODE_A as ALIVE/HEALTHY
             var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
             assertThat(observations.byType(SwimObservation.HealthyObserved.class)).hasSize(1);
             SwimHealth healthBefore = protocol.currentHealth()
@@ -361,7 +361,7 @@ class SwimObservationStreamTest {
             // (the peer's own re-announcement / probe-ack path) returns it to HEALTHY. Transport
             // may accelerate death suspicion, never report life — the suspicion is refutable.
             var refutation = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 5, ADDR_A);
-            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 2L, List.of(refutation)));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(refutation)));
 
             SwimHealth healthAfter = protocol.currentHealth()
                                              .healthOf(NODE_A)
@@ -382,7 +382,7 @@ class SwimObservationStreamTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
         }
 
@@ -390,7 +390,7 @@ class SwimObservationStreamTest {
         void currentHealth_neverSeenPeer_classifiedAsUnknown() {
             // Inject SUSPECT update for never-healthy peer
             var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
 
             SwimHealth health = protocol.currentHealth()
                                         .healthOf(NODE_A)
@@ -403,7 +403,7 @@ class SwimObservationStreamTest {
         @Test
         void currentHealth_alivePeer_classifiedAsHealthy() {
             var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
             SwimHealth health = protocol.currentHealth()
                                         .healthOf(NODE_A)
@@ -443,14 +443,14 @@ class SwimObservationStreamTest {
         }
 
         private SwimProtocol protocolWith(SwimConfig config) {
-            var protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            var protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                        .fold(_ -> null, v -> v);
             protocol.addObservationListener(observations);
             return protocol;
         }
 
         private void seenHealthy(SwimProtocol protocol, NodeId nodeId, InetSocketAddress addr) {
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(MembershipUpdate.membershipUpdate(nodeId, MemberState.ALIVE, 0, addr))));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(MembershipUpdate.membershipUpdate(nodeId, MemberState.ALIVE, 0, addr))));
         }
 
         @Test
@@ -510,7 +510,7 @@ class SwimObservationStreamTest {
 
             // The peer refutes within the window via a higher-incarnation ALIVE (its
             // re-announcement / probe-ack path). SWIM stays authoritative on recovery.
-            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 2L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 5, ADDR_A))));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 5, ADDR_A))));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("A refutation returns the transport-suspected peer to ALIVE — recovery preserved")

@@ -98,7 +98,7 @@ class SwimExpiryRefutationRaceTest {
             var go = new AtomicBoolean(false);
             var expiry = new Thread(() -> spinThen(ready, go, () -> protocol.expireSuspectMembersForTest(farFuture())),
                                     "race-expiry");
-            var refuter = new Thread(() -> spinThen(ready, go, () -> protocol.deliverForTest(ADDR_A, aliveOfNodeA(1, 10L))),
+            var refuter = new Thread(() -> spinThen(ready, go, () -> protocol.onMessage(ADDR_A, aliveOfNodeA(1, 10L))),
                                      "race-refuter");
 
             expiry.start();
@@ -127,7 +127,7 @@ class SwimExpiryRefutationRaceTest {
         assertThat(hook.inside.await(WAIT_MS, TimeUnit.MILLISECONDS)).as("control: the expiry reached its member store")
                                                                     .isTrue();
 
-        var refuter = new Thread(() -> refutation.forEach(ping -> protocol.deliverForTest(ADDR_A, ping)), "race-refuter");
+        var refuter = new Thread(() -> refutation.forEach(ping -> protocol.onMessage(ADDR_A, ping)), "race-refuter");
 
         refuter.start();
         awaitParkedOrDone(refuter);
@@ -145,7 +145,7 @@ class SwimExpiryRefutationRaceTest {
                                 timeSpan(100).millis(),
                                 8,
                                 timeSpan(20).millis()).withJoinGrace(timeSpan(0).millis());
-        var protocol = SwimProtocol.swimProtocol(config,
+        var protocol = SwimTestProtocols.swimProtocol(config,
                                                  new SilentTransport(),
                                                  new SilentListener(),
                                                  SELF_ID,
@@ -157,7 +157,7 @@ class SwimExpiryRefutationRaceTest {
         protocol.setMembershipEligibility(hook::eligible);
         protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
         protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
-        protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(update(MemberState.SUSPECT, 0))));
+        protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(update(MemberState.SUSPECT, 0))));
         assertThat(stateOfA(protocol)).as("control: A is SUSPECT at incarnation 0").isEqualTo("SUSPECT@0");
         assertThat(protocol.suspectTimestampForTest(NODE_A).isPresent()).as("control: A's suspicion is armed").isTrue();
 

@@ -79,6 +79,13 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
+            <artifactId>swim</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
             <artifactId>dht</artifactId>
         </dependency>
         <dependency>

@@ -54,22 +54,44 @@ import org.slf4j.LoggerFactory;
 /// [VirtualMachineError] (stack overflow, out of memory) is logged the same way and then propagates to the drainer's
 /// caller, because the drainer's thread is not trusted to keep running after one. The drainer is released on EVERY
 /// exit (a `finally` around the drain), so the tasks still queued after it run on the next submission.
+///
+/// Quiescing mode (#3568, tests only, [#quiescingSerialExecutor]): [#execute] and [#call] from outside a task also wait
+/// until the executor is quiet, meaning no task is queued and none is running, so a test that returns from any call
+/// into the protocol sees that call and every follow-up it queued applied, even while another thread (the probe
+/// tick) is the drainer. This is the one construction-time answer to the race of #3560 and #3568: no entry point
+/// needs its own waiting wrapper. Quiet is a moment, not a latch: a submission by another thread after that moment
+/// (the probe tick) and a timer-driven task not yet queued are not waited for. The wait is skipped inside any
+/// quiescing executor's task, of this or another executor (a simulated network hop from one protocol's task into
+/// another's), where it would wait on a drainer that waits back. Production code never builds this mode: a
+/// production wait on another drainer is the lock-cycle risk the default mode is built to avoid.
 final class SerialExecutor {
     private static final Logger LOG = LoggerFactory.getLogger(SerialExecutor.class);
     private static final long CALL_WAIT_NANOS = 50_000L;
+    /// Set while the thread runs a task of a quiescing executor; read only by quiescing executors.
+    private static final ThreadLocal<Boolean> IN_QUIESCING_TASK = ThreadLocal.withInitial(() -> false);
 
     private final Queue<Runnable> queue = new ConcurrentLinkedQueue<>();
     private final AtomicReference<Thread> drainer = new AtomicReference<>();
+    private final boolean quiescing;
 
-    private SerialExecutor() {}
+    private SerialExecutor(boolean quiescing) {
+        this.quiescing = quiescing;
+    }
 
     static SerialExecutor serialExecutor() {
-        return new SerialExecutor();
+        return new SerialExecutor(false);
+    }
+
+    /// TEST seam only (#3568): an executor whose [#execute] and [#call] wait for quiet before returning to a caller
+    /// outside every task. Built by the test protocol factory, never by production code.
+    static SerialExecutor quiescingSerialExecutor() {
+        return new SerialExecutor(true);
     }
 
     /// Run `task` serially with every other task of this executor, without ever waiting. From inside a task:
     /// queued, runs after the current one. From outside: queued, then this thread drains the queue to empty if no
-    /// other thread is draining; otherwise it returns at once and the running drainer runs the task.
+    /// other thread is draining; otherwise it returns at once and the running drainer runs the task. A quiescing
+    /// executor then waits for quiet, from outside every task (see the class comment).
     @Contract
     void execute(Runnable task) {
         queue.add(task);
@@ -78,12 +100,14 @@ final class SerialExecutor {
         }
 
         drainWhileOwned();
+        quiesceOutsideTasks();
     }
 
     /// TEST seams only: run `action` serially and return its value. Unlike [#execute] it waits until the action
     /// ran (strict, no escape), so it must not be called from inside a task (it would wait on itself) — that is a
-    /// failure, [SwimError.General#CALL_FROM_INSIDE_TASK], a test-wiring defect reported as a value, not thrown. Production code never calls
-    /// it: a production wait on another drainer is the lock-cycle risk [#execute] is built to avoid.
+    /// failure, [SwimError.General#CALL_FROM_INSIDE_TASK], a test-wiring defect reported as a value, not thrown. A
+    /// quiescing executor also waits for quiet, so a follow-up the action queued has run when it returns. Production
+    /// code never calls it: a production wait on another drainer is the lock-cycle risk [#execute] is built to avoid.
     <T> Result<T> call(Supplier<T> action) {
         return isConfined()
                ? SwimError.General.CALL_FROM_INSIDE_TASK.result()
@@ -100,7 +124,39 @@ final class SerialExecutor {
             parkUnlessDone(done);
         }
 
+        quiesceOutsideTasks();
+
         return Result.success(result.get());
+    }
+
+    /// Quiescing mode only: wait until quiet, unless this thread is inside a quiescing executor's task.
+    @Contract
+    private void quiesceOutsideTasks() {
+        if (quiescing && !IN_QUIESCING_TASK.get()) {
+            awaitQuiet();
+        }
+    }
+
+    /// Wait until quiet, draining if no other thread is the drainer. Never called from inside a task of this executor
+    /// ([#execute] returns first), where it would wait on itself.
+    @Contract
+    private void awaitQuiet() {
+        while (!isQuiet()) {
+            drainWhileOwned();
+            parkUnlessQuiet();
+        }
+    }
+
+    private void parkUnlessQuiet() {
+        if (!isQuiet()) {
+            LockSupport.parkNanos(CALL_WAIT_NANOS);
+        }
+    }
+
+    /// Queue first, drainer second: a task polled before the queue read is still running, so the drainer is still
+    /// set when it is read (the reverse order could see a null drainer, then a task taken and running, and report quiet).
+    private boolean isQuiet() {
+        return queue.isEmpty() && drainer.get() == null;
     }
 
     /// `true` when the calling thread is inside a task of this executor.
@@ -134,9 +190,29 @@ final class SerialExecutor {
     /// a drainer left pinned would make every later submission enqueue and return, and nothing would drain again.
     private void drainAndRelease() {
         try {
-            drainQueue();
+            drainTasks();
         } finally {
             drainer.set(null);
+        }
+    }
+
+    /// A quiescing executor marks the thread for the duration of the drain; the default executor touches no thread-local.
+    private void drainTasks() {
+        if (quiescing) {
+            drainMarked();
+        } else {
+            drainQueue();
+        }
+    }
+
+    private void drainMarked() {
+        var wasMarked = IN_QUIESCING_TASK.get();
+
+        IN_QUIESCING_TASK.set(true);
+        try {
+            drainQueue();
+        } finally {
+            IN_QUIESCING_TASK.set(wasMarked);
         }
     }
 

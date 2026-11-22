@@ -82,7 +82,7 @@ class SwimDeathPathCoConfirmationTest {
             liveTransport.clear();
             // NORMAL phase (isBooting=false) so cold-boot suppression never masks the FAULTY edge.
             // transportConnected reflects this node's LIVE QUIC links (the P1 contradiction predicate).
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR,
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR,
                                                  () -> false, liveTransport::contains)
                                    .unwrap();
             protocol.addObservationListener(observations);
@@ -95,7 +95,7 @@ class SwimDeathPathCoConfirmationTest {
             liveTransport.add(NODE_A); // gossip will say dead, but my own link is up — the S06 poison case
 
             var faulty = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(faulty)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faulty)));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("Live-transport-contradicted second-hand FAULTY must downgrade to SUSPECT (counted, refutable)")
@@ -121,7 +121,7 @@ class SwimDeathPathCoConfirmationTest {
             transport.sentMessages.clear();
 
             var faulty = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(faulty)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faulty)));
 
             assertThat(transport.sentMessages.stream()
                                              .anyMatch(sent -> sent.target().equals(ADDR_A)
@@ -138,7 +138,7 @@ class SwimDeathPathCoConfirmationTest {
             // liveTransport does NOT contain NODE_A.
 
             var faulty = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(faulty)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faulty)));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("Gossiped FAULTY with NO live local link drives the death path: member is FAULTY")
@@ -163,13 +163,13 @@ class SwimDeathPathCoConfirmationTest {
             var graceListener = new RecordingListener();
             var graceObservations = new RecordingObservationSink();
             var config = swimConfig().withJoinGrace(timeSpan(0).millis());
-            var graceProtocol = SwimProtocol.swimProtocol(config, graceTransport, graceListener, SELF_ID, SELF_ADDR,
+            var graceProtocol = SwimTestProtocols.swimProtocol(config, graceTransport, graceListener, SELF_ID, SELF_ADDR,
                                                           () -> false, liveTransport::contains)
                                             .unwrap();
             graceProtocol.addObservationListener(graceObservations);
 
             var faulty = MembershipUpdate.membershipUpdate(NODE_C, MemberState.FAULTY, 1, ADDR_C);
-            graceProtocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(faulty)));
+            graceProtocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(faulty)));
 
             assertThat(graceProtocol.members().get(NODE_C).state())
                 .as("Unknown peer first-seen as FAULTY gossip with no live link is accepted (FAULTY)")
@@ -183,7 +183,7 @@ class SwimDeathPathCoConfirmationTest {
             // First sighting of NODE_C is a FAULTY gossip but this node holds a live link to it.
             liveTransport.add(NODE_C);
             var faulty = MembershipUpdate.membershipUpdate(NODE_C, MemberState.FAULTY, 1, ADDR_C);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(faulty)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(faulty)));
 
             assertThat(protocol.members().get(NODE_C).state())
                 .as("New member first-seen as contradicted FAULTY gossip must be held SUSPECT")
@@ -205,13 +205,13 @@ class SwimDeathPathCoConfirmationTest {
                                     timeSpan(60).millis(),
                                     8,
                                     timeSpan(40).millis()).withJoinGrace(timeSpan(0).millis());
-            var tightProtocol = SwimProtocol.swimProtocol(config, tightTransport, tightListener, SELF_ID, SELF_ADDR, () -> false)
+            var tightProtocol = SwimTestProtocols.swimProtocol(config, tightTransport, tightListener, SELF_ID, SELF_ADDR, () -> false)
                                             .unwrap();
             tightProtocol.addObservationListener(tightObservations);
 
             // NODE_A ever-HEALTHY, then SUSPECT — THIS node's own suspect-window expiry → first-hand FAULTY.
-            tightProtocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A))));
-            tightProtocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A))));
+            tightProtocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A))));
+            tightProtocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A))));
 
             tightProtocol.start();
             try {
@@ -231,7 +231,7 @@ class SwimDeathPathCoConfirmationTest {
 
         private void seenHealthy(NodeId nodeId, InetSocketAddress addr) {
             var alive = MembershipUpdate.membershipUpdate(nodeId, MemberState.ALIVE, 0, addr);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(alive)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(alive)));
         }
     }
 
@@ -270,7 +270,7 @@ class SwimDeathPathCoConfirmationTest {
             observations = new RecordingObservationSink();
             liveTransport.clear();
             // NORMAL phase; transportConnected mirrors this node's live QUIC links, as production wires it.
-            protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR,
+            protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR,
                                                  () -> false, liveTransport::contains)
                                    .unwrap();
             protocol.addObservationListener(observations);
@@ -594,7 +594,7 @@ class SwimDeathPathCoConfirmationTest {
                                          timeSpan(500).millis(),
                                          8,
                                          timeSpan(40).millis()).withJoinGrace(timeSpan(0).millis());
-            var held = SwimProtocol.swimProtocol(shortWindow, transport, listener, SELF_ID, SELF_ADDR, () -> false, liveTransport::contains)
+            var held = SwimTestProtocols.swimProtocol(shortWindow, transport, listener, SELF_ID, SELF_ADDR, () -> false, liveTransport::contains)
                                    .unwrap();
 
             held.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
@@ -622,12 +622,12 @@ class SwimDeathPathCoConfirmationTest {
                                   .filter(sent -> sent.target().equals(addr) && sent.message() instanceof Ping)
                                   .map(sent -> ((Ping) sent.message()).sequence())
                                   .reduce((first, second) -> second)
-                                  .ifPresent(seq -> protocol.deliverForTest(addr, new Ack(peer, seq, List.of())));
+                                  .ifPresent(seq -> protocol.onMessage(addr, new Ack(peer, seq, List.of())));
             return stateOf(peer) == MemberState.ALIVE;
         }
 
         private void seenHealthy(SwimProtocol target, NodeId nodeId, InetSocketAddress addr) {
-            target.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(MembershipUpdate.membershipUpdate(nodeId, MemberState.ALIVE, 0, addr))));
+            target.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(MembershipUpdate.membershipUpdate(nodeId, MemberState.ALIVE, 0, addr))));
         }
 
         private TransportObservation.PeerUnreachable linkLost(NodeId peer) {
@@ -671,11 +671,11 @@ class SwimDeathPathCoConfirmationTest {
                                     timeSpan(60).millis(),
                                     8,
                                     timeSpan(40).millis()).withJoinGrace(timeSpan(0).millis());
-            var protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+            var protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
                                        .unwrap();
 
             // Two peers, both ever-HEALTHY (so their FAULTY is not cold-boot-suppressed).
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L,
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L,
                                                 List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A),
                                                         MembershipUpdate.membershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B))));
 
@@ -702,7 +702,7 @@ class SwimDeathPathCoConfirmationTest {
                 // Rejoin evidence: NODE_A returns and re-announces ALIVE at a strictly-higher
                 // incarnation (supersedes the FAULTY tombstone) — a peer is reachable again, so
                 // this node is no longer isolated. Routes through recordHealthyAndEmit.
-                protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 99L,
+                protocol.onMessage(ADDR_A, new Ping(NODE_A, 99L,
                                                     List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 5, ADDR_A))));
 
                 assertThat(protocol.selfIsolatedForTest())
@@ -729,11 +729,11 @@ class SwimDeathPathCoConfirmationTest {
                                     timeSpan(60).millis(),
                                     8,
                                     timeSpan(40).millis()).withJoinGrace(timeSpan(0).millis());
-            var protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+            var protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
                                        .unwrap();
 
             // Two known, ever-HEALTHY peers.
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L,
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L,
                                                 List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A),
                                                         MembershipUpdate.membershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B))));
 
@@ -841,7 +841,6 @@ class SwimDeathPathCoConfirmationTest {
 
             if (target.equals(peerAddress) && message instanceof Ping ping) {
                 Option.option(handler.get())
-                      // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                       .onPresent(swim -> swim.onMessage(peerAddress, new Ack(peer, ping.sequence(), List.of())))
                       .onPresent(_ -> acksDelivered.incrementAndGet());
             }

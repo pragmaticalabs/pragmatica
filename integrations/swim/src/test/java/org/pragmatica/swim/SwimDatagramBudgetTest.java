@@ -68,7 +68,7 @@ class SwimDatagramBudgetTest {
     @BeforeEach
     void setUp() {
         transport = new RecordingTransport();
-        protocol = SwimProtocol.swimProtocol(swimConfig(timeSpan(1).seconds(), timeSpan(500).millis(), 3, timeSpan(5).seconds(), 64, timeSpan(1).seconds()),
+        protocol = SwimTestProtocols.swimProtocol(swimConfig(timeSpan(1).seconds(), timeSpan(500).millis(), 3, timeSpan(5).seconds(), 64, timeSpan(1).seconds()),
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,
@@ -93,7 +93,7 @@ class SwimDatagramBudgetTest {
 
     @Test
     void selfAliveGossip_carriesTheNodesOwnLabels() {
-        var fresh = SwimProtocol.swimProtocol(swimConfig(timeSpan(100).millis(), timeSpan(80).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(40).millis())
+        var fresh = SwimTestProtocols.swimProtocol(swimConfig(timeSpan(100).millis(), timeSpan(80).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(40).millis())
                                                   .withJoinGrace(timeSpan(0).millis()),
                                               transport,
                                               new RecordingListener(),
@@ -124,7 +124,7 @@ class SwimDatagramBudgetTest {
 
     private List<MembershipUpdate> selfUpdates(SwimProtocol subject) {
         transport.sentMessages.clear();
-        subject.deliverForTest(ASKER_ADDR, new Ping(ASKER, 5000L, List.of()));
+        subject.onMessage(ASKER_ADDR, new Ping(ASKER, 5000L, List.of()));
 
         return transport.sentMessages.stream()
                                      .map(SentMessage::message)
@@ -140,7 +140,7 @@ class SwimDatagramBudgetTest {
     /// the budget with room to spare instead of tipping every probe past the receive buffer.
     @Test
     void defaultEightUpdateAck_withLongRealisticLabels_carriesOnlyRoleSourceAndZone_underBudget() {
-        var defaults = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, transport, new RecordingListener(), SELF_ID, SELF_ADDR)
+        var defaults = SwimTestProtocols.swimProtocol(SwimConfig.DEFAULT, transport, new RecordingListener(), SELF_ID, SELF_ADDR)
                                    .unwrap();
         var longLabels = Map.of(NodeInfo.LABEL_ROLE, "core",
                                 NodeInfo.LABEL_SOURCE, "replacement",
@@ -149,7 +149,7 @@ class SwimDatagramBudgetTest {
                                 NodeInfo.LABEL_INSTANCE_TYPE, "ccx33-dedicated-vcpu-general-purpose",
                                 NodeInfo.LABEL_POOL, "core-pool-primary-replacement-generation-7");
 
-        IntStream.range(0, 20).forEach(i -> defaults.deliverForTest(ASKER_ADDR,
+        IntStream.range(0, 20).forEach(i -> defaults.onMessage(ASKER_ADDR,
                                                                new Ping(ASKER,
                                                                         1L,
                                                                         List.of(MembershipUpdate.membershipUpdate(new NodeId("aether-test-cluster-node-01m3rc2gnr6bnvmnmc7rs0r" + i),
@@ -159,7 +159,7 @@ class SwimDatagramBudgetTest {
                                                                                                                   0L,
                                                                                                                   longLabels)))));
         transport.sentMessages.clear();
-        defaults.deliverForTest(ASKER_ADDR, new Ping(ASKER, 2L, List.of()));
+        defaults.onMessage(ASKER_ADDR, new Ping(ASKER, 2L, List.of()));
         var piggyback = transport.sentMessages.stream()
                                               .map(SentMessage::message)
                                               .filter(Ack.class::isInstance)
@@ -178,7 +178,7 @@ class SwimDatagramBudgetTest {
 
     private Ack ackToPing(int sequence) {
         transport.sentMessages.clear();
-        protocol.deliverForTest(ASKER_ADDR, new Ping(ASKER, sequence, List.of()));
+        protocol.onMessage(ASKER_ADDR, new Ping(ASKER, sequence, List.of()));
 
         return transport.sentMessages.stream()
                                      .map(SentMessage::message)
@@ -193,7 +193,7 @@ class SwimDatagramBudgetTest {
         var address = new InetSocketAddress("127.0.0.1", 9800 + index);
         var update = MembershipUpdate.membershipUpdate(subject, MemberState.ALIVE, 0L, address, 0L, REALISTIC_LABELS);
 
-        protocol.deliverForTest(ASKER_ADDR, new Ping(ASKER, 1L, List.of(update)));
+        protocol.onMessage(ASKER_ADDR, new Ping(ASKER, 1L, List.of(update)));
     }
 
     private static int estimatedBytes(List<MembershipUpdate> updates) {

@@ -73,7 +73,7 @@ class SwimUndecodableStateTest {
 
     @BeforeEach
     void setUp() {
-        protocol = SwimProtocol.swimProtocol(config(),
+        protocol = SwimTestProtocols.swimProtocol(config(),
                                              new SilentTransport(),
                                              new SilentListener(),
                                              SELF_ID,
@@ -83,7 +83,7 @@ class SwimUndecodableStateTest {
     }
 
     private void gossip(MemberState state, long incarnation) {
-        protocol.deliverForTest(ADDR_B, new Ping(NODE_B, incarnation + 1, List.of(MembershipUpdate.membershipUpdate(NODE_A, state, incarnation, ADDR_A))));
+        protocol.onMessage(ADDR_B, new Ping(NODE_B, incarnation + 1, List.of(MembershipUpdate.membershipUpdate(NODE_A, state, incarnation, ADDR_A))));
     }
 
     private void seedAlive() {

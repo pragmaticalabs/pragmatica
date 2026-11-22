@@ -126,7 +126,7 @@ class SwimIsolationProbeTest {
     @BeforeEach
     void setUp() {
         transport = new AddressedTransport();
-        protocol = SwimProtocol.swimProtocol(config(), transport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
+        protocol = SwimTestProtocols.swimProtocol(config(), transport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
                                .unwrap();
         protocol.setBootTokens(BootTokens.bootTokens(SELF_TOKEN));
         protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.FAULTY);
@@ -190,21 +190,21 @@ class SwimIsolationProbeTest {
         protocol.announceJoin(INFO_SELF, "", 1L, SELF_TOKEN, List.of());
         protocol.latchSelfIsolationForTest(() -> true);
         var holderTransport = new RecordingTransport();
-        holder = SwimProtocol.swimProtocol(config(), holderTransport, new RecordingListener(), NODE_A, ADDR_A, () -> false)
+        holder = SwimTestProtocols.swimProtocol(config(), holderTransport, new RecordingListener(), NODE_A, ADDR_A, () -> false)
                              .unwrap();
         holder.setBootTokens(BootTokens.bootTokens(TOKEN_A));
         holder.putDeathRecordForTest(SELF_ID, 1L, SELF_TOKEN, System.currentTimeMillis());
 
         protocol.probeRoundForTest();
         var isolationPing = transport.firstPingTo(ADDR_A);
-        holder.deliverForTest(SELF_ADDR, isolationPing);
+        holder.onMessage(SELF_ADDR, isolationPing);
         var ack = holderTransport.sentMessages.stream()
                                               .filter(Ack.class::isInstance)
                                               .map(Ack.class::cast)
                                               .filter(sent -> sent.sequence() == isolationPing.sequence())
                                               .findFirst()
                                               .orElseThrow();
-        protocol.deliverForTest(ADDR_A, ack);
+        protocol.onMessage(ADDR_A, ack);
 
         assertThat(protocol.selfIncarnation()).as("the notice in the isolation ping's Ack is refuted").isEqualTo(2L);
     }
@@ -214,7 +214,7 @@ class SwimIsolationProbeTest {
         protocol.latchSelfIsolationForTest(() -> true);
 
         protocol.probeRoundForTest();
-        protocol.deliverForTest(ADDR_A, Ack.ack(NODE_A, transport.firstPingTo(ADDR_A).sequence(), List.of()));
+        protocol.onMessage(ADDR_A, Ack.ack(NODE_A, transport.firstPingTo(ADDR_A).sequence(), List.of()));
         protocol.probeRoundForTest();
 
         assertThat(protocol.selfIsolatedForTest()).as("an isolation Ack alone does not unlatch (design behaviour)").isTrue();
@@ -303,12 +303,12 @@ class SwimIsolationProbeTest {
     void isolationProbe_throughTheRealTick_latchedNodePingsTheFaultyPeer() {
         protocol.removeMemberForTest(NODE_A);
         protocol.removeMemberForTest(NODE_B);
-        protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(faultyClaim(MemberState.ALIVE, 0L))));
+        protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(faultyClaim(MemberState.ALIVE, 0L))));
         protocol.recordTransportHint(NODE_A,
                                      new TransportObservation.PeerUnreachable(NODE_A,
                                                                               Causes.cause("test peer down"),
                                                                               TransportObservation.HintOrigin.LINK_LOST));
-        protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyClaim(MemberState.FAULTY, 1L))));
+        protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyClaim(MemberState.FAULTY, 1L))));
         protocol.latchSelfIsolationForTest(() -> true);
         transport.sent.clear();
 
@@ -367,7 +367,7 @@ class SwimIsolationProbeTest {
 
     /// A latched protocol with a 1 s period whose only peer has been swept, so the round announces to the seed.
     private SwimProtocol aloneAndLatched(AddressedTransport recorder, InetSocketAddress seed) {
-        var alone = SwimProtocol.swimProtocol(swimConfig(timeSpan(1000).millis(),
+        var alone = SwimTestProtocols.swimProtocol(swimConfig(timeSpan(1000).millis(),
                                                          timeSpan(20).millis(),
                                                          3,
                                                          timeSpan(100).millis(),

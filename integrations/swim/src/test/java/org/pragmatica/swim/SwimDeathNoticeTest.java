@@ -83,7 +83,7 @@ class SwimDeathNoticeTest {
 
     private void createHolder(int maxPiggyback) {
         transport = new RecordingTransport();
-        protocol = SwimProtocol.swimProtocol(config(maxPiggyback),
+        protocol = SwimTestProtocols.swimProtocol(config(maxPiggyback),
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,
@@ -111,7 +111,7 @@ class SwimDeathNoticeTest {
     }
 
     private void ping(NodeId from, long sequence, List<MembershipUpdate> piggyback) {
-        protocol.deliverForTest(ADDR_A, new Ping(from, sequence, piggyback));
+        protocol.onMessage(ADDR_A, new Ping(from, sequence, piggyback));
     }
 
     private static NodeId longId(char fill, int length) {
@@ -227,7 +227,7 @@ class SwimDeathNoticeTest {
         protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
         protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
 
-        protocol.deliverForTest(ADDR_A, new PingReq(NODE_A, NODE_B, 9L));
+        protocol.onMessage(ADDR_A, new PingReq(NODE_A, NODE_B, 9L));
 
         var relayed = transport.sentMessages.stream()
                                             .filter(Ping.class::isInstance)
@@ -266,7 +266,7 @@ class SwimDeathNoticeTest {
         protocol.putDeathRecordForTest(NODE_A, 1L, TOKEN_A, System.currentTimeMillis());
         protocol.putDeathRecordForTest(NODE_C, 1L, TOKEN_C, System.currentTimeMillis());
 
-        protocol.deliverForTest(ADDR_B,
+        protocol.onMessage(ADDR_B,
                            Ping.relayedPing(NODE_B,
                                             7L,
                                             List.of(updateOf(NODE_C, MemberState.ALIVE, 1L, TOKEN_C),
@@ -283,7 +283,7 @@ class SwimDeathNoticeTest {
     void deathNotice_relayedPing_onBehalfOfNamesOther_noNoticeForTheEntryHeld() {
         protocol.putDeathRecordForTest(NODE_A, 1L, TOKEN_A, System.currentTimeMillis());
 
-        protocol.deliverForTest(ADDR_B,
+        protocol.onMessage(ADDR_B,
                            Ping.relayedPing(NODE_B, 7L, List.of(updateOf(NODE_A, MemberState.ALIVE, 1L, TOKEN_A)), NODE_C));
 
         assertThat(carriesFaultyOf(ackOf(transport, 7L), NODE_A)).as("onBehalfOf names C, the entry for A is gossip")
@@ -295,7 +295,7 @@ class SwimDeathNoticeTest {
         protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
         protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
 
-        protocol.deliverForTest(ADDR_A, new PingReq(NODE_A, NODE_B, 9L));
+        protocol.onMessage(ADDR_A, new PingReq(NODE_A, NODE_B, 9L));
 
         var relayed = transport.sentMessages.stream()
                                             .filter(Ping.class::isInstance)
@@ -333,11 +333,11 @@ class SwimDeathNoticeTest {
             }
         };
 
-        claimant = SwimProtocol.swimProtocol(config(8), relayerTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
+        claimant = SwimTestProtocols.swimProtocol(config(8), relayerTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
                                .unwrap();
         claimant.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
         claimant.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
-        claimant.deliverForTest(ADDR_A, new PingReq(NODE_A, NODE_B, 9L));
+        claimant.onMessage(ADDR_A, new PingReq(NODE_A, NODE_B, 9L));
 
         var relayed = relayerTransport.sentMessages.stream()
                                                    .filter(Ping.class::isInstance)
@@ -346,7 +346,7 @@ class SwimDeathNoticeTest {
                                                    .orElseThrow();
         var notice = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1L, ADDR_A, TOKEN_A);
 
-        claimant.deliverForTest(ADDR_B, Ack.ack(NODE_B, relayed.sequence(), List.of(notice)));
+        claimant.onMessage(ADDR_B, Ack.ack(NODE_B, relayed.sequence(), List.of(notice)));
 
         assertThat(forwardedTo).as("the Ack answering the requester's PingReq goes to the requester's address").containsEntry(9L, ADDR_A);
         assertThat(ackOf(relayerTransport, 9L).piggyback()).as("the forwarded Ack carries the notice for the requester")
@@ -359,9 +359,9 @@ class SwimDeathNoticeTest {
     void deathNotice_relayedPing_requesterEntryIsSuspect_noNotice_aliveControlEarnsOne() {
         protocol.putDeathRecordForTest(NODE_A, 1L, TOKEN_A, System.currentTimeMillis());
 
-        protocol.deliverForTest(ADDR_B,
+        protocol.onMessage(ADDR_B,
                            Ping.relayedPing(NODE_B, 7L, List.of(updateOf(NODE_A, MemberState.SUSPECT, 1L, TOKEN_A)), NODE_A));
-        protocol.deliverForTest(ADDR_B,
+        protocol.onMessage(ADDR_B,
                            Ping.relayedPing(NODE_B, 8L, List.of(updateOf(NODE_A, MemberState.ALIVE, 1L, TOKEN_A)), NODE_A));
 
         assertThat(carriesFaultyOf(ackOf(transport, 8L), NODE_A)).as("control: the Alive claim of the same requester earns the notice")
@@ -381,7 +381,7 @@ class SwimDeathNoticeTest {
         ping(NODE_B, 1L, List.of(updateOf(overlong, MemberState.ALIVE, 1L, 0L)));
         transport.sentMessages.clear();
 
-        protocol.deliverForTest(ADDR_A, new PingReq(NODE_A, NODE_B, 9L));
+        protocol.onMessage(ADDR_A, new PingReq(NODE_A, NODE_B, 9L));
 
         var relayed = transport.sentMessages.stream()
                                             .filter(Ping.class::isInstance)
@@ -530,7 +530,7 @@ class SwimDeathNoticeTest {
                .until(() -> !protocol.members().containsKey(NODE_A) && !protocol.tombstonedForTest(NODE_A));
         var claimantTransport = new RecordingTransport();
 
-        claimant = SwimProtocol.swimProtocol(config(8),
+        claimant = SwimTestProtocols.swimProtocol(config(8),
                                              claimantTransport,
                                              new RecordingListener(),
                                              NODE_A,
@@ -539,14 +539,14 @@ class SwimDeathNoticeTest {
                                .unwrap();
         claimant.announceJoin(INFO_A, "", 1L, TOKEN_A, List.of());
 
-        claimant.deliverForTest(SELF_ADDR, new Ping(SELF_ID, 11L, List.of()));
+        claimant.onMessage(SELF_ADDR, new Ping(SELF_ID, 11L, List.of()));
         ping(NODE_A, 21L, ackOf(claimantTransport, 11L).piggyback());
 
         assertThat(protocol.members()).as("the stale self-Alive is refused").doesNotContainKey(NODE_A);
         assertThat(ackOf(transport, 21L).piggyback()).anyMatch(noticeOf(NODE_A, 1L, TOKEN_A));
 
-        claimant.deliverForTest(SELF_ADDR, ackOf(transport, 21L));
-        claimant.deliverForTest(SELF_ADDR, new Ping(SELF_ID, 12L, List.of()));
+        claimant.onMessage(SELF_ADDR, ackOf(transport, 21L));
+        claimant.onMessage(SELF_ADDR, new Ping(SELF_ID, 12L, List.of()));
         ping(NODE_A, 22L, ackOf(claimantTransport, 12L).piggyback());
 
         assertThat(protocol.members()).as("the refuted claim at incarnation 2 is admitted").containsKey(NODE_A);

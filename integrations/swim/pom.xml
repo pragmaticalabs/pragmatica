@@ -94,4 +94,23 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Attach the test sources as a consumable test-jar so the tests of the other modules that drive a SWIM
+                 protocol build it through SwimTestProtocols (#3568), the one test factory. The jar carries a test
+                 HELPER only; it holds no second copy of production behaviour. Precedent: the aether-stream test-jar. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

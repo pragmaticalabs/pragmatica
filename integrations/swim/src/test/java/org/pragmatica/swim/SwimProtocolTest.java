@@ -67,7 +67,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -95,7 +95,7 @@ class SwimProtocolTest {
 
             protocol.probeOnceForTest();
             var probePing = lastPing(transport);
-            protocol.deliverForTest(ADDR_A, Ack.ack(NODE_A, probePing.sequence(), List.of()));
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, probePing.sequence(), List.of()));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("a verified probe-ack promotes an OBSERVED member to ALIVE")
@@ -114,7 +114,7 @@ class SwimProtocolTest {
             protocol.addSeedMember(NODE_A, ADDR_A); // OBSERVED at incarnation 0
 
             var sameIncAlive = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(sameIncAlive)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(sameIncAlive)));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("a same-incarnation gossip ALIVE promotes a local OBSERVED member to ALIVE")
@@ -131,13 +131,13 @@ class SwimProtocolTest {
             // join deadline decides. The member stays OBSERVED with NO armed death-timer.
             protocol.addSeedMember(NODE_A, ADDR_A); // OBSERVED at incarnation 0
 
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L,
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L,
                                                 List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A))));
             assertThat(protocol.members().get(NODE_A).state())
                 .as("a gossiped SUSPECT must NOT dislodge a local OBSERVED member")
                 .isEqualTo(MemberState.OBSERVED);
 
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 2L,
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L,
                                                 List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 0, ADDR_A))));
             assertThat(protocol.members().get(NODE_A).state())
                 .as("a gossiped FAULTY must NOT dislodge a local OBSERVED member either")
@@ -160,7 +160,7 @@ class SwimProtocolTest {
             // (#336/#241): introduce it OBSERVED — no armed death-timer, probe-eligible — so our OWN
             // probe cycle decides. The wire SUSPECT is NOT re-broadcast (OBSERVED never disseminated).
             var gossipSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossipSuspect)));
+            protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossipSuspect)));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("a gossiped SUSPECT for an UNKNOWN id is born OBSERVED, not SUSPECT")
@@ -225,7 +225,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -233,7 +233,7 @@ class SwimProtocolTest {
         void onMessage_ping_sendsAck() {
             var ping = new Ping(NODE_A, 1L, List.of());
 
-            protocol.deliverForTest(ADDR_A, ping);
+            protocol.onMessage(ADDR_A, ping);
 
             assertThat(transport.sentMessages).hasSize(1);
             assertThat(transport.sentMessages.getFirst().message()).isInstanceOf(Ack.class);
@@ -248,7 +248,7 @@ class SwimProtocolTest {
             var update = MembershipUpdate.membershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B);
             var ping = new Ping(NODE_A, 1L, List.of(update));
 
-            protocol.deliverForTest(ADDR_A, ping);
+            protocol.onMessage(ADDR_A, ping);
 
             assertThat(protocol.members()).containsKey(NODE_B);
             assertThat(listener.joined).hasSize(1);
@@ -261,7 +261,7 @@ class SwimProtocolTest {
 
             var pingReq = new PingReq(NODE_A, NODE_B, 42L);
 
-            protocol.deliverForTest(ADDR_A, pingReq);
+            protocol.onMessage(ADDR_A, pingReq);
 
             assertThat(transport.sentMessages).hasSize(1);
 
@@ -274,7 +274,7 @@ class SwimProtocolTest {
         void onMessage_pingReqForUnknownTarget_ignored() {
             var pingReq = new PingReq(NODE_A, NODE_B, 42L);
 
-            protocol.deliverForTest(ADDR_A, pingReq);
+            protocol.onMessage(ADDR_A, pingReq);
 
             assertThat(transport.sentMessages).isEmpty();
         }
@@ -288,7 +288,7 @@ class SwimProtocolTest {
 
             // NODE_A asks self to probe NODE_B (indirect probe)
             var pingReq = new PingReq(NODE_A, NODE_B, 42L);
-            protocol.deliverForTest(ADDR_A, pingReq);
+            protocol.onMessage(ADDR_A, pingReq);
 
             // Self should send Ping to NODE_B with its OWN sequence (not 42)
             assertThat(transport.sentMessages).hasSize(1);
@@ -301,7 +301,7 @@ class SwimProtocolTest {
 
             // NODE_B responds with Ack using the RELAY sequence
             var ack = Ack.ack(NODE_B, relaySeq, List.of());
-            protocol.deliverForTest(ADDR_B, ack);
+            protocol.onMessage(ADDR_B, ack);
 
             // Self should forward Ack back to NODE_A with the ORIGINAL sequence (42)
             assertThat(transport.sentMessages).hasSize(1);
@@ -330,7 +330,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
             observations = new RecordingObservationSink();
             protocol.addObservationListener(observations);
@@ -385,7 +385,7 @@ class SwimProtocolTest {
             // now ALSO born OBSERVED (#336/#241) — no armed death-timer, not yet proven-healthy — so
             // our own probing decides rather than third-party rumour.
             var gossip = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
-            protocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossip)));
+            protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossip)));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("third-party SUSPECT gossip of an unknown member is born OBSERVED, not SUSPECT")
@@ -404,7 +404,7 @@ class SwimProtocolTest {
             var originalAddress = protocol.members().get(NODE_A).address();
 
             var newSourceIp = new InetSocketAddress("127.0.0.2", ADDR_A.getPort());
-            protocol.deliverForTest(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
+            protocol.onMessage(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
 
             assertThat(protocol.members().get(NODE_A).address())
                 .as("a re-ANNOUNCE from a new source IP must not move the pinned member's probe address")
@@ -416,7 +416,7 @@ class SwimProtocolTest {
         void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_nextProbeStillTargetsPinnedAddress() {
             protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
             var newSourceIp = new InetSocketAddress("127.0.0.2", ADDR_A.getPort());
-            protocol.deliverForTest(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
+            protocol.onMessage(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
             transport.sentMessages.clear();
 
             protocol.probeOnceForTest();
@@ -447,7 +447,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
             observations = new RecordingObservationSink();
             protocol.addObservationListener(observations);
@@ -562,7 +562,7 @@ class SwimProtocolTest {
             var config = swimConfig(timeSpan(50).millis(), timeSpan(20).millis(), 3, timeSpan(100).millis(), 8);
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -572,11 +572,11 @@ class SwimProtocolTest {
             // member in a disseminable state (ALIVE/SUSPECT/FAULTY) rides the piggyback. Introduce
             // NODE_A via gossip ALIVE so it is buffered for dissemination.
             var aliveA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
-            protocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
             transport.sentMessages.clear();
 
             // Respond to a ping — the ack should carry the buffered membership update.
-            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 2L, List.of()));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of()));
 
             assertThat(transport.sentMessages).isNotEmpty();
 
@@ -601,7 +601,7 @@ class SwimProtocolTest {
             );
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
                                             .fold(cause -> null, v -> v);
 
             localProtocol.addSeedMember(NODE_A, ADDR_A);
@@ -610,12 +610,12 @@ class SwimProtocolTest {
             // gossip first so the subsequent SUSPECT gossip is a genuine ALIVE->SUSPECT edge
             // (not a no-op against the seeded OBSERVED state).
             var aliveGossip = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
-            localProtocol.deliverForTest(ADDR_B, new Ping(NODE_B, 0L, List.of(aliveGossip)));
+            localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 0L, List.of(aliveGossip)));
             assertThat(localProtocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
 
             // Drive ALIVE -> SUSPECT (incarnation=2) via a piggybacked update from a peer.
             var initialSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
-            localProtocol.deliverForTest(ADDR_B, new Ping(NODE_B, 1L, List.of(initialSuspect)));
+            localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(initialSuspect)));
 
             assertThat(localListener.suspected).hasSize(1);
             assertThat(localListener.suspected.getFirst().nodeId()).isEqualTo(NODE_A);
@@ -630,7 +630,7 @@ class SwimProtocolTest {
             // diagnosis) reset the suspect timer. With the fix they are no-ops.
             for (var i = 0; i < 14; i++) {
                 var rebroadcast = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
-                localProtocol.deliverForTest(ADDR_B, new Ping(NODE_B, 100L + i, List.of(rebroadcast)));
+                localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 100L + i, List.of(rebroadcast)));
             }
 
             // Reference equality: same-state same-incarnation is observed as a no-op.
@@ -697,7 +697,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -749,7 +749,7 @@ class SwimProtocolTest {
             protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
 
             waitUntil(() -> announceCount(transport) >= 1, 3_000L);
-            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 1L, List.of()));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of()));
 
             var afterPing = announceCount(transport);
 
@@ -767,7 +767,7 @@ class SwimProtocolTest {
             assertThat(announceCount(transport)).isGreaterThanOrEqualTo(1);
 
             // The seed's sequence-0 Ack for an accepted ANNOUNCE, through the real receive path.
-            protocol.deliverForTest(ADDR_A, Ack.ack(NODE_A, 0L, List.of()));
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, 0L, List.of()));
 
             // The loop must stop announcing by the following tick; allow an in-flight attempt to drain first.
             Thread.sleep(200L);
@@ -786,7 +786,7 @@ class SwimProtocolTest {
         void announceJoin_afterAnEarlierJoinWasAcknowledged_announcesAgain() throws InterruptedException {
             protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
             waitUntil(() -> announceCount(transport) >= 1, 3_000L);
-            protocol.deliverForTest(ADDR_A, Ack.ack(NODE_A, 0L, List.of()));
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, 0L, List.of()));
             Thread.sleep(1_200L);
 
             var afterFirstJoin = announceCount(transport);
@@ -974,7 +974,7 @@ class SwimProtocolTest {
         @Test
         void stopDuringAnAttempt_doesNotAnnounceToTheRemainingSeeds() throws InterruptedException {
             var blocking = new ParkingTransport();
-            var local = SwimProtocol.swimProtocol(swimConfig(), blocking, new RecordingListener(), SELF_ID, SELF_ADDR)
+            var local = SwimTestProtocols.swimProtocol(swimConfig(), blocking, new RecordingListener(), SELF_ID, SELF_ADDR)
                                     .fold(cause -> null, v -> v);
 
             local.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A, ADDR_B));
@@ -1082,7 +1082,7 @@ class SwimProtocolTest {
 
         @Test
         void start_alreadyRunning_returnsError() {
-            var protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            var protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                        .fold(cause -> null, v -> v);
 
             protocol.start();
@@ -1095,7 +1095,7 @@ class SwimProtocolTest {
 
         @Test
         void stop_notRunning_returnsError() {
-            var protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            var protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                        .fold(cause -> null, v -> v);
 
             var result = protocol.stop();
@@ -1120,7 +1120,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -1132,21 +1132,21 @@ class SwimProtocolTest {
             // incarnation bumps (pre-gate every replay re-bumped, feeding gossip churn).
             var selfSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, 5L, SELF_ADDR);
 
-            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
             var afterFirst = protocol.selfIncarnation();
             assertThat(afterFirst)
                 .as("first refutation must strictly exceed the suspicion incarnation (5)")
                 .isGreaterThan(5L);
 
-            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 2L, List.of(selfSuspect)));
-            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 3L, List.of(selfSuspect)));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(selfSuspect)));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 3L, List.of(selfSuspect)));
             assertThat(protocol.selfIncarnation())
                 .as("stale replays of an already-refuted suspicion must NOT move the incarnation")
                 .isEqualTo(afterFirst);
 
             // A GENUINELY NEW suspicion at our current incarnation still strictly advances.
             var newSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, afterFirst, SELF_ADDR);
-            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 4L, List.of(newSuspect)));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 4L, List.of(newSuspect)));
             assertThat(protocol.selfIncarnation())
                 .as("a new suspicion challenging the current liveness claim strictly advances the stored incarnation")
                 .isGreaterThan(afterFirst);
@@ -1157,7 +1157,7 @@ class SwimProtocolTest {
             // A suspicion raised at a high incarnation must still be strictly out-paced.
             var highSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, 42L, SELF_ADDR);
 
-            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 1L, List.of(highSuspect)));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(highSuspect)));
 
             assertThat(protocol.selfIncarnation())
                 .as("refutation must strictly exceed the (higher) suspicion incarnation 42")
@@ -1172,7 +1172,7 @@ class SwimProtocolTest {
             protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 7L, List.of(ADDR_A));
 
             var selfSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, 7L, SELF_ADDR);
-            protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
             var advanced = protocol.selfIncarnation();
             assertThat(advanced).isGreaterThan(7L);
 
@@ -1185,7 +1185,7 @@ class SwimProtocolTest {
                 var deadline = System.currentTimeMillis() + 3_000L;
                 Option<MembershipUpdate> selfAlive = Option.none();
                 while (selfAlive.isEmpty() && System.currentTimeMillis() < deadline) {
-                    protocol.deliverForTest(ADDR_A, new Ping(NODE_A, 99L, List.of()));
+                    protocol.onMessage(ADDR_A, new Ping(NODE_A, 99L, List.of()));
                     selfAlive = latestSelfAliveInLastAck();
                     if (selfAlive.isEmpty()) {
                         Thread.sleep(25L);
@@ -1251,7 +1251,7 @@ class SwimProtocolTest {
             );
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
                                             .fold(cause -> null, v -> v);
 
             localProtocol.addSeedMember(FLAPPER, FLAPPER_ADDR);
@@ -1273,7 +1273,7 @@ class SwimProtocolTest {
                     ackPingsTo(localTransport, FLAPPER_ADDR, localProtocol);
                     var state = (pingedSeq % 2 == 0) ? MemberState.ALIVE : MemberState.SUSPECT;
                     var gossip = MembershipUpdate.membershipUpdate(FLAPPER, state, 1L, FLAPPER_ADDR);
-                    localProtocol.deliverForTest(FLAPPER_ADDR, new Ping(FLAPPER, 5_000L + pingedSeq, List.of(gossip)));
+                    localProtocol.onMessage(FLAPPER_ADDR, new Ping(FLAPPER, 5_000L + pingedSeq, List.of(gossip)));
                     pingedSeq++;
                     Thread.sleep(15L);
                 }
@@ -1304,7 +1304,7 @@ class SwimProtocolTest {
             );
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
                                             .fold(cause -> null, v -> v);
 
             // Three stable members + one id that churns in and out between selections.
@@ -1345,7 +1345,7 @@ class SwimProtocolTest {
             transport.sentMessages.stream()
                                   .filter(m -> m.target().equals(addr) && m.message() instanceof Ping)
                                   .map(m -> (Ping) m.message())
-                                  .forEach(ping -> protocol.deliverForTest(addr, Ack.ack(FLAPPER, ping.sequence(), List.of())));
+                                  .forEach(ping -> protocol.onMessage(addr, Ack.ack(FLAPPER, ping.sequence(), List.of())));
         }
 
         private static int pingsTo(RecordingTransport transport, InetSocketAddress addr) {
@@ -1383,12 +1383,12 @@ class SwimProtocolTest {
                                     timeSpan(60).seconds());  // joinGrace (≫ test window)
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener,
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener,
                                                           SELF_ID, SELF_ADDR, () -> false)
                                             .fold(cause -> null, v -> v);
 
             var gossipSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
-            localProtocol.deliverForTest(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossipSuspect)));
+            localProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossipSuspect)));
 
             assertThat(localProtocol.members().get(NODE_A).state())
                 .as("gossip-SUSPECT-of-unknown in NORMAL phase is born OBSERVED")

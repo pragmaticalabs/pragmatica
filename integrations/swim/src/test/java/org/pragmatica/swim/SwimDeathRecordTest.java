@@ -82,7 +82,7 @@ class SwimDeathRecordTest {
         tokens = BootTokens.bootTokens(0x5E1FL);
         observations = new RecordingObservationSink();
         transport = new RecordingTransport();
-        protocol = SwimProtocol.swimProtocol(tightConfig(),
+        protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,
@@ -99,7 +99,7 @@ class SwimDeathRecordTest {
     }
 
     private void gossip(long sequence, MembershipUpdate update) {
-        protocol.deliverForTest(ADDR_B, new Ping(NODE_B, sequence, List.of(update)));
+        protocol.onMessage(ADDR_B, new Ping(NODE_B, sequence, List.of(update)));
     }
 
     private static MembershipUpdate updateOfA(MemberState state, long incarnation, long token) {
@@ -216,7 +216,7 @@ class SwimDeathRecordTest {
                                           .findFirst()
                                           .orElseThrow();
 
-        protocol.deliverForTest(ADDR_A, new Ack(NODE_A, probe.sequence(), List.of()));
+        protocol.onMessage(ADDR_A, new Ack(NODE_A, probe.sequence(), List.of()));
 
         assertThat(protocol.members().get(NODE_A).state()).as("a verified probe-ack carries no incarnation and is refused by the record")
                                                            .isEqualTo(MemberState.OBSERVED);

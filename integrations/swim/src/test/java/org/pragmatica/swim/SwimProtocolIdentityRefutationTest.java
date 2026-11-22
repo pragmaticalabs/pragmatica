@@ -70,7 +70,7 @@ class SwimProtocolIdentityRefutationTest {
     private static SwimProtocol bootingProtocol(RecordingObservationSink observations,
                                                 AtomicBoolean linkUp,
                                                 SwimTransport transport) {
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  transport,
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -132,7 +132,7 @@ class SwimProtocolIdentityRefutationTest {
 
         protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         // The claimant is a live peer this node already knows ALIVE, and it answers every probe.
-        protocol.deliverForTest(CLAIMANT_ADDR,
+        protocol.onMessage(CLAIMANT_ADDR,
                            new Ping(CLAIMANT, 1L, List.of(MembershipUpdate.membershipUpdate(CLAIMANT, MemberState.ALIVE, 5, CLAIMANT_ADDR))));
         protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT));
         protocol.start();
@@ -234,7 +234,6 @@ class SwimProtocolIdentityRefutationTest {
         @Override
         public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
             if (target.equals(CLAIMANT_ADDR) && message instanceof Ping ping) {
-                // ASYNC-DELIVERY: simulated network hop, called from a transport send inside a task or from the wire thread; it must not wait (deliverForTest would fail from inside a task, and a real transport never waits)
                 handler.get().onMessage(CLAIMANT_ADDR, Ack.ack(CLAIMANT, ping.sequence(), List.of()));
             }
 

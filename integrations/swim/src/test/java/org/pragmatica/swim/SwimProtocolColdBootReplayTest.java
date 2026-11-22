@@ -81,7 +81,7 @@ class SwimProtocolColdBootReplayTest {
     void phantomSeed_suppressedDuringColdBoot_departsWhenGateCloses_withoutWaitingForSweep() {
         var booting = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -120,7 +120,7 @@ class SwimProtocolColdBootReplayTest {
     void replayPrecedesSweep_whenGateClosesAndResidencyExpiresInTheSameTick() throws InterruptedException {
         var booting = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -130,7 +130,7 @@ class SwimProtocolColdBootReplayTest {
 
         protocol.addObservationListener(observations);
         // Not started: no tick runs. A gossiped FAULTY for the phantom is suppressed by cold boot and stamped.
-        protocol.deliverForTest(GOSSIPER_ADDR,
+        protocol.onMessage(GOSSIPER_ADDR,
                            new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(PHANTOM, MemberState.FAULTY, 0, PHANTOM_ADDR))));
         assertThat(hasUnknown(observations, PHANTOM)).isTrue();
         Thread.sleep(PAST_RESIDENCY.toMillis());
@@ -149,7 +149,7 @@ class SwimProtocolColdBootReplayTest {
     void genuineSlowPeer_comesUpBeforeGateCloses_isNeverDeparted() {
         var booting = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -161,7 +161,7 @@ class SwimProtocolColdBootReplayTest {
         // The genuine peer is not up yet: a peer's gossip says FAULTY, and cold boot suppresses it. The
         // edge is second-hand, the case the #336 kill-gate does not hold — so only the replay's own guard
         // stands between a since-recovered peer and a departure.
-        protocol.deliverForTest(GOSSIPER_ADDR,
+        protocol.onMessage(GOSSIPER_ADDR,
                            new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(GENUINE, MemberState.FAULTY, 0, GENUINE_ADDR))));
         protocol.start();
         try {
@@ -169,7 +169,7 @@ class SwimProtocolColdBootReplayTest {
                    .until(() -> hasUnknown(observations, GENUINE));
 
             // "60 s": the genuine peer comes up and gossips its own Alive at its boot incarnation.
-            protocol.deliverForTest(GENUINE_ADDR,
+            protocol.onMessage(GENUINE_ADDR,
                                new Ping(GENUINE, 1L, List.of(MembershipUpdate.membershipUpdate(GENUINE, MemberState.ALIVE, 5, GENUINE_ADDR))));
             await().atMost(Duration.ofSeconds(1))
                    .until(() -> protocol.everSeenHealthyForTest(GENUINE));
@@ -192,7 +192,7 @@ class SwimProtocolColdBootReplayTest {
     void genuinePeerWithLiveLink_whenGateCloses_isHeldByTransportVeto() {
         var booting = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -231,7 +231,7 @@ class SwimProtocolColdBootReplayTest {
     void vetoedFaulty_linkDropsWhileStillFaulty_departsWithoutWaitingForSweep() {
         var linkUp = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -266,7 +266,7 @@ class SwimProtocolColdBootReplayTest {
     void vetoedThenRecoveredHealthy_linkDrops_isNeverDeparted() throws InterruptedException {
         var linkUp = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -276,7 +276,7 @@ class SwimProtocolColdBootReplayTest {
                                    .unwrap();
 
         protocol.addObservationListener(observations);
-        protocol.deliverForTest(GOSSIPER_ADDR,
+        protocol.onMessage(GOSSIPER_ADDR,
                            new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(GENUINE, MemberState.FAULTY, 0, GENUINE_ADDR))));
         protocol.start();
         try {
@@ -284,7 +284,7 @@ class SwimProtocolColdBootReplayTest {
                    .until(() -> hasUnknown(observations, GENUINE));
             assertThat(protocol.transportVetoedForTest(GENUINE)).as("the live link deferred the edge").isTrue();
 
-            protocol.deliverForTest(GENUINE_ADDR,
+            protocol.onMessage(GENUINE_ADDR,
                                new Ping(GENUINE, 1L, List.of(MembershipUpdate.membershipUpdate(GENUINE, MemberState.ALIVE, 5, GENUINE_ADDR))));
             await().atMost(Duration.ofSeconds(1))
                    .until(() -> protocol.everSeenHealthyForTest(GENUINE));
@@ -308,7 +308,7 @@ class SwimProtocolColdBootReplayTest {
     @Test
     void vetoedFaulty_linkStaysUp_isNeverDeparted() {
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,

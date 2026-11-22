@@ -33,6 +33,7 @@ import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 
 import java.net.InetSocketAddress;
@@ -547,7 +548,7 @@ class SwimHealthFsmTest {
     /// Build a real SWIM protocol seeded with the listed peers. The protocol is NOT started, so
     /// no tick thread is scheduled; membership is populated purely via `addSeedMember`.
     private static SwimProtocol swimWithSeeds(NodeId... peers) {
-        var protocol = SwimProtocol.swimProtocol(SwimConfig.DEFAULT, new StubTransport(),
+        var protocol = SwimTestProtocols.swimProtocol(SwimConfig.DEFAULT, new StubTransport(),
                                                   noopListener(), SELF,
                                                   new InetSocketAddress("127.0.0.1", 9101)).unwrap();
         for (var peer : peers) {

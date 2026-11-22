@@ -62,6 +62,7 @@ import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.ULID;
@@ -3479,11 +3480,11 @@ class LeaderReconcilerTest {
         /// gossiped ALIVE update from a peer, delivered to a real `SwimProtocol` whose observations feed
         /// the fixture FSM. The role label is whatever that gossip carries.
         private void seedGossipLearnedCore(NodeId id) {
-            var protocol = SwimProtocol.swimProtocol(swimConfig(), new NullSwimTransport(), new NullSwimListener(), SELF, SWIM_SELF)
+            var protocol = SwimTestProtocols.swimProtocol(swimConfig(), new NullSwimTransport(), new NullSwimListener(), SELF, SWIM_SELF)
                                        .unwrap();
 
             protocol.addObservationListener(this::routeToFsm);
-            protocol.deliverForTest(SWIM_GOSSIPER, new Ping(GOSSIPER, 1L, List.of(gossipedAlive(id))));
+            protocol.onMessage(SWIM_GOSSIPER, new Ping(GOSSIPER, 1L, List.of(gossipedAlive(id))));
             health.markHealthy(id);
             sampler.sample();
             agePastDrainSafetyGrace();

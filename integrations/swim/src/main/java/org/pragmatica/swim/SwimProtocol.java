@@ -166,7 +166,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// window (membership-scope monitor, isolation-latch monitor, self-quorum monitor). The expiry keeps its
     /// suspicion-identity compare of #3526: a listener re-arms inside the same task. The maps stay concurrent
     /// only for readers outside the executor ([#members], [#currentHealth], [#healthOf] and the test probes).
-    private final SerialExecutor stateExecutor = SerialExecutor.serialExecutor();
+    private final SerialExecutor stateExecutor;
     /// Count of member/suspicion writes that ran off [#stateExecutor] (#3529 confinement sensor). Always 0
     /// while every entry point dispatches; a test asserts it after exercising each entry point.
     private final AtomicLong offExecutorMutations = new AtomicLong();
@@ -586,13 +586,17 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
-    private SwimProtocol(SwimConfig config,
-                         SwimTransport transport,
-                         SwimMembershipListener listener,
-                         NodeId selfId,
-                         InetSocketAddress selfAddress,
-                         BooleanSupplier isBooting,
-                         Predicate<NodeId> transportConnected) {
+    /// Package-private so the test protocol factory (in the test sources) can inject the executor (#3568): the one
+    /// construction seam, the production factory passes the default executor.
+    SwimProtocol(SwimConfig config,
+                 SwimTransport transport,
+                 SwimMembershipListener listener,
+                 NodeId selfId,
+                 InetSocketAddress selfAddress,
+                 BooleanSupplier isBooting,
+                 Predicate<NodeId> transportConnected,
+                 SerialExecutor stateExecutor) {
+        this.stateExecutor = stateExecutor;
         this.config = config;
         this.transport = transport;
         this.listener = listener;
@@ -653,7 +657,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                selfId,
                                                selfAddress,
                                                isBooting,
-                                               transportConnected));
+                                               transportConnected,
+                                               SerialExecutor.serialExecutor()));
     }
 
     /// Start the protocol: begin periodic probing via SharedScheduler.
@@ -4197,8 +4202,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Test-only: one [#latchSelfIsolation] with `allPeersFaulty` as the check, run on [#stateExecutor] and
     /// waited for, so a test can hold the check-to-write window open (#1990) and read the outcome.
     boolean latchSelfIsolationForTest(BooleanSupplier allPeersFaulty) {
-        return stateExecutor.call(() -> latchSelfIsolation(allPeersFaulty))
-                            .unwrap();
+        return callForTest(() -> latchSelfIsolation(allPeersFaulty));
     }
 
     /// Test-only (#3529 confinement sensor): member/suspicion writes that ran off [#stateExecutor] so far.
@@ -4214,22 +4218,20 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Test-only (#3529): run `action` on [#stateExecutor], serially with the tick and every message, and wait
-    /// for it ([SerialExecutor#call], the strict test-only wait). Every state-writing test seam goes through it, so
-    /// a test reads its own seam write on return even while the tick drains; a test also uses it to hold the
-    /// executor (and so every mutation) at a chosen point. Never call it from inside a task (a listener callback).
+    /// for it ([SerialExecutor#call], the strict test-only wait). On a quiescing executor (every protocol the test
+    /// factory builds, #3568) that includes the follow-up tasks the action's listeners queued, even when another
+    /// thread was the drainer. Every state-writing test seam goes through it, so a test reads its own seam write on
+    /// return even while the tick drains; a test also uses it to hold the executor (and so every mutation) at a
+    /// chosen point. Never call it from inside a task (a listener callback).
     @Contract
     void onStateExecutorForTest(Runnable action) {
-        stateExecutor.call(() -> runForTest(action)).unwrap();
+        callForTest(() -> runForTest(action));
     }
 
-    /// Test-only (#3560): deliver `message` from `sender` and wait until it has been applied, so a test may assert
-    /// on the next line. Production [#onMessage] only enqueues when another thread is draining (the probe tick), so
-    /// a bare `onMessage` followed by an assertion reads the state before the message ran. Public only because tests
-    /// of other modules drive a started protocol; never use it from inside a task (a listener or transport callback):
-    /// it waits ([SerialExecutor#call]) and would fail there.
-    @Contract
-    public void deliverForTest(InetSocketAddress sender, SwimMessage message) {
-        onStateExecutorForTest(() -> handleMessage(sender, message));
+    /// The one waiting path of every test seam: run `action` as a task and return its value.
+    private <T> T callForTest(Supplier<T> action) {
+        return stateExecutor.call(action)
+                            .unwrap();
     }
 
     private static Unit runForTest(Runnable action) {
@@ -4273,7 +4275,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     void announceFromPinnedSourceForTest(InetSocketAddress sender, Announce announce) {
         onStateExecutorForTest(() -> addressPins.put(announce.nodeInfo().id(),
                                                      sender.getAddress()));
-        deliverForTest(sender, announce);
+        onMessage(sender, announce);
     }
 
     private static long unpredictableSequenceStart() {
@@ -4382,8 +4384,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// to drive selection deterministically without scheduler timing. Returns the selected
     /// target (if any) so a test can assert which member was chosen.
     Option<SwimMember> probeOnceForTest() {
-        return stateExecutor.call(this::probeOnce)
-                            .unwrap();
+        return callForTest(this::probeOnce);
     }
 
     private Option<SwimMember> probeOnce() {
