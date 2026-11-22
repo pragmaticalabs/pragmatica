@@ -20,7 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// C6a-0 assembly pin (#3467, A1 and A2; C6-W0 #3413): the DRAIN channel the management server takes from the quorum-loss unit.
 /// The channel is a seam of its own (`DrainAssembly.drainPort`), pinned here on both halves. That the management server
-/// holds this very port is pinned at runtime by [NodeDrainPortIdentityBootTest], which replaced the assembly-text pins.
+/// holds this very port is pinned at runtime by [NodeDrainPortIdentityBootTest], which replaced the drain assembly-text pins. The one assembly-text pin that
+/// remains (#3303, A3c) is on the management validator and flag in `ManagementAssembly`.
 class ManagementAssemblyDrainPortSeamTest {
     private static final NodeId TARGET = NodeId.nodeId("node-target").unwrap();
 
@@ -59,5 +60,20 @@ class ManagementAssemblyDrainPortSeamTest {
         registry.requestDrain(TARGET);
 
         assertThat(port.pending()).containsExactly(TARGET);
+    }
+    /// #3303 (A3c): the assembly builds the management validator and the enabled flag from ONE call, so one read of the
+    /// configured mode feeds both. A second mode read (a `managementSecurityEnabled()` call, or the mode itself) can
+    /// disagree with the validator; deriving the flag from the app plane (`securityEnabled()`, `securityMode()`) breaks
+    /// the #962 inheritance rule. Mutants: a second read of the mode turns the `doesNotContain` red; a second call, or
+    /// none, turns `containsOnlyOnce` red.
+    @Test
+    void managementServer_buildsTheValidatorAndTheFlagFromOneModeRead() {
+        var code = NodeDepartureWiringTest.assemblyCode();
+
+        assertThat(code).containsOnlyOnce("SecurityValidator.managementValidator(");
+        assertThat(code).doesNotContain("managementSecurityEnabled");
+        assertThat(code).doesNotContain("managementSecurityMode");
+        assertThat(code).doesNotContain(".securityEnabled()");
+        assertThat(code).doesNotContain(".securityMode()");
     }
 }

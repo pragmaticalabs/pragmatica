@@ -11,6 +11,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.http.security.Authenticated;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.management.route.MatchedRoute;
 import org.pragmatica.http.ContentCategory;
@@ -20,16 +22,21 @@ import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.JsonCodec;
 import org.pragmatica.http.ResponseSerializer;
+import org.pragmatica.http.routing.Handler;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.PathUtils;
+import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.lang.utils.Causes;
 
 import io.netty.handler.codec.http.DefaultHttpHeadersFactory;
 import io.netty.handler.codec.http.HttpHeaders;
@@ -68,12 +75,41 @@ public final class ManagementRouter {
         return Option.option(routesByName.get(name));
     }
 
+    /// A route handler that acts on the request's [Authenticated], and through it on the ADMIN grant minted at the
+    /// credential match. The router hands it the `Authenticated` the management server validated, as an argument; the
+    /// grant is never read from anywhere else. Package-private: only a route declared in this package can receive one.
+    @FunctionalInterface
+    interface GrantedHandler<T> extends Handler<T> {
+        Cause UNGRANTED_CALL = Causes.cause("A granted management route was called without the request's authentication");
+
+        Promise<T> handle(RequestContext request, Authenticated authenticated);
+
+        /// A call that carries no `Authenticated` refuses: a wrapper that hides this type from the router fails closed
+        /// instead of running the route ungranted.
+        @Override
+        default Promise<T> handle(RequestContext request) {
+            return UNGRANTED_CALL.promise();
+        }
+    }
+
+    /// Dispatches with no grant: the route sees an anonymous, ungranted [Authenticated]. For callers that validated
+    /// nothing; the management server passes what it validated through [#handle(HttpRequest, ResponseWriter, Authenticated)].
     public boolean handle(HttpRequest ctx, ResponseWriter response) {
-        return parseMethod(ctx.method().name()).flatMap(method -> dispatch(method, ctx, response))
+        return handle(ctx,
+                      response,
+                      Authenticated.authenticated(SecurityContext.securityContext()));
+    }
+
+    /// Dispatches the request; a [GrantedHandler] route receives `authenticated`, every other route the request alone.
+    public boolean handle(HttpRequest ctx, ResponseWriter response, Authenticated authenticated) {
+        return parseMethod(ctx.method().name()).flatMap(method -> dispatch(method, ctx, response, authenticated))
                           .or(false);
     }
 
-    private Option<Boolean> dispatch(HttpMethod method, HttpRequest ctx, ResponseWriter response) {
+    private Option<Boolean> dispatch(HttpMethod method,
+                                     HttpRequest ctx,
+                                     ResponseWriter response,
+                                     Authenticated authenticated) {
         var matchResult = ManagementRoute.match(method, ctx.path());
 
         if (matchResult.isSuccess()) {
@@ -84,7 +120,7 @@ public final class ManagementRouter {
                 log.trace("ManagementRoute matched: {} target={}",
                           matched.route().name(),
                           matched.route().target());
-                handleRoute(route, ctx, response);
+                handleRoute(route, ctx, response, authenticated);
 
                 return Option.some(true);
             }
@@ -96,22 +132,32 @@ public final class ManagementRouter {
         return requestRouter.findRoute(method,
                                        ctx.path())
                             .map(route -> {
-                                handleRoute(route, ctx, response);
+                                handleRoute(route, ctx, response, authenticated);
 
                                 return true;
                             });
     }
 
-    private void handleRoute(Route<?> route, HttpRequest serverCtx, ResponseWriter response) {
+    private void handleRoute(Route<?> route,
+                             HttpRequest serverCtx,
+                             ResponseWriter response,
+                             Authenticated authenticated) {
         var routingCtx = adaptContext(serverCtx, route);
 
-        route.handler()
-             .handle(routingCtx)
-             .onFailure(cause -> writeError(response, cause, serverCtx))
-             .onSuccess(value -> writeSuccess(value,
-                                              route.contentType(),
-                                              response,
-                                              serverCtx));
+        invoke(route.handler(),
+               routingCtx,
+               authenticated).onFailure(cause -> writeError(response, cause, serverCtx))
+              .onSuccess(value -> writeSuccess(value,
+                                               route.contentType(),
+                                               response,
+                                               serverCtx));
+    }
+
+    private static Promise<?> invoke(Handler<?> handler, RequestContext routingCtx, Authenticated authenticated) {
+        return switch (handler) {
+            case GrantedHandler<?> granted -> granted.handle(routingCtx, authenticated);
+            default -> handler.handle(routingCtx);
+        };
     }
 
     private void writeError(ResponseWriter response, org.pragmatica.lang.Cause cause, HttpRequest serverCtx) {

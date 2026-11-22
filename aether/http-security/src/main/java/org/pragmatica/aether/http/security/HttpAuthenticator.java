@@ -30,6 +30,12 @@ public interface HttpAuthenticator {
 
     Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy);
 
+    /// The validated context with the ADMIN grant minted at the credential match. This default grants nothing, so a
+    /// lambda or wrapping authenticator fails closed; only the API-key and JWT verifiers override it, and mint.
+    default Result<Authenticated> authenticate(HttpRequestContext request, SecurityPolicy policy) {
+        return validate(request, policy).map(Authenticated::authenticated);
+    }
+
     static HttpAuthenticator apiKeyValidator(Set<String> validKeys) {
         return new ApiKeySecurityValidator(ApiKeySecurityValidator.fromKeySet(validKeys));
     }

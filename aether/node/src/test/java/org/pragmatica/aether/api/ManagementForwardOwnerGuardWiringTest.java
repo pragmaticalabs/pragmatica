@@ -33,7 +33,9 @@ import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
+import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.http.security.SecurityValidator;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -205,7 +207,7 @@ class ManagementForwardOwnerGuardWiringTest {
                                         mock(SliceInvoker.class),
                                         mock(ScheduledTaskStateRegistry.class),
                                         Option.none(),
-                                        mock(SecurityValidator.class),
+                                        SecurityValidator.managementValidator(AppHttpConfig.insecureAppHttpConfig(0), () -> mock(KVStore.class)).validator(),
                                         false,
                                         Map::of,
                                         Option.none(),

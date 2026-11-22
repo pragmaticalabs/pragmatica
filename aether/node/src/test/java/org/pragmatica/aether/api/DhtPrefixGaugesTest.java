@@ -19,7 +19,9 @@ import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.TlsProbe;
+import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.http.security.SecurityValidator;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
@@ -109,7 +111,7 @@ class DhtPrefixGaugesTest {
                                                  mock(SliceInvoker.class, NONE_OR_MOCK),
                                                  mock(ScheduledTaskStateRegistry.class, NONE_OR_MOCK),
                                                  Option.none(),
-                                                 mock(SecurityValidator.class, NONE_OR_MOCK),
+                                                 SecurityValidator.managementValidator(AppHttpConfig.insecureAppHttpConfig(0), () -> mock(KVStore.class)).validator(),
                                                  false,
                                                  Map::of,
                                                  Option.none(),
