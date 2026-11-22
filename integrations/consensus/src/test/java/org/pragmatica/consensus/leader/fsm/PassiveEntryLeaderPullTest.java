@@ -240,8 +240,25 @@ class PassiveEntryLeaderPullTest {
         assertThat(changes).containsExactly(Option.some(LEADER));
     }
 
-    /// I2's second half on the re-pull: a view-free removal that names the held leader failed drops it even where the
-    /// storage keeps it (the last node left), and the pull after that removal must not re-admit it.
+    /// The same heal through a `NodeGone` whose view holds the leader the stored view lacked: every sequenced view write
+    /// re-runs the pull, a departure as well as an arrival.
+    @Test
+    void passivePush_refusedOutOfView_nodeGoneViewHoldingItAdoptsTheRecord() {
+        startDormant();
+        link(SUCCESSOR, List.of(SELF, SUCCESSOR));
+        harness.dispatch(new PassiveDirectory(CORES));
+        kvLeader.set(Option.some(leaderCommitted(LEADER, 5)));
+        manager.onLeaderCommitted(LEADER, 5);
+        assertThat(manager.leader()).as("instrument: the push was refused out of view").isEqualTo(Option.none());
+
+        harness.dispatch(new ClusterFsmEvent.NodeGone(SUCCESSOR, List.of(SELF, LEADER), viewSequence.incrementAndGet()));
+
+        assertThat(manager.leader()).isEqualTo(Option.some(LEADER));
+        assertThat(changes).containsExactly(Option.some(LEADER));
+    }
+
+    /// I2's second half: a view-free removal that names the held leader failed drops it even where the
+    /// storage keeps it (the last node left); no re-pull follows a removal, so nothing re-admits it.
     @Test
     void passiveRemoval_heldLeaderNamedFailedButKept_pullDoesNotReadmitIt() {
         startDormant();
