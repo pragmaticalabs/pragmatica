@@ -37,6 +37,19 @@ class RepositoryTypeStagedTest {
                                             .doesNotContain(OTHER.asString()));
     }
 
+    /// Pins the clash list's order and the message prefix (v3031b survivors m10c, m10d): two clashes given in reverse order
+    /// are reported sorted, after the fixed prefix.
+    @Test
+    void refuseShared_namesEveryClashSortedByCoordinate_afterTheFixedPrefix() {
+        var zed = Artifact.artifact("org.example:zed:1.0.0").unwrap();
+        var staged = RepositoryType.Staged.staged(Path.of("root"), List.of(zed, MODULE));
+
+        staged.refuseShared(List.of(zed, MODULE))
+              .onSuccess(_ -> Assertions.fail("a [shared] module coordinate must be refused"))
+              .onFailure(cause -> assertThat(cause.message()).contains("module coordinate declared [shared]: "
+                                                                        + MODULE.asString() + ", " + zed.asString()));
+    }
+
     @Test
     void staged_copiesTheCoordinateSet() {
         var coordinates = new HashSet<>(List.of(MODULE));
