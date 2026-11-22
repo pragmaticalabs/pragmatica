@@ -22,8 +22,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// A shim call is `new CursorExpired(` with any qualifier before the name (`StreamError.`, or the fully-qualified
 /// `org.pragmatica...StreamError.`) with 2 arguments, or with 3 whose last argument does not name a cause, and
-/// `new ReadRefusal(` with 11 arguments. The canonical forms are `CursorExpired(requested, tail, reason, cause)`,
-/// `CursorExpired(requested, tail, cause)` and the 12-argument `ReadRefusal`. The shim constructors themselves delegate
+/// `new ReadRefusal(` with any argument count but 13 (the 12-argument form predates `causes`, the 11-argument one predates
+/// `cause`). The canonical forms are `CursorExpired(requested, tail, reason, cause)`, `CursorExpired(requested, tail, cause)`,
+/// `CursorExpired(requested, tail, reason, cause, causes)` and the 13-argument `ReadRefusal`. The shim constructors themselves delegate
 /// through `this(...)`, which is not a `new` call, so they never match.
 ///
 /// Arguments are counted by balanced parentheses, brackets and braces over the source with comments and string and
@@ -56,7 +57,7 @@ class CursorExpiredShimCallersTest {
 
         assertThat(hits).as("shim-form raise sites in " + files.size() + " main source files: use the canonical "
                             + "constructor `CursorExpired(requested, tail, reason, cause)` or `(requested, tail, cause)` "
-                            + "(and the 12-argument `ReadRefusal`), naming the removal's cause")
+                            + "or the 5-argument form (and the 13-argument `ReadRefusal`), naming the removal's cause")
                         .isEmpty();
     }
 
@@ -77,18 +78,21 @@ class CursorExpiredShimCallersTest {
             var c = new ReadRefusal(kind, stream, partition, first, second, flag, detail, peerFirst, peerSecond, e1, e2);
             var d = new org.pragmatica.aether.stream.StreamError.CursorExpired(offset, tail);
             var e = new StreamError.CursorExpired(offset, tail, why);
+            var f = new ReadRefusal(kind, stream, partition, first, second, flag, detail, peerFirst, peerSecond, e1, e2,
+                                    RemovalCause.AGE);
             """;
         var canonical = """
             var a = new StreamError.CursorExpired(offset, tail, Reason.LOST, RemovalCause.RING_FROZEN);
             var b = new CursorExpired(offset, tail, RemovalCause.RETENTION);
             var c = new ReadRefusal(kind, stream, partition, first, second, flag, detail, peerFirst, peerSecond, e1, e2,
-                                    RemovalCause.AGE);
+                                    RemovalCause.AGE, mask);
             var d = new org.pragmatica.aether.stream.StreamError.CursorExpired(offset, tail, RemovalCause.AGE);
+            var e = new StreamError.CursorExpired(offset, tail, Reason.LOST, RemovalCause.RING_FROZEN, causes);
             """;
 
-        assertThat(shimCalls("Shims.java", shims)).as("one hit per shim form")
+        assertThat(shimCalls("Shims.java", shims)).as("one hit per shim form: the 11- and 12-argument ReadRefusal are both shims")
                                                   .containsExactly("Shims.java:1", "Shims.java:2", "Shims.java:3", "Shims.java:4",
-                                                                  "Shims.java:5");
+                                                                  "Shims.java:5", "Shims.java:6");
         assertThat(shimCalls("Canonical.java", canonical)).as("canonical forms")
                                                           .isEmpty();
     }
@@ -132,7 +136,7 @@ class CursorExpiredShimCallersTest {
 
     private static boolean isShim(String type, List<String> arguments) {
         return type.equals("ReadRefusal")
-               ? arguments.size() == 11
+               ? arguments.size() != 13
                : arguments.size() == 2 || (arguments.size() == 3 && !namesACause(arguments.getLast()));
     }
 
