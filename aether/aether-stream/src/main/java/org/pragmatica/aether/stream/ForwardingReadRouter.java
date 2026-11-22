@@ -349,7 +349,7 @@ public final class ForwardingReadRouter<E> {
                                                                                                                            partition,
                                                                                                                            fromOffset,
                                                                                                                            maxEvents)))
-                                                           .or(() -> cause.<List<E>> promise())
+                                    .or(() -> cause.<List<E>> promise())
                : cause.promise();
     }
 

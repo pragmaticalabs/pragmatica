@@ -182,15 +182,15 @@ public final class StreamReadRouter {
                                                                    int maxEvents,
                                                                    Epoch consumerEpoch) {
         return localValidatedRead.read(streamName, partition, fromOffset, maxEvents, consumerEpoch)
-                               .fold(result -> result.fold(cause -> isForwarded(cause)
-                                                                    ? forwardValidated(streamName,
-                                                                                       partition,
-                                                                                       fromOffset,
-                                                                                       maxEvents,
-                                                                                       consumerEpoch,
-                                                                                       cause)
-                                                                    : cause.<StreamPartitionManager.EpochRead> promise(),
-                                                           Promise::success));
+                                 .fold(result -> result.fold(cause -> isForwarded(cause)
+                                                                      ? forwardValidated(streamName,
+                                                                                         partition,
+                                                                                         fromOffset,
+                                                                                         maxEvents,
+                                                                                         consumerEpoch,
+                                                                                         cause)
+                                                                      : cause.<StreamPartitionManager.EpochRead> promise(),
+                                                             Promise::success));
     }
 
     /// The local refusals this router answers by forwarding the read ONCE to the owner: a ring this node does not hold
