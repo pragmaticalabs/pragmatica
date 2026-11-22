@@ -296,7 +296,9 @@ public interface AetherNode extends ManageableNode {
     String DEPLOYMENT_CONFIG_LISTENER = "deployment-config-applied";
     NodeId self();
     Promise<Unit> start();
-    Promise<Unit> stop();
+    /// Stops the node. Succeeds with a [StopReport] once every step has settled: clean, or completed with the failures of the steps that
+    /// failed (the node is stopped either way, #3565). Fails only when the stop sequence itself could not complete.
+    Promise<StopReport> stop();
     KVStore<AetherKey, AetherValue> kvStore();
     SliceStore sliceStore();
     ClusterSyncCollector metricsCollector();
@@ -1961,7 +1963,7 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
-            public Promise<Unit> stop() {
+            public Promise<StopReport> stop() {
                 log.info("Stopping Aether node {}", self());
                 // D1-react (KVStore dispatcher design §3.5.1 "Gate predicate"): the stopping flag is set FIRST, so a reaction
                 // still queued on a react executor cannot restart what the steps below cancel (#642).
@@ -1998,7 +2000,7 @@ public interface AetherNode extends ManageableNode {
                 // #3565: one invariant, kept by NodeStopSequence — once the stop begins, every step below runs exactly once,
                 // whatever any earlier step returned (a failed leaveQuorum no longer skips the FSM2 close, the components' stops,
                 // the listeners and the cluster node, which a flatMap chain did). The promise stop() returns carries the FIRST
-                // failure; the later ones are logged there.
+                // failure; all of them are logged there and carried by the StopReport the stop succeeds with.
                 //
                 // #1612: that includes a failed HTTP listener stop (a timed-out close or termination).
                 return NodeStopSequence.run(NodeStopSequence.Steps.steps(() -> quorumLeft,
@@ -2013,8 +2015,9 @@ public interface AetherNode extends ManageableNode {
                                                                          this::shutdownStorage,
                                                                          clusterNode::stop))
                                        .withResult(_ -> closeKvStore())
-                                       .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                                self()));
+                                       .onSuccess(report -> log.info("Aether node {} stopped{}",
+                                                                     self(),
+                                                                     report.logSuffix()));
             }
 
             /// B13: the FSM2 interpreters close, after the quiesce that follows the delivery of the passive notification's `LeaderChange` reaction (#2688).

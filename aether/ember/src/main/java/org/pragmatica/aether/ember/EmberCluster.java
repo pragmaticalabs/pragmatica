@@ -962,7 +962,7 @@ public final class EmberCluster {
         var registered = registeredNow();
         var stopPromises = nodes.values()
                                 .stream()
-                                .map(node -> node.stop()
+                                .map(node -> stopped(node)
                                                  .timeout(NODE_TIMEOUT)
                                                  .recover(_ -> Unit.unit()))
                                 .toList();
@@ -1083,7 +1083,7 @@ public final class EmberCluster {
     private Promise<Unit> stopFailedHeldBackNode(String nodeIdStr, AetherNode node, Cause cause) {
         log.error("Held-back node {} failed to start: {}", nodeIdStr, cause.message());
 
-        return node.stop()
+        return stopped(node)
                    .timeout(NODE_TIMEOUT)
                    .recover(_ -> Unit.unit())
                    .flatMap(_ -> cause.promise());
@@ -1139,7 +1139,7 @@ public final class EmberCluster {
         var registered = registeredNow();
         var stopPromises = succeeded.stream()
                                     .map(r -> Option.option(nodes.get(r.nodeId()))
-                                                    .map(node -> node.stop()
+                                                    .map(node -> stopped(node)
                                                                      .timeout(NODE_TIMEOUT)
                                                                      .recover(_ -> Unit.unit()))
                                                     .or(Promise.success(Unit.unit())))
@@ -1268,11 +1268,25 @@ public final class EmberCluster {
                                                              node).onResult(promise::resolve)).timeout(NODE_TIMEOUT);
     }
 
+    /// `node.stop()` as a plain "the node is stopped" outcome (#3565): the stop succeeds with a report once every step has
+    /// settled, so a report carrying step failures (a listener close that timed out) still means STOPPED. It is logged here and
+    /// never read as "did not stop"; only a stop that FAILS (the sequence could not complete) is a node that did not stop.
+    private static Promise<Unit> stopped(AetherNode node) {
+        return node.stop()
+                   .onSuccess(report -> Option.option(report)
+                                              .filter(r -> !r.isClean())
+                                              .onPresent(r -> log.warn("Node {} stopped with {} step failure(s): {}",
+                                                                       node.self().id(),
+                                                                       r.failures().size(),
+                                                                       r.summary())))
+                   .mapToUnit();
+    }
+
     /// Start `node.stop()` and keep it in [#inFlightStops] until it resolves. The returned promise is the node's own, never
     /// failed by a bound: bound a COPY with [#bounded], so a stop that resolves after its bound is still seen.
     private Promise<Unit> trackedStop(String nodeId, AetherNode node) {
         var token = new Object();
-        var raw = node.stop();
+        var raw = stopped(node);
 
         inFlightStops.put(token, new InFlightStop(nodeId, raw));
 

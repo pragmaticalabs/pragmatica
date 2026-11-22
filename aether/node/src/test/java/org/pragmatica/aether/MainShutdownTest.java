@@ -7,6 +7,7 @@ package org.pragmatica.aether;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.StopReport;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.storage.EncryptionError;
 
@@ -23,7 +24,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #838 review round 1 pins the expiry path of [Main#shutdownNode] directly, without touching the real
@@ -71,7 +71,7 @@ class MainShutdownTest {
         @Test
         void shutdownNode_logsAndDoesNotHalt_whenStopResolvesInTime() {
             var node = Mockito.mock(AetherNode.class);
-            Mockito.when(node.stop()).thenReturn(Promise.success(unit()));
+            Mockito.when(node.stop()).thenReturn(Promise.success(StopReport.clean()));
 
             var flushed = new AtomicBoolean(false);
             var haltedWith = new AtomicInteger(-1);

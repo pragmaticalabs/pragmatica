@@ -29,7 +29,6 @@ import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -225,7 +224,7 @@ class AetherNodeKvDispatcherWiringBootTest {
                                                                                                                                    "INFO")))));
         assertThat(held.await(20, TimeUnit.SECONDS)).as("the dispatcher is held in the marker's handler").isTrue();
         nodes.remove(node);
-        Promise<Unit> stopped = node.stop();
+        Promise<StopReport> stopped = node.stop();
 
         try {
             assertThat(eventually(() -> store.deliveryMetrics().closed())).as("the stop reached the store's close").isTrue();

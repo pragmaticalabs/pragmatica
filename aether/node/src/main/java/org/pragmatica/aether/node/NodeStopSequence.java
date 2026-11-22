@@ -6,12 +6,14 @@ package org.pragmatica.aether.node;
 
 import java.util.List;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+
+import org.pragmatica.aether.node.StopReport.StepFailure;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,9 +22,10 @@ import org.slf4j.LoggerFactory;
 /// The whole of `AetherNode.stop()` after its synchronous prologue, as one ordered list of steps (#1612, #3565).
 ///
 /// One invariant: once the stop begins, every step runs exactly once, in order, whatever any earlier step returned.
-/// A failure never skips a later step; it is logged where it happens and the stop's own result is the FIRST failure
-/// (the caller learns the stop did not complete cleanly, and the later failures are in the log). So a failed leave of
-/// the quorum, a failed HTTP listener stop and a failed shared-resource close are one case, not three.
+/// A failure never skips a later step; it is logged where it happens and recorded, and the stop's result is a [StopReport]
+/// carrying EVERY failure in step order. The stop SUCCEEDS with it once every step settled: a failed step means "stopped, with
+/// failures", never "did not stop". So a failed leave of the quorum, a failed HTTP listener stop and a failed shared-resource
+/// close are one case, not three. The result fails only when the sequence cannot complete; no returned step failure causes that.
 ///
 /// Each step is a `Supplier`, so no step starts before the previous one has settled. The sequence can be tested
 /// without assembling a node.
@@ -98,42 +101,44 @@ sealed interface NodeStopSequence {
         }
     }
 
-    /// Runs every step in order and resolves with the first failure, or with success when none failed.
-    static Promise<Unit> run(Steps steps) {
-        return runFrom(steps.ordered(), Option.empty()).flatMap(NodeStopSequence::outcome);
+        /// Runs every step in order and resolves with the report of what failed: [StopReport#clean] when nothing did,
+    /// otherwise every failure, in step order. It never fails for a step's returned failure.
+    static Promise<StopReport> run(Steps steps) {
+        return runFrom(steps.ordered(), List.of()).map(StopReport::of);
     }
 
-    /// Runs `remaining` in order, carrying the first failure so far. The next step starts when this one has settled,
+    /// Runs `remaining` in order, carrying the failures so far. The next step starts when this one has settled,
     /// whether it succeeded or failed: this is where a failure stops being able to skip anything.
-    private static Promise<Option<Cause>> runFrom(List<Step> remaining, Option<Cause> firstFailure) {
+    private static Promise<List<StepFailure>> runFrom(List<Step> remaining, List<StepFailure> failures) {
         return remaining.isEmpty()
-               ? Promise.success(firstFailure)
+               ? Promise.success(failures)
                : settle(remaining.getFirst(),
                         remaining.subList(1, remaining.size()),
-                        firstFailure);
+                        failures);
     }
 
-    private static Promise<Option<Cause>> settle(Step step, List<Step> rest, Option<Cause> firstFailure) {
+    private static Promise<List<StepFailure>> settle(Step step, List<Step> rest, List<StepFailure> failures) {
         return step.action()
                    .get()
                    .fold(result -> runFrom(rest,
-                                           firstFailure.orElse(failureOf(step.name(),
-                                                                         result))));
+                                           withOutcomeOf(step.name(), result, failures)));
     }
 
-    /// The failure of a settled step, logged; empty when it succeeded.
-    private static Option<Cause> failureOf(String name, Result<Unit> result) {
-        return result.fold(cause -> logged(name, cause), _ -> Option.empty());
+    /// `failures` plus the failure of a settled step, logged; `failures` itself when it succeeded.
+    private static List<StepFailure> withOutcomeOf(String name, Result<Unit> result, List<StepFailure> failures) {
+        return result.fold(cause -> appended(failures, logged(name, cause)),
+                           _ -> failures);
     }
 
-    private static Option<Cause> logged(String name, Cause cause) {
+    private static List<StepFailure> appended(List<StepFailure> failures, StepFailure failure) {
+        return Stream.concat(failures.stream(), Stream.of(failure))
+                     .toList();
+    }
+
+    private static StepFailure logged(String name, Cause cause) {
         LOG.warn("{} did not stop cleanly; continuing node shutdown: {}", name, cause.message());
 
-        return Option.present(cause);
-    }
-
-    private static Promise<Unit> outcome(Option<Cause> firstFailure) {
-        return firstFailure.fold(Promise::unitPromise, Cause::promise);
+        return StepFailure.stepFailure(name, cause);
     }
 
     record unused() implements NodeStopSequence {}

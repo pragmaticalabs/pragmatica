@@ -21,9 +21,10 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /// #3565 (generalising #1612): once a node's stop begins, every step runs exactly once, in order, whatever any
-/// earlier step returned, and the stop's result is the first failure. Before, a failed `leaveQuorum` (and, before
+/// earlier step returned, and the stop SUCCEEDS with a report carrying every failure, in step order. Before, a failed `leaveQuorum` (and, before
 /// #1612, a failed HTTP listener stop) ended the `flatMap` chain, so the FSM2 close, the components' stops, the
 /// listeners and the cluster node never ran.
 class NodeStopSequenceTest {
@@ -60,6 +61,7 @@ class NodeStopSequenceTest {
         var outcome = NodeStopSequence.run(steps(Map.of())).await();
 
         assertThat(outcome.isSuccess()).isTrue();
+        assertThat(reportOf(outcome).isClean()).isTrue();
         assertThat(ran).containsExactlyElementsOf(EVERY_STEP);
         assertThat(capture.messages()).isEmpty();
     }
@@ -70,13 +72,13 @@ class NodeStopSequenceTest {
         var outcome = NodeStopSequence.run(steps(Map.of("leaveQuorum", QUORUM_NOT_LEFT))).await();
 
         assertThat(ran).containsExactlyElementsOf(EVERY_STEP);
-        assertThat(failureOf(outcome)).isEqualTo(QUORUM_NOT_LEFT.message());
+        assertThat(failuresOf(outcome)).containsExactly("Leave quorum: " + QUORUM_NOT_LEFT.message());
         assertThat(capture.messages()).containsExactly("Leave quorum did not stop cleanly; continuing node shutdown: " + QUORUM_NOT_LEFT.message());
     }
 
     /// Whichever step fails, no other step is skipped or repeated, and the failure is the stop's outcome.
     @Test
-    void run_anyOneStepFails_everyStepStillRunsExactlyOnce_andTheStopReportsThatFailure() {
+    void run_anyOneStepFails_everyStepStillRunsExactlyOnce_andTheStopCompletesWithThatFailure() {
         for (var failing : EVERY_STEP) {
             ran.clear();
 
@@ -87,12 +89,13 @@ class NodeStopSequenceTest {
             var infallible = failing.equals("storage") || failing.equals("deploymentWiring");
 
             assertThat(ran).as("steps run with %s failing", failing).containsExactlyElementsOf(EVERY_STEP);
-            assertThat(outcome.isFailure()).as("outcome with %s failing", failing).isEqualTo(!infallible);
+            assertThat(outcome.isSuccess()).as("the stop completed with %s failing", failing).isTrue();
+            assertThat(reportOf(outcome).isClean()).as("report with %s failing", failing).isEqualTo(infallible);
         }
     }
 
     @Test
-    void run_aMiddleStepFails_theStepsAfterItRun_andTheStopResultCarriesTheFailure() {
+    void run_aMiddleStepFails_theStepsAfterItRun_andTheReportCarriesTheFailure() {
         var outcome = NodeStopSequence.run(steps(Map.of("nodeComponents", STOP_TIMED_OUT))).await();
 
         assertThat(ran.subList(ran.indexOf("nodeComponents") + 1, ran.size())).containsExactly("deactivate",
@@ -102,16 +105,17 @@ class NodeStopSequenceTest {
                                                                                                 "sharedResources",
                                                                                                 "storage",
                                                                                                 "clusterNode");
-        assertThat(failureOf(outcome)).isEqualTo(STOP_TIMED_OUT.message());
+        assertThat(failuresOf(outcome)).containsExactly("Node components: " + STOP_TIMED_OUT.message());
     }
 
-    /// #1612: a listener that fails to stop is logged, does not skip what follows, and (since #3565) is the outcome.
+    /// #1612: a listener that fails to stop is logged, does not skip what follows, and (since #3565) is in the stop's report, which still SUCCEEDS: the node is stopped.
     @Test
     void run_managementServerStopFails_runsEveryLaterStep_logsTheFailure_andReportsIt() {
         var outcome = NodeStopSequence.run(steps(Map.of("management", STOP_TIMED_OUT))).await();
 
         assertThat(ran).containsExactlyElementsOf(EVERY_STEP);
-        assertThat(failureOf(outcome)).isEqualTo(STOP_TIMED_OUT.message());
+        assertThat(outcome.isSuccess()).isTrue();
+        assertThat(failuresOf(outcome)).containsExactly("Management server: " + STOP_TIMED_OUT.message());
         assertThat(capture.entries()).anyMatch(entry -> entry.level() == Level.WARN
                                                        && entry.message()
                                                                .equals("Management server did not stop cleanly; continuing node shutdown: "
@@ -122,7 +126,7 @@ class NodeStopSequenceTest {
     void run_appHttpServerStopFails_runsEveryLaterStep_andLogsTheFailure() {
         var outcome = NodeStopSequence.run(steps(Map.of("appHttp", STOP_TIMED_OUT))).await();
 
-        assertThat(outcome.isFailure()).isTrue();
+        assertThat(failuresOf(outcome)).containsExactly("App HTTP server: " + STOP_TIMED_OUT.message());
         assertThat(ran).containsExactlyElementsOf(EVERY_STEP);
         assertThat(capture.messages()).anyMatch(message -> message.startsWith("App HTTP server did not stop cleanly"));
     }
@@ -133,23 +137,25 @@ class NodeStopSequenceTest {
     void run_sharedResourceCloseFails_runsEveryLaterStep_andLogsTheFailure() {
         var outcome = NodeStopSequence.run(steps(Map.of("sharedResources", STOP_TIMED_OUT))).await();
 
-        assertThat(outcome.isFailure()).isTrue();
+        assertThat(failuresOf(outcome)).containsExactly("Shared resource scope: " + STOP_TIMED_OUT.message());
         assertThat(ran).containsExactlyElementsOf(EVERY_STEP);
         assertThat(capture.messages()).anyMatch(message -> message.startsWith("Shared resource scope did not stop cleanly"));
     }
 
     @Test
     void run_clusterNodeStopFails_reportsTheFailure() {
-        assertThat(failureOf(NodeStopSequence.run(steps(Map.of("clusterNode", STOP_TIMED_OUT))).await())).isEqualTo(STOP_TIMED_OUT.message());
+        assertThat(failuresOf(NodeStopSequence.run(steps(Map.of("clusterNode", STOP_TIMED_OUT))).await())).containsExactly("Cluster node: " + STOP_TIMED_OUT.message());
     }
 
-    /// The first failure is the stop's outcome; a later one is not lost, it is logged.
+    /// The report carries EVERY failure, in step order (not only the first), and each is logged.
     @Test
-    void run_severalStepsFail_theResultIsTheFirst_andEveryFailureIsLogged() {
+    void run_severalStepsFail_theReportCarriesEveryFailureInStepOrder_andEveryFailureIsLogged() {
         var outcome = NodeStopSequence.run(steps(Map.of("leaveQuorum", QUORUM_NOT_LEFT, "clusterNode", LATER_FAILURE))).await();
 
         assertThat(ran).containsExactlyElementsOf(EVERY_STEP);
-        assertThat(failureOf(outcome)).isEqualTo(QUORUM_NOT_LEFT.message());
+        assertThat(outcome.isSuccess()).isTrue();
+        assertThat(failuresOf(outcome)).containsExactly("Leave quorum: " + QUORUM_NOT_LEFT.message(),
+                                                        "Cluster node: " + LATER_FAILURE.message());
         assertThat(capture.messages()).containsExactly("Leave quorum did not stop cleanly; continuing node shutdown: " + QUORUM_NOT_LEFT.message(),
                                                        "Cluster node did not stop cleanly; continuing node shutdown: " + LATER_FAILURE.message());
     }
@@ -175,12 +181,21 @@ class NodeStopSequenceTest {
         quorum.fail(QUORUM_NOT_LEFT);
 
         assertThat(ran).containsExactlyElementsOf(EVERY_STEP);
-        assertThat(failureOf(stop.await())).isEqualTo(QUORUM_NOT_LEFT.message());
+        assertThat(failuresOf(stop.await())).containsExactly("Leave quorum: " + QUORUM_NOT_LEFT.message());
     }
 
-    /// The failure's message, or `success` when the stop succeeded.
-    private static String failureOf(Result<Unit> outcome) {
-        return outcome.fold(Cause::message, _ -> "success");
+    /// The report of a stop that must have succeeded (a failed stop fails the calling assertion).
+    private static StopReport reportOf(Result<StopReport> outcome) {
+        return outcome.fold(cause -> fail("the stop must succeed with a report, failed: " + cause.message()),
+                            report -> report);
+    }
+
+    /// The report's failures as `step: message`, in step order.
+    private static List<String> failuresOf(Result<StopReport> outcome) {
+        return reportOf(outcome).failures()
+                                .stream()
+                                .map(StopReport.StepFailure::describe)
+                                .toList();
     }
 
     private NodeStopSequence.Steps steps(Map<String, Cause> failing) {

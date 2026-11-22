@@ -38,7 +38,7 @@ class StopSequencePinTest {
     private static final Pattern LEADER_EXECUTOR = Pattern.compile("reactors\\.executor\\(\"LeaderManager\"\\)");
     private static final Pattern RECORDED = Pattern.compile("MessageRouter\\.Entry\\.route\\(LeaderNotification\\.LeaderChange\\.class,\\s*leaderDeactivation::onLeaderChange\\)");
     private static final Pattern CHAIN_HEAD = Pattern.compile("return NodeStopSequence\\.run\\(NodeStopSequence\\.Steps\\.steps\\(\\(\\) -> quorumLeft,\\s*this::stopDeploymentWiring,\\s*\\(\\) -> stopNodeComponents\\(backupFlushed\\),\\s*this::releaseWatchesThenDeactivate,");
-    private static final String STOP = "public Promise<Unit> stop() {";
+    private static final String STOP = "public Promise<StopReport> stop() {";
     private static final String FSM2_CLOSE = "private Unit stopDeploymentWiring() {";
     private static final String COMPONENTS = "private Promise<Unit> stopNodeComponents(Promise<Unit> backupFlushed) {";
     private static final String COMPONENTS_END = "return backupFlushed.flatMap(() -> streamsStopped);";
