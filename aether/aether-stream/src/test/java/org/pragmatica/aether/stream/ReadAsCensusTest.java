@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -45,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// The [ReadAs] census (M-2r-1, ruling 7): the constructor is called exactly twice in the main sources of every aether module
 /// (the `COPY` constant and the mint), and the type is held nowhere: not by a field, not by a record component, not by an array
-/// and not as a type argument. The one exception is `ReadAs.java` itself (CTO ruling s54): the mint's signature is
+/// and not as a type argument. The one exception is the compilation unit declaring `ReadAs` itself (CTO ruling s54): the mint's signature is
 /// `Fn1<Result<T>, ReadAs>`, the shape the ruling fixed, and `COPY` is a constant, not a held value.
 ///
 /// The census reads the SYNTAX TREE, not text. Three rounds of token rules each missed a spelling (an annotation between the
@@ -62,9 +63,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ReadAsCensusTest {
     private static final Path AETHER_ROOT = Path.of("..");
     private static final String READ_AS = "ReadAs";
-    private static final String EXEMPT_FILE = "ReadAs.java";
+    private static final String EXEMPT_PACKAGE = "org.pragmatica.aether.stream";
+    private static final Path CLAIMED_ROOT = Path.of("..");
+    private static final Path OTHER_READ_AS_FIXTURE = Path.of("src/test/resources/read-as-census-fixture/ReadAs.java");
 
-    private record Census(long constructions, long declarations, List<String> offences) {}
+    private record Census(long parsed, long constructions, long declarations, List<String> offences) {}
 
     @Test
     void readAs_overTheMainSources_isConstructedTwiceAndHeldNowhere() throws IOException {
@@ -76,10 +79,28 @@ class ReadAsCensusTest {
 
         var census = censusOfFiles(sources);
 
-        assertThat(sources).as("the main sources the census parsed").hasSizeGreaterThan(100);
+        assertThat(census.parsed()).as("main sources the census parsed == main sources under the claimed root, walked independently")
+                                   .isEqualTo(mainSourcesUnderClaimedRoot());
         assertThat(census.constructions()).as("'new ReadAs(' in aether/*/src/main").isEqualTo(2L);
         assertThat(census.declarations()).as("types named ReadAs declared in aether/*/src/main").isEqualTo(1L);
         assertThat(census.offences()).isEmpty();
+    }
+
+    /// The second instrument of the reach check: a plain walk of the claimed root, sharing nothing with the census's own file filter.
+    /// A reach that silently drops modules (a narrowed root, a filter that skips a directory) makes the two counts disagree.
+    private static long mainSourcesUnderClaimedRoot() throws IOException {
+        try (Stream<Path> files = Files.walk(CLAIMED_ROOT)) {
+            return files.filter(path -> path.getFileName().toString().endsWith(".java"))
+                        .filter(ReadAsCensusTest::isUnderMainJava)
+                        .count();
+        }
+    }
+
+    private static boolean isUnderMainJava(Path path) {
+        var names = new ArrayList<String>();
+
+        path.normalize().forEach(name -> names.add(name.toString()));
+        return !names.contains("target") && !names.contains(".m2-local") && Collections.indexOfSubList(names, List.of("src", "main", "java")) >= 0;
     }
 
     /// Positive controls: every spelling of a held ReadAs is an offence, however it is written.
@@ -150,15 +171,29 @@ class ReadAsCensusTest {
         }
     }
 
-    /// The exemption is the file `ReadAs.java` and nothing else: the same declarations are offences in any other file.
+    /// The exemption is the one compilation unit that declares the `ReadAs` type in its package, resolved from the parse (package
+    /// plus type name), never the file name: the same declarations are offences in any other unit, whatever the file is called.
     @Test
-    void offences_exemptsExactlyReadAsJava() {
+    void offences_exemptsExactlyTheUnitDeclaringReadAs() {
         var declarations = "public static final ReadAs COPY = new ReadAs(\"\", -1, 0L);\n"
                            + "<T> Promise<T> loan(Fn1<Result<T>, ReadAs> use) { return null; }";
+        var declaring = "package " + EXEMPT_PACKAGE + ";\nfinal class ReadAs {\n" + declarations + "\n}\n";
+        var otherPackage = "package org.example.other;\nfinal class ReadAs {\n" + declarations + "\n}\n";
+        var otherType = "package " + EXEMPT_PACKAGE + ";\nfinal class Other {\n" + declarations + "\n}\n";
 
-        assertThat(offences("ReadAs.java", inClass(declarations))).isEmpty();
+        assertThat(offences("ReadAs.java", declaring)).isEmpty();
+        assertThat(offences("ReadAs.java", otherPackage)).hasSize(2);
+        assertThat(offences("ReadAs.java", otherType)).hasSize(2);
         assertThat(offences("Other.java", inClass(declarations))).hasSize(2);
-        assertThat(offences("MyReadAs.java", inClass(declarations))).hasSize(2);
+    }
+
+    /// A second file named `ReadAs.java` in another package that holds a `ReadAs` is counted: the fixture is parsed by the same
+    /// census function as the real sources, and a name match would have exempted it.
+    @Test
+    void census_ofASecondFileNamedReadAsJava_countsItsHeldReadAs() throws IOException {
+        var census = censusOfFiles(List.of(OTHER_READ_AS_FIXTURE));
+
+        assertThat(census.offences()).hasSize(1);
     }
 
     /// Constructions are counted by syntax: a qualified name, an annotation and a constructor reference are constructions, a
@@ -234,8 +269,11 @@ class ReadAsCensusTest {
         var units = task.parse();
         var scanner = new ReadAsScanner(Trees.instance(task).getSourcePositions());
 
+        var parsed = 0L;
+
         for (var unit : units) {
             scanner.scan(unit, null);
+            parsed++;
         }
 
         var errors = diagnostics.getDiagnostics()
@@ -245,7 +283,7 @@ class ReadAsCensusTest {
                                 .toList();
 
         assertThat(errors).as("every source must parse").isEmpty();
-        return new Census(scanner.constructions, scanner.declarations, scanner.offences);
+        return new Census(parsed, scanner.constructions, scanner.declarations, scanner.offences);
     }
 
     /// The node `type` is `ReadAs` itself, whatever its spelling: simple or qualified, annotated, or the bound of a wildcard.
@@ -275,11 +313,15 @@ class ReadAsCensusTest {
 
         @Override
         public Void visitCompilationUnit(CompilationUnitTree node, Void unused) {
-            var path = node.getSourceFile().toUri().getPath();
-
             unit = node;
-            exempt = path.substring(path.lastIndexOf('/') + 1).equals(EXEMPT_FILE);
+            exempt = declaresReadAsInExemptPackage(node);
             return super.visitCompilationUnit(node, unused);
+        }
+
+        private static boolean declaresReadAsInExemptPackage(CompilationUnitTree node) {
+            return node.getPackageName() != null
+                   && node.getPackageName().toString().equals(EXEMPT_PACKAGE)
+                   && node.getTypeDecls().stream().anyMatch(type -> type instanceof ClassTree declared && declared.getSimpleName().contentEquals(READ_AS));
         }
 
         @Override
