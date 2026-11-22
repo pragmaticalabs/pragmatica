@@ -240,6 +240,25 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A read below the first offset this copy ever held, made by a caller that is not the owner: the neutral fact "this copy
+    /// never held it". `firstHeld` is the first offset the copy holds and `tailOffset` its tail. It names no removal cause,
+    /// because this copy removed nothing (a removal is a [CursorExpired]); the requested offset is not a field, the caller has
+    /// it. The owner answers it, so it is a retry-elsewhere refusal on the wire (`ReadRefusal.Kind.BELOW_COPY_TAIL`, 503). The
+    /// compact constructor refuses a `firstHeld` above the tail, which no copy can hold (a programming error only).
+    record BelowCopyTail(long firstHeld, long tailOffset) implements StreamError {
+        @SuppressWarnings("JBCT-EX-01") public BelowCopyTail {
+            if (firstHeld > tailOffset) {
+                throw new IllegalArgumentException("BelowCopyTail firstHeld " + firstHeld + " is above tail " + tailOffset);
+            }
+        }
+
+        @Override
+        public String message() {
+            return "Read is below the first offset this copy held: it holds from %d, tail is %d".formatted(firstHeld,
+                                                                                                           tailOffset);
+        }
+    }
+
     /// A repair was refused because this copy's own history cannot vouch for its records (#1730 phase 2): it compares
     /// unequal with the owner at `offset` only because it holds records and no owner-epoch history, which is no evidence of
     /// a lineage split. Nothing was cut; the partition stays quarantined.

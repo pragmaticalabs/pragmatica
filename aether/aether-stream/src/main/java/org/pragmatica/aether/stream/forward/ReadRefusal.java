@@ -156,6 +156,8 @@ public record ReadRefusal(Kind kind,
         SEALED_RANGE_MISSING,
         /// The stream's existence is confirmed but this node's engine does not hold it yet (503, a repeat may succeed).
         STREAM_NOT_MATERIALIZED,
+        /// A read below the first offset this copy ever held, by a caller that is not the owner (503, the owner answers it).
+        BELOW_COPY_TAIL,
         /// A code this node does not know, sent by a newer one (#964): rebuilt as the owner's text.
         UNKNOWN;
         /// The row this kind answers with: the ONE switch from a kind to what a node does with a failed read. A switch
@@ -164,7 +166,7 @@ public record ReadRefusal(Kind kind,
             return switch (this) {
                 case BUFFER_CLOSED, OWNER_NOT_ACTIVATED, REPLICA_NOT_VERIFIED, STALE_EPOCH_READ, NOT_CURRENT_OWNER, OWNER_CATCHUP_PENDING, LINEARIZABLE_ROUND_TIMEOUT, PARTITION_HELD_NOT_MATERIALIZED, SEAL_IN_FLIGHT, SEALED_RANGE_MISSING, STREAM_NOT_MATERIALIZED -> Answer.NN_SURFACE;
                 case UNKNOWN -> Answer.NN_DEGRADE;
-                case PARTITION_NOT_LOCAL -> Answer.NN_RETRY;
+                case PARTITION_NOT_LOCAL, BELOW_COPY_TAIL -> Answer.NN_RETRY;
                 case PARTITION_OUT_OF_RANGE -> Answer.RQ_INVALID;
                 case STREAM_NOT_FOUND -> Answer.RQ_NOT_FOUND;
                 case CURSOR_EXPIRED -> Answer.CE_L;
@@ -300,6 +302,7 @@ public record ReadRefusal(Kind kind,
                                                                  cause,
                                                                  StreamError.CursorExpired.causesOf(causes));
             case STREAM_NOT_MATERIALIZED -> new StreamError.StreamNotMaterialized(stream);
+            case BELOW_COPY_TAIL -> new StreamError.BelowCopyTail(first, second);
             case OWNER_NOT_ACTIVATED -> new StreamError.OwnerNotActivated(stream, partition);
             case REPLICA_NOT_VERIFIED -> new StreamError.ReplicaNotVerified(stream, partition, first);
             case STALE_EPOCH_READ -> new StreamError.StaleEpochRead(stream, partition, epochFirst, epochSecond);
@@ -348,6 +351,10 @@ public record ReadRefusal(Kind kind,
             case StreamError.StreamNotMaterialized(var stream) -> some(readRefusal(Kind.STREAM_NOT_MATERIALIZED,
                                                                                    stream,
                                                                                    0));
+            case StreamError.BelowCopyTail(var firstHeld, var tail) -> some(readRefusal(Kind.BELOW_COPY_TAIL,
+                                                                                        "",
+                                                                                        0).withFirst(firstHeld)
+                                                                                          .withSecond(tail));
             case StreamError.OwnerNotActivated(var stream, var partition) -> some(readRefusal(Kind.OWNER_NOT_ACTIVATED,
                                                                                               stream,
                                                                                               partition));

@@ -75,6 +75,7 @@ class StreamErrorStatusTest {
         all.put(new StreamError.CursorExpired(1, 5), HttpStatus.GONE);
         all.put(new StreamError.CursorExpired(1, 5, StreamError.CursorExpired.Reason.LOST), HttpStatus.GONE);
         all.put(new StreamError.StreamNotMaterialized("s"), HttpStatus.SERVICE_UNAVAILABLE);
+        all.put(new StreamError.BelowCopyTail(1, 5), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.EpochDiverged(EPOCH, 3, 3), HttpStatus.CONFLICT);
         all.put(new StreamError.SeedRejected(1, 2), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.WalReplayMismatch("s", 0, WAL, 1, 3), HttpStatus.INTERNAL_SERVER_ERROR);
@@ -379,6 +380,15 @@ class StreamErrorStatusTest {
             assertThat(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_DEGRADE)).isEqualTo(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_SURFACE));
             assertThat(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_RETRY)).isEqualTo(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_SURFACE));
             assertThat(StreamErrorStatus.statusOf(ReadRefusal.Answer.FAULT_DEGRADE)).isEqualTo(StreamErrorStatus.statusOf(ReadRefusal.Answer.FAULT));
+        }
+
+        /// W-4 (stream-mem): the neutral "this copy never held it" answers 503 as a record and through its row `NN_RETRY`, as
+        /// literals (a derived expectation cannot see a wrong group). Mutant: `BelowCopyTail` moved to another group -> RED.
+        @Test
+        void belowCopyTail_answers503_asARecord_andThroughItsRetryRow() {
+            assertThat(StreamErrorStatus.statusOf(new StreamError.BelowCopyTail(5L, 9L))).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            assertThat(StreamErrorStatus.statusOf(ReadRefusal.Answer.NN_RETRY)).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            assertThat(ReadRefusal.answerOf(new StreamError.BelowCopyTail(5L, 9L))).isEqualTo(ReadRefusal.Answer.NN_RETRY);
         }
 
         /// Arm (4): the row reaches the caller, for every sample cause, with no test of the cause's type.
