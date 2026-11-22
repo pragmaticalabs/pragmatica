@@ -248,7 +248,8 @@ public sealed interface StreamError extends Cause {
     record BelowCopyTail(long firstHeld, long tailOffset) implements StreamError {
         @SuppressWarnings("JBCT-EX-01") public BelowCopyTail {
             if (firstHeld > tailOffset) {
-                throw new IllegalArgumentException("BelowCopyTail firstHeld " + firstHeld + " is above tail " + tailOffset);
+                throw new IllegalArgumentException("BelowCopyTail firstHeld " + firstHeld
+                                                  + " is above tail " + tailOffset);
             }
         }
 

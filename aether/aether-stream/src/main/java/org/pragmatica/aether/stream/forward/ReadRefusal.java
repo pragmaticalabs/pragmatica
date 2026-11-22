@@ -351,10 +351,7 @@ public record ReadRefusal(Kind kind,
             case StreamError.StreamNotMaterialized(var stream) -> some(readRefusal(Kind.STREAM_NOT_MATERIALIZED,
                                                                                    stream,
                                                                                    0));
-            case StreamError.BelowCopyTail(var firstHeld, var tail) -> some(readRefusal(Kind.BELOW_COPY_TAIL,
-                                                                                        "",
-                                                                                        0).withFirst(firstHeld)
-                                                                                          .withSecond(tail));
+            case StreamError.BelowCopyTail(var firstHeld, var tail) -> some(readRefusal(Kind.BELOW_COPY_TAIL, "", 0).withFirst(firstHeld).withSecond(tail));
             case StreamError.OwnerNotActivated(var stream, var partition) -> some(readRefusal(Kind.OWNER_NOT_ACTIVATED,
                                                                                               stream,
                                                                                               partition));
