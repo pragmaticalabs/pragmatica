@@ -666,7 +666,7 @@ class ViewApplicationTableTest {
 
     /// Item 6: a local tick over an empty view reschedules, so the node elects once a view appears without any event.
     @Test
-    void item6_localTick_onAnEmptyView_reschedulesAndElectsWhenAViewAppears() throws InterruptedException {
+    void item6_localTick_onAnEmptyView_reschedulesAndElectsWhenAViewAppears() {
         localNode(StartState.ELECTING, Option::none, TimeSpan.timeSpan(20).millis());
         node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N1, List.of(), 2L));
 
@@ -676,7 +676,7 @@ class ViewApplicationTableTest {
 
         var deadline = System.nanoTime() + 5_000_000_000L;
         while (!node.state().equals("Led") && System.nanoTime() < deadline) {
-            Thread.sleep(20);
+            Thread.onSpinWait();
         }
         assertThat(node.state() + " " + node.leader()).as("the rescheduled tick elected").isEqualTo("Led N1");
     }

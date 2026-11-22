@@ -1040,8 +1040,17 @@ class RabiaEngineTest {
 
     @Nested
     class DecisionLatency {
-        private static final long HOLD_MILLIS = 25;
         private static final long MIN_HELD_NANOS = MILLISECONDS.toNanos(20);
+
+        /// Serves the lower bound of the duration assertion below: the slot must have been held at least `nanos` on the clock that
+        /// assertion reads. The slot started before this call, so holding `nanos` from here is enough.
+        private static void holdAtLeast(long nanos) {
+            var until = System.nanoTime() + nanos;
+
+            while (System.nanoTime() < until) {
+                Thread.onSpinWait();
+            }
+        }
 
         /// #2644: commitDecision recorded a hard-coded 0, so every consumer of average decision latency read 0.
         /// The bounds come from the test's own clock: the slot is held at least the quorum delay (the lower bound
@@ -1071,7 +1080,7 @@ class RabiaEngineTest {
             target.processVoteRound1(new VoteRound1(NODE_2, Phase.ZERO, StateValue.V1));
             target.processVoteRound1(new VoteRound1(NODE_3, Phase.ZERO, StateValue.V1));
             awaitOwnVote2(Phase.ZERO);
-            Thread.sleep(HOLD_MILLIS);
+            holdAtLeast(MIN_HELD_NANOS);
             target.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
             target.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
 

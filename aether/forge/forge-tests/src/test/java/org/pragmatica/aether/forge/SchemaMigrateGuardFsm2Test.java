@@ -44,9 +44,8 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class SchemaMigrateGuardFsm2Test {
-    private static final int BASE_PORT = 33000;
-    private static final int BASE_MGMT_PORT = 33100;
-    private static final int BASE_APP_HTTP_PORT = 33200;
+    /// Where the probe for a free block starts (EquivalencePorts bind-checks every port the cluster will take).
+    private static final int FIRST_BLOCK = 33000;
     private static final int NODES = 3;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(90);
@@ -60,7 +59,9 @@ class SchemaMigrateGuardFsm2Test {
 
     @BeforeAll
     void setUp() {
-        cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "sg3411");
+        var base = EquivalencePorts.freeBase(FIRST_BLOCK, NODES);
+
+        cluster = emberCluster(NODES, base, base + EquivalencePorts.OFFSETS[1], base + EquivalencePorts.OFFSETS[2], "sg3411");
         cluster.withDeploymentEngine(DeploymentEngine.FSM2);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         await().atMost(WAIT_TIMEOUT).pollInterval(Duration.ofMillis(500)).until(() -> cluster.currentLeader().isPresent());
