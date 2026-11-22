@@ -19,9 +19,10 @@
 /// to the committed record); the grace timer's re-arm while KV sync is pending (the timeout may fire at any time, or
 /// never); the pre-vote (consensus mode's `enableLeaderPreVote`: `loseLeader` keeps `Led` with an out-of-view leader
 /// while the electorate votes, and the model drops that leader at once, so `VotingInView` is claimed for pre-vote
-/// disabled only); the local view path's election (`LeaderManager` `electLocallyIfPossible`: I3 is claimed from ticks
-/// alone); `QuorumLost` (its entry clears the leader); `Passive` re-entry; and, without the fix `serial`, every
-/// handler but the push's admission stays one atomic step.
+/// disabled only; modelling it is #3589); the local view path's election (`LeaderManager`
+/// `electLocallyIfPossible`: I3 is claimed from ticks alone); `QuorumLost` (its entry clears the
+/// leader); `Passive` re-entry; and, without the fix `serial`, every handler but the push's admission stays one
+/// atomic step.
 ///
 /// ```tla LeaderAdmission:head
 /// EXTENDS Naturals, FiniteSets
@@ -37,7 +38,7 @@
 /// \* carries the entry hold). A config that drops one models the code without it and must fail:
 /// \*   serial        - Passive's push admission check and its write are one step against the view (#3587, know
 /// \*                   45a9e2fdd9: the code as it stands splits them, Fsm.dispatch runs on the caller thread and a
-/// \*                   view write on another thread may run between; config `interleave` drops it, a FINDING)
+/// \*                   view write on another thread may run between; configs `interleave`, `interleavelearns`, `interleavemono` drop it, a FINDING)
 /// \*   entryhold     - Passive's entry holds an inherited leader to the stored view, whatever the predecessor (#3581:
 /// \*                   without it a Led holding a FIX 1 leader absent from the view enters Passive still holding it)
 /// \*   entrypull     - Passive's entry pulls the committed LeaderKey (#3414: a worker entering Passive after the push
@@ -426,7 +427,30 @@
 ///           Mutant = {}
 /// CONSTANT Fixed = {"entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
 /// INVARIANT PassiveInView
-/// PROPERTY PassiveLearns AdSeqMono
+/// ```
+///
+/// ```tlacfg LeaderAdmission:interleavelearns
+/// CONSTANTS Role = "passive"
+///           Local = FALSE
+///           MaxSeq = 3
+///           MaxCommits = 2
+///           EnvSteps = 3
+///           Env = {"view", "commit"}
+///           Mutant = {}
+/// CONSTANT Fixed = {"entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
+/// PROPERTY PassiveLearns
+/// ```
+///
+/// ```tlacfg LeaderAdmission:interleavemono
+/// CONSTANTS Role = "passive"
+///           Local = FALSE
+///           MaxSeq = 3
+///           MaxCommits = 2
+///           EnvSteps = 3
+///           Env = {"view", "commit"}
+///           Mutant = {}
+/// CONSTANT Fixed = {"entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
+/// PROPERTY AdSeqMono
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:noentryhold
