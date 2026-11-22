@@ -214,6 +214,7 @@ _generation_harness_bug() {
     local message="[FAIL]  HARNESS BUG (generation barrier): $1 -- aborting the suite: a barrier that no-ops invalidates every later result"
     { echo "$message" >&7; } 2>/dev/null || echo "$message" >&2
     if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then
+        # The sole raw kill outside proc_reap: the script aborting ITSELF (not a harness child), so it is not registered.
         kill -TERM "$$" 2>/dev/null
     fi
     exit 3

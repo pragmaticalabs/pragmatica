@@ -17,6 +17,7 @@ package org.pragmatica.dht;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.OutboundMessageLimit;
 import org.pragmatica.dht.storage.KeyStamp;
@@ -311,7 +312,10 @@ class DHTRepairPlaneTest {
         }
     }
 
+    /// Each test here runs in under a second. A run past the deadline means the departure push never resolved
+    /// (a page or probe is awaited for ever), not a slow machine.
     @Nested
+    @Timeout(60)
     class DeparturePush {
         /// A departing node's large partition reaches its newcomer in pages within the budget, every page acked, so
         /// the push completes with nothing reported at risk. Red when the byte budget is dropped.
@@ -329,7 +333,7 @@ class DHTRepairPlaneTest {
             var reported = new AtomicInteger(-1);
 
             cluster.departing.add(leaver.id());
-            leaver.rebalancer().pushOnDeparture(timeSpan(60).seconds(), (atRisk, _) -> reported.set(atRisk)).await();
+            DeparturePushes.push(leaver.rebalancer(), timeSpan(60).seconds(), (atRisk, _) -> reported.set(atRisk)).await();
 
             var pushes = cluster.sentOfType(DHTMessage.MigrationDataResponse.class);
             var largest = cluster.repairMessageBytes.stream().mapToInt(Integer::intValue).max().orElse(0);
@@ -342,11 +346,11 @@ class DHTRepairPlaneTest {
             assertThat(newcomer.node().getLocal(keys.get(41)).await().unwrap().unwrap()).isEqualTo(value(MIB, 541));
         }
 
-        /// Pages leave one after another, each once the previous is acked: with no ack coming back only the first page
-        /// leaves — resent every `resendAfter` (#2034), always under the same correlation id — and when the budget expires every
-        /// key, sent and unsent, is reported at risk.
+        /// Pages leave one after another, each once the previous is acked: with no ack coming back only the first page's keys
+        /// leave — the page is split on silence (#3345 P1) and its parts resent every `resendAfter` (#2034) — and when the budget
+        /// expires every key, sent and unsent, is reported at risk.
         @Test
-        void unackedPush_reportsEveryPlannedKeyAtRisk_andResendsOnlyTheFirstPage() {
+        void unackedPush_reportsEveryPlannedKeyAtRisk_andOnlyTheFirstPagesKeysLeave() {
             var cluster = new RepairCluster(PAIR, "leaver", "r1", "r2");
             var leaver = cluster.member("leaver");
             var keys = keysLeaverReplicates(leaver, 40);
@@ -358,14 +362,21 @@ class DHTRepairPlaneTest {
             var reported = new AtomicInteger(-1);
 
             cluster.unreachable.add(newcomer.id());
-            leaver.rebalancer().pushOnDeparture(timeSpan(300).millis(), (atRisk, _) -> reported.set(atRisk)).await();
+            DeparturePushes.push(leaver.rebalancer(), timeSpan(300).millis(), (atRisk, _) -> reported.set(atRisk)).await();
 
             var pushes = cluster.sentOfType(DHTMessage.MigrationDataResponse.class);
-            assertThat(pushes).as("the first page is resent").hasSizeGreaterThanOrEqualTo(2);
-            assertThat(pushes.stream().map(DHTMessage.MigrationDataResponse::requestId).distinct())
-                .as("the chain waits for the first ack: only page 1 ever leaves")
-                .hasSize(1);
+            var firstPage = keysOf(pushes.getFirst());
+
+            assertThat(pushes).as("the first page's keys are resent").hasSizeGreaterThanOrEqualTo(2);
+            assertThat(firstPage).as("control: the first page carries several keys, not all of them").hasSizeBetween(2, keys.size() - 1);
+            assertThat(pushes.stream().flatMap(push -> keysOf(push).stream()).distinct())
+                .as("the chain waits for the first ack: only page 1's keys ever leave")
+                .containsExactlyInAnyOrderElementsOf(firstPage);
             assertThat(reported).as("unsent pages are at risk too").hasValue(keys.size());
+        }
+
+        private static List<String> keysOf(DHTMessage.MigrationDataResponse push) {
+            return push.entries().stream().map(entry -> HexFormat.of().formatHex(entry.key())).toList();
         }
 
         private static List<byte[]> keysLeaverReplicates(RepairCluster.Member leaver, int count) {

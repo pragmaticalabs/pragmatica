@@ -158,7 +158,7 @@ test_rotation_under_load() {
 }
 
 test_cluster_healthy_after_rotation() {
-    sleep 5
+    poll_until 30 cluster_is_healthy   # wait on health, not a fixed sleep (#3424)
     assert_cluster_healthy "Cluster healthy after cert rotation"
 }
 
