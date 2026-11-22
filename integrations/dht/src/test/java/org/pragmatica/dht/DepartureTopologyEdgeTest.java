@@ -39,6 +39,7 @@ import static org.pragmatica.dht.DHTRebalancerTest.LOCAL;
 import static org.pragmatica.dht.DHTRebalancerTest.value;
 import static org.pragmatica.dht.DepartureDirectRuns.delivererOf;
 import static org.pragmatica.dht.DepartureDirectRuns.fiveNodeRing;
+import static org.pragmatica.dht.DepartureDirectRuns.ringPlus;
 import static org.pragmatica.dht.DepartureDirectRuns.soleKey;
 import static org.pragmatica.dht.DepartureDirectRuns.takeover;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
@@ -68,7 +69,11 @@ class DepartureTopologyEdgeTest {
         var key = soleKey(ring, "edge-recover");
         var recovered = takeover(ring, key);
 
-        assertRePlannedTo(ring, key, recovered, listener -> listener.onNodeRecovered(recovered));
+        assertRePlannedTo(ringPlus(ring, recovered),
+                          key,
+                          recovered,
+                          listener -> listener.onNodeDeparting(recovered),
+                          listener -> listener.onNodeRecovered(recovered));
     }
 
     @Test
@@ -101,6 +106,16 @@ class DepartureTopologyEdgeTest {
                                           byte[] key,
                                           NodeId expected,
                                           Consumer<DHTTopologyListener> edge) {
+        assertRePlannedTo(ring, key, expected, _ -> {}, edge);
+    }
+
+    /// As above, with `before` run on the listener ahead of the push: a recovery restores only a node this listener pruned on its
+    /// departing edge (#3415), so the recovery case prunes `expected` first and the edge then recovers it.
+    private static void assertRePlannedTo(ConsistentHashRing<NodeId> ring,
+                                          byte[] key,
+                                          NodeId expected,
+                                          Consumer<DHTTopologyListener> before,
+                                          Consumer<DHTTopologyListener> edge) {
         var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
         node.putLocal(key, value("payload")).await();
         var listener = new AtomicReference<DHTTopologyListener>();
@@ -110,6 +125,7 @@ class DepartureTopologyEdgeTest {
                                                             : raiseOnce(raised, () -> edge.accept(listener.get())));
         var rebalancer = dhtRebalancer(node, network, RF1);
         listener.set(DHTTopologyListener.dhtTopologyListener(node, rebalancer));
+        before.accept(listener.get());
         network.ackVia(rebalancer::onMigrationDataAck);
         var window = DepartureWindow.departureWindow(System.nanoTime() + ms(2_000).nanos());
         var tuning = new DeparturePushTuning(ms(100), ms(400), DeparturePushTuning.DEFAULT.reportAfter(), ms(200));

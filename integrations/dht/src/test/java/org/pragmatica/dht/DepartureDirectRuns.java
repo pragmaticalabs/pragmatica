@@ -107,7 +107,7 @@ final class DepartureDirectRuns {
                         .orElseThrow();
     }
 
-    private static ConsistentHashRing<NodeId> ringPlus(ConsistentHashRing<NodeId> ring, NodeId extra) {
+    static ConsistentHashRing<NodeId> ringPlus(ConsistentHashRing<NodeId> ring, NodeId extra) {
         var copy = ConsistentHashRing.<NodeId>consistentHashRing();
         ring.nodes().forEach(copy::addNode);
         copy.addNode(extra);
