@@ -51,13 +51,19 @@ test_reapply_exported_config() {
     fi
 }
 
+# Canonical form of the export, as compared below (see the comment at the comparison).
+_canonical_config() { tr ',' '\n' | tr -d '[:space:]' | grep -v '"scaling-cooldown/' | sort; }
+# Predicates for poll_until, each on the event the next read depends on (#3424).
+_export_has_roundtrip_key() { config_export | grep -qF 'test.export.roundtrip'; }
+_export_canonical_equals() { [ "$(config_export | _canonical_config)" = "$1" ]; }   # <canonical form to match>
+
 test_config_identical_after_reapply() {
     # Audit fix (#14): the prior shape logged a byte-count diff and always
     # passed. Now we assert round-trip identity: capture the post-reapply
     # export, re-apply the same {key,value} a second time (idempotent), and
     # compare the next export. Any divergence in the canonical key/value
     # set is a hard failure.
-    sleep 2
+    poll_until 15 _export_has_roundtrip_key   # wait on the re-applied key showing in the export, not a fixed sleep (#3424)
     local first
     first=$(config_export)
     if [ -z "$first" ]; then
@@ -73,7 +79,8 @@ test_config_identical_after_reapply() {
         log_fail "Idempotent re-apply of {key,value} returned empty"
         return 1
     fi
-    sleep 2
+    # Poll for the equality asserted below (first == second, canonical form), not for non-emptiness (#3424).
+    poll_until 15 _export_canonical_equals "$(printf '%s' "$first" | _canonical_config)"
     local second
     second=$(config_export)
     if [ -z "$second" ]; then
@@ -92,8 +99,8 @@ test_config_identical_after_reapply() {
     #     is observability metadata, not user-authored config, so it does not
     #     belong in a round-trip identity check.
     local first_canonical second_canonical
-    first_canonical=$(printf '%s' "$first" | tr ',' '\n' | tr -d '[:space:]' | grep -v '"scaling-cooldown/' | sort)
-    second_canonical=$(printf '%s' "$second" | tr ',' '\n' | tr -d '[:space:]' | grep -v '"scaling-cooldown/' | sort)
+    first_canonical=$(printf '%s' "$first" | _canonical_config)
+    second_canonical=$(printf '%s' "$second" | _canonical_config)
     if ! assert_eq "$second_canonical" "$first_canonical" "Config round-trip canonical-form equality"; then
         log_info "first (canonical): $(printf '%s' "$first_canonical" | head -c 500)"
         log_info "second (canonical): $(printf '%s' "$second_canonical" | head -c 500)"

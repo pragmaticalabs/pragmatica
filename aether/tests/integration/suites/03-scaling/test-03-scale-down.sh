@@ -166,6 +166,7 @@ test_scale_down_under_load() {
     # log was never available afterwards). Background, bounded, and unable to fail this test (see capture.sh).
     ( capture_at_demotion "$voters_before" ) > /dev/null 2>&1 7>&- &
     local demotion_capture_pid=$!
+    proc_track "$demotion_capture_pid"
     # Opt-in reproduction aid (default OFF, no-op): re-aim the load at a node that is leaving, preferring one that hosts the
     # load's slice. See lib/cluster.sh.
     scale_load_retarget_to_victim "$voters_before" "" "$ECHO_BLUEPRINT" > /dev/null

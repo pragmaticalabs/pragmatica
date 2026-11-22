@@ -89,7 +89,7 @@ node-3
 node-4"'
 
 # ---- C1: concurrent apply -------------------------------------------------------------------------------------------------
-C1_STUB='disconnect_node_from_network() { echo "start $1" >> "$D/order"; command sleep 1; echo "end $1" >> "$D/order"; [ "$1" != "${FAILING:-}" ]; }
+C1_STUB='disconnect_node_from_network() { echo "start $1" >> "$D/order"; command sleep 1; echo "end $1" >> "$D/order"; [ "$1" != "${FAILING:-}" ]; }  # sleep-ok: the stub disconnect takes real time on purpose (ordering probe)
 log_info() { echo "INFO $*"; }; log_fail() { echo "FAIL $*"; }'
 run_case c1 "$C1_STUB"'
 _s05_partition_both nodeA nodeB; echo "RC=$?"'

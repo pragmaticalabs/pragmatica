@@ -485,12 +485,14 @@ test_pick_victims_and_kill_three_simultaneously() {
             [ -z "$v" ] && continue
             cloud_kill_vm "$v" &
             kill_pids+=("$!")
+            proc_track "$!"
         done
         local p
         # `${kill_pids[@]+...}` guards the empty-array expansion under `set -u` on
         # bash 3.2 (macOS), mirroring the `${base_urls[*]-}` idiom in lib/topology.sh.
         for p in ${kill_pids[@]+"${kill_pids[@]}"}; do
             wait "$p" || kill_fail=1
+            proc_untrack "$p"
         done
         if [ "$kill_fail" -ne 0 ]; then
             log_fail "cloud delete of one or more victims [${victim_list}] failed (see cloud_kill_vm FAIL lines above)"

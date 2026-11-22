@@ -121,6 +121,7 @@ start_load() {
         echo "${success}:${failure}" > "/tmp/load_result_$$.txt"
     ) &
     LOAD_PIDS+=($!)
+    proc_track "$!"
     log_info "Load PID: $!"
 }
 
@@ -152,6 +153,7 @@ start_mgmt_load() {
         echo "${success}:${failure}" > "/tmp/load_result_$$.txt"
     ) &
     LOAD_PIDS+=($!)
+    proc_track "$!"
 }
 
 # Persist this window's failure lines (timestamp, status, endpoint, body) into the failure-logs dir, one line per
@@ -178,10 +180,8 @@ stop_load() {
     local total_success=0 total_failure=0
 
     log_info "Stopping load generators (${#LOAD_PIDS[@]} processes)" >&2
-    for pid in "${LOAD_PIDS[@]}"; do
-        kill "$pid" 2>/dev/null
-        wait "$pid" 2>/dev/null
-    done
+    # One reaper ends each loop AND whatever it forked (an in-flight curl), and returns only when they are gone (#3424).
+    [ "${#LOAD_PIDS[@]}" -eq 0 ] || proc_reap "${LOAD_PIDS[@]}"
 
     # Collect results from temp files. Scope to THIS process ($$) — the previous
     # /tmp/load_result_*.txt glob summed result files left by EVERY prior run/process,
@@ -295,6 +295,7 @@ start_sustained_load() {
         echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) FINAL count=${count} success=${success} failure=${failure}" >> "$log_file"
     ) &
     LOAD_PIDS+=($!)
+    proc_track "$!"
 }
 
 # ---------------------------------------------------------------------------

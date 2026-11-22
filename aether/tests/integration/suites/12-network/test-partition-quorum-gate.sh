@@ -391,9 +391,12 @@ _s05_partition_both() {
     f1=$(mktemp); f2=$(mktemp)
     ( r=0; disconnect_node_from_network "$c1" || r=$?; printf '%s %s' "$r" "$(date +%s)" > "$f1" ) &
     p1=$!
+    proc_track "$p1"
     ( r=0; disconnect_node_from_network "$c2" || r=$?; printf '%s %s' "$r" "$(date +%s)" > "$f2" ) &
     p2=$!
+    proc_track "$p2"
     wait "$p1" "$p2" || true
+    proc_untrack "$p1"; proc_untrack "$p2"
     r1=$(awk '{print $1}' "$f1" 2>/dev/null); t1=$(awk '{print $2}' "$f1" 2>/dev/null)
     r2=$(awk '{print $1}' "$f2" 2>/dev/null); t2=$(awk '{print $2}' "$f2" 2>/dev/null)
     rm -f "$f1" "$f2"
