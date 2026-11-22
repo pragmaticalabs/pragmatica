@@ -9,6 +9,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource.CommittedOwner;
 import org.pragmatica.aether.stream.ForwardingReadRouter.LocalReader;
@@ -260,6 +262,31 @@ class BelowCopyTailForwardTest {
 
         assertFailsWith("G1", router.readValidated(STREAM, PARTITION, 0, 10, EPOCH), expired);
         assertThat(client.validatedTargets).isEmpty();
+    }
+
+    /// The seam defaults to the partition manager on every public factory: a colocated consumer read through the
+    /// committed-owner overload is served by the manager, not by a scripted local answer.
+    @Test
+    void readValidated_isServedByThePartitionManager_onTheCommittedOwnerOverload() {
+        partitions.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000), "earliest"))
+                  .onFailure(BelowCopyTailForwardTest::failUnexpected);
+        partitions.publishLocal(STREAM, PARTITION, new byte[]{1}, 1_000L)
+                  .onFailure(BelowCopyTailForwardTest::failUnexpected);
+        partitions.ownerLease(OwnerLease.TEST_VALID);
+        var router = StreamReadRouter.streamReadRouter(partitions,
+                                                       Option.none(),
+                                                       Option.none(),
+                                                       SELF,
+                                                       (_, _) -> Option.none(),
+                                                       StreamReadForwardMetrics.NOOP,
+                                                       Option.none(),
+                                                       Option.none(),
+                                                       Option.none());
+
+        router.readValidated(STREAM, PARTITION, 0, 10, EPOCH)
+              .await()
+              .onFailure(BelowCopyTailForwardTest::failUnexpected)
+              .onSuccess(read -> assertThat(read.events()).hasSize(1));
     }
 
     // ---- fixture -----------------------------------------------------------------------------------------------------
