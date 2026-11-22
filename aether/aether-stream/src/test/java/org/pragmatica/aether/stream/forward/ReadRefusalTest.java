@@ -71,7 +71,8 @@ class ReadRefusalTest {
                                                        new StreamError.RingIndexCorrupted("orders", 2, "Index 9 out of bounds for length 4"),
                                                        new SegmentError.SealInFlight("orders", 1, 23L),
                                                        new SegmentError.SealedRangeMissing("orders", 1, 23L, 31L),
-                                                       new StreamError.StreamNotMaterialized("orders"));
+                                                       new StreamError.StreamNotMaterialized("orders"),
+                                                       new StreamError.BelowCopyTail(5L, 9L));
 
     @Test
     void everyKindButUnknown_hasACarriedSample_andNothingElse() {
@@ -614,6 +615,117 @@ class ReadRefusalTest {
         }
     }
 
+    /// T-W2 kind arm (stream-mem W-4): `BelowCopyTail`, the neutral "this copy never held it", is its own wire kind, answers
+    /// `NN_RETRY` (503, the owner answers it) locally and once forwarded, and names no removal cause.
+    @Nested
+    class TheBelowCopyTail {
+        private static final int UNKNOWN_CODE_FROM = Kind.UNKNOWN.ordinal() + 1;
+
+        /// Mutants: swap `first`/`second` in the encode -> RED; drop the kind (the type falls into "not carried" and travels as
+        /// text, rebuilt as `ReadForwardFailed`) -> RED.
+        @Test
+        void belowCopyTail_roundTripsAsItself_throughTheRefusalAndTheCodec() {
+            var cause = new StreamError.BelowCopyTail(5L, 9L);
+            var refusal = ReadRefusal.readRefusal(cause).unwrap();
+
+            assertThat(refusal.kind()).isEqualTo(Kind.BELOW_COPY_TAIL);
+            assertThat(refusal.first()).isEqualTo(5L);
+            assertThat(refusal.second()).isEqualTo(9L);
+            assertThat(refusal.toCause("text")).isEqualTo(cause);
+
+            var received = roundTrip(ReadForwardResponse.refusalResponse(SENDER, "corr", refusal, cause.message()));
+
+            assertThat(received.refusal().unwrap().toCause(received.errorMessage())).isEqualTo(cause);
+        }
+
+        /// Every other slot is at its default, so the encode writes nothing else. Mutant: the encode writes the stream or a
+        /// partition into the refusal -> RED.
+        @Test
+        void theEncode_usesOnlyFirstAndSecond() {
+            var refusal = ReadRefusal.readRefusal(new StreamError.BelowCopyTail(5L, 9L)).unwrap();
+
+            assertThat(refusal).isEqualTo(new ReadRefusal(Kind.BELOW_COPY_TAIL, "", 0, 5L, 9L, false, "", "", "", Epoch.ZERO, Epoch.ZERO,
+                                                          RemovalCause.NOT_APPLICABLE, 0));
+        }
+
+        /// Mutant: the row is `NN_SURFACE` -> RED.
+        @Test
+        void theRow_isRetry_locallyAndAfterTheRoundTrip() {
+            var cause = new StreamError.BelowCopyTail(5L, 9L);
+            var refusal = ReadRefusal.readRefusal(cause).unwrap();
+            var received = roundTrip(ReadForwardResponse.refusalResponse(SENDER, "corr", refusal, cause.message()));
+
+            assertThat(Kind.BELOW_COPY_TAIL.answer()).isEqualTo(Answer.NN_RETRY);
+            assertThat(ReadRefusal.answerOf(cause)).isEqualTo(Answer.NN_RETRY);
+            assertThat(ReadRefusal.answerOf(received.refusal().unwrap().toCause(received.errorMessage()))).isEqualTo(Answer.NN_RETRY);
+        }
+
+        /// Mutant: the compact constructor keeps a written cause or mask for this kind -> RED.
+        @Test
+        void aRefusalBuiltWithACauseAndAMask_readsBackNotApplicableAndZero() {
+            var refusal = new ReadRefusal(Kind.BELOW_COPY_TAIL, "", 0, 5L, 9L, false, "", "", "", Epoch.ZERO, Epoch.ZERO,
+                                          RemovalCause.AGE, (1 << RemovalCause.AGE.ordinal()) | (1 << RemovalCause.RETENTION.ordinal()));
+
+            assertThat(refusal.cause()).isEqualTo(RemovalCause.NOT_APPLICABLE);
+            assertThat(refusal.causes()).isZero();
+        }
+
+        /// The record's own invariant (a programming error only). Mutant: the guard is `>=` (refuses an empty copy) or absent -> RED.
+        @Test
+        void firstHeldAboveTheTail_isRefused_andAnEmptyCopyBuilds() {
+            assertThatThrownBy(() -> new StreamError.BelowCopyTail(10L, 9L)).isInstanceOf(IllegalArgumentException.class);
+            assertThat(new StreamError.BelowCopyTail(9L, 9L).message()).isEqualTo("Read is below the first offset this copy held: it holds from 9, tail is 9");
+            assertThat(new StreamError.BelowCopyTail(5L, 9L).message()).isEqualTo("Read is below the first offset this copy held: it holds from 5, tail is 9");
+        }
+
+        /// The decode reads past the new last kind: ordinal 17 is `UNKNOWN` itself, a code of 18 or more is a newer node's and also
+        /// decodes to `UNKNOWN`. Mutant: the codec's range ends at the old last ordinal -> RED.
+        @Test
+        void aKindCodeAtOrAbove18_decodesToUnknown_andUnknownItselfIs17() {
+            assertThat(Kind.UNKNOWN.ordinal()).isEqualTo(17);
+
+            for (var code : List.of(UNKNOWN_CODE_FROM, UNKNOWN_CODE_FROM + 1, 99)) {
+                assertThat(decodedKind(code)).as("code %d", code).isEqualTo(Kind.UNKNOWN);
+            }
+            assertThat(decodedKind(Kind.BELOW_COPY_TAIL.ordinal())).isEqualTo(Kind.BELOW_COPY_TAIL);
+            assertThat(decodedKind(Kind.UNKNOWN.ordinal())).isEqualTo(Kind.UNKNOWN);
+        }
+
+        /// The sample's bytes with the kind code replaced: the byte that differs between two kinds' samples is the kind.
+        private static Kind decodedKind(int code) {
+            var low = encoded(sample(Kind.STREAM_NOT_FOUND, false, RemovalCause.NOT_APPLICABLE));
+            var high = encoded(sample(Kind.UNKNOWN, false, RemovalCause.NOT_APPLICABLE));
+            var at = firstDifference(low, high);
+            var patched = Unpooled.buffer();
+
+            patched.writeBytes(low, 0, at);
+            SliceCodec.writeCompact(patched, code);
+            patched.writeBytes(low, at + 1, low.writerIndex() - at - 1);
+
+            assertThat(patched.writerIndex()).as("a one-byte code keeps the length").isEqualTo(low.writerIndex());
+
+            return ((ReadRefusal) CODEC.read(patched)).kind();
+        }
+
+        private static io.netty.buffer.ByteBuf encoded(ReadRefusal refusal) {
+            var buffer = Unpooled.buffer();
+
+            CODEC.write(buffer, refusal);
+
+            return buffer;
+        }
+
+        private static int firstDifference(io.netty.buffer.ByteBuf left, io.netty.buffer.ByteBuf right) {
+            var at = 0;
+
+            while (left.getByte(at) == right.getByte(at)) {
+                at++;
+            }
+
+            return at;
+        }
+    }
+
     /// T-P8 unit arms (stream-mem M-1b), the aether-stream half: totality, the round trip, the content pins from sources that
     /// are not the row, and the transport family against the family's own marks. The status arms are `StreamErrorStatusTest`.
     @Nested
@@ -636,8 +748,9 @@ class ReadRefusalTest {
 
         @Test
         void theNewKind_isAppendedBeforeUnknown() {
-            assertThat(Kind.STREAM_NOT_MATERIALIZED.ordinal()).isEqualTo(Kind.UNKNOWN.ordinal() - 1);
-            assertThat(Kind.UNKNOWN.ordinal()).isEqualTo(16);
+            assertThat(Kind.STREAM_NOT_MATERIALIZED.ordinal()).isEqualTo(Kind.UNKNOWN.ordinal() - 2);
+            assertThat(Kind.BELOW_COPY_TAIL.ordinal()).isEqualTo(Kind.UNKNOWN.ordinal() - 1).isEqualTo(Kind.STREAM_NOT_MATERIALIZED.ordinal() + 1);
+            assertThat(Kind.UNKNOWN.ordinal()).isEqualTo(17);
             assertThat(Kind.STREAM_NOT_MATERIALIZED.answer()).isEqualTo(Answer.NN_SURFACE);
             assertThat(ReadRefusal.answerOf(new StreamError.StreamNotMaterialized("orders"))).isEqualTo(Answer.NN_SURFACE);
         }
@@ -662,7 +775,7 @@ class ReadRefusalTest {
             var kindsInThem = Arrays.stream(Kind.values()).filter(kind -> notSurface.contains(kind.answer())).collect(Collectors.toSet());
 
             assertThat(notSurface).containsExactlyInAnyOrder(Answer.NN_DEGRADE, Answer.NN_RETRY, Answer.FAULT_DEGRADE);
-            assertThat(kindsInThem).containsExactlyInAnyOrder(Kind.UNKNOWN, Kind.PARTITION_NOT_LOCAL);
+            assertThat(kindsInThem).containsExactlyInAnyOrder(Kind.UNKNOWN, Kind.PARTITION_NOT_LOCAL, Kind.BELOW_COPY_TAIL);
         }
 
         /// #3481 fix round item 4: every row's class and behaviour as literals, so a row moved to another class or behaviour

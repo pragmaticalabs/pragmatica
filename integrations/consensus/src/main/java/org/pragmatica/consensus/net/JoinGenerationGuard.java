@@ -52,7 +52,8 @@ public interface JoinGenerationGuard {
     /// 8: #3530 (four dead key types and their values left the wire baseline: their TAG and SHAPE lines are gone).
     /// 9: #3458 M-1b (`ReadRefusal` gained its removal cause).
     /// 10: #3458 M-1c (`ReadRefusal` gained its removal-cause set, `causes`).
-    int WIRE_GENERATION = 10;
+    /// 11: #3458 W-4 (`ReadRefusal.Kind` gained `BELOW_COPY_TAIL`; `UNKNOWN`'s ordinal moved from 16 to 17).
+    int WIRE_GENERATION = 11;
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.
