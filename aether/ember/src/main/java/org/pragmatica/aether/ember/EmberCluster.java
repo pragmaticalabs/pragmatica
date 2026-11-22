@@ -15,6 +15,7 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Queue;
 import java.util.Random;
 import java.util.Set;
@@ -82,6 +83,7 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.concurrent.CancellableTask;
+import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.RouteTable;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
@@ -254,8 +256,8 @@ public final class EmberCluster {
     /// #3021 — a test-supplied config source layered into every node's provider; see [#withConfigSource].
     private final AtomicReference<Option<ConfigSource>> testConfigSource = new AtomicReference<>(Option.none());
 
-    /// #3021 probe 2 — see [#withRoutePublicationDelay]; zero by default.
-    private final AtomicReference<TimeSpan> routePublicationDelay = new AtomicReference<>(TimeSpan.timeSpan(0).millis());
+    /// #3021 probe 2 — see [#withRoutePublicationHeld]; off by default.
+    private final AtomicBoolean routePublicationHeld = new AtomicBoolean(false);
 
     /// #1276 — the storage root for nodes when the test did not opt into [#withDataBaseDir]: a path
     /// under a regular FILE in a per-instance temp dir, so no directory can ever be created beneath it,
@@ -830,15 +832,24 @@ public final class EmberCluster {
 
     /// Set the repositories EVERY node resolves slices from (#3021), before [#start]; the default is `[Local]`. The Ember
     /// JUnit extension passes `[Staged(root, moduleSet)]` and nothing else, so a module coordinate that is not in the staged
-    /// root has no repository left to fall through to.
+    /// root has no repository left to fall through to. A null list, an empty one or one holding a null entry is refused with an
+    /// `InvalidSliceConfig`, like [SliceConfig#sliceConfigFromNames] refuses an empty list.
     public Result<Unit> withSliceRepositories(List<RepositoryType> repositories) {
         if (!notStarted()) {
             return refuseAfterStart("Slice repositories");
         }
 
-        sliceConfig.updateAndGet(current -> current.withRepositories(List.copyOf(repositories)));
+        return Option.option(repositories)
+                     .filter(EmberCluster::usableRepositories)
+                     .toResult(SliceConfig.SliceConfigError.InvalidSliceConfig.invalidSliceConfig("repositories list cannot be null, empty or hold a null entry"))
+                     .map(List::copyOf)
+                     .onSuccess(valid -> sliceConfig.updateAndGet(current -> current.withRepositories(valid)))
+                     .mapToUnit();
+    }
 
-        return Result.unitResult();
+    private static boolean usableRepositories(List<RepositoryType> repositories) {
+        return ! repositories.isEmpty() && repositories.stream()
+                                                       .noneMatch(Objects::isNull);
     }
 
     /// Layer one more [ConfigSource] into every node's configuration provider (#3021), before [#start]. Refused when the
@@ -872,16 +883,34 @@ public final class EmberCluster {
                      .mapToUnit();
     }
 
-    /// TEST SEAM (#3021 probe 2): routes of every slice deployed after this call appear on each node `delay` after the slice
-    /// is activated, instead of with it, before [#start]. Slice activation is not held back; only the route table lags.
-    public Result<Unit> withRoutePublicationDelay(TimeSpan delay) {
+    /// TEST SEAM (#3021 probe 2): HOLD route publication on every node, before [#start]. A slice deployed while the hold is
+    /// on is activated as usual, but its routes are only recorded as pending: they are not in any route table and not in
+    /// the cluster until [#releaseRoutePublication]. Only the route table lags; slice activation is not held back.
+    public Result<Unit> withRoutePublicationHeld() {
         if (!notStarted()) {
-            return refuseAfterStart("Route publication delay");
+            return refuseAfterStart("Route publication hold");
         }
 
-        routePublicationDelay.set(delay);
+        routePublicationHeld.set(true);
 
         return Result.unitResult();
+    }
+
+    /// End the hold set by [#withRoutePublicationHeld]: every node publishes its pending routes. Completes when all nodes
+    /// have them in the cluster; later deployments publish at once. Without a hold it completes at once.
+    public Promise<Unit> releaseRoutePublication() {
+        routePublicationHeld.set(false);
+
+        return Promise.allOf(nodes.values().stream().map(EmberCluster::releasedPublications).toList()).flatMap(results -> Result.allOf(results)
+                                                                                                                                .mapToUnit()
+                                                                                                                                .async());
+    }
+
+    private static Promise<Unit> releasedPublications(AetherNode node) {
+        return node.appHttpServer()
+                   .httpRoutePublisher()
+                   .map(HttpRoutePublisher::releaseRoutePublication)
+                   .or(Promise.unitPromise());
     }
 
     /// The route table `nodeIdStr` currently serves from, or none when no such node is running (#3021).
@@ -2022,14 +2051,14 @@ public final class EmberCluster {
         return AetherNode.aetherNode(config,
                                      code -> onNodeExit(nodeId.id(),
                                                         code))
-                         .map(this::publicationDelayApplied)
+                         .map(this::publicationHoldApplied)
                          .unwrap();
     }
 
-    private AetherNode publicationDelayApplied(AetherNode node) {
-        node.appHttpServer()
-            .httpRoutePublisher()
-            .onPresent(publisher -> publisher.setRoutePublicationDelay(routePublicationDelay.get()));
+    private AetherNode publicationHoldApplied(AetherNode node) {
+        if (routePublicationHeld.get()) {
+            node.appHttpServer().httpRoutePublisher().onPresent(HttpRoutePublisher::holdRoutePublication);
+        }
 
         return node;
     }

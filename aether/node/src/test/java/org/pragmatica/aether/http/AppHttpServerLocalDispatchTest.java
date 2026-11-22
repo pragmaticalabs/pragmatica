@@ -156,6 +156,22 @@ class AppHttpServerLocalDispatchTest {
         }
     }
 
+    /// v3031b survivor m20: `currentRouteTable()` (read by the Ember seam) exposes the routes the server serves, not an empty table.
+    @Test
+    void currentRouteTable_exposesTheRemoteRouteTheRegistryHolds() {
+        registerNodeRoute("GET", "/remote/", REMOTE_NODE);
+        var publisher = StubRoutePublisher.hosting("GET", "/local/", SELF_NODE);
+        var server = serverWithPublisher(Option.some(publisher));
+
+        TlsProbe.requireStarted(server.start().await(),
+                                "app listener");
+        try {
+            assertThat(server.currentRouteTable().remoteRoutes()).isNotEmpty();
+        } finally {
+            server.stop().await();
+        }
+    }
+
     /// Rc6 f3a: the EXTERNAL arrival counters at the HTTP ingress, counted per resolved route.
     @Test
     void externalArrival_servedRequest_isArrivalAcceptedCompleted() throws Exception {
