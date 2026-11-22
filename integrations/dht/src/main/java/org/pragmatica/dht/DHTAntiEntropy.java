@@ -1278,24 +1278,27 @@ public final class DHTAntiEntropy {
     /// halts with its in-memory store, so a copy it holds last would otherwise be lost. A current replica
     /// already holds those partitions legitimately, so its push carries no authority it lacks.
     /// ```tla DHTDepartureDrain:Deliver
-    /// \* d sends a page to t (attempt: t is in d's ring) with its leaving set and its ring as the view; t accepts and places it
-    /// \* (stores, acks) or nacks it: the page stays pending and is resent. A nack of an accepted sender by a node that never
-    /// \* drains is a stray refusal. A co-drainer (a final-primary candidate since #3225) that pruned itself on its own DEPARTING
-    /// \* edge refuses too, but it halts, and the page is retargeted once it leaves d's ring: that refusal costs time only.
-    /// \* d records the applied ack (Page#settle); it delivers the key only from a deliverer, or from anyone without `deliverer`.
+    /// \* d sends a page to t (attempt: t is in d's view V, DeparturePushRun.mayAct) with its leaving set and V; t accepts and
+    /// \* places it (stores, acks) or nacks it: the page stays pending and is resent. A nack of an accepted sender by a node that
+    /// \* never drains is a stray refusal. A co-drainer (a final-primary candidate since #3225) that pruned itself on its own
+    /// \* DEPARTING edge refuses too, but it halts, and the page goes once it leaves d's view: that refusal costs time only.
+    /// \* d counts the applied ack (DeparturePushRun.recordAck: the page is current, its target in V); the ack ends the page.
+    /// \* Without `exit` (the code before #3576) the ack also sets the report, from a deliverer, or from anyone without `deliverer`.
     /// Deliver(d, t) ==
     ///     /\ Pending(d, t)
-    ///     /\ t \in Ring(d)
+    ///     /\ t \in view[d]
     ///     /\ phase[t] # "halted"
     ///     /\ IF Accepted(t, d) /\ Placed(t, d)
     ///        THEN /\ store' = [store EXCEPT ![t] = TRUE]
     ///             /\ pages' = pages \ {Page(d, t)}
     ///             /\ acked' = [acked EXCEPT ![d] = @ \cup {t}]
-    ///             /\ delivered' = [delivered EXCEPT ![d] = @ \/ ~Fix("deliverer") \/ t \in deliverers[d]]
+    ///             /\ delivered' = IF Fix("exit") THEN delivered
+    ///                             ELSE [delivered EXCEPT ![d] = @ \/ ~Fix("deliverer") \/ t \in deliverers[d]]
     ///             /\ UNCHANGED strayNack
     ///        ELSE /\ strayNack' = (strayNack \/ (Accepted(t, d) /\ t \notin drainers))
     ///             /\ UNCHANGED <<store, pages, acked, delivered>>
-    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, phase, leaving, rfAt, claimed, deliverers>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, phase, view, leaving, inv, rfAt, claimed,
+    ///                    deliverers>>
     /// ```
     private void acceptDeparturePush(DHTMessage.MigrationDataResponse response) {
         if (departingSenders.test(response.sender()) || response.entries()

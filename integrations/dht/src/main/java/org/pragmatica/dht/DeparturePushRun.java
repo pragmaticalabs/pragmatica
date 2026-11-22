@@ -395,24 +395,6 @@ final class DeparturePushRun {
         awaitEvents(report).onSuccess(result::succeed);
     }
 
-    /// ```tla DHTDepartureDrain:Plan
-    /// \* The push is built (DHTRebalancer.pushOnDeparture: rf at the call, leaving = the drain set d received + self) and planned:
-    /// \* one page per initial target (drainTargets), and the key's deliverers recorded. A key with no target sends nothing
-    /// \* (delivered when replicated, at risk when sole).
-    /// Plan(d) ==
-    ///     /\ phase[d] = "draining"
-    ///     /\ LET excl == (IF Fix("codrain") THEN known[d] ELSE {}) \cup {d}
-    ///            rf   == RFOf(Ring(d))
-    ///            tgts == IF store[d] THEN DrainTargets(d, excl, rf) ELSE {}
-    ///        IN /\ leaving' = [leaving EXCEPT ![d] = excl]
-    ///           /\ rfAt' = [rfAt EXCEPT ![d] = rf]
-    ///           /\ claimed' = [claimed EXCEPT ![d] = tgts]
-    ///           /\ pages' = pages \cup {Page(d, t) : t \in tgts}
-    ///           /\ deliverers' = [deliverers EXCEPT ![d] = IF store[d] THEN Deliverers(d, excl, rf) ELSE {}]
-    ///           /\ delivered' = [delivered EXCEPT ![d] = store[d] /\ tgts = {} /\ ~Sole(d, excl, rf)]
-    ///     /\ phase' = [phase EXCEPT ![d] = "pushing"]
-    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, store, strayNack, acked>>
-    /// ```
     private Unit start(List<KeyStamp> stamps) {
         transition(() -> armThenEnumerate(stamps));
         reconcile();
@@ -530,22 +512,63 @@ final class DeparturePushRun {
     }
 
     /// Under `transitions`.
-    /// ```tla DHTDepartureDrain:Retarget
-    /// \* An attempt finds its target gone from d's ring: the page is dropped, the target joins leaving, and the key is re-planned
-    /// \* to targets it has not claimed yet (claimTarget). The new deliverers join the old (allowDelivery); one that already
-    /// \* acked delivers the key at once (deliverIfAcked).
-    /// Retarget(d, t) ==
-    ///     /\ Pending(d, t)
-    ///     /\ t \notin Ring(d)
-    ///     /\ LET lv  == leaving[d] \cup {t}
-    ///            new == DrainTargets(d, lv, rfAt[d]) \ claimed[d]
-    ///            dl  == deliverers[d] \cup Deliverers(d, lv, rfAt[d])
-    ///        IN /\ leaving' = [leaving EXCEPT ![d] = lv]
-    ///           /\ claimed' = [claimed EXCEPT ![d] = @ \cup new]
-    ///           /\ pages' = (pages \ {Page(d, t)}) \cup {Page(d, n) : n \in new}
-    ///           /\ deliverers' = [deliverers EXCEPT ![d] = dl]
-    ///           /\ delivered' = [delivered EXCEPT ![d] = @ \/ dl \cap acked[d] # {}]
-    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, store, phase, rfAt, strayNack, acked>>
+    /// ```tla DHTDepartureDrain:Replan
+    /// \* The one serial re-plan (#3576), on three triggers: the run's start (phase "draining"), a view change (onViewChange,
+    /// \* called by the topology listener after each ring change: d's ring is no longer the V it observed) and an exit attempt
+    /// \* (claimExit: no live page; the exit re-reads the inventory, afterReread). A holder lost to a "draining" nack or a token
+    /// \* mismatch is the fourth trigger; the model's receivers never send either, so it is not modelled.
+    /// \* observeView takes V (the ring) and L (the drain set d received, and self) together; every target, deliverer and Safe
+    /// \* decision until the next re-plan comes from them. A holder outside V counts no more (Held). The key is owed to every
+    /// \* target that is not a holder (owedTargets): a live page to such a target stays, any other page of d is cancelled
+    /// \* (keepOrCancel; a cancelled page's late ack is not modelled: it only adds a holder whose copy is real), and an owed target
+    /// \* without a page gets one. rf is fixed when the run is built (DHTRebalancer.pushOnDeparture).
+    /// Replanned(d, start, exit) ==
+    ///     LET R    == Ring(d)
+    ///         excl == Excl(d)
+    ///         rf   == IF start THEN RFOf(R) ELSE rfAt[d]
+    ///         own  == IF start \/ exit THEN store[d] ELSE inv[d]
+    ///         held == Held(d, R)
+    ///         tgts == IF own THEN DrainTargets(R, d, excl, rf) ELSE {}
+    ///     IN /\ view' = [view EXCEPT ![d] = R]
+    ///        /\ leaving' = [leaving EXCEPT ![d] = excl]
+    ///        /\ rfAt' = [rfAt EXCEPT ![d] = rf]
+    ///        /\ inv' = [inv EXCEPT ![d] = own]
+    ///        /\ acked' = [acked EXCEPT ![d] = held]
+    ///        /\ claimed' = IF Fix("replan") THEN claimed ELSE [claimed EXCEPT ![d] = tgts]
+    ///        /\ pages' = {p \in pages : p.from # d} \cup {Page(d, t) : t \in tgts \ held}
+    ///        /\ deliverers' = [deliverers EXCEPT ![d] = IF own THEN Deliverers(R, d, excl, rf) ELSE {}]
+    ///        \* Without `exit` the plan reports a key with no target delivered when it is replicated (before #3576).
+    ///        /\ delivered' = IF start /\ ~Fix("exit")
+    ///                        THEN [delivered EXCEPT ![d] = own /\ tgts = {} /\ ~Sole(R, d, excl, rf)]
+    ///                        ELSE delivered
+    /// \* Without `replan` (the code before #3576) a view change is the old Retarget: every pending page whose target left the
+    /// \* ring is dropped, the target joins the frozen leaving set, the key is paged to the targets not claimed before, and the
+    /// \* new deliverers join the old (one that already acked delivers the key at once, deliverIfAcked). Batched per view change.
+    /// Retargeted(d) ==
+    ///     LET R    == Ring(d)
+    ///         gone == {t \in Nodes : Pending(d, t) /\ t \notin R}
+    ///         lv   == leaving[d] \cup gone
+    ///         new  == DrainTargets(R, d, lv, rfAt[d]) \ claimed[d]
+    ///         dl   == deliverers[d] \cup Deliverers(R, d, lv, rfAt[d])
+    ///     IN /\ view' = [view EXCEPT ![d] = R]
+    ///        /\ acked' = [acked EXCEPT ![d] = Held(d, R)]
+    ///        /\ IF gone = {}
+    ///           THEN UNCHANGED <<leaving, claimed, pages, deliverers, delivered>>
+    ///           ELSE /\ leaving' = [leaving EXCEPT ![d] = lv]
+    ///                /\ claimed' = [claimed EXCEPT ![d] = @ \cup new]
+    ///                /\ pages' = (pages \ {Page(d, t) : t \in gone}) \cup {Page(d, n) : n \in new}
+    ///                /\ deliverers' = [deliverers EXCEPT ![d] = dl]
+    ///                /\ delivered' = IF Fix("exit") THEN delivered
+    ///                                ELSE [delivered EXCEPT ![d] = @ \/ dl \cap acked[d] # {}]
+    ///        /\ UNCHANGED <<rfAt, inv>>
+    /// Replan(d) ==
+    ///     /\ phase[d] \in {"draining", "pushing"}
+    ///     /\ LET start == phase[d] = "draining"
+    ///            exit  == Fix("exit") /\ ~start /\ \A p \in pages : p.from # d
+    ///        IN /\ start \/ exit \/ view[d] # Ring(d)
+    ///           /\ IF start \/ Fix("replan") THEN Replanned(d, start, exit) ELSE Retargeted(d)
+    ///     /\ phase' = [phase EXCEPT ![d] = "pushing"]
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, store, strayNack>>
     /// ```
     private Plan replan() {
         if (closed || window.halted().getAsBoolean()) {
@@ -1392,12 +1415,32 @@ final class DeparturePushRun {
 
     /// Under `transitions`, once: report what is owed, raise the closing events (not after a halt), drop every page of the run.
     /// ```tla DHTDepartureDrain:Halt
-    /// \* d halts with its in-memory store: once every page is acknowledged, or (Deadline) with pages pending when a window is
-    /// \* used up (window.halted / pastDeadline end every attempt). An applied ack from ANY target ends its page, a named one
-    /// \* included (Page#settle): delivery decides the report, not the halt. The report (`delivered`) outlives d.
+    /// \* d closes and halts with its in-memory store. Safe(d) at a close: a holder that is one of the key's deliverers in the
+    /// \* observation (R, L) and that passes a probe sent after its ack (probeTargets, uncoveredHolders: a halted node answers
+    /// \* nothing). The exit (claimExit, afterReread, probeTargets, closeIfClean) closes when no page of d is live and its re-plan,
+    /// \* with the inventory re-read and V and L observed afresh, owes nothing: every target holds the key and it is Safe there.
+    /// \* Without `Deadline` the run also ends when the key is owed but nothing could still be sent (no deliverer in the fresh
+    /// \* observation): its deadline closes it with the key owed. With `Deadline` it may close at any point, from the last
+    /// \* observation (onDeadline: no re-read). The report is Safe at the close and outlives d.
+    /// \* Without `exit` (the code before #3576): the run halts once every page is acknowledged, and the report is what the acks
+    /// \* set (Deliver, Retargeted).
+    /// SafeAt(d, R, excl) ==
+    ///     \E t \in Held(d, R) : /\ ~Fix("deliverer") \/ t \in Deliverers(R, d, excl, rfAt[d])
+    ///                           /\ phase[t] # "halted"
+    /// ExitClean(d) ==
+    ///     LET R    == Ring(d)
+    ///         excl == IF Fix("replan") THEN Excl(d) ELSE leaving[d]
+    ///     IN store[d] => /\ DrainTargets(R, d, excl, rfAt[d]) \subseteq Held(d, R)
+    ///                    /\ SafeAt(d, R, excl) \/ Deliverers(R, d, excl, rfAt[d]) = {}
     /// Halt(d) ==
     ///     /\ phase[d] = "pushing"
-    ///     /\ Deadline \/ \A p \in pages : p.from # d
+    ///     /\ LET idle  == \A p \in pages : p.from # d
+    ///            clean == idle /\ (Fix("exit") => ExitClean(d))
+    ///            exL   == IF Fix("replan") THEN Excl(d) ELSE leaving[d]
+    ///        IN /\ Deadline \/ clean
+    ///           /\ delivered' = IF ~Fix("exit") THEN delivered
+    ///                           ELSE [delivered EXCEPT ![d] = IF clean THEN store[d] /\ SafeAt(d, Ring(d), exL)
+    ///                                                          ELSE inv[d] /\ SafeAt(d, view[d], leaving[d])]
     ///     /\ phase' = [phase EXCEPT ![d] = "halted"]
     ///     /\ store' = [store EXCEPT ![d] = FALSE]
     ///     /\ pages' = {p \in pages : p.from # d}
@@ -1405,12 +1448,14 @@ final class DeparturePushRun {
     ///     /\ known' = [known EXCEPT ![d] = {}]
     ///     /\ pruned' = [pruned EXCEPT ![d] = {}]
     ///     /\ flapped' = [flapped EXCEPT ![d] = {}]
+    ///     /\ view' = [view EXCEPT ![d] = {}]
     ///     /\ leaving' = [leaving EXCEPT ![d] = {}]
+    ///     /\ inv' = [inv EXCEPT ![d] = FALSE]
     ///     /\ rfAt' = [rfAt EXCEPT ![d] = 0]
     ///     /\ claimed' = [claimed EXCEPT ![d] = {}]
     ///     /\ deliverers' = [deliverers EXCEPT ![d] = {}]
     ///     /\ acked' = [acked EXCEPT ![d] = {}]
-    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, strayNack, delivered>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, strayNack>>
     /// ```
     private boolean closeUnder(boolean halted) {
         if (closed) {
