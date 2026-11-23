@@ -1761,12 +1761,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// A hydration that built no entry (native OOM, WAL refusal) has already been flagged; the caller may retry.
+    /// #3390 F1: a committed config the ring invariant refuses answers that typed refusal ([#hydrateEntry] refuses it the same
+    /// way), never the transient `StreamConfigNotYetVisible`, which would have the publish forwarder retry it forever.
     private Result<Unit> adoptCommittedLife(StreamConfig committed, CommitMode commitMode) {
+        return checkRetentionCapacity(committed).flatMap(_ -> reconcileCommittedLife(committed))
+                                     .flatMap(_ -> commitMode.alreadyCommitted());
+    }
+
+    private Result<StreamEntry> reconcileCommittedLife(StreamConfig committed) {
         return option(streams.compute(committed.name(),
                                       (_, existing) -> reconcileCommittedConfig(committed,
                                                                                 existing,
-                                                                                StreamPartitionManager::noAdoptionHere))).toResult(new StreamError.StreamConfigNotYetVisible(committed.name()))
-                     .flatMap(_ -> commitMode.alreadyCommitted());
+                                                                                StreamPartitionManager::noAdoptionHere))).toResult(new StreamError.StreamConfigNotYetVisible(committed.name()));
     }
 
     /// #3554: [#adoptCommittedLife] re-reconciles the config this node last APPLIED, which only [#onStreamConfigPut] applies,
@@ -1807,11 +1813,29 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Result<Unit> createFreshStream(StreamConfig requested, CommitMode commitMode) {
         var config = ownLife(withIncarnation(requested));
 
+        return validateCommit(config, config).flatMap(_ -> checkPartitionCaps(config))
+                             .flatMap(_ -> adoptIfUnclustered(config))
+                             .flatMap(_ -> materializeFreshStream(config, commitMode));
+    }
+
+    /// THE commit validator (#3390 F1, ruling know e8888553b4): every config that is committed, by any path, passes this one
+    /// function, so no commit path can check less than a fresh create. [#publishStreamConfig], the one commit choke point,
+    /// runs it on every commit; [#createFreshStream] runs the same function once more BEFORE materialisation, so a refused
+    /// config leaves no entry and no floor reservation. `life` is the config of the life the commit belongs to (the entry's
+    /// own; on a fresh create, the config itself). Admission against the cluster ([#checkPartitionCaps]) is not here: it
+    /// counts this stream's slots against the others', and the re-publish keeps the life's count (#3263), which a fresh
+    /// create admitted.
+    private static Result<Unit> validateCommit(StreamConfig config, StreamConfig life) {
         return checkReplicationMinimum(config).flatMap(_ -> checkStorageKnown(config))
                                       .flatMap(_ -> checkRetentionCapacity(config))
-                                      .flatMap(_ -> checkPartitionCaps(config))
-                                      .flatMap(_ -> adoptIfUnclustered(config))
-                                      .flatMap(_ -> materializeFreshStream(config, commitMode));
+                                      .flatMap(_ -> checkLifeImmutables(config, life));
+    }
+
+    /// Ruling know e8888553b4 (2): within a life `max_event_size` is immutable, and so are the other keys [#adopts] holds
+    /// immutable. A commit of the life's own config with one of them changed is refused, naming the key: the life's rings and
+    /// WALs were built under the old value. A new life (a destroy, then a create) is a fresh entry and may change any of them.
+    private static Result<Unit> checkLifeImmutables(StreamConfig config, StreamConfig life) {
+        return immutableChange(config, life).fold(() -> success(unit()), StreamError.ImmutableKeyChanged::result);
     }
 
     /// #1278 (ruling B): through a cluster a fresh create is only a PROPOSAL, so it adopts nothing — the footprint
@@ -1826,7 +1850,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1564 engine backstop (R5): whichever path minted the config, its factors satisfy `1 <= CF <= RF`
     /// ([ReplicationFactors#replicationFactors]). "RF below 3 only when declared, with a loud warning" is a
     /// DECLARATION rule ([org.pragmatica.aether.slice.ReplicationDeclaration]) — the engine cannot know what was
-    /// declared. Applied on the create path only; a config already committed is adopted as-is.
+    /// declared. A write-side rule ([#validateCommit]); a config already committed is adopted as-is ([#hydrateEntry]).
     private static Result<Unit> checkReplicationMinimum(StreamConfig config) {
         return ReplicationFactors.replicationFactors(config.replicationFactor(),
                                                      config.confirmationFactor())
@@ -2100,24 +2124,19 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `Put` without blocking and returns `Result.unitResult()` immediately; the entry is latched by the
     /// async `onSuccess` callback, a transient failure is logged and retried by the next publish.
     ///
-    /// #1547: the replication minimum is re-checked HERE, on every commit path. The fresh-create check alone
-    /// was bypassable: a re-create of a materialized-but-uncommitted stream republishes the INCOMING config
-    /// (`ensureConfigCommitted` → `republishExistingConfig`), so an RF=1 re-create after a failed RF=3 commit
-    /// committed `replicas = 1`.
-    ///
-    /// #3458 M-1: the storage mode is refused BEFORE materialisation on the fresh-create path ([#createFreshStream]), so a
-    /// refused `UNKNOWN` leaves no entry in `streams` and no floor reservation; it is re-checked HERE too as the backstop for
-    /// the re-publish path, which skips the fresh-create chain. A config re-published from a decoded value (the committed
-    /// config of a stream, adopted or re-materialized) may carry `UNKNOWN`, the decode-only sentinel for a mode a newer build
-    /// wrote; writing it back would turn it into a mode a newer build reads as one of its own. Every production
-    /// `StreamConfigValue` is built in [#putCommand], which only this method's commit modes reach.
+    /// The one commit choke point: every production `StreamConfigValue` is built in [#putCommand], which only this method's
+    /// commit modes reach, and this method runs the whole commit validator ([#validateCommit]) first. The re-publish of a
+    /// materialized-but-uncommitted stream (`ensureConfigCommitted` → `republishExistingConfig`) skips the fresh-create chain
+    /// and commits the INCOMING config, so each check that ran only on the fresh create was bypassable there: the replication
+    /// minimum (#1547, an RF=1 re-create after a failed RF=3 commit committed `replicas = 1`), the storage mode (#3458 M-1, a
+    /// decoded `UNKNOWN` written back), the ring window (#3390 F1, a `[hot]` below `max_event_size` or a zero hot count) and the
+    /// life's immutable keys (#3390 F1, ruling know e8888553b4 (2)). One validator here closes the class, not the instance.
     private Result<Unit> publishStreamConfig(StreamConfig config, StreamEntry entry, CommitMode commitMode) {
-        return checkReplicationMinimum(config).flatMap(_ -> checkStorageKnown(config))
-                                      .flatMap(_ -> clusterNode.fold(() -> latchCommitted(entry),
-                                                                     node -> commitMode.publish(this,
-                                                                                                node,
-                                                                                                config,
-                                                                                                entry)));
+        return validateCommit(config, entry.config()).flatMap(_ -> clusterNode.fold(() -> latchCommitted(entry),
+                                                                                    node -> commitMode.publish(this,
+                                                                                                               node,
+                                                                                                               config,
+                                                                                                               entry)));
     }
 
     private static Result<Unit> checkStorageKnown(StreamConfig config) {
@@ -2398,7 +2417,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     private StreamEntry adoptIfMoreDurable(StreamConfig config, StreamEntry existing, Consumer<StreamConfig> adopted) {
         return adopts(config, existing.config())
                ? adoptConfig(config, existing, adopted)
-               : existing;
+               : keepEnforced(config, existing);
+    }
+
+    /// Not adopted. A committed config the ring invariant refuses is named here (#3390 F1); every other reason is the
+    /// operator-visible `STREAM_CONFIG_CHANGE_NOT_APPLIED` event's ([#notAppliedReason]).
+    private static StreamEntry keepEnforced(StreamConfig config, StreamEntry existing) {
+        checkRetentionCapacity(config).onFailure(cause -> log.warn("Committed config of stream '{}' not adopted, the enforced one is kept: {}",
+                                                                   config.name(),
+                                                                   cause.message()));
+
+        return existing;
     }
 
     /// The one rule that decides whether a committed config of the SAME life replaces the local one (ST 2.5 L251, #3334):
@@ -2408,11 +2437,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// so an immutable change would ride along with a storage change; it is not adopted (the deploy validation refuses
     /// it before commit). [#confirmationFactorAfter] reads it too, so what is announced about a factor change cannot
     /// differ from what [#confirmationFactorFor] then enforces.
+    ///
+    /// #3390 F1: a config the ring invariant refuses ([#checkRetentionCapacity]) is never adopted either; the entry keeps the
+    /// config it enforces, and [#adoptIfMoreDurable] names the refusal.
     private static boolean adopts(StreamConfig incoming, StreamConfig existing) {
         return incoming.partitions() == existing.partitions()
                && notWeaker(incoming, existing)
                && immutableUnchanged(incoming, existing)
-               && (strongerDurability(incoming, existing) || storageChanged(incoming, existing));
+               && (strongerDurability(incoming, existing) || storageChanged(incoming, existing))
+               && checkRetentionCapacity(incoming).isSuccess();
     }
 
     private static boolean notWeaker(StreamConfig incoming, StreamConfig existing) {
@@ -2420,10 +2453,36 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static boolean immutableUnchanged(StreamConfig incoming, StreamConfig existing) {
-        return incoming.maxEventSizeBytes() == existing.maxEventSizeBytes()
-               && incoming.encryptionKeyId()
-                          .equals(existing.encryptionKeyId())
-               && truncationOf(incoming).equals(truncationOf(existing));
+        return immutableChange(incoming, existing).isEmpty();
+    }
+
+    /// The first immutable key `incoming` changes against `existing`, if any: the one rule [#adopts] (do not adopt) and
+    /// [#checkLifeImmutables] (do not commit) both read.
+    private static Option<StreamError.ImmutableKeyChanged> immutableChange(StreamConfig incoming,
+                                                                           StreamConfig existing) {
+        return keyChange(incoming.name(),
+                         "max_event_size",
+                         existing.maxEventSizeBytes(),
+                         incoming.maxEventSizeBytes()).orElse(() -> keyChange(incoming.name(),
+                                                                              "encryption_key_id",
+                                                                              existing.encryptionKeyId(),
+                                                                              incoming.encryptionKeyId()))
+                        .orElse(() -> keyChange(incoming.name(),
+                                                "[truncation]",
+                                                truncationOf(existing),
+                                                truncationOf(incoming)));
+    }
+
+    private static <T> Option<StreamError.ImmutableKeyChanged> keyChange(String streamName,
+                                                                         String key,
+                                                                         T enforced,
+                                                                         T requested) {
+        return enforced.equals(requested)
+               ? none()
+               : some(new StreamError.ImmutableKeyChanged(streamName,
+                                                          key,
+                                                          String.valueOf(enforced),
+                                                          String.valueOf(requested)));
     }
 
     private static Option<TruncationDeclaration> truncationOf(StreamConfig config) {
@@ -2572,7 +2631,27 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// NOT diverge (the committed config is present metadata-only, zero bytes past the cap), and the held
     /// partitions materialize later through the single deferred-retry entry point once budget frees (see
     /// {@link #deferHydration}). The growth seam still gates every later segment against the pool normally.
+    ///
+    /// #3390 F1: a committed config is held to the ring invariant FIRST ([#checkRetentionCapacity], the rule the commit
+    /// validator [#validateCommit] runs): one that fails it is refused BY NAME, with no entry, no reservation and no ring,
+    /// instead of failing inside the ring build and being reported as a memory refusal. A config committed through this
+    /// build never fails it; a backup restore or an older build's commit can. The write-side rules are not re-run here: a
+    /// decoded `UNKNOWN` storage is the legitimate read of a newer build's value (#3458 M-1) and committed factors are
+    /// adopted as-is (#1564).
+    @NullReturn
     private StreamEntry hydrateEntry(StreamConfig config) {
+        return checkRetentionCapacity(config).fold(cause -> refuseHydration(config, cause), _ -> hydrateHoldable(config));
+    }
+
+    @NullReturn
+    private static StreamEntry refuseHydration(StreamConfig config, Cause cause) {
+        log.warn("Committed stream '{}' refused on this node, no entry created: {}", config.name(), cause.message());
+
+        return null;
+    }
+
+    @NullReturn
+    private StreamEntry hydrateHoldable(StreamConfig config) {
         adoptIncarnation(config).onFailure(cause -> log.warn("Stream '{}' hydrates; reclaiming other lives of its name did"
                                                             + " not complete: {}",
                                                              config.name(),

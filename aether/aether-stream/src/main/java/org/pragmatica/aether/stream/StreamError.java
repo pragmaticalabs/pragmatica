@@ -650,6 +650,20 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A commit of a life's own config that changes one of its immutable keys (`max_event_size`, `encryption_key_id`,
+    /// `[truncation]`; #3390 F1, ruling know e8888553b4 (2): within a life `max_event_size` is immutable). The life's rings and
+    /// WALs were built under the enforced value. Refused at the commit, naming the key and both values; a fatal config error,
+    /// never retried. A new life (destroy, then create) may change the key.
+    record ImmutableKeyChanged(String streamName, String key, String enforced, String requested) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' changes %s from %s to %s within one life: the key is immutable for the life of a stream".formatted(streamName,
+                                                                                                                                   key,
+                                                                                                                                   enforced,
+                                                                                                                                   requested);
+        }
+    }
+
     /// A stream config whose replication factors the engine refuses (#1564): `1 <= CF <= RF` fails, or a declared
     /// stream is redeclared with factors different from its committed ones. `cause` is the typed
     /// [org.pragmatica.aether.slice.ReplicationFactorsError].
