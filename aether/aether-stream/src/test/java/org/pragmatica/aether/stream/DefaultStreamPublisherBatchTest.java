@@ -159,8 +159,10 @@ class DefaultStreamPublisherBatchTest {
 
         // No WAL: the eviction listener must retain the unsealed prefix and may refuse hand-over.
         try (var manager = streamPartitionManager(Long.MAX_VALUE, blockedSealer, replication)) {
-            manager.createStream(StreamConfig.streamConfig(STREAM, 1,
-                RetentionPolicy.retentionPolicy(16, 1024 * 1024, 60_000), "earliest")).unwrap();
+            // The hot window is declared equal to the retention (16 entries, 1 MiB): the three 512 KiB events of the run exceed the
+            // data region whether the ring is sized from retention or from the declared window.
+            var config = StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(16, 1024 * 1024, 60_000), "earliest");
+            manager.createStream(HotWindowFixture.declaredHot(config, 16, 1024 * 1024)).unwrap();
             var publisher = streamPublisher(manager, identitySerializer(), STREAM, 1,
                 Option.<java.util.function.Function<byte[], Object>> none());
             var payloads = distinctEvents(3, 512 * 1024);

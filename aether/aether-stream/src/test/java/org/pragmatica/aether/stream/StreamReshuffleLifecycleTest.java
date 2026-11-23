@@ -45,19 +45,25 @@ class StreamReshuffleLifecycleTest {
     /// Per-partition floor for the small retention used throughout: 64 + 24×100 + min(256KiB, 64KiB) = 68000.
     private static final long FLOOR = HEADER + INDEX_ENTRY * SMALL_COUNT + Math.min(SEGMENT, SMALL_BYTES);
 
+    /// A user stream declares its hot window equal to its retention (the data region is below one segment, so the event size
+    /// does not move the floor), which keeps [#FLOOR] whether the ring is sized from retention or from the declared window. A
+    /// `system:` ring keeps its retention sizing (R-13) and declares nothing.
     private static StreamConfig cfg(String name, int partitions, int replicas) {
         var retention = RetentionPolicy.retentionPolicy(SMALL_COUNT, SMALL_BYTES, 3_600_000L);
+        var config = StreamConfig.streamConfig(name,
+                                               partitions,
+                                               retention,
+                                               "latest",
+                                               1_048_576L,
+                                               ConsistencyMode.EVENTUAL,
+                                               replicas,
+                                               1,
+                                               StreamCompression.NONE,
+                                               Option.none());
 
-        return StreamConfig.streamConfig(name,
-                                         partitions,
-                                         retention,
-                                         "latest",
-                                         1_048_576L,
-                                         ConsistencyMode.EVENTUAL,
-                                         replicas,
-                                         1,
-                                         StreamCompression.NONE,
-                                         Option.none());
+        return name.startsWith("system:")
+               ? config
+               : HotWindowFixture.declaredHot(config, SMALL_COUNT, SMALL_BYTES);
     }
 
     private static ValuePut<StreamConfigKey, StreamConfigValue> configPut(StreamConfig config) {
