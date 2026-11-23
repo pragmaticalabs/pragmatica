@@ -91,6 +91,11 @@ final class SerialExecutor {
         return drainer.get() == Thread.currentThread();
     }
 
+    /// Test seam (#3605): the number of tasks queued and not yet started. Read-only; no production code calls it.
+    int pendingForTest() {
+        return queue.size();
+    }
+
     /// Reject every task from now on: those still queued are dropped as the drain reaches them, later ones at submission.
     @Contract
     void close() {

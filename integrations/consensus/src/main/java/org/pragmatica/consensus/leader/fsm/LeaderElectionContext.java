@@ -1136,6 +1136,11 @@ public final class LeaderElectionContext {
         serial.execute(task);
     }
 
+    /// Test seam (#3605): the tasks queued in the node's serial executor and not yet started ([SerialExecutor#pendingForTest]).
+    int pendingSerialTasksForTest() {
+        return serial.pendingForTest();
+    }
+
     /// #3587: `task` as a callback (a timer's, a listener's) that runs it in the node's one total order.
     public Runnable serialized(Runnable task) {
         return () -> serial.execute(task);

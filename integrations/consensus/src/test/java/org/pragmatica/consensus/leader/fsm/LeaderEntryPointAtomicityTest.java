@@ -267,8 +267,8 @@ class LeaderEntryPointAtomicityTest {
                                                                                .equals(SELF_ONLY);
     }
 
-    /// A drainer held by another thread until [HeldDrainer#release].
-    private record HeldDrainer(Thread holder, CountDownLatch latch) {
+    /// A drainer held by another thread until [HeldDrainer#release]. Shared with [LeaderTimerSerialCensusTest].
+    record HeldDrainer(Thread holder, CountDownLatch latch) {
         void release() throws InterruptedException {
             latch.countDown();
             holder.join(TimeUnit.SECONDS.toMillis(10));
@@ -277,7 +277,7 @@ class LeaderEntryPointAtomicityTest {
         }
     }
 
-    private static HeldDrainer holdDrainer(LeaderElectionContext ctx) throws InterruptedException {
+    static HeldDrainer holdDrainer(LeaderElectionContext ctx) throws InterruptedException {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var holder = Thread.ofPlatform()
