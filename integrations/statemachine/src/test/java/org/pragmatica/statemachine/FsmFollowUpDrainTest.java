@@ -19,15 +19,19 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 /// The follow-up drain of [Fsm] (#3605 ruling): a dispatch returns only after every follow-up queued by its completed
 /// transition is dispatched, FIFO; a throwing follow-up stops neither its later siblings nor the rest of an enclosing
 /// frame, the first throwable is rethrown after the queue empties, later ones suppressed; a handler that throws
-/// delivers none of its own follow-ups. Each test names the property it pins; all of it runs on the test thread.
+/// delivers none of its own follow-ups; a dispatch nested directly in a handler rethrows to that handler; a
+/// VirtualMachineError is never deferred (#3605 round-4 rulings 1-2). Each test names the property it pins; all of it runs on the test thread.
 class FsmFollowUpDrainTest {
-    enum Ev { GO, A, B, BOOM, NEST, FAN, SPLIT, KABOOM, Y, KABOOM2, X, TWICE, SAME, Z, CHECKED, SNEAKY, W }
+    enum Ev { GO, A, B, BOOM, NEST, FAN, SPLIT, KABOOM, Y, KABOOM2, X, TWICE, SAME, Z, CHECKED, SNEAKY, W,
+              NEST_CATCH, NEST_PROPAGATE, NEST_BOOM, OOPS, Q, NEXT, DONE, GO_VM, OOPS2, DEEP, VM, LATE, DEEP_LATE }
 
     /// The states and the FSM of one test. `seen` is what a handler's code after a nested dispatch observed;
-    /// `shared` is the one exception instance two follow-ups throw.
+    /// `caught` is what a handler caught from a nested dispatch; `shared` is the one exception instance two follow-ups
+    /// throw.
     static final class Ctx {
         Fsm<St, Ev> fsm;
         St seen;
+        Throwable caught;
         final IllegalStateException shared = new IllegalStateException("shared instance");
         final St s0 = new St(this, "S0");
         final St s1 = new St(this, "S1");
@@ -42,6 +46,14 @@ class FsmFollowUpDrainTest {
         final St sz = new St(this, "SZ");
         final St checked = new St(this, "CHECKED");
         final St sw = new St(this, "SW");
+        final St pq = new St(this, "PQ");
+        final St rb = new St(this, "RB");
+        final St qd = new St(this, "QD");
+        final St after = new St(this, "AFTER");
+        final St done = new St(this, "DONE");
+        final St v = new St(this, "V");
+        final St deep = new St(this, "DEEP");
+        final St late = new St(this, "LATE");
     }
 
     record St(Ctx ctx, String name) implements FsmState<St, Ev> {
@@ -65,6 +77,18 @@ class FsmFollowUpDrainTest {
                 case "TWICED:Z" -> tx.transitionTo(ctx.sz);
                 case "CHECKED:SNEAKY" -> sneakyThrow(new IOException("checked, thrown sneakily"));
                 case "CHECKED:W" -> tx.transitionTo(ctx.sw);
+                case "S0:NEST_CATCH" -> nestCatching(tx);
+                case "S0:NEST_PROPAGATE" -> nestPropagating(tx);
+                case "PQ:NEST_BOOM" -> tx.transitionTo(ctx.rb);
+                case "RB:OOPS" -> throw new IllegalStateException("nested follow-up throws");
+                case "RB:Q" -> tx.transitionTo(ctx.qd);
+                case "QD:NEXT" -> tx.transitionTo(ctx.after);
+                case "AFTER:DONE" -> tx.transitionTo(ctx.done);
+                case "S0:GO_VM" -> tx.transitionTo(ctx.v);
+                case "V:OOPS2" -> throw new IllegalStateException("earlier non-VM follow-up failure");
+                case "V:DEEP" -> tx.transitionTo(ctx.deep);
+                case "DEEP:VM" -> throw new InternalError("vm error from a nested follow-up");
+                case "DEEP:DEEP_LATE", "DEEP:LATE" -> tx.transitionTo(ctx.late);
                 default -> tx.ignore();
             }
         }
@@ -74,6 +98,23 @@ class FsmFollowUpDrainTest {
             ctx.fsm.dispatch(Ev.GO);
             ctx.seen = ctx.fsm.current();
             tx.ignore();
+        }
+
+        /// A handler that transitions to PQ (whose entry queues Q in this handler's frame), dispatches nested, and
+        /// catches what that dispatch rethrows.
+        private void nestCatching(TransitionRequest<St, Ev> tx) {
+            tx.transitionTo(ctx.pq);
+            try {
+                ctx.fsm.dispatch(Ev.NEST_BOOM);
+            } catch (IllegalStateException e) {
+                ctx.caught = e;
+            }
+        }
+
+        /// The same handler, letting the nested dispatch's rethrow propagate.
+        private void nestPropagating(TransitionRequest<St, Ev> tx) {
+            tx.transitionTo(ctx.pq);
+            ctx.fsm.dispatch(Ev.NEST_BOOM);
         }
 
         @Override
@@ -93,6 +134,11 @@ class FsmFollowUpDrainTest {
                 case "SY" -> followUpAll(Ev.KABOOM2);
                 case "TWICED" -> followUpAll(Ev.SAME, Ev.SAME, Ev.Z);
                 case "CHECKED" -> followUpAll(Ev.SNEAKY, Ev.W);
+                case "PQ" -> followUpAll(Ev.Q);
+                case "RB" -> followUpAll(Ev.OOPS);
+                case "AFTER" -> followUpAll(Ev.DONE);
+                case "V" -> followUpAll(Ev.OOPS2, Ev.DEEP, Ev.LATE);
+                case "DEEP" -> followUpAll(Ev.VM, Ev.DEEP_LATE);
                 default -> {}
             }
         }
@@ -219,6 +265,67 @@ class FsmFollowUpDrainTest {
         ctx.fsm.followUp(Ev.A);
         assertThat(ctx.fsm.current()).as("the frame was restored on the throw, so A ran at once")
                                      .isSameAs(ctx.sa);
+    }
+
+    /// A dispatch nested directly in a handler is the handler's call (#3605 round-4 ruling 1): its follow-up OOPS
+    /// throws, the nested drain rethrows it to the handler, the handler catches it and returns, and Q (queued in the
+    /// handler's frame by its completed transition to PQ) is then delivered.
+    @Test
+    void handlerNestedDispatchWhoseFollowUpThrows_handlerSeesIt_andCatchingIt_keepsItsFrame() {
+        var ctx = fresh();
+
+        ctx.fsm.dispatch(Ev.NEST_CATCH);
+
+        assertThat(ctx.caught).as("the nested dispatch rethrew its follow-up's throwable to the handler")
+                              .isInstanceOf(IllegalStateException.class)
+                              .hasMessage("nested follow-up throws");
+        assertThat(transitions).containsExactly("S0->PQ", "PQ->RB", "RB->QD");
+        assertThat(ctx.fsm.current()).isSameAs(ctx.qd);
+    }
+
+    /// The same handler lets the rethrow propagate, so it is a throwing handler (#3605 round-4 ruling 1): its frame's
+    /// follow-up Q is discarded, the thread's frame is restored (a followUp outside a dispatch runs at once), and a
+    /// later dispatch delivers its own follow-ups as usual.
+    @Test
+    void handlerNestedDispatchWhoseFollowUpThrows_propagated_discardsTheFrame_restoresIt_laterDispatchUnaffected() {
+        var ctx = fresh();
+
+        var thrown = catchThrowable(() -> ctx.fsm.dispatch(Ev.NEST_PROPAGATE));
+
+        assertThat(thrown).isInstanceOf(IllegalStateException.class)
+                          .hasMessage("nested follow-up throws");
+        assertThat(transitions).as("Q, queued in the propagating handler's frame, is not delivered")
+                               .containsExactly("S0->PQ", "PQ->RB");
+        assertThat(ctx.fsm.current()).isSameAs(ctx.rb);
+
+        ctx.fsm.followUp(Ev.Q);
+        assertThat(ctx.fsm.current()).as("the frame was restored, so a followUp outside a dispatch ran at once")
+                                     .isSameAs(ctx.qd);
+
+        ctx.fsm.dispatch(Ev.NEXT);
+        assertThat(ctx.fsm.current()).as("a later dispatch delivers its own follow-up DONE")
+                                     .isSameAs(ctx.done);
+        assertThat(transitions).containsExactly("S0->PQ", "PQ->RB", "RB->QD", "QD->AFTER", "AFTER->DONE");
+    }
+
+    /// A VirtualMachineError is never deferred (#3605 round-4 ruling 2): V queues [OOPS2, DEEP, LATE]; OOPS2 throws an
+    /// ordinary exception, DEEP queues [VM, DEEP_LATE] and VM throws a VM error. It propagates at once: neither its later
+    /// sibling DEEP_LATE nor the rest of the enclosing frame (LATE) runs, the earlier ordinary failure is not what
+    /// surfaces, and the thread's frame is restored (a followUp outside a dispatch runs at once).
+    @Test
+    void vmErrorFromAFollowUp_propagatesAtOnce_laterSiblingsAndEnclosingFrameNotRun() {
+        var ctx = fresh();
+
+        var thrown = catchThrowable(() -> ctx.fsm.dispatch(Ev.GO_VM));
+
+        assertThat(thrown).isExactlyInstanceOf(InternalError.class)
+                          .hasMessage("vm error from a nested follow-up");
+        assertThat(transitions).as("nothing after the VM error ran").containsExactly("S0->V", "V->DEEP");
+        assertThat(ctx.fsm.current()).isSameAs(ctx.deep);
+
+        ctx.fsm.followUp(Ev.LATE);
+        assertThat(ctx.fsm.current()).as("the frames were restored, so a followUp outside a dispatch ran at once")
+                                     .isSameAs(ctx.late);
     }
 
     private FsmObserver<St, Ev> observer() {

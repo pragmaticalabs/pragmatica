@@ -66,6 +66,30 @@ class SerialExecutorStrandedTaskTest {
         assertThat(ran.get()).as("a task submitted after the VM error runs: nothing is pinned").isEqualTo(1);
     }
 
+    /// #3605 round-4 ruling 2: a VM error is never deferred. The first task queues a second one, then throws a VM error:
+    /// the error reaches the caller at once and the second task has not run; the next submission drains it, in order.
+    @Test
+    void vmErrorInATask_laterQueuedTasksDoNotRunInThatDrain_theNextSubmissionRunsThem() {
+        var executor = SerialExecutor.serialExecutor();
+        var order = new ConcurrentLinkedQueue<String>();
+
+        assertThatThrownBy(() -> executor.execute(() -> queueThenFailWithAVmError(executor, order)))
+            .isInstanceOf(TestVmError.class);
+
+        assertThat(order).as("the task queued before the VM error did not run in that drain").isEmpty();
+        assertThat(executor.pendingForTest()).as("it is still queued").isEqualTo(1);
+
+        executor.execute(() -> order.add("next"));
+
+        assertThat(order).as("the next submission drains the queued task first, then its own")
+                         .containsExactly("queued", "next");
+    }
+
+    private static void queueThenFailWithAVmError(SerialExecutor executor, ConcurrentLinkedQueue<String> order) {
+        executor.execute(() -> order.add("queued"));
+        throw new TestVmError();
+    }
+
     private static final class TestVmError extends VirtualMachineError {}
 
     private static void submitFromAnotherThread(SerialExecutor executor, AtomicInteger ran, AtomicBoolean submitted) {

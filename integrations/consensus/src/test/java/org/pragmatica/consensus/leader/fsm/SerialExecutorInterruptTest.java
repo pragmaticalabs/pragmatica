@@ -14,8 +14,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// Pins the drainer's interrupt policy (#3605 ruling): a submitter that becomes the drainer takes its own interrupt status
-/// at entry and re-asserts it on release (also when a task throws); between tasks the status is cleared, so an interrupt a
-/// task raises reaches neither later tasks nor the caller. Everything runs synchronously on the test thread: the outer task
+/// at entry and re-asserts it on release (also when a task throws, a VM error included); between tasks and before that
+/// re-assert the status is cleared, so an interrupt a task raises reaches neither later tasks nor the caller. Everything runs synchronously on the test thread: the outer task
 /// queues the inner tasks, and the same drain runs them in order.
 class SerialExecutorInterruptTest {
     @Test
@@ -97,6 +97,29 @@ class SerialExecutorInterruptTest {
         } finally {
             Thread.interrupted();
         }
+    }
+
+    /// #3605 round-4 ruling 3: a task that interrupts itself and then throws a VM error skips the between-task clear;
+    /// the release clears it before re-asserting the entry status, so a caller that entered clear returns clear.
+    @Test
+    void vmErrorAfterATaskInterrupt_leavesAClearCallerClear() {
+        var executor = SerialExecutor.serialExecutor();
+
+        try {
+            assertThat(Thread.currentThread().isInterrupted()).as("precondition: the caller enters clear")
+                                                              .isFalse();
+            assertThatThrownBy(() -> executor.execute(SerialExecutorInterruptTest::interruptSelfThenFailWithAVmError))
+                .isInstanceOf(InternalError.class);
+            assertThat(Thread.currentThread().isInterrupted()).as("the task's own interrupt does not reach the caller")
+                                                              .isFalse();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    private static void interruptSelfThenFailWithAVmError() {
+        Thread.currentThread().interrupt();
+        throw new InternalError("vm failed after interrupting itself");
     }
 
     private static void queueInterrupterThenProbe(SerialExecutor executor, AtomicReference<Boolean> sawInterrupt) {

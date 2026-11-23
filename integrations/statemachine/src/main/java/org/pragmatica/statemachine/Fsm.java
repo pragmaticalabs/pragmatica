@@ -24,15 +24,21 @@ import org.pragmatica.lang.Option;
 /// A hook ([`FsmState#onEntry`], [`FsmState#onExit`]) never dispatches; a follow-up event it decides goes through
 /// [`#followUp`]. GUARANTEE: a dispatch returns only after every follow-up queued by its completed transition is
 /// dispatched, after that transition's observer callback, FIFO among that dispatch's follow-ups, each one a full
-/// dispatch step (its own follow-ups are delivered before the next sibling's). A follow-up whose dispatch throws stops
-/// neither its later siblings nor the rest of any enclosing frame: the drain continues, and once the queue is empty the
-/// first [Throwable] is rethrown (a checked one, which only a sneaky throw raises, wrapped in
-/// [UndeclaredThrowableException]), with every later distinct one added to it as suppressed. A handler that throws
-/// delivers none of its own follow-ups. MECHANISM: every [`#dispatch`] opens a follow-up frame for the calling thread,
-/// restores the enclosing frame when its handler returns or throws, then drains its own frame only if the handler
-/// returned; the drain catches each follow-up's throwable per step. Code that runs after that dispatch (the rest of the
-/// caller's handler or task) therefore sees the follow-up's outcome, exactly as a nested dispatch inside the hook would
-/// have shown it, and observers see the transitions in the order they happen.
+/// dispatch step (its own follow-ups are delivered before the next sibling's). Within a follow-up chain, a follow-up
+/// whose dispatch throws stops neither its later siblings nor the rest of any enclosing follow-up frame: the drain
+/// continues, and once the queue is empty the first [Throwable] is rethrown (a checked one, which only a sneaky throw
+/// raises, wrapped in [UndeclaredThrowableException]), with every later distinct one added to it as suppressed. A
+/// dispatch nested directly in a handler is a call that handler makes: its drain rethrows the first follow-up throwable
+/// to the handler. A handler that throws, including one that lets such a rethrow propagate, delivers none of its own
+/// frame's follow-ups. Handlers are total by contract, so a
+/// throw is a contract breach whose only obligation is that every frame is restored: the thread's frame is the enclosing
+/// one again, and later dispatches are unaffected. A [VirtualMachineError] is never deferred: it propagates at once,
+/// after the frames are restored, no later follow-up runs, and a follow-up failure recorded before it is not attached
+/// to it. MECHANISM: every [`#dispatch`] opens a follow-up frame for the calling thread, restores the enclosing frame
+/// when its handler returns or throws, then drains its own frame only if the handler returned; the drain catches each
+/// follow-up's throwable per step, a [VirtualMachineError] excepted. Code that runs after that dispatch (the rest of
+/// the caller's handler or task) therefore sees the follow-up's outcome, exactly as a nested dispatch inside the hook
+/// would have shown it, and observers see the transitions in the order they happen.
 ///
 /// State identity is by reference. Data-free states must be singletons; data-carrying states
 /// are typically immutable records created fresh per transition. See [`FsmState`] for details.
@@ -143,7 +149,8 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     /// [`TransitionRequest#transitionTo`].
     ///
     /// The follow-ups the transition's hooks decided ([`#followUp`]) are dispatched before this returns; a throwing
-    /// follow-up surfaces here only after the rest are dispatched (see the class GUARANTEE).
+    /// follow-up surfaces here only after the rest are dispatched, a [VirtualMachineError] at once (see the class
+    /// GUARANTEE). Called from inside a handler, this is the handler's call: the throwable surfaces in the handler.
     @Contract
     public void dispatch(E event) {
         Queue<E> pending = new ArrayDeque<>();
@@ -178,7 +185,8 @@ public final class Fsm<S extends FsmState<S, E>, E> {
 
     /// Dispatch every queued follow-up in FIFO order, each to completion, a throwing one included: the first throwable
     /// is rethrown once the queue is empty, later ones suppressed into it (the #3605 ruling: one failed follow-up never
-    /// drops the events queued after it; the caller still sees that a step failed).
+    /// drops the events queued after it; the caller still sees that a step failed). A [VirtualMachineError] leaves at
+    /// once and the rest of the queue is discarded (#3605 round-4 ruling).
     private void drain(Queue<E> pending) {
         Option<Throwable> failure = Option.none();
 
@@ -190,12 +198,16 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     }
 
     /// One drain step: dispatch `event`; a throwable becomes the first failure, or is suppressed into the earlier one.
-    @SuppressWarnings("JBCT-EX-01")  // #3605 ruling: a throwing follow-up never stops the drain; rethrown after it
+    /// A [VirtualMachineError] is rethrown unchanged at once: the dispatch that raised it already restored its frame,
+    /// and nothing is allocated on its path (the earlier failure, if any, is not attached).
+    @SuppressWarnings("JBCT-EX-01")  // #3605 ruling: a throwing follow-up never stops the drain; a VM error does, at once
     private Option<Throwable> dispatchRecordingFailure(E event, Option<Throwable> failure) {
         try {
             dispatch(event);
 
             return failure;
+        } catch (VirtualMachineError vmError) {
+            throw vmError;
         } catch (Throwable thrown) {
             return Option.some(firstWithLaterSuppressed(failure, thrown));
         }

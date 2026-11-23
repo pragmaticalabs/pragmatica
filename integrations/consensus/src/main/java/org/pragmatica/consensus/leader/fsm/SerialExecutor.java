@@ -49,14 +49,21 @@ import org.slf4j.LoggerFactory;
 ///
 /// A task that throws is logged at ERROR and the drain continues with the next task, for any [Throwable] (FER, degrade
 /// forward: the failed event is lost, every later event still runs): otherwise one failing task would strand the queue
-/// (no drainer, queued tasks never run). Pinned by `LeaderSerialDispatchCensusTest#failingTask_doesNotStallTheQueue`. A [VirtualMachineError] is logged and then
-/// propagates to the drainer's caller; the drainer is released on EVERY exit (a `finally` around the drain).
+/// (no drainer, queued tasks never run). Pinned by `LeaderSerialDispatchCensusTest#failingTask_doesNotStallTheQueue`. A [VirtualMachineError] is
+/// never deferred (#3605 round-4 ruling): it is logged and propagates to the drainer's caller at once, after the drainer
+/// is released and the interrupt status restored (a `finally` around the drain, on EVERY exit); no later task runs in
+/// that drain, and the tasks still queued run on the next one (the next submission drains them). Pinned by
+/// `SerialExecutorStrandedTaskTest#vmErrorInATask_laterQueuedTasksDoNotRunInThatDrain_theNextSubmissionRunsThem`.
 ///
 /// Interrupt policy (#3605 ruling): when a submitter becomes the drainer it first takes its own interrupt status
 /// (`Thread.interrupted()`) and keeps it; between tasks the drainer clears the status, so an interrupt a task raises reaches
 /// neither later tasks nor the caller; on release (a `finally`, also on a thrown task) it re-asserts the status it took at
-/// entry. A caller interrupted before submit therefore returns still interrupted. No leader task blocks or reads the
-/// status. Pinned by `SerialExecutorInterruptTest`.
+/// entry, after clearing whatever status the drain left (a task that interrupts itself and then throws a
+/// [VirtualMachineError] skips the between-task clear). A caller interrupted before submit therefore returns still
+/// interrupted, and a caller that entered clear returns clear. An interrupt another thread delivers to the caller WHILE
+/// it drains (for example a pool's `shutdownNow`) is indistinguishable from one a task raised, so it is cleared too and
+/// that caller returns clear: the interrupt is lost, by design (#3605 round-4 ruling 4). No leader task blocks or reads
+/// the status. Pinned by `SerialExecutorInterruptTest`.
 ///
 /// The same mechanism as SWIM's `org.pragmatica.swim.SerialExecutor` (#3529), without its test-only quiescing mode and with
 /// the stop rejection: the two modules share no dependency, and a library-wide executor is a separate design (#3587 ruling).
@@ -138,8 +145,11 @@ final class SerialExecutor {
         }
     }
 
-    /// Give the caller back the interrupt status it had when it became the drainer; a clear status stays clear.
+    /// Give the caller back the interrupt status it had when it became the drainer; a clear status stays clear. The
+    /// status is cleared first: on a propagating [VirtualMachineError] the between-task clear was skipped, so a task's
+    /// own interrupt would otherwise reach a caller that entered clear (#3605 round-4 ruling 3).
     private static void reassertInterruptStatus(boolean callerWasInterrupted) {
+        clearInterruptStatus();
         if (callerWasInterrupted) {
             Thread.currentThread().interrupt();
         }
