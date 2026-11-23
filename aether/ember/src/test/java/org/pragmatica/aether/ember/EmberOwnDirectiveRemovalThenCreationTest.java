@@ -112,9 +112,10 @@ class EmberOwnDirectiveRemovalThenCreationTest {
         var node = leader();
         var submittedTo = node.self().id();
         var transactionId = UUID.randomUUID().toString();
+        var authority = node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
         var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(mutations.getFirst().key(),
                                                                               transactionId,
-                                                                              node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap(),
+                                                                              authority,
                                                                               List.of(),
                                                                               mutations);
         var results = node.<Object> apply(List.of(command)).await(START_BOUND).unwrap();
@@ -124,20 +125,25 @@ class EmberOwnDirectiveRemovalThenCreationTest {
                          .filter(result -> result.transactionId().equals(transactionId))
                          .findFirst();
 
-        return own.map(result -> result.accepted() ? "" : refusalDescription(node, result, submittedTo))
+        return own.map(result -> result.accepted() ? "" : refusalDescription(node, result, submittedTo, authority))
                   .orElseGet(() -> "no result for transaction " + transactionId + " submitted to " + submittedTo
-                                   + " (leader now " + cluster.currentLeader() + "); results=" + results);
+                                   + " under " + authority + " (leader now " + cluster.currentLeader() + "); results=" + results);
     }
 
-    private String refusalDescription(AetherNode node, KVCommand.TransactionResult result, String submittedTo) {
+    private String refusalDescription(AetherNode node,
+                                      KVCommand.TransactionResult result,
+                                      String submittedTo,
+                                      LeaderValue authority) {
         var refusal = result.refusal();
 
         return "transaction " + result.transactionId() + " refused: " + refusal
-               + "; submitted to " + submittedTo + " (leader now " + cluster.currentLeader() + ")"
-               + "; mutated keys now: " + mutatedKeysNow(node, refusal);
+               + "; submitted to " + submittedTo + " under " + authority
+               + ", committed on that node now " + node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+               + " (leader now " + cluster.currentLeader() + ")"
+               + "; refused key now: " + refusedKeyNow(node, refusal);
     }
 
-    private static String mutatedKeysNow(AetherNode node, Option<KVCommand.Refusal> refusal) {
+    private static String refusedKeyNow(AetherNode node, Option<KVCommand.Refusal> refusal) {
         return refusal.flatMap(KVCommand.Refusal::key)
                       .map(key -> key + " -> " + node.kvStore().get((AetherKey) key))
                       .or("none named");
