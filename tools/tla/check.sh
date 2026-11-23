@@ -34,7 +34,7 @@ metadir="states/run$$"   # this run's own states dir (relative to $out): the onl
     -metadir "$metadir" -config "${module}_${variant}.cfg" "$module.tla" ) > "$raw" 2>&1 &
 tlc=$!
 # a TERM/INT to this script (run.sh's timeout) takes the TLC it started down with it, never a pattern match
-trap 'kill -TERM "$tlc" 2>/dev/null; sleep 1; kill -KILL "$tlc" 2>/dev/null; rm -rf "$out/$metadir"; exit 143' TERM INT
+trap 'kill -TERM "$tlc" 2>/dev/null; sleep 1; kill -KILL "$tlc" 2>/dev/null; rm -rf "$out/$metadir"; rmdir "$out/states" 2>/dev/null; exit 143' TERM INT
 guard=""; tick=0
 while kill -0 "$tlc" 2>/dev/null; do
   if (( tick % guard_secs == 0 )); then
@@ -53,7 +53,7 @@ while kill -0 "$tlc" 2>/dev/null; do
 done
 wait "$tlc" 2>/dev/null; rc=$?
 trap - TERM INT
-rm -rf "$out/$metadir"
+rm -rf "$out/$metadir"; rmdir "$out/states" 2>/dev/null   # the parent goes only when empty: another run's dir keeps it
 if [[ -n $guard ]]; then
   echo "RESOURCE-GUARD: killed TLC: $guard" | tee -a "$raw"
   cp "$raw" "$out/${module}_${variant}.log"
