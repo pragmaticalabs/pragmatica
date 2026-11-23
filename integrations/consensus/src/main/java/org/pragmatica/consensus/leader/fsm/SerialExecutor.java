@@ -52,6 +52,11 @@ import org.slf4j.LoggerFactory;
 /// (no drainer, queued tasks never run). Pinned by `LeaderSerialDispatchCensusTest#failingTask_doesNotStallTheQueue`. A [VirtualMachineError] is logged and then
 /// propagates to the drainer's caller; the drainer is released on EVERY exit (a `finally` around the drain).
 ///
+/// Interrupt policy (#3605 ruling): the drainer clears its thread's interrupt status after every task, so an interrupt a
+/// task raises reaches neither the next task (which may be another submitter's) nor the submitting thread after the
+/// drain. No leader task blocks or reads the status; a submitter interrupted before it drained loses that status after
+/// the first task it runs. Pinned by `SerialExecutorInterruptTest`.
+///
 /// The same mechanism as SWIM's `org.pragmatica.swim.SerialExecutor` (#3529), without its test-only quiescing mode and with
 /// the stop rejection: the two modules share no dependency, and a library-wide executor is a separate design (#3587 ruling).
 final class SerialExecutor {
@@ -120,10 +125,17 @@ final class SerialExecutor {
         }
     }
 
+    /// Run queued tasks until the queue is empty, clearing the interrupt status after each one (see the class doc).
     private void drainQueue() {
         for (var task = queue.poll(); task != null; task = queue.poll()) {
             runUnlessClosed(task);
+            clearInterruptStatus();
         }
+    }
+
+    /// `Thread.interrupted()` clears the status; its result (whether a task left one) is not needed.
+    private static void clearInterruptStatus() {
+        Thread.interrupted();
     }
 
     private void runUnlessClosed(Runnable task) {
