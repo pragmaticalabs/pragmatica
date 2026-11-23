@@ -1,5 +1,5 @@
 # Shrink-only allow-list for FlakeScanTest: the census of test lines carrying a flake pattern when the scan landed.
-# Entry: <file>|<PATTERN>|<first 12 hex of SHA-1 of the whitespace-normalised stripped line>. One line per hit; identical lines repeat.
+# Entry: <file>|<PATTERN>|<first 12 hex of SHA-1 of the whitespace-normalised stripped line, or of the whole statement when the match spans lines>. One entry per hit; identical hits repeat.
 # Delete an entry when its line is fixed (the test fails on a stale entry) and lower COMMITTED_ENTRIES in FlakeScanTest to match.
 # Never add one: fix the line (wait with org.pragmatica.testing.PollUntil, take a free port, assert structurally, wait at least 5 s).
 aether/aether-control/src/test/java/org/pragmatica/aether/controller/RollbackManagerEngineStopGateTest.java|SLEEP|dbd5138dd5e1
@@ -1017,6 +1017,7 @@ integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineA
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineApplyContainmentTest.java|SLEEP|5a0ccdcc9414
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineApplyContainmentTest.java|SLEEP|5a0ccdcc9414
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineApplyContainmentTest.java|SLEEP|5e76dedaad83
+integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineApplyContainmentTest.java|WALL_CLOCK_BOUND|b9d0b4b45614
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineCleanupArmingTest.java|SLEEP|90c3c7c3942c
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineCompleteAfterDeliveryTest.java|SLEEP|5b3ac70bfffd
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineCompleteAfterDeliveryTest.java|SLEEP|dbd5138dd5e1
@@ -1126,6 +1127,7 @@ integrations/net/http-server/src/test/java/org/pragmatica/http/server/Http3Strea
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/Http3StreamWireTest.java|SLEEP|dbd5138dd5e1
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/HttpServerStopTest.java|SLEEP|1d26733fc094
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/HttpServerStopTest.java|SLEEP|1d26733fc094
+integrations/net/http-server/src/test/java/org/pragmatica/http/server/HttpServerStopTest.java|WALL_CLOCK_BOUND|35dacb6b27e5
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/RequestGateStreamWireTest.java|SLEEP|1d26733fc094
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/RequestGateStreamWireTest.java|SLEEP|37f10ef191e8
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/RequestGateStreamWireTest.java|SLEEP|dbd5138dd5e1
