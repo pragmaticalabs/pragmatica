@@ -236,7 +236,7 @@ class LeaderHookFollowUpTest {
 
         return new LeaderElectionContext(fsm,
                                          SELF,
-                                         noHandler,
+                                         handler,
                                          CORES,
                                          router,
                                          LONG,
