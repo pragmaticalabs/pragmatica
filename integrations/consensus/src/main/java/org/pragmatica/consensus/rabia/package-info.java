@@ -494,8 +494,12 @@
 /// \*   "D5q" (comparison, not paper) newer epoch needs a LIVE majority (n/2+1) claiming one configuration;
 /// \*         the response-quorum rule the code rejects because it wedges #1526 (liveness not checked here)
 /// \* Assumptions as constants:
-/// \*   KeepBallots  the process keeps its ballot memory across pause and adoption (phases.clear() runs only in
-/// \*                shutdownAndReset, the stop path; GC drops only expired past slots)
+/// \*   Ballot memory (`voted`: the self entries of PhaseData in RabiaEngine.phases, held in memory only) can be lost
+/// \*   only at a code event that could lose it, one constant per event; a probe cfg sets exactly ONE of them FALSE and
+/// \*   its row names that event (#3592). The code keeps both: phases.clear() runs only in shutdownAndReset (the stop
+/// \*   path) and GC drops only expired past slots. Restart (a new process) empties `voted` whatever these say.
+/// \*   KeepBallotsOnPause  Pause keeps `voted` (code: TRUE; doPauseForQuorumLoss and doResumeFromPause never touch phases)
+/// \*   KeepBallotsOnAdopt  Install keeps `voted` (code: TRUE; applyRestoredState never touches phases)
 /// \*   FaultyResp   node "C" may answer sync with an arbitrary well-formed log (a non-crash fault)
 /// \*   Probe        which adoption branch the sticky ghost `reached` records ("none" in property cfgs)
 /// \*   SameEpochAdopt  FALSE disables the same-epoch adoption branches, isolating the D5 newer-epoch path (diagnostic)
@@ -508,7 +512,7 @@
 /// \*                composition does not by itself pin syncresume; rjT_nosyncresume (two crashes, two restarts) does.
 /// EXTENDS Naturals, FiniteSets
 ///
-/// CONSTANTS Fixed, Paper, KeepBallots, FaultyResp, SameEpochAdopt, Probe, MaxCrash, MaxRestart, MaxPause, Rejoin, SaveFails, ResyncOn
+/// CONSTANTS Fixed, Paper, KeepBallotsOnPause, KeepBallotsOnAdopt, FaultyResp, SameEpochAdopt, Probe, MaxCrash, MaxRestart, MaxPause, Rejoin, SaveFails, ResyncOn
 ///
 /// ASSUME Fixed \subseteq {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 /// ASSUME Paper \subseteq {"D3", "D4", "D5", "D5q"}
@@ -582,7 +586,7 @@
 ///        THEN /\ st' = [st EXCEPT ![n] = "active"]
 ///             /\ marker' = [marker EXCEPT ![n] = "participated"]   \* recordParticipation before activate
 ///        ELSE /\ st' = st /\ marker' = marker
-///   /\ voted' = IF KeepBallots THEN voted ELSE [voted EXCEPT ![n] = Empty]
+///   /\ voted' = IF KeepBallotsOnAdopt THEN voted ELSE [voted EXCEPT ![n] = Empty]
 ///   /\ UNCHANGED <<admit, known, reinc, ballots, chosen, crashes, restarts, pauses>>
 ///
 /// Hit(tg) ==
@@ -1520,7 +1524,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -1541,7 +1546,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -1562,7 +1568,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -1578,12 +1585,13 @@
 ///
 /// ```tlacfg RabiaAdopt:resync_ballotloss
 /// \* RabiaAdopt config resync_ballotloss: the expected verdict is its row in tools/tla/models.tsv
-/// \* D10 with ballot memory lost on adoption (KeepBallots FALSE): a resynced voter may vote a slot twice
+/// \* D10, ballot memory lost on adoption (KeepBallotsOnAdopt FALSE): a voter resyncs, adopts and votes its open slot again
 /// SPECIFICATION Spec
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = FALSE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = FALSE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -1604,7 +1612,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -1624,7 +1633,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -1644,7 +1654,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -1664,7 +1675,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = FALSE
 ///   Probe = "none"
@@ -1684,7 +1696,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5q"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = FALSE
 ///   Probe = "none"
@@ -1700,11 +1713,13 @@
 ///
 /// ```tlacfg RabiaAdopt:ballotloss
 /// \* RabiaAdopt config ballotloss: the expected verdict is its row in tools/tla/models.tsv
+/// \* ballot memory lost on adoption (KeepBallotsOnAdopt FALSE), same-epoch path: pause, resume into sync, adopt, vote again
 /// SPECIFICATION Spec
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = FALSE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = FALSE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -1720,11 +1735,35 @@
 ///
 /// ```tlacfg RabiaAdopt:ballotlossD5
 /// \* RabiaAdopt config ballotlossD5: the expected verdict is its row in tools/tla/models.tsv
+/// \* ballot memory lost on pause (KeepBallotsOnPause FALSE): pause, direct resume, vote again; no adoption takes part
 /// SPECIFICATION Spec
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = FALSE
+///   KeepBallotsOnPause = FALSE
+///   KeepBallotsOnAdopt = TRUE
+///   FaultyResp = FALSE
+///   SameEpochAdopt = FALSE
+///   Probe = "none"
+///   MaxCrash = 1
+///   MaxRestart = 1
+///   MaxPause = 1
+///   Rejoin = "none"
+///   SaveFails = FALSE
+///   ResyncOn = FALSE
+/// INVARIANTS TypeOK Agreement Held
+/// PROPERTIES DurableDecision
+/// ```
+///
+/// ```tlacfg RabiaAdopt:adoptlossD5
+/// \* RabiaAdopt config adoptlossD5: the expected verdict is its row in tools/tla/models.tsv
+/// \* ballot memory lost on adoption (KeepBallotsOnAdopt FALSE), newer-epoch path only: the base of the ballotlossD5_no* rows
+/// SPECIFICATION Spec
+/// CONSTANTS
+///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
+///   Paper = {}
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = FALSE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = FALSE
 ///   Probe = "none"
@@ -1740,12 +1779,13 @@
 ///
 /// ```tlacfg RabiaAdopt:ballotlossD5_nooneconfig
 /// \* RabiaAdopt config ballotlossD5_nooneconfig: the expected verdict is its row in tools/tla/models.tsv
-/// \* D5 one-configuration check dropped, ballots lost on pause, newer-epoch path only (ballotlossD5 is the green base)
+/// \* D5 one-configuration check dropped, ballots lost on adoption, newer-epoch path only (adoptlossD5 is the base)
 /// SPECIFICATION Spec
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = FALSE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = FALSE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = FALSE
 ///   Probe = "none"
@@ -1761,12 +1801,13 @@
 ///
 /// ```tlacfg RabiaAdopt:ballotlossD5_noselfvouch
 /// \* RabiaAdopt config ballotlossD5_noselfvouch: the expected verdict is its row in tools/tla/models.tsv
-/// \* D4 self-vouch dropped, ballots lost on pause, newer-epoch path only (ballotlossD5 is the green base)
+/// \* D4 self-vouch dropped, ballots lost on adoption, newer-epoch path only (adoptlossD5 is the base)
 /// SPECIFICATION Spec
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = FALSE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = FALSE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = FALSE
 ///   Probe = "none"
@@ -1786,7 +1827,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "claimed2"
@@ -1805,7 +1847,8 @@
 /// CONSTANTS
 ///   Fixed = {"selfvouch", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "claimed2"
@@ -1824,7 +1867,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "live1novouch"
@@ -1843,7 +1887,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "live2novouch"
@@ -1862,7 +1907,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "newerlag"
@@ -1881,7 +1927,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "newernonlive"
@@ -1900,7 +1947,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -1919,7 +1967,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "rejoinamnesiac"
@@ -1938,7 +1987,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "rejoinamnesiac1"
@@ -1957,7 +2007,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "rejoinstale"
@@ -1976,7 +2027,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "rejoinstale1"
@@ -1995,7 +2047,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "rejoinamnesiac"
@@ -2014,7 +2067,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "rejoinamnesiac1"
@@ -2033,7 +2087,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "rejoinamnesiac1"
@@ -2052,7 +2107,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "rejoin"
@@ -2071,7 +2127,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "claimed2"
@@ -2090,7 +2147,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "rejoinwiped"
@@ -2109,7 +2167,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = TRUE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2130,7 +2189,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = TRUE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2149,7 +2209,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = TRUE
 ///   SameEpochAdopt = FALSE
 ///   Probe = "none"
@@ -2169,7 +2230,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5q"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = TRUE
 ///   SameEpochAdopt = FALSE
 ///   Probe = "none"
@@ -2189,7 +2251,8 @@
 /// CONSTANTS
 ///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2209,7 +2272,8 @@
 /// CONSTANTS
 ///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = FALSE
 ///   Probe = "none"
@@ -2229,7 +2293,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2249,7 +2314,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = FALSE
 ///   Probe = "none"
@@ -2269,7 +2335,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2290,7 +2357,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2310,7 +2378,8 @@
 /// CONSTANTS
 ///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D3"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2330,7 +2399,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D4"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2350,7 +2420,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2370,7 +2441,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = FALSE
 ///   Probe = "none"
@@ -2390,7 +2462,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2410,7 +2483,8 @@
 /// CONSTANTS
 ///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2430,7 +2504,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2450,7 +2525,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2470,7 +2546,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D4"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2490,7 +2567,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2510,7 +2588,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2531,7 +2610,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2552,7 +2632,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2573,7 +2654,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2594,7 +2676,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2615,7 +2698,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2635,7 +2719,8 @@
 /// CONSTANTS
 ///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2655,7 +2740,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2675,7 +2761,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2696,7 +2783,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2716,7 +2804,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D4"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2736,7 +2825,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2756,7 +2846,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2776,7 +2867,8 @@
 /// CONSTANTS
 ///   Fixed = {"selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2796,7 +2888,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2816,7 +2909,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "oneconfig", "syncresume"}
 ///   Paper = {}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2836,7 +2930,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D4"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
@@ -2856,7 +2951,8 @@
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
 ///   Paper = {"D5"}
-///   KeepBallots = TRUE
+///   KeepBallotsOnPause = TRUE
+///   KeepBallotsOnAdopt = TRUE
 ///   FaultyResp = FALSE
 ///   SameEpochAdopt = TRUE
 ///   Probe = "none"
