@@ -18,7 +18,6 @@ import org.pragmatica.aether.resource.db.PoolConfig;
 import org.pragmatica.aether.resource.db.PoolScope;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.testing.DockerRequirement;
 import org.pragmatica.utility.warning.OperatorWarning;
@@ -109,8 +108,28 @@ class PgSharedPoolLiveTest {
                        .unwrap();
     }
 
+    private static int namedSessions(PgSqlConnector connector) {
+        return connector.queryOne(COUNT_NAMED, row -> row.getInt("n"), "t-pg-shared")
+                        .await(TIMEOUT)
+                        .unwrap();
+    }
+
+    /// Barrier: every `acquire` has returned (a pool's provisioning waits for its own warm-up), then poll until the session
+    /// count reaches one pool's minimum, so the count is taken from a state in which three pools would already be visible.
+    private static int sessionsOnceWarm(PgSqlConnector connector, int minimum, long millis) throws InterruptedException {
+        var deadline = System.currentTimeMillis() + millis;
+        var sessions = namedSessions(connector);
+
+        while (sessions < minimum && System.currentTimeMillis() < deadline) {
+            Thread.sleep(200);
+            sessions = namedSessions(connector);
+        }
+
+        return sessions;
+    }
+
     @Test
-    void threeSlicesOnOneConfig_openOnePoolsSessions() {
+    void threeSlicesOnOneConfig_openOnePoolsSessions() throws InterruptedException {
         var postgres = postgres(100);
         var provider = provider(Map.of("database", config(postgres, 3, 5, Option.none())));
         var a = acquire(provider, "database", "slice-a");
@@ -118,9 +137,11 @@ class PgSharedPoolLiveTest {
         acquire(provider, "database", "slice-b");
         acquire(provider, "database", "slice-c");
 
-        Result<Integer> sessions = a.queryOne(COUNT_NAMED, row -> row.getInt("n"), "t-pg-shared").await(TIMEOUT);
+        var sessions = sessionsOnceWarm(a, 3, 30_000);
 
-        assertThat(sessions.unwrap()).as("one pool's warm sessions, not three pools'").isEqualTo(3);
+        assertThat(sessions).as("sessions named t-pg-shared after the warm-up barrier: one pool holds 3 to 5 (min 3, max 5, the "
+                                + "counting query's own session included), three pools would hold at least 9")
+                            .isBetween(3, 5);
 
         provider.closeShared().await(TIMEOUT);
     }
