@@ -229,3 +229,28 @@ a35b0a006a29af93c97f3f2f7369b2270a92a7b9	clean	2026-11-23T03:15:46Z	small	Fsm2Le
 1f0e265c7544fb3291f8f49c154767fb55d0625d	clean	2026-11-23T19:57:41Z	full	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4484	2026.11.06.222357	OK	
 1f0e265c7544fb3291f8f49c154767fb55d0625d	clean	2026-11-23T19:57:42Z	full	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2863	2026.11.06.222357	OK	
 1f0e265c7544fb3291f8f49c154767fb55d0625d	clean	2026-11-23T19:57:43Z	full	LeaderAdmission	noentryhold	fail	fail	PassiveInView	341	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:02:58Z	small	LeaderAdmission	pushfirst	pass	pass		672	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:00Z	small	LeaderAdmission	removal	pass	pass		3315	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:02Z	small	LeaderAdmission	stale	pass	pass		1812	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:04Z	small	LeaderAdmission	passive	pass	pass		5921	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:06Z	small	LeaderAdmission	voting	pass	pass		14565	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:07Z	small	LeaderAdmission	local	pass	pass		247	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:09Z	small	LeaderAdmission	noentrypull	fail	fail	PassiveLearns	2798	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:10Z	small	LeaderAdmission	pushnoview	fail	fail	PassiveInView	308	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:11Z	small	LeaderAdmission	pullnoview	fail	fail	PassiveInView	58	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:13Z	small	LeaderAdmission	norepull	fail	fail	PassiveLearns	3086	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:15Z	small	LeaderAdmission	removalpull	fail	fail	NotNamedFailed	1619	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:16Z	small	LeaderAdmission	mutdropempty	fail	fail	I1	188	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:17Z	small	LeaderAdmission	mutnostale	fail	fail	I1	361	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:18Z	small	LeaderAdmission	mutnohold	fail	fail	VotingInView	277	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:19Z	small	LeaderAdmission	mutnoholdp	fail	fail	PassiveInView	549	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:20Z	small	LeaderAdmission	mutnoholdr	fail	fail	NotNamedFailed	513	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:21Z	small	LeaderAdmission	mutseqgate	fail	fail	LocalProgress	307	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:22Z	small	LeaderAdmission	interleave	fail	fail	PassiveInView	2520	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:24Z	small	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4784	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:26Z	small	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2885	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:28Z	small	LeaderAdmission	noentryhold	fail	fail	PassiveInView	363	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:30Z	small	LeaderAdmission	readmit	pass	pass		33529	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:31Z	small	LeaderAdmission	readmitnoadseq	fail	fail	AdSeqMono	1633	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:33Z	small	LeaderAdmission	readmitstale	fail	fail	NoOlderAdoption	2025	2026.11.06.222357	OK	
+380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:34Z	small	LeaderAdmission	nokvseq	fail	fail	NoOlderAdoption	626	2026.11.06.222357	OK	
