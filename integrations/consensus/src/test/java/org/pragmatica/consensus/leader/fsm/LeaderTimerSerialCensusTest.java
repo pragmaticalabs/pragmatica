@@ -6,9 +6,6 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -17,7 +14,6 @@ import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
@@ -44,7 +40,6 @@ import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.statemachine.FsmTags;
 
 import org.awaitility.Awaitility;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -59,21 +54,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// Round-3 ruling (know 6c68615e20, item 1): such a callback enters the node order through ONE path,
 /// `ctx.serialized(...)`; `dispatchSelf` is for already-confined code and has no queueing path of its own. This census
-/// has one row per `serialized(` call in leader main, and [#census_hasOneRowPerSerializedSiteOfLeaderMain] counts the
-/// calls in the source, so a new site cannot go unlisted. [LeaderSerialDispatchCensusTest] cannot see this: a callback's own event goes through
-/// `submit`, which queues on its own; what the `serialized` wrap adds is that the callback's READS (the KV leader, the
-/// ping freshness, the jitter, the transport view, the pre-vote episode) and its sends happen in the order.
+/// has one behaviour row per `serialized(` site of leader main. Round-4 ruling (know 4c954b1c5d): a NEW unwrapped site
+/// is caught by enforcement, not by a count of the source: every leader dispatch goes through
+/// [LeaderElectionContext#dispatchConfined], which refuses a caller off the drainer ([LeaderDispatchConfinementTest]).
+/// What the `serialized` wrap adds beyond that is that the callback's READS (the KV leader, the ping freshness, the
+/// jitter, the transport view, the pre-vote episode) and its sends happen in the order.
 ///
 /// Instrument: another thread holds the drainer ([LeaderEntryPointAtomicityTest#holdDrainer]); the timer under test is
 /// armed AFTER that, with a short delay (every other timer of the context is 60 s), so it fires on a scheduler thread
 /// while the drainer is held. Every input the callback reads is a test supplier that records the read, every send and
 /// every FSM event is recorded, all in one trace. The test awaits the condition the firing produces: the callback's task
 /// queued in the executor (an unserialized callback produces a read in the trace instead). Asserted: (a) nothing in the
-/// trace before the release; (b) after it, the callback's first effect (a read it makes, or, for a callback whose body
+/// trace before the release, and no dispatch refused off the drainer; (b) after it, the callback's first effect (a read it makes, or, for a callback whose body
 /// only dispatches, its event) and its event, where it has one, come before a marker task queued after the callback's
 /// task: handled in order. An unserialized callback reads or dispatches on its own thread: RED on (a). The proposal
 /// callbacks fire on the thread that settles the proposal, a scheduler thread `SHORT` after the tick (a foreign thread,
-/// as in production, where the consensus engine settles it).
+/// as in production, where the consensus engine settles it). An unwrapped callback whose body only dispatches is refused
+/// on the scheduler thread ([LeaderElectionContext#confinementBreachesForTest]): RED on (a).
 ///
 /// The queue is read through the test seam [LeaderElectionContext#pendingSerialTasksForTest]: the only way to observe that
 /// a serialized callback fired, since it does nothing else until the drainer runs it. The 200 ms timer delay is the
@@ -92,10 +89,6 @@ class LeaderTimerSerialCensusTest {
     private static final String READ_JITTER = "read: jitter";
     private static final String READ_VIEW = "read: transport view";
     private static final String MARKER = "marker: the task queued after the timer's";
-
-    private static final Path LEADER_MAIN = Path.of("src/main/java/org/pragmatica/consensus/leader");
-    private static final Pattern SERIALIZED_CALL = Pattern.compile("\\bserialized\\(");
-    private static final Pattern SERIALIZED_DECLARATION = Pattern.compile("\\bserialized\\(\\w[^)]*\\)\\s*\\{");
 
     private final List<Object> trace = new CopyOnWriteArrayList<>();
     private final AtomicReference<Option<LeaderCommitted>> kvLeader = new AtomicReference<>(Option.none());
@@ -253,49 +246,6 @@ class LeaderTimerSerialCensusTest {
                                         Option.none())));
     }
 
-    /// The census guard (round-3 ruling, know 6c68615e20): every off-drainer callback of leader main enters the node
-    /// order through `ctx.serialized(...)`, and every such call has a row in [#timers]. A `serialized(` call added
-    /// without its row (or a row left for a removed call) fails here. Comment lines and the two declarations are not
-    /// counted.
-    @Test
-    void census_hasOneRowPerSerializedSiteOfLeaderMain() throws IOException {
-        assertThat(LEADER_MAIN).as("instrument: the leader main sources are readable from the module directory")
-                               .isDirectory();
-        assertThat(serializedCallSites()).as("#3605 rule: every callback that runs off the serial drainer enters the node "
-                                             + "order through ONE path, ctx.serialized(...), and every serialized( call in "
-                                             + "leader main has its row in LeaderTimerSerialCensusTest#timers")
-                                         .isEqualTo(timers().count());
-    }
-
-    private static long serializedCallSites() throws IOException {
-        try (var files = Files.walk(LEADER_MAIN)) {
-            return files.filter(file -> file.toString()
-                                            .endsWith(".java"))
-                        .flatMap(LeaderTimerSerialCensusTest::codeLines)
-                        .mapToLong(LeaderTimerSerialCensusTest::callsOnLine)
-                        .sum();
-        }
-    }
-
-    private static Stream<String> codeLines(Path file) {
-        try {
-            return Files.readAllLines(file)
-                        .stream()
-                        .map(String::strip)
-                        .filter(line -> !line.startsWith("//") && !line.startsWith("*") && !line.startsWith("/*"));
-        } catch (IOException e) {
-            throw new AssertionError("instrument: cannot read " + file, e);
-        }
-    }
-
-    private static long callsOnLine(String line) {
-        return SERIALIZED_CALL.matcher(line)
-                              .results()
-                              .count() - SERIALIZED_DECLARATION.matcher(line)
-                                                               .results()
-                                                               .count();
-    }
-
     private static Arguments timer(String name, Case testCase) {
         return Arguments.of(name, testCase);
     }
@@ -314,6 +264,9 @@ class LeaderTimerSerialCensusTest {
             awaitFiring(ctx);
             assertThat(trace).as("%s ran on the scheduler thread while another thread held the serial executor", name)
                       .isEmpty();
+            assertThat(ctx.confinementBreachesForTest()).as("%s dispatched on the scheduler thread, off the serial drainer",
+                                                            name)
+                      .isZero();
             assertThat(ctx.pendingSerialTasksForTest()).as("instrument: %s fired while the drainer was held", name)
                       .isPositive();
             ctx.serially(() -> trace.add(MARKER));
@@ -475,10 +428,11 @@ class LeaderTimerSerialCensusTest {
     }
 
     private void awaitFiring(LeaderElectionContext ctx) {
-        Awaitility.await("the timer fired: its task is queued, or an unserialized callback already read")
+        Awaitility.await("the timer fired: its task is queued, or an unserialized callback already read or dispatched")
                   .atMost(Duration.ofSeconds(10))
                   .pollInterval(Duration.ofMillis(5))
-                  .until(() -> ctx.pendingSerialTasksForTest() > 0 || !trace.isEmpty());
+                  .until(() -> ctx.pendingSerialTasksForTest() > 0 || !trace.isEmpty()
+                               || ctx.confinementBreachesForTest() > 0);
     }
 
     private List<Object> beforeMarker() {

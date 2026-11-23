@@ -240,6 +240,10 @@ public final class LeaderElectionContext {
     private final Fsm<LeaderElectionState, ClusterFsmEvent> fsm;
     /// The node's one serial executor (#3587): every leader-election event of this node enters the FSM through it.
     private final SerialExecutor serial = SerialExecutor.serialExecutor();
+    /// Dispatches refused by [#dispatchConfined] because the caller was not on the serial drainer (#3605 round-4
+    /// ruling). Counted because the refusal is otherwise invisible where it matters most: an unwrapped timer or
+    /// promise callback throws on a scheduler thread, whose future keeps the exception and reports it to nobody.
+    private final AtomicLong confinementBreaches = new AtomicLong(0);
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
     private final AtomicReference<Option<NodeId>> lastAdoptedLeader = new AtomicReference<>(Option.none());
 
@@ -1142,9 +1146,15 @@ public final class LeaderElectionContext {
         return serial.pendingForTest();
     }
 
+    /// Test seam (#3605 round 4): how many dispatches [#dispatchConfined] refused because the caller was off the drainer.
+    long confinementBreachesForTest() {
+        return confinementBreaches.get();
+    }
+
     /// #3587: `task` as a callback (a timer's, a listener's) that runs it in the node's one total order. The ONE path by
-    /// which a callback that runs off the drainer enters that order (#3605 round-3 ruling): every `serialized(` call in
-    /// leader main has a row in `LeaderTimerSerialCensusTest`, which counts them in the source.
+    /// which a callback that runs off the drainer enters that order (#3605 round-3 ruling); a callback that dispatches
+    /// without it is refused by [#dispatchConfined] (round 4). Each `serialized(` site has a behaviour row in
+    /// `LeaderTimerSerialCensusTest`.
     public Runnable serialized(Runnable task) {
         return () -> serial.execute(task);
     }
@@ -1160,10 +1170,38 @@ public final class LeaderElectionContext {
     @Contract
     public void submit(ClusterFsmEvent event) {
         if (serial.isConfined()) {
-            fsm.dispatch(event);
+            dispatchConfined(event);
         } else {
-            serial.execute(() -> fsm.dispatch(event));
+            serial.execute(() -> dispatchConfined(event));
         }
+    }
+
+    /// #3605 round-4 ruling: the ONE FSM dispatch of leader code ([#submit], the stop, and `dispatchSelf` in the
+    /// states all go through it). GUARANTEE: no leader-code dispatch runs off the node's serial drainer; one that
+    /// would is refused before it reaches the FSM. MECHANISM: the caller must be the drainer
+    /// ([SerialExecutor#isConfined]); otherwise this logs the breach, counts it ([#confinementBreachesForTest]) and
+    /// throws [IllegalStateException] naming the rule and the calling thread. Confinement is enforced here, not
+    /// counted in the source: an off-drainer callback that dispatches without [#serialized] fails the first time it
+    /// fires instead of racing the drainer. A refusal on a scheduler thread is caught by that thread's future and
+    /// reported to nobody, so the log line and the count are what keep it visible.
+    @Contract
+    void dispatchConfined(ClusterFsmEvent event) {
+        if (!serial.isConfined()) {
+            throw confinementBreach(event);
+        }
+        fsm.dispatch(event);
+    }
+
+    private IllegalStateException confinementBreach(ClusterFsmEvent event) {
+        var message = "#3605 confinement rule: a leader FSM dispatch runs only on the node's serial drainer (a handler, "
+                      + "a ctx.serialized(...) callback, or a serially/submit task); refused "
+                      + event.getClass().getSimpleName() + " dispatched from thread '" + Thread.currentThread().getName()
+                      + "'";
+
+        confinementBreaches.incrementAndGet();
+        log.error(message);
+
+        return new IllegalStateException(message);
     }
 
     /// #3587: the follow-up of the transition whose hook is running ([Fsm#followUp]): a hook never dispatches
@@ -1190,7 +1228,7 @@ public final class LeaderElectionContext {
     /// the executor would stay open and keep running events after the stop.
     private void shutdownInOrder() {
         try {
-            fsm.dispatch(new ClusterFsmEvent.Shutdown());
+            dispatchConfined(new ClusterFsmEvent.Shutdown());
         } finally {
             serial.close();
         }
