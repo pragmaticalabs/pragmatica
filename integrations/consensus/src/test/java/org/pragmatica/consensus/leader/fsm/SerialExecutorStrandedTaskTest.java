@@ -85,6 +85,25 @@ class SerialExecutorStrandedTaskTest {
                          .containsExactly("queued", "next");
     }
 
+    /// The deferral boundary is exactly [VirtualMachineError] (#3605 v3605i row 31): a task that throws an
+    /// [AssertionError], an Error that is not a VM error, is logged and absorbed like any other throwable. The caller
+    /// returns normally and the task it queued before throwing runs in that same drain.
+    @Test
+    void nonVmErrorInATask_isAbsorbed_theCallerReturns_theNextQueuedTaskRuns() {
+        var executor = SerialExecutor.serialExecutor();
+        var order = new ConcurrentLinkedQueue<String>();
+
+        executor.execute(() -> queueThenFailWithAnAssertionError(executor, order));
+
+        assertThat(order).as("the task queued before the AssertionError ran in that drain").containsExactly("queued");
+        assertThat(executor.pendingForTest()).as("nothing is left queued").isZero();
+    }
+
+    private static void queueThenFailWithAnAssertionError(SerialExecutor executor, ConcurrentLinkedQueue<String> order) {
+        executor.execute(() -> order.add("queued"));
+        throw new AssertionError("an Error that is not a VirtualMachineError");
+    }
+
     private static void queueThenFailWithAVmError(SerialExecutor executor, ConcurrentLinkedQueue<String> order) {
         executor.execute(() -> order.add("queued"));
         throw new TestVmError();

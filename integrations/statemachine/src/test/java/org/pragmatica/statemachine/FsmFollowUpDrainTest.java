@@ -18,12 +18,13 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 /// The follow-up drain of [Fsm] (#3605 ruling): a dispatch returns only after every follow-up queued by its completed
 /// transition is dispatched, FIFO; a throwing follow-up stops neither its later siblings nor the rest of an enclosing
-/// frame, the first throwable is rethrown after the queue empties, later ones suppressed; a handler that throws
+/// follow-up frame, the first throwable is rethrown after the queue empties, later ones suppressed; a handler that throws
 /// delivers none of its own follow-ups; a dispatch nested directly in a handler rethrows to that handler; a
 /// VirtualMachineError is never deferred (#3605 round-4 rulings 1-2). Each test names the property it pins; all of it runs on the test thread.
 class FsmFollowUpDrainTest {
     enum Ev { GO, A, B, BOOM, NEST, FAN, SPLIT, KABOOM, Y, KABOOM2, X, TWICE, SAME, Z, CHECKED, SNEAKY, W,
-              NEST_CATCH, NEST_PROPAGATE, NEST_BOOM, OOPS, Q, NEXT, DONE, GO_VM, OOPS2, DEEP, VM, LATE, DEEP_LATE }
+              NEST_CATCH, NEST_PROPAGATE, NEST_BOOM, OOPS, Q, NEXT, DONE, GO_VM, OOPS2, DEEP, VM, LATE, DEEP_LATE,
+              GO_AE, AE, AFTER_AE }
 
     /// The states and the FSM of one test. `seen` is what a handler's code after a nested dispatch observed;
     /// `caught` is what a handler caught from a nested dispatch; `shared` is the one exception instance two follow-ups
@@ -54,6 +55,8 @@ class FsmFollowUpDrainTest {
         final St v = new St(this, "V");
         final St deep = new St(this, "DEEP");
         final St late = new St(this, "LATE");
+        final St errs = new St(this, "ERRS");
+        final St errsAfter = new St(this, "ERRS_AFTER");
     }
 
     record St(Ctx ctx, String name) implements FsmState<St, Ev> {
@@ -89,6 +92,9 @@ class FsmFollowUpDrainTest {
                 case "V:DEEP" -> tx.transitionTo(ctx.deep);
                 case "DEEP:VM" -> throw new InternalError("vm error from a nested follow-up");
                 case "DEEP:DEEP_LATE", "DEEP:LATE" -> tx.transitionTo(ctx.late);
+                case "S0:GO_AE" -> tx.transitionTo(ctx.errs);
+                case "ERRS:AE" -> throw new AssertionError("an Error that is not a VirtualMachineError");
+                case "ERRS:AFTER_AE" -> tx.transitionTo(ctx.errsAfter);
                 default -> tx.ignore();
             }
         }
@@ -139,6 +145,7 @@ class FsmFollowUpDrainTest {
                 case "AFTER" -> followUpAll(Ev.DONE);
                 case "V" -> followUpAll(Ev.OOPS2, Ev.DEEP, Ev.LATE);
                 case "DEEP" -> followUpAll(Ev.VM, Ev.DEEP_LATE);
+                case "ERRS" -> followUpAll(Ev.AE, Ev.AFTER_AE);
                 default -> {}
             }
         }
@@ -320,12 +327,30 @@ class FsmFollowUpDrainTest {
 
         assertThat(thrown).isExactlyInstanceOf(InternalError.class)
                           .hasMessage("vm error from a nested follow-up");
+        assertThat(thrown.getSuppressed()).as("a follow-up failure recorded before the VM error is not attached to it")
+                                          .isEmpty();
         assertThat(transitions).as("nothing after the VM error ran").containsExactly("S0->V", "V->DEEP");
         assertThat(ctx.fsm.current()).isSameAs(ctx.deep);
 
         ctx.fsm.followUp(Ev.LATE);
         assertThat(ctx.fsm.current()).as("the frames were restored, so a followUp outside a dispatch ran at once")
                                      .isSameAs(ctx.late);
+    }
+
+    /// The deferral boundary is exactly [VirtualMachineError] (#3605 v3605i row 30): an [AssertionError], an Error that
+    /// is not a VM error, is deferred like any other throwable. ERRS queues [AE, AFTER_AE]; AE throws the AssertionError,
+    /// AFTER_AE (its later sibling) still runs, and the AssertionError surfaces after the drain.
+    @Test
+    void nonVmErrorFromAFollowUp_isDeferredLikeAnyThrowable_laterSiblingStillRuns() {
+        var ctx = fresh();
+
+        var thrown = catchThrowable(() -> ctx.fsm.dispatch(Ev.GO_AE));
+
+        assertThat(thrown).isExactlyInstanceOf(AssertionError.class)
+                          .hasMessage("an Error that is not a VirtualMachineError");
+        assertThat(transitions).as("the later sibling ran: an AssertionError is not a VM error")
+                               .containsExactly("S0->ERRS", "ERRS->ERRS_AFTER");
+        assertThat(ctx.fsm.current()).isSameAs(ctx.errsAfter);
     }
 
     private FsmObserver<St, Ev> observer() {
