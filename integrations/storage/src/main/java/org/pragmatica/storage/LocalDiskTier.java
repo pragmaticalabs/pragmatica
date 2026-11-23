@@ -577,16 +577,17 @@ public final class LocalDiskTier implements StorageTier {
         return readerOverride.fold(() -> readBlockDefault(id), reader -> reader.apply(id));
     }
 
-    /// None when no regular file is at the block path, including one deleted while it was being read: a check followed by a
-    /// read would fail for a block a delete removes between the two, so the read is the one operation (#3594). Its failure is
-    /// told apart from absence by what failed it, not by the path afterwards: a put can place the block again between the failed
-    /// read and any later look at the path, and a read that found nothing is still a read that found nothing.
+    /// None when there is no file at the block path, including one deleted while it was being read: a check followed by a
+    /// read would fail for a block a delete removes between the two, so the read is the one operation (#3594). Absence is what
+    /// the read itself reports, a `NoSuchFileException`; a directory or special file at the path, or any other failure, is a
+    /// read failure. The path is not looked at after a failed read: a put can place the block again between the read and any
+    /// later look, and a read that found nothing is still a read that found nothing.
     private Result<Option<byte[]>> readBlockDefault(BlockId id) {
         var path = blockPath(id);
 
         return Result.lift(e -> readFailure(path, e),
                            () -> Files.readAllBytes(path))
-                     .fold(cause -> absentOrFailed(path, cause),
+                     .fold(LocalDiskTier::absentOrFailed,
                            content -> Result.success(some(content)));
     }
 
@@ -596,10 +597,10 @@ public final class LocalDiskTier implements StorageTier {
                : new FileError.ReadFailed(path, failure.getMessage());
     }
 
-    private static Result<Option<byte[]>> absentOrFailed(Path path, Cause cause) {
+    private static Result<Option<byte[]>> absentOrFailed(Cause cause) {
         return cause == VANISHED
                ? Result.success(none())
-               : absentOr(path, cause);
+               : cause.result();
     }
 
     private Result<Unit> writeBlock(BlockId id, byte[] content) {

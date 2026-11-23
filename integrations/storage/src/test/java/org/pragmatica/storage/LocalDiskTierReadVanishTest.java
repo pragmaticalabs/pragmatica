@@ -11,6 +11,7 @@ import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.io.FileError;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
@@ -25,10 +26,11 @@ class LocalDiskTierReadVanishTest {
     @TempDir
     Path dir;
 
-    /// A directory squatting at the block path is no block: a read of it fails, and the path is no regular file, so it answers
-    /// absent as `stat` does. The block file deleted under a read is the race test below; this one pins the other absent branch.
+    /// Absent means no file at the path. A directory squatting at the block path is a file, not an absence: the read of it is a
+    /// read failure (a copy made from it must fail, as AetherNodePromotionStallBootTest relies on). Only the file deleted under
+    /// a read, the race test below, answers absent. Restores the failure answer an earlier revision of this test had turned into absent.
     @Test
-    void aReadWhoseFileIsNoRegularFile_isAbsent_notAReadFailure() throws IOException {
+    void aReadWhoseFileIsADirectory_isAReadFailure_notAbsent() throws IOException {
         var id = BlockId.blockId("block".getBytes()).unwrap();
         var tier = LocalDiskTier.localDiskTier(dir, 1 << 20).unwrap();
         var hex = id.hexString();
@@ -37,8 +39,8 @@ class LocalDiskTierReadVanishTest {
 
         var read = tier.get(id).await();
 
-        assertThat(read.isSuccess()).as("the read of a block that is not a file is not a failure: %s", read).isTrue();
-        read.onSuccess(content -> assertThat(content.isPresent()).as("and answers absent").isFalse());
+        assertThat(read.isFailure()).as("the read of a directory at the block path is a failure, not absence: %s", read).isTrue();
+        read.onFailure(cause -> assertThat(cause).as("and it is the read failure").isInstanceOf(FileError.ReadFailed.class));
     }
 
     /// The race itself: one thread puts and deletes a block over and over while another reads it. Every read answers present
