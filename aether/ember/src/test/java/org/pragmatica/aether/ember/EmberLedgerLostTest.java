@@ -27,8 +27,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EmberLedgerLostTest {
     private final IdentityRestartHarness harness = new IdentityRestartHarness("ell");
 
+    private final java.util.concurrent.atomic.AtomicBoolean burn = new java.util.concurrent.atomic.AtomicBoolean(true);
+    private static volatile long burnSink;
+
+    private void startLoad(int threads) {
+        for (var i = 0; i < threads; i++) {
+            var t = new Thread(() -> {
+                long x = 0;
+                while (burn.get()) {
+                    x += System.nanoTime() % 7;
+                }
+                burnSink = x;
+            }, "diag-burn-" + i);
+            t.setDaemon(true);
+            t.start();
+        }
+    }
+
     @AfterEach
     void tearDown() {
+        burn.set(false);
         harness.stop();
     }
 
@@ -108,13 +126,14 @@ class EmberLedgerLostTest {
 
     /// With the stray dead, one legitimate peer is not a majority of three seats once its own offer is set aside: B stays wiped and
     /// links to nobody. Fails closed; the safe remedy is a new node id (known-limitations).
-    @RepeatedTest(10)
+    @RepeatedTest(20)
     @Timeout(1200)
     void oneHoldersLedgerFileLost_withOnlyOneLegitPeerOfThreeSeats_staysWiped() {
         harness.start();
         harness.retireXAtBothHolders();
         harness.killBothHolders();
         harness.deleteLedgerFile(harness.observer);
+        startLoad(32);
 
         harness.relaunch(harness.coreA);
         var restartedB = harness.relaunch(harness.observer);
@@ -129,7 +148,10 @@ class EmberLedgerLostTest {
                 System.out.println("DIAG2772 t=" + (System.nanoTime() - startNs) / 1_000_000L + "ms B.connectedNodeCount=" + count
                                    + " B.connectedPeerIds=" + restartedB.connectedPeerIds()
                                    + " B.refusals=" + IdentityRestartHarness.refusals(restartedB)
-                                   + " ledgerRetires=" + harness.ledgerRetires(harness.observer, harness.retired));
+                                   + " ledgerRetires=" + harness.ledgerRetires(harness.observer, harness.retired)
+                                   + " X.registered=" + harness.cluster().getNode(harness.retired).isPresent()
+                                   + " A.registered=" + harness.cluster().getNode(harness.coreA).isPresent()
+                                   + " A.peers=" + harness.cluster().getNode(harness.coreA).map(n -> n.connectedPeerIds().toString()).or("-"));
                 lastCount = count;
             }
 
