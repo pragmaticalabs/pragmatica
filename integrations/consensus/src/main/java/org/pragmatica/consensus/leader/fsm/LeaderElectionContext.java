@@ -1189,14 +1189,16 @@ public final class LeaderElectionContext {
         if (!serial.isConfined()) {
             throw confinementBreach(event);
         }
+
         fsm.dispatch(event);
     }
 
     private IllegalStateException confinementBreach(ClusterFsmEvent event) {
         var message = "#3605 confinement rule: a leader FSM dispatch runs only on the node's serial drainer (a handler, "
-                      + "a ctx.serialized(...) callback, or a serially/submit task); refused "
-                      + event.getClass().getSimpleName() + " dispatched from thread '" + Thread.currentThread().getName()
-                      + "'";
+                    + "a ctx.serialized(...) callback, or a serially/submit task); refused " + event.getClass()
+                                                                                                    .getSimpleName()
+                    + " dispatched from thread '" + Thread.currentThread().getName()
+                    + "'";
 
         confinementBreaches.incrementAndGet();
         log.error(message);
