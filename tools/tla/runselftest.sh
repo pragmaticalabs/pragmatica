@@ -170,7 +170,7 @@ stubcheck "$work/sc.out" TLA_DISK_MAX="$pct"; want guard-disk-limit-equal-to-usa
   want guard-memory-line-names-MemAvailable 1 "$(grep -cE '^RESOURCE-GUARD: killed TLC: MemAvailable [0-9]+ MB$' "$work/sc.out")"; }
 # a TERM to check.sh (run.sh's timeout) takes the TLC it started down with it and removes the states dir
 rm -rf "$work/sc"; mkdir -p "$work/sc"
-( cd "$work" && env PATH="$work/stub:$PATH" STUB_PID="$work/stub.pid" TLA_OUT="$work/sc" TLA_DISK_MAX=101 TLA_MEM_MIN_MB=0 bash "$here/check.sh" Fix ok src > "$work/sc.out" 2>&1 ) & cpid=$!
+( cd "$work" && exec env PATH="$work/stub:$PATH" STUB_PID="$work/stub.pid" TLA_OUT="$work/sc" TLA_DISK_MAX=101 TLA_MEM_MIN_MB=0 bash "$here/check.sh" Fix ok src > "$work/sc.out" 2>&1 ) & cpid=$!
 sleep 5; kill -TERM "$cpid"; wait "$cpid"; want term-to-check-exits-143 143 "$?"
 want term-to-check-kills-its-tlc dead "$(alive)"
 want term-to-check-removes-the-states-dir 0 "$(find "$work/sc" -path '*states*' | wc -l | tr -d ' ')"
