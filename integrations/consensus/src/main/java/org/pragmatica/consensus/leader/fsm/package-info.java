@@ -15,7 +15,10 @@
 /// Abstractions (what the model leaves out, so a result says nothing about it): eligibility (every candidate is
 /// eligible, this node is none of them); proposals (an electing node learns a leader from a pushed commit, from its
 /// KV pull `E_Pull` or, in local mode, its own tick; the waiting states' KV pulls, at entry, on the poll and at the
-/// grace timeout, are `V_Grace`; every pull reads a local KV replica equal to the committed record); the electing
+/// grace timeout, are `V_Grace`; every pull reads a local KV replica equal to the committed record; a local-mode pull is not modelled: `Init` leaves
+/// `kv` empty and `Commit` needs a cluster, so no local run reads a record, while the code's pull admits a record only
+/// for a leader in the stored view (`adoptLocalCommit`) and records the record's own sequence as the adopted one, which
+/// only rises; `LeaderKvFollowUpTest` carries that path, #3588 F1); the electing
 /// states' hold of a leader (an election from a waiting state drops the leader the context carries: `ReElecting`'s
 /// entry clears it, `Electing`, entered only by a node never `Led`, keeps one a passive pull adopted); the grace timer's re-arm while KV sync is pending (the timeout may fire at any time, or
 /// never); the pre-vote (consensus mode's `enableLeaderPreVote`: `loseLeader` keeps `Led` with an out-of-view leader

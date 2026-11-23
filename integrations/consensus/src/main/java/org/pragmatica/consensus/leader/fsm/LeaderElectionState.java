@@ -1445,7 +1445,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// \* record with its own sequence, #3588 F1; without it sequence-less), unless it names the held leader or is older
     /// \* than the adopted one (KvTakes), goes through the LeaderCommitted arm, adoptLeaderIfPostElectionCommit: adopted
     /// \* iff the observed committed sequence postdates the entry baseline and the commit is not skipped as older. A pull
-    /// \* this refuses changes nothing. The waiting states' use of this decision is V_Grace; local mode has no record.
+    /// \* this refuses changes nothing. The waiting states' use of this decision is V_Grace; a local-mode pull is not modelled (package-info, Abstractions).
     /// E_Pull == /\ st = "electing"
     ///           /\ ~Local
     ///           /\ KvTakes

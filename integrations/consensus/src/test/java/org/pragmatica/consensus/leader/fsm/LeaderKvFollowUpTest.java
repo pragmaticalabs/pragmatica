@@ -178,6 +178,65 @@ class LeaderKvFollowUpTest {
         ctx.submit(new ClusterFsmEvent.Shutdown());
     }
 
+    /// #3588 F1 (the case the model leaves out: local mode has no record in `LeaderAdmission`): a local-mode pull of a
+    /// stale record with a sequence above 0 names a leader the stored view no longer holds. The admission refuses it, so
+    /// the node settles in `ReElecting` and the adopted sequence does not take the record's 7.
+    @Test
+    void reElectingEntry_staleKvRecordWithASequence_localModeAdoptsNeitherLeaderNorSequence() {
+        var fsm = fsm(Option.none(), ctx -> LeaderElectionState.Led.fresh(ctx, PEER));
+        var ctx = fsm.current()
+                     .ctx();
+
+        ctx.submit(new ClusterFsmEvent.NodeAdded(PEER, List.of(SELF, PEER), 1));
+        kvLeader.set(Option.some(new LeaderCommitted(OTHER, 7L)));
+        observed.clear();
+
+        ctx.submit(new LeaderSilent(PEER));
+
+        assertThat(observed).as("instrument: the lease expiry re-elected, so the entry pull ran")
+                            .anyMatch(LeaderElectionState.ReElecting.class::isInstance);
+        assertThat(fsm.current()).as("the evicted leader's record is not adopted")
+                                 .isInstanceOf(LeaderElectionState.ReElecting.class);
+        assertThat(ctx.adoptedViewSequence()).as("adoptedViewSequence did not take the stale record's sequence")
+                                             .isEqualTo(0L);
+        ctx.submit(new ClusterFsmEvent.Shutdown());
+    }
+
+    /// #3588 F1: after a local-mode pull adopted sequence 4, a pulled record of the stored view that is older (2) is
+    /// not adopted, and a sequence-less local commit (a swap) does not move the adopted sequence back: it only rises.
+    @Test
+    void localMode_afterAPullAdoptedSequence4_olderRecordIsSkippedAndSequenceLessSwapKeepsIt() {
+        var fsm = fsm(Option.none(), LeaderElectionContext::awaitingKvSync);
+        var ctx = fsm.current()
+                     .ctx();
+
+        ctx.submit(new ClusterFsmEvent.NodeAdded(PEER, CORES, 1));
+        scriptedKv.add(Option.none());
+        kvLeader.set(Option.some(new LeaderCommitted(PEER, 4L)));
+        ctx.submit(new KvSyncGraceTimeout());
+        assertThat(ctx.adoptedViewSequence()).as("instrument: the pull adopted the record's sequence")
+                                             .isEqualTo(4L);
+        kvLeader.set(Option.some(new LeaderCommitted(OTHER, 2L)));
+        observed.clear();
+
+        ctx.submit(new LeaderSilent(PEER));
+
+        assertThat(observed).as("instrument: the lease expiry re-elected, so the entry pull ran")
+                            .anyMatch(LeaderElectionState.ReElecting.class::isInstance);
+        assertThat(fsm.current()).as("the older record is passed over")
+                                 .isInstanceOf(LeaderElectionState.ReElecting.class);
+        assertThat(ctx.adoptedViewSequence()).as("adoptedViewSequence after the older record was passed over")
+                                             .isEqualTo(4L);
+
+        ctx.submit(new LeaderCommitted(OTHER));
+
+        assertThat(heldLeader(fsm)).as("instrument: the sequence-less local commit was adopted")
+                                   .isEqualTo(Option.some(OTHER));
+        assertThat(ctx.adoptedViewSequence()).as("adoptedViewSequence after the sequence-less local commit")
+                                             .isEqualTo(4L);
+        ctx.submit(new ClusterFsmEvent.Shutdown());
+    }
+
     private static Option<NodeId> heldLeader(Fsm<LeaderElectionState, ClusterFsmEvent> fsm) {
         return fsm.current() instanceof LeaderElectionState.Led led
                ? Option.some(led.leader())
