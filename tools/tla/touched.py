@@ -142,7 +142,9 @@ def show(repo, rev, path):
 
 
 def diff_files(repo, base, head):
-    """[(old path or None, new path, [(new_start, new_count, [removed lines], [added lines])])] for the Java files of the diff."""
+    """[(old path or None, new path or None, [(new_start, new_count, [removed lines], [added lines])])] for the Java files of
+    the diff: new is None for a deleted file. `-M` is explicit so a `diff.renames=false` in a user or runner config cannot
+    turn a rename into add + delete."""
     d = git(repo, 'diff', '-M', '-U0', '--no-color', base, head, '--', '*.java')
     files, cur = [], None
     for l in d.split('\n'):
@@ -162,7 +164,7 @@ def diff_files(repo, base, head):
             cur['hunks'][-1][2].append(l[1:])
         elif cur['hunks'] and l.startswith('+'):
             cur['hunks'][-1][3].append(l[1:])
-    return [(f['old'], f['new'], f['hunks']) for f in files if f['new']]
+    return [(f['old'], f['new'], f['hunks']) for f in files]
 
 
 def changed_in(region, hunks, code):
@@ -173,7 +175,7 @@ def changed_in(region, hunks, code):
     for s, n, removed, added in hunks:
         removed_code = any(not COMMENT_ONLY.match(r) for r in removed)
         if n == 0:                                   # pure deletion between new lines s and s+1
-            if a <= s < b and removed_code:
+            if a - 1 <= s < b and removed_code:      # a - 1: right under the doc comment, where a deleted declaration was
                 hit.append(s)
             continue
         span = range(max(s, a), min(s + n - 1, b) + 1)
@@ -199,12 +201,25 @@ def check(repo, base, head, body):
     mb = git(repo, 'merge-base', base, head).strip()
     excused = {m.group(1): m.group(2) for m in MARKER.finditer(body or '')}
     red, ok = [], []
-    for old, new, hunks in diff_files(repo, mb, head):
+    files = diff_files(repo, mb, head)
+
+    def fragments(path):
+        text = show(repo, mb, path)
+        return {(m, p): t for m, p, _, _, _, t in regions(text, path)} if text and '```tla' in text else {}
+
+    # a file git reports as added while another was deleted may be a move below git's similarity threshold: its base
+    # fragments are those of the deleted files, matched by Module:Part
+    gone = {}
+    for old, new, _ in files:
+        if new is None and old:
+            gone.update(fragments(old))
+    for old, new, hunks in files:
+        if new is None:
+            continue
         text = show(repo, head, new)
         if text is None or '```tla' not in text:
             continue
-        old_text = show(repo, mb, old) if old else None
-        old_frag = {(m, p): t for m, p, _, _, _, t in regions(old_text, old)} if old_text and '```tla' in old_text else {}
+        old_frag = fragments(old) if old else dict(gone)
         code = code_lines(text)
         for module, part, fline, a, b, ftext in regions(text, new):
             hit = changed_in((a, b), hunks, code)

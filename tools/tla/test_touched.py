@@ -277,6 +277,70 @@ public final class A {
         rc, out = self.r.run(base)
         self.red(rc, out, 'B.java:')
 
+    # --- #3593 survivors: deletions at the region's edges, rename detection, comment and whitespace handling ---
+    def test_deleting_the_first_line_after_the_declaration_is_red(self):
+        # the deletion follows the region's first line (pure deletion, s == a): it is inside the region
+        rc, out = self.verdict(BASE, BASE.replace('        int a = 1;\n', ''))
+        self.red(rc, out)
+
+    def test_deleting_the_whole_method_under_its_fragment_is_red(self):
+        # the deletion follows the doc comment (s == a - 1): the method the fragment documents is gone, the fragment stays
+        rc, out = self.verdict(BASE, BASE.replace('    int step() {\n        int a = 1;\n        int b = 2;\n        return a + b;\n    }\n\n', ''))
+        self.red(rc, out)
+
+    def test_deleting_code_that_follows_the_region_is_green(self):
+        # the control for the two cases above: the deletion after the closing brace is outside the region
+        rc, out = self.verdict(BASE, BASE.replace('    int other() {\n        return 9;\n    }\n', ''))
+        self.assertEqual(rc, 0, out)
+
+    def test_rename_is_followed_when_rename_detection_is_off_in_the_git_config(self):
+        # touched.py asks git for renames itself (-M), so a user or runner `diff.renames=false` cannot turn a rename into add+delete
+        self.r.write('A.java', BASE)
+        base = self.r.commit('base')
+        self.r.g('config', 'diff.renames', 'false')
+        self.r.g('mv', 'A.java', 'B.java')
+        self.r.write('B.java', BASE.replace('class A', 'class B').replace('int b = 2;', 'int b = 3;'))
+        self.r.commit('head')
+        rc, out = self.r.run(base)
+        self.red(rc, out, 'B.java:')
+
+    def test_a_pure_rename_is_green_even_when_rename_detection_is_off_in_the_git_config(self):
+        # without -M a rename reads as a whole new file, every line "changed", and the unchanged fragment would be red
+        self.r.write('A.java', BASE)
+        base = self.r.commit('base')
+        self.r.g('config', 'diff.renames', 'false')
+        self.r.g('mv', 'A.java', 'B.java')
+        self.r.commit('head')
+        rc, out = self.r.run(base)
+        self.assertEqual(rc, 0, out)
+
+    def test_move_to_a_file_too_different_to_count_as_a_rename_is_still_red(self):
+        # a small file moved with most lines rewritten falls under git's similarity threshold: add + delete, not a rename;
+        # the fragment is still the same Module:Part, so the base fragment is found through the deleted file
+        base_text = 'class A {\n' + FRAG + '    int step() {\n        return 1;\n    }\n}\n'
+        head_text = 'package p;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Set;\n/// the moved class\nclass Renamed {\n    int field = 7;\n' + FRAG + '    int step() {\n        return 2;\n    }\n}\n'
+        self.r.write('A.java', base_text)
+        base = self.r.commit('base')
+        self.r.g('rm', '-q', 'A.java')
+        self.r.write('B.java', head_text)
+        self.r.commit('head')
+        self.assertNotIn('rename', self.r.g('diff', '-M', '--summary', base, 'HEAD'))   # control: git does not see a rename here
+        rc, out = self.r.run(base)
+        self.red(rc, out, 'B.java:')
+
+    def test_a_trailing_space_added_to_a_fragment_line_is_not_a_fragment_change(self):
+        rc, out = self.verdict(BASE, BASE.replace("x' = x + 1", "x' = x + 1   ").replace('int b = 2;', 'int b = 3;'))
+        self.red(rc, out)
+
+    def test_deleting_a_block_comment_in_the_region_is_green(self):
+        base = BASE.replace('        int b = 2;\n', '        /*\n         * note\n         */\n        int b = 2;\n')
+        rc, out = self.verdict(base, BASE)
+        self.assertEqual(rc, 0, out)
+
+    def test_a_file_that_ends_with_the_fragment_doc_comment_has_no_region_and_is_not_a_crash(self):
+        rc, out = self.verdict('class A {}\n/// ```tla M:Step\n/// Step == TRUE\n/// ```', 'class A { int x; }\n/// ```tla M:Step\n/// Step == TRUE\n/// ```')
+        self.assertEqual(rc, 0, out)
+
     def test_file_without_fragments_is_ignored(self):
         rc, out = self.verdict('class P { int x = 1; }\n', 'class P { int x = 2; }\n', path='P.java')
         self.assertEqual(rc, 0, out)
