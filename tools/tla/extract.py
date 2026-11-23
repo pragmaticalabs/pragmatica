@@ -33,7 +33,12 @@ class Fail(Exception):
 def scan(path, rel):
     """Yield (kind, module, part, rel, line, body_lines) for each fragment in one Java file."""
     with open(path, encoding='utf-8') as f:
-        lines = f.read().split('\n')
+        yield from scan_text(f.read(), rel)
+
+
+def scan_text(text, rel):
+    """scan() over the source text of one Java file (touched.py reads the base and head versions from git)."""
+    lines = text.split('\n')
     i = 0
     while i < len(lines):
         m = OPEN.match(lines[i])
