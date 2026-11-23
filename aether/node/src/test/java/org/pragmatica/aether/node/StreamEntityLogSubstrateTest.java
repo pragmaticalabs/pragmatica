@@ -10,9 +10,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.resource.entity.EntityLogError;
+import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.stream.RingGeometry;
+import org.pragmatica.aether.stream.EntityRingWindow;
 import org.pragmatica.aether.stream.EvictionListener;
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
@@ -112,8 +118,8 @@ class StreamEntityLogSubstrateTest {
 
     /// Pins the entity ring window as BUILT: the config a created entity log enforces carries the literals of
     /// `EntityRingWindow` (10 000 entries, 64 MiB, 365 days, 1 MiB record), so a drift of any one constant goes red here.
-    /// `CAPACITY` is also pinned, in one direction, by sizing in `append_failsWithEventDropped_whenFrozenRingCannotFitRecord...`; `MAX_BYTES`
-    /// and `MAX_AGE_MS` have no other pin.
+    /// `CAPACITY`, `MAX_BYTES`
+    /// and `MAX_AGE_MS` are pinned here and nowhere else.
     @Test
     void ensureLog_buildsTheEntityRingWindowFromTheDeclaredLiterals() {
         var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
@@ -238,16 +244,32 @@ class StreamEntityLogSubstrateTest {
 
     /// #1233: an entity keyspace log is durable state even at replicationFactor = 1 with no WAL (Forge,
     /// embedded, or the non-durable opt-in). A record the frozen partition ring cannot store must FAIL the
-    /// append, never be acked as a committed write. Driven through the real `ensureLog`/`append` path so
+    /// append, never be acked as a committed write. Driven through the real `ensureLog`/`append` path (over a pre-created small `entity:` ring, see the test body) so
     /// the `entity:` naming the drop rule keys on (`EntityPartitionArc.arcName` here,
     /// `StreamPartitionManager`'s entity prefix there) cannot drift apart unnoticed.
     @Test
     void append_failsWithEventDropped_whenFrozenRingCannotFitRecord_evenAtReplicationFactorOneWithoutWal() {
-        // The budget is the entity partition floor: 10k index slots + the first data region the entity ring reserves
-        // (the 1 MiB entity max_event_size, within the 64 MiB cap, per StreamEntityLogSubstrate's ring sizing). Creation
-        // fits, no growth beyond it is admitted, and the record below is exactly one max-size record, which cannot fit
-        // beside the first one in that region whichever way the ring is sized (retention or hot window).
-        var floor = RingGeometry.floorBytes(10_000L, 64L * 1024 * 1024, 1_048_576L);
+        // The `entity:` ring is created here, small, BEFORE `ensureLog` (which tolerates an existing stream of the same shape):
+        // after the ring is sized from the hot window the entity ring reserves its whole 1 MiB `max_event_size` up front,
+        // so a legal entity record can no longer outgrow it and the drop is only reachable through a smaller ring. The ring
+        // is 1 000 entries over a 512 KiB data region, its hot window declared equal to that and `max_event_size` pinned to
+        // the first segment (256 KiB), so its first region is the 256 KiB segment whether it is sized from retention or from
+        // the declared window. The budget is exactly its floor: creation fits, every growth is refused.
+        var arcName = EntityPartitionArc.arcName("ledger");
+        var retention = RetentionPolicy.retentionPolicy(1_000L, 512L * 1024, EntityRingWindow.MAX_AGE_MS);
+        var ring = HotWindowFixture.declaredHot(StreamConfig.streamConfig(arcName,
+                                                                          1,
+                                                                          retention,
+                                                                          "earliest",
+                                                                          RingGeometry.SEGMENT_BYTES,
+                                                                          ConsistencyMode.EVENTUAL,
+                                                                          3,
+                                                                          1,
+                                                                          StreamCompression.NONE,
+                                                                          Option.none()),
+                                                retention.maxCount(),
+                                                retention.maxBytes());
+        var floor = RingGeometry.floorBytes(retention.maxCount(), retention.maxBytes(), RingGeometry.SEGMENT_BYTES);
         var partitionManager = StreamPartitionManager.streamPartitionManager(floor);
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
@@ -258,10 +280,11 @@ class StreamEntityLogSubstrateTest {
                                                  null,
                                                  null);
 
+        partitionManager.createDeclaredStream(ring).unwrap();
         substrate.ensureLog("ledger", 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
         substrate.append("ledger", 0, new byte[16]).await().unwrap();
 
-        substrate.append("ledger", 0, new byte[1_048_576])
+        substrate.append("ledger", 0, new byte[300_000])
                  .await()
                  .onSuccess(offset -> fail("an entity record the frozen ring dropped was acked at offset " + offset))
                  .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
