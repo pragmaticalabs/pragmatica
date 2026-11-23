@@ -620,8 +620,8 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Stream '%s' hot window max_count %d exceeds the indexable ring capacity %d".formatted(streamName,
-                                                                                                         maxCount,
-                                                                                                         maxCapacity);
+                                                                                                          maxCount,
+                                                                                                          maxCapacity);
         }
     }
 
