@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// Pins the drainer's release re-check (#3605, se04): a task submitted by another thread in the window between the
 /// drainer's last empty poll and its release finds a live drainer and returns, so only the re-check after the release
@@ -48,6 +49,24 @@ class SerialExecutorStrandedTaskTest {
         assertThat(ran.get()).as("the first task and the one submitted during the release both ran").isEqualTo(2);
         assertThat(executor.pendingForTest()).as("nothing stranded in the queue").isZero();
     }
+
+    @Test
+    void vmErrorInATask_propagatesToTheCaller_andTheDrainerIsReleased() {
+        var executor = SerialExecutor.serialExecutor();
+        var ran = new AtomicInteger();
+
+        assertThatThrownBy(() -> executor.execute(() -> {
+            throw new TestVmError();
+        })).isInstanceOf(TestVmError.class);
+
+        assertThat(executor.isConfined()).as("the drainer was released on the propagating exit").isFalse();
+
+        executor.execute(ran::incrementAndGet);
+
+        assertThat(ran.get()).as("a task submitted after the VM error runs: nothing is pinned").isEqualTo(1);
+    }
+
+    private static final class TestVmError extends VirtualMachineError {}
 
     private static void submitFromAnotherThread(SerialExecutor executor, AtomicInteger ran, AtomicBoolean submitted) {
         var failure = new AtomicReference<Throwable>();
