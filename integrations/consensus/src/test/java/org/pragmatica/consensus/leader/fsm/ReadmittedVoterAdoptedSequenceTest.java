@@ -259,6 +259,28 @@ class ReadmittedVoterAdoptedSequenceTest {
                   .isEqualTo(Option.some(NEW_LEADER));
     }
 
+    /// The `ReElecting` entry hook's KV follow-up carries the record's sequence (#3588 F1). The record is at 4 when the
+    /// lease trip re-elects off baseline 1, so the follow-up adopts it at 4 and a queued commit at 3 for another leader
+    /// is refused by the fence.
+    @Test
+    void reElectingEntry_kvFollowUpAdoptsTheRecordsSequence_staleCommitForAnotherLeaderRefused() {
+        passiveCoreThatPulledNothing();
+        consensusReady.set(true);
+        readmitAsVoter();
+        manager.onLeaderCommitted(OLD_LEADER, 1);
+        OnDrainer.drained(ctx());
+        assertThat(heldLeader()).as("instrument: Led(old leader) at sequence 1")
+                  .isEqualTo(Option.some(OLD_LEADER));
+        kvLeader.set(Option.some(leaderCommitted(NEW_LEADER, 4)));
+        OnDrainer.dispatch(ctx(), new LeaderSilent(OLD_LEADER));
+        assertThat(heldLeader()).as("instrument: the ReElecting entry followed the KV record's leader")
+                  .isEqualTo(Option.some(NEW_LEADER));
+        manager.onLeaderCommitted(OLD_LEADER, 3);
+        OnDrainer.drained(ctx());
+        assertThat(heldLeader()).as("Led after the queued older commit for another leader")
+                  .isEqualTo(Option.some(NEW_LEADER));
+    }
+
     /// A KV record older than the adopted leader is not a follow-up of the `QuorumWaiting` entry: the adoption would
     /// refuse it, and the entry would then arm no readiness poll, so the node would wait forever. The entry polls
     /// instead and advances once consensus is ready. The stale record is constructed at the FSM level.
