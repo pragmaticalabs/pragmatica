@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The wait to use instead is [PollUntil].
 class FlakeScanTest {
     /// The allow-list size as last committed. Lower it when entries are deleted; raising it is the change a reviewer must refuse.
-    static final int COMMITTED_ENTRIES = 1287;
+    static final int COMMITTED_ENTRIES = 1285;
 
     private static final String ALLOW_LIST = "testing/src/test/resources/flake-scan-allowlist.txt";
     private static final int MINIMUM_EXAMINED_FILES = 1_000;

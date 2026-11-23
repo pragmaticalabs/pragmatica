@@ -1187,8 +1187,6 @@ integrations/storage/src/test/java/org/pragmatica/storage/StorageInstanceWarmDel
 integrations/storage/src/test/java/org/pragmatica/storage/WriteBehindIntegrationTest.java|SLEEP|9695949ba336
 integrations/storage/src/test/java/org/pragmatica/storage/WriteBehindQueueStopTest.java|SLEEP|5b3ac70bfffd
 integrations/storage/src/test/java/org/pragmatica/storage/WriteBehindTest.java|SLEEP|9695949ba336
-integrations/swim/src/test/java/org/pragmatica/swim/NettySwimTransportBoundedShutdownTest.java|FIXED_PORT|224af39d6a81
-integrations/swim/src/test/java/org/pragmatica/swim/NettySwimTransportBoundedShutdownTest.java|FIXED_PORT|f096820be1fc
 integrations/swim/src/test/java/org/pragmatica/swim/SwimAnnounceSourcePinTest.java|SHORT_AWAIT|4d50d4a14400
 integrations/swim/src/test/java/org/pragmatica/swim/SwimAnnounceSourcePinTest.java|SHORT_AWAIT|dc46a8edc0d9
 integrations/swim/src/test/java/org/pragmatica/swim/SwimAnnounceSourcePinTest.java|SLEEP|770fa34320b7
