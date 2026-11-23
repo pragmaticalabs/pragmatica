@@ -33,6 +33,8 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 class OrderedSectionRollbackTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
+    /// The frozen-ring fixture's declared hot data region: one floor segment, which is also today's first region at any retention bytes.
+    private static final long FLOOR_SEGMENT_BYTES = 256 * 1024L;
     private static final Epoch E1 = Epoch.epoch(0, 1, 0);
 
     /// NT-27: a failed continuation of an ordered batch leaves the head where it was, and the next append takes the withdrawn offset.
@@ -202,7 +204,9 @@ class OrderedSectionRollbackTest {
 
         @Test
         void publishBatch_oversizeRun_isRefusedUntouched_andTheSinglePublishFallbackStaysContiguous() throws Exception {
-            var config = StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(4, 1_000_000L, 3_600_000L), "earliest");
+            var config = HotWindowFixture.declaredHot(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(4, 1_000_000L, 3_600_000L), "earliest"),
+                                                      4,
+                                                      1_000_000L);
             var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
 
             manager.createStream(config).onFailure(cause -> fail(cause.message()));
@@ -235,7 +239,8 @@ class OrderedSectionRollbackTest {
 
         @Test
         void publishBatch_onAFrozenRingThatCannotFitAnEvent_writesNoWalRecord_andLeavesOffsetsIntact() throws Exception {
-            var config = StreamConfig.streamConfig("feed-2c", 1, RetentionPolicy.retentionPolicy(), "earliest");
+            var base = StreamConfig.streamConfig("feed-2c", 1, RetentionPolicy.retentionPolicy(), "earliest");
+            var config = HotWindowFixture.declaredHot(base, base.retention().maxCount(), FLOOR_SEGMENT_BYTES);
             var manager = streamPartitionManager(OffHeapRingBuffer.floorBytes(config.retention().maxCount(), config.retention().maxBytes()),
                                                  Option.some(walDir));
 

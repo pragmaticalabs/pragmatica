@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.lang.Option;
@@ -40,6 +41,11 @@ class StreamDestroyRecreateTest {
     private static final int PARTITION = 0;
     private static final long ONE_GB = 1024 * 1024 * 1024L;
     private static final int RING_EVENTS = 4;
+    /// The ring is declared twice, equal: as the retention (4 entries, 1 MiB) and as the hot window. The event size is pinned to
+    /// one floor segment (the payloads are a few bytes), so the first data region is the same whether the ring is sized from
+    /// retention or from the declared hot window.
+    private static final long RING_BYTES = 1024 * 1024;
+    private static final long MAX_EVENT_BYTES = 256 * 1024;
     private static final int FIRST_LIFE = 60;
     private static final int SECOND_LIFE = 10;
 
@@ -143,10 +149,13 @@ class StreamDestroyRecreateTest {
     }
 
     private static void createStream(StreamPartitionManager manager, long incarnation) {
-        manager.createStream(StreamConfig.streamConfig(STREAM,
-                                                       1,
-                                                       RetentionPolicy.retentionPolicy(RING_EVENTS, 1024 * 1024, 600_000),
-                                                       "earliest")
+        manager.createStream(HotWindowFixture.declaredHot(StreamConfig.streamConfig(STREAM,
+                                                                                    1,
+                                                                                    RetentionPolicy.retentionPolicy(RING_EVENTS, RING_BYTES, 600_000),
+                                                                                    "earliest",
+                                                                                    MAX_EVENT_BYTES),
+                                                          RING_EVENTS,
+                                                          RING_BYTES)
                                          .withIncarnation(incarnation))
                .onFailure(cause -> fail(cause.message()));
     }

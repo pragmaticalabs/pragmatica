@@ -42,19 +42,22 @@ class PacedMaterializeRetryTest {
         return cfg("app", 100, 64 * 1024L);
     }
 
+    /// The hot window is declared equal to the retention (both data regions are at most one segment, so the event size does
+    /// not move the floor): the floors hold whether the ring is sized from retention or from the declared window.
     private static StreamConfig cfg(String name, int maxCount, long maxBytes) {
         var retention = RetentionPolicy.retentionPolicy(maxCount, maxBytes, 3_600_000L);
+        var config = StreamConfig.streamConfig(name,
+                                               PARTITIONS,
+                                               retention,
+                                               "latest",
+                                               1_048_576L,
+                                               ConsistencyMode.EVENTUAL,
+                                               1,
+                                               1,
+                                               StreamCompression.NONE,
+                                               Option.none());
 
-        return StreamConfig.streamConfig(name,
-                                         PARTITIONS,
-                                         retention,
-                                         "latest",
-                                         1_048_576L,
-                                         ConsistencyMode.EVENTUAL,
-                                         1,
-                                         1,
-                                         StreamCompression.NONE,
-                                         Option.none());
+        return HotWindowFixture.declaredHot(config, maxCount, maxBytes);
     }
 
     private StreamPartitionManager manager(long budget) {

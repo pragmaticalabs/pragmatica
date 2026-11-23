@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -388,10 +389,12 @@ class SegmentSealerTest {
             var managedSealer = segmentSealer(neverSeals);
             var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE, managedSealer);
 
-            manager.createStream(StreamConfig.streamConfig(DOOMED,
-                                                           1,
-                                                           RetentionPolicy.retentionPolicy(4, 4096, 600_000),
-                                                           "earliest"))
+            manager.createStream(HotWindowFixture.declaredHot(StreamConfig.streamConfig(DOOMED,
+                                                                                        1,
+                                                                                        RetentionPolicy.retentionPolicy(4, 4096, 600_000),
+                                                                                        "earliest"),
+                                                              4,
+                                                              4096))
                    .onFailure(cause -> fail(cause.message()));
             for (int i = 0; i < 10; i++) {
                 manager.publishLocal(DOOMED,

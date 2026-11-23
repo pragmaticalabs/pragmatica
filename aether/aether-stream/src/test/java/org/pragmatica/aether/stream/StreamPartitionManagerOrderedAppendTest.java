@@ -47,6 +47,9 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 class StreamPartitionManagerOrderedAppendTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
+    /// The stream declares its hot window equal to its (default) retention and pins the event size to one floor segment (its
+    /// payloads are tens of bytes), so the ring is the same whether it is sized from retention or from the declared hot window.
+    private static final long MAX_EVENT_BYTES = 256L * 1024;
 
     @TempDir
     Path walDir;
@@ -154,7 +157,12 @@ class StreamPartitionManagerOrderedAppendTest {
     // === helpers ===
 
     private static void createStream(StreamPartitionManager manager) {
-        manager.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
+        var defaults = StreamConfig.streamConfig(STREAM);
+        var retention = defaults.retention();
+        var config = StreamConfig.streamConfig(STREAM, defaults.partitions(), retention, defaults.autoOffsetReset(), MAX_EVENT_BYTES);
+
+        manager.createStream(HotWindowFixture.declaredHot(config, retention.maxCount(), retention.maxBytes()))
+               .onFailure(cause -> fail(cause.message()));
     }
 
     private static List<Acked> publishConcurrently(StreamPartitionManager manager, int threads, int perThread) {

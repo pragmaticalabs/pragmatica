@@ -44,15 +44,23 @@ class StreamHydrationSnapshotTest {
     /// The management-API default retention (the pre-#3334 `MANAGEMENT_API_RETENTION`, since removed): 10_000 count,
     /// 4 MiB bytes, 1h. 4 partitions per the stream default.
     private static StreamConfig mgmtDefault(String name) {
-        var retention = RetentionPolicy.retentionPolicy(10_000, 4L * 1024 * 1024, 60 * 60 * 1000L);
-        return StreamConfig.streamConfig(name, 4, retention, "latest");
+        return declaredWindow(name, 4);
     }
 
     /// The same mgmt-default retention over 16 partitions — the acceptance-in-miniature stream for the
     /// placement-gating proofs.
     private static StreamConfig sixteenPartition(String name) {
+        return declaredWindow(name, 16);
+    }
+
+    /// The mgmt-default retention (10_000 count, 4 MiB) as the stream's declared hot window, with `max_event_size` one
+    /// segment, so its first data region is one segment whether the ring is sized from retention or from the declared window
+    /// (the invariance rule of the ring-window restatement).
+    private static StreamConfig declaredWindow(String name, int partitions) {
         var retention = RetentionPolicy.retentionPolicy(10_000, 4L * 1024 * 1024, 60 * 60 * 1000L);
-        return StreamConfig.streamConfig(name, 16, retention, "latest");
+        var config = StreamConfig.streamConfig(name, partitions, retention, "latest", SEGMENT);
+
+        return HotWindowFixture.declaredHot(config, 10_000, 4L * 1024 * 1024);
     }
 
     /// Fixed placement double: partitions 0-2 OWNER, 3-4 REPLICA, the rest NONE — 5 held, 11 metadata-only.

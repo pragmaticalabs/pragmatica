@@ -26,6 +26,7 @@ import org.pragmatica.aether.stream.OwnerLease;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource.CommittedOwner;
 import org.pragmatica.aether.stream.EvictionListener;
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.LinearizableBarrier;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
@@ -624,17 +625,22 @@ class ForwardedReadRefusalTest {
         return config(name, partitions, 100);
     }
 
+    /// The hot window is declared equal to the retention (the ring holds the same `retainedEvents` entries whether it is sized
+    /// from retention or from the declared window); the 64 KiB data region is below the first segment, so `max_event_size`
+    /// does not move the ring's first region.
     private static StreamConfig config(String name, int partitions, long retainedEvents) {
-        return StreamConfig.streamConfig(name,
-                                         partitions,
-                                         RetentionPolicy.retentionPolicy(retainedEvents, 64 * 1024L, 3_600_000L),
-                                         "earliest",
-                                         1_048_576L,
-                                         ConsistencyMode.EVENTUAL,
-                                         1,
-                                         1,
-                                         StreamCompression.NONE,
-                                         Option.none());
+        return HotWindowFixture.declaredHot(StreamConfig.streamConfig(name,
+                                                                      partitions,
+                                                                      RetentionPolicy.retentionPolicy(retainedEvents, 64 * 1024L, 3_600_000L),
+                                                                      "earliest",
+                                                                      1_048_576L,
+                                                                      ConsistencyMode.EVENTUAL,
+                                                                      1,
+                                                                      1,
+                                                                      StreamCompression.NONE,
+                                                                      Option.none()),
+                                            retainedEvents,
+                                            64 * 1024L);
     }
 
     private static ValuePut<StreamConfigKey, StreamConfigValue> configPut(StreamConfig config) {
