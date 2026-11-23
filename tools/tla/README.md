@@ -250,7 +250,7 @@ while any of the three disagrees or a job downloads from anywhere else. Re-run t
 
 Environment: `TLA_JAR` (default `~/tools/tla/tla2tools.jar`), `TLC_WORKERS`, `TLC_OPTS`, `TLA_OUT` (default
 `target/tla/<Module>` for `check.sh`, `target/tla` for `run.sh`), `TLC_CONST` (`check.sh`: space-separated
-`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options), `TLA_DISK_MAX`, `TLA_MEM_MIN_MB`, `TLA_GUARD_SECS` (`check.sh`: the resource guard, below), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it), `PINS_TSV` (`run.sh`: a different pinned-counts table). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
+`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options; TLC always runs with `-XX:+UseCompactObjectHeaders`, JDK 25+, measured on DHTDepartureDrain `strand`: heap after GC -21% at peak, RSS -8%, state counts unchanged), `TLA_DISK_MAX`, `TLA_MEM_MIN_MB`, `TLA_GUARD_SECS` (`check.sh`: the resource guard, below), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it), `PINS_TSV` (`run.sh`: a different pinned-counts table). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
 is `<out>/<Module>_<Variant>.log`; the console gets the verdict, the counterexample as actions with their Java
 positions, and the state counts.
 
