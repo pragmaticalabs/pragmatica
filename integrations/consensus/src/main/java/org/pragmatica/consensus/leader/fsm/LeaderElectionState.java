@@ -306,14 +306,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// cluster that shows no leader and no sync in flight is genuinely leaderless and lets this node elect.
     ///
     /// ```tla LeaderAdmission:V_Grace
-    /// \* The waiting states' KV pull (AwaitingKvSync's entry and grace timeout, QuorumWaiting's poll), cluster
-    /// \* mode: a committed leader in the KV record is adopted unconditionally (FIX 1, sequence-less:
-    /// \* recordAdoptedSequence keeps the observed sequence); with none, the grace timeout elects (Electing or
-    /// \* ReElecting, whose entry snapshots the baseline). The re-arm while KV sync is pending changes no modelled
-    /// \* variable, so it is left out.
+    /// \* The waiting states' KV pull (AwaitingKvSync's entry and grace timeout, QuorumWaiting's poll; after a
+    /// \* readmission the entries' pull re-adopts the held leader, `.orElse(ctx::currentLeader)`, which the KV record
+    /// \* names), cluster mode: a committed leader in the KV record is adopted unconditionally (FIX 1, sequence-less, so
+    /// \* never older: recordAdoptedSequence records the observed sequence, with "adseq" never below the adopted one);
+    /// \* with none, the grace timeout elects (Electing or ReElecting, whose entry snapshots the baseline). The re-arm
+    /// \* while KV sync is pending changes no modelled variable, so it is left out.
     /// V_Grace == /\ st = "waiting"
     ///            /\ IF kv # NoRec
-    ///               THEN /\ st' = "led" /\ leader' = kv[1] /\ lastAd' = kv[1] /\ adSeq' = obsSeq /\ cluster' = TRUE
+    ///               THEN /\ st' = "led" /\ leader' = kv[1] /\ lastAd' = kv[1] /\ adSeq' = RecordAd(0, obsSeq)
+    ///                    /\ cluster' = TRUE
     ///                    /\ UNCHANGED base
     ///               ELSE /\ st' = "electing" /\ base' = obsSeq
     ///                    /\ UNCHANGED <<leader, lastAd, adSeq, cluster>>
@@ -799,12 +801,14 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// A committed leader while `Led` holds one: an idempotent replay, a fenced stale commit, or a swap.
     ///
     /// ```tla LeaderAdmission:V_PushLed
-    /// \* Led: a commit of another leader is a swap iff its sequence advances past the adopted one (FIX 2); adopted when
-    /// \* absent from the view (FIX 1), so no view checked it yet.
+    /// \* Led: a commit of another leader is a swap iff its sequence advances past the adopted one (FIX 2, so an older
+    /// \* one is fenced); adopted when absent from the view (FIX 1), so no view checked it yet. The swap records its
+    /// \* sequence through recordAdoptedSequence with "adseq" (#3588 finding A); rc6 set the commit's own sequence.
     /// V_PushLed(r) == /\ st = "led"
     ///                 /\ PushStep(r)
     ///                 /\ IF r[1] # leader /\ r[2] > adSeq
-    ///                    THEN /\ leader' = r[1] /\ lastAd' = r[1] /\ adSeq' = r[2] /\ cluster' = TRUE
+    ///                    THEN /\ leader' = r[1] /\ lastAd' = r[1] /\ cluster' = TRUE
+    ///                         /\ adSeq' = IF Fix("adseq") THEN RecordAd(r[2], obsSeq') ELSE r[2]
     ///                    ELSE UNCHANGED <<leader, lastAd, adSeq, cluster>>
     ///                 /\ UNCHANGED <<st, view, vseq, kv, base, adm, env, hi, removed, suspect>>
     /// ```
@@ -1069,6 +1073,19 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         ///                /\ named' = n
         ///                /\ UNCHANGED <<st, vseq, kv, pend, obsSeq, base, adm, hi, cluster>>
         /// ```
+        ///
+        /// ```tla LeaderAdmission:P_Readmit
+        /// \* VoterReadmitted (LeaderManager.applyVoterConfiguration: the voter configuration holds this node again):
+        /// \* Passive -> QuorumWaiting. The context's leader, adopted sequence and last adopted leader carry over; the
+        /// \* passive pull may have adopted a sequence above the observed one, so the waiting state's next adoption is
+        /// \* where #3588 finding A lived.
+        /// P_Readmit == /\ st = "passive"
+        ///              /\ "readmit" \in Env
+        ///              /\ st' = "waiting"
+        ///              /\ named' = None
+        ///              /\ UNCHANGED <<leader, view, vseq, kv, pend, adSeq, lastAd, obsSeq, base, adm, env, hi, removed,
+        ///                             suspect, cluster>>
+        /// ```
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
@@ -1205,15 +1222,19 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// ([#skippedAsOlderThanAdopted], #3588 finding A).
     ///
     /// ```tla LeaderAdmission:V_PushWaiting
-    /// \* QuorumWaiting / AwaitingKvSync: a committed leader is adopted unconditionally (FIX 1), present in the view or not;
-    /// \* recordAdoptedSequence keeps the larger of its sequence and the observed one.
+    /// \* QuorumWaiting / AwaitingKvSync: a committed leader is adopted unconditionally w.r.t. the view (FIX 1), present
+    /// \* in it or not; with "adseq" a push older than the adopted leader is skipped (skippedAsOlderThanAdopted: after a
+    /// \* readmission, a queued push older than the leader the passive pull adopted, #3588 finding A), and
+    /// \* recordAdoptedSequence records the sequence.
     /// V_PushWaiting(r) == /\ st = "waiting"
     ///                     /\ PushStep(r)
-    ///                     /\ st' = "led"
-    ///                     /\ leader' = r[1]
-    ///                     /\ lastAd' = r[1]
-    ///                     /\ adSeq' = Max(r[2], obsSeq')
-    ///                     /\ cluster' = TRUE
+    ///                     /\ IF VotingSkips(r)
+    ///                        THEN UNCHANGED <<st, leader, lastAd, adSeq, cluster>>
+    ///                        ELSE /\ st' = "led"
+    ///                             /\ leader' = r[1]
+    ///                             /\ lastAd' = r[1]
+    ///                             /\ adSeq' = RecordAd(r[2], obsSeq')
+    ///                             /\ cluster' = TRUE
     ///                     /\ UNCHANGED <<view, vseq, kv, base, adm, env, hi, removed, suspect>>
     /// ```
     private static void adoptLeaderUnconditionally(LeaderElectionContext ctx,
@@ -1250,11 +1271,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///
     /// ```tla LeaderAdmission:V_PushElecting
     /// \* Electing / ReElecting in cluster mode: adopted (FIX 1, no view test) iff the observed committed sequence postdates
-    /// \* the entry baseline; a pre-election commit is skipped.
+    /// \* the entry baseline and, with "adseq", the commit is not older than the adopted leader (skippedAsOlderThanAdopted);
+    /// \* a pre-election or older commit is skipped. recordAdoptedSequence records the sequence.
     /// V_PushElecting(r) == /\ st = "electing"
     ///                      /\ PushStep(r)
-    ///                      /\ IF obsSeq' > base
-    ///                         THEN /\ st' = "led" /\ leader' = r[1] /\ lastAd' = r[1] /\ adSeq' = Max(r[2], obsSeq')
+    ///                      /\ IF obsSeq' > base /\ ~VotingSkips(r)
+    ///                         THEN /\ st' = "led" /\ leader' = r[1] /\ lastAd' = r[1] /\ adSeq' = RecordAd(r[2], obsSeq')
     ///                              /\ cluster' = TRUE
     ///                         ELSE UNCHANGED <<st, leader, lastAd, adSeq, cluster>>
     ///                      /\ UNCHANGED <<view, vseq, kv, base, adm, env, hi, removed, suspect>>
@@ -1554,7 +1576,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// ```tla LeaderAdmission:L_Tick
     /// \* I3, local mode: a leaderless electing state's tick commits the first node of the stored view and adoptLocalCommit
     /// \* admits it (in view, no sequence gate; the mutant "seqgatelocal" puts it behind the cluster gate local mode never
-    /// \* passes); Led's local entry (leftTheViewOnLocalEntry) keeps it (the view is read in the same step).
+    /// \* passes); Led's local entry (leftTheViewOnLocalEntry) keeps it (the view is read in the same step); the
+    /// \* sequence-less commit records its sequence through recordAdoptedSequence.
     /// L_Tick == /\ Local
     ///           /\ st = "electing"
     ///           /\ view # {}
@@ -1562,7 +1585,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///           /\ st' = "led"
     ///           /\ leader' = MinOf(view)
     ///           /\ lastAd' = MinOf(view)
-    ///           /\ adSeq' = obsSeq
+    ///           /\ adSeq' = RecordAd(0, obsSeq)
     ///           /\ cluster' = FALSE
     ///           /\ named' = None
     ///           /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, base, adm, env, hi, removed, suspect>>
