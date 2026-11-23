@@ -12,8 +12,8 @@
 # the PR checks required"). Two properties make them fit to be required:
 #  1. The merge queue. Every job also runs on `merge_group`, where a required context must report or the queue waits for it
 #     forever (the squash commit of each queued PR is the unit judged, see each job).
-#  2. The instrument comes from the BASE. The scripts and their self-tests are read from the base branch's tools/tla (git archive
-#     of the base revision into a temp dir) and run against the PR's tree, so a branch older than the instrument cannot lack it
+#  2. The instrument comes from the BASE. The scripts and their self-tests are read from the base branch's tools/tla (a detached git
+#     worktree of the base revision in a temp dir, a whole tree because the base self-tests read the base repository) and run against the PR's tree, so a branch older than the instrument cannot lack it
 #     (#3605: "NO TESTS RAN", a check that said nothing about the PR) and a PR cannot edit the judge that judges it. When the PR
 #     itself changes tools/tla/*.py (or its fixtures), the head's own copy and tests ALSO run, so a PR that breaks the tooling
 #     is red. An instrument the base lacks fails with one `INSTRUMENT ABSENT:` line, never as exit 5 or a pass.
@@ -65,8 +65,8 @@ jobs:
         run: |
           set -euo pipefail
           inst="$RUNNER_TEMP/tla-base"
-          rm -rf "$inst"; mkdir -p "$inst"
-          git archive "$BASE_REV" tools/tla | tar -x -C "$inst"
+          rm -rf "$inst"
+          git worktree add --detach --quiet "$inst" "$BASE_REV"   # a whole base tree: the base self-tests read the base repository
           for f in $NEED; do
             [ -f "$inst/tools/tla/$f" ] || { echo "INSTRUMENT ABSENT: tools/tla/$f in $BASE_REV; the base itself lacks it, no judgement is possible"; exit 1; }
           done
@@ -154,8 +154,8 @@ jobs:
         run: |
           set -euo pipefail
           inst="$RUNNER_TEMP/tla-base"
-          rm -rf "$inst"; mkdir -p "$inst"
-          git archive "$BASE_REV" tools/tla | tar -x -C "$inst"
+          rm -rf "$inst"
+          git worktree add --detach --quiet "$inst" "$BASE_REV"   # a whole base tree: the base self-tests read the base repository
           for f in $NEED; do
             [ -f "$inst/tools/tla/$f" ] || { echo "INSTRUMENT ABSENT: tools/tla/$f in $BASE_REV; the base itself lacks it, no judgement is possible"; exit 1; }
           done
@@ -204,8 +204,8 @@ jobs:
         run: |
           set -euo pipefail
           inst="$RUNNER_TEMP/tla-base"
-          rm -rf "$inst"; mkdir -p "$inst"
-          git archive "$BASE_REV" tools/tla | tar -x -C "$inst"
+          rm -rf "$inst"
+          git worktree add --detach --quiet "$inst" "$BASE_REV"   # a whole base tree: the base self-tests read the base repository
           for f in $NEED; do
             [ -f "$inst/tools/tla/$f" ] || { echo "INSTRUMENT ABSENT: tools/tla/$f in $BASE_REV; the base itself lacks it, no judgement is possible"; exit 1; }
           done
