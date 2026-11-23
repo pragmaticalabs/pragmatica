@@ -92,8 +92,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// `serialized(` call in leader main, counted against the source). A hook never takes this path: it follows up
     /// ([LeaderElectionContext#followUp]).
     private static void dispatchSelf(LeaderElectionContext ctx, ClusterFsmEvent event) {
-        ctx.fsm()
-           .dispatch(event);
+        ctx.fsm().dispatch(event);
     }
 
     // --- State records ---
@@ -340,7 +339,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         log.info("AwaitingKvSync: KV state still catching up and no committed leader visible yet — waiting another {}ms",
                  ctx.kvSyncGraceDelay().millis());
         waiting.graceTimeoutFuture()
-               .set(SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx, new KvSyncGraceTimeout())),
+               .set(SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx,
+                                                                               new KvSyncGraceTimeout())),
                                              ctx.kvSyncGraceDelay()));
     }
 
@@ -1421,8 +1421,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         var timeoutFuture = SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx,
                                                                                        new ProposalSettled(candidate,
                                                                                                            false,
-                                                                                                           "timeout@epoch="
-                                                                                                           + epoch))),
+                                                                                                           "timeout@epoch=" + epoch))),
                                                      ctx.proposalTimeout());
 
         storeProposalTimeoutFuture(owner, timeoutFuture);
