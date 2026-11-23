@@ -1277,6 +1277,29 @@ public final class DHTAntiEntropy {
     /// second covers a node that drains itself on quorum loss: no signal reaches its peers in time, and it
     /// halts with its in-memory store, so a copy it holds last would otherwise be lost. A current replica
     /// already holds those partitions legitimately, so its push carries no authority it lacks.
+    /// ```tla DHTDepartureDrain:Deliver
+    /// \* d sends a page to t (attempt: t is in d's view V, DeparturePushRun.mayAct) with its leaving set and V; t accepts and
+    /// \* places it (stores, acks) or nacks it: the page stays pending and is resent. A nack of an accepted sender by a node that
+    /// \* never drains is a stray refusal. A co-drainer (a final-primary candidate since #3225) that pruned itself on its own
+    /// \* DEPARTING edge refuses too, but it halts, and the page goes once it leaves d's view: that refusal costs time only.
+    /// \* d counts the applied ack (DeparturePushRun.recordAck: the page is current, its target in V); the ack ends the page.
+    /// \* Without `exit` (the code before #3576) the ack also sets the report, from a deliverer, or from anyone without `deliverer`.
+    /// Deliver(d, t) ==
+    ///     /\ Pending(d, t)
+    ///     /\ t \in view[d]
+    ///     /\ phase[t] # "halted"
+    ///     /\ IF Accepted(t, d) /\ Placed(t, d)
+    ///        THEN /\ store' = [store EXCEPT ![t] = TRUE]
+    ///             /\ pages' = pages \ {Page(d, t)}
+    ///             /\ acked' = [acked EXCEPT ![d] = @ \cup {t}]
+    ///             /\ delivered' = IF Fix("exit") THEN delivered
+    ///                             ELSE [delivered EXCEPT ![d] = @ \/ ~Fix("deliverer") \/ t \in deliverers[d]]
+    ///             /\ UNCHANGED strayNack
+    ///        ELSE /\ strayNack' = (strayNack \/ (Accepted(t, d) /\ t \notin drainers))
+    ///             /\ UNCHANGED <<store, pages, acked, delivered>>
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, pruned, flapped, phase, view, leaving, inv, rfAt, claimed,
+    ///                    deliverers>>
+    /// ```
     private void acceptDeparturePush(DHTMessage.MigrationDataResponse response) {
         if (departingSenders.test(response.sender()) || response.entries()
                                                                 .stream()
@@ -1430,7 +1453,7 @@ public final class DHTAntiEntropy {
         }
 
         network.send(response.sender(),
-                     new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId(), applied));
+                     new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId(), applied, 0L, 0L, false));
     }
 
     /// Get the count of pending digest comparisons (for testing).

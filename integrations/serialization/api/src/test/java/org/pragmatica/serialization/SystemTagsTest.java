@@ -50,6 +50,16 @@ class SystemTagsTest {
         assertEquals(2985, SystemTags.tagFor("org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach"));
     }
 
+    /// #3458 M-1: `StreamConfigValue` moved from 2920 to 3014 and `StreamStorage` took 3010. The retired 2920 stays PINNED, to a name
+    /// that resolves to no class, so the tag is never reused; asserted straight on the table, since no decoder exercises a reservation.
+    @Test
+    void streamConfigValueCarrierMove_pinsTheNewTags_andKeepsTheRetiredTagReserved() {
+        assertEquals(3014, SystemTags.tagFor("org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue"));
+        assertEquals(3010, SystemTags.tagFor("org.pragmatica.aether.slice.StreamStorage"));
+        assertTrue(SystemTags.TAGS.containsValue(2920), "tag 2920 stays reserved");
+        assertEquals(2920, SystemTags.tagFor("org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValueRetiredRc6b"));
+    }
+
     /// The disjointness the whole split rests on. A system tag that strayed into the user range would
     /// be reachable by a slice type's hash, which is the collision this design exists to make
     /// structurally impossible.

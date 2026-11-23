@@ -198,7 +198,7 @@ public final class LeaderPreVote {
         current.vouching = new HashSet<>();
         current.doubting = new HashSet<>(Set.of(ctx.self()));
         stopTimer(current);
-        current.timer = some(SharedScheduler.schedule(() -> onRoundTimeout(current, round), timeout));
+        current.timer = some(SharedScheduler.schedule(ctx.serialized(() -> onRoundTimeout(current, round)), timeout));
         log.info("Leader pre-vote round {}: {} lost its view of leader {}, asking {} voter(s) whether they still see it",
                  round,
                  ctx.self(),
@@ -276,8 +276,7 @@ public final class LeaderPreVote {
                  leader,
                  vouchers);
 
-        return () -> ctx.fsm()
-                        .dispatch(new LeaderDoubtConfirmed(leader));
+        return () -> ctx.submit(new LeaderDoubtConfirmed(leader));
     }
 
     private Runnable refrain(Episode current) {
@@ -292,7 +291,7 @@ public final class LeaderPreVote {
                  current.doubting.size(),
                  current.vouching.size(),
                  ctx.electorate().size());
-        current.timer = some(SharedScheduler.schedule(() -> onRetry(current), retryDelay()));
+        current.timer = some(SharedScheduler.schedule(ctx.serialized(() -> onRetry(current)), retryDelay()));
 
         return NO_EFFECT;
     }

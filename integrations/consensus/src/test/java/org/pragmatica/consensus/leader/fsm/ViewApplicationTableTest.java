@@ -47,6 +47,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// #3092 + #3426 (ruling d73377451d): view application in the leader-election FSM, pinned cell by cell as
 /// (state x view event x mode) -> (resulting state, leader). The leader column is [LeaderElectionContext#currentLeader()],
@@ -65,8 +66,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// - I3: a leaderless electing state progresses on its own tick in local mode (it elects the first node of the
 ///   view); in cluster mode a tick submits a proposal and the leader comes from the consensus commit.
 /// States that hold no leader and do not adopt one (`Dormant`, `QuorumLost`, `Stopped`) only store the view, in both
-/// modes; `Passive` stores it and drops an observed leader the view lacks (I2, F-a4). (`Stopped` and `Passive` used to
-/// ignore views in cluster mode, so a readmitted worker read a replaced view.)
+/// modes; `Passive` stores it, drops an observed leader the view lacks (I2, F-a4), and re-runs the pull of the committed
+/// record after the write, so it holds the committed leader iff the view holds it (#3581: `REJOIN` re-admits N1).
+/// (`Stopped` and `Passive` used to ignore views in cluster mode, so a readmitted worker read a replaced view.)
 @Timeout(30)
 class ViewApplicationTableTest {
     private static final NodeId N1 = new NodeId("node-1");
@@ -82,7 +84,7 @@ class ViewApplicationTableTest {
     /// evicted, view [N2] (#3426, Led :600); EMPTY = N1 evicted, view [] (#3092); REJOIN = EMPTY, then N1 rejoins
     /// with view [N1 N2] at sequence 3 (#3092, v3436a P1a); TICK = an election tick; REMOVED_LEADER = SWIM marks N1
     /// faulty, the view-free removal (`PeerRemovedFromView`), view [N2] (#3436 F-a2). `Passive` starts observing the
-    /// committed N1 and drops it when a view lacks it (I2 binds every state, F-a4).
+    /// committed N1 (the KV-Store holds its record) and drops it when a view lacks it (I2 binds every state, F-a4).
     private static final String TABLE = """
         DORMANT          NODE_ADDED           LOCAL   Dormant         -
         DORMANT          NODE_ADDED_NO_LEADER LOCAL   Dormant         -
@@ -234,7 +236,7 @@ class ViewApplicationTableTest {
         PASSIVE          GONE_OTHER           LOCAL   Passive         N1
         PASSIVE          GONE_OTHER_NO_LEADER LOCAL   Passive         -
         PASSIVE          EMPTY                LOCAL   Passive         -
-        PASSIVE          REJOIN               LOCAL   Passive         -
+        PASSIVE          REJOIN               LOCAL   Passive         N1
         PASSIVE          TICK                 LOCAL   Passive         N1
         PASSIVE          NODE_ADDED           CLUSTER Passive         N1
         PASSIVE          NODE_ADDED_NO_LEADER CLUSTER Passive         -
@@ -242,7 +244,7 @@ class ViewApplicationTableTest {
         PASSIVE          GONE_OTHER           CLUSTER Passive         N1
         PASSIVE          GONE_OTHER_NO_LEADER CLUSTER Passive         -
         PASSIVE          EMPTY                CLUSTER Passive         -
-        PASSIVE          REJOIN               CLUSTER Passive         -
+        PASSIVE          REJOIN               CLUSTER Passive         N1
         PASSIVE          TICK                 CLUSTER Passive         N1
         PASSIVE          REMOVED_LEADER       LOCAL   Passive         -
         PASSIVE          REMOVED_LEADER       CLUSTER Passive         -
@@ -295,7 +297,7 @@ class ViewApplicationTableTest {
         GONE_OTHER_NO_LEADER(node -> node.manager.peerDisconnected(new PeerDisconnected(N3, List.of(N2), ObservationSource.QUIC, 2L)), ClusterFsmEvent.NodeGone.class),
         EMPTY(ViewEvent::evictIntoAnEmptyView, ClusterFsmEvent.NodeGone.class),
         REJOIN(ViewEvent::evictThenRejoin, ClusterFsmEvent.NodeGone.class, ClusterFsmEvent.NodeAdded.class),
-        TICK(node -> node.harness.dispatch(new ElectionTick()), ElectionTick.class),
+        TICK(node -> OnDrainer.dispatch(node.harness, new ElectionTick()), ElectionTick.class),
         REMOVED_LEADER(node -> node.manager.peerObservedFaulty(new PeerObservedFaulty(N1, ALL, ObservationSource.QUIC)), PeerRemovedFromView.class);
 
         final Consumer<Node> apply;
@@ -360,7 +362,7 @@ class ViewApplicationTableTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         () -> true,
-                                                        kvLeader,
+                                                        () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                         LONG,
                                                         LONG,
                                                         LONG,
@@ -375,18 +377,20 @@ class ViewApplicationTableTest {
         }
 
         static Node startedIn(StartState start, Mode mode) {
-            var node = new Node(start.initial, mode);
+            var node = start == StartState.PASSIVE
+                       ? new Node(start.initial, mode, () -> Option.some(N1), LONG)
+                       : new Node(start.initial, mode);
 
             if (start == StartState.LED) {
-                node.harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
-                node.harness.dispatch(new ClusterFsmEvent.NodeAdded(N2, INITIAL_VIEW, 1L));
-                node.harness.dispatch(new ConsensusReady());
-                node.harness.dispatch(new LeaderCommitted(N1, 1L));
+                OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumEstablished());
+                OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeAdded(N2, INITIAL_VIEW, 1L));
+                OnDrainer.dispatch(node.harness, new ConsensusReady());
+                OnDrainer.dispatch(node.harness, new LeaderCommitted(N1, 1L));
             } else {
                 node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N2, INITIAL_VIEW, 1L));
             }
             if (start == StartState.PASSIVE) {
-                node.harness.dispatch(new LeaderCommitted(N1, 1L));
+                OnDrainer.dispatch(node.harness, new LeaderCommitted(N1, 1L));
             }
 
             return node;
@@ -545,8 +549,8 @@ class ViewApplicationTableTest {
     @Test
     void p1c_emptyEviction_quorumFlapThenRejoin_followsTheLeader() {
         var local = evictTheOnlyEligibleLeader();
-        node.harness.dispatch(new ClusterFsmEvent.QuorumDisappeared());
-        node.harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumDisappeared());
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumEstablished());
         local.peerJoined(new PeerJoined(N1, ALL, ObservationSource.QUIC, 3L));
 
         assertThat(node.state() + " " + node.leader()).isEqualTo("Led N1");
@@ -557,8 +561,8 @@ class ViewApplicationTableTest {
         var local = evictTheOnlyEligibleLeader();
         local.peerObservedFaulty(new PeerObservedFaulty(N3, ALL, ObservationSource.QUIC));
         assertThat(node.state()).as("a fault of another peer in an empty view changes nothing").isEqualTo("ReElecting");
-        node.harness.dispatch(new ClusterFsmEvent.QuorumDisappeared());
-        node.harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumDisappeared());
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumEstablished());
         node.ctx.installVoters(List.of(N1, N3));
         local.peerJoined(new PeerJoined(N3, List.of(N2, N3), ObservationSource.QUIC, 1L));
 
@@ -590,7 +594,7 @@ class ViewApplicationTableTest {
     void f_a1_localLed_staleCommitOfANodeOutsideTheView_neverFollowsIt() {
         node = Node.startedIn(StartState.LED, Mode.LOCAL);
 
-        node.harness.dispatch(new LeaderCommitted(N3));
+        OnDrainer.dispatch(node.harness, new LeaderCommitted(N3));
 
         assertThat(node.state() + " " + node.leader()).as("I2: the leader is in the view or none").isEqualTo("ReElecting -");
     }
@@ -601,7 +605,7 @@ class ViewApplicationTableTest {
     void staleLeaderOutOfView_namingAnotherLeader_isDiscardedInLed() {
         node = Node.startedIn(StartState.LED, Mode.LOCAL);
 
-        node.harness.dispatch(new LeaderElectionEvents.LeaderOutOfView(N3));
+        OnDrainer.dispatch(node.harness, new LeaderElectionEvents.LeaderOutOfView(N3));
 
         assertThat(node.state() + " " + node.leader()).as("stale out-of-view for another leader changes nothing").isEqualTo("Led N1");
     }
@@ -613,7 +617,7 @@ class ViewApplicationTableTest {
         localNode(StartState.RE_ELECTING, Option::none, LONG);
         node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N1, List.of(), 2L));
 
-        node.harness.dispatch(new LeaderCommitted(N1));
+        OnDrainer.dispatch(node.harness, new LeaderCommitted(N1));
 
         assertThat(node.state() + " " + node.leader()).isEqualTo("ReElecting -");
         assertThat(enteredLed()).as("no Led tenure for a leader outside the view").isFalse();
@@ -624,9 +628,9 @@ class ViewApplicationTableTest {
     @Test
     void item5_reElecting_kvKeepsTheEvictedLeader_settlesWithoutALedTenure() {
         localNode(StartState.LED, () -> Option.some(N1), LONG);
-        node.harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        node.harness.dispatch(new ConsensusReady());
-        node.harness.dispatch(new LeaderCommitted(N1, 1L));
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(node.harness, new ConsensusReady());
+        OnDrainer.dispatch(node.harness, new LeaderCommitted(N1, 1L));
         assertThat(node.state() + " " + node.leader()).as("control: Led N1").isEqualTo("Led N1");
         var before = node.harness.transitions().size();
 
@@ -646,9 +650,9 @@ class ViewApplicationTableTest {
         localNode(StartState.RE_ELECTING, Option::none, LONG);
         node.ctx.observeViewSequence(5L);
 
-        node.harness.dispatch(new LeaderCommitted(N1));
+        OnDrainer.dispatch(node.harness, new LeaderCommitted(N1));
         assertThat(node.ctx.adoptedViewSequence()).as("recorded at adoption").isEqualTo(5L);
-        node.harness.dispatch(new LeaderCommitted(N2, 3L));
+        OnDrainer.dispatch(node.harness, new LeaderCommitted(N2, 3L));
 
         assertThat(node.state() + " " + node.leader()).as("the lower-sequence swap is fenced").isEqualTo("Led N1");
     }
@@ -659,7 +663,7 @@ class ViewApplicationTableTest {
     void item6_localTick_afterTheKvPullMovedTheFsm_electsNothing() {
         localNode(StartState.ELECTING, () -> Option.some(N2), LONG);
 
-        node.harness.dispatch(new ElectionTick());
+        OnDrainer.dispatch(node.harness, new ElectionTick());
 
         assertThat(node.state() + " " + node.leader()).isEqualTo("Led N2");
     }
@@ -670,7 +674,7 @@ class ViewApplicationTableTest {
         localNode(StartState.ELECTING, Option::none, TimeSpan.timeSpan(20).millis());
         node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N1, List.of(), 2L));
 
-        node.harness.dispatch(new ElectionTick());
+        OnDrainer.dispatch(node.harness, new ElectionTick());
         assertThat(node.state()).as("control: nothing to elect").isEqualTo("Electing");
         node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, INITIAL_VIEW, 3L));
 

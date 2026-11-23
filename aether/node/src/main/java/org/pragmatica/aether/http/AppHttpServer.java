@@ -161,6 +161,12 @@ public interface AppHttpServer {
 
     boolean isRouteReady();
 
+    /// The route table this node currently serves from (local routes plus remote routes seen in the KV); empty outside
+    /// `RouteReady`/`CertRotating`. The default is for servers that keep none (test doubles).
+    default RouteTable currentRouteTable() {
+        return RouteTable.empty();
+    }
+
     @Contract
     void onQuorumStateChange(ClusterStateNotification notification);
 
@@ -921,6 +927,11 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Override
     public boolean isRouteReady() {
         return context.isRouteReady() || httpRoutePublisher.isEmpty();
+    }
+
+    @Override
+    public RouteTable currentRouteTable() {
+        return context.currentRoutes();
     }
 
     @Override

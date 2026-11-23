@@ -37,6 +37,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.PartitionedStreamAccess.streamAccess;
+import static org.pragmatica.aether.stream.HotWindowFixture.declaredHot;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
@@ -60,6 +61,10 @@ class TieredReadVisibleBoundTest {
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId PEER = NodeId.randomNodeId();
     private static final long RING_CAPACITY = 2;
+    /// The ring's data region (retention bytes and declared hot bytes alike) and the event size: 256 KiB keeps the first
+    /// data segment at today's 256 KiB when the ring is sized from the hot window (`RingGeometry.firstSegmentBytes`).
+    private static final long RING_BYTES = 1_048_576L;
+    private static final long MAX_EVENT_BYTES = 256 * 1024L;
     private static final long ONE_GB = 1024 * 1024 * 1024L;
 
     private StorageInstance storage;
@@ -90,17 +95,7 @@ class TieredReadVisibleBoundTest {
         manager = streamPartitionManager(Long.MAX_VALUE,
                                          segmentSealer(SealReleaseLag.laggingRelease(storageSegmentSink(storage, index))),
                                          replication);
-        manager.createStream(StreamConfig.streamConfig(STREAM,
-                                                       1,
-                                                       RetentionPolicy.retentionPolicy(RING_CAPACITY, 1_048_576L, 60_000L),
-                                                       "earliest",
-                                                       1_048_576L,
-                                                       ConsistencyMode.EVENTUAL,
-                                                       3,
-                                                       2,
-                                                       StreamCompression.NONE,
-                                                       Option.none()))
-               .onFailure(cause -> fail(cause.message()));
+        manager.createStream(config()).onFailure(cause -> fail(cause.message()));
         PartitionedStreamAccess.CursorCheckpointWriter noopWriter = (_, _, _, _) -> Promise.unitPromise();
         access = streamAccess(manager,
                               identitySerializer(),
@@ -219,16 +214,18 @@ class TieredReadVisibleBoundTest {
     }
 
     private static StreamConfig config() {
-        return StreamConfig.streamConfig(STREAM,
-                                         1,
-                                         RetentionPolicy.retentionPolicy(RING_CAPACITY, 1_048_576L, 60_000L),
-                                         "earliest",
-                                         1_048_576L,
-                                         ConsistencyMode.EVENTUAL,
-                                         3,
-                                         2,
-                                         StreamCompression.NONE,
-                                         Option.none());
+        return declaredHot(StreamConfig.streamConfig(STREAM,
+                                                     1,
+                                                     RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_BYTES, 60_000L),
+                                                     "earliest",
+                                                     MAX_EVENT_BYTES,
+                                                     ConsistencyMode.EVENTUAL,
+                                                     3,
+                                                     2,
+                                                     StreamCompression.NONE,
+                                                     Option.none()),
+                           RING_CAPACITY,
+                           RING_BYTES);
     }
 
     private List<Long> fetch(long fromOffset) {

@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// Verifies Fix A: `Electing` and `ReElecting` schedule an independent peer-observation
 /// `ScheduledFuture` that calls `adoptLeaderFromKvIfPresent` at
@@ -84,7 +85,7 @@ class ElectingPeerObservationTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         () -> true,
-                                                        kvLeader::get,
+                                                        () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                         KV_SYNC_GRACE_DELAY,
                                                         observationInterval);
                     return ctx.dormant();

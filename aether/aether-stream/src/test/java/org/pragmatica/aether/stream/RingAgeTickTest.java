@@ -49,6 +49,10 @@ class RingAgeTickTest {
     /// (`StreamConfigParser`'s `time` arm): the count and byte defaults, so the policy is finite on all three axes.
     private static final long DEFAULT_MAX_COUNT = 100_000L;
     private static final long DEFAULT_MAX_BYTES = 256L * 1024 * 1024;
+    /// The `heavy` stream declares its hot window equal to its retention (the defaults above) and pins the event size to one floor
+    /// segment, so its first data region is the same whether the ring is sized from retention or from the declared hot window.
+    /// Its events are appended straight to the ring, which does not check the event size.
+    private static final long MAX_EVENT_BYTES = 256L * 1024;
 
     private final List<Long> handedOver = new CopyOnWriteArrayList<>();
     private final List<String> handedOverRings = new CopyOnWriteArrayList<>();
@@ -303,7 +307,9 @@ class RingAgeTickTest {
     /// D5: the byte cap bounds a batch whose events are large, whatever their number.
     @Test
     void evictRingsByAge_handsOverAtMostTheByteBatchPerRingPerTick() {
-        manager.createStream(StreamConfig.streamConfig("heavy", 1, timeTyped(HOUR_MS), "earliest"))
+        manager.createStream(HotWindowFixture.declaredHot(StreamConfig.streamConfig("heavy", 1, timeTyped(HOUR_MS), "earliest", MAX_EVENT_BYTES),
+                                                          DEFAULT_MAX_COUNT,
+                                                          DEFAULT_MAX_BYTES))
                .onFailure(cause -> fail(cause.message()));
 
         var ring = manager.partitionBuffer("heavy", 0).unwrap();

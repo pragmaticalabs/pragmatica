@@ -465,6 +465,7 @@ reap_publisher() {
         if ! wait "$PUBLISHER_PID"; then
             log_info "concurrent publisher ${PUBLISHER_PID} exited non-zero (expected when the owner dies mid-publish)"
         fi
+        proc_untrack "$PUBLISHER_PID"
         PUBLISHER_PID=""
     fi
 }
@@ -587,6 +588,7 @@ test_kill_owner_under_concurrent_publish() {
 
     publish_range_recording_acks "$N_PRE" "$N_DURING" "$ACKED_DURING" &
     PUBLISHER_PID=$!
+    proc_track "$PUBLISHER_PID"
 
     sleep 2   # let the concurrent publisher get into the window before the kill lands
 

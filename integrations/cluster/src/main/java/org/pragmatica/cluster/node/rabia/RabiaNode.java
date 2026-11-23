@@ -28,6 +28,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.consensus.net.NetworkMessage;
@@ -375,7 +376,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     /// Full-arity overload accepting a `currentLeaderFromKvSupplier` — pull-side complement
     /// to the push-based `KVStoreNotification.ValuePut<LeaderKey>` listener. Production wiring
-    /// (Aether's `AetherNode`) plumbs `() -> kvStore.get(LeaderKey.INSTANCE).map(LeaderValue::leader)`
+    /// (Aether's `AetherNode`) plumbs `LeaderKey` read as the committed `LeaderCommitted(leader, viewSequence)`
     /// so the leader-election FSM can adopt the cluster-committed leader on entry to
     /// `Electing` / `ReElecting`, even when the rejoining node missed the notification path.
     ///
@@ -393,7 +394,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               TlsConfig tlsConfig,
                                                               Supplier<Long> rabiaTermSupplier,
                                                               Predicate<NodeId> isDecommissioned,
-                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                               GenerationSnapshotSource snapshotSource,
                                                               Supplier<HlcTimestamp> hlcSupplier) {
         return rabiaNode(config,
@@ -433,7 +434,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               TlsConfig tlsConfig,
                                                               Supplier<Long> rabiaTermSupplier,
                                                               Predicate<NodeId> isDecommissioned,
-                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                               GenerationSnapshotSource snapshotSource,
                                                               Supplier<HlcTimestamp> hlcSupplier,
                                                               SyncHoldRegistry syncHoldRegistry,
@@ -476,7 +477,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               TlsConfig tlsConfig,
                                                               Supplier<Long> rabiaTermSupplier,
                                                               Predicate<NodeId> isDecommissioned,
-                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                               Predicate<NodeId> leaderPingFreshFn,
                                                               GenerationSnapshotSource snapshotSource,
                                                               Supplier<HlcTimestamp> hlcSupplier,
@@ -532,7 +533,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                  boolean useConsensusLeaderElection,
                                                                  RabiaPersistence<C> persistence,
                                                                  Supplier<Long> rabiaTermSupplier,
-                                                                 Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                                 Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                                  Predicate<NodeId> leaderPingFreshFn,
                                                                  SyncHoldRegistry syncHoldRegistry,
                                                                  SyncHoldConfig syncHoldConfig,

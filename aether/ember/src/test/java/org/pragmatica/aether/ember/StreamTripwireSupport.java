@@ -32,6 +32,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamWriteRouter;
@@ -72,6 +73,8 @@ final class StreamTripwireSupport {
     static final String NAMESPACE = "ember";
     static final String VERSION = "1.0.0";
     static final int PARTITION = 0;
+    private static final long SMALL_RING_DATA_BYTES = 64L * 1024 * 1024;
+    private static final long FIRST_SEGMENT_BYTES = 256L * 1024;
 
     record Response(int status, String body, long elapsedMs) {
         boolean acked() {
@@ -90,8 +93,20 @@ final class StreamTripwireSupport {
     static StreamConfig smallRingStream(String stream, int partitions, long maxCount, long maxAgeMs) {
         return StreamConfig.streamConfig(engineKey(stream),
                                          partitions,
-                                         RetentionPolicy.retentionPolicy(maxCount, 64L * 1024 * 1024, maxAgeMs),
+                                         RetentionPolicy.retentionPolicy(maxCount, SMALL_RING_DATA_BYTES, maxAgeMs),
                                          "earliest");
+    }
+
+    /// [#smallRingStream] for a test whose assertions need the ring to evict at exactly `maxCount`. The hot window is declared
+    /// equal to the retention, so the ring holds the same `maxCount` entries whether it is sized from retention or from the
+    /// declared window; `max_event_size` is pinned to the first segment (256 KiB) so the ring's first data region is the same
+    /// in both (the data region, 64 MiB, is above 256 KiB).
+    static StreamConfig evictingRingStream(String stream, int partitions, long maxCount, long maxAgeMs) {
+        var retention = RetentionPolicy.retentionPolicy(maxCount, SMALL_RING_DATA_BYTES, maxAgeMs);
+
+        return HotWindowFixture.declaredHot(StreamConfig.streamConfig(engineKey(stream), partitions, retention, "earliest", FIRST_SEGMENT_BYTES),
+                                            retention.maxCount(),
+                                            retention.maxBytes());
     }
 
     @SuppressWarnings("JBCT-EX-01")

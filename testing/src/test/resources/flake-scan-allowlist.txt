@@ -1,5 +1,5 @@
 # Shrink-only allow-list for FlakeScanTest: the census of test lines carrying a flake pattern when the scan landed.
-# Entry: <file>|<PATTERN>|<first 12 hex of SHA-1 of the whitespace-normalised stripped line>. One line per hit; identical lines repeat.
+# Entry: <file>|<PATTERN>|<first 12 hex of SHA-1 of the whitespace-normalised stripped line, or of the whole statement when the match spans lines>. One entry per hit; identical hits repeat.
 # Delete an entry when its line is fixed (the test fails on a stale entry) and lower COMMITTED_ENTRIES in FlakeScanTest to match.
 # Never add one: fix the line (wait with org.pragmatica.testing.PollUntil, take a free port, assert structurally, wait at least 5 s).
 aether/aether-control/src/test/java/org/pragmatica/aether/controller/RollbackManagerEngineStopGateTest.java|SLEEP|dbd5138dd5e1
@@ -1017,6 +1017,7 @@ integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineA
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineApplyContainmentTest.java|SLEEP|5a0ccdcc9414
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineApplyContainmentTest.java|SLEEP|5a0ccdcc9414
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineApplyContainmentTest.java|SLEEP|5e76dedaad83
+integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineApplyContainmentTest.java|WALL_CLOCK_BOUND|b9d0b4b45614
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineCleanupArmingTest.java|SLEEP|90c3c7c3942c
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineCompleteAfterDeliveryTest.java|SLEEP|5b3ac70bfffd
 integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaEngineCompleteAfterDeliveryTest.java|SLEEP|dbd5138dd5e1
@@ -1097,7 +1098,6 @@ integrations/dht/src/test/java/org/pragmatica/dht/DHTDeposedWriterSameEpochTest.
 integrations/dht/src/test/java/org/pragmatica/dht/DHTDeposedWriterSameEpochTest.java|SLEEP|d435bd61e73f
 integrations/dht/src/test/java/org/pragmatica/dht/DHTPendingWriteMarkTest.java|SLEEP|5282a1cdad3a
 integrations/dht/src/test/java/org/pragmatica/dht/DHTPendingWriteMarkTest.java|SLEEP|5282a1cdad3a
-integrations/dht/src/test/java/org/pragmatica/dht/DHTRebalancerTest.java|WALL_CLOCK_BOUND|13b8632ec425
 integrations/dht/src/test/java/org/pragmatica/dht/DHTRebalancerTest.java|WALL_CLOCK_BOUND|2e443593d9f7
 integrations/dht/src/test/java/org/pragmatica/dht/DHTRebalancerTest.java|WALL_CLOCK_BOUND|2e443593d9f7
 integrations/dht/src/test/java/org/pragmatica/dht/DHTRebalancerTest.java|WALL_CLOCK_BOUND|3cf9d942b45a
@@ -1127,6 +1127,7 @@ integrations/net/http-server/src/test/java/org/pragmatica/http/server/Http3Strea
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/Http3StreamWireTest.java|SLEEP|dbd5138dd5e1
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/HttpServerStopTest.java|SLEEP|1d26733fc094
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/HttpServerStopTest.java|SLEEP|1d26733fc094
+integrations/net/http-server/src/test/java/org/pragmatica/http/server/HttpServerStopTest.java|WALL_CLOCK_BOUND|35dacb6b27e5
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/RequestGateStreamWireTest.java|SLEEP|1d26733fc094
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/RequestGateStreamWireTest.java|SLEEP|37f10ef191e8
 integrations/net/http-server/src/test/java/org/pragmatica/http/server/RequestGateStreamWireTest.java|SLEEP|dbd5138dd5e1
@@ -1188,25 +1189,11 @@ integrations/storage/src/test/java/org/pragmatica/storage/StorageInstanceWarmDel
 integrations/storage/src/test/java/org/pragmatica/storage/WriteBehindIntegrationTest.java|SLEEP|9695949ba336
 integrations/storage/src/test/java/org/pragmatica/storage/WriteBehindQueueStopTest.java|SLEEP|5b3ac70bfffd
 integrations/storage/src/test/java/org/pragmatica/storage/WriteBehindTest.java|SLEEP|9695949ba336
-integrations/swim/src/test/java/org/pragmatica/swim/GossipDecryptObserverTest.java|SLEEP|1d26733fc094
-integrations/swim/src/test/java/org/pragmatica/swim/GossipDecryptObserverTest.java|SLEEP|1d26733fc094
-integrations/swim/src/test/java/org/pragmatica/swim/GossipDecryptObserverTest.java|SLEEP|1d26733fc094
-integrations/swim/src/test/java/org/pragmatica/swim/GossipDecryptObserverTest.java|SLEEP|1d26733fc094
-integrations/swim/src/test/java/org/pragmatica/swim/GossipDecryptObserverTest.java|SLEEP|5b3ac70bfffd
-integrations/swim/src/test/java/org/pragmatica/swim/GossipDecryptObserverTest.java|SLEEP|5b3ac70bfffd
-integrations/swim/src/test/java/org/pragmatica/swim/GossipDecryptObserverTest.java|SLEEP|dbd5138dd5e1
-integrations/swim/src/test/java/org/pragmatica/swim/NettySwimTransportBoundedShutdownTest.java|FIXED_PORT|224af39d6a81
-integrations/swim/src/test/java/org/pragmatica/swim/NettySwimTransportBoundedShutdownTest.java|FIXED_PORT|f096820be1fc
-integrations/swim/src/test/java/org/pragmatica/swim/NettySwimTransportBoundedShutdownTest.java|SLEEP|67579e27adcd
-integrations/swim/src/test/java/org/pragmatica/swim/NettySwimTransportDecryptObserverTest.java|SLEEP|dbd5138dd5e1
-integrations/swim/src/test/java/org/pragmatica/swim/NettySwimTransportDecryptObserverTest.java|SLEEP|dbd5138dd5e1
 integrations/swim/src/test/java/org/pragmatica/swim/SwimAnnounceSourcePinTest.java|SHORT_AWAIT|4d50d4a14400
 integrations/swim/src/test/java/org/pragmatica/swim/SwimAnnounceSourcePinTest.java|SHORT_AWAIT|dc46a8edc0d9
 integrations/swim/src/test/java/org/pragmatica/swim/SwimAnnounceSourcePinTest.java|SLEEP|770fa34320b7
 integrations/swim/src/test/java/org/pragmatica/swim/SwimAppGossipTest.java|SLEEP|16956120a624
 integrations/swim/src/test/java/org/pragmatica/swim/SwimAppGossipTest.java|SLEEP|1d26733fc094
-integrations/swim/src/test/java/org/pragmatica/swim/SwimBootTokenTest.java|SLEEP|19607f237565
-integrations/swim/src/test/java/org/pragmatica/swim/SwimBootTokenTest.java|SLEEP|67579e27adcd
 integrations/swim/src/test/java/org/pragmatica/swim/SwimDeathNoticeTest.java|SHORT_AWAIT|27f12a92211c
 integrations/swim/src/test/java/org/pragmatica/swim/SwimDeathNoticeTest.java|SHORT_AWAIT|27f12a92211c
 integrations/swim/src/test/java/org/pragmatica/swim/SwimDeathPathCoConfirmationTest.java|SHORT_AWAIT|27f12a92211c
@@ -1228,11 +1215,6 @@ integrations/swim/src/test/java/org/pragmatica/swim/SwimIsolationProbeTest.java|
 integrations/swim/src/test/java/org/pragmatica/swim/SwimIsolationProbeTest.java|SHORT_AWAIT|df09b99e4dd3
 integrations/swim/src/test/java/org/pragmatica/swim/SwimIsolationProbeTest.java|SHORT_AWAIT|df09b99e4dd3
 integrations/swim/src/test/java/org/pragmatica/swim/SwimIsolationProbeTest.java|SHORT_AWAIT|df09b99e4dd3
-integrations/swim/src/test/java/org/pragmatica/swim/SwimJoinSyncTest.java|SLEEP|67579e27adcd
-integrations/swim/src/test/java/org/pragmatica/swim/SwimLinkLostLivePeerTest.java|SHORT_AWAIT|b9c7aa9e8e0c
-integrations/swim/src/test/java/org/pragmatica/swim/SwimLinkLostLivePeerTest.java|SHORT_AWAIT|c0d311e6c95d
-integrations/swim/src/test/java/org/pragmatica/swim/SwimLinkLostLivePeerTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimLinkLostLivePeerTest.java|SHORT_AWAIT|dc46a8edc0d9
 integrations/swim/src/test/java/org/pragmatica/swim/SwimObservationStreamTest.java|SHORT_AWAIT|dc46a8edc0d9
 integrations/swim/src/test/java/org/pragmatica/swim/SwimObservationStreamTest.java|SHORT_AWAIT|dc46a8edc0d9
 integrations/swim/src/test/java/org/pragmatica/swim/SwimPortOffsetAndHealthOfTest.java|FIXED_PORT|b69c6af06760
@@ -1252,36 +1234,12 @@ integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolIdentityRefutati
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolIdentityRefutationTest.java|SHORT_AWAIT|dc46a8edc0d9
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolIdentityRefutationTest.java|SHORT_AWAIT|dc46a8edc0d9
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolIdentityRefutationTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|1e897e8f9fe4
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|dc46a8edc0d9
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|df09b99e4dd3
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|df09b99e4dd3
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|df09b99e4dd3
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|df09b99e4dd3
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|df09b99e4dd3
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|df09b99e4dd3
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|df09b99e4dd3
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SHORT_AWAIT|df09b99e4dd3
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolPhaseAwareSuppressionTest.java|SLEEP|addbe2a4b15b
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|07d68bd3ffd2
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|3166334ae954
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|4361b27a6468
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|4361b27a6468
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|5ba75b70f103
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|79506e065448
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|79506e065448
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|a5bc1e65c7f8
-integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|adaed95e03d0
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|e6bb6c278488
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|e6bb6c278488
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolTest.java|SLEEP|e6bb6c278488
@@ -1309,21 +1267,6 @@ integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolWave6Test.java|S
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolWave6Test.java|SLEEP|c0c54af36b1c
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolWave6Test.java|SLEEP|d6a739d3efd6
 integrations/swim/src/test/java/org/pragmatica/swim/SwimProtocolWave6Test.java|SLEEP|d6a739d3efd6
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|18b7aef11c9a
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|18b7aef11c9a
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|18b7aef11c9a
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|18b7aef11c9a
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|18b7aef11c9a
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|18b7aef11c9a
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|18b7aef11c9a
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|43f0b1568ff1
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|5dbf3192654a
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|5dbf3192654a
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|5dbf3192654a
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|5dbf3192654a
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|f3876a499625
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|f3876a499625
-integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SHORT_AWAIT|f3876a499625
 integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SLEEP|1d26733fc094
 integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SLEEP|5b3ac70bfffd
 integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SLEEP|9c589e87fe90
@@ -1338,7 +1281,6 @@ integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest
 integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SLEEP|ea5c2f14288c
 integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SLEEP|ea5c2f14288c
 integrations/swim/src/test/java/org/pragmatica/swim/SwimRetiredIdentityDeathTest.java|SLEEP|ea5c2f14288c
-integrations/swim/src/test/java/org/pragmatica/swim/SwimSelfIsolationLatchAtomicityTest.java|SLEEP|0a68201e2dec
 integrations/utility/src/test/java/org/pragmatica/utility/KSUIDTest.java|SLEEP|dbd5138dd5e1
 integrations/utility/src/test/java/org/pragmatica/utility/KSUIDTest.java|SLEEP|dbd5138dd5e1
 integrations/utility/src/test/java/org/pragmatica/utility/ULIDTest.java|SLEEP|dbd5138dd5e1

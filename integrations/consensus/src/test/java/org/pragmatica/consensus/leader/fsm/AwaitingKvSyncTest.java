@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// Verifies the cold-boot self-proposal race fix: when a fresh node boots into a cluster of
 /// peers booting simultaneously, the new `AwaitingKvSync` gate defers leader-proposal submission
@@ -70,7 +71,7 @@ class AwaitingKvSyncTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         () -> true,
-                                                        () -> kvLeader,
+                                                        () -> kvLeader.map(leader -> leaderCommitted(leader, 1L)),
                                                         kvSyncGraceDelay);
                     return ctx.dormant();
                 });

@@ -27,30 +27,35 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 
 import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.lang.reflect.Proxy;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.pragmatica.dht.storage.StorageEngine;
+import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.LockSupport;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.function.BooleanSupplier;
 import java.time.Duration;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.testlogging.LogCapture;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.LogEvent;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import org.pragmatica.consensus.net.WriteOutcome;
 
@@ -58,22 +63,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.ConsistentHashRing.consistentHashRing;
 import static org.pragmatica.dht.DHTNode.dhtNode;
 import static org.pragmatica.dht.DHTRebalancer.dhtRebalancer;
+import static org.pragmatica.dht.DepartureDirectRuns.bystander;
+import static org.pragmatica.dht.DepartureDirectRuns.delivererOf;
+import static org.pragmatica.dht.DepartureDirectRuns.direct;
+import static org.pragmatica.dht.DepartureDirectRuns.fiveNodeRing;
+import static org.pragmatica.dht.DepartureDirectRuns.sameDeliverer;
+import static org.pragmatica.dht.DepartureDirectRuns.sameRequest;
+import static org.pragmatica.dht.DepartureDirectRuns.soleKey;
+import static org.pragmatica.dht.DepartureDirectRuns.takeover;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class DHTRebalancerTest {
-    private static final NodeId LOCAL = new NodeId("local");
-    private static final NodeId PEER_A = new NodeId("peer-a");
-    private static final NodeId PEER_B = new NodeId("peer-b");
-    private static final NodeId PEER_C = new NodeId("peer-c");
-    private static final NodeId PEER_D = new NodeId("peer-d");
+    static final NodeId LOCAL = new NodeId("local");
+    static final NodeId PEER_A = new NodeId("peer-a");
+    static final NodeId PEER_B = new NodeId("peer-b");
+    static final NodeId PEER_C = new NodeId("peer-c");
+    static final NodeId PEER_D = new NodeId("peer-d");
     private static final NodeId REMOVED = new NodeId("removed");
 
-    private static byte[] key(String s) {
+    static byte[] key(String s) {
         return s.getBytes(StandardCharsets.UTF_8);
     }
 
-    private static byte[] value(String s) {
+    static byte[] value(String s) {
         return s.getBytes(StandardCharsets.UTF_8);
     }
 
@@ -322,7 +335,7 @@ class DHTRebalancerTest {
             network.ackVia(rebalancer::onMigrationDataAck);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             var pushes = network.migrationResponses();
             assertThat(pushes).isNotEmpty();
@@ -356,7 +369,7 @@ class DHTRebalancerTest {
             network.ackVia(rebalancer::onMigrationDataAck);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             return new WeakReference<>(observer);
         }
@@ -386,19 +399,18 @@ class DHTRebalancerTest {
             var rebalancer = dhtRebalancer(node, network, CONFIG);
             network.ackVia(rebalancer::onMigrationDataAck);
 
-            rebalancer.pushOnDeparture(new RecordingObserver()).await();
+            DeparturePushes.push(rebalancer, new RecordingObserver()).await();
 
             assertThat(network.targets()).doesNotContainAnyElementsOf(existingReplicas);
             assertThat(network.targets()).doesNotContain(LOCAL);
         }
 
         @Test
-        void pushOnDeparture_selfAlreadyPruned_pushesToWholeNewSet() {
+        void pushOnDeparture_selfAlreadyPruned_deliversWithinTheWholeNewSet() {
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, CONFIG);
             var replicationFactor = CONFIG.effectiveReplicationFactor(ring.nodeCount());
             var probe = findKeyWithNewcomer(ring, LOCAL, replicationFactor);
-            var origReplicas = existingReplicas(ring, probe, LOCAL, replicationFactor);
 
             node.putLocal(probe, value("payload")).await();
 
@@ -410,13 +422,13 @@ class DHTRebalancerTest {
             var rebalancer = dhtRebalancer(node, network, CONFIG);
             network.ackVia(rebalancer::onMigrationDataAck);
 
-            rebalancer.pushOnDeparture(new RecordingObserver()).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, new RecordingObserver()).await().onFailure(cause -> Assertions.fail(cause.message()));
 
-            // With self no longer identifiable in the ring, push to the WHOLE post-departure responsible
-            // set: newcomers get the chunk, and existing replicas tolerate the idempotent versioned
-            // re-put (the storm guard cannot apply without self in the ring).
-            assertThat(network.targets()).containsExactlyInAnyOrderElementsOf(postSet);
-            assertThat(network.targets()).containsAll(origReplicas);
+            // With self no longer identifiable in the ring, every node of the WHOLE post-departure responsible set is a target
+            // (the storm guard cannot apply without self in the ring). #3345: one acked holder among them makes the key safe, so
+            // the pages to the others are cancelled at the exit's re-plan and need not all be sent.
+            assertThat(network.targets()).isNotEmpty();
+            assertThat(postSet).containsAll(network.targets());
             assertThat(network.targets()).doesNotContain(LOCAL);
         }
 
@@ -433,7 +445,7 @@ class DHTRebalancerTest {
             var rebalancer = dhtRebalancer(node, network, CONFIG);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(timeSpan(200).millis(), observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, timeSpan(200).millis(), observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             assertThat(observer.incompleteCount()).isEqualTo(1);
             assertThat(observer.lastKeysAtRisk()).isGreaterThanOrEqualTo(1);
@@ -449,7 +461,7 @@ class DHTRebalancerTest {
             var rebalancer = dhtRebalancer(node, network, DHTConfig.FULL);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             assertThat(network.captured).isEmpty();
             assertThat(observer.incompleteCount()).isZero();
@@ -463,7 +475,7 @@ class DHTRebalancerTest {
             var rebalancer = dhtRebalancer(node, network, CONFIG);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             assertThat(network.captured).isEmpty();
             assertThat(observer.incompleteCount()).isZero();
@@ -524,7 +536,7 @@ class DHTRebalancerTest {
             network.ackVia(rebalancer::onMigrationDataAck);
             var observer = new RecordingObserver();
 
-            rebalancer.pushOnDeparture(timeSpan(2).seconds(), observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+            DeparturePushes.push(rebalancer, timeSpan(2).seconds(), observer).await().onFailure(cause -> Assertions.fail(cause.message()));
 
             assertThat(network.sends()).as("the dropped page was resent").hasSizeGreaterThanOrEqualTo(2);
             assertThat(network.ackedKeys()).contains(new String(probe, StandardCharsets.UTF_8));
@@ -534,7 +546,8 @@ class DHTRebalancerTest {
         private static final DHTConfig RF2 = new DHTConfig(2, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
         private static final DHTConfig RF3 = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
 
-        /// T3 (H1): 3 nodes at RF 3, one draining: both survivors hold the key, so it is replicated and never raises AT_RISK.
+        /// T3 (H1): 3 nodes at RF 3, one draining: both survivors hold the key, so a never-acked key is owed as REPLICATED: no
+        /// AT_RISK, and the report counts it apart from the sole copies (#3345: the class only shapes the events and the report).
         @Test
         @Timeout(20)
         void pushOnDeparture_threeNodeRf3_neverAcked_isReplicated() {
@@ -542,13 +555,13 @@ class DHTRebalancerTest {
             List.of(LOCAL, PEER_A, PEER_B).forEach(ring::addNode);
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF3);
             node.putLocal(key("t3"), value("payload")).await();
-            var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(300, 30_000, 50), Set.of());
+            var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(300, 0, 50), Set.of());
 
             assertThat(run.recorder().atRisk()).isEmpty();
-            assertThat(run.recorder().incomplete()).hasSize(1);
-            assertThat(run.recorder().incomplete().getFirst().sole()).isZero();
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 0));
             assertThat(run.report().soleCopyAtRisk()).isZero();
-            assertThat(run.elapsedMillis()).as("base window only, never the 30 s sole extra").isLessThan(10_000);
+            assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
+            assertThat(run.elapsedMillis()).as("ends at its own window, never a sole extra").isLessThan(10_000);
         }
 
         /// T4 (H1): five nodes at RF 3, a key with a newcomer: two survivors, replicated.
@@ -558,17 +571,18 @@ class DHTRebalancerTest {
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF3);
             node.putLocal(keyIncluding(ring, 3, LOCAL, "t4"), value("payload")).await();
-            var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(300, 30_000, 50), Set.of());
+            var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(300, 0, 50), Set.of());
 
             assertThat(run.recorder().atRisk()).isEmpty();
-            assertThat(run.recorder().incomplete()).hasSize(1);
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 0));
             assertThat(run.report().soleCopyAtRisk()).isZero();
             assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
-            assertThat(run.elapsedMillis()).isLessThan(10_000);
+            assertThat(run.elapsedMillis()).as("ends at its own window, never a sole extra").isLessThan(10_000);
         }
 
-        /// T4b: self already pruned. RF 1: sole (1 - 1 = 0). RF 3 on 5 nodes pruned to 4: replicated (3 - 1 = 2); and (E2) it is
-        /// never promoted at `baseDeadline`, because its plan-time survivors are unknown: no AT_RISK, and the push ends at base.
+        /// T4b: self already pruned. RF 1: sole (1 - 1 = 0). RF 3 on 5 nodes pruned to 4: replicated (3 - 1 = 2). The class shows
+        /// in the report and the incomplete event; the sole key, still owed at the deadline, raises AT_RISK there, the replicated
+        /// one never does.
         @Test
         @Timeout(20)
         void classify_pruneAhead_usesHolderLowerBound() {
@@ -579,22 +593,25 @@ class DHTRebalancerTest {
             var sole = push(soleNode, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(200, 300, 50), Set.of());
 
             assertThat(sole.report().soleCopyAtRisk()).isEqualTo(1);
-            assertThat(sole.recorder().atRisk()).containsExactly(1);
+            assertThat(sole.report().replicatedAtRisk()).isZero();
+            assertThat(sole.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
+            assertThat(sole.recorder().atRisk()).as("a sole key owed at the deadline").containsExactly(1);
 
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF3);
             node.putLocal(keyIncluding(ring, 3, LOCAL, "t4b-repl"), value("payload")).await();
             ring.removeNode(LOCAL);
-            var replicated = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(200, 2_000, 50), Set.of());
+            var replicated = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(200, 300, 50), Set.of());
 
             assertThat(replicated.report().soleCopyAtRisk()).isZero();
             assertThat(replicated.report().replicatedAtRisk()).isEqualTo(1);
-            assertThat(replicated.recorder().atRisk()).as("never promoted past base").isEmpty();
-            assertThat(replicated.elapsedMillis()).as("ends at base, not at base + sole extra").isLessThan(1_500);
+            assertThat(replicated.recorder().incomplete()).containsExactly(new Incomplete(1, 0));
+            assertThat(replicated.recorder().atRisk()).isEmpty();
         }
 
         /// E1: self is in the ring, RF 2, the co-drainer B already pruned. The ring put a node that never held the key into B's slot,
-        /// so `currentSet \ leaving` names one "survivor"; the bound subtracts the pruned B: sole, AT_RISK fires.
+        /// so `currentSet \ leaving` names one "survivor"; the bound subtracts the pruned B: sole. Never acked, it is still owed at
+        /// the deadline: AT_RISK fires there, then the incomplete report.
         @Test
         @Timeout(20)
         void classify_coDrainerPruned_selfInRing_isSole() {
@@ -604,11 +621,13 @@ class DHTRebalancerTest {
             ring.removeNode(PEER_B);
             var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(200, 300, 50), Set.of(PEER_B));
 
-            assertThat(run.recorder().atRisk()).containsExactly(1);
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
+            assertThat(run.recorder().atRisk()).as("a sole key owed at the deadline").containsExactly(1);
         }
 
-        /// T5: a sole page never acked is resent, raises AT_RISK exactly once, and is reported sole.
+        /// T5: a sole page never acked is resent until the deadline. It has a deliverer, so no AT_RISK at plan time (#3345); still
+        /// owed at the deadline, it raises AT_RISK once there, then the incomplete report, and nothing claims it delivered.
         @Test
         @Timeout(20)
         void pushOnDeparture_soleNeverAcked_atRiskOnceThenIncomplete() {
@@ -619,28 +638,36 @@ class DHTRebalancerTest {
             var run = push(node, network, T(200, 1_000, 50), Set.of());
 
             assertThat(network.sends()).hasSizeGreaterThanOrEqualTo(2);
-            assertThat(run.recorder().atRisk()).containsExactly(1);
+            assertThat(run.recorder().atRisk()).as("raised once, at the deadline").containsExactly(1);
             assertThat(run.recorder().delivered()).isEmpty();
             assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
         }
 
-        /// T6: the target starts acking once AT_RISK was raised; DELIVERED closes it and nothing is reported.
+        /// T6: a sole key with no deliverer raises AT_RISK at plan time; a node joining from the at-risk callback gives it one, its
+        /// ack makes it safe, DELIVERED closes the at-risk and nothing is reported incomplete.
         @Test
         @Timeout(20)
         void pushOnDeparture_soleAckReleasedOnAtRisk_deliveredRecovers() {
-            var ring = fiveNodeRing();
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            ring.addNode(LOCAL);
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
-            node.putLocal(soleKey(ring, "t6"), value("payload")).await();
-            var gate = new AtomicBoolean(false);
-            var network = ScriptedNetwork.scripted((_, _) -> gate.get() ? Reply.ACK : Reply.DROP);
-            var recorder = new EventRecorder(() -> gate.set(true));
+            node.putLocal(key("t6"), value("payload")).await();
+            var network = ScriptedNetwork.scriptedOver(ring, (_, _) -> Reply.ACK);
+            var recorder = new EventRecorder(() -> join(ring, network, PEER_A));
             var run = push(node, network, T(200, 5_000, 50), Set.of(), recorder);
 
             assertThat(recorder.atRisk()).containsExactly(1);
             assertThat(recorder.delivered()).containsExactly(1);
             assertThat(recorder.incomplete()).isEmpty();
             assertThat(run.report().soleCopyAtRisk()).isZero();
+            assertThat(network.sends()).isNotEmpty().allSatisfy(sent -> assertThat(sent.target()).isEqualTo(PEER_A));
+        }
+
+        /// `member` joins `ring`, followed by the rebalancer's `onViewChange`, as `DHTTopologyListener` does after `changeRing`.
+        private static void join(ConsistentHashRing<NodeId> ring, ScriptedNetwork network, NodeId member) {
+            ring.addNode(member);
+            network.signalViewChange();
         }
 
         /// T7 (H2): a refused send proves nothing about the ring, so the SAME target is retried; the push never carries a stray.
@@ -680,8 +707,8 @@ class DHTRebalancerTest {
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
         }
 
-        /// T8 (H2): the target leaves the ring after losing the first push; the page goes to the next responsible node, and the push
-        /// carries the removed node in `leaving`.
+        /// T8 (H2): the target leaves the ring after losing the first push; the ring change reaches the run as `onViewChange` (as
+        /// `DHTTopologyListener` delivers it), the page goes to the next responsible node, and its `view` no longer has the removed node.
         @Test
         @Timeout(20)
         void pushOnDeparture_targetRemovedFromRing_retargetsWithLeaving() {
@@ -689,14 +716,17 @@ class DHTRebalancerTest {
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             var probe = soleKey(ring, "t8");
             node.putLocal(probe, value("payload")).await();
-            var network = ScriptedNetwork.scripted((index, sent) -> index == 0 ? removeAndDrop(ring, sent.target()) : Reply.ACK);
+            var network = ScriptedNetwork.scriptedOver(ring, (index, sent) -> index == 0 ? removeAndDrop(ring, sent.target()) : Reply.ACK);
             var run = push(node, network, T(2_000, 2_000, 50), Set.of());
             var first = network.sends().getFirst().target();
             var expected = ring.nodesFor(probe, 1, candidate -> !candidate.equals(LOCAL)).getFirst();
 
             assertThat(network.sends()).hasSize(2);
             assertThat(network.sends().get(1).target()).isEqualTo(expected).isNotEqualTo(first);
-            assertThat(network.sends().get(1).response().leaving()).contains(first, LOCAL);
+            // #3345: `leaving` is L (self + drain set); the removed target reaches the receiver as its absence from the page's `view`
+            // (the pusher's ring after the change), so the receiver still computes the post-removal placement (#1818 L1).
+            assertThat(network.sends().get(1).response().leaving()).containsExactly(LOCAL);
+            assertThat(network.sends().get(1).response().view()).doesNotContain(first).contains(expected);
             assertThat(network.ackedKeys()).contains(new String(probe, StandardCharsets.UTF_8));
             assertThat(run.report().soleCopyAtRisk()).isZero();
         }
@@ -732,11 +762,12 @@ class DHTRebalancerTest {
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             node.putLocal(soleKey(ring, "t10"), value("payload")).await();
             var network = ScriptedNetwork.scripted((_, _) -> Reply.NACK);
-            var tuning = new DeparturePushTuning(ms(100), ms(1_200), ms(50), ms(400), ms(200));
+            var tuning = timing(100, 1_200, 50, 400, 200);
             var run = push(node, network, tuning, Set.of());
 
             assertThat(network.sends()).hasSizeBetween(2, 12);
-            assertThat(run.recorder().atRisk()).containsExactly(1);
+            assertThat(run.recorder().atRisk()).as("a sole key owed at the deadline").containsExactly(1);
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
         }
 
@@ -750,10 +781,13 @@ class DHTRebalancerTest {
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             node.putLocal(key("t11"), value("payload")).await();
             var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
-            var run = push(node, network, T(5_000, 30_000, 50), Set.of(PEER_A));
+            var run = push(node, network, T(300, 700, 50), Set.of(PEER_A));
 
             assertThat(network.sends()).isNotEmpty().allSatisfy(sent -> assertThat(sent.target()).isEqualTo(PEER_A));
+            assertThat(network.ackedKeys()).contains("t11");
             assertThat(run.recorder().atRisk()).containsExactly(1);
+            assertThat(run.recorder().delivered()).isEmpty();
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
             assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
         }
 
@@ -777,7 +811,7 @@ class DHTRebalancerTest {
         }
 
         /// T12 (N2): one target owed a sole key and a replicated key. Every sole page is lost; the replicated page travels in its own
-        /// chain, so it is acked within the base window.
+        /// chain, so it is acked within the base window; the deadline probe (P3) confirms its holder, so only the sole key is owed.
         @Test
         @Timeout(20)
         void pushOnDeparture_stuckSolePage_doesNotStarveReplicatedChain() {
@@ -791,26 +825,127 @@ class DHTRebalancerTest {
             var run = push(node, network, T(300, 1_000, 50), Set.of(PEER_C));
 
             assertThat(network.ackedKeys()).contains(new String(shape.replicated(), StandardCharsets.UTF_8));
-            assertThat(run.report().replicatedAtRisk()).isZero();
+            assertThat(run.report().replicatedAtRisk()).as("acked, then confirmed by the deadline probe (P3)").isZero();
             assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 1));
         }
 
-        /// T13 (F7): the only plan-time survivor E leaves the ring before `baseDeadline`; the replicated key is promoted to sole, raises
-        /// AT_RISK, and its page keeps being resent past base.
+        /// #3345 P1 (bound): one page of 8 keys bound for the same target, one of which the receiver nacks every time (a whole-page
+        /// nack, as the receiver gives for one entry it cannot take). The page is split in halves down to single keys: every
+        /// good key is acked, the bad key alone stays unacked; no exit runs while it is owed, so the deadline probe (P3) confirms
+        /// the acked keys' holder and the bad key alone is owed and reported. Bound: sends other than the bad key's single-key page
+        /// <= 2 * log2(N) = 6 for N = 8 (the first page, two halves on each of the log2(N) - 1 levels above the leaf, and the bad
+        /// key's good sibling leaf), and the bad key's own resends back off.
         @Test
         @Timeout(20)
-        void pushOnDeparture_existingReplicaRemovedBeforeBase_promotedToSole() {
+        void pushOnDeparture_nackedPageWithOneBadKey_splitsDownToTheKey_boundedSends() {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            List.of(LOCAL, PEER_A).forEach(ring::addNode);
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            var keys = IntStream.range(0, 8).mapToObj(i -> "p1-" + i).toList();
+            keys.forEach(text -> node.putLocal(key(text), value("payload")).await());
+            var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, "p1-5") ? Reply.NACK : Reply.ACK);
+            var run = push(node, network, timing(100, 1_200, 50, 400, 200), Set.of());
+
+            var otherThanTheBadKey = network.sends().stream().filter(sent -> !isOnly(sent, "p1-5")).count();
+
+            assertThat(network.sends().getFirst().response().entries()).as("control: the 8 keys travel in one page").hasSize(8);
+            assertThat(network.ackedKeys()).as("every good key is safe").containsAll(keys.stream().filter(text -> !text.equals("p1-5")).toList());
+            assertThat(network.ackedKeys()).doesNotContain("p1-5");
+            assertThat(otherThanTheBadKey).as("at most log2(8) split levels, two pages each, plus the first page").isLessThanOrEqualTo(6);
+            assertThat(network.sends().size() - otherThanTheBadKey).as("the bad key alone backs off").isBetween(1L, 12L);
+            assertThat(run.recorder().incomplete()).as("acked keys confirmed by the deadline probe (P3)").containsExactly(new Incomplete(1, 1));
+            assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+        }
+
+        /// #3345 P1 (transient): the first page of 4 keys is nacked once, then every page is acked. The nack carries no reason
+        /// (`MigrationDataAck` has only `applied`), so the push cannot tell a refusal from a passing back-off nack and splits
+        /// once: both halves are accepted and nothing is split further (3 sends: no split storm). Every key is delivered.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_transientNack_oneSplitThenAccepted_noSplitStorm() {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            List.of(LOCAL, PEER_A).forEach(ring::addNode);
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            var keys = IntStream.range(0, 4).mapToObj(i -> "p1t-" + i).toList();
+            keys.forEach(text -> node.putLocal(key(text), value("payload")).await());
+            var network = ScriptedNetwork.scripted((index, _) -> index == 0 ? Reply.NACK : Reply.ACK);
+            var run = push(node, network, timing(100, 1_200, 50, 400, 200), Set.of());
+
+            assertThat(network.sends().getFirst().response().entries()).as("control: the 4 keys travel in one page").hasSize(4);
+            assertThat(network.sends()).as("the first page and its two halves, nothing more").hasSize(3);
+            assertThat(network.ackedKeys()).containsExactlyInAnyOrderElementsOf(keys);
+            assertThat(run.recorder().incomplete()).isEmpty();
+            assertThat(run.report().owed()).isZero();
+        }
+
+        /// #3345 P1 (cost of the split): a target that nacks every page. As no ack field tells a refusal from a back-off nack, every
+        /// nack splits; the cost stays bounded. Bound: sends of several keys = N - 1 = 7 for N = 8 (each inner page of the split
+        /// tree is sent once, never resent), and each key's single-key sends <= 1 + log2(cap / b0) + ceil(W / cap) = 1 + 3 + 4 = 8
+        /// (b0 = 50 ms first pause, cap = 400 ms, W = 1300 ms window): no storm, and every key stays owed.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_targetNacksEverything_innerPagesNMinus1_singleKeySendsBackOff() {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            List.of(LOCAL, PEER_A).forEach(ring::addNode);
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            var keys = IntStream.range(0, 8).mapToObj(i -> "p1n-" + i).toList();
+            keys.forEach(text -> node.putLocal(key(text), value("payload")).await());
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.NACK);
+            var run = push(node, network, timing(100, 1_200, 50, 400, 200), Set.of());
+
+            var multiKey = network.sends().stream().filter(sent -> sent.response().entries().size() > 1).count();
+
+            assertThat(network.sends().getFirst().response().entries()).as("control: the 8 keys travel in one page").hasSize(8);
+            assertThat(multiKey).as("each inner page of the split tree sent once: N - 1").isEqualTo(7);
+            keys.forEach(text -> assertThat(network.sends().stream().filter(sent -> isOnly(sent, text)).count())
+                                     .as("single-key sends of %s", text)
+                                     .isBetween(1L, 8L));
+            assertThat(network.ackedKeys()).isEmpty();
+            assertThat(run.report().owed()).isEqualTo(8);
+        }
+
+        /// #3345 P1 (cost of splitting on silence): a target that never answers. A timed-out page of several keys splits like a
+        /// nacked one. Bound: sends of several keys = N - 1 = 7 for N = 8, and each key's single-key sends <= 1 + ceil(W / resend)
+        /// = 1 + 26 = 27 (W = 1300 ms window, resend = 50 ms): every key stays owed.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_silentTarget_innerPagesNMinus1_singleKeySendsBoundedByWindowOverResend() {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            List.of(LOCAL, PEER_A).forEach(ring::addNode);
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+            var keys = IntStream.range(0, 8).mapToObj(i -> "p1s-" + i).toList();
+            keys.forEach(text -> node.putLocal(key(text), value("payload")).await());
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.DROP);
+            var run = push(node, network, timing(100, 1_200, 50, 400, 200), Set.of());
+
+            var multiKey = network.sends().stream().filter(sent -> sent.response().entries().size() > 1).count();
+
+            assertThat(network.sends().getFirst().response().entries()).as("control: the 8 keys travel in one page").hasSize(8);
+            assertThat(multiKey).as("each inner page of the split tree sent once: N - 1").isEqualTo(7);
+            keys.forEach(text -> assertThat(network.sends().stream().filter(sent -> isOnly(sent, text)).count())
+                                     .as("single-key sends of %s", text)
+                                     .isBetween(1L, 27L));
+            assertThat(run.report().owed()).isEqualTo(8);
+        }
+
+        /// T13:the only plan-time survivor A leaves the ring at the first send. A plan-time survivor is no holder (#3345): without an
+        /// ack the key stays owed, its page keeps being resent after A left, and the report counts it owed (as classed at plan time,
+        /// replicated; the F7 promotion to sole is gone). It has a deliverer, so no AT_RISK.
+        @Test
+        @Timeout(20)
+        void pushOnDeparture_existingReplicaRemovedMidPush_staysOwed() {
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF2);
             var probe = keyHeldBy(ring, 2, Set.of(LOCAL, PEER_A), "t13");
             node.putLocal(probe, value("payload")).await();
-            var network = ScriptedNetwork.scripted((index, _) -> index == 0 ? removeAndDrop(ring, PEER_A) : Reply.DROP);
+            var network = ScriptedNetwork.scriptedOver(ring, (index, _) -> index == 0 ? removeAndDrop(ring, PEER_A) : Reply.DROP);
             var t0 = System.nanoTime();
-            var run = push(node, network, T(1_500, 3_000, 50), Set.of());
+            var run = push(node, network, T(1_500, 500, 50), Set.of());
 
-            assertThat(run.recorder().atRisk()).containsExactly(1);
             assertThat(network.sends()).anyMatch(sent -> sent.atNanos() - t0 > ms(1_500).nanos());
-            assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
+            assertThat(run.recorder().atRisk()).isEmpty();
+            assertThat(run.recorder().incomplete()).containsExactly(new Incomplete(1, 0));
+            assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
         }
 
         /// T14 (F2): a window already used up sends nothing and reports every sole key.
@@ -824,8 +959,8 @@ class DHTRebalancerTest {
             var recorder = new EventRecorder(() -> {});
             var started = System.nanoTime();
             var report = dhtRebalancer(node, network, RF1).pushOnDeparture(DepartureWindow.departureWindow(started - ms(1).nanos()),
-                                                                        T(200, 300, 50),
-                                                                        Set.of(),
+                                                                        T(200, 300, 50).tuning(),
+                                                                        Set::of,
                                                                         recorder)
                                                           .await()
                                                           .unwrap();
@@ -845,8 +980,8 @@ class DHTRebalancerTest {
             var recorder = new EventRecorder(() -> {});
             var report = dhtRebalancer(node, ScriptedNetwork.scripted((_, _) -> Reply.ACK), RF1)
                              .pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(300).nanos()),
-                                              T(10_000, 10_000, 50),
-                                              Set.of(),
+                                              T(10_000, 10_000, 50).tuning(),
+                                              Set::of,
                                               recorder)
                              .await()
                              .unwrap();
@@ -866,8 +1001,8 @@ class DHTRebalancerTest {
             var started = System.nanoTime();
             var report = dhtRebalancer(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), RF1)
                              .pushOnDeparture(DepartureWindow.departureWindow(started + ms(2_500).nanos()),
-                                              T(10_000, 10_000, 50),
-                                              Set.of(),
+                                              T(10_000, 10_000, 50).tuning(),
+                                              Set::of,
                                               new EventRecorder(() -> {}))
                              .await()
                              .unwrap();
@@ -888,8 +1023,8 @@ class DHTRebalancerTest {
             var started = System.nanoTime();
 
             dhtRebalancer(node, network, RF1).pushOnDeparture(DepartureWindow.departureWindow(started + ms(60_000).nanos(), halted::get),
-                                                              T(10_000, 10_000, 50),
-                                                              Set.of(),
+                                                              T(10_000, 10_000, 50).tuning(),
+                                                              Set::of,
                                                               new EventRecorder(() -> {}))
                                              .await();
 
@@ -911,7 +1046,7 @@ class DHTRebalancerTest {
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             node.putLocal(soleKey(ring, "t17"), value("payload")).await();
             var network = ScriptedNetwork.scripted((index, _) -> index == 0 ? Reply.NACK : Reply.ACK);
-            var tuning = new DeparturePushTuning(ms(10_000), ms(10_000), ms(5_000), ms(50), ms(200));
+            var tuning = timing(10_000, 10_000, 5_000, 50, 200);
             var run = push(node, network, tuning, Set.of());
 
             assertThat(network.sends()).hasSize(2);
@@ -919,38 +1054,26 @@ class DHTRebalancerTest {
             assertThat(run.report().soleCopyAtRisk()).isZero();
         }
 
-        /// #2684 F1: the base-deadline re-evaluation raises AT_RISK, and its observer call is held open; the last sole ack lands
-        /// meanwhile and the push finishes. The acking thread returns without waiting for the held call (the transition lock is never
-        /// held across an observer call), DELIVERED is not called before AT_RISK returned, and the push does not resolve while the
-        /// AT_RISK call is in flight: its event is awaited like every other.
+        /// #2684 F1: AT_RISK is raised at plan time (the drainer is the ring's only node, so the sole key has no deliverer, #3345) and
+        /// its observer call is held open; a node joins, its page is acked and the push finishes meanwhile. The acking thread returns
+        /// without waiting for the held call (the transition lock is never held across an observer call), DELIVERED is not called
+        /// before AT_RISK returned, and the push does not resolve while the AT_RISK call is in flight: its event is awaited like
+        /// every other.
         @Test
         @Timeout(30)
         void pushOnDeparture_atRiskCallInFlightAtLastAck_resolvesOnlyAfterAtRiskThenDelivered() throws InterruptedException {
-            var ring = fiveNodeRing();
-            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
-            node.putLocal(soleKey(ring, "f1"), value("payload")).await();
-            var network = ScriptedNetwork.scripted((_, _) -> Reply.DROP);
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
             var recorder = new EventRecorder(() -> holdOpen(entered, release));
-            var rebalancer = dhtRebalancer(node, network, RF1);
-            var push = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos()),
-                                                  new DeparturePushTuning(ms(300), ms(10_000), ms(10_000), ms(10_000), ms(200)),
-                                                  Set.of(),
-                                                  recorder);
+            var held = HeldAtRisk.heldAtRisk(recorder, "f1");
 
-            assertThat(entered.await(10, TimeUnit.SECONDS)).as("control: the re-evaluation's AT_RISK call is in flight").isTrue();
-            var sent = network.sends().getFirst();
-            var acker = Thread.ofPlatform()
-                              .start(() -> rebalancer.onMigrationDataAck(new DHTMessage.MigrationDataAck(sent.response().requestId(),
-                                                                                                         sent.target(),
-                                                                                                         true)));
-            var ackReturned = acker.join(Duration.ofSeconds(2));
-            var resolvedWhileHeld = push.await(ms(1_000)).isSuccess();
+            assertThat(entered.await(10, TimeUnit.SECONDS)).as("control: the plan-time AT_RISK call is in flight").isTrue();
+            var ackReturned = held.joinAndAck();
+            var resolvedWhileHeld = held.push().await(ms(1_000)).isSuccess();
             var deliveredWhileHeld = recorder.delivered();
 
             release.countDown();
-            var report = push.await().unwrap();
+            var report = held.push().await().unwrap();
 
             assertThat(ackReturned).as("the acking thread never waits for an observer call").isTrue();
             assertThat(deliveredWhileHeld).as("DELIVERED is not called before AT_RISK returned").isEmpty();
@@ -960,99 +1083,117 @@ class DHTRebalancerTest {
             assertThat(report.soleCopyAtRisk()).isZero();
         }
 
-        /// #2684 P1: the winner of the re-evaluation is held in the log line of its AT_RISK raise, an effect that runs BEFORE the
-        /// observer call, outside the transition lock. The event was decided under the lock, so it is already in `events` (and
-        /// so is the DELIVERED event the last ack decides next): the push must not resolve while the winner is still draining. A
-        /// registration done by the effect itself would leave `events` empty here and the push would resolve at once.
+        /// #2684 P1: the AT_RISK raise is held in its log line, an effect that runs BEFORE the observer call, outside the transition
+        /// lock. The event was decided under the lock, so it is already in `events` (and so is the DELIVERED event the joined node's
+        /// ack decides next): the push must not resolve while the raising thread is still draining its effects.
         @Test
         @Timeout(30)
         void pushOnDeparture_winnerHeldBeforeItsObserverCall_pushWaitsForTheRegisteredEvents() throws InterruptedException {
-            var ring = fiveNodeRing();
-            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
-            node.putLocal(soleKey(ring, "p1"), value("payload")).await();
-            var network = ScriptedNetwork.scripted((_, _) -> Reply.DROP);
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
             var recorder = new EventRecorder(() -> {});
-            var rebalancer = dhtRebalancer(node, network, RF1);
 
             try (var _ = LogCapture.capture(DeparturePushRun.class.getName(), Level.WARN, true, holdAtRiskLog(entered, release, _ -> {}))) {
-                var push = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos()),
-                                                      new DeparturePushTuning(ms(300), ms(10_000), ms(10_000), ms(10_000), ms(200)),
-                                                      Set.of(),
-                                                      recorder);
+                var held = HeldAtRisk.heldAtRisk(recorder, "p1");
 
-                assertThat(entered.await(10, TimeUnit.SECONDS)).as("control: the winner is held in its AT_RISK log line").isTrue();
-                var sent = network.sends().getFirst();
-                var acker = Thread.ofPlatform()
-                                  .start(() -> rebalancer.onMigrationDataAck(new DHTMessage.MigrationDataAck(sent.response().requestId(),
-                                                                                                             sent.target(),
-                                                                                                             true)));
-                var ackReturned = acker.join(Duration.ofSeconds(2));
-                var resolvedWhileHeld = push.await(ms(1_000)).isSuccess();
+                assertThat(entered.await(10, TimeUnit.SECONDS)).as("control: the raise is held in its AT_RISK log line").isTrue();
+                var ackReturned = held.joinAndAck();
+                var resolvedWhileHeld = held.push().await(ms(1_000)).isSuccess();
                 var atRiskWhileHeld = recorder.atRisk();
 
                 release.countDown();
-                var report = push.await().unwrap();
+                var report = held.push().await().unwrap();
 
-                assertThat(ackReturned).as("the acking thread never waits for the draining winner").isTrue();
+                assertThat(ackReturned).as("the acking thread never waits for the draining raise").isTrue();
                 assertThat(atRiskWhileHeld).as("control: the observer call is still behind the held log line").isEmpty();
-                assertThat(resolvedWhileHeld).as("the push does not resolve while the winner's registered events are pending").isFalse();
+                assertThat(resolvedWhileHeld).as("the push does not resolve while its registered events are pending").isFalse();
                 assertThat(recorder.atRisk()).containsExactly(1);
                 assertThat(recorder.delivered()).containsExactly(1);
                 assertThat(report.soleCopyAtRisk()).isZero();
             }
         }
 
-        /// #2684 P1: effects run in the order their transitions queued them, across transitions. The re-evaluation's promotion
-        /// (log, AT_RISK log, AT_RISK call) is held in its second effect; the last ack's transition queues its DELIVERED effects
-        /// meanwhile. Whatever the winner already ran stays before them, and whatever it has left runs before them too: the
-        /// promotion line and the AT_RISK call precede the DELIVERED line and call.
+        /// #2684 P1: effects run in the order their transitions queued them, across transitions. The plan-time AT_RISK raise (log
+        /// line, observer call) is held in its log line; the joined node's ack and the exit queue the DELIVERED effects meanwhile.
+        /// The AT_RISK line and call precede the DELIVERED line and call.
         @Test
         @Timeout(30)
         void pushOnDeparture_effectsOfTwoTransitionsQueuedBeforeOneDrain_runInTransitionOrder() throws InterruptedException {
-            var ring = fiveNodeRing();
-            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF2);
-            var probe = keyHeldBy(ring, 2, Set.of(LOCAL, PEER_A), "p1order");
-            node.putLocal(probe, value("payload")).await();
-            var firstSend = new CountDownLatch(1);
-            var network = ScriptedNetwork.scripted((_, _) -> countDownThenDrop(firstSend));
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
             var trace = new CopyOnWriteArrayList<String>();
             var recorderRef = new AtomicReference<EventRecorder>();
             var recorder = new EventRecorder(() -> trace.add("AT_RISK call, delivered calls seen: " + recorderRef.get().delivered().size()));
             recorderRef.set(recorder);
-            var rebalancer = dhtRebalancer(node, network, node.config());
 
             try (var _ = LogCapture.capture(DeparturePushRun.class.getName(),
                                             Level.INFO,
                                             true,
                                             holdAtRiskLog(entered, release, line -> trace.add(line + ", delivered calls seen: " + recorder.delivered().size())))) {
-                var push = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos()),
-                                                      T(300, 10_000, 10_000),
-                                                      Set.of(),
-                                                      recorder);
+                var held = HeldAtRisk.heldAtRisk(recorder, "p1order");
 
-                assertThat(firstSend.await(10, TimeUnit.SECONDS)).as("control: the replicated page was sent").isTrue();
-                ring.removeNode(PEER_A);
-                assertThat(entered.await(10, TimeUnit.SECONDS)).as("control: the winner is held in its AT_RISK log line").isTrue();
-                var sent = network.sends().getFirst();
+                assertThat(entered.await(10, TimeUnit.SECONDS)).as("control: the raise is held in its AT_RISK log line").isTrue();
+                var ackReturned = held.joinAndAck();
+
+                release.countDown();
+                held.push().await();
+
+                assertThat(ackReturned).as("control: the ack was decided while the raise was held").isTrue();
+                assertThat(recorder.delivered()).as("control: the delivered event was raised").containsExactly(1);
+                assertThat(trace).containsExactly("without a holder, delivered calls seen: 0",
+                                                  "AT_RISK call, delivered calls seen: 0",
+                                                  "every sole-copy chunk has a holder, delivered calls seen: 0");
+            }
+        }
+
+        /// A push whose sole key has no deliverer at plan time (the drainer is the ring's only node): AT_RISK is raised at plan
+        /// time on the thread that enumerated the inventory, never on the test thread. [#joinAndAck] then gives the key a deliverer.
+        private record HeldAtRisk(ConsistentHashRing<NodeId> ring,
+                                  ScriptedNetwork network,
+                                  DHTRebalancer rebalancer,
+                                  Promise<DeparturePushReport> push) {
+            static HeldAtRisk heldAtRisk(EventRecorder recorder, String keyText) {
+                var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+                ring.addNode(LOCAL);
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                node.putLocal(key(keyText), value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, _) -> Reply.DROP);
+                var rebalancer = dhtRebalancer(node, network, RF1);
+                network.ackVia(rebalancer::onMigrationDataAck);
+                var push = onAnotherThread(() -> rebalancer.pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos()),
+                                                                             timing(300, 10_000, 10_000, 10_000, 200).tuning(),
+                                                                             Set::of,
+                                                                             recorder));
+                return new HeldAtRisk(ring, network, rebalancer, push);
+            }
+
+            /// PEER_A joins, followed by `onViewChange` as `DHTTopologyListener` does; the page it is sent is acked from another
+            /// thread. True iff the acking thread returned within 2 s.
+            boolean joinAndAck() throws InterruptedException {
+                ring.addNode(PEER_A);
+                Thread.ofPlatform().start(rebalancer::onViewChange);
+                var sent = firstSend();
                 var acker = Thread.ofPlatform()
                                   .start(() -> rebalancer.onMigrationDataAck(new DHTMessage.MigrationDataAck(sent.response().requestId(),
                                                                                                              sent.target(),
                                                                                                              true)));
-                var ackReturned = acker.join(Duration.ofSeconds(2));
+                return acker.join(Duration.ofSeconds(2));
+            }
 
-                release.countDown();
-                push.await();
+            private TimedSend firstSend() {
+                var until = System.nanoTime() + ms(10_000).nanos();
+                while (network.sends().isEmpty() && System.nanoTime() < until) {
+                    LockSupport.parkNanos(1_000_000);
+                }
+                assertThat(network.sends()).as("control: the joined node was paged").isNotEmpty();
+                assertThat(network.sends().getFirst().target()).isEqualTo(PEER_A);
+                return network.sends().getFirst();
+            }
 
-                assertThat(ackReturned).as("control: the last ack was decided while the winner was held").isTrue();
-                assertThat(recorder.delivered()).as("control: the delivered event was raised").containsExactly(1);
-                assertThat(trace).containsExactly("lost every plan-time survivor, delivered calls seen: 0",
-                                                  "not yet acknowledged, delivered calls seen: 0",
-                                                  "AT_RISK call, delivered calls seen: 0",
-                                                  "every sole-copy chunk was acknowledged, delivered calls seen: 0");
+            private static Promise<DeparturePushReport> onAnotherThread(Supplier<Promise<DeparturePushReport>> start) {
+                Promise<DeparturePushReport> push = Promise.promise();
+                Thread.ofVirtual().start(() -> start.get().onResult(push::resolve));
+                return push;
             }
         }
 
@@ -1067,62 +1208,17 @@ class DHTRebalancerTest {
                 if (!tag.equals("other")) {
                     tagger.accept(tag);
                 }
-                if (message.contains("not yet acknowledged")) {
+                if (message.contains("without a holder")) {
                     holdOpen(entered, release);
                 }
             };
         }
 
         private static String tagOf(String message) {
-            return Stream.of("lost every plan-time survivor", "not yet acknowledged", "every sole-copy chunk was acknowledged")
+            return Stream.of("without a holder", "every sole-copy chunk has a holder")
                          .filter(message::contains)
                          .findFirst()
                          .orElse("other");
-        }
-
-        /// #2684 F2: replicated key {LOCAL, A}; A leaves the ring before `baseDeadline`, so the re-evaluation must promote the key to
-        /// sole and its page continue to `soleDeadline`. The re-evaluation that wins is held inside its transition, after claiming the
-        /// re-evaluation and before reading the ring: a helper holds the ring's write lock. The page's chain, released only once the
-        /// winner is queued on that lock, then checks its deadline past base. It must wait for the promotion, not stop the page.
-        @Test
-        @Timeout(40)
-        void pushOnDeparture_reevaluationLoserPastBase_waitsForThePromotion() throws InterruptedException {
-            var ring = fiveNodeRing();
-            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF2);
-            var probe = keyHeldBy(ring, 2, Set.of(LOCAL, PEER_A), "f2");
-            node.putLocal(probe, value("payload")).await();
-            var probeText = new String(probe, StandardCharsets.UTF_8);
-            var firstSend = new CountDownLatch(1);
-            var network = ScriptedNetwork.scripted((_, _) -> countDownThenDrop(firstSend));
-            var ringLock = ringLock(ring);
-            var lockHeld = new CountDownLatch(1);
-            var releaseLock = new CountDownLatch(1);
-            var holder = Thread.ofPlatform().unstarted(() -> holdWriteLock(ringLock, lockHeld, releaseLock));
-            var started = System.nanoTime();
-            var gate = new PromotionRaceGate(holder, lockHeld, ringLock, started + ms(300).nanos());
-            var recorder = new EventRecorder(() -> {});
-            var rebalancer = dhtRebalancer(node, network, node.config());
-            network.ackVia(rebalancer::onMigrationDataAck);
-            var push = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(started + ms(60_000).nanos(), gate),
-                                                  T(300, 5_000, 1_000),
-                                                  Set.of(),
-                                                  recorder);
-
-            assertThat(firstSend.await(10, TimeUnit.SECONDS)).as("control: the replicated page was sent").isTrue();
-            ring.removeNode(PEER_A);
-            push.await(ms(1_000));
-            var releasedAt = System.nanoTime();
-            releaseLock.countDown();
-            push.await();
-            holder.join(5_000);
-            var sendsAfterPromotion = network.sends()
-                                             .stream()
-                                             .filter(sent -> sent.atNanos() > releasedAt && carries(sent, probeText))
-                                             .count();
-
-            assertThat(gate.winnerQueued()).as("control: the winner was held inside its transition when the loser checked").isTrue();
-            assertThat(sendsAfterPromotion).as("the promoted key is resent after its promotion (page continues to soleDeadline)")
-                                           .isPositive();
         }
 
         /// #2684 F3: self in ring, RF 2, co-drainer B pruned. The key is sole because the node X now in B's slot may never have held
@@ -1149,86 +1245,11 @@ class DHTRebalancerTest {
             awaitQuietly(release, 15_000);
         }
 
-        private static Reply countDownThenDrop(CountDownLatch latch) {
-            latch.countDown();
-            return Reply.DROP;
-        }
-
-        /// The ring's lock is private and the only point inside a push-run transition that can be held from outside; a seam on the
-        /// production ring for one test is not worth its surface, so the test reaches it by reflection.
-        private static ReentrantReadWriteLock ringLock(ConsistentHashRing<NodeId> ring) {
-            try {
-                var field = ConsistentHashRing.class.getDeclaredField("lock");
-                field.setAccessible(true);
-                return (ReentrantReadWriteLock) field.get(ring);
-            } catch (ReflectiveOperationException e) {
-                throw new AssertionError("ConsistentHashRing.lock is the instrument of this test", e);
-            }
-        }
-
-        private static void holdWriteLock(ReentrantReadWriteLock lock, CountDownLatch held, CountDownLatch release) {
-            lock.writeLock().lock();
-            try {
-                held.countDown();
-                awaitQuietly(release, 30_000);
-            } finally {
-                lock.writeLock().unlock();
-            }
-        }
-
         private static void awaitQuietly(CountDownLatch latch, long millis) {
             try {
                 latch.await(millis, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-            }
-        }
-
-        private static boolean calledFrom(String method) {
-            return StackWalker.getInstance()
-                              .walk(frames -> frames.anyMatch(frame -> frame.getClassName().endsWith("DeparturePushRun")
-                                                                       && frame.getMethodName().equals(method)));
-        }
-
-        /// The `halted` supplier as a gate (never halts): the first re-evaluation starts the ring-lock holder before its transition;
-        /// the first deadline check past base waits until that winner is queued on the ring lock.
-        private static final class PromotionRaceGate implements BooleanSupplier {
-            private final Thread holder;
-            private final CountDownLatch lockHeld;
-            private final ReentrantReadWriteLock ringLock;
-            private final long baseNanos;
-            private final AtomicInteger reevaluations = new AtomicInteger();
-            private final AtomicBoolean loserGated = new AtomicBoolean(false);
-            private final AtomicBoolean winnerQueued = new AtomicBoolean(false);
-
-            PromotionRaceGate(Thread holder, CountDownLatch lockHeld, ReentrantReadWriteLock ringLock, long baseNanos) {
-                this.holder = holder;
-                this.lockHeld = lockHeld;
-                this.ringLock = ringLock;
-                this.baseNanos = baseNanos;
-            }
-
-            @Override
-            public boolean getAsBoolean() {
-                if (calledFrom("reevaluate") && reevaluations.getAndIncrement() == 0) {
-                    holder.start();
-                    awaitQuietly(lockHeld, 10_000);
-                } else if (calledFrom("shouldStop") && System.nanoTime() >= baseNanos && loserGated.compareAndSet(false, true)) {
-                    awaitWinnerQueued();
-                }
-                return false;
-            }
-
-            private void awaitWinnerQueued() {
-                var until = System.nanoTime() + ms(10_000).nanos();
-                while (!ringLock.hasQueuedThreads() && System.nanoTime() < until) {
-                    LockSupport.parkNanos(1_000_000);
-                }
-                winnerQueued.set(ringLock.hasQueuedThreads());
-            }
-
-            boolean winnerQueued() {
-                return winnerQueued.get();
             }
         }
 
@@ -1257,7 +1278,7 @@ class DHTRebalancerTest {
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
             node.putLocal(soleKey(ring, "b-cap"), value("payload")).await();
             var network = ScriptedNetwork.scripted((_, _) -> Reply.NACK);
-            var run = push(node, network, new DeparturePushTuning(ms(2_500), ms(500), ms(25), ms(50), ms(200)), Set.of());
+            var run = push(node, network, timing(2_500, 500, 25, 50, 200), Set.of());
 
             assertThat(network.sends()).hasSizeGreaterThanOrEqualTo(6);
             assertThat(maxGapNanos(network.sends())).isLessThan(ms(600).nanos());
@@ -1272,34 +1293,37 @@ class DHTRebalancerTest {
             return max;
         }
 
-        /// A replicated page stops at `baseDeadline` (its key still has a survivor), and the push ends with it rather than at the later
-        /// backstop: an attempt's wait is clipped to the page's remaining time, however long `resendAfter` is.
+        /// The push ends at its deadline (400 ms) with the key owed, although the unanswered page would be resent only after 3 s: the
+        /// run's one deadline (#3345) does not wait for the page's resend interval.
         @Test
         @Timeout(20)
-        void pushOnDeparture_unackedAttemptWait_isClippedToThePageDeadline() {
-            var run = replicatedPageUnder(Reply.DROP, "b-wait");
+        void pushOnDeparture_unackedAttemptWait_endsAtTheDeadline() {
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.DROP);
+            var run = replicatedPageUnder(network, "b-wait");
 
             assertThat(run.elapsedMillis()).isLessThan(1_500);
+            assertThat(network.sends()).hasSize(1);
             assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
         }
 
-        /// The pause after a nack is clipped the same way.
+        /// The same for the 3 s pause after a nack.
         @Test
         @Timeout(20)
-        void pushOnDeparture_nackPause_isClippedToThePageDeadline() {
-            var run = replicatedPageUnder(Reply.NACK, "b-pause");
+        void pushOnDeparture_nackPause_endsAtTheDeadline() {
+            var network = ScriptedNetwork.scripted((_, _) -> Reply.NACK);
+            var run = replicatedPageUnder(network, "b-pause");
 
             assertThat(run.elapsedMillis()).isLessThan(1_500);
+            assertThat(network.sends()).hasSize(1);
             assertThat(run.report().replicatedAtRisk()).isEqualTo(1);
         }
 
-        private Run replicatedPageUnder(Reply reply, String prefix) {
+        private Run replicatedPageUnder(ScriptedNetwork network, String prefix) {
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF2);
             node.putLocal(keyHeldBy(ring, 2, Set.of(LOCAL, PEER_A), prefix), value("payload")).await();
-            var network = ScriptedNetwork.scripted((_, _) -> reply);
 
-            return push(node, network, new DeparturePushTuning(ms(400), ms(5_000), ms(3_000), ms(3_000), ms(200)), Set.of());
+            return push(node, network, timing(400, 0, 3_000, 3_000, 200), Set.of());
         }
 
         /// A clean sole ack raises no event at all: DELIVERED is the recovery of an AT_RISK that was never raised.
@@ -1318,12 +1342,14 @@ class DHTRebalancerTest {
         }
 
         /// An observer that throws loses its own event only: the push still resolves, and the later events still reach the observer.
+        /// The key has no deliverer (the drainer is the ring's only node), so AT_RISK is raised at plan time (#3345) and throws.
         @Test
         @Timeout(20)
         void pushOnDeparture_throwingObserver_isIsolated() {
-            var ring = fiveNodeRing();
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            ring.addNode(LOCAL);
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
-            node.putLocal(soleKey(ring, "b-throw"), value("payload")).await();
+            node.putLocal(key("b-throw"), value("payload")).await();
             var recorder = new EventRecorder(SoleCopyDeparture::boom);
             var run = push(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), T(200, 300, 50), Set.of(), recorder);
 
@@ -1348,8 +1374,8 @@ class DHTRebalancerTest {
             var started = System.nanoTime();
             var report = dhtRebalancer(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), RF1)
                              .pushOnDeparture(DepartureWindow.departureWindow(started + ms(150).nanos()),
-                                              new DeparturePushTuning(ms(10_000), ms(10_000), ms(50), ms(200), ms(2_000)),
-                                              Set.of(),
+                                              timing(10_000, 10_000, 50, 200, 2_000).tuning(),
+                                              Set::of,
                                               recorder)
                              .await()
                              .unwrap();
@@ -1360,21 +1386,23 @@ class DHTRebalancerTest {
         }
 
         /// After the node halted nothing more is reported or awaited: the AT_RISK call halts the node and its event never settles;
-        /// the push resolves at once, without the incomplete report and without waiting for that event.
+        /// the push resolves at once, without the incomplete report and without waiting for that event. The key has no deliverer
+        /// (the drainer is the ring's only node), so AT_RISK is raised at plan time (#3345).
         @Test
         @Timeout(20)
         void pushOnDeparture_haltedByTheAtRiskCall_reportsAndAwaitsNothingMore() {
-            var ring = fiveNodeRing();
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            ring.addNode(LOCAL);
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
-            node.putLocal(soleKey(ring, "b-halt"), value("payload")).await();
+            node.putLocal(key("b-halt"), value("payload")).await();
             var halted = new AtomicBoolean(false);
             var recorder = new EventRecorder(() -> halted.set(true), () -> Promise.promise());
             var started = System.nanoTime();
 
             dhtRebalancer(node, ScriptedNetwork.scripted((_, _) -> Reply.DROP), RF1)
                 .pushOnDeparture(DepartureWindow.departureWindow(started + ms(3_000).nanos(), halted::get),
-                                 new DeparturePushTuning(ms(300), ms(500), ms(50), ms(200), ms(200)),
-                                 Set.of(),
+                                 timing(300, 500, 50, 200, 200).tuning(),
+                                 Set::of,
                                  recorder)
                 .await();
 
@@ -1395,8 +1423,8 @@ class DHTRebalancerTest {
             var network = ScriptedNetwork.scripted((_, _) -> haltAndDrop(halted));
 
             dhtRebalancer(node, network, RF1).pushOnDeparture(DepartureWindow.departureWindow(System.nanoTime() + ms(60_000).nanos(), halted::get),
-                                                              T(300, 1_000, 50),
-                                                              Set.of(),
+                                                              T(300, 1_000, 50).tuning(),
+                                                              Set::of,
                                                               recorder)
                                              .await();
             awaitQuietly(new CountDownLatch(1), 800);
@@ -1419,36 +1447,15 @@ class DHTRebalancerTest {
             var hungRecorder = new EventRecorder(() -> {});
             var past = System.nanoTime() - ms(1).nanos();
             var plan = dhtRebalancer(usedUp, ScriptedNetwork.scripted((_, _) -> Reply.ACK), RF1)
-                           .pushOnDeparture(DepartureWindow.departureWindow(past, () -> true), T(200, 300, 50), Set.of(), planRecorder);
+                           .pushOnDeparture(DepartureWindow.departureWindow(past, () -> true), T(200, 300, 50).tuning(), Set::of, planRecorder);
             var enumeration = dhtRebalancer(hung, ScriptedNetwork.scripted((_, _) -> Reply.ACK), RF1)
-                                  .pushOnDeparture(DepartureWindow.departureWindow(past, () -> true), T(200, 300, 50), Set.of(), hungRecorder);
+                                  .pushOnDeparture(DepartureWindow.departureWindow(past, () -> true), T(200, 300, 50).tuning(), Set::of, hungRecorder);
 
             plan.await();
             enumeration.await();
 
             assertThat(planRecorder.atRisk()).isEmpty();
             assertThat(hungRecorder.atRisk()).isEmpty();
-        }
-
-        /// F7 at the end of the push: pages that end early (EncodeFailed is final) with the only plan-time survivor gone, long before
-        /// `baseDeadline`, still promote the key at the closing re-evaluation: AT_RISK and a sole-copy report, not a replicated one.
-        @Test
-        @Timeout(20)
-        void pushOnDeparture_pagesEndEarlyAfterTheSurvivorLeft_closingReevaluationPromotes() {
-            var ring = fiveNodeRing();
-            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF2);
-            node.putLocal(keyHeldBy(ring, 2, Set.of(LOCAL, PEER_A), "b-close"), value("payload")).await();
-            var network = ScriptedNetwork.scripted((_, _) -> removeAndFailToEncode(ring, PEER_A));
-            var run = push(node, network, T(10_000, 10_000, 50), Set.of());
-
-            assertThat(network.sends()).hasSize(1);
-            assertThat(run.recorder().atRisk()).containsExactly(1);
-            assertThat(run.report().soleCopyAtRisk()).isEqualTo(1);
-        }
-
-        private static Reply removeAndFailToEncode(ConsistentHashRing<NodeId> ring, NodeId survivor) {
-            ring.removeNode(survivor);
-            return Reply.refuse(id -> new WriteOutcome.EncodeFailed(id, "MigrationDataResponse"));
         }
 
         /// E2: with a co-drainer already pruned the survivors are unknown (`existingAtPlan` empty), so a replicated key whose current
@@ -1476,37 +1483,595 @@ class DHTRebalancerTest {
             return Reply.DROP;
         }
 
+        /// #3345 rule (I) and its triggers, against [DeparturePushRun] run directly (its counters are read after the run): a key is
+        /// delivered only by an applied ack from a holder in its current tenure at its stamp, after a passed pre-exit probe.
+        @Nested
+        class DepartureHolder {
+            /// Red first. The target leaves V and returns (a new tenure); an ack for the page of its earlier tenure arrives after the
+            /// re-entry and never counts: the key stays owed and is paged again in the new tenure.
+            @Test
+            @Timeout(20)
+            void ackFromAnEarlierTenureNeverCounts() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h1");
+                node.putLocal(k, value("payload")).await();
+                var target = delivererOf(ring, k, Set.of(LOCAL));
+                var earlier = new AtomicReference<TimedSend>();
+                var delivered = new AtomicBoolean();
+                var self = new AtomicReference<ScriptedNetwork>();
+                var network = ScriptedNetwork.scriptedOver(ring, (_, sent) -> earlierTenure(ring, target, sent, earlier, delivered, self));
+                self.set(network);
+                var run = direct(node, network, 1_500, 100, Set::of);
+
+                assertThat(delivered).as("the earlier tenure's ack arrived after the re-entry").isTrue();
+                assertThat(network.sends()).as("paged again in the new tenure")
+                                           .anyMatch(sent -> sent.target().equals(target) && !sameRequest(sent, earlier.get()));
+                assertThat(run.report().owed()).isEqualTo(1);
+            }
+
+            private Reply earlierTenure(ConsistentHashRing<NodeId> ring,
+                                        NodeId target,
+                                        TimedSend sent,
+                                        AtomicReference<TimedSend> earlier,
+                                        AtomicBoolean delivered,
+                                        AtomicReference<ScriptedNetwork> self) {
+                if (sent.target().equals(target) && earlier.compareAndSet(null, sent)) {
+                    ring.removeNode(target);
+                } else if (!sent.target().equals(target) && !ring.nodes().contains(target)) {
+                    ring.addNode(target);
+                } else if (sent.target().equals(target) && !sameRequest(sent, earlier.get()) && delivered.compareAndSet(false, true)) {
+                    self.get().deliver(earlier.get(), Reply.ACK);
+                }
+                return Reply.DROP;
+            }
+
+            /// Red first (R4): a key anti-entropy brought to the drainer after the fence came from a current holder; the exit re-read
+            /// finds it and does not owe it.
+            @Test
+            @Timeout(20)
+            void keyAfterTheFenceIsNotOwed() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                node.putLocal(soleKey(ring, "h2"), value("payload")).await();
+                var late = key("h2-late");
+                var written = new AtomicBoolean();
+                var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, "h2-late")
+                                                                    ? Reply.DROP
+                                                                    : writeOnceThenAck(node, late, written));
+                var run = direct(node, network, 1_000, 100, Set::of);
+
+                assertThat(written).as("the late key was written during the drain").isTrue();
+                assertThat(node.storage().stamps().await().unwrap()).anyMatch(stamp -> Arrays.equals(stamp.key(), late));
+                assertThat(network.sends()).noneMatch(sent -> carries(sent, "h2-late"));
+                assertThat(run.report().enumeratedKeys()).isEqualTo(1);
+                assertThat(run.report().owed()).isZero();
+            }
+
+            private static Reply writeOnceThenAck(DHTNode node, byte[] key, AtomicBoolean written) {
+                if (written.compareAndSet(false, true)) {
+                    write(node, key, "rewritten");
+                }
+                return Reply.ACK;
+            }
+
+            private static final AtomicInteger LOGICAL = new AtomicInteger();
+
+            /// A local write stamped with the wall clock now (HLC), as a client write is.
+            private static void write(DHTNode node, byte[] key, String text) {
+                node.putLocalVersioned(key, value(text), HlcTimestamp.pack(System.currentTimeMillis(), LOGICAL.incrementAndGet())).await();
+            }
+
+            /// A key the first inventory missed whose stamp predates the fence is found by the exit re-read and owed.
+            @Test
+            @Timeout(20)
+            void preExitReReadFindsALateKey() {
+                var ring = fiveNodeRing();
+                var late = key("h3-late");
+                var reads = new AtomicInteger();
+                var storage = stampsVia(memory -> memory.stamps()
+                                                        .map(stamps -> reads.getAndIncrement() == 0
+                                                                       ? stamps.stream().filter(stamp -> !Arrays.equals(stamp.key(), late)).toList()
+                                                                       : stamps));
+                var node = dhtNode(LOCAL, storage, ring, RF1);
+                node.putLocal(soleKey(ring, "h3"), value("payload")).await();
+                write(node, late, "late");
+                LockSupport.parkNanos(ms(5).nanos());
+                var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
+                var run = direct(node, network, 1_500, 100, Set::of);
+
+                assertThat(reads.get()).as("the inventory was re-read").isGreaterThanOrEqualTo(2);
+                assertThat(network.sends()).anyMatch(sent -> carries(sent, "h3-late"));
+                assertThat(run.report().enumeratedKeys()).isEqualTo(2);
+                assertThat(run.report().owed()).isZero();
+            }
+
+            /// Within one tenure, an ack for a page a re-plan cancelled (a joiner took the key over, then left) still counts.
+            @Test
+            @Timeout(20)
+            void lateAckWithinOneTenureCounts() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h4");
+                node.putLocal(k, value("payload")).await();
+                var target = delivererOf(ring, k, Set.of(LOCAL));
+                var joiner = takeover(ring, k);
+                var cancelled = new AtomicReference<TimedSend>();
+                var delivered = new AtomicBoolean();
+                var self = new AtomicReference<ScriptedNetwork>();
+                var network = ScriptedNetwork.scriptedOver(ring,
+                                                           (_, sent) -> cancelledThenLate(ring, target, joiner, sent, cancelled, delivered, self, Reply.ACK));
+                self.set(network);
+                var run = direct(node, network, 1_500, 100, Set::of);
+
+                assertThat(delivered).as("the cancelled page's ack arrived late").isTrue();
+                assertThat(network.sends()).anyMatch(sent -> sent.target().equals(joiner));
+                assertThat(run.report().owed()).isZero();
+            }
+
+            /// The first page to `target` is cancelled by `joiner` taking the key over; the joiner leaves at its first page; at the
+            /// target's next page the cancelled page is answered with `late`.
+            private Reply cancelledThenLate(ConsistentHashRing<NodeId> ring,
+                                            NodeId target,
+                                            NodeId joiner,
+                                            TimedSend sent,
+                                            AtomicReference<TimedSend> cancelled,
+                                            AtomicBoolean delivered,
+                                            AtomicReference<ScriptedNetwork> self,
+                                            Reply late) {
+                if (sent.target().equals(target) && cancelled.compareAndSet(null, sent)) {
+                    ring.addNode(joiner);
+                } else if (sent.target().equals(joiner)) {
+                    ring.removeNode(joiner);
+                } else if (sent.target().equals(target) && !sameRequest(sent, cancelled.get()) && delivered.compareAndSet(false, true)) {
+                    self.get().deliver(cancelled.get(), late);
+                }
+                return Reply.DROP;
+            }
+
+            /// Safe is per (key, stamp): the key is rewritten locally after its page was read; the ack counts for the old stamp and
+            /// the exit re-read owes the newer one again.
+            @Test
+            @Timeout(20)
+            void newerLocalStampIsOwedAgain() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h5");
+                write(node, k, "v1");
+                var written = new AtomicBoolean();
+                var network = ScriptedNetwork.scripted((_, _) -> writeOnceThenAck(node, k, written));
+                var run = direct(node, network, 1_500, 100, Set::of);
+
+                assertThat(network.sends()).as("the newer stamp was paged again").hasSizeGreaterThanOrEqualTo(2);
+                assertThat(network.sends()).allMatch(sent -> isOnly(sent, new String(k, StandardCharsets.UTF_8)));
+                assertThat(run.report().owed()).isZero();
+            }
+
+            /// #3345: a probe unanswered past `resendAfter` is sent again, never a holder lost: the key is not paged again and the
+            /// run closes before its deadline.
+            @Test
+            @Timeout(20)
+            void probeSilencePastResendIsResentNotHolderLost() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                node.putLocal(soleKey(ring, "h6"), value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
+                var probes = new AtomicInteger();
+                network.probesAnswer(_ -> probes.getAndIncrement() == 0 ? Reply.DROP : Reply.ACK);
+                var started = System.nanoTime();
+                var run = direct(node, network, 3_000, 100, Set::of);
+
+                assertThat(run.run().holderLosses()).isZero();
+                assertThat(network.probes()).as("the silent probe was sent again").hasSizeGreaterThanOrEqualTo(2);
+                assertThat(network.sends()).as("no re-push").hasSize(1);
+                assertThat(run.report().owed()).isZero();
+                assertThat(System.nanoTime() - started).as("closed before the deadline").isLessThan(ms(3_000).nanos());
+            }
+
+            /// A holder lost between a passed probe and the close (here a draining nack for a cancelled page of a node that holds
+            /// nothing) re-opens the run: a second exit attempt probes again before the close.
+            @Test
+            @Timeout(20)
+            void holderLostAfterProbeReopens() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h7");
+                node.putLocal(k, value("payload")).await();
+                var target = delivererOf(ring, k, Set.of(LOCAL));
+                var joiner = takeover(ring, k);
+                var cancelled = new AtomicReference<TimedSend>();
+                var self = new AtomicReference<ScriptedNetwork>();
+                var network = ScriptedNetwork.scriptedOver(ring, (_, sent) -> joinerTakesOver(ring, target, joiner, sent, cancelled));
+                self.set(network);
+                var probes = new AtomicInteger();
+                network.probesAnswer(probe -> lossDuringFirstProbe(probes, cancelled, self));
+                var run = direct(node, network, 3_000, 100, Set::of);
+
+                assertThat(cancelled.get()).isNotNull();
+                assertThat(run.run().holderLosses()).isEqualTo(1);
+                assertThat(network.probes()).as("re-opened: probed again").hasSize(2);
+                assertThat(run.report().owed()).isZero();
+            }
+
+            private static Reply joinerTakesOver(ConsistentHashRing<NodeId> ring,
+                                                 NodeId target,
+                                                 NodeId joiner,
+                                                 TimedSend sent,
+                                                 AtomicReference<TimedSend> cancelled) {
+                if (sent.target().equals(target) && cancelled.compareAndSet(null, sent)) {
+                    ring.addNode(joiner);
+                    return Reply.DROP;
+                }
+                return sent.target().equals(joiner) ? Reply.ACK : Reply.DROP;
+            }
+
+            private static Reply lossDuringFirstProbe(AtomicInteger probes,
+                                                      AtomicReference<TimedSend> cancelled,
+                                                      AtomicReference<ScriptedNetwork> self) {
+                if (probes.getAndIncrement() == 0) {
+                    self.get().deliver(cancelled.get(), Reply.DRAINING_NACK);
+                }
+                return Reply.ACK;
+            }
+
+            /// A nack that says "draining" is a holder lost: the run re-plans with the target now in L and pages the next node.
+            /// ac517fb077: the loss is terminal for the target within the run (owed = planned minus delivered minus lost), so no
+            /// re-plan, the exit's re-read re-plan included, pages it again: one loss, exactly one send to it.
+            @Test
+            @Timeout(20)
+            void drainingNackIsHolderLost() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h8");
+                node.putLocal(k, value("payload")).await();
+                var target = delivererOf(ring, k, Set.of(LOCAL));
+                var next = delivererOf(ring, k, Set.of(LOCAL, target));
+                var drainSet = new AtomicReference<Set<NodeId>>(Set.of());
+                var network = ScriptedNetwork.scripted((_, sent) -> drainingAt(target, sent, drainSet));
+                var run = direct(node, network, 1_500, 100, drainSet::get);
+
+                assertThat(run.run().holderLosses()).isEqualTo(1);
+                assertThat(network.sends().stream().filter(sent -> sent.target().equals(target))).as("the draining target: paged once, never again")
+                                                                                                 .hasSize(1);
+                assertThat(network.sends()).anyMatch(sent -> sent.target().equals(next));
+                assertThat(run.report().owed()).isZero();
+            }
+
+            private static Reply drainingAt(NodeId target, TimedSend sent, AtomicReference<Set<NodeId>> drainSet) {
+                if (sent.target().equals(target)) {
+                    drainSet.set(Set.of(target));
+                    return Reply.DRAINING_NACK;
+                }
+                return Reply.ACK;
+            }
+
+            /// No target outside L: the co-drainer gets the page as a named-prefix target and acks it, yet it is no deliverer, so the
+            /// key stays owed.
+            @Test
+            @Timeout(20)
+            void emptyTargetSetIsOwed() {
+                var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+                List.of(LOCAL, PEER_A).forEach(ring::addNode);
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                node.putLocal(soleKey(ring, "h9"), value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
+                var run = direct(node, network, 500, 100, () -> Set.of(PEER_A));
+
+                assertThat(network.ackedKeys()).as("the co-drainer acked the key").isNotEmpty();
+                assertThat(run.report().owed()).isEqualTo(1);
+            }
+
+            /// A key removed after the inventory is read is never sent and never counted delivered; with no exit re-read (another
+            /// key stays owed to the deadline) it is still owed in the report.
+            @Test
+            @Timeout(20)
+            void keyRemovedMeanwhileIsNotDelivered() {
+                var ring = fiveNodeRing();
+                var removed = soleKey(ring, "h10-removed");
+                var storage = stampsVia(memory -> memory.stamps().flatMap(stamps -> memory.remove(removed).map(_ -> stamps)));
+                var node = dhtNode(LOCAL, storage, ring, RF1);
+                node.putLocal(removed, value("payload")).await();
+                node.putLocal(soleKey(ring, "h10-kept"), value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, _) -> Reply.DROP);
+                var run = direct(node, network, 800, 100, Set::of);
+
+                assertThat(network.sends()).isNotEmpty().noneMatch(sent -> carries(sent, new String(removed, StandardCharsets.UTF_8)));
+                assertThat(run.report().enumeratedKeys()).isEqualTo(2);
+                assertThat(run.report().owed()).isEqualTo(2);
+            }
+
+            /// EncodeFailed splits the page once into single-key pages; the key whose own page still fails is undeliverable, counted
+            /// apart and still owed; the other key is acked and, confirmed by the deadline probe (P3), delivered.
+            @Test
+            @Timeout(20)
+            void encodeFailedSplitsThenUndeliverable() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var good = soleKey(ring, "h11");
+                var bad = sameDeliverer(ring, good, "h11-bad");
+                var badText = new String(bad, StandardCharsets.UTF_8);
+                node.putLocal(good, value("payload")).await();
+                node.putLocal(bad, value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, badText)
+                                                                    ? Reply.refuse(id -> new WriteOutcome.EncodeFailed(id, "MigrationDataResponse"))
+                                                                    : Reply.ACK);
+                var run = direct(node, network, 800, 100, Set::of);
+
+                assertThat(network.sends().getFirst().response().entries()).as("one page of both keys first").hasSize(2);
+                assertThat(network.sends()).filteredOn(sent -> isOnly(sent, badText)).hasSize(1);
+                assertThat(network.ackedKeys()).containsExactly(new String(good, StandardCharsets.UTF_8));
+                assertThat(run.report().undeliverable()).isEqualTo(1);
+                assertThat(run.report().owed()).as("the acked key is confirmed by the deadline probe (P3)").isEqualTo(1);
+            }
+
+            /// #3345 P3: a run that ends at its deadline (one key is never acked, so no exit starts) probes the holder of its acked
+            /// key before it reports, and owes exactly the key never acked.
+            @Test
+            @Timeout(20)
+            void deadlineCloseProbesTheAckedKeysHolder_owesOnlyTheUnackedKey() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var acked = soleKey(ring, "h20");
+                var unacked = sameDeliverer(ring, acked, "h20-unacked");
+                var ackedText = new String(acked, StandardCharsets.UTF_8);
+                var unackedText = new String(unacked, StandardCharsets.UTF_8);
+                node.putLocal(acked, value("payload")).await();
+                node.putLocal(unacked, value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, unackedText) ? Reply.DROP : Reply.ACK);
+                var run = direct(node, network, 800, 100, Set::of);
+
+                assertThat(run.report().owed()).as("exactly the key never acked").isEqualTo(1);
+                assertThat(network.ackedKeys()).contains(ackedText).doesNotContain(unackedText);
+                assertThat(network.probes()).as("the deadline probe of the acked key's holder")
+                                            .isNotEmpty()
+                                            .allMatch(probe -> probe.target().equals(delivererOf(ring, acked, Set.of(LOCAL))));
+                assertThat(run.run().exitAttempts()).as("no exit: the unacked key stays owed").isZero();
+            }
+
+            /// #3345 P3 (verifier M3): the holder acks, then stops answering probes; the unacked key's chain keeps the exit from
+            /// starting; the deadline probe goes unanswered, so the acked key is owed in the incomplete report.
+            @Test
+            @Timeout(20)
+            void deadlineProbeUnanswered_ackedKeyIsOwed() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var acked = soleKey(ring, "h21");
+                var unacked = sameDeliverer(ring, acked, "h21-unacked");
+                var ackedText = new String(acked, StandardCharsets.UTF_8);
+                var unackedText = new String(unacked, StandardCharsets.UTF_8);
+                node.putLocal(acked, value("payload")).await();
+                node.putLocal(unacked, value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, unackedText) ? Reply.DROP : Reply.ACK);
+                network.probesAnswer(_ -> Reply.DROP);
+                var run = direct(node, network, 800, 100, Set::of);
+
+                assertThat(network.ackedKeys()).as("control: the holder acked").contains(ackedText);
+                assertThat(network.probes()).as("control: the deadline probe was sent").isNotEmpty();
+                assertThat(run.report().owed()).as("the acked key, its holder silent at the deadline probe, is owed").isEqualTo(2);
+            }
+
+            /// #3345 P3, the cost: a deadline close ends no later than the window plus one probe deadline (`resendAfter`), here
+            /// with the probe unanswered so the close waits the whole probe deadline.
+            @Test
+            @Timeout(20)
+            void deadlineClose_endsWithinTheWindowPlusOneProbeDeadline() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var acked = soleKey(ring, "h22");
+                var unacked = sameDeliverer(ring, acked, "h22-unacked");
+                var unackedText = new String(unacked, StandardCharsets.UTF_8);
+                node.putLocal(acked, value("payload")).await();
+                node.putLocal(unacked, value("payload")).await();
+                var network = ScriptedNetwork.scripted((_, sent) -> carries(sent, unackedText) ? Reply.DROP : Reply.ACK);
+                network.probesAnswer(_ -> Reply.DROP);
+                var started = System.nanoTime();
+                var run = direct(node, network, 600, 300, Set::of);
+                var elapsed = System.nanoTime() - started;
+
+                assertThat(network.probes()).as("control: probed at the deadline, not before")
+                                            .isNotEmpty()
+                                            .allMatch(probe -> probe.atNanos() - started >= ms(600).nanos());
+                assertThat(run.report().owed()).isEqualTo(2);
+                assertThat(elapsed).as("window 600 ms + probe deadline 300 ms (+ scheduling slack)")
+                                   .isGreaterThanOrEqualTo(ms(600).nanos())
+                                   .isLessThan(ms(600 + 300 + 250).nanos());
+            }
+
+            /// #3345 P3 with P2: a halted run sends no probe; it closes at once with nothing more sent or raised.
+            @Test
+            @Timeout(20)
+            void haltedRun_sendsNoProbe() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var acked = soleKey(ring, "h23");
+                var unacked = sameDeliverer(ring, acked, "h23-unacked");
+                var ackedText = new String(acked, StandardCharsets.UTF_8);
+                var unackedText = new String(unacked, StandardCharsets.UTF_8);
+                node.putLocal(acked, value("payload")).await();
+                node.putLocal(unacked, value("payload")).await();
+                var halted = new AtomicBoolean(false);
+                var unackedSends = new AtomicInteger();
+                var network = ScriptedNetwork.scripted((_, sent) -> haltAtSecondSoloSend(sent, unackedText, unackedSends, halted));
+                var started = System.nanoTime();
+                var run = direct(node, network, 3_000, 100, Set::of, new AtomicReference<>(), halted::get);
+
+                assertThat(halted.get()).as("control: the run was halted").isTrue();
+                assertThat(network.ackedKeys()).as("control: a key was acked, so a probe would be due").contains(ackedText);
+                assertThat(network.probes()).as("a halt sends nothing").isEmpty();
+                assertThat(System.nanoTime() - started).as("closed at the halt, not at the deadline").isLessThan(ms(3_000).nanos());
+            }
+
+            private static Reply haltAtSecondSoloSend(TimedSend sent, String unackedText, AtomicInteger unackedSends, AtomicBoolean halted) {
+                if (isOnly(sent, unackedText) && unackedSends.incrementAndGet() == 2) {
+                    halted.set(true);
+                }
+                return carries(sent, unackedText) ? Reply.DROP : Reply.ACK;
+            }
+
+            /// Acks and nacks never re-plan: reconciles = start + view changes + holder losses + exit attempts.
+            @Test
+            @Timeout(20)
+            void nackTriggersNoReconcile() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                node.putLocal(soleKey(ring, "h12"), value("payload")).await();
+                var network = ScriptedNetwork.scripted((index, _) -> index < 5 ? Reply.NACK : Reply.ACK);
+                var run = direct(node, network, 2_000, 20, Set::of);
+
+                assertThat(network.sends()).hasSize(6);
+                assertThat(run.report().owed()).isZero();
+                assertReconcilesBounded(run.run());
+            }
+
+            /// 50 flaps of a node outside the key's placement, each page nacked: reconciles stay within view changes + losses +
+            /// attempts + 1 (counted on the run).
+            @Test
+            @Timeout(30)
+            void flapIsBounded() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h13");
+                node.putLocal(k, value("payload")).await();
+                var flapper = bystander(ring, k);
+                var network = ScriptedNetwork.scriptedOver(ring, (index, _) -> index < 50 ? flap(ring, flapper) : Reply.ACK);
+                var run = direct(node, network, 6_000, 10, Set::of);
+
+                assertThat(run.run().viewChanges()).isGreaterThanOrEqualTo(50);
+                assertThat(run.report().owed()).isZero();
+                assertReconcilesBounded(run.run());
+            }
+
+            private static Reply flap(ConsistentHashRing<NodeId> ring, NodeId flapper) {
+                if (ring.nodes().contains(flapper)) {
+                    ring.removeNode(flapper);
+                } else {
+                    ring.addNode(flapper);
+                }
+                return Reply.NACK;
+            }
+
+            private static void assertReconcilesBounded(DeparturePushRun run) {
+                assertThat(run.reconciles()).isPositive()
+                                            .isLessThanOrEqualTo(1 + run.viewChanges() + run.holderLosses() + run.exitAttempts());
+            }
+
+            /// A node entering V that becomes the key's deliverer re-owes a key a former deliverer held: it is paged to the joiner.
+            @Test
+            @Timeout(20)
+            void addEdgeReowes() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h14");
+                node.putLocal(k, value("payload")).await();
+                var joiner = takeover(ring, k);
+                var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
+                var probes = new AtomicInteger();
+                var handle = new AtomicReference<DeparturePushRun>();
+                network.probesAnswer(_ -> joinAtFirstProbe(ring, joiner, probes, handle));
+                var run = direct(node, network, 1_500, 100, Set::of, handle);
+
+                assertThat(network.sends()).anyMatch(sent -> sent.target().equals(joiner));
+                assertThat(run.report().owed()).isZero();
+            }
+
+            /// The joiner enters V while the first probe is in flight; the view change reaches the run as `DHTTopologyListener`
+            /// delivers it, after the ring change.
+            private static Reply joinAtFirstProbe(ConsistentHashRing<NodeId> ring,
+                                                  NodeId joiner,
+                                                  AtomicInteger probes,
+                                                  AtomicReference<DeparturePushRun> handle) {
+                if (probes.getAndIncrement() == 0) {
+                    ring.addNode(joiner);
+                    handle.get().onViewChange();
+                }
+                return Reply.ACK;
+            }
+
+            /// L is the drain set read now, not a union: a co-drainer that withdrew is the deliverer again at the next re-plan, so its
+            /// ack (taken while it was only a named-prefix target) makes the key safe; the next node never answers.
+            @Test
+            @Timeout(20)
+            void withdrawnCoDrainerLeavesL() {
+                var ring = fiveNodeRing();
+                var node = dhtNode(LOCAL, memoryStorageEngine(), ring, RF1);
+                var k = soleKey(ring, "h15");
+                node.putLocal(k, value("payload")).await();
+                var coDrainer = delivererOf(ring, k, Set.of(LOCAL));
+                var next = delivererOf(ring, k, Set.of(LOCAL, coDrainer));
+                var drainSet = new AtomicReference<Set<NodeId>>(Set.of(coDrainer));
+                var handle = new AtomicReference<DeparturePushRun>();
+                var network = ScriptedNetwork.scripted((_, sent) -> withdrawAtFirstPage(coDrainer, sent, drainSet, handle));
+                var run = direct(node, network, 1_500, 100, drainSet::get, handle);
+
+                assertThat(network.sends()).as("while it drained, the next node was the deliverer").anyMatch(sent -> sent.target().equals(next));
+                assertThat(network.sends()).anyMatch(sent -> sent.target().equals(coDrainer));
+                assertThat(run.report().owed()).isZero();
+            }
+
+            /// The co-drainer withdraws at the first page (to another node) and the ring changes, as the view update delivers it.
+            private static Reply withdrawAtFirstPage(NodeId coDrainer,
+                                                     TimedSend sent,
+                                                     AtomicReference<Set<NodeId>> drainSet,
+                                                     AtomicReference<DeparturePushRun> handle) {
+                if (sent.target().equals(coDrainer)) {
+                    return Reply.ACK;
+                }
+                if (!drainSet.getAndSet(Set.of()).isEmpty()) {
+                    Thread.ofVirtual().start(handle.get()::onViewChange);
+                }
+                return Reply.DROP;
+            }
+        }
+
         // --- fixtures ---
 
         private record Run(DeparturePushReport report, EventRecorder recorder, long elapsedMillis) {}
 
-        private Run push(DHTNode node, ScriptedNetwork network, DeparturePushTuning tuning, Set<NodeId> coDeparting) {
-            return push(node, network, tuning, coDeparting, new EventRecorder(() -> {}));
+        private Run push(DHTNode node, ScriptedNetwork network, Timing timing, Set<NodeId> coDeparting) {
+            return push(node, network, timing, coDeparting, new EventRecorder(() -> {}));
         }
 
         private Run push(DHTNode node,
                          ScriptedNetwork network,
-                         DeparturePushTuning tuning,
+                         Timing timing,
                          Set<NodeId> coDeparting,
                          EventRecorder recorder) {
             var rebalancer = dhtRebalancer(node, network, node.config());
             network.ackVia(rebalancer::onMigrationDataAck);
+            network.viewChangeVia(rebalancer::onViewChange);
             var started = System.nanoTime();
-            var report = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(started + ms(60_000).nanos()),
-                                                    tuning,
-                                                    coDeparting,
+            var report = rebalancer.pushOnDeparture(DepartureWindow.departureWindow(started + timing.windowNanos()),
+                                                    timing.tuning(),
+                                                    () -> coDeparting,
                                                     recorder)
                                    .await()
                                    .unwrap();
             return new Run(report, recorder, (System.nanoTime() - started) / 1_000_000);
         }
 
-        private DeparturePushTuning T(long baseMs, long extraMs, long resendMs) {
-            return new DeparturePushTuning(ms(baseMs), ms(extraMs), ms(resendMs), ms(4 * resendMs), ms(200));
+        /// The legacy (base, sole extra) attempt budget of a push (#2034) as one attempts window (#3345): the push runs until nothing is
+        /// owed or `baseMs + extraMs` has passed, then waits `waitMs` for its events.
+        private record Timing(long attemptsMs, DeparturePushTuning tuning) {
+            long windowNanos() {
+                return ms(attemptsMs).nanos() + tuning.eventDeliveryWait().nanos();
+            }
+        }
+
+        private static Timing timing(long baseMs, long extraMs, long resendMs, long capMs, long waitMs) {
+            return new Timing(baseMs + extraMs,
+                              new DeparturePushTuning(ms(resendMs), ms(capMs), DeparturePushTuning.DEFAULT.reportAfter(), ms(waitMs)));
+        }
+
+        private Timing T(long baseMs, long extraMs, long resendMs) {
+            return timing(baseMs, extraMs, resendMs, 4 * resendMs, 200);
         }
 
         private static TimeSpan ms(long millis) {
             return timeSpan(millis).millis();
+        }
+
+        private static boolean isOnly(TimedSend sent, String keyText) {
+            return sent.response().entries().size() == 1 && carries(sent, keyText);
         }
 
         private static boolean carries(TimedSend sent, String keyText) {
@@ -1569,23 +2134,6 @@ class DHTRebalancerTest {
                 throw e.getCause();
             }
         }
-
-        private ConsistentHashRing<NodeId> fiveNodeRing() {
-            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
-            List.of(LOCAL, PEER_A, PEER_B, PEER_C, PEER_D).forEach(ring::addNode);
-            return ring;
-        }
-
-        /// A key LOCAL alone is responsible for at RF 1.
-        private byte[] soleKey(ConsistentHashRing<NodeId> ring, String prefix) {
-            for (int i = 0; i < 20_000; i++) {
-                var candidate = key(prefix + "-" + i);
-                if (ring.nodesFor(candidate, 1).equals(List.of(LOCAL))) {
-                    return candidate;
-                }
-            }
-            throw new AssertionError("no RF-1 key held by LOCAL");
-        }
     }
 
     // --- Test infrastructure ---
@@ -1628,50 +2176,101 @@ class DHTRebalancerTest {
                            .map(CapturedMessage::message)
                            .filter(m -> m instanceof DHTMessage.MigrationDataResponse)
                            .map(m -> (DHTMessage.MigrationDataResponse) m)
+                           .filter(response -> !response.entries().isEmpty())
                            .toList();
         }
 
         List<NodeId> targets() {
             return captured.stream()
-                           .filter(m -> m.message() instanceof DHTMessage.MigrationDataResponse)
+                           .filter(m -> m.message() instanceof DHTMessage.MigrationDataResponse response
+                                        && !response.entries().isEmpty())
                            .map(CapturedMessage::target)
                            .toList();
         }
     }
 
     /// What a [ScriptedNetwork] does with one departure push.
-    private record Reply(String kind, boolean async, Function<NodeId, WriteOutcome> refusal) {
-        static final Reply DROP = new Reply("drop", false, null);
-        static final Reply ACK = new Reply("ack", false, null);
-        static final Reply NACK = new Reply("nack", false, null);
-        static final Reply ASYNC_ACK = new Reply("ack", true, null);
-        static final Reply ASYNC_NACK = new Reply("nack", true, null);
+    /// An ack or nack carries the receiver's boot token, store generation and "draining" flag (#3345: token 0, generation 0, not
+    /// draining unless a test scripts otherwise).
+    record Reply(String kind, boolean async, Function<NodeId, WriteOutcome> refusal, long token, long generation, boolean draining) {
+        static final Reply DROP = new Reply("drop", false, null, 0L, 0L, false);
+        static final Reply ACK = new Reply("ack", false, null, 0L, 0L, false);
+        static final Reply NACK = new Reply("nack", false, null, 0L, 0L, false);
+        static final Reply ASYNC_ACK = new Reply("ack", true, null, 0L, 0L, false);
+        static final Reply ASYNC_NACK = new Reply("nack", true, null, 0L, 0L, false);
+        static final Reply DRAINING_NACK = new Reply("nack", false, null, 0L, 0L, true);
 
         static Reply refuse(Function<NodeId, WriteOutcome> refusal) {
-            return new Reply("refuse", false, refusal);
+            return new Reply("refuse", false, refusal, 0L, 0L, false);
+        }
+
+        /// An applied ack from a process whose boot token is `token`.
+        static Reply ackWithToken(long token) {
+            return new Reply("ack", false, null, token, 0L, false);
+        }
+
+        /// The same answer, delivered later from another thread.
+        Reply later() {
+            return new Reply(kind, true, refusal, token, generation, draining);
         }
     }
 
-    private record TimedSend(NodeId target, DHTMessage.MigrationDataResponse response, long atNanos) {}
+    record TimedSend(NodeId target, DHTMessage.MigrationDataResponse response, long atNanos) {}
 
     /// A network double whose answer to the n-th departure push (0-based, across all targets) is scripted. An ack or nack is routed
     /// to the sink synchronously inside `send` unless the reply is async. Non-departure messages are captured and dropped.
-    private static final class ScriptedNetwork implements DHTNetwork {
+    static final class ScriptedNetwork implements DHTNetwork {
         private final CopyOnWriteArrayList<TimedSend> sends = new CopyOnWriteArrayList<>();
+        private final CopyOnWriteArrayList<TimedSend> probes = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<String> ackedKeys = new CopyOnWriteArrayList<>();
         private final AtomicReference<Consumer<DHTMessage.MigrationDataAck>> ackSink = new AtomicReference<>(ack -> {});
+        private final AtomicReference<Runnable> viewChangeSink = new AtomicReference<>(() -> {});
+        private final AtomicReference<Function<TimedSend, Reply>> probeScript = new AtomicReference<>(_ -> Reply.ACK);
+        private final AtomicBoolean probeSendsHang = new AtomicBoolean();
         private final java.util.function.BiFunction<Integer, TimedSend, Reply> script;
+        private final Option<ConsistentHashRing<NodeId>> watchedRing;
+        private final AtomicReference<Set<NodeId>> lastView;
 
-        private ScriptedNetwork(java.util.function.BiFunction<Integer, TimedSend, Reply> script) {
+        private ScriptedNetwork(java.util.function.BiFunction<Integer, TimedSend, Reply> script,
+                                Option<ConsistentHashRing<NodeId>> watchedRing) {
             this.script = script;
+            this.watchedRing = watchedRing;
+            this.lastView = new AtomicReference<>(watchedRing.map(ring -> Set.copyOf(ring.nodes())).or(Set.of()));
         }
 
         static ScriptedNetwork scripted(java.util.function.BiFunction<Integer, TimedSend, Reply> script) {
-            return new ScriptedNetwork(script);
+            return new ScriptedNetwork(script, Option.none());
+        }
+
+        /// A network whose script changes `ring`: like `DHTTopologyListener` after each `changeRing`, every change the script
+        /// makes is followed by the rebalancer's `onViewChange` (#3345's re-plan trigger), delivered from another thread.
+        static ScriptedNetwork scriptedOver(ConsistentHashRing<NodeId> ring,
+                                            java.util.function.BiFunction<Integer, TimedSend, Reply> script) {
+            return new ScriptedNetwork(script, Option.some(ring));
         }
 
         void ackVia(Consumer<DHTMessage.MigrationDataAck> sink) {
             ackSink.set(sink);
+        }
+
+        /// How the pre-exit probes (EMPTY pages) are answered; by default an ack at once with token 0.
+        void probesAnswer(Function<TimedSend, Reply> answer) {
+            probeScript.set(answer);
+        }
+
+        /// Every probe send from now on returns a promise that never resolves (a transport that never reports its outcome).
+        void probeSendsHang() {
+            probeSendsHang.set(true);
+        }
+
+        void viewChangeVia(Runnable sink) {
+            viewChangeSink.set(sink);
+        }
+
+        private void signalViewChange() {
+            watchedRing.map(ring -> Set.copyOf(ring.nodes()))
+                       .filter(view -> !view.equals(lastView.getAndSet(view)))
+                       .onPresent(_ -> Thread.ofVirtual().start(viewChangeSink.get()));
         }
 
         @Override
@@ -1680,29 +2279,49 @@ class DHTRebalancerTest {
                 return Promise.success(new WriteOutcome.Sent(target));
             }
             var sent = new TimedSend(target, response, System.nanoTime());
+            if (response.entries().isEmpty()) {
+                // #3345: an EMPTY page is the pre-exit probe of a holder: kept apart from the data pages, answered as scripted
+                // (by default an ack at once).
+                probes.add(sent);
+                if (probeSendsHang.get()) {
+                    return Promise.promise();
+                }
+                respond(probeScript.get().apply(sent), sent);
+                return Promise.success(new WriteOutcome.Sent(target));
+            }
             int index;
             synchronized (sends) {
                 index = sends.size();
                 sends.add(sent);
             }
             var reply = script.apply(index, sent);
-            switch (reply.kind()) {
-                case "ack" -> answer(sent, true, reply.async());
-                case "nack" -> answer(sent, false, reply.async());
-                case "refuse" -> {
-                    return Promise.success(reply.refusal().apply(target));
-                }
-                default -> { }
+            signalViewChange();
+            if (reply.kind().equals("refuse")) {
+                return Promise.success(reply.refusal().apply(target));
             }
+            respond(reply, sent);
             return Promise.success(new WriteOutcome.Sent(target));
         }
 
-        private void answer(TimedSend sent, boolean applied, boolean async) {
-            var ack = new DHTMessage.MigrationDataAck(sent.response().requestId(), sent.target(), applied);
+        private void respond(Reply reply, TimedSend sent) {
+            switch (reply.kind()) {
+                case "ack" -> answer(sent, true, reply);
+                case "nack" -> answer(sent, false, reply);
+                default -> { }
+            }
+        }
+
+        private void answer(TimedSend sent, boolean applied, Reply reply) {
+            var ack = new DHTMessage.MigrationDataAck(sent.response().requestId(),
+                                                      sent.target(),
+                                                      applied,
+                                                      reply.token(),
+                                                      reply.generation(),
+                                                      reply.draining());
             if (applied) {
                 sent.response().entries().forEach(kv -> ackedKeys.add(new String(kv.key(), StandardCharsets.UTF_8)));
             }
-            if (async) {
+            if (reply.async()) {
                 CompletableFuture.runAsync(() -> ackSink.get().accept(ack),
                                            CompletableFuture.delayedExecutor(5, TimeUnit.MILLISECONDS));
             } else {
@@ -1710,8 +2329,17 @@ class DHTRebalancerTest {
             }
         }
 
+        /// Answer `sent` now with `reply` (a late or stale answer a test delivers itself).
+        void deliver(TimedSend sent, Reply reply) {
+            respond(reply, sent);
+        }
+
         List<TimedSend> sends() {
             return List.copyOf(sends);
+        }
+
+        List<TimedSend> probes() {
+            return List.copyOf(probes);
         }
 
         List<NodeId> targets() {
@@ -1723,10 +2351,10 @@ class DHTRebalancerTest {
         }
     }
 
-    private record Incomplete(int keys, int sole) {}
+    record Incomplete(int keys, int sole) {}
 
     /// Records the #2034 departure events; every event's promise settles at once. `onAtRisk` runs inside the at-risk callback.
-    private static final class EventRecorder implements DeparturePushObserver {
+    static final class EventRecorder implements DeparturePushObserver {
         private final CopyOnWriteArrayList<Integer> atRisk = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<Integer> delivered = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<Incomplete> incomplete = new CopyOnWriteArrayList<>();
