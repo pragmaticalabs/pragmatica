@@ -28,7 +28,9 @@ import org.pragmatica.statemachine.FsmObserver;
 /// [`LeaderElectionContext`] (which in turn builds every per-FSM state singleton), captures the
 /// context in an `AtomicReference` holder for the caller, and returns the `Dormant` initial state.
 ///
-/// No executor, no queue, no dispatcher thread — `Fsm.dispatch` runs on the caller thread.
+/// No dispatcher thread: `Fsm.dispatch` runs on the thread draining the node's serial executor (#3587,
+/// [`LeaderElectionContext#serially`]), which every leader-election event of the node enters; a direct `Fsm.dispatch`
+/// (tests only) runs on the caller's thread.
 public final class LeaderElectionFsm {
     /// Pair of the built Fsm and its context. Returned together so the factory caller (the
     /// `LeaderManager` builder) can wire both into the final `LeaderManager` record.

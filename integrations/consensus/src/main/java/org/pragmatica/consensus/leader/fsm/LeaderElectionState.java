@@ -84,11 +84,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     LeaderElectionContext ctx();
 
-    /// Dispatches an event to this FSM instance through the Fsm reference stored in the context.
-    /// The reference is bound at Context construction time via the constructor-driven initial-state
-    /// factory, so it is always present when this method runs.
+    /// Delivers an event to this FSM instance in the node's one total order (#3587, [LeaderElectionContext#submit]):
+    /// from a handler (already inside a task) it is dispatched at once; from a timer or a proposal completion it is
+    /// queued behind every event submitted before it.
     private static void dispatchSelf(LeaderElectionContext ctx, ClusterFsmEvent event) {
-        ctx.fsm().dispatch(event);
+        ctx.submit(event);
     }
 
     // --- State records ---
@@ -153,8 +153,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             }
             // Query the consensus engine's readiness state directly (SSOT). If consensus is
             // already active we synthesize a ConsensusReady event so the existing handler arm
-            // below advances the FSM. Synchronous dispatch — the FSM is single-threaded on the
-            // caller thread, so re-entry into `handle` happens before this method returns.
+            // below advances the FSM. Synchronous dispatch — the hook runs inside a task of the node's
+            // serial executor (#3587), so re-entry into `handle` happens before this method returns.
             if (ctx.consensusReadySupplier().get()) {
                 log.debug("Consensus engine reports ready on entry to QuorumWaiting — advancing");
                 dispatchSelf(ctx, new ConsensusReady());
@@ -170,7 +170,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // to flip.
             log.debug("Consensus engine not ready on entry — scheduling periodic re-check at {}ms",
                       POLL_INTERVAL.millis());
-            var future = SharedScheduler.scheduleAtFixedRate(() -> pollConsensusAndKv(ctx), POLL_INTERVAL);
+            var future = SharedScheduler.scheduleAtFixedRate(ctx.serialized(() -> pollConsensusAndKv(ctx)), POLL_INTERVAL);
 
             pollFuture.set(future);
         }
@@ -399,7 +399,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // adopted, so a killed leader's corpse in KV cannot resurrect and wedge re-election.
             var entryBaseline = ctx.committedViewSequence();
             var tickFuture = scheduleStaircaseFirstTick(ctx, "Electing", Option.none());
-            var observationFuture = SharedScheduler.scheduleAtFixedRate(() -> adoptLeaderFromKvIfPresent(ctx),
+            var observationFuture = SharedScheduler.scheduleAtFixedRate(ctx.serialized(() -> adoptLeaderFromKvIfPresent(ctx)),
                                                                         ctx.peerObservationInterval());
 
             return new Electing(ctx,
@@ -505,7 +505,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // follower's freshness cache before the lease can observe it. Without the warm-up the
             // lease trips on every new leader before its first freshness signal can arrive — the
             // perpetual re-election churn seen on loaded hosts.
-            var future = SharedScheduler.scheduleAtFixedRate(() -> checkLeaderLease(this),
+            var future = SharedScheduler.scheduleAtFixedRate(ctx.serialized(() -> checkLeaderLease(this)),
                                                              ctx.leaderLeaseWarmup(),
                                                              ctx.leaderLeaseCheckInterval());
 
@@ -513,19 +513,20 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
 
         /// #3092 I2 after a local leader adoption: a local commit names a node of the view it was elected from, but a
-        /// view written concurrently (another transport thread) may have dropped that node between the commit's
-        /// admission and this transition. The one I2 site runs here, BEFORE the leader is published, so such a
-        /// tenure leaves at once and announces nothing. Cluster mode is exempt: a consensus commit is adopted when
-        /// absent from the view (FIX 1), and the next view checks it.
+        /// view written by an earlier event may have dropped that node between the commit's admission and this
+        /// transition. The I2 predicate is read here, BEFORE the leader is published, so such a tenure announces
+        /// nothing; the hook does not dispatch (`FsmState`, #3587): the loss is queued as `LeaderOutOfView`, which
+        /// this tenure handles as the next event in order, as the I2 site's own event ([#holdLeaderToView]).
+        /// Cluster mode is exempt: a consensus commit is adopted when absent from the view (FIX 1), and the next view
+        /// checks it.
         private boolean leftTheViewOnLocalEntry() {
-            if (!ctx.isLocalMode()) {
+            if (!ctx.isLocalMode() || isInStoredView(ctx, leader)) {
                 return false;
             }
 
-            holdLeaderToView(ctx, Option.none());
+            ctx.enqueue(new LeaderOutOfView(leader));
 
-            return ctx.fsm()
-                      .current() != this;
+            return true;
         }
 
         @Override
@@ -827,7 +828,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // `rescheduleCurrentTick` path — the staircase only governs the FIRST tick after
             // entry to the state, which is exactly when herding would otherwise occur.
             var holder = new AtomicReference<ScheduledFuture<?>>(scheduleStaircaseFirstTick(ctx, "ReElecting", suspect));
-            var observationFuture = SharedScheduler.scheduleAtFixedRate(() -> adoptLeaderFromKvIfPresent(ctx),
+            var observationFuture = SharedScheduler.scheduleAtFixedRate(ctx.serialized(() -> adoptLeaderFromKvIfPresent(ctx)),
                                                                         ctx.peerObservationInterval());
 
             return new ReElecting(ctx,
@@ -948,8 +949,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             ctx.installVoters(members);
             // #3581 I2 at every entry, whatever the predecessor: the stored leader handed over (a voting state's, which
             // FIX 1 may hold out of view; or one the entered members make ineligible) is held to the stored eligible
-            // view by the one I2 site, which announces its loss, BEFORE the pull, so no later clear undoes the pull.
-            holdLeaderToView(ctx, Option.none());
+            // view and its loss announced, BEFORE the pull, so no later clear undoes the pull. The hook does not
+            // dispatch (`FsmState`, #3587): it drops the leader itself, exactly as `Passive`'s `LeaderOutOfView` arm.
+            dropLeaderOutOfViewOnEntry(ctx);
             // #3414: Passive can be entered after the committed leader's notification passed (Dormant drops it), so the
             // entry reads the committed leader key, as the other entry states do.
             observeCommittedLeaderFromKv(ctx);
@@ -1000,6 +1002,14 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         ctx.setAdoptedViewSequence(committed.viewSequence());
         ctx.setCurrentLeader(Option.some(committed.leader()));
         notifyLeaderChange(ctx);
+    }
+
+    /// `Passive.onEntry`'s I2 check (#3587): the predicate of [#holdLeaderToView] with no named node, applied without an
+    /// event: the stored leader absent from the stored view is dropped and its loss announced ([#dropObservedLeader]).
+    private static void dropLeaderOutOfViewOnEntry(LeaderElectionContext ctx) {
+        ctx.storedLeader()
+           .filter(leader -> !isInStoredView(ctx, leader))
+           .onPresent(_ -> clearLeaderAndNotify(ctx));
     }
 
     /// `Passive` side of the I2 site: the observed leader the site found absent from the stored view is dropped

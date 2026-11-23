@@ -8,7 +8,6 @@
 package org.pragmatica.consensus.leader.fsm;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -49,7 +48,9 @@ import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCom
 ///
 /// The stress drives exactly those two calls into one worker's `LeaderManager` from two threads, released together
 /// by a barrier, with a random spin on the view side to sweep the offset between them, once per fresh worker. The
-/// outcome checked after both calls returned is I2 for `Passive`: a held leader is in the stored view.
+/// outcome checked after both calls returned is I2 for `Passive`: a held leader is in the stored view. Before the fix
+/// (the two calls dispatched on their own threads) the racy outcome was observed within 0.3 s of this budget; with
+/// every event of the node in one serial executor (#3587) the two calls are handled one after the other.
 class PassiveAdmissionInterleaveTest {
     private static final NodeId SELF = new NodeId("worker-1");
     private static final NodeId LEADER = new NodeId("core-1");
@@ -67,33 +68,11 @@ class PassiveAdmissionInterleaveTest {
         pool.shutdownNow();
     }
 
-    /// TRIPWIRE (current behaviour, #3587 open): the racy outcome is observable within the iteration budget.
-    @Test
-    void tripwire_passiveHoldsALeaderAbsentFromItsStoredView_raceObservable() throws Exception {
-        assertThat(firstViolation(ITERATIONS))
-                .as("TRIPWIRE #3587: no racy admission in %d iterations. If the serial executor in LeaderManager is in, "
-                    + "the race is fixed: delete this tripwire and enable "
-                    + "passiveNeverHoldsALeaderAbsentFromItsStoredView", ITERATIONS)
-                .isPositive();
-    }
-
     /// The real assertion: no interleaving of the push admission and the view write leaves a held leader out of view.
-    @Disabled("#3587: enable with the serial executor in LeaderManager, and delete the tripwire beside it")
     @Test
     void passiveNeverHoldsALeaderAbsentFromItsStoredView() throws Exception {
         assertThat(violations(ITERATIONS)).as("iterations ending with a held leader absent from the stored view")
                                           .isZero();
-    }
-
-    /// The 1-based iteration of the first violation, or 0 when none occurred within `iterations`.
-    private int firstViolation(int iterations) throws Exception {
-        for (int i = 1; i <= iterations; i++) {
-            if (raceOnce()) {
-                return i;
-            }
-        }
-
-        return 0;
     }
 
     private int violations(int iterations) throws Exception {

@@ -237,6 +237,8 @@ public final class LeaderElectionContext {
     // Per-FSM Fsm reference — bound at construction time via the constructor-driven initial-state
     // factory. Replaces the global static FSM_REF.
     private final Fsm<LeaderElectionState, ClusterFsmEvent> fsm;
+    /// The node's one serial executor (#3587): every leader-election event of this node enters the FSM through it.
+    private final SerialExecutor serial = SerialExecutor.serialExecutor();
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
     private final AtomicReference<Option<NodeId>> lastAdoptedLeader = new AtomicReference<>(Option.none());
 
@@ -876,7 +878,7 @@ public final class LeaderElectionContext {
 
     private void scheduleReassertion(Supplier<Option<TransportView>> view) {
         if (reassertionArmed.compareAndSet(false, true)) {
-            SharedScheduler.schedule(() -> reassert(view), reassertPeriod.get());
+            SharedScheduler.schedule(serialized(() -> reassert(view)), reassertPeriod.get());
         }
     }
 
@@ -889,7 +891,7 @@ public final class LeaderElectionContext {
     }
 
     private void dispatchTransportView(TransportView view) {
-        fsm.dispatch(new ClusterFsmEvent.NodeAdded(self, view.topology(), view.sequence()));
+        submit(new ClusterFsmEvent.NodeAdded(self, view.topology(), view.sequence()));
     }
 
     private boolean applyTopology(List<NodeId> topology, long sequence) {
@@ -1125,6 +1127,48 @@ public final class LeaderElectionContext {
 
     public Fsm<LeaderElectionState, ClusterFsmEvent> fsm() {
         return fsm;
+    }
+
+    /// #3587: run `task` in the node's one total order of leader-election events ([SerialExecutor#execute]). Every
+    /// `LeaderManager` entry point that reads or writes election state takes this path.
+    @Contract
+    public void serially(Runnable task) {
+        serial.execute(task);
+    }
+
+    /// #3587: `task` as a callback (a timer's, a listener's) that runs it in the node's one total order.
+    public Runnable serialized(Runnable task) {
+        return () -> serial.execute(task);
+    }
+
+    /// #3587: deliver `event` to the FSM in the node's one total order. Inside a task (a handler following up, a
+    /// callback already serialized) it is dispatched at once, as part of that task; from any other thread it is queued.
+    @Contract
+    public void submit(ClusterFsmEvent event) {
+        if (serial.isConfined()) {
+            fsm.dispatch(event);
+        } else {
+            serial.execute(() -> fsm.dispatch(event));
+        }
+    }
+
+    /// #3587: deliver `event` AFTER the current task, never inside it. The path for a follow-up decided in an `onEntry`
+    /// hook, which must not dispatch (`FsmState`): the event runs once the transition that ran the hook is complete.
+    @Contract
+    public void enqueue(ClusterFsmEvent event) {
+        serial.execute(() -> fsm.dispatch(event));
+    }
+
+    /// #3587: stop in order. Every event submitted before it is handled first, then `Shutdown`, then the executor
+    /// rejects every later task ([SerialExecutor#close]): no event reaches the FSM after the stop.
+    @Contract
+    public void stop() {
+        serial.execute(this::shutdownInOrder);
+    }
+
+    private void shutdownInOrder() {
+        fsm.dispatch(new ClusterFsmEvent.Shutdown());
+        serial.close();
     }
 
     // --- Derived helpers ---
