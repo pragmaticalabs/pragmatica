@@ -499,7 +499,7 @@
 /// \*   its row names that event (#3592). The code keeps it across pause/resume and a same-epoch Install: phases.clear() runs only in shutdownAndReset (the stop
 /// \*   path) and GC (doCleanupOldPhases) drops only expired past slots. A NEWER-epoch adoption replaces the PhaseData of every slot
 /// \*   at or after the frontier (currentPhaseData), so those ballots are dropped; harmless, since self votes only at currentPhase
-/// \*   (canVoteRound1/2) and the persisted phase is currentPhase (adoptlossD5 and mutB stay green). Restart (a new process) empties `voted` whatever these say.
+/// \*   (canVoteRound1/2) and the persisted phase is currentPhase (the adoptlossD5 row stays green). Restart (a new process) empties `voted` whatever these say.
 /// \*   KeepBallotsOnPause  Pause keeps `voted` (code: TRUE; doPauseForQuorumLoss and doResumeFromPause never touch phases)
 /// \*   KeepBallotsOnAdopt  Install keeps `voted` (code: TRUE on a same-epoch Install; a newer-epoch adoption replaces slots >= the frontier, see above)
 /// \*   FaultyResp   node "C" may answer sync with an arbitrary well-formed log (a non-crash fault)
