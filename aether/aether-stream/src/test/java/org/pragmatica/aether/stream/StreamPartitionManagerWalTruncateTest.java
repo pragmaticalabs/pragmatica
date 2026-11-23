@@ -37,6 +37,7 @@ import java.util.stream.IntStream;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.aether.stream.HotWindowFixture.declaredHot;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
@@ -59,6 +60,10 @@ class StreamPartitionManagerWalTruncateTest {
     private static final int SEALED_BOUND = 19;
     private static final int SMALL_EVENTS = 6;
     private static final int RING_EVENTS = 4;
+    private static final long RING_BYTES = 2L * RING_EVENTS * PAYLOAD_BYTES;
+    /// One payload: 256 KiB keeps the first data segment at today's 256 KiB when the ring is sized from the declared hot
+    /// window (`RingGeometry.firstSegmentBytes`), as the data region exceeds one segment.
+    private static final long MAX_EVENT_BYTES = PAYLOAD_BYTES;
     private static final int SEAL_FAILURES = 2;
     /// 40 one-event segments of ~1 KiB each during the outage against a cap of ~5 of them.
     private static final int SPILL_EVENTS = 40;
@@ -330,10 +335,10 @@ class StreamPartitionManagerWalTruncateTest {
     }
 
     private static void createSmallRingStream(StreamPartitionManager manager) {
-        var retention = RetentionPolicy.retentionPolicy(RING_EVENTS, 2L * RING_EVENTS * PAYLOAD_BYTES, 600_000);
+        var retention = RetentionPolicy.retentionPolicy(RING_EVENTS, RING_BYTES, 600_000);
+        var config = StreamConfig.streamConfig(STREAM, 1, retention, "earliest", MAX_EVENT_BYTES);
 
-        manager.createStream(StreamConfig.streamConfig(STREAM, 1, retention, "earliest"))
-               .onFailure(cause -> fail(cause.message()));
+        manager.createStream(declaredHot(config, RING_EVENTS, RING_BYTES)).onFailure(cause -> fail(cause.message()));
     }
 
     private static void createStream(StreamPartitionManager manager) {

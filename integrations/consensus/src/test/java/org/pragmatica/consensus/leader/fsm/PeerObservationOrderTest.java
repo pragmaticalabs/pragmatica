@@ -134,10 +134,10 @@ class PeerObservationOrderTest {
         static Node following(boolean preVote) {
             var node = new Node(LeaderElectionContext::dormant, preVote);
 
-            node.harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            node.harness.dispatch(new ClusterFsmEvent.NodeAdded(N2, ALL, 1L));
-            node.harness.dispatch(new ConsensusReady());
-            node.harness.dispatch(new LeaderCommitted(N1, 1L));
+            OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumEstablished());
+            OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeAdded(N2, ALL, 1L));
+            OnDrainer.dispatch(node.harness, new ConsensusReady());
+            OnDrainer.dispatch(node.harness, new LeaderCommitted(N1, 1L));
 
             return node;
         }
@@ -216,7 +216,7 @@ class PeerObservationOrderTest {
         node.manager.peerDisconnected(new PeerDisconnected(N3, List.of(N1, N2), ObservationSource.QUIC, 5L));
 
         node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC));
-        node.harness.dispatch(new ClusterFsmEvent.NodeGone(N1, List.of(N2)));
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeGone(N1, List.of(N2)));
         node.manager.peerJoined(new PeerJoined(N3, ALL, ObservationSource.QUIC));
 
         assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N3, ALL))).as("an unsequenced write is dropped").isFalse();
@@ -380,10 +380,10 @@ class PeerObservationOrderTest {
     void staleTopologyEventInElecting_doesNotRescheduleTheTick() {
         node = new Node(LeaderElectionContext::electing);
 
-        node.harness.dispatch(new ClusterFsmEvent.NodeAdded(N1, ALL, 5L));
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeAdded(N1, ALL, 5L));
         var electing = (LeaderElectionState.Electing) node.harness.state();
         var afterFresh = electing.tickFuture().get();
-        node.harness.dispatch(new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 4L));
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 4L));
 
         assertThat(node.ctx.currentTopology()).as("control: the stale event was dropped").contains(N1);
         assertThat(electing.tickFuture().get() == afterFresh).as("a dropped event leaves the pending tick alone").isTrue();
@@ -484,8 +484,8 @@ class PeerObservationOrderTest {
     void olderNodeAdded_afterANewerNodeGone_doesNotRestoreThePeer(StoringState state) {
         node = new Node(state.initial);
 
-        node.harness.dispatch(new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 2L));
-        node.harness.dispatch(new ClusterFsmEvent.NodeAdded(N1, ALL, 1L));
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 2L));
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeAdded(N1, ALL, 1L));
 
         assertThat(node.ctx.currentTopology()).as("in %s", state).containsExactlyElementsOf(WITHOUT_N1);
     }
@@ -495,8 +495,8 @@ class PeerObservationOrderTest {
     void olderNodeGone_afterANewerNodeAdded_doesNotRemoveThePeer(StoringState state) {
         node = new Node(state.initial);
 
-        node.harness.dispatch(new ClusterFsmEvent.NodeAdded(N1, ALL, 2L));
-        node.harness.dispatch(new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 1L));
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeAdded(N1, ALL, 2L));
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 1L));
 
         assertThat(node.ctx.currentTopology()).as("in %s", state).containsExactlyElementsOf(ALL);
     }
@@ -559,7 +559,7 @@ class PeerObservationOrderTest {
         node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1, N2), 5L));
         node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N3, ALL, 6L));
 
-        node.harness.dispatch(new PeerRemovedFromView(N3));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N3));
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (! node.ctx.currentTopology().contains(N3) && System.nanoTime() < deadline) {
             Thread.sleep(50);
@@ -578,7 +578,7 @@ class PeerObservationOrderTest {
         node.ctx.installTransportView(() -> countedView(reads, WITHOUT_N3, sequence), TimeSpan.timeSpan(100).millis());
         node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
 
-        node.harness.dispatch(new PeerRemovedFromView(N3));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N3));
         awaitReads(reads, 1);
 
         assertThat(node.ctx.currentTopology()).as("the transport does not list node-3").containsExactly(N1, N2);
@@ -594,13 +594,13 @@ class PeerObservationOrderTest {
         node.ctx.installTransportView(() -> countedView(reads, ALL, sequence), TimeSpan.timeSpan(300).millis());
         node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
 
-        node.harness.dispatch(new PeerRemovedFromView(N3));
-        node.harness.dispatch(new PeerRemovedFromView(N1));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N3));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N1));
         awaitReads(reads, 1);
         Thread.sleep(600);
 
         assertThat(reads.get()).as("one read for the burst").isEqualTo(1);
-        node.harness.dispatch(new PeerRemovedFromView(N3));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N3));
         awaitReads(reads, 2);
         assertThat(node.ctx.currentTopology()).as("restored again").containsExactlyElementsOf(ALL);
     }
@@ -614,7 +614,7 @@ class PeerObservationOrderTest {
         node.manager.installTransportView(() -> Option.some(TransportView.transportView(ALL, sequence.incrementAndGet())));
         node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
 
-        node.harness.dispatch(new PeerRemovedFromView(N3));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N3));
         var deadline = System.nanoTime() + LeaderElectionContext.DEFAULT_REASSERT_PERIOD.nanos() * 3;
         while (!node.ctx.currentTopology().contains(N3) && System.nanoTime() < deadline) {
             Thread.sleep(50);
@@ -629,7 +629,7 @@ class PeerObservationOrderTest {
         node = new Node(LeaderElectionContext::dormant);
         node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 6L));
 
-        node.harness.dispatch(new PeerRemovedFromView(N3));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N3));
         Thread.sleep(400);
 
         assertThat(node.ctx.currentTopology()).containsExactly(N1, N2);
@@ -773,9 +773,9 @@ class PeerObservationOrderTest {
     @EnumSource(RemovingState.class)
     void removedFromView_inEveryState(RemovingState state) {
         node = state.node.get();
-        node.harness.dispatch(new ClusterFsmEvent.NodeAdded(N1, ALL, 5L));
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeAdded(N1, ALL, 5L));
 
-        node.harness.dispatch(new PeerRemovedFromView(N3));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N3));
 
         assertThat(node.ctx.currentTopology()).as("in %s", state).containsExactly(N1, N2);
     }
@@ -784,7 +784,7 @@ class PeerObservationOrderTest {
     void removalOfLeader_inLed_losesLeader() {
         node = Node.following(false);
 
-        node.harness.dispatch(new PeerRemovedFromView(N1));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N1));
 
         assertThat(node.ctx.currentTopology()).containsExactlyElementsOf(WITHOUT_N1);
         assertThat(node.harness.state()).as("the leader is lost").isInstanceOf(LeaderElectionState.ReElecting.class);
@@ -794,7 +794,7 @@ class PeerObservationOrderTest {
     void removalOfAnotherPeer_inLed_keepsTheLeader() {
         node = Node.following(false);
 
-        node.harness.dispatch(new PeerRemovedFromView(N3));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N3));
 
         assertThat(node.ctx.currentTopology()).containsExactly(N1, N2);
         assertThat(node.followsTheLeader()).isTrue();
@@ -807,7 +807,7 @@ class PeerObservationOrderTest {
         node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1), 5L));
         assertThat(node.ctx.removeFromView(N1)).as("control: the storage keeps the last node").isFalse();
 
-        node.harness.dispatch(new PeerRemovedFromView(N1));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N1));
 
         assertThat(node.ctx.currentTopology()).as("the view is kept").containsExactly(N1);
         assertThat(node.harness.state()).as("the leader is lost all the same").isInstanceOf(LeaderElectionState.ReElecting.class);
@@ -820,7 +820,7 @@ class PeerObservationOrderTest {
         node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 5L));
         assertThat(node.followsTheLeader()).as("control: the direct write left Led alone").isTrue();
 
-        node.harness.dispatch(new PeerRemovedFromView(N1));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N1));
 
         assertThat(node.ctx.currentTopology()).as("the view is kept").containsExactlyElementsOf(WITHOUT_N1);
         assertThat(node.harness.state()).as("the leader is lost all the same").isInstanceOf(LeaderElectionState.ReElecting.class);
@@ -835,7 +835,7 @@ class PeerObservationOrderTest {
         node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1), 5L));
         var before = node.sends.get();
 
-        node.harness.dispatch(new PeerRemovedFromView(N1));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N1));
 
         assertThat(node.sends.get()).as("the pre-vote question went out").isGreaterThan(before);
         assertThat(node.followsTheLeader()).as("the pre-vote keeps Led until the verdict").isTrue();
@@ -846,7 +846,7 @@ class PeerObservationOrderTest {
     void removalOfLeader_inLed_leavesNoSuspect() {
         node = Node.following(false);
 
-        node.harness.dispatch(new PeerRemovedFromView(N1));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N1));
 
         assertThat(node.harness.state()).isInstanceOfSatisfying(LeaderElectionState.ReElecting.class,
                                                                 reElecting -> assertThat(reElecting.suspect()).isEqualTo(Option.none()));
@@ -857,11 +857,11 @@ class PeerObservationOrderTest {
     @Test
     void removalOfSelf_asLeader_inLed_stepsDown() {
         node = Node.following(true);
-        node.harness.dispatch(new LeaderCommitted(N2, 2L));
+        OnDrainer.dispatch(node.harness, new LeaderCommitted(N2, 2L));
         assertThat(node.harness.state()).as("control: self leads")
                   .isInstanceOfSatisfying(LeaderElectionState.Led.class, led -> assertThat(led.leader()).isEqualTo(N2));
 
-        node.harness.dispatch(new PeerRemovedFromView(N2));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N2));
 
         assertThat(node.harness.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
     }
@@ -870,13 +870,13 @@ class PeerObservationOrderTest {
     @EnumSource(value = RemovingState.class, names = {"ELECTING", "RE_ELECTING"})
     void removalInAnElectingState_reschedulesOnlyWhenApplied(RemovingState state) {
         node = state.node.get();
-        node.harness.dispatch(new ClusterFsmEvent.NodeAdded(N1, List.of(N1, N2), 5L));
+        OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeAdded(N1, List.of(N1, N2), 5L));
         var tick = electionTick(node.harness.state());
         var afterAdded = tick.get();
 
-        node.harness.dispatch(new PeerRemovedFromView(N3));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N3));
         assertThat(tick.get() == afterAdded).as("in %s: removing an absent node leaves the tick alone", state).isTrue();
-        node.harness.dispatch(new PeerRemovedFromView(N1));
+        OnDrainer.dispatch(node.harness, new PeerRemovedFromView(N1));
 
         assertThat(node.ctx.currentTopology()).containsExactly(N2);
         assertThat(tick.get() != afterAdded).as("in %s: an applied removal reschedules the tick", state).isTrue();

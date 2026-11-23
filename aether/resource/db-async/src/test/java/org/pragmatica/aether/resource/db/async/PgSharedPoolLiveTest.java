@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.async;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -18,9 +19,9 @@ import org.pragmatica.aether.resource.db.PoolConfig;
 import org.pragmatica.aether.resource.db.PoolScope;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.testing.DockerRequirement;
+import org.pragmatica.testing.PollUntil;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -36,6 +37,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Timeout(value = 120, unit = TimeUnit.SECONDS)
 class PgSharedPoolLiveTest {
     private static final TimeSpan TIMEOUT = timeSpan(30).seconds();
+    private static final Duration WARM_UP_BOUND = Duration.ofSeconds(30);
+    private static final Duration POLL_INTERVAL = Duration.ofMillis(200);
     private static final String COUNT_NAMED = "SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = ?";
 
     private final List<PostgreSQLContainer<?>> containers = new CopyOnWriteArrayList<>();
@@ -109,6 +112,12 @@ class PgSharedPoolLiveTest {
                        .unwrap();
     }
 
+    private static int namedSessions(PgSqlConnector connector) {
+        return connector.queryOne(COUNT_NAMED, row -> row.getInt("n"), "t-pg-shared")
+                        .await(TIMEOUT)
+                        .unwrap();
+    }
+
     @Test
     void threeSlicesOnOneConfig_openOnePoolsSessions() {
         var postgres = postgres(100);
@@ -118,9 +127,14 @@ class PgSharedPoolLiveTest {
         acquire(provider, "database", "slice-b");
         acquire(provider, "database", "slice-c");
 
-        Result<Integer> sessions = a.queryOne(COUNT_NAMED, row -> row.getInt("n"), "t-pg-shared").await(TIMEOUT);
+        // Barrier: every acquire has returned (a pool's provisioning waits for its own warm-up); then wait until the count
+        // reaches one pool's minimum, so the count is read from a state in which three pools would already be visible.
+        var warm = PollUntil.pollUntil(() -> namedSessions(a), sessions -> sessions >= 3, WARM_UP_BOUND, POLL_INTERVAL)
+                            .assertMet("sessions named t-pg-shared reaching one pool's minimum (3)");
 
-        assertThat(sessions.unwrap()).as("one pool's warm sessions, not three pools'").isEqualTo(3);
+        assertThat(warm.finalValue()).as("sessions named t-pg-shared after the warm-up barrier: one pool holds 3 to 5 (min 3, "
+                                         + "max 5, the counting query's own session included), three pools would hold at least 9")
+                                     .isBetween(3, 5);
 
         provider.closeShared().await(TIMEOUT);
     }

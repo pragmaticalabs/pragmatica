@@ -39,6 +39,7 @@ import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.aether.stream.HotWindowFixture.declaredHot;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 
@@ -61,6 +62,10 @@ class StreamPartitionManagerRestartAfterCompactionTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final int RING_EVENTS = 4;
+    private static final long RING_BYTES = 1024 * 1024;
+    /// 256 KiB keeps the first data segment at today's 256 KiB when the ring is sized from the declared hot window
+    /// (`RingGeometry.firstSegmentBytes`): the data region exceeds one segment, and a payload is 70 KiB.
+    private static final long MAX_EVENT_BYTES = 256 * 1024L;
     /// 200 × 70 KiB ≈ 13.7 MiB > AppendLog.COMPACTION_THRESHOLD_BYTES (8 MiB): a truncate past the sealed
     /// watermark physically rewrites the file, which is the only way the survivors' offsets can be lost.
     private static final int EVENTS = 200;
@@ -429,9 +434,10 @@ class StreamPartitionManagerRestartAfterCompactionTest {
     }
 
     private static Result<?> createStream(StreamPartitionManager manager) {
-        var retention = RetentionPolicy.retentionPolicy(RING_EVENTS, 1024 * 1024, 600_000);
+        var retention = RetentionPolicy.retentionPolicy(RING_EVENTS, RING_BYTES, 600_000);
+        var config = StreamConfig.streamConfig(STREAM, 1, retention, "earliest", MAX_EVENT_BYTES);
 
-        return manager.createStream(StreamConfig.streamConfig(STREAM, 1, retention, "earliest"));
+        return manager.createStream(declaredHot(config, RING_EVENTS, RING_BYTES));
     }
 
     private static void publish(StreamPartitionManager manager, int i) {

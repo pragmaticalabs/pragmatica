@@ -84,11 +84,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     LeaderElectionContext ctx();
 
-    /// Dispatches an event to this FSM instance through the Fsm reference stored in the context.
-    /// The reference is bound at Context construction time via the constructor-driven initial-state
-    /// factory, so it is always present when this method runs.
+    /// Dispatches an event to this FSM instance from code that is ALREADY confined to the node's serial executor
+    /// (#3587): a handler, or a callback body wrapped in [LeaderElectionContext#serialized]. It has no queueing path of
+    /// its own (#3605 round-3 ruling): every callback that runs off the drainer (a timer, a promise completion) enters
+    /// the node's order through ONE path, `ctx.serialized(...)`, and calls this only inside it. Enforced, not assumed
+    /// (round-4 ruling): it goes through [LeaderElectionContext#dispatchConfined], which throws
+    /// [IllegalStateException] when the caller is not the drainer, so an unwrapped callback fails the first time it
+    /// fires instead of dispatching on its own thread. A hook never takes this path: it follows up
+    /// ([LeaderElectionContext#followUp]).
     private static void dispatchSelf(LeaderElectionContext ctx, ClusterFsmEvent event) {
-        ctx.fsm().dispatch(event);
+        ctx.dispatchConfined(event);
     }
 
     // --- State records ---
@@ -147,26 +152,20 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // snapshot included `LeaderKey`), we must observe it here — without this pull, the
             // FSM would advance to AwaitingKvSync and re-discover it, but the direct path is
             // both shorter and matches the spec's "always-listening KV poll across all states"
-            // contract. `adoptLeaderFromKvIfPresent` synthesizes `LeaderCommitted`; this state's
-            // handler arm transitions to `Led(thatLeader)` synchronously.
-            adoptLeaderFromKvIfPresent(ctx);
-            // If the synchronous dispatch already advanced us out of QuorumWaiting (i.e. we're
-            // now in Led), skip scheduling the poll — the new state owns its own timers.
-            // We compare to `this` rather than asserting `instanceof QuorumWaiting` to keep
-            // the `fresh` + manual-`onEntry` test pattern (used elsewhere for `onCasLost`
-            // coverage) working without changes — when invoked outside the FSM the current
-            // state is whatever the harness left in place, and the "did we transition out"
-            // semantics is "is the FSM still pointing at this exact record?".
-            if (ctx.fsm().current() != this && ctx.currentLeader().isPresent()) {
-                return;
-            }
+            // contract. The hook decides ONE follow-up from its inputs (#3587, `FsmState`): a
+            // `LeaderCommitted` for a KV leader to adopt (this state's handler arm always moves to
+            // `Led(thatLeader)`, which owns its own timers), else consensus readiness or the poll.
+            kvLeaderToAdopt(ctx).onPresent(leader -> ctx.followUp(new LeaderCommitted(leader)))
+                           .onEmpty(this::advanceOrPoll);
+        }
+
+        private void advanceOrPoll() {
             // Query the consensus engine's readiness state directly (SSOT). If consensus is
             // already active we synthesize a ConsensusReady event so the existing handler arm
-            // below advances the FSM. Synchronous dispatch — the FSM is single-threaded on the
-            // caller thread, so re-entry into `handle` happens before this method returns.
+            // below advances the FSM, as the follow-up of this entry (#3587).
             if (ctx.consensusReadySupplier().get()) {
                 log.debug("Consensus engine reports ready on entry to QuorumWaiting — advancing");
-                dispatchSelf(ctx, new ConsensusReady());
+                ctx.followUp(new ConsensusReady());
 
                 return;
             }
@@ -179,7 +178,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // to flip.
             log.debug("Consensus engine not ready on entry — scheduling periodic re-check at {}ms",
                       POLL_INTERVAL.millis());
-            var future = SharedScheduler.scheduleAtFixedRate(() -> pollConsensusAndKv(ctx), POLL_INTERVAL);
+            var future = SharedScheduler.scheduleAtFixedRate(ctx.serialized(() -> pollConsensusAndKv(ctx)),
+                                                             POLL_INTERVAL);
 
             pollFuture.set(future);
         }
@@ -252,27 +252,21 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         public void onEntry() {
             // Pull-side fast path — if KV already has a leader (auto-heal: replacement node
             // joined an existing cluster, KVSync already applied LeaderKey before we got here),
-            // synthesize LeaderCommitted now. Synchronous dispatch — re-entry into `handle`
-            // happens before this method returns and transitions to `Led(leader)`.
-            adoptLeaderFromKvIfPresent(ctx);
-            // #1803: a leader this node already observed (while passive, before it was admitted as a
-            // voter) is a committed leader too. The KV pull above skips a leader equal to the one
-            // already known, so without this a joiner never left the wait on the strength of it.
-            if (ctx.fsm().current() instanceof AwaitingKvSync) {
-                adoptKnownLeader(ctx);
-            }
-            // If the synchronous dispatch already advanced us out of AwaitingKvSync, skip
-            // scheduling the grace timer — this record's CAS reservation is gone, but the new
-            // state owns its own timers.
-            if (! (ctx.fsm().current() instanceof AwaitingKvSync)) {
-                log.debug("AwaitingKvSync.onEntry: KV-side leader adopted synchronously — skipping grace timer");
+            // follow up with LeaderCommitted. #1803: a leader this node already observed (while
+            // passive, before it was admitted as a voter) is a committed leader too; the KV pull
+            // skips a leader equal to the one already known, so without it a joiner never left the
+            // wait on the strength of it. The hook decides ONE follow-up from its inputs (#3587,
+            // `FsmState`): the KV leader to adopt, else the known leader, else the grace timer. The
+            // `LeaderCommitted` arm always moves to `Led(leader)`, so a second adoption never runs.
+            kvLeaderToAdopt(ctx).orElse(ctx::currentLeader)
+                           .onPresent(leader -> ctx.followUp(new LeaderCommitted(leader)))
+                           .onEmpty(this::armGraceTimer);
+        }
 
-                return;
-            }
-
+        private void armGraceTimer() {
             log.info("Entering AwaitingKvSync: deferring leader-proposal for {}ms to absorb KV-sync from peers",
                      ctx.kvSyncGraceDelay().millis());
-            var future = SharedScheduler.schedule(() -> dispatchSelf(ctx, new KvSyncGraceTimeout()),
+            var future = SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx, new KvSyncGraceTimeout())),
                                                   ctx.kvSyncGraceDelay());
 
             graceTimeoutFuture.set(future);
@@ -371,15 +365,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         log.info("AwaitingKvSync: KV state still catching up and no committed leader visible yet — waiting another {}ms",
                  ctx.kvSyncGraceDelay().millis());
         waiting.graceTimeoutFuture()
-               .set(SharedScheduler.schedule(() -> dispatchSelf(ctx,
-                                                                new KvSyncGraceTimeout()),
+               .set(SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx,
+                                                                               new KvSyncGraceTimeout())),
                                              ctx.kvSyncGraceDelay()));
-    }
-
-    /// Adopts the leader this node already knows. Synchronous dispatch, like the KV pull: the `LeaderCommitted`
-    /// handler moves the FSM to `Led` before this returns.
-    private static void adoptKnownLeader(LeaderElectionContext ctx) {
-        ctx.currentLeader().onPresent(leader -> dispatchSelf(ctx, new LeaderCommitted(leader)));
     }
 
     /// Periodic re-check of (a) consensus readiness AND (b) KV-committed leader. R6: pulls
@@ -424,7 +412,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // adopted, so a killed leader's corpse in KV cannot resurrect and wedge re-election.
             var entryBaseline = ctx.committedViewSequence();
             var tickFuture = scheduleStaircaseFirstTick(ctx, "Electing", Option.none());
-            var observationFuture = SharedScheduler.scheduleAtFixedRate(() -> adoptLeaderFromKvIfPresent(ctx),
+            var observationFuture = SharedScheduler.scheduleAtFixedRate(ctx.serialized(() -> adoptLeaderFromKvIfPresent(ctx)),
                                                                         ctx.peerObservationInterval());
 
             return new Electing(ctx,
@@ -439,7 +427,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             ctx.clearProposalInFlight();
             ctx.resetElectionRetryCount();
             ctx.resetStuckElectionCount();
-            adoptLeaderFromKvIfPresent(ctx);
+            followUpKvLeader(ctx);
         }
 
         @Override
@@ -530,7 +518,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // follower's freshness cache before the lease can observe it. Without the warm-up the
             // lease trips on every new leader before its first freshness signal can arrive — the
             // perpetual re-election churn seen on loaded hosts.
-            var future = SharedScheduler.scheduleAtFixedRate(() -> checkLeaderLease(this),
+            var future = SharedScheduler.scheduleAtFixedRate(ctx.serialized(() -> checkLeaderLease(this)),
                                                              ctx.leaderLeaseWarmup(),
                                                              ctx.leaderLeaseCheckInterval());
 
@@ -538,19 +526,21 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
 
         /// #3092 I2 after a local leader adoption: a local commit names a node of the view it was elected from, but a
-        /// view written concurrently (another transport thread) may have dropped that node between the commit's
-        /// admission and this transition. The one I2 site runs here, BEFORE the leader is published, so such a
-        /// tenure leaves at once and announces nothing. Cluster mode is exempt: a consensus commit is adopted when
-        /// absent from the view (FIX 1), and the next view checks it.
+        /// view written by an earlier event may have dropped that node between the commit's admission and this
+        /// transition. The I2 predicate is read here, BEFORE the leader is published, so such a tenure announces
+        /// nothing; the hook does not dispatch (`FsmState`, #3587): the loss is this entry's follow-up
+        /// `LeaderOutOfView` ([LeaderElectionContext#followUp]), which this tenure handles before any other event, as
+        /// the I2 site's own event ([#holdLeaderToView]).
+        /// Cluster mode is exempt: a consensus commit is adopted when absent from the view (FIX 1), and the next view
+        /// checks it.
         private boolean leftTheViewOnLocalEntry() {
-            if (!ctx.isLocalMode()) {
+            if (!ctx.isLocalMode() || isInStoredView(ctx, leader)) {
                 return false;
             }
 
-            holdLeaderToView(ctx, Option.none());
+            ctx.followUp(new LeaderOutOfView(leader));
 
-            return ctx.fsm()
-                      .current() != this;
+            return true;
         }
 
         @Override
@@ -906,7 +896,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // `rescheduleCurrentTick` path — the staircase only governs the FIRST tick after
             // entry to the state, which is exactly when herding would otherwise occur.
             var holder = new AtomicReference<ScheduledFuture<?>>(scheduleStaircaseFirstTick(ctx, "ReElecting", suspect));
-            var observationFuture = SharedScheduler.scheduleAtFixedRate(() -> adoptLeaderFromKvIfPresent(ctx),
+            var observationFuture = SharedScheduler.scheduleAtFixedRate(ctx.serialized(() -> adoptLeaderFromKvIfPresent(ctx)),
                                                                         ctx.peerObservationInterval());
 
             return new ReElecting(ctx,
@@ -922,7 +912,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             ctx.clearProposalInFlight();
             ctx.resetStuckElectionCount();
             clearLeaderAndNotify(ctx);
-            adoptLeaderFromKvIfPresent(ctx);
+            followUpKvLeader(ctx);
         }
 
         @Override
@@ -1046,8 +1036,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             ctx.installVoters(members);
             // #3581 I2 at every entry, whatever the predecessor: the stored leader handed over (a voting state's, which
             // FIX 1 may hold out of view; or one the entered members make ineligible) is held to the stored eligible
-            // view by the one I2 site, which announces its loss, BEFORE the pull, so no later clear undoes the pull.
-            holdLeaderToView(ctx, Option.none());
+            // view and its loss announced, BEFORE the pull, so no later clear undoes the pull. The hook does not
+            // dispatch (`FsmState`, #3587) and needs no follow-up: the drop is a direct write of this entry, exactly
+            // `Passive`'s `LeaderOutOfView` arm, and it must precede the pull below, which a follow-up (delivered after
+            // this hook) would not.
+            dropLeaderOutOfViewOnEntry(ctx);
             // #3414: Passive can be entered after the committed leader's notification passed (Dormant drops it), so the
             // entry reads the committed leader key, as the other entry states do.
             observeCommittedLeaderFromKv(ctx);
@@ -1175,6 +1168,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         ctx.setAdoptedViewSequence(committed.viewSequence());
         ctx.setCurrentLeader(Option.some(committed.leader()));
         notifyLeaderChange(ctx);
+    }
+
+    /// `Passive.onEntry`'s I2 check (#3587): the predicate of [#holdLeaderToView] with no named node, applied without an
+    /// event: the stored leader absent from the stored view is dropped and its loss announced ([#dropObservedLeader]).
+    private static void dropLeaderOutOfViewOnEntry(LeaderElectionContext ctx) {
+        ctx.storedLeader().filter(leader -> !isInStoredView(ctx, leader)).onPresent(_ -> clearLeaderAndNotify(ctx));
     }
 
     /// `Passive` side of the I2 site: the observed leader the site found absent from the stored view is dropped
@@ -1342,35 +1341,42 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// it once per state-entry and once per election tick guarantees the FSM cannot stay in
     /// `Electing` while consensus has already named a leader visible to this node's local KV.
     private static void adoptLeaderFromKvIfPresent(LeaderElectionContext ctx) {
-        // The transitioning states keep the sequence-less pull (NO_SEQUENCE, FIX 1); only Passive adopts the record (#3581).
-        ctx.currentLeaderFromKvSupplier()
-           .get()
-           .map(LeaderCommitted::leader)
-           .onPresent(leader -> {
-                          if (ctx.currentLeader()
-                                 .filter(leader::equals)
-                                 .isPresent()) {
-                              return;
-                          }
-                          // FIX 1: do NOT gate the KV-pull adoption on transport topology presence. The prior
-                          // `if (!currentTopology().contains(leader)) return;` silently skipped FOREVER on every
-                          // 500ms tick when the committed leader was absent from the transport view — the second
-                          // root of the 600s wedge (one joiner self-healed only by luck, the other never did).
-                          // The KV leader is a consensus-validated decision; adopt it. A transport-absent leader
-                          // is logged WARN here; the `adoptLeaderUnconditionally` handler emits the adoption WARN.
-                          if (!isInStoredView(ctx, leader)) {
-                              log.warn("KV-pull: committed leader {} NOT in transport topology {} — adopting anyway "
-                                      + "(consensus decision overrides observed state, FIX 1)",
-                                       leader,
-                                       ctx.currentTopology());
-                          } else {
-                              log.info("Adopting leader from KV-Store: {} (push-notification path missed)",
-                                       leader);
-                          }
+        kvLeaderToAdopt(ctx).onPresent(leader -> dispatchSelf(ctx, new LeaderCommitted(leader)));
+    }
 
-                          dispatchSelf(ctx,
-                                       new LeaderCommitted(leader));
-                      });
+    /// The hook form of [#adoptLeaderFromKvIfPresent] (#3587, `FsmState`): the KV leader to adopt is this entry's
+    /// follow-up, delivered after the transition completes.
+    private static void followUpKvLeader(LeaderElectionContext ctx) {
+        kvLeaderToAdopt(ctx).onPresent(leader -> ctx.followUp(new LeaderCommitted(leader)));
+    }
+
+    /// The KV pull's one decision: the committed leader the KV record names, unless it is the leader already held.
+    private static Option<NodeId> kvLeaderToAdopt(LeaderElectionContext ctx) {
+        // The transitioning states keep the sequence-less pull (NO_SEQUENCE, FIX 1); only Passive adopts the record (#3581).
+        return ctx.currentLeaderFromKvSupplier()
+                  .get()
+                  .map(LeaderCommitted::leader)
+                  .filter(leader -> ctx.currentLeader()
+                                       .filter(leader::equals)
+                                       .isEmpty())
+                  .onPresent(leader -> logKvAdoption(ctx, leader));
+    }
+
+    private static void logKvAdoption(LeaderElectionContext ctx, NodeId leader) {
+        // FIX 1: do NOT gate the KV-pull adoption on transport topology presence. The prior
+        // `if (!currentTopology().contains(leader)) return;` silently skipped FOREVER on every
+        // 500ms tick when the committed leader was absent from the transport view — the second
+        // root of the 600s wedge (one joiner self-healed only by luck, the other never did).
+        // The KV leader is a consensus-validated decision; adopt it. A transport-absent leader
+        // is logged WARN here; the `adoptLeaderUnconditionally` handler emits the adoption WARN.
+        if (!isInStoredView(ctx, leader)) {
+            log.warn("KV-pull: committed leader {} NOT in transport topology {} — adopting anyway "
+                    + "(consensus decision overrides observed state, FIX 1)",
+                     leader,
+                     ctx.currentTopology());
+        } else {
+            log.info("Adopting leader from KV-Store: {} (push-notification path missed)", leader);
+        }
     }
 
     private static void notifyLeaderChange(LeaderElectionContext ctx) {
@@ -1466,7 +1472,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                  ctx.perRankDelay().millis(),
                  ctx.peerObservationInterval().millis());
 
-        return SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
+        return SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx, new ElectionTick())),
                                         TimeSpan.timeSpan(delayMs).millis());
     }
 
@@ -1481,7 +1487,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         var jitterMs = (long)(ctx.proposalRetryDelay().millis() * (1.0 + ctx.jitterSource().getAsDouble()));
 
         log.debug("Scheduling election tick #{} in {}ms", retry, jitterMs);
-        var future = SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
+        var future = SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx, new ElectionTick())),
                                               TimeSpan.timeSpan(jitterMs).millis());
 
         Option.option(holder.getAndSet(future)).onPresent(prior -> prior.cancel(false));
@@ -1630,20 +1636,22 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         var viewSeq = ctx.nextViewSequence();
 
         log.info("Submitting leader proposal: candidate={}, viewSequence={}, epoch={}", candidate, viewSeq, epoch);
-        var timeoutFuture = SharedScheduler.schedule(() -> dispatchSelf(ctx,
-                                                                        new ProposalSettled(candidate,
-                                                                                            false,
-                                                                                            "timeout@epoch=" + epoch)),
+        var timeoutFuture = SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx,
+                                                                                       new ProposalSettled(candidate,
+                                                                                                           false,
+                                                                                                           "timeout@epoch=" + epoch))),
                                                      ctx.proposalTimeout());
 
         storeProposalTimeoutFuture(owner, timeoutFuture);
         handler.propose(candidate, viewSeq)
-               .onSuccess(_ -> dispatchSelf(ctx,
-                                            new ProposalSettled(candidate, true, "submitted@epoch=" + epoch)))
-               .onFailure(cause -> dispatchSelf(ctx,
-                                                new ProposalSettled(candidate,
-                                                                    false,
-                                                                    cause.message() + "@epoch=" + epoch)));
+               .onSuccess(ctx.serialized(_ -> dispatchSelf(ctx,
+                                                           new ProposalSettled(candidate,
+                                                                               true,
+                                                                               "submitted@epoch=" + epoch))))
+               .onFailure(ctx.serialized(cause -> dispatchSelf(ctx,
+                                                               new ProposalSettled(candidate,
+                                                                                   false,
+                                                                                   cause.message() + "@epoch=" + epoch))));
     }
 
     /// Stores the proposal-timeout future onto the owning Electing/ReElecting record so that

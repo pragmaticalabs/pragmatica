@@ -49,7 +49,16 @@ class StreamBudgetThawTest {
     private static final long FLOOR = 64L + 24L * 10_000 + SEGMENT;
 
     private static StreamConfig stream(String name, long maxBytes) {
-        return StreamConfig.streamConfig(name, 1, RetentionPolicy.retentionPolicy(10_000, maxBytes, 3_600_000L), "latest");
+        return declaredWindow(name, 10_000, maxBytes);
+    }
+
+    /// A stream whose hot window equals its retention (count, bytes) and whose `max_event_size` is one segment, so its first
+    /// data region is `min(SEGMENT, bytes)` whether the ring is sized from retention or from the declared window
+    /// (the invariance rule of the ring-window restatement).
+    private static StreamConfig declaredWindow(String name, long maxCount, long maxBytes) {
+        var retention = RetentionPolicy.retentionPolicy(maxCount, maxBytes, 3_600_000L);
+
+        return HotWindowFixture.declaredHot(StreamConfig.streamConfig(name, 1, retention, "latest", SEGMENT), maxCount, maxBytes);
     }
 
     @Nested
@@ -97,7 +106,7 @@ class StreamBudgetThawTest {
 
             manager.exhaustionSink(sink);
             try {
-                create(manager, StreamConfig.streamConfig("x", 1, RetentionPolicy.retentionPolicy(70_000, SEGMENT, 3_600_000L), "latest"));
+                create(manager, declaredWindow("x", 70_000, SEGMENT));
                 manager.onStreamConfigPut(streamConfigPut(stream("a", 4 * MIB)));
                 assertThat(manager.partitionBuffer("a", 0).isPresent()).as("control: a's floor did not fit, it is deferred").isFalse();
 

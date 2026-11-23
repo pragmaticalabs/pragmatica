@@ -1,0 +1,189 @@
+/*
+ *  Copyright (c) 2020-2025 Sergiy Yevtushenko.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
+package org.pragmatica.consensus.leader.fsm;
+
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.pragmatica.lang.Contract;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+
+/// The one serial executor of a node's leader election (#3587): every leader-election event of the node, whatever thread
+/// delivers it (KV notification, transport, SWIM, quorum notification, timers, proposal completion, stop), runs as a task
+/// here, so a handler's check-then-act is atomic against every other event of the node.
+///
+/// GUARANTEE: every task runs on one drainer at a time, in submission order (FIFO across all submitters), never two at once,
+/// and no task runs after [#close]. MECHANISM: a submitter enqueues, then tries to become the drainer by a compare-and-set on
+/// [#drainer]; the winner runs queued tasks on its own thread until the queue is empty, a loser returns at once. A drainer
+/// that releases re-checks the queue and takes the drain back if a task arrived during the release, so no task is stranded.
+///
+/// Consequences the callers rely on:
+/// - Run-to-completion: a task submitted from inside a task runs AFTER the current one, never nested inside it.
+/// - A follow-up event an FSM hook decides is not a task here: the FSM dispatches it inside the running task, when the
+///   dispatch whose transition ran the hook returns ([LeaderElectionContext#followUp], `Fsm#followUp`), so it runs
+///   after that transition and before any other event of the node, queued or not.
+/// - Never waits: [#execute] does not block on another drainer, so it cannot close a lock cycle with a caller that holds a
+///   lock while a task's listener (a leader-change subscriber) waits on that lock. A submitter that finds another drainer
+///   returns before its task ran; the running drainer runs it. No production caller reads its own write back.
+/// - No owned thread. [#close] is called from inside the stop task, after the stop event was handled: every task submitted
+///   before the stop task ran in order before it, and every task after it (already queued, or submitted later) is dropped,
+///   logged at DEBUG, never run. Shutdown therefore drains up to the stop and rejects the rest, deterministically.
+///
+/// A task that throws is logged at ERROR and the drain continues with the next task, for any [Throwable] (FER, degrade
+/// forward: the failed event is lost, every later event still runs): otherwise one failing task would strand the queue
+/// (no drainer, queued tasks never run). Pinned by `LeaderSerialDispatchCensusTest#failingTask_doesNotStallTheQueue`. A [VirtualMachineError] is
+/// never deferred (#3605 round-4 ruling): it is logged and propagates to the drainer's caller at once, after the drainer
+/// is released and the interrupt status restored (a `finally` around the drain, on EVERY exit); no later task runs in
+/// that drain, and the tasks still queued run on the next one (the next submission drains them). Pinned by
+/// `SerialExecutorStrandedTaskTest#vmErrorInATask_laterQueuedTasksDoNotRunInThatDrain_theNextSubmissionRunsThem`.
+///
+/// Interrupt policy (#3605 ruling): when a submitter becomes the drainer it first takes its own interrupt status
+/// (`Thread.interrupted()`) and keeps it; between tasks the drainer clears the status, so an interrupt a task raises reaches
+/// neither later tasks nor the caller; on release (a `finally`, also on a thrown task) it re-asserts the status it took at
+/// entry, after clearing whatever status the drain left (a task that interrupts itself and then throws a
+/// [VirtualMachineError] skips the between-task clear). A caller interrupted before submit therefore returns still
+/// interrupted, and a caller that entered clear returns clear. An interrupt another thread delivers to the caller WHILE
+/// it drains (for example a pool's `shutdownNow`) is indistinguishable from one a task raised, so it is cleared too: the
+/// caller returns with the status it entered with, so that interrupt is lost, by design (#3605 round-4 ruling 4, not
+/// pinned). No leader task blocks or reads the status. The rest is pinned by `SerialExecutorInterruptTest`.
+///
+/// The same mechanism as SWIM's `org.pragmatica.swim.SerialExecutor` (#3529), without its test-only quiescing mode and with
+/// the stop rejection: the two modules share no dependency, and a library-wide executor is a separate design (#3587 ruling).
+final class SerialExecutor {
+    private static final Logger LOG = LoggerFactory.getLogger(SerialExecutor.class);
+
+    private final Queue<Runnable> queue = new ConcurrentLinkedQueue<>();
+    private final AtomicReference<Thread> drainer = new AtomicReference<>();
+    private final AtomicBoolean closed = new AtomicBoolean();
+
+    private SerialExecutor() {}
+
+    static SerialExecutor serialExecutor() {
+        return new SerialExecutor();
+    }
+
+    /// Run `task` serially with every other task of this executor, without ever waiting. From inside a task: queued, runs
+    /// after the current one. From outside: queued, then this thread drains the queue to empty if no other thread is
+    /// draining; otherwise it returns at once and the running drainer runs the task. After [#close]: dropped.
+    @Contract
+    void execute(Runnable task) {
+        if (closed.get()) {
+            LOG.debug("Leader election serial executor: stopped, dropping task {}", task);
+
+            return;
+        }
+
+        queue.add(task);
+        if (isConfined()) {
+            return;
+        }
+
+        drainWhileOwned();
+    }
+
+    /// `true` when the calling thread is inside a task of this executor.
+    boolean isConfined() {
+        return drainer.get() == Thread.currentThread();
+    }
+
+    /// Test seam (#3605): the number of tasks queued and not yet started. Read-only; no production code calls it.
+    int pendingForTest() {
+        return queue.size();
+    }
+
+    /// Reject every task from now on: those still queued are dropped as the drain reaches them, later ones at submission.
+    @Contract
+    void close() {
+        closed.set(true);
+    }
+
+    private void drainWhileOwned() {
+        var self = Thread.currentThread();
+
+        while (!queue.isEmpty() && drainer.compareAndSet(null, self)) {
+            drainAndRelease();
+        }
+    }
+
+    /// Drain while owning [#drainer], then release it on every exit, a propagating [VirtualMachineError] included: a
+    /// drainer left pinned would make every later submission enqueue and return, and nothing would drain again. The
+    /// caller's own interrupt status is taken at entry and re-asserted on that same exit (see the class doc).
+    private void drainAndRelease() {
+        var callerWasInterrupted = Thread.interrupted();
+
+        try {
+            drainQueue();
+        } finally {
+            drainer.set(null);
+            reassertInterruptStatus(callerWasInterrupted);
+        }
+    }
+
+    /// Run queued tasks until the queue is empty, clearing the interrupt status after each one (see the class doc).
+    private void drainQueue() {
+        for (var task = queue.poll(); task != null; task = queue.poll()) {
+            runUnlessClosed(task);
+            clearInterruptStatus();
+        }
+    }
+
+    /// Give the caller back the interrupt status it had when it became the drainer; a clear status stays clear. The
+    /// status is cleared first: on a propagating [VirtualMachineError] the between-task clear was skipped, so a task's
+    /// own interrupt would otherwise reach a caller that entered clear (#3605 round-4 ruling 3).
+    private static void reassertInterruptStatus(boolean callerWasInterrupted) {
+        clearInterruptStatus();
+        if (callerWasInterrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /// `Thread.interrupted()` clears the status; its result (whether a task left one) is not needed.
+    private static void clearInterruptStatus() {
+        Thread.interrupted();
+    }
+
+    private void runUnlessClosed(Runnable task) {
+        if (closed.get()) {
+            LOG.debug("Leader election serial executor: stopped, dropping queued task {}", task);
+
+            return;
+        }
+
+        runLogged(task);
+    }
+
+    /// Run one task: any [Throwable] is logged and absorbed so the drain continues; a [VirtualMachineError] is logged and
+    /// rethrown; the caller's `finally` releases the drainer as it propagates.
+    @SuppressWarnings("JBCT-EX-01")  // #3587: a VM error is never absorbed; it propagates after logging (as SWIM's, #3529)
+    private static void runLogged(Runnable task) {
+        try {
+            task.run();
+        } catch (VirtualMachineError e) {
+            LOG.error("Leader election serial executor: task {} failed with a VM error; releasing the drainer and rethrowing",
+                      task,
+                      e);
+
+            throw e;
+        } catch (Throwable e) {
+            LOG.error("Leader election serial executor: task {} failed; the drain continues with the next task", task, e);
+        }
+    }
+}
