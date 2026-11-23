@@ -77,11 +77,23 @@ PINS='Fix\tbad\tsmall\t4\tx\n' run pin-on-fail-row-is-error nonzero 'need a mode
 VARIANTS=ok run variant-filter-runs-only-the-selected 0 'configs=1 .*GREEN' small < <(rows pass - fail Small pass - | grep -v broken)
 VARIANTS=ok KEEP_BROKEN=1 run variant-filter-keeps-coverage nonzero 'configs and models.tsv rows differ' small < <(rows pass - fail Small pass - | grep -v 'Fix.src.broken')
 VARIANTS=nosuch run variant-filter-no-match-is-error nonzero 'no row matches variant' small < <(rows pass - fail Small pass - | grep -v broken)
-# Evidence rows (#3584): one row per config that ran, with the actual verdict read from TLC's exit code, never from the expectation.
 res="$work/out/results.tsv"
 cell() { awk -F'\t' -v m="$1" -v v="$2" -v c="$3" 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == c) col = i } NR > 1 && $5 == m && $6 == v { print $col }' "$res"; }
 want() { # want <name> <expected> <actual>
   if [[ $2 == "$3" ]]; then echo "PASS $1 ($3)"; else echo "FAIL $1: want '$2', got '$3'"; fail=1; fi; }
+# Heavy rows: a row marked heavy (small column) is not run by small and never counts as a pass; heavy and full run it as written.
+# Fix/bad is marked heavy and expects pass although it violates Small: it is RED exactly when it is run.
+heavybad() { rows pass - pass - pass - | grep -v broken | awk -F'\t' -v OFS='\t' '$3 == "bad" { $6 = "heavy" } 1'; }
+run heavy-row-is-skipped-by-name-at-small 0 '^SKIPPED-HEAVY Fix/bad expect=pass .*not a pass' small < <(heavybad)
+want heavy-row-recorded-as-skipped 'skipped/SKIPPED-HEAVY' "$(cell Fix bad actual)/$(cell Fix bad verdict)"
+want heavy-row-never-reached-tlc 0 "$(ls "$work"/out/Fix/Fix_bad.log 2>/dev/null | wc -l | tr -d ' ')"
+want heavy-skip-leaves-the-other-row-run pass "$(cell Fix ok actual)"
+run heavy-row-skipped-line-counts-in-summary 0 'configs=1 skipped-heavy=1 ' small < <(heavybad)
+run heavy-profile-runs-the-heavy-row-and-it-is-red nonzero '^RED Fix/bad expect=pass got=fail' heavy < <(heavybad)
+run heavy-profile-runs-only-heavy-rows nonzero 'configs=1 skipped-heavy=0 .*RED' heavy < <(heavybad)
+run full-profile-runs-heavy-rows-as-written nonzero '^RED Fix/bad expect=pass got=fail' full < <(heavybad)
+run heavy-profile-without-a-heavy-row-is-an-error nonzero 'no row marked heavy' heavy < <(rows pass - fail Small pass - | grep -v broken)
+# Evidence rows (#3584): one row per config that ran, with the actual verdict read from TLC's exit code, never from the expectation.
 run rows-control 0 'evidence rows in' small < <(rows pass - fail Small pass - | grep -v broken)
 want rows-count 3 "$(wc -l < "$res" | tr -d ' ')"
 want rows-ok-actual pass "$(cell Fix ok actual)"

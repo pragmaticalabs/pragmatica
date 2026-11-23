@@ -8,8 +8,14 @@ every row of the file at head. (A squash merge rewrites the PR's commits, so row
 subject of a later PR.)
 
 Red (exit 1, one `file:line: RED ...` per row): a header other than run.sh's; a row that is not 13 tab-separated columns or
-has a malformed value; a commit that is not in the repository or is not an ancestor of head; a row made on a dirty tree
+has a malformed value; a row whose verdict contradicts its own columns (OK with an actual other than the expected one;
+ERROR without actual=error or the reverse; SKIPPED-HEAVY without actual=skipped, profile small and empty violated and
+distinct, or the reverse); a commit that is not in the repository or is not an ancestor of head; a row made on a dirty tree
 (its commit does not name the code that ran); a commit recorded as `none` (the run was outside a git repository).
+
+Named, not red (one `file:line: NOTE ...` per row): a SKIPPED-HEAVY row (a heavy config the small profile did not run: it is
+never a pass) and a RED or ERROR row (the evidence records a failing config; the check verifies provenance, not health).
+The last line tallies the verdicts of the rows checked, so a skipped row is never folded into a pass count.
 Exit 2: an unusable invocation (unknown revision, missing file).
 
 Usage: results-check.py [--file tools/tla/results.tsv] [--base REV] [--head REV] [--repo DIR]
@@ -29,11 +35,11 @@ VALID = {
     'module': re.compile(r'^[A-Za-z][A-Za-z0-9_]*$'),
     'variant': re.compile(r'^[A-Za-z][A-Za-z0-9_]*$'),
     'expect': re.compile(r'^(?:pass|fail)$'),
-    'actual': re.compile(r'^(?:pass|fail|error)$'),
+    'actual': re.compile(r'^(?:pass|fail|error|skipped)$'),
     'violated': re.compile(r'^(?:[A-Za-z][A-Za-z0-9_]*)?$'),
     'distinct': re.compile(r'^\d*$'),
     'tlc': re.compile(r'^[^\t]*$'),
-    'verdict': re.compile(r'^(?:OK|RED|ERROR)$'),
+    'verdict': re.compile(r'^(?:OK|RED|ERROR|SKIPPED-HEAVY)$'),
     'constants': re.compile(r'^[^\t]*$'),
 }
 
@@ -74,10 +80,12 @@ def check(repo, path, base, head):
     head_sha = git(repo, 'rev-parse', f'{head}^{{commit}}').stdout.strip()
     sel = rows_to_check(repo, path, base, head)
     if sel is None:
-        return [], 0
+        return [], 0, [], {}
     red = []
+    notes = []
+    tally = {}
     if not sel or sel[0][1] != HEADER:
-        return [f'{path}:1: RED the header is not the evidence-row header ({HEADER.replace(chr(9), " ")})'], 0
+        return [f'{path}:1: RED the header is not the evidence-row header ({HEADER.replace(chr(9), " ")})'], 0, [], {}
     verdicts = {}
     count = 0
     for n, text in sel[1:]:
@@ -92,6 +100,18 @@ def check(repo, path, base, head):
         bad = [c for c in COLS if not VALID[c].match(row[c])]
         if bad:
             red.append(f'{path}:{n}: RED malformed value in column {", ".join(bad)}')
+            continue
+        who = f'{row["module"]}/{row["variant"]}'
+        skipped = row['verdict'] == 'SKIPPED-HEAVY'
+        contradiction = None
+        if skipped != (row['actual'] == 'skipped') or (skipped and (row['profile'] != 'small' or row['violated'] or row['distinct'])):
+            contradiction = 'SKIPPED-HEAVY needs actual=skipped, profile small and no violated property or state count (and the reverse)'
+        elif (row['verdict'] == 'ERROR') != (row['actual'] == 'error'):
+            contradiction = f'verdict {row["verdict"]} with actual {row["actual"]}: ERROR and actual=error go together'
+        elif row['verdict'] == 'OK' and row['actual'] != row['expect']:
+            contradiction = f'verdict OK but actual {row["actual"]} is not the expected {row["expect"]}'
+        if contradiction:
+            red.append(f'{path}:{n}: RED {who}: {contradiction}')
             continue
         c = row['commit']
         if c == 'none':
@@ -108,8 +128,14 @@ def check(repo, path, base, head):
             else:
                 verdicts[c] = None
         if verdicts[c]:
-            red.append(f'{path}:{n}: RED {row["module"]}/{row["variant"]}: commit {c[:10]} {verdicts[c]}')
-    return red, count
+            red.append(f'{path}:{n}: RED {who}: commit {c[:10]} {verdicts[c]}')
+            continue
+        tally[row['verdict']] = tally.get(row['verdict'], 0) + 1
+        if skipped:
+            notes.append(f'{path}:{n}: NOTE SKIPPED-HEAVY {who}: a heavy config the small profile did not run; not a pass')
+        elif row['verdict'] != 'OK':
+            notes.append(f'{path}:{n}: NOTE {row["verdict"]} {who}: expect {row["expect"]}, actual {row["actual"]}{", violated " + row["violated"] if row["violated"] else ""}')
+    return red, count, notes, tally
 
 
 def main():
@@ -120,13 +146,14 @@ def main():
     ap.add_argument('--repo', default='.')
     a = ap.parse_args()
     try:
-        red, count = check(a.repo, a.file, a.base, a.head)
+        red, count, notes, tally = check(a.repo, a.file, a.base, a.head)
     except Error as e:
         print(f'results-check: ERROR {e}', file=sys.stderr)
         sys.exit(2)
-    for l in red:
+    for l in red + notes:
         print(l)
-    print(f'results-check: {"RED" if red else "GREEN"} {len(red)} bad of {count} rows checked in {a.file}')
+    counts = ', '.join(f'{v} {tally.get(v, 0)}' for v in ('OK', 'RED', 'ERROR', 'SKIPPED-HEAVY'))
+    print(f'results-check: {"RED" if red else "GREEN"} {len(red)} bad of {count} rows checked in {a.file}; accepted rows by verdict: {counts}')
     sys.exit(1 if red else 0)
 
 

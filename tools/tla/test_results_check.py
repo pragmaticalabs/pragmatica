@@ -16,8 +16,9 @@ ENV = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTE
 F = 'tools/tla/results.tsv'
 
 
-def row(commit, dirty='clean', module='Fix', variant='ok', expect='pass', actual='pass', violated='', distinct='4', verdict='OK', consts='K=2'):
-    return '\t'.join([commit, dirty, '2026-11-22T20:00:00Z', 'small', module, variant, expect, actual, violated, distinct, '2.20', verdict, consts])
+def row(commit, dirty='clean', module='Fix', variant='ok', expect='pass', actual='pass', violated='', distinct='4', verdict='OK', consts='K=2',
+        profile='small'):
+    return '\t'.join([commit, dirty, '2026-11-22T20:00:00Z', profile, module, variant, expect, actual, violated, distinct, '2.20', verdict, consts])
 
 
 class ResultsCheck(unittest.TestCase):
@@ -163,6 +164,76 @@ class ResultsCheck(unittest.TestCase):
         rc, out = self.run_check('--head', 'nope')
         self.assertEqual(rc, 2, out)
 
+
+    # --- heavy rows and recorded failures: named, never folded into a pass count ---
+    def skipped_row(self, c, **kw):
+        base = dict(variant='live', actual='skipped', distinct='', verdict='SKIPPED-HEAVY', consts='')
+        base.update(kw)
+        return row(c, **base)
+
+    def test_skipped_heavy_row_is_green_named_and_tallied_apart_from_passes(self):
+        c0 = self.commit()
+        self.commit(self.table(row(c0), self.skipped_row(c0, module='RabiaSlot')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0, out)
+        self.assertIn('tools/tla/results.tsv:3: NOTE SKIPPED-HEAVY RabiaSlot/live', out)
+        self.assertIn('not a pass', out)
+        self.assertIn('OK 1, RED 0, ERROR 0, SKIPPED-HEAVY 1', out)
+
+    def test_skipped_row_claiming_a_pass_is_red(self):
+        c0 = self.commit()
+        self.commit(self.table(self.skipped_row(c0, actual='pass')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('SKIPPED-HEAVY needs actual=skipped', out)
+
+    def test_actual_skipped_under_an_ok_verdict_is_red(self):
+        c0 = self.commit()
+        self.commit(self.table(self.skipped_row(c0, verdict='OK')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('SKIPPED-HEAVY needs actual=skipped', out)
+
+    def test_skipped_row_with_a_state_count_or_outside_small_is_red(self):
+        c0 = self.commit()
+        self.commit(self.table(self.skipped_row(c0, distinct='5'), self.skipped_row(c0, profile='full', variant='b')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count('SKIPPED-HEAVY needs actual=skipped'), 2, out)
+
+    def test_ok_row_whose_actual_differs_from_expect_is_red(self):
+        c0 = self.commit()
+        self.commit(self.table(row(c0, expect='pass', actual='fail', violated='Agreement', verdict='OK')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('verdict OK but actual fail is not the expected pass', out)
+
+    def test_error_verdict_without_actual_error_is_red(self):
+        c0 = self.commit()
+        self.commit(self.table(row(c0, verdict='ERROR')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('ERROR and actual=error go together', out)
+
+    def test_recorded_red_row_is_green_provenance_and_named(self):
+        # RabiaAdopt/ballotlossD5 (#3592): the evidence records the failure; the check verifies where the row came from
+        c0 = self.commit()
+        self.commit(self.table(row(c0, module='RabiaAdopt', variant='ballotlossD5', expect='pass', actual='fail', violated='Agreement',
+                                   distinct='28279', verdict='RED')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0, out)
+        self.assertIn('NOTE RED RabiaAdopt/ballotlossD5: expect pass, actual fail, violated Agreement', out)
+        self.assertIn('OK 0, RED 1, ERROR 0, SKIPPED-HEAVY 0', out)
+
+    def test_skipped_row_naming_a_foreign_commit_is_still_red(self):
+        self.commit()
+        self.g('checkout', '-q', '-b', 'other')
+        other = self.commit(msg='only on other')
+        self.g('checkout', '-q', 'main')
+        self.commit(self.table(self.skipped_row(other)))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('is not an ancestor of', out)
 
 if __name__ == '__main__':
     unittest.main()
