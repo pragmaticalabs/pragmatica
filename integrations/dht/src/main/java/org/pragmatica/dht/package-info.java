@@ -458,7 +458,7 @@
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
-///           Flap = "self"
+///           Flap = "peer"
 ///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT ReceiverAgrees
 /// ```
