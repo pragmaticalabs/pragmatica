@@ -496,10 +496,12 @@
 /// \* Assumptions as constants:
 /// \*   Ballot memory (`voted`: the self entries of PhaseData in RabiaEngine.phases, held in memory only) can be lost
 /// \*   only at a code event that could lose it, one constant per event; a probe cfg sets exactly ONE of them FALSE and
-/// \*   its row names that event (#3592). The code keeps both: phases.clear() runs only in shutdownAndReset (the stop
-/// \*   path) and GC drops only expired past slots. Restart (a new process) empties `voted` whatever these say.
+/// \*   its row names that event (#3592). The code keeps it across pause/resume and a same-epoch Install: phases.clear() runs only in shutdownAndReset (the stop
+/// \*   path) and GC (doCleanupOldPhases) drops only expired past slots. A NEWER-epoch adoption replaces the PhaseData of every slot
+/// \*   at or after the frontier (currentPhaseData), so those ballots are dropped; harmless, since self votes only at currentPhase
+/// \*   (canVoteRound1/2) and the persisted phase is currentPhase (adoptlossD5 and mutB stay green). Restart (a new process) empties `voted` whatever these say.
 /// \*   KeepBallotsOnPause  Pause keeps `voted` (code: TRUE; doPauseForQuorumLoss and doResumeFromPause never touch phases)
-/// \*   KeepBallotsOnAdopt  Install keeps `voted` (code: TRUE; applyRestoredState never touches phases)
+/// \*   KeepBallotsOnAdopt  Install keeps `voted` (code: TRUE on a same-epoch Install; a newer-epoch adoption replaces slots >= the frontier, see above)
 /// \*   FaultyResp   node "C" may answer sync with an arbitrary well-formed log (a non-crash fault)
 /// \*   Probe        which adoption branch the sticky ghost `reached` records ("none" in property cfgs)
 /// \*   SameEpochAdopt  FALSE disables the same-epoch adoption branches, isolating the D5 newer-epoch path (diagnostic)
@@ -1757,7 +1759,7 @@
 ///
 /// ```tlacfg RabiaAdopt:adoptlossD5
 /// \* RabiaAdopt config adoptlossD5: the expected verdict is its row in tools/tla/models.tsv
-/// \* ballot memory lost on adoption (KeepBallotsOnAdopt FALSE), newer-epoch path only: the base of the ballotlossD5_no* rows
+/// \* ballot memory lost on adoption (KeepBallotsOnAdopt FALSE), newer-epoch path only: the base of the adoptlossD5_no* rows
 /// SPECIFICATION Spec
 /// CONSTANTS
 ///   Fixed = {"amnesiafence", "selfvouch", "oneconfig", "syncresume"}
@@ -1777,8 +1779,8 @@
 /// PROPERTIES DurableDecision
 /// ```
 ///
-/// ```tlacfg RabiaAdopt:ballotlossD5_nooneconfig
-/// \* RabiaAdopt config ballotlossD5_nooneconfig: the expected verdict is its row in tools/tla/models.tsv
+/// ```tlacfg RabiaAdopt:adoptlossD5_nooneconfig
+/// \* RabiaAdopt config adoptlossD5_nooneconfig: the expected verdict is its row in tools/tla/models.tsv
 /// \* D5 one-configuration check dropped, ballots lost on adoption, newer-epoch path only (adoptlossD5 is the base)
 /// SPECIFICATION Spec
 /// CONSTANTS
@@ -1799,8 +1801,8 @@
 /// PROPERTIES DurableDecision
 /// ```
 ///
-/// ```tlacfg RabiaAdopt:ballotlossD5_noselfvouch
-/// \* RabiaAdopt config ballotlossD5_noselfvouch: the expected verdict is its row in tools/tla/models.tsv
+/// ```tlacfg RabiaAdopt:adoptlossD5_noselfvouch
+/// \* RabiaAdopt config adoptlossD5_noselfvouch: the expected verdict is its row in tools/tla/models.tsv
 /// \* D4 self-vouch dropped, ballots lost on adoption, newer-epoch path only (adoptlossD5 is the base)
 /// SPECIFICATION Spec
 /// CONSTANTS
