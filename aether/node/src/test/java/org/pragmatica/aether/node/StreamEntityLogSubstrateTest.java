@@ -321,7 +321,9 @@ class StreamEntityLogSubstrateTest {
         substrate.append("ledger", 0, new byte[(int) RingGeometry.SEGMENT_BYTES])
                  .await()
                  .onSuccess(offset -> assertThat(offset).isEqualTo(1L))
-                 .onFailure(cause -> fail("an entity record of exactly max_event_size was refused: " + cause.message()));
+                 .onFailure(cause -> fail("TRIPWIRE: an entity record of exactly max_event_size was refused, so the #1233 ring-level drop is reachable again: "
+                                     + "enable append_failsWithEventDropped_whenFrozenRingCannotFitRecord_evenAtReplicationFactorOneWithoutWal "
+                                     + "and retire this tripwire; cause: " + cause.message()));
     }
 
     /// T-278 refusal arm (O19 ruled (c)): the entity `max_event_size` is 1 MiB. A record one byte over is refused with the
