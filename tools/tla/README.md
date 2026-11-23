@@ -48,6 +48,8 @@ reconcile, stream ownership, catch-up and ISR, SharedPools, quorum re-admission)
 - **Every filed concurrency defect in a listed protocol adds a known-bad config**: a config that models the code
   before the fix (the model's `Fixed` constant drops the fix's name) and must FAIL. It is listed in `models.tsv` with
   `expect` = `fail`. A known-bad config that passes means the model no longer reaches the code it pins.
+  A fix name added to a model later is OFF in every existing known-bad's `Fixed` unless that row's defect needs it ON:
+  the config models the code the defect lived in, so a later fix cannot mask it (#3580).
 - **Configs** are blocks tagged `tlacfg <Module>:<Variant>`, written to `<Module>_<Variant>.cfg`. Variant `common`
   is prepended to every other variant. One variant per property keeps each counterexample attributable.
 - Assembly order is deterministic: `head`, then the action fragments ordered by (source path, line), then `tail`.

@@ -125,6 +125,9 @@
 /// \*               page is acknowledged, and the report is set by a deliverer's ack and never withdrawn
 /// \*   revoke    - a holder that leaves the view no longer counts (#3576: safe() asks V and the tenure); without it, an ack
 /// \*               counts for the rest of the run
+/// \* A known-bad models the code its defect lived in, so a fix named after it stays off there: every fail row that drops a
+/// \* fix, and `waves`, omits replan, exit and revoke (#3580: with exit on, emptyset, nocodrain and waves find no violation
+/// \* in 900 s; with replan or revoke alone on, each still fails).
 /// CONSTANTS N, RF, MaxDrain, MaxStale, Waves, Deadline, HaltFair, Flap, Fixed
 ///
 /// AllFixes == {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself",
@@ -420,8 +423,7 @@
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
 ///           Flap = "self"
-///           Fixed = {"drainset", "codrain", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself",
-///                    "replan", "exit", "revoke"}
+///           Fixed = {"drainset", "codrain", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -430,8 +432,7 @@
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
 ///           Flap = "self"
-///           Fixed = {"drainset", "codrain", "exhaust", "pruned", "view", "accept", "primary", "deliverer", "namedself",
-///                    "replan", "exit", "revoke"}
+///           Fixed = {"drainset", "codrain", "exhaust", "pruned", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -440,8 +441,7 @@
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
 ///           Flap = "self"
-///           Fixed = {"drainset", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself",
-///                    "replan", "exit", "revoke"}
+///           Fixed = {"drainset", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -450,8 +450,7 @@
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
 ///           Flap = "self"
-///           Fixed = {"codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself",
-///                    "replan", "exit", "revoke"}
+///           Fixed = {"codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -460,8 +459,7 @@
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
 ///           Flap = "self"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "accept", "primary", "deliverer", "namedself",
-///                    "replan", "exit", "revoke"}
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT ReceiverAgrees
 /// ```
 ///
@@ -470,8 +468,7 @@
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
 ///           Flap = "self"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "view", "accept", "primary", "deliverer", "namedself",
-///                    "replan", "exit", "revoke"}
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT ReplicaDegree
 /// ```
 ///
@@ -480,8 +477,7 @@
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
 ///           Flap = "self"
-///           Fixed = {"drainset", "codrain", "view", "accept", "primary", "deliverer", "namedself",
-///                    "replan", "exit", "revoke"}
+///           Fixed = {"drainset", "codrain", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -511,7 +507,7 @@
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
 ///           Flap = "self"
-///           Fixed <- AllFixes
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -547,8 +543,7 @@
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
 ///           Flap = "none"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "deliverer", "namedself",
-///                    "replan", "exit", "revoke"}
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "deliverer", "namedself"}
 /// INVARIANT NoLastCopyLoss
 /// ```
 ///
@@ -557,8 +552,7 @@
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
 ///           Flap = "peer"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "deliverer", "namedself",
-///                    "replan", "exit", "revoke"}
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "deliverer", "namedself"}
 /// INVARIANT ReplicaPlacement
 /// ```
 ///
@@ -567,8 +561,7 @@
 ///           Deadline = FALSE
 ///           HaltFair = TRUE
 ///           Flap = "none"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer",
-///                    "replan", "exit", "revoke"}
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer"}
 /// INVARIANT ReceiverAgrees
 /// ```
 ///
@@ -586,8 +579,7 @@
 ///           Deadline = TRUE
 ///           HaltFair = TRUE
 ///           Flap = "peer"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "namedself",
-///                    "replan", "exit", "revoke"}
+///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "namedself"}
 /// INVARIANT ReportTruthful
 /// ```
 ///
