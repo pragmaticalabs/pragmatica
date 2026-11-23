@@ -95,6 +95,7 @@ class ReadmittedVoterAdoptedSequenceTest {
         assertThat(heldLeader()).as("instrument: Led(new leader) before the queued pushes run")
                   .isEqualTo(Option.some(NEW_LEADER));
         manager.onLeaderCommitted(OLD_LEADER, OLD_SEQUENCE);
+        OnDrainer.drained(ctx());
         assertThat(heldLeader()).as("Led after the queued older commit for another leader")
                   .isEqualTo(Option.some(NEW_LEADER));
     }
@@ -157,6 +158,7 @@ class ReadmittedVoterAdoptedSequenceTest {
                   .isInstanceOf(LeaderElectionState.Electing.class);
         manager.onLeaderCommitted(OLD_LEADER, OLD_SEQUENCE);
         manager.onLeaderCommitted(NEW_LEADER, NEW_SEQUENCE);
+        OnDrainer.drained(ctx());
         assertThat(heldLeader()).as("Led after the queued older commit, then the newest one, inside the election")
                   .isEqualTo(Option.some(NEW_LEADER));
     }
