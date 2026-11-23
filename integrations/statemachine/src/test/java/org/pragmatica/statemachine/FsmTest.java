@@ -575,8 +575,16 @@ class FsmTest {
                 case DoorEvent.Open _ when name.equals("CLOSED") -> tx.transitionTo(ctx.open);
                 case DoorEvent.Close _ when name.equals("OPEN") -> tx.transitionTo(ctx.closed);
                 case DoorEvent.Lock _ when name.equals("CLOSED") -> tx.transitionTo(ctx.locked);
+                case DoorEvent.Unlock _ when name.equals("CLOSED") -> openAfterANestedDispatch(tx);
                 default -> tx.ignore();
             }
+        }
+
+        /// A handler that dispatches nested (allowed: handlers may) BEFORE its own transition: the nested dispatch
+        /// returns with this handler's frame still in place, so the transition's hook follow-ups stay deferred.
+        private void openAfterANestedDispatch(TransitionRequest<DoorState, DoorEvent> tx) {
+            ctx.fsm.dispatch(new DoorEvent.Tick());
+            tx.transitionTo(ctx.open);
         }
 
         @Override
@@ -613,6 +621,21 @@ class FsmTest {
         var ctx = holder[0];
 
         harness.dispatch(new DoorEvent.Open());
+        assertThat(harness.transitions()).containsExactly(new FsmTestHarness.Transition<>(ctx.closed, ctx.open),
+                                                          new FsmTestHarness.Transition<>(ctx.open, ctx.closed),
+                                                          new FsmTestHarness.Transition<>(ctx.closed, ctx.locked));
+        assertThat(harness.state()).isSameAs(ctx.locked);
+    }
+
+    /// A nested dispatch inside a handler restores the handler's follow-up frame when it returns: the hook follow-ups
+    /// of the handler's own transition after it are still delivered after that transition's observer callback.
+    @Test
+    void nestedDispatchInAHandler_keepsTheHandlersFrame_followUpsStayAfterTheObserver() {
+        var holder = new FollowUpCtx[1];
+        var harness = followUpHarness(holder);
+        var ctx = holder[0];
+
+        harness.dispatch(new DoorEvent.Unlock());
         assertThat(harness.transitions()).containsExactly(new FsmTestHarness.Transition<>(ctx.closed, ctx.open),
                                                           new FsmTestHarness.Transition<>(ctx.open, ctx.closed),
                                                           new FsmTestHarness.Transition<>(ctx.closed, ctx.locked));
