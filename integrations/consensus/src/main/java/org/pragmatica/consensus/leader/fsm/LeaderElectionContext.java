@@ -1152,23 +1152,34 @@ public final class LeaderElectionContext {
         }
     }
 
-    /// #3587: deliver `event` AFTER the current task, never inside it. The path for a follow-up decided in an `onEntry`
-    /// hook, which must not dispatch (`FsmState`): the event runs once the transition that ran the hook is complete.
+    /// #3587: the follow-up of the transition whose hook is running ([Fsm#followUp]): a hook never dispatches
+    /// (`FsmState`). The event is dispatched when the dispatch that ran the hook returns, after the transition's
+    /// observer callback, so it runs before the rest of that task and before any other event of the node. Every hook
+    /// runs inside a dispatch, and every dispatch inside a task, so the follow-up stays in the node's one order.
     @Contract
-    public void enqueue(ClusterFsmEvent event) {
-        serial.execute(() -> fsm.dispatch(event));
+    public void followUp(ClusterFsmEvent event) {
+        fsm.followUp(event);
     }
 
-    /// #3587: stop in order. Every event submitted before it is handled first, then `Shutdown`, then the executor
-    /// rejects every later task ([SerialExecutor#close]): no event reaches the FSM after the stop.
+    /// #3587: stop in order. GUARANTEE: no event reaches the FSM after the `Shutdown` task: every event submitted
+    /// before the stop is handled first, then `Shutdown`, then the executor rejects every later task
+    /// ([SerialExecutor#close]). It does NOT guarantee that `Shutdown` ran when this returns: called while another
+    /// thread drains, it queues the `Shutdown` task and returns before that task (and every event queued ahead of it)
+    /// has run ([SerialExecutor#execute] never waits). A caller that stops a collaborator right after this call may
+    /// still see election steps from the events queued ahead of `Shutdown`.
     @Contract
     public void stop() {
         serial.execute(this::shutdownInOrder);
     }
 
+    /// The executor closes on every exit, a `Shutdown` dispatch that throws (a hook or a listener) included: otherwise
+    /// the executor would stay open and keep running events after the stop.
     private void shutdownInOrder() {
-        fsm.dispatch(new ClusterFsmEvent.Shutdown());
-        serial.close();
+        try {
+            fsm.dispatch(new ClusterFsmEvent.Shutdown());
+        } finally {
+            serial.close();
+        }
     }
 
     // --- Derived helpers ---

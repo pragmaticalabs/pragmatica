@@ -6,14 +6,27 @@
  */
 package org.pragmatica.statemachine;
 
+import java.util.ArrayDeque;
+import java.util.Queue;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 
 /// GoF-style state machine with CAS-guarded transitions. Dispatch runs on the caller thread; no
 /// executor, no queue. Concurrent dispatches are serialized via `AtomicReference.compareAndSet`
 /// on the state reference: only the thread that wins the CAS runs the transition action and
 /// entry/exit hooks.
+///
+/// A hook ([`FsmState#onEntry`], [`FsmState#onExit`]) never dispatches; a follow-up event it decides goes through
+/// [`#followUp`]. GUARANTEE: the follow-up is dispatched when the dispatch whose transition ran the hook returns, after
+/// that transition's observer callback, FIFO among that dispatch's follow-ups, each one a full dispatch step (its own
+/// follow-ups are delivered before the next sibling's). MECHANISM: every [`#dispatch`] opens a follow-up frame for the
+/// calling thread, restores the enclosing frame when its handler returns, then drains its own. Code that runs after
+/// that dispatch (the rest of the caller's handler or task) therefore sees the follow-up's outcome, exactly as a nested
+/// dispatch inside the hook would have shown it, and observers see the transitions in the order they happen.
 ///
 /// State identity is by reference. Data-free states must be singletons; data-carrying states
 /// are typically immutable records created fresh per transition. See [`FsmState`] for details.
@@ -24,6 +37,7 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     private final FsmTags tags;
     private final AtomicReference<S> currentState;
     private final FsmObserver<S, E> observer;
+    private final ThreadLocal<Option<Queue<E>>> followUps = ThreadLocal.withInitial(Option::none);
 
     private Fsm(FsmTags tags, FsmObserver<S, E> observer) {
         this.tags = tags;
@@ -121,11 +135,44 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     /// Dispatch an event to the current state. The current state's [`FsmState#handle`] method
     /// decides whether to request a transition; the CAS happens inside
     /// [`TransitionRequest#transitionTo`].
+    ///
+    /// The follow-ups the transition's hooks decided ([`#followUp`]) are dispatched before this returns.
+    @Contract
     public void dispatch(E event) {
-        var state = currentState.get();
-        var tx = new TransitionRequest<>(this, state, event);
+        Queue<E> pending = new ArrayDeque<>();
 
-        state.handle(event, tx);
+        handleInFrame(event, pending);
+        drain(pending);
+    }
+
+    /// Deliver `event` as the follow-up of the transition whose hook is running: queued in the frame of the innermost
+    /// dispatch on this thread and dispatched when that dispatch returns (see the class GUARANTEE). Called outside any
+    /// dispatch (a hook invoked directly, as tests do), it is dispatched at once.
+    @Contract
+    public void followUp(E event) {
+        followUps.get().onPresent(pending -> pending.add(event)).onEmpty(() -> dispatch(event));
+    }
+
+    /// The handler runs with `pending` as this thread's frame; the enclosing frame comes back on every exit. A handler
+    /// that throws delivers none of its follow-ups: the exception propagates out of [`#dispatch`] before the drain, so a
+    /// half-run transition starts no further steps (the caller decides what a failed dispatch means).
+    private void handleInFrame(E event, Queue<E> pending) {
+        var enclosing = followUps.get();
+
+        followUps.set(Option.some(pending));
+        try {
+            var state = currentState.get();
+
+            state.handle(event, new TransitionRequest<>(this, state, event));
+        } finally {
+            followUps.set(enclosing);
+        }
+    }
+
+    private void drain(Queue<E> pending) {
+        for (var next = pending.poll(); next != null; next = pending.poll()) {
+            dispatch(next);
+        }
     }
 
     /// Package-private helper invoked by [`TransitionRequest#ignore`].

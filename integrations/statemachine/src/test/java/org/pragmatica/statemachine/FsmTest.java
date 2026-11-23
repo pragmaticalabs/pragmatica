@@ -4,10 +4,7 @@
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  */
-
 package org.pragmatica.statemachine;
-
-import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.concurrent.BrokenBarrierException;
@@ -16,23 +13,31 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 class FsmTest {
     interface DoorState extends FsmState<DoorState, DoorEvent> {}
 
     sealed interface DoorEvent {
         record Open() implements DoorEvent {}
+
         record Close() implements DoorEvent {}
+
         record Lock() implements DoorEvent {}
+
         record Unlock() implements DoorEvent {}
+
         record Tick() implements DoorEvent {}
     }
 
     /// Stateless singletons.
     enum Simple implements DoorState {
-        CLOSED, OPEN, LOCKED;
-
+        CLOSED,
+        OPEN,
+        LOCKED;
         @Override
         public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
             switch (this) {
@@ -41,7 +46,6 @@ class FsmTest {
                 case LOCKED -> handleLocked(event, tx);
             }
         }
-
         private static void handleClosed(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
             switch (event) {
                 case DoorEvent.Open o -> tx.transitionTo(OPEN);
@@ -49,7 +53,6 @@ class FsmTest {
                 default -> tx.ignore();
             }
         }
-
         private static void handleOpen(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
             switch (event) {
                 case DoorEvent.Close c -> tx.transitionTo(CLOSED);
@@ -57,7 +60,6 @@ class FsmTest {
                 default -> tx.ignore();
             }
         }
-
         private static void handleLocked(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
             switch (event) {
                 case DoorEvent.Unlock u -> tx.transitionTo(CLOSED);
@@ -71,7 +73,6 @@ class FsmTest {
         var harness = FsmTestHarness.harness("door", Simple.CLOSED);
 
         harness.dispatch(new DoorEvent.Open());
-
         assertThat(harness.state()).isEqualTo(Simple.OPEN);
         assertThat(harness.transitions()).containsExactly(new FsmTestHarness.Transition<>(Simple.CLOSED, Simple.OPEN));
         assertThat(harness.casLosses()).isEmpty();
@@ -81,8 +82,7 @@ class FsmTest {
     void unhandledEvent_recordsIgnored() {
         var harness = FsmTestHarness.harness("door", Simple.CLOSED);
 
-        harness.dispatch(new DoorEvent.Unlock()); // CLOSED does not handle Unlock
-
+        harness.dispatch(new DoorEvent.Unlock());  // CLOSED does not handle Unlock
         assertThat(harness.state()).isEqualTo(Simple.CLOSED);
         assertThat(harness.transitions()).isEmpty();
         assertThat(harness.ignored()).hasSize(1);
@@ -97,17 +97,14 @@ class FsmTest {
         harness.dispatch(new DoorEvent.Close());
         harness.dispatch(new DoorEvent.Lock());
         harness.dispatch(new DoorEvent.Unlock());
-
         assertThat(harness.state()).isEqualTo(Simple.CLOSED);
-        assertThat(harness.transitions()).containsExactly(
-            new FsmTestHarness.Transition<>(Simple.CLOSED, Simple.OPEN),
-            new FsmTestHarness.Transition<>(Simple.OPEN, Simple.CLOSED),
-            new FsmTestHarness.Transition<>(Simple.CLOSED, Simple.LOCKED),
-            new FsmTestHarness.Transition<>(Simple.LOCKED, Simple.CLOSED));
+        assertThat(harness.transitions()).containsExactly(new FsmTestHarness.Transition<>(Simple.CLOSED, Simple.OPEN),
+                                                          new FsmTestHarness.Transition<>(Simple.OPEN, Simple.CLOSED),
+                                                          new FsmTestHarness.Transition<>(Simple.CLOSED, Simple.LOCKED),
+                                                          new FsmTestHarness.Transition<>(Simple.LOCKED, Simple.CLOSED));
     }
 
     // --- Entry / exit actions ---
-
     static class InstrumentedState implements DoorState {
         final AtomicInteger entryCount = new AtomicInteger();
         final AtomicInteger exitCount = new AtomicInteger();
@@ -119,8 +116,15 @@ class FsmTest {
             this.name = name;
         }
 
-        @Override public void onEntry() { entryCount.incrementAndGet(); }
-        @Override public void onExit()  { exitCount.incrementAndGet(); }
+        @Override
+        public void onEntry() {
+            entryCount.incrementAndGet();
+        }
+
+        @Override
+        public void onExit() {
+            exitCount.incrementAndGet();
+        }
 
         @Override
         public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
@@ -132,7 +136,9 @@ class FsmTest {
         }
 
         @Override
-        public String toString() { return name; }
+        public String toString() {
+            return name;
+        }
     }
 
     @Test
@@ -140,13 +146,12 @@ class FsmTest {
         var a = new InstrumentedState("A");
         var b = new InstrumentedState("B");
         var trigger = new DoorEvent.Open();
+
         a.trigger = trigger;
         a.next = b;
-
-        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("door", a);
+        var harness = FsmTestHarness.<DoorState, DoorEvent> harness("door", a);
 
         harness.dispatch(trigger);
-
         assertThat(a.exitCount.get()).isEqualTo(1);
         assertThat(b.entryCount.get()).isEqualTo(1);
         assertThat(a.entryCount.get()).isZero();
@@ -159,43 +164,56 @@ class FsmTest {
         var b = new InstrumentedState("B");
         var trigger = new DoorEvent.Open();
         var order = new java.util.ArrayList<String>();
-        a.trigger = null; // Override handle to include ordered action
 
+        a.trigger = null;  // Override handle to include ordered action
         var aOrdered = new DoorState() {
-            @Override public void onExit() { order.add("exitA"); }
-            @Override public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
+            @Override
+            public void onExit() {
+                order.add("exitA");
+            }
+
+            @Override
+            public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
                 if (event.equals(trigger)) {
                     tx.transitionTo(new DoorState() {
-                        @Override public void onEntry() { order.add("entryB"); }
-                        @Override public void handle(DoorEvent e, TransitionRequest<DoorState, DoorEvent> t) { t.ignore(); }
-                    }, () -> order.add("action"));
+                                        @Override
+                                        public void onEntry() {
+                                            order.add("entryB");
+                                        }
+
+                                        @Override
+                                        public void handle(DoorEvent e, TransitionRequest<DoorState, DoorEvent> t) {
+                                            t.ignore();
+                                        }
+                                    },
+                                    () -> order.add("action"));
                 }
             }
         };
+        var harness = FsmTestHarness.<DoorState, DoorEvent> harness("door", aOrdered);
 
-        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("door", aOrdered);
         harness.dispatch(trigger);
-
         assertThat(order).containsExactly("exitA", "action", "entryB");
     }
 
     // --- CAS contention / concurrency ---
-
     @Test
     void concurrentDispatch_oneWinsCasOthersForward() throws InterruptedException {
         var harness = FsmTestHarness.harness("door", Simple.CLOSED);
-
         // Dispatch the same Open event from 8 threads. Only one CAS wins; the rest either hit
         // CAS-loss + forward (reaching OPEN.handle(Open) which ignores), or land directly in
         // OPEN post-winner (also ignored). Either way each non-winner contributes exactly one
         // `ignored` entry; the CAS-loss count varies with interleaving.
-        harness.dispatchConcurrently(List.of(
-            new DoorEvent.Open(), new DoorEvent.Open(), new DoorEvent.Open(), new DoorEvent.Open(),
-            new DoorEvent.Open(), new DoorEvent.Open(), new DoorEvent.Open(), new DoorEvent.Open()));
-
+        harness.dispatchConcurrently(List.of(new DoorEvent.Open(),
+                                             new DoorEvent.Open(),
+                                             new DoorEvent.Open(),
+                                             new DoorEvent.Open(),
+                                             new DoorEvent.Open(),
+                                             new DoorEvent.Open(),
+                                             new DoorEvent.Open(),
+                                             new DoorEvent.Open()));
         assertThat(harness.state()).isEqualTo(Simple.OPEN);
-        assertThat(harness.transitions()).containsExactly(
-            new FsmTestHarness.Transition<>(Simple.CLOSED, Simple.OPEN));
+        assertThat(harness.transitions()).containsExactly(new FsmTestHarness.Transition<>(Simple.CLOSED, Simple.OPEN));
         assertThat(harness.ignored()).hasSize(7);
         assertThat(harness.casLosses().size()).isBetween(0, 7);
     }
@@ -205,10 +223,10 @@ class FsmTest {
         // Start OPEN. Tick uses transitionToOrDrop (idempotent). 4 Ticks concurrent.
         var harness = FsmTestHarness.harness("door", Simple.OPEN);
 
-        harness.dispatchConcurrently(List.of(
-            new DoorEvent.Tick(), new DoorEvent.Tick(),
-            new DoorEvent.Tick(), new DoorEvent.Tick()));
-
+        harness.dispatchConcurrently(List.of(new DoorEvent.Tick(),
+                                             new DoorEvent.Tick(),
+                                             new DoorEvent.Tick(),
+                                             new DoorEvent.Tick()));
         assertThat(harness.state()).isEqualTo(Simple.CLOSED);
         assertThat(harness.transitions()).hasSize(1);
         // Key invariant: each non-winner contributes EXACTLY ONE observer event (cas-loss OR
@@ -218,7 +236,6 @@ class FsmTest {
     }
 
     // --- Constructor-driven initial state factory ---
-
     /// Minimal Context that receives the Fsm reference at construction time and exposes it to
     /// state singletons. Matches the pattern used across all real FSMs in the codebase.
     static final class CtxWithFsm {
@@ -260,19 +277,19 @@ class FsmTest {
     @Test
     void factoryOverload_wiresContextBeforeDispatch() {
         var ctxHolder = new java.util.concurrent.atomic.AtomicReference<CtxWithFsm>();
-        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("ctx-door", f -> {
-            var ctx = new CtxWithFsm(f);
-            ctxHolder.set(ctx);
-            return ctx.closed;
-        });
+        var harness = FsmTestHarness.<DoorState, DoorEvent> harness("ctx-door",
+                                                                    f -> {
+                                                                        var ctx = new CtxWithFsm(f);
 
+                                                                        ctxHolder.set(ctx);
+
+                                                                        return ctx.closed;
+                                                                    });
         // Context and Fsm cross-reference each other; state singletons built inside factory work.
         assertThat(ctxHolder.get()).isNotNull();
         assertThat(ctxHolder.get().fsm).isSameAs(harness.fsm());
         assertThat(harness.state()).isSameAs(ctxHolder.get().closed);
-
         harness.dispatch(new DoorEvent.Open());
-
         assertThat(harness.state()).isSameAs(ctxHolder.get().open);
         assertThat(harness.transitions()).hasSize(1);
     }
@@ -280,12 +297,14 @@ class FsmTest {
     @Test
     void factoryOverload_dispatchFromExternalThreadUsesWiredContext() throws InterruptedException {
         var ctxHolder = new java.util.concurrent.atomic.AtomicReference<CtxWithFsm>();
-        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("ctx-door-2", f -> {
-            var ctx = new CtxWithFsm(f);
-            ctxHolder.set(ctx);
-            return ctx.closed;
-        });
+        var harness = FsmTestHarness.<DoorState, DoorEvent> harness("ctx-door-2",
+                                                                    f -> {
+                                                                        var ctx = new CtxWithFsm(f);
 
+                                                                        ctxHolder.set(ctx);
+
+                                                                        return ctx.closed;
+                                                                    });
         // Prove the fsm reference captured in Context is fully usable post-construction: dispatch
         // a burst of events through the Context-held fsm ref and verify state advances correctly.
         var ctx = ctxHolder.get();
@@ -296,15 +315,14 @@ class FsmTest {
             ctx.fsm.dispatch(new DoorEvent.Open());
             latch.countDown();
         });
+
         worker.start();
         assertThat(latch.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-
         assertThat(harness.state()).isSameAs(ctx.open);
         assertThat(harness.transitions()).hasSize(3);
     }
 
     // --- FsmTags (kind/instance split) ---
-
     @Test
     void fsmTags_twoArgFactory_setsBothFields() {
         var fsm = Fsm.fsm("leader-election", "node-a", Simple.CLOSED);
@@ -335,23 +353,26 @@ class FsmTest {
     void observerReceivesTags_notString() {
         var captured = new java.util.concurrent.atomic.AtomicReference<FsmTags>();
         FsmObserver<DoorState, DoorEvent> observer = new FsmObserver<>() {
-            @Override public void onTransition(FsmTags tags, DoorState from, DoorState to) {
+            @Override
+            public void onTransition(FsmTags tags, DoorState from, DoorState to) {
                 captured.set(tags);
             }
-            @Override public void onCasLost(FsmTags tags, DoorState expected, DoorState actual) {}
-            @Override public void onEventIgnored(FsmTags tags, DoorState state, DoorEvent event) {}
+
+            @Override
+            public void onCasLost(FsmTags tags, DoorState expected, DoorState actual) {}
+
+            @Override
+            public void onEventIgnored(FsmTags tags, DoorState state, DoorEvent event) {}
         };
-
         var fsm = Fsm.fsm("leader-election", "node-a", Simple.CLOSED, observer);
-        fsm.dispatch(new DoorEvent.Open());
 
+        fsm.dispatch(new DoorEvent.Open());
         assertThat(captured.get()).isNotNull();
         assertThat(captured.get().kind()).isEqualTo("leader-election");
         assertThat(captured.get().instance()).isEqualTo("node-a");
     }
 
     // --- onCasLost hook on target ---
-
     /// Target state that records onEntry/onCasLost invocations on shared counters. Distinct from
     /// `InstrumentedState` above because each instance must share the same counters across
     /// different `TrackingTarget` records (one per CAS attempt).
@@ -364,8 +385,15 @@ class FsmTest {
             this.casLostCounter = casLostCounter;
         }
 
-        @Override public void onEntry() { entryCounter.incrementAndGet(); }
-        @Override public void onCasLost() { casLostCounter.incrementAndGet(); }
+        @Override
+        public void onEntry() {
+            entryCounter.incrementAndGet();
+        }
+
+        @Override
+        public void onCasLost() {
+            casLostCounter.incrementAndGet();
+        }
 
         @Override
         public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
@@ -382,9 +410,7 @@ class FsmTest {
         final AtomicInteger casLostCounter;
         final CyclicBarrier barrier;
 
-        FreshTargetSource(AtomicInteger entryCounter,
-                          AtomicInteger casLostCounter,
-                          CyclicBarrier barrier) {
+        FreshTargetSource(AtomicInteger entryCounter, AtomicInteger casLostCounter, CyclicBarrier barrier) {
             this.entryCounter = entryCounter;
             this.casLostCounter = casLostCounter;
             this.barrier = barrier;
@@ -393,6 +419,7 @@ class FsmTest {
         @Override
         public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
             var target = new TrackingTarget(entryCounter, casLostCounter);
+
             awaitBarrier();
             tx.transitionToOrDrop(target);
         }
@@ -414,16 +441,15 @@ class FsmTest {
         var casLostCounter = new AtomicInteger();
         var barrier = new CyclicBarrier(4);
         var source = new FreshTargetSource(entryCounter, casLostCounter, barrier);
-        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("door", source);
-
+        var harness = FsmTestHarness.<DoorState, DoorEvent> harness("door", source);
         // 4 threads, 4 fresh TrackingTarget instances constructed in the source's handler before
         // any CAS runs (barrier ensures all four reach transitionToOrDrop after constructing
         // their target). Exactly one CAS wins (entry +1); the other three lose (onCasLost +1
         // each).
-        harness.dispatchConcurrently(List.of(
-            new DoorEvent.Open(), new DoorEvent.Open(),
-            new DoorEvent.Open(), new DoorEvent.Open()));
-
+        harness.dispatchConcurrently(List.of(new DoorEvent.Open(),
+                                             new DoorEvent.Open(),
+                                             new DoorEvent.Open(),
+                                             new DoorEvent.Open()));
         assertThat(harness.state()).isInstanceOf(TrackingTarget.class);
         assertThat(harness.transitions()).hasSize(1);
         assertThat(entryCounter.get()).isEqualTo(1);
@@ -439,13 +465,14 @@ class FsmTest {
         var casLostCounter = new AtomicInteger();
         var barrier = new CyclicBarrier(4);
         var source = new FreshTargetSource(entryCounter, casLostCounter, barrier);
-        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("door", source);
+        var harness = FsmTestHarness.<DoorState, DoorEvent> harness("door", source);
 
-        harness.dispatchConcurrently(List.of(
-            new DoorEvent.Open(), new DoorEvent.Open(),
-            new DoorEvent.Open(), new DoorEvent.Open()));
-
+        harness.dispatchConcurrently(List.of(new DoorEvent.Open(),
+                                             new DoorEvent.Open(),
+                                             new DoorEvent.Open(),
+                                             new DoorEvent.Open()));
         var winner = harness.state();
+
         assertThat(winner).isInstanceOf(TrackingTarget.class);
         // Exactly one TrackingTarget became current — entry fired exactly once.
         assertThat(entryCounter.get()).isEqualTo(1);
@@ -456,19 +483,18 @@ class FsmTest {
     }
 
     // --- handle (side-effect with no transition) ---
-
     @Test
     void handle_runsActionThenRecordsObserver() {
         var counter = new AtomicInteger();
         var state = new DoorState() {
-            @Override public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
+            @Override
+            public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
                 tx.handle(counter::incrementAndGet);
             }
         };
-        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("door", state);
+        var harness = FsmTestHarness.<DoorState, DoorEvent> harness("door", state);
 
         harness.dispatch(new DoorEvent.Open());
-
         assertThat(counter.get()).isEqualTo(1);
         assertThat(harness.handled()).hasSize(1);
         assertThat(harness.handled().getFirst().state()).isSameAs(state);
@@ -482,18 +508,18 @@ class FsmTest {
     void handle_distinguishedFromIgnore() {
         var counter = new AtomicInteger();
         var state = new DoorState() {
-            @Override public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
+            @Override
+            public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
                 switch (event) {
                     case DoorEvent.Open _ -> tx.handle(counter::incrementAndGet);
                     default -> tx.ignore();
                 }
             }
         };
-        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("door", state);
+        var harness = FsmTestHarness.<DoorState, DoorEvent> harness("door", state);
 
         harness.dispatch(new DoorEvent.Open());
         harness.dispatch(new DoorEvent.Close());
-
         assertThat(counter.get()).isEqualTo(1);
         assertThat(harness.handled()).hasSize(1);
         assertThat(harness.ignored()).hasSize(1);
@@ -507,24 +533,100 @@ class FsmTest {
         // threads where first wins: the second's transitionTo CAS fails, forwards X to B, which
         // ignores it. Verified via the ignored list.
         var a = new DoorState() {
-            @Override public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
+            @Override
+            public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
                 if (event instanceof DoorEvent.Open) {
                     tx.transitionTo(new DoorState() {
-                        @Override public void handle(DoorEvent e, TransitionRequest<DoorState, DoorEvent> t) {
+                        @Override
+                        public void handle(DoorEvent e, TransitionRequest<DoorState, DoorEvent> t) {
                             t.ignore();
                         }
                     });
                 }
             }
         };
-        var harness = FsmTestHarness.<DoorState, DoorEvent>harness("door", a);
-
+        var harness = FsmTestHarness.<DoorState, DoorEvent> harness("door", a);
         // Single-threaded: first Open transitions. Second Open dispatched against the NEW state,
         // which ignores. This confirms forwarding works structurally (not a contention test).
         harness.dispatch(new DoorEvent.Open());
         harness.dispatch(new DoorEvent.Open());
-
         assertThat(harness.transitions()).hasSize(1);
         assertThat(harness.ignored()).hasSize(1);
+    }
+
+    // --- Hook follow-ups (#3587) ---
+    /// A context whose OPEN entry follows up with `Close` and, when `chained`, whose CLOSED entry after it follows up
+    /// with `Lock`: the follow-up of a follow-up.
+    static final class FollowUpCtx {
+        final Fsm<DoorState, DoorEvent> fsm;
+        final DoorState closed = new FollowUpState(this, "CLOSED");
+        final DoorState open = new FollowUpState(this, "OPEN");
+        final DoorState locked = new FollowUpState(this, "LOCKED");
+
+        FollowUpCtx(Fsm<DoorState, DoorEvent> fsm) {
+            this.fsm = fsm;
+        }
+    }
+
+    record FollowUpState(FollowUpCtx ctx, String name) implements DoorState {
+        @Override
+        public void handle(DoorEvent event, TransitionRequest<DoorState, DoorEvent> tx) {
+            switch (event) {
+                case DoorEvent.Open _ when name.equals("CLOSED") -> tx.transitionTo(ctx.open);
+                case DoorEvent.Close _ when name.equals("OPEN") -> tx.transitionTo(ctx.closed);
+                case DoorEvent.Lock _ when name.equals("CLOSED") -> tx.transitionTo(ctx.locked);
+                default -> tx.ignore();
+            }
+        }
+
+        @Override
+        public void onEntry() {
+            switch (name) {
+                case "OPEN" -> ctx.fsm.followUp(new DoorEvent.Close());
+                case "CLOSED" -> ctx.fsm.followUp(new DoorEvent.Lock());
+                default -> {}
+            }
+        }
+
+        @Override
+        public String toString() {
+            return name;
+        }
+    }
+
+    private static FsmTestHarness<DoorState, DoorEvent> followUpHarness(FollowUpCtx[] holder) {
+        return FsmTestHarness.<DoorState, DoorEvent> harness("door", fsm -> initialClosed(fsm, holder));
+    }
+
+    private static DoorState initialClosed(Fsm<DoorState, DoorEvent> fsm, FollowUpCtx[] holder) {
+        holder[0] = new FollowUpCtx(fsm);
+
+        return holder[0].closed;
+    }
+
+    /// The follow-up a hook decides runs after the transition's observer callback (observers see the transitions in
+    /// order), its own follow-up runs as part of its step, and all of it before `dispatch` returns.
+    @Test
+    void hookFollowUp_runsAfterTheObserverAndBeforeDispatchReturns() {
+        var holder = new FollowUpCtx[1];
+        var harness = followUpHarness(holder);
+        var ctx = holder[0];
+
+        harness.dispatch(new DoorEvent.Open());
+        assertThat(harness.transitions()).containsExactly(new FsmTestHarness.Transition<>(ctx.closed, ctx.open),
+                                                          new FsmTestHarness.Transition<>(ctx.open, ctx.closed),
+                                                          new FsmTestHarness.Transition<>(ctx.closed, ctx.locked));
+        assertThat(harness.state()).isSameAs(ctx.locked);
+    }
+
+    /// A follow-up requested outside any dispatch (a hook invoked directly) is dispatched at once.
+    @Test
+    void followUp_outsideADispatch_isDispatchedAtOnce() {
+        var holder = new FollowUpCtx[1];
+        var harness = followUpHarness(holder);
+        var ctx = holder[0];
+
+        harness.fsm().followUp(new DoorEvent.Lock());
+        assertThat(harness.transitions()).containsExactly(new FsmTestHarness.Transition<>(ctx.closed, ctx.locked));
     }
 }
