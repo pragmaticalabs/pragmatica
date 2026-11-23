@@ -112,13 +112,16 @@ class ReElectionSuspectTest {
         return h;
     }
 
-    /// Dormant → QuorumWaiting → AwaitingKvSync → `Led(leader)`, with every node in the transport topology.
-    private static void driveToLed(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h,
-                                   List<NodeId> topology,
-                                   NodeId leader) {
+    /// Dormant → QuorumWaiting → AwaitingKvSync → `Led(leader)`, with every node in the transport topology. The
+    /// commit is observed before the FSM sees it, in the production order (the LeaderKey ValuePut advances the committed
+    /// viewSequence first): a re-election then proposes above the adopted sequence, as a real one does.
+    private void driveToLed(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h,
+                            List<NodeId> topology,
+                            NodeId leader) {
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, topology, seq()));
         h.dispatch(new ConsensusReady());
+        context.observeViewSequence(1L);
         h.dispatch(new LeaderCommitted(leader, 1L));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
     }
