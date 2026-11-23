@@ -19,7 +19,10 @@ import java.util.stream.LongStream;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
@@ -53,6 +56,9 @@ class SegmentRunFormingTest {
     private static final int PARTITION = 0;
     /// Every test event is 8 payload bytes behind the 20-byte per-event header.
     private static final long EVENT_BYTES = 28;
+    /// A manager-built stream here declares its hot window equal to its retention and pins the event size to one floor segment
+    /// (its payloads are a few bytes), so the ring is the same whether it is sized from retention or from the declared window.
+    private static final long SMALL_EVENT_BYTES = 256 * 1024;
     private static final long NEVER_BYTES = Long.MAX_VALUE;
     private static final int NEVER_EVENTS = Integer.MAX_VALUE;
     private static final TimeSpan HOUR = timeSpan(1).hours();
@@ -655,10 +661,13 @@ class SegmentRunFormingTest {
         var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, HOUR, MERGE));
         var manager = org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE, sealer);
 
-        manager.createStream(org.pragmatica.aether.slice.StreamConfig.streamConfig(STREAM,
-                                                                                  1,
-                                                                                  org.pragmatica.aether.slice.RetentionPolicy.retentionPolicy(4, 1_048_576L, 600_000L),
-                                                                                  "earliest"))
+        manager.createStream(HotWindowFixture.declaredHot(StreamConfig.streamConfig(STREAM,
+                                                                                    1,
+                                                                                    RetentionPolicy.retentionPolicy(4, 1_048_576L, 600_000L),
+                                                                                    "earliest",
+                                                                                    SMALL_EVENT_BYTES),
+                                                          4,
+                                                          1_048_576L))
                .onFailure(cause -> fail(cause.message()));
         for (long offset = 0; offset < 10; offset++) {
             manager.publishLocal(STREAM, PARTITION, payload(offset), 1000L + offset).onFailure(cause -> fail("publish: " + cause.message()));
