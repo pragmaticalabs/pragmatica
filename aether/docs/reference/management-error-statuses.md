@@ -95,6 +95,7 @@ A publish is not idempotent. On the stream publish route a raw stream engine ref
 | `org.pragmatica.aether.stream.StreamError$General#STREAM_ALREADY_EXISTS` | Internal Server Error | Conflict |
 | `org.pragmatica.aether.stream.StreamError$General#STREAM_CLOSED` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$General#STREAM_MEMORY_EXCEEDED` | Internal Server Error | Service Unavailable |
+| `org.pragmatica.aether.stream.StreamError$HotWindowBelowMaxEvent` | Internal Server Error | Bad Request |
 | `org.pragmatica.aether.stream.StreamError$LinearizableRoundTimeout` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$MaterializeBudgetExceeded` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$NotCurrentOwner` | Internal Server Error | Service Unavailable |

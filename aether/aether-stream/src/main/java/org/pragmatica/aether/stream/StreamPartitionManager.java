@@ -1861,9 +1861,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                                    window.count()).flatMap(_ -> checkRetentionBound(config.name(),
                                                                                     "hot.max_bytes",
                                                                                     window.bytes()))
+                                  .flatMap(_ -> checkHotHoldsMaxEvent(config))
                                   .flatMap(_ -> checkIndexable(config.name(),
                                                                window,
                                                                config.maxEventSizeBytes()));
+    }
+
+    /// Enforcer 1 of the ring invariant (S2b-2a, ruling 2026-11-23): a ring holds at least one `max_event_size` event of its
+    /// current life, so a DECLARED `[hot] max_bytes` below `max_event_size` is refused, naming both values. The one refusal
+    /// site for every create path (declared, management, publish), plain and `entity:` streams alike: it reads the
+    /// declaration, never the ring window, because an `entity:` ring ignores `[hot]` yet a declaration that could never hold
+    /// an event is still a wrong one. An absent `[hot] max_bytes` is not refused: its default window is at least one event.
+    private static Result<Unit> checkHotHoldsMaxEvent(StreamConfig config) {
+        return config.declaration()
+                     .flatMap(StreamDeclaration::hot)
+                     .flatMap(HotWindowDeclaration::maxBytes)
+                     .filter(hotBytes -> hotBytes < config.maxEventSizeBytes())
+                     .fold(() -> success(unit()),
+                           hotBytes -> new StreamError.HotWindowBelowMaxEvent(config.name(),
+                                                                              hotBytes,
+                                                                              config.maxEventSizeBytes()).result());
     }
 
     private static Result<Unit> checkRetentionBound(String streamName, String bound, long value) {

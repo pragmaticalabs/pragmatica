@@ -5281,7 +5281,7 @@ A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a m
 
 | Status | Class | Engine refusals |
 |---|---|---|
-| `400` | the request is wrong | `PartitionOutOfRange`, `EventTooLarge`, `EVENT_DROPPED`, `AHSE_REQUIRED_FOR_STRONG`, `PartitionCeilingExceeded`, `RetentionCountUnindexable`, `RetentionBoundInvalid`, `PartitionCapExceeded` |
+| `400` | the request is wrong | `PartitionOutOfRange`, `EventTooLarge`, `EVENT_DROPPED`, `AHSE_REQUIRED_FOR_STRONG`, `PartitionCeilingExceeded`, `RetentionCountUnindexable`, `RetentionBoundInvalid`, `HotWindowBelowMaxEvent`, `PartitionCapExceeded` |
 | `404` | unknown to this node's engine | `StreamNotFound`, `CONSUMER_NOT_FOUND` |
 | `409` | conflicts with what exists | `STREAM_ALREADY_EXISTS`, `CONSUMER_ALREADY_SUBSCRIBED`, `ReplicationRefused`, `EpochDiverged` (a cursor from a replaced owner lineage) |
 | `410` | the cursor's offset was reclaimed by retention (a judgement call: the offset was valid) | `CursorExpired` |

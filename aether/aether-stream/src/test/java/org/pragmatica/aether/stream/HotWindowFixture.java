@@ -15,10 +15,15 @@ import static org.pragmatica.lang.Option.some;
 /// carried over verbatim, and every other section of an existing declaration (`[retention]`, `[truncation]`, expected
 /// ingress) kept as the source declared it. Only `[hot]` is replaced. A test that sizes a ring from the hot window declares it
 /// through this, so it reads the same with and without the ring reading the declaration.
+///
+/// A window below the stream's `max_event_size` is not creatable ([StreamError.HotWindowBelowMaxEvent]), so the copy's
+/// `max_event_size` is lowered to the window when the window is smaller: the one component this fixture does not carry over
+/// verbatim. It is the maximum such a ring always enforced (the ring refused an event past its data region); a test of the
+/// refusal itself builds its declaration directly.
 public final class HotWindowFixture {
     private HotWindowFixture() {}
 
-    /// `config` with `[hot]` = (`count` entries, `bytes` bytes); a source without a declaration gets one holding only `[hot]`.
+    /// `config` with `[hot]` = (`count` entries, `bytes` bytes) and `max_event_size` at most `bytes`; a source without a declaration gets one holding only `[hot]`.
     public static StreamConfig declaredHot(StreamConfig config, long count, long bytes) {
         var hot = HotWindowDeclaration.hotWindowDeclaration(some(bytes), some(count));
         var declaration = config.declaration()
@@ -29,7 +34,7 @@ public final class HotWindowFixture {
                                 config.partitions(),
                                 config.retention(),
                                 config.autoOffsetReset(),
-                                config.maxEventSizeBytes(),
+                                Math.min(config.maxEventSizeBytes(), bytes),
                                 config.consistencyMode(),
                                 config.replicationFactor(),
                                 config.confirmationFactor(),

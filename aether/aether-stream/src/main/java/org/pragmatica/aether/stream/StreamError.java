@@ -636,6 +636,20 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A declared `[hot] max_bytes` below the stream's `max_event_size` (S2b-2a, ruling 2026-11-23): a ring holds at least
+    /// one maximal event of its current life, and a hot window smaller than one event would make the ring's effective
+    /// maximum the window instead of `max_event_size` (an event between the two was refused at the ring as too large).
+    /// Rejected PRE-COMMIT on create, naming both values; a fatal config error, never retried. An absent `[hot]` never
+    /// reaches here: its default window is at least one maximal event ([org.pragmatica.aether.slice.stream.RingGeometry#hotWindowBytes]).
+    record HotWindowBelowMaxEvent(String streamName, long hotMaxBytes, long maxEventSizeBytes) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' declares [hot] max_bytes = %d, below its max_event_size %d: the hot window must hold at least one maximal event".formatted(streamName,
+                                                                                                                                                           hotMaxBytes,
+                                                                                                                                                           maxEventSizeBytes);
+        }
+    }
+
     /// A stream config whose replication factors the engine refuses (#1564): `1 <= CF <= RF` fails, or a declared
     /// stream is redeclared with factors different from its committed ones. `cause` is the typed
     /// [org.pragmatica.aether.slice.ReplicationFactorsError].

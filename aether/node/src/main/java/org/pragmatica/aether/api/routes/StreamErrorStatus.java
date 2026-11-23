@@ -36,7 +36,7 @@ public final class StreamErrorStatus {
     public static HttpStatus statusOf(StreamError error) {
         return switch (error) {
             case StreamError.General general -> general(general);
-            case StreamError.EventTooLarge _, StreamError.PartitionOutOfRange _, StreamError.PartitionCeilingExceeded _, StreamError.RetentionCountUnindexable _, StreamError.RetentionBoundInvalid _, StreamError.PartitionCapExceeded _ -> HttpStatus.BAD_REQUEST;
+            case StreamError.EventTooLarge _, StreamError.PartitionOutOfRange _, StreamError.PartitionCeilingExceeded _, StreamError.RetentionCountUnindexable _, StreamError.RetentionBoundInvalid _, StreamError.HotWindowBelowMaxEvent _, StreamError.PartitionCapExceeded _ -> HttpStatus.BAD_REQUEST;
             case StreamError.StreamNotFound _ -> HttpStatus.NOT_FOUND;
             case StreamError.SystemStreamWriteRefused _ -> HttpStatus.METHOD_NOT_ALLOWED;
             case StreamError.ReplicationRefused _, StreamError.StreamStorageUnknown _, StreamError.EpochDiverged _ -> HttpStatus.CONFLICT;

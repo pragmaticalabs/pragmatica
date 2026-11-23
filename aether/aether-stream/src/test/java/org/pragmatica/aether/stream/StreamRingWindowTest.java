@@ -177,11 +177,11 @@ class StreamRingWindowTest {
         void declaredBytesOnly_takesTheDefaultCount() {
             var manager = streamPartitionManager(GIB);
             try {
-                create(manager, withHot(userStream("bytes", RetentionPolicy.retentionPolicy(), MIB), some(64 * KIB), none()));
+                create(manager, withHot(userStream("bytes", RetentionPolicy.retentionPolicy(), MIB), some(MIB), none()));
                 var ring = ring(manager, "bytes");
 
                 assertThat(indexCapacity(ring)).as("default count").isEqualTo(RingGeometry.HOT_WINDOW_ENTRIES);
-                assertThat(ring.allocatedBytes()).as("declared bytes").isEqualTo(RingGeometry.floorBytes(RingGeometry.HOT_WINDOW_ENTRIES, 64 * KIB, MIB));
+                assertThat(ring.allocatedBytes()).as("declared bytes").isEqualTo(RingGeometry.floorBytes(RingGeometry.HOT_WINDOW_ENTRIES, MIB, MIB));
             } finally {
                 manager.close();
             }
@@ -281,6 +281,76 @@ class StreamRingWindowTest {
                 manager.createStream(withHot(userStream("zerob", RetentionPolicy.retentionPolicy(), MIB), some(0L), none()))
                        .onSuccess(_ -> fail("hot.max_bytes 0 must be refused"))
                        .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.RetentionBoundInvalid("zerob", "hot.max_bytes", 0)));
+            } finally {
+                manager.close();
+            }
+        }
+    }
+
+    /// S2b-2a (ruling 2026-11-23): a ring holds at least one `max_event_size` event, so create refuses a DECLARED `[hot]
+    /// max_bytes` below it, typed and naming both values, before any ring is built or byte reserved. Plain and `entity:`
+    /// streams alike; at the boundary and above it, and with no `[hot] max_bytes`, the stream is created.
+    @Nested
+    class HotBelowMaxEvent {
+        private static final long HOT = 100_000L;
+        private static final long MAX_EVENT = 600_000L;
+
+        @Test
+        void plainStream_declaredHotBelowMaxEvent_isRefusedNamingBothValues() {
+            assertRefused("plain-small", HOT, MAX_EVENT);
+        }
+
+        @Test
+        void entityStream_declaredHotBelowMaxEvent_isRefusedNamingBothValues() {
+            assertRefused("entity:small", HOT, MAX_EVENT);
+        }
+
+        @Test
+        void plainStream_declaredHotOneByteBelowMaxEvent_isRefused() {
+            assertRefused("plain-edge", MAX_EVENT - 1, MAX_EVENT);
+        }
+
+        @Test
+        void hotEqualToMaxEvent_isAccepted_plainAndEntity() {
+            assertAccepted("plain-equal", MAX_EVENT, MAX_EVENT);
+            assertAccepted("entity:equal", MAX_EVENT, MAX_EVENT);
+        }
+
+        @Test
+        void hotAboveMaxEvent_isAccepted_plainAndEntity() {
+            assertAccepted("plain-above", MAX_EVENT + 1, MAX_EVENT);
+            assertAccepted("entity:above", 4 * MIB, MAX_EVENT);
+        }
+
+        @Test
+        void defaultWindow_withNoDeclaredHotBytes_isAccepted() {
+            var manager = streamPartitionManager(GIB);
+            try {
+                create(manager, userStream("plain-default", RetentionPolicy.retentionPolicy(), MAX_EVENT));
+                create(manager, withHot(userStream("plain-count-only", RetentionPolicy.retentionPolicy(), MAX_EVENT), none(), some(1_000L)));
+                create(manager, userStream("entity:default", RetentionPolicy.retentionPolicy(), MAX_EVENT));
+            } finally {
+                manager.close();
+            }
+        }
+
+        private void assertRefused(String name, long hot, long maxEvent) {
+            var manager = streamPartitionManager(GIB);
+            try {
+                manager.createStream(withHot(userStream(name, RetentionPolicy.retentionPolicy(), maxEvent), some(hot), some(1_000L)))
+                       .onSuccess(_ -> fail("a [hot] max_bytes " + hot + " below max_event_size " + maxEvent + " must be refused"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.HotWindowBelowMaxEvent(name, hot, maxEvent)))
+                       .onFailure(cause -> assertThat(cause.message()).contains(Long.toString(hot)).contains(Long.toString(maxEvent)));
+                assertThat(manager.partitionBuffer(name, 0).isPresent()).as("no ring is built for a refused create").isFalse();
+            } finally {
+                manager.close();
+            }
+        }
+
+        private void assertAccepted(String name, long hot, long maxEvent) {
+            var manager = streamPartitionManager(GIB);
+            try {
+                create(manager, withHot(userStream(name, RetentionPolicy.retentionPolicy(), maxEvent), some(hot), some(1_000L)));
             } finally {
                 manager.close();
             }

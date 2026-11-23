@@ -189,22 +189,6 @@ class DefaultStreamPublisherBatchTest {
         assertThat(replayOffsets(batchWal)).containsExactlyElementsOf(LongStream.range(0, 2_000).boxed().toList());
     }
 
-    /// #1287 review K1, the other branch: an event the frozen ring can never hold (the budget covers only
-    /// the floor, so a 300 KB event exceeds the 256 KB first segment and growth is refused). The run cannot
-    /// be one contiguous unit, so its events take the single-publish path — the batch's outcome and ring
-    /// contents must equal three single publishes'.
-    @Test
-    void publishBatch_withAnEventTheFrozenRingCannotHold_matchesPerEventPublishes() {
-        var retention = RetentionPolicy.retentionPolicy(1_000, 64L * 1024 * 1024, 3_600_000);
-        var budget = OffHeapRingBuffer.floorBytes(1_000, 64L * 1024 * 1024);
-        var payloads = List.of(padded(0, 1024), padded(1, 300 * 1024), padded(2, 1024));
-
-        assertBatchMatchesPerEvent(streamPartitionManager(budget),
-                                   streamPartitionManager(budget),
-                                   StreamConfig.streamConfig(STREAM, 1, retention, "earliest").withReplication(new org.pragmatica.aether.slice.ReplicationFactors(3, 1)),
-                                   payloads);
-    }
-
     /// #1287 review K2: the batch ack waits for its WAL group commit. With the WAL's fsync parked, the
     /// batch must not resolve; releasing the fsync resolves it.
     @Test
