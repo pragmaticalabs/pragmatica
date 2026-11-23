@@ -19,18 +19,19 @@ public final class LeaderElectionEvents {
     /// A leader has been committed to the KV-store. Typically triggered by
     /// `KVStoreNotification.ValuePut<LeaderKey>` on every node. `viewSequence` is the committed
     /// leader-election sequence (H4 fence) — STRICTLY POSITIVE for a real consensus commit, and a
-    /// non-positive sentinel ([`#NO_SEQUENCE`]) for the sequence-less synthesis paths (KV-pull
-    /// adoption, local-election mode) that carry no sequence. The `Led` swap fence treats a
-    /// sentinel sequence as "always adoptable" so those paths keep their prior unfenced behaviour.
+    /// non-positive sentinel ([`#NO_SEQUENCE`]) for the sequence-less synthesis paths (local-election
+    /// mode, a re-adoption of the leader already held) that carry no sequence; a KV pull carries the
+    /// record's own (#3588 F1). The `Led` swap fence treats a sentinel sequence as "always adoptable"
+    /// so those paths keep their prior unfenced behaviour.
     public record LeaderCommitted(NodeId leader, long viewSequence) implements ClusterFsmEvent {
         /// Sentinel sequence for commits synthesized without a real consensus viewSequence
-        /// (KV-pull adoption in `adoptLeaderFromKvIfPresent`, local-election mode). Bypasses the
-        /// `Led` swap fence.
+        /// (local-election mode, a re-adoption of the leader already held). Bypasses the `Led` swap
+        /// fence.
         public static final long NO_SEQUENCE = 0L;
 
         /// Sequence-less convenience constructor — synthesizes a commit carrying [`#NO_SEQUENCE`].
-        /// Used by KV-pull adoption and local-election mode, neither of which carries a real
-        /// committed sequence.
+        /// Used by local-election mode and the re-adoption of a held leader, neither of which
+        /// carries a real committed sequence.
         public LeaderCommitted(NodeId leader) {
             this(leader, NO_SEQUENCE);
         }

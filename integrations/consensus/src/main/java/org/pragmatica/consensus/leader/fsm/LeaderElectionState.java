@@ -155,8 +155,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // contract. The hook decides ONE follow-up from its inputs (#3587, `FsmState`): a
             // `LeaderCommitted` for a KV leader to adopt (this state's handler arm always moves to
             // `Led(thatLeader)`, which owns its own timers), else consensus readiness or the poll.
-            kvLeaderToAdopt(ctx).onPresent(leader -> ctx.followUp(new LeaderCommitted(leader)))
-                           .onEmpty(this::advanceOrPoll);
+            kvCommitToAdopt(ctx).onPresent(ctx::followUp).onEmpty(this::advanceOrPoll);
         }
 
         private void advanceOrPoll() {
@@ -258,8 +257,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // wait on the strength of it. The hook decides ONE follow-up from its inputs (#3587,
             // `FsmState`): the KV leader to adopt, else the known leader, else the grace timer. The
             // `LeaderCommitted` arm always moves to `Led(leader)`, so a second adoption never runs.
-            kvLeaderToAdopt(ctx).orElse(ctx::currentLeader)
-                           .onPresent(leader -> ctx.followUp(new LeaderCommitted(leader)))
+            kvCommitToAdopt(ctx).orElse(() -> ctx.currentLeader()
+                                                 .map(LeaderCommitted::new))
+                           .onPresent(ctx::followUp)
                            .onEmpty(this::armGraceTimer);
         }
 
@@ -325,20 +325,21 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     private static void graceTimeoutFallthrough(LeaderElectionContext ctx,
                                                 TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx,
                                                 AwaitingKvSync waiting) {
-        // The transitioning states keep the sequence-less pull (NO_SEQUENCE, FIX 1); only Passive adopts the record (#3581).
+        // The pull carries the KV record's own sequence, as every KV pull does (#3588 F1); a record older than the adopted
+        // leader is not a visible leader, so the wait goes on to its no-leader verdict rather than to a refused adoption.
         ctx.currentLeaderFromKvSupplier()
            .get()
-           .map(LeaderCommitted::leader)
-           .onPresent(leader -> adoptVisibleLeader(ctx, leader, tx))
+           .filter(commit -> !isOlderThanAdopted(ctx, commit))
+           .onPresent(commit -> adoptVisibleLeader(ctx, commit, tx))
            .onEmpty(() -> electOrKeepWaiting(ctx, tx, waiting));
     }
 
     private static void adoptVisibleLeader(LeaderElectionContext ctx,
-                                           NodeId leader,
+                                           LeaderCommitted commit,
                                            TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
         log.info("AwaitingKvSync grace window elapsed with committed leader {} visible — following it, not electing",
-                 leader);
-        adoptLeaderUnconditionally(ctx, new LeaderCommitted(leader), "AwaitingKvSync", tx);
+                 commit.leader());
+        adoptLeaderUnconditionally(ctx, commit, "AwaitingKvSync", tx);
     }
 
     private static void electOrKeepWaiting(LeaderElectionContext ctx,
@@ -825,7 +826,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         // adopted. Without the fence a LATER-arriving but LOWER-sequence LeaderCommitted (e.g.
         // node-2 commits seq3 but a straggling seq2 commit lands afterwards) would overwrite the
         // newer leader and amplify a crossed-pointer wedge. A non-positive incoming sequence
-        // (legacy sequence-less commit synthesized by KV-pull / local mode) bypasses the fence —
+        // (a sequence-less commit: local mode, the sequence-less push, a held-leader re-adoption) bypasses the fence —
         // those paths carry no sequence and must stay adoptable as before.
         if (!isAdvancingCommit(ctx, event)) {
             log.warn("Discarding STALE LeaderCommitted({}, seq={}) in Led({}) — incoming sequence "
@@ -859,7 +860,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// Sequence fence for a leader SWAP in [`Led`] (FIX 2). A commit ADVANCES iff it carries a
     /// sequence strictly greater than the sequence of the currently-adopted leader. A non-positive
     /// incoming sequence ([`LeaderCommitted#NO_SEQUENCE`]) marks a legacy sequence-less commit
-    /// (KV-pull synthesis / local mode); those bypass the fence so the prior unfenced behaviour is
+    /// (local mode, the sequence-less push, a held-leader re-adoption); those bypass the fence so the prior unfenced behaviour is
     /// preserved on the paths that never carried a sequence.
     private static boolean isAdvancingCommit(LeaderElectionContext ctx, LeaderCommitted event) {
         return event.viewSequence() <= LeaderCommitted.NO_SEQUENCE || event.viewSequence() > ctx.adoptedViewSequence();
@@ -1360,8 +1361,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// The one staleness rule of every sequenced adoption (#3588 finding A; `Passive`'s rule since #3581): a commit that
     /// carries a real sequence is older than the adopted leader iff its sequence is below
     /// [LeaderElectionContext#adoptedViewSequence], or equal to it for a leader other than the one adopted at it. A
-    /// sequence-less commit ([`LeaderCommitted#NO_SEQUENCE`], KV-pull synthesis / local mode) is never older: it names
-    /// the record the KV-Store holds now. The adopted sequence can be ahead of `committedViewSequence` (a passive pull
+    /// sequence-less commit ([`LeaderCommitted#NO_SEQUENCE`]: local mode, the sequence-less push, a held-leader
+    /// re-adoption; a KV pull carries the record's own sequence since #3588 F1) is never older: it has no sequence to
+    /// compare. The adopted sequence can be ahead of `committedViewSequence` (a passive pull
     /// adopts the record's own sequence before the push that observes it runs), so this rule, not the observed baseline,
     /// is what keeps a queued older push from displacing the newer leader.
     private static boolean isOlderThanAdopted(LeaderElectionContext ctx, LeaderCommitted event) {
@@ -1392,7 +1394,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     /// Records the sequence at which a leader is being adopted into [`Led`], the fence reference
     /// for the next swap (FIX 2). Uses the largest of the sequence already adopted, the commit's own `viewSequence` and
-    /// the node's observed committed baseline: a sequence-less synthetic commit (KV-pull / local mode,
+    /// the node's observed committed baseline: a sequence-less commit (local mode, a held-leader re-adoption,
     /// [`LeaderCommitted#NO_SEQUENCE`]) still records the true committed sequence the node has seen rather than the
     /// sentinel, and the adopted sequence never moves down within the node's life (#3588 finding A: a readmitted voter
     /// re-adopting the leader it pulled while passive kept the pulled sequence, which can be ahead of the baseline).
@@ -1411,25 +1413,27 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// it once per state-entry and once per election tick guarantees the FSM cannot stay in
     /// `Electing` while consensus has already named a leader visible to this node's local KV.
     private static void adoptLeaderFromKvIfPresent(LeaderElectionContext ctx) {
-        kvLeaderToAdopt(ctx).onPresent(leader -> dispatchSelf(ctx, new LeaderCommitted(leader)));
+        kvCommitToAdopt(ctx).onPresent(commit -> dispatchSelf(ctx, commit));
     }
 
     /// The hook form of [#adoptLeaderFromKvIfPresent] (#3587, `FsmState`): the KV leader to adopt is this entry's
     /// follow-up, delivered after the transition completes.
     private static void followUpKvLeader(LeaderElectionContext ctx) {
-        kvLeaderToAdopt(ctx).onPresent(leader -> ctx.followUp(new LeaderCommitted(leader)));
+        kvCommitToAdopt(ctx).onPresent(ctx::followUp);
     }
 
-    /// The KV pull's one decision: the committed leader the KV record names, unless it is the leader already held.
-    private static Option<NodeId> kvLeaderToAdopt(LeaderElectionContext ctx) {
-        // The transitioning states keep the sequence-less pull (NO_SEQUENCE, FIX 1); only Passive adopts the record (#3581).
+    /// The KV pull's one decision: the committed record the KV-Store holds, with its own sequence (#3588 F1), unless it
+    /// names the leader already held or is older than the adopted leader ([#isOlderThanAdopted]). A record the adoption
+    /// would refuse is never a follow-up, so an entry hook that finds one falls through to its own no-leader branch.
+    private static Option<LeaderCommitted> kvCommitToAdopt(LeaderElectionContext ctx) {
         return ctx.currentLeaderFromKvSupplier()
                   .get()
-                  .map(LeaderCommitted::leader)
-                  .filter(leader -> ctx.currentLeader()
-                                       .filter(leader::equals)
+                  .filter(commit -> ctx.currentLeader()
+                                       .filter(commit.leader()::equals)
                                        .isEmpty())
-                  .onPresent(leader -> logKvAdoption(ctx, leader));
+                  .filter(commit -> !isOlderThanAdopted(ctx, commit))
+                  .onPresent(commit -> logKvAdoption(ctx,
+                                                     commit.leader()));
     }
 
     private static void logKvAdoption(LeaderElectionContext ctx, NodeId leader) {

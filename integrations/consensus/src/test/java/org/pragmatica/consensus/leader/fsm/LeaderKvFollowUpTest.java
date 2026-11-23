@@ -135,6 +135,49 @@ class LeaderKvFollowUpTest {
         ctx.submit(new ClusterFsmEvent.Shutdown());
     }
 
+    /// #3588 F1: the `Electing` entry pull hands the adoption the record as the KV-Store holds it, with its own
+    /// sequence. The leader is adopted in local mode either way, so the adopted sequence is what tells a carried
+    /// sequence from a stripped one: it records the record's 4, not the 0 a sequence-less commit would leave.
+    @Test
+    void electingEntry_kvRecordCarriesItsSequence_adoptedSequenceIsTheRecords() {
+        var fsm = fsm(Option.none(), LeaderElectionContext::awaitingKvSync);
+        var ctx = fsm.current()
+                     .ctx();
+
+        ctx.submit(new ClusterFsmEvent.NodeAdded(PEER, CORES, 1));
+        scriptedKv.add(Option.none());
+        kvLeader.set(Option.some(new LeaderCommitted(PEER, 4L)));
+        observed.clear();
+
+        ctx.submit(new KvSyncGraceTimeout());
+
+        assertThat(heldLeader(fsm)).as("instrument: the Electing entry's pull adopted the record's leader")
+                                   .isEqualTo(Option.some(PEER));
+        assertThat(ctx.adoptedViewSequence()).as("adoptedViewSequence after the Electing entry pull")
+                                             .isEqualTo(4L);
+        ctx.submit(new ClusterFsmEvent.Shutdown());
+    }
+
+    /// #3588 F1: the `ReElecting` entry pull carries the record's own sequence, as the `Electing` one does.
+    @Test
+    void reElectingEntry_kvRecordCarriesItsSequence_adoptedSequenceIsTheRecords() {
+        var fsm = fsm(Option.none(), ctx -> LeaderElectionState.Led.fresh(ctx, PEER));
+        var ctx = fsm.current()
+                     .ctx();
+
+        ctx.submit(new ClusterFsmEvent.NodeAdded(PEER, CORES, 1));
+        kvLeader.set(Option.some(new LeaderCommitted(OTHER, 4L)));
+        observed.clear();
+
+        ctx.submit(new LeaderSilent(PEER));
+
+        assertThat(heldLeader(fsm)).as("instrument: the ReElecting entry's pull adopted the record's leader")
+                                   .isEqualTo(Option.some(OTHER));
+        assertThat(ctx.adoptedViewSequence()).as("adoptedViewSequence after the ReElecting entry pull")
+                                             .isEqualTo(4L);
+        ctx.submit(new ClusterFsmEvent.Shutdown());
+    }
+
     private static Option<NodeId> heldLeader(Fsm<LeaderElectionState, ClusterFsmEvent> fsm) {
         return fsm.current() instanceof LeaderElectionState.Led led
                ? Option.some(led.leader())
