@@ -515,8 +515,10 @@ final class DeparturePushRun {
     /// ```tla DHTDepartureDrain:Replan
     /// \* The one serial re-plan (#3576), on three triggers: the run's start (phase "draining"), a view change (onViewChange,
     /// \* called by the topology listener after each ring change: d's ring is no longer the V it observed) and an exit attempt
-    /// \* (claimExit: no live page; the exit re-reads the inventory, afterReread). A holder lost to a "draining" nack or a token
-    /// \* mismatch is the fourth trigger; the model's receivers never send either, so it is not modelled.
+    /// \* that does not close (Claim, then afterReread re-reads the inventory and re-plans, and the key is not Safe in that
+    /// \* observation: probeTargets is empty, the exit reopens and the re-plan's pages carry on; an exit that closes is Halt).
+    /// \* A holder lost to a "draining" nack or a token mismatch is the fourth trigger; the model's receivers never send either,
+    /// \* so it is not modelled.
     /// \* observeView takes V (the ring) and L (the drain set d received, and self) together; every target, deliverer and Safe
     /// \* decision until the next re-plan comes from them. A holder outside V counts no more (Held). The key is owed to every
     /// \* target that is not a holder (owedTargets): a live page to such a target stays, any other page of d is cancelled
@@ -564,7 +566,7 @@ final class DeparturePushRun {
     /// Replan(d) ==
     ///     /\ phase[d] \in {"draining", "pushing"}
     ///     /\ LET start == phase[d] = "draining"
-    ///            exit  == Fix("exit") /\ ~start /\ \A p \in pages : p.from # d
+    ///            exit  == Fix("exit") /\ ~start /\ Claim(d) /\ ~ExitSafe(d)
     ///        IN /\ start \/ exit \/ view[d] # Ring(d)
     ///           /\ IF start \/ Fix("replan") THEN Replanned(d, start, exit) ELSE Retargeted(d)
     ///     /\ phase' = [phase EXCEPT ![d] = "pushing"]
@@ -1415,31 +1417,27 @@ final class DeparturePushRun {
 
     /// Under `transitions`, once: report what is owed, raise the closing events (not after a halt), drop every page of the run.
     /// ```tla DHTDepartureDrain:Halt
-    /// \* d closes and halts with its in-memory store. Safe(d) at a close: a holder that is one of the key's deliverers in the
-    /// \* observation (R, L) and that passes a probe sent after its ack (probeTargets, uncoveredHolders: a halted node answers
-    /// \* nothing). The exit (claimExit, afterReread, probeTargets, closeIfClean) closes when no page of d is live and its re-plan,
-    /// \* with the inventory re-read and V and L observed afresh, owes nothing: every target holds the key and it is Safe there.
-    /// \* Without `Deadline` the run also ends when the key is owed but nothing could still be sent (no deliverer in the fresh
-    /// \* observation): its deadline closes it with the key owed. With `Deadline` it may close at any point, from the last
-    /// \* observation (onDeadline: no re-read). The report is Safe at the close and outlives d.
-    /// \* Without `exit` (the code before #3576): the run halts once every page is acknowledged, and the report is what the acks
-    /// \* set (Deliver, Retargeted).
-    /// SafeAt(d, R, excl) ==
-    ///     \E t \in Held(d, R) : /\ ~Fix("deliverer") \/ t \in Deliverers(R, d, excl, rfAt[d])
-    ///                           /\ phase[t] # "halted"
-    /// ExitClean(d) ==
-    ///     LET R    == Ring(d)
-    ///         excl == IF Fix("replan") THEN Excl(d) ELSE leaving[d]
-    ///     IN store[d] => /\ DrainTargets(R, d, excl, rfAt[d]) \subseteq Held(d, R)
-    ///                    /\ SafeAt(d, R, excl) \/ Deliverers(R, d, excl, rfAt[d]) = {}
+    /// \* d closes and halts with its in-memory store; the report (`delivered`) is Safe at the close (SafeAt: a holder among the
+    /// \* key's deliverers that passes a probe sent after its ack) and outlives d. Three closes:
+    /// \* - the exit (clean): Claim (claimExit: no live page, the key Safe in the last observation), then afterReread re-reads the
+    /// \*   inventory and re-plans with V and L observed afresh, and the key is Safe through a probe there (probeTargets, probe,
+    /// \*   closeIfClean). A page that re-plan registered does not hold the close (closeUnder drops it);
+    /// \* - the deadline with nothing it could still send (`stuck`, closeUnder from onDeadline): no live page, the observation
+    /// \*   current, and no deliverer in it, so the key stays owed until the attempts deadline closes the run with it owed;
+    /// \* - with `Deadline`, the deadline at any point (onDeadline, a halted window, a page failed for good), from the last
+    /// \*   observation: no re-read.
+    /// \* Without `exit` (the code before #3576): the run halts once no page is pending, and the report is what the acks set
+    /// \* (Deliver, Retargeted, the start's no-target report).
     /// Halt(d) ==
     ///     /\ phase[d] = "pushing"
-    ///     /\ LET idle  == \A p \in pages : p.from # d
-    ///            clean == idle /\ (Fix("exit") => ExitClean(d))
-    ///            exL   == IF Fix("replan") THEN Excl(d) ELSE leaving[d]
-    ///        IN /\ Deadline \/ clean
+    ///     /\ LET clean == Claim(d) /\ ExitSafe(d)
+    ///            stuck == /\ \A p \in pages : p.from # d
+    ///                     /\ view[d] = Ring(d)
+    ///                     /\ inv[d] /\ SafeBy(d, view[d], leaving[d]) = {}
+    ///                     /\ Deliverers(view[d], d, leaving[d], rfAt[d]) = {}
+    ///        IN /\ IF Fix("exit") THEN Deadline \/ clean \/ stuck ELSE Deadline \/ \A p \in pages : p.from # d
     ///           /\ delivered' = IF ~Fix("exit") THEN delivered
-    ///                           ELSE [delivered EXCEPT ![d] = IF clean THEN store[d] /\ SafeAt(d, Ring(d), exL)
+    ///                           ELSE [delivered EXCEPT ![d] = IF clean THEN store[d] /\ SafeAt(d, Ring(d), ExitL(d))
     ///                                                          ELSE inv[d] /\ SafeAt(d, view[d], leaving[d])]
     ///     /\ phase' = [phase EXCEPT ![d] = "halted"]
     ///     /\ store' = [store EXCEPT ![d] = FALSE]

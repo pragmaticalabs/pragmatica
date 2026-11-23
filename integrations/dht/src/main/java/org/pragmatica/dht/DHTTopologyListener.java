@@ -207,10 +207,10 @@ public final class DHTTopologyListener {
     /// this: that first MEMBER entry emits its JOINED edge, so [`#onNodeJoined`] adds it.
     /// ```tla DHTDepartureDrain:Recover
     /// \* A flapped stale entry recovers on `o`: departing remove, ring re-add. The guard `x \in pruned[o]` is the code's
-    /// \* Then DHTRebalancer.onViewChange (#3576): `o`'s push re-plans in a later step (Replan: its ring is no longer its V).
     /// \* `pruned.remove` returning true (the DEPARTING edge recorded the prune, #3415); the model's `pruned[o]` is ring absence,
     /// \* which for a stale entry (never a drainer, so never removed by NodeRemoved) is exactly the recorded set. Not recorded:
     /// \* the else branch leaves the ring unchanged, which is the action being disabled.
+    /// \* Then DHTRebalancer.onViewChange (#3576): `o`'s push re-plans in a later step (Replan: its ring is no longer its V).
     /// Recover(o, x) ==
     ///     /\ phase[o] # "halted"
     ///     /\ x \in stale /\ x \in pruned[o]

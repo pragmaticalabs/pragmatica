@@ -40,9 +40,8 @@
 /// `departureTargets`, once more in `finalPrimaryCandidates`); torn reads are not modelled. A send, its receipt and its ack
 /// are one step: the receiver judges the page against its state at receipt, and the pusher's carried leaving set and view
 /// are the pusher's state at that step. `Deadline = FALSE` assumes every page settles inside its window; halting with pages
-/// unacknowledged is the code's normal deadline path ([DeparturePushRun] `execute` stops at `backstopDeadline`,
-/// `shouldStop`/`pastDeadline` stop pages at `baseDeadline`), so the `code` pass holds only for drains whose pages all settle
-/// in time. `Waves = FALSE` assumes the ping that commands the first drainer names every co-drainer (DhtDeparturePush reads
+/// unacknowledged is the code's normal deadline path ([DeparturePushRun] `onDeadline` closes the run at `attemptsDeadline`,
+/// `shouldStop` stops pages there), so the `code` pass holds only for drains whose pages all settle in time. `Waves = FALSE` assumes the ping that commands the first drainer names every co-drainer (DhtDeparturePush reads
 /// the drain set at push time); two operator drains issued minutes apart are the `waves` case, which is red. `Flap` says
 /// which stale-entry flaps happen; `code` allows flaps seen by other nodes ("peer").
 ///
@@ -57,9 +56,12 @@
 /// What the passing `code` row does NOT exercise (its invariants are vacuous or its paths unreached there):
 /// - ReportTruthful without `Deadline` or `Waves`: a deliverer is a node no drainer names, so it never drains, and it stores the
 ///   copy in the step that delivers the key. It has content in `report` (pass), `nodeliverer` and `wavesset` (red).
-/// - `Retarget` fires in `code` and `live` since #3225 (TLC action coverage): a page to a named node is retargeted when that
-///   node's DEPARTING edge or flap prunes it from the pusher's ring. Whether a retarget ever delivers the key at once through a
-///   deliverer that had already acked (`deliverIfAcked`) is not measured. With MaxDrain = 1 every `Halt` leads to a state
+/// - A non-holder credit: the model does not distinguish it at these bounds (#3590). A receiver that acks a page it dropped as
+///   strays (the credit #3576 removes) leaves `code`-shaped runs green at N=4 RF=2 and RF=3 with MaxDrain=1 (a mutant of the
+///   `Deliver` ack, probed 2026-11-23), so #3576's defect is pinned by its Java tests only.
+/// - `Replan` fires in `code` and `live` (TLC action coverage): a page to a named node is re-planned when that node's
+///   DEPARTING edge or flap prunes it from the pusher's ring (a view change, `onViewChange`). Whether a re-plan ever delivers
+///   the key at once through a deliverer that had already acked is not measured. With MaxDrain = 1 every `Halt` leads to a state
 ///   outside CONSTRAINT `Active`: TLC checks the invariants there but does not count it, so `report` and `code` count the
 ///   same distinct states although `Deadline` adds halts (a probe adding NoLastCopyLoss to `report` is red at `Halt`).
 /// - Since #3225 the `exhaust` fallback matters for NoLastCopyLoss only when no named node lies within the first rf nodes of
@@ -209,6 +211,21 @@
 /// \* The holders d counts in the observation of ring R: DeparturePushRun.safe asks V and the tenure, so a holder outside R
 /// \* (it left the view, and a re-entry starts a new tenure with no counted ack) counts no more.
 /// Held(d, R) == IF Fix("revoke") THEN acked[d] \cap R ELSE acked[d]
+/// \* The holders that make d's key Safe in the observation (R, excl): DeparturePushRun.isSafe, a holder among the deliverers.
+/// SafeBy(d, R, excl) == {t \in Held(d, R) : ~Fix("deliverer") \/ t \in Deliverers(R, d, excl, rfAt[d])}
+/// \* ... and Safe at a close: such a holder passes a probe sent after its ack (safe(key, target, true), probeTargets,
+/// \* uncoveredHolders); a halted node answers nothing.
+/// SafeAt(d, R, excl) == \E t \in SafeBy(d, R, excl) : phase[t] # "halted"
+/// \* DeparturePushRun.claimExit: no live page of d, and the key of its inventory Safe in the last observation (owed(false), no
+/// \* probe). Only then does the exit re-read the inventory and re-plan (afterReread).
+/// Claim(d) ==
+///     /\ \A p \in pages : p.from # d
+///     /\ inv[d] => SafeBy(d, view[d], leaving[d]) # {}
+/// \* The leaving set an exit observes: re-read by its re-plan (observeView), or the frozen one without `replan`.
+/// ExitL(d) == IF Fix("replan") THEN Excl(d) ELSE leaving[d]
+/// \* The exit closes (probeTargets, probe, closeIfClean) when the key, re-read from the store, is Safe through a probe in the
+/// \* observation its re-plan takes; pages that re-plan registers are dropped by the close.
+/// ExitSafe(d) == store[d] => SafeAt(d, Ring(d), ExitL(d))
 ///
 /// \* DHTAntiEntropy.acceptDeparturePush: the sender is departing in t's view, or a current replica of the key in t's ring.
 /// Accepted(t, d) == ~Fix("accept") \/ Departing(t, d) \/ d \in Cur(t)
@@ -314,7 +331,7 @@
 /// ReportTruthful == \A d \in drainers : delivered[d] => \E n \in Nodes \ drainers : store[n]
 ///
 /// \* #1818 L1: a receiver that never drains and accepts the sender never refuses the page as a stray, so no page to a node
-/// \* that stays is nacked forever (a refusing co-drainer halts and the page is retargeted, see Deliver).
+/// \* that stays is nacked forever (a refusing co-drainer halts and the page is re-planned, see Deliver).
 /// ReceiverAgrees == ~strayNack
 ///
 /// AllHalted == \A d \in drainers : phase[d] = "halted"
@@ -602,108 +619,6 @@
 ///           Flap = "peer"
 ///           Fixed <- AllFixes
 /// INVARIANT NoLastCopyLoss
-/// ```
-///
-/// ```tlacfg DHTDepartureDrain:xreplanw
-/// CONSTANTS Waves = TRUE
-///           Deadline = FALSE
-///           HaltFair = TRUE
-///           Flap = "self"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer",
-///                    "namedself", "exit", "revoke"}
-/// INVARIANT NoLastCopyLoss
-/// ```
-///
-/// ```tlacfg DHTDepartureDrain:xreplanr
-/// CONSTANTS Waves = TRUE
-///           Deadline = FALSE
-///           HaltFair = TRUE
-///           Flap = "self"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer",
-///                    "namedself", "exit", "revoke"}
-/// INVARIANT ReportTruthful
-/// ```
-///
-/// ```tlacfg DHTDepartureDrain:xreplanc
-/// CONSTANTS Waves = FALSE
-///           Deadline = FALSE
-///           HaltFair = TRUE
-///           Flap = "peer"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer",
-///                    "namedself", "exit", "revoke"}
-/// INVARIANT NoLastCopyLoss
-/// INVARIANT ReportTruthful
-/// INVARIANT ReceiverAgrees
-/// INVARIANT ReplicaDegree
-/// INVARIANT ReplicaPlacement
-/// ```
-///
-/// ```tlacfg DHTDepartureDrain:xexitw
-/// CONSTANTS Waves = TRUE
-///           Deadline = FALSE
-///           HaltFair = TRUE
-///           Flap = "self"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer",
-///                    "namedself", "replan", "revoke"}
-/// INVARIANT NoLastCopyLoss
-/// ```
-///
-/// ```tlacfg DHTDepartureDrain:xexitr
-/// CONSTANTS Waves = TRUE
-///           Deadline = FALSE
-///           HaltFair = TRUE
-///           Flap = "self"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer",
-///                    "namedself", "replan", "revoke"}
-/// INVARIANT ReportTruthful
-/// ```
-///
-/// ```tlacfg DHTDepartureDrain:xexitc
-/// CONSTANTS Waves = FALSE
-///           Deadline = FALSE
-///           HaltFair = TRUE
-///           Flap = "peer"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer",
-///                    "namedself", "replan", "revoke"}
-/// INVARIANT NoLastCopyLoss
-/// INVARIANT ReportTruthful
-/// INVARIANT ReceiverAgrees
-/// INVARIANT ReplicaDegree
-/// INVARIANT ReplicaPlacement
-/// ```
-///
-/// ```tlacfg DHTDepartureDrain:xrevokew
-/// CONSTANTS Waves = TRUE
-///           Deadline = FALSE
-///           HaltFair = TRUE
-///           Flap = "self"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer",
-///                    "namedself", "replan", "exit"}
-/// INVARIANT NoLastCopyLoss
-/// ```
-///
-/// ```tlacfg DHTDepartureDrain:xrevoker
-/// CONSTANTS Waves = TRUE
-///           Deadline = FALSE
-///           HaltFair = TRUE
-///           Flap = "self"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer",
-///                    "namedself", "replan", "exit"}
-/// INVARIANT ReportTruthful
-/// ```
-///
-/// ```tlacfg DHTDepartureDrain:xrevokec
-/// CONSTANTS Waves = FALSE
-///           Deadline = FALSE
-///           HaltFair = TRUE
-///           Flap = "peer"
-///           Fixed = {"drainset", "codrain", "exhaust", "selfcheck", "pruned", "view", "accept", "primary", "deliverer",
-///                    "namedself", "replan", "exit"}
-/// INVARIANT NoLastCopyLoss
-/// INVARIANT ReportTruthful
-/// INVARIANT ReceiverAgrees
-/// INVARIANT ReplicaDegree
-/// INVARIANT ReplicaPlacement
 /// ```
 ///
 /// ```tlacfg DHTDepartureDrain:nohaltfair
