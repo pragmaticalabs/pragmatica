@@ -300,10 +300,13 @@ class ReplicaWalTierPrefixCatchupTest {
     }
 
     private static StreamConfig heldConfig() {
-        return StreamConfig.streamConfig("held",
-                                         1,
-                                         RetentionPolicy.retentionPolicy(RING, 2L * RING * PAYLOAD_BYTES, 600_000L),
-                                         "earliest");
+        return HotWindowFixture.declaredHot(StreamConfig.streamConfig("held",
+                                                                      1,
+                                                                      RetentionPolicy.retentionPolicy(RING, 2L * RING * PAYLOAD_BYTES, 600_000L),
+                                                                      "earliest",
+                                                                      256 * 1024L),
+                                            RING,
+                                            2L * RING * PAYLOAD_BYTES);
     }
 
     private static StreamConfig config(String name, int partitions) {

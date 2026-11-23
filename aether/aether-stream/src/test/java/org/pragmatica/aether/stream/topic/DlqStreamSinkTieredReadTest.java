@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.lang.Option;
@@ -66,10 +67,7 @@ class DlqStreamSinkTieredReadTest {
     void read_listsDeadLettersEvictedFromTheRing_servedFromTheSealedTier() {
         var dlqStream = DurableTopicNames.dlqStreamForTopicStream(TOPIC_STREAM);
 
-        manager.createStream(StreamConfig.streamConfig(dlqStream,
-                                                       1,
-                                                       RetentionPolicy.retentionPolicy(RING_CAPACITY, 1_048_576L, 14L * 24 * 3_600_000L),
-                                                       "earliest"))
+        manager.createStream(dlqConfig(dlqStream, RING_CAPACITY))
                .onFailure(cause -> fail(cause.message()));
 
         var sink = new DlqStreamSink(codec,
@@ -101,5 +99,18 @@ class DlqStreamSinkTieredReadTest {
         while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
             Thread.onSpinWait();
         }
+    }
+
+    /// The DLQ stream under test: the hot window is declared equal to the retention (the ring holds the same `ringCapacity`
+    /// entries whether it is sized from retention or from the declared window) and `max_event_size` is pinned to the first
+    /// segment (256 KiB), so the ring's first data region is the same in both.
+    private static StreamConfig dlqConfig(String name, int ringCapacity) {
+        return HotWindowFixture.declaredHot(StreamConfig.streamConfig(name,
+                                                                      1,
+                                                                      RetentionPolicy.retentionPolicy(ringCapacity, 1_048_576L, 14L * 24 * 3_600_000L),
+                                                                      "earliest",
+                                                                      256 * 1024L),
+                                            ringCapacity,
+                                            1_048_576L);
     }
 }
