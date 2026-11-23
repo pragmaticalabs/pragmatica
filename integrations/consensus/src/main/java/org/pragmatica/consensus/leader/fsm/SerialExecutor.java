@@ -61,9 +61,9 @@ import org.slf4j.LoggerFactory;
 /// entry, after clearing whatever status the drain left (a task that interrupts itself and then throws a
 /// [VirtualMachineError] skips the between-task clear). A caller interrupted before submit therefore returns still
 /// interrupted, and a caller that entered clear returns clear. An interrupt another thread delivers to the caller WHILE
-/// it drains (for example a pool's `shutdownNow`) is indistinguishable from one a task raised, so it is cleared too and
-/// that caller returns clear: the interrupt is lost, by design (#3605 round-4 ruling 4). No leader task blocks or reads
-/// the status. Pinned by `SerialExecutorInterruptTest`.
+/// it drains (for example a pool's `shutdownNow`) is indistinguishable from one a task raised, so it is cleared too: the
+/// caller returns with the status it entered with, so that interrupt is lost, by design (#3605 round-4 ruling 4, not
+/// pinned). No leader task blocks or reads the status. The rest is pinned by `SerialExecutorInterruptTest`.
 ///
 /// The same mechanism as SWIM's `org.pragmatica.swim.SerialExecutor` (#3529), without its test-only quiescing mode and with
 /// the stop rejection: the two modules share no dependency, and a library-wide executor is a separate design (#3587 ruling).

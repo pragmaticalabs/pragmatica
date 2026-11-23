@@ -241,8 +241,10 @@ public final class LeaderElectionContext {
     /// The node's one serial executor (#3587): every leader-election event of this node enters the FSM through it.
     private final SerialExecutor serial = SerialExecutor.serialExecutor();
     /// Dispatches refused by [#dispatchConfined] because the caller was not on the serial drainer (#3605 round-4
-    /// ruling). Counted because the refusal is otherwise invisible where it matters most: an unwrapped timer or
-    /// promise callback throws on a scheduler thread, whose future keeps the exception and reports it to nobody.
+    /// ruling). Counted because the refusal is otherwise easy to miss where it matters most: an unwrapped timer or
+    /// promise callback throws on a scheduler thread, where the scheduler (SharedScheduler logs the throw at WARN and
+    /// keeps the recurrence, `VirtualThreadScheduler` `runGuarded`) and Promise (which contains and logs callback
+    /// throws) report it without the rule context; the ERROR line and the count carry the rule.
     private final AtomicLong confinementBreaches = new AtomicLong(0);
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
     private final AtomicReference<Option<NodeId>> lastAdoptedLeader = new AtomicReference<>(Option.none());
@@ -1180,10 +1182,11 @@ public final class LeaderElectionContext {
     /// states all go through it). GUARANTEE: no leader-code dispatch runs off the node's serial drainer; one that
     /// would is refused before it reaches the FSM. MECHANISM: the caller must be the drainer
     /// ([SerialExecutor#isConfined]); otherwise this logs the breach, counts it ([#confinementBreachesForTest]) and
-    /// throws [IllegalStateException] naming the rule and the calling thread. Confinement is enforced here, not
-    /// counted in the source: an off-drainer callback that dispatches without [#serialized] fails the first time it
-    /// fires instead of racing the drainer. A refusal on a scheduler thread is caught by that thread's future and
-    /// reported to nobody, so the log line and the count are what keep it visible.
+    /// throws [IllegalStateException] naming the rule and the calling thread (its id, and its name when it has one:
+    /// a virtual thread's name is empty). Confinement is enforced here, not counted in the source: an off-drainer
+    /// callback that dispatches without [#serialized] fails the first time it fires instead of racing the drainer. A
+    /// refusal on a scheduler thread is logged by the scheduler and by Promise at WARN/ERROR without the rule context,
+    /// so this ERROR line and the count are what carry the rule.
     @Contract
     void dispatchConfined(ClusterFsmEvent event) {
         if (!serial.isConfined()) {
@@ -1197,13 +1200,22 @@ public final class LeaderElectionContext {
         var message = "#3605 confinement rule: a leader FSM dispatch runs only on the node's serial drainer (a handler, "
                     + "a ctx.serialized(...) callback, or a serially/submit task); refused " + event.getClass()
                                                                                                     .getSimpleName()
-                    + " dispatched from thread '" + Thread.currentThread().getName()
-                    + "'";
+                    + " dispatched from thread " + callingThread();
 
         confinementBreaches.incrementAndGet();
         log.error(message);
 
         return new IllegalStateException(message);
+    }
+
+    /// The caller named usefully: `#id`, plus `'name'` when the name is non-empty (a virtual thread's is empty).
+    private static String callingThread() {
+        var thread = Thread.currentThread();
+        var name = thread.getName();
+
+        return name.isEmpty()
+               ? "#" + thread.threadId()
+               : "#" + thread.threadId() + " '" + name + "'";
     }
 
     /// #3587: the follow-up of the transition whose hook is running ([Fsm#followUp]): a hook never dispatches

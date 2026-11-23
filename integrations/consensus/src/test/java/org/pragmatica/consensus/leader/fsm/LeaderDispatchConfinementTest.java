@@ -8,6 +8,7 @@ package org.pragmatica.consensus.leader.fsm;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -77,6 +78,91 @@ class LeaderDispatchConfinementTest {
         } finally {
             ctx.stop();
         }
+    }
+
+    /// The production off-drainer case is a scheduler's virtual thread, whose name is empty: the refusal still names the
+    /// caller, by thread id (#3605 v3605j row 48), and does not print an empty name.
+    @Test
+    void dispatchConfined_fromAVirtualThread_namesTheCallerByThreadId() throws InterruptedException {
+        var ctx = context(LeaderElectionContext::dormant, LONG);
+
+        try {
+            var thrown = new AtomicReference<Throwable>();
+            var caller = Thread.ofVirtual()
+                               .unstarted(() -> runCapturing(() -> ctx.dispatchConfined(new ClusterFsmEvent.QuorumEstablished()),
+                                                             thrown));
+
+            caller.start();
+            assertThat(caller.join(Duration.ofSeconds(10))).as("instrument: the virtual caller finished")
+                                                           .isTrue();
+            assertThat(caller.getName()).as("instrument: a virtual thread's name is empty")
+                                        .isEmpty();
+            assertThat(thrown.get()).as("a dispatch from a virtual thread is refused")
+                                    .isInstanceOf(IllegalStateException.class)
+                                    .hasMessageContaining(RULE)
+                                    .hasMessageContaining("dispatched from thread #" + caller.threadId())
+                                    .message()
+                                    .doesNotContain("''");
+        } finally {
+            ctx.stop();
+        }
+    }
+
+    /// [OnDrainer#dispatch] returns only after the event was handled, also when a timer task holds the drainer and the
+    /// event is queued behind it (#3605 v3605j row 50). The holder keeps the drainer until the dispatching thread's task
+    /// is queued (the condition the step produces); only then is it released. The state read the moment `dispatch`
+    /// returns must already show the event: a `dispatch` that returned on queueing reads Dormant (RED).
+    @Test
+    void onDrainerDispatch_whileTheDrainerIsBusy_returnsOnlyAfterTheEventWasHandled() throws InterruptedException {
+        var ctx = context(LeaderElectionContext::dormant, LONG);
+        var holding = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var stateAtReturn = new AtomicReference<LeaderElectionState>();
+
+        try {
+            var holder = Thread.ofPlatform()
+                               .start(() -> ctx.serially(() -> holdTheDrainer(holding, release)));
+            var dispatcher = Thread.ofPlatform()
+                                   .unstarted(() -> dispatchThenRead(ctx, stateAtReturn));
+
+            assertThat(holding.await(10, TimeUnit.SECONDS)).as("instrument: the holder owns the drainer")
+                                                           .isTrue();
+            dispatcher.start();
+            Awaitility.await("instrument: the dispatching thread's task is queued behind the holder")
+                      .atMost(Duration.ofSeconds(10))
+                      .pollInterval(Duration.ofMillis(5))
+                      .until(() -> ctx.pendingSerialTasksForTest() == 1);
+            release.countDown();
+            assertThat(dispatcher.join(Duration.ofSeconds(10))).as("instrument: OnDrainer.dispatch returned")
+                                                               .isTrue();
+            assertThat(holder.join(Duration.ofSeconds(10))).as("instrument: the holder finished")
+                                                           .isTrue();
+            assertThat(stateAtReturn.get()).as("the event was handled before dispatch returned")
+                                           .isNotInstanceOf(LeaderElectionState.Dormant.class);
+        } finally {
+            release.countDown();
+            ctx.stop();
+        }
+    }
+
+    private static void holdTheDrainer(CountDownLatch holding, CountDownLatch release) {
+        holding.countDown();
+        awaitRelease(release);
+    }
+
+    private static void awaitRelease(CountDownLatch release) {
+        try {
+            release.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread()
+                  .interrupt();
+        }
+    }
+
+    private static void dispatchThenRead(LeaderElectionContext ctx, AtomicReference<LeaderElectionState> stateAtReturn) {
+        OnDrainer.dispatch(ctx, new ClusterFsmEvent.QuorumEstablished());
+        stateAtReturn.set(ctx.fsm()
+                             .current());
     }
 
     /// `dispatchSelf` from a handler that runs off the drainer: a view-free removal of the Led leader holds the leader
