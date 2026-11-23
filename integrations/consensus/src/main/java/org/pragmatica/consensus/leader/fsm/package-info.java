@@ -321,7 +321,7 @@
 ///           Mutant = {}
 /// CONSTANT Fixed <- AllFixes
 /// INVARIANT Safety
-/// PROPERTY AdSeqMono
+/// PROPERTY AdSeqMono NoOlderAdoption
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:local
