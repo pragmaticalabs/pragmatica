@@ -1653,7 +1653,7 @@ public class RabiaEngine<C extends Command> {
     ///                  ELSE IF n \in Roster(log[n]) THEN {FALSE} ELSE BOOLEAN :
     ///        /\ st' = [st EXCEPT ![n] = IF act THEN "paused" ELSE "pausedsync"]
     ///        /\ saved' = IF act /\ ok THEN [saved EXCEPT ![n] = log[n]] ELSE saved
-    ///   /\ voted' = IF KeepBallots THEN voted ELSE [voted EXCEPT ![n] = Empty]
+    ///   /\ voted' = IF KeepBallotsOnPause THEN voted ELSE [voted EXCEPT ![n] = Empty]
     ///   /\ pauses' = pauses + 1
     ///   /\ UNCHANGED <<log, marker, admit, known, reinc, ballots, chosen, crashes, restarts>>
     /// ```
