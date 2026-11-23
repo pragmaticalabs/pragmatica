@@ -52,10 +52,11 @@ import org.slf4j.LoggerFactory;
 /// (no drainer, queued tasks never run). Pinned by `LeaderSerialDispatchCensusTest#failingTask_doesNotStallTheQueue`. A [VirtualMachineError] is logged and then
 /// propagates to the drainer's caller; the drainer is released on EVERY exit (a `finally` around the drain).
 ///
-/// Interrupt policy (#3605 ruling): the drainer clears its thread's interrupt status after every task, so an interrupt a
-/// task raises reaches neither the next task (which may be another submitter's) nor the submitting thread after the
-/// drain. No leader task blocks or reads the status; a submitter interrupted before it drained loses that status after
-/// the first task it runs. Pinned by `SerialExecutorInterruptTest`.
+/// Interrupt policy (#3605 ruling): when a submitter becomes the drainer it first takes its own interrupt status
+/// (`Thread.interrupted()`) and keeps it; between tasks the drainer clears the status, so an interrupt a task raises reaches
+/// neither later tasks nor the caller; on release (a `finally`, also on a thrown task) it re-asserts the status it took at
+/// entry. A caller interrupted before submit therefore returns still interrupted. No leader task blocks or reads the
+/// status. Pinned by `SerialExecutorInterruptTest`.
 ///
 /// The same mechanism as SWIM's `org.pragmatica.swim.SerialExecutor` (#3529), without its test-only quiescing mode and with
 /// the stop rejection: the two modules share no dependency, and a library-wide executor is a separate design (#3587 ruling).
@@ -116,12 +117,16 @@ final class SerialExecutor {
     }
 
     /// Drain while owning [#drainer], then release it on every exit, a propagating [VirtualMachineError] included: a
-    /// drainer left pinned would make every later submission enqueue and return, and nothing would drain again.
+    /// drainer left pinned would make every later submission enqueue and return, and nothing would drain again. The
+    /// caller's own interrupt status is taken at entry and re-asserted on that same exit (see the class doc).
     private void drainAndRelease() {
+        var callerWasInterrupted = Thread.interrupted();
+
         try {
             drainQueue();
         } finally {
             drainer.set(null);
+            reassertInterruptStatus(callerWasInterrupted);
         }
     }
 
@@ -130,6 +135,13 @@ final class SerialExecutor {
         for (var task = queue.poll(); task != null; task = queue.poll()) {
             runUnlessClosed(task);
             clearInterruptStatus();
+        }
+    }
+
+    /// Give the caller back the interrupt status it had when it became the drainer; a clear status stays clear.
+    private static void reassertInterruptStatus(boolean callerWasInterrupted) {
+        if (callerWasInterrupted) {
+            Thread.currentThread().interrupt();
         }
     }
 

@@ -11,13 +11,15 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/// Pins the drainer's interrupt policy (#3605 ruling): the interrupt status is cleared between tasks, so an interrupt one
-/// task raises reaches neither the next task nor the submitting thread after the drain. Everything runs synchronously on
-/// the test thread: the outer task queues both inner tasks, and the same drain runs them in order.
+/// Pins the drainer's interrupt policy (#3605 ruling): a submitter that becomes the drainer takes its own interrupt status
+/// at entry and re-asserts it on release (also when a task throws); between tasks the status is cleared, so an interrupt a
+/// task raises reaches neither later tasks nor the caller. Everything runs synchronously on the test thread: the outer task
+/// queues the inner tasks, and the same drain runs them in order.
 class SerialExecutorInterruptTest {
     @Test
-    void interruptRaisedByATask_reachesNeitherTheNextTaskNorTheSubmitter() {
+    void interruptRaisedByATask_doesNotReachTheNextTask() {
         var executor = SerialExecutor.serialExecutor();
         var nextTaskSawInterrupt = new AtomicReference<Boolean>();
 
@@ -26,10 +28,74 @@ class SerialExecutorInterruptTest {
 
             assertThat(nextTaskSawInterrupt.get()).as("the task after the interrupting one ran with a clear status")
                                                   .isFalse();
-            assertThat(Thread.currentThread().isInterrupted()).as("the submitter's status is clear after the drain")
-                                                              .isFalse();
         } finally {
             Thread.interrupted();  // never leave the JUnit thread interrupted, whatever the verdict
+        }
+    }
+
+    @Test
+    void interruptRaisedByATask_doesNotReachTheSubmittingCaller() {
+        var executor = SerialExecutor.serialExecutor();
+
+        try {
+            executor.execute(() -> Thread.currentThread().interrupt());
+
+            assertThat(Thread.currentThread().isInterrupted()).as("the caller's status is clear after the drain")
+                                                              .isFalse();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void callerInterruptedBeforeSubmit_isStillInterruptedAfterSubmitReturns() {
+        var executor = SerialExecutor.serialExecutor();
+        var taskSawInterrupt = new AtomicReference<Boolean>();
+
+        try {
+            Thread.currentThread().interrupt();
+            executor.execute(() -> taskSawInterrupt.set(Thread.currentThread().isInterrupted()));
+
+            assertThat(taskSawInterrupt.get()).as("the caller's status is taken at entry, the task runs with a clear one")
+                                              .isFalse();
+            assertThat(Thread.currentThread().isInterrupted()).as("the caller returns still interrupted")
+                                                              .isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void callerInterruptedBeforeSubmit_isStillInterruptedWhenItsTaskThrows() {
+        var executor = SerialExecutor.serialExecutor();
+
+        try {
+            Thread.currentThread().interrupt();
+            executor.execute(() -> {
+                throw new IllegalStateException("task failed");
+            });
+
+            assertThat(Thread.currentThread().isInterrupted()).as("an absorbed task failure keeps the caller's status")
+                                                              .isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void callerInterruptedBeforeSubmit_isStillInterruptedWhenItsTaskThrowsAVmError() {
+        var executor = SerialExecutor.serialExecutor();
+
+        try {
+            Thread.currentThread().interrupt();
+
+            assertThatThrownBy(() -> executor.execute(() -> {
+                throw new InternalError("vm failed");
+            })).isInstanceOf(InternalError.class);
+            assertThat(Thread.currentThread().isInterrupted()).as("a propagating VM error still releases the status")
+                                                              .isTrue();
+        } finally {
+            Thread.interrupted();
         }
     }
 
