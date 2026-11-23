@@ -68,7 +68,7 @@ class PassiveEntryLeaderPullTest {
         startLinked();
         commitDroppedWhileDormant(LEADER, 5);
 
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
 
         assertThat(harness.state()).isInstanceOf(LeaderElectionState.Passive.class);
         assertThat(manager.leader()).as("Passive entry pulls the committed leader key").isEqualTo(Option.some(LEADER));
@@ -80,10 +80,10 @@ class PassiveEntryLeaderPullTest {
     void passiveReentry_sameCommittedLeader_adoptsNothingNew() {
         startLinked();
         commitDroppedWhileDormant(LEADER, 5);
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
 
-        harness.dispatch(new PassiveDirectory(CORES));
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
 
         assertThat(manager.leader()).isEqualTo(Option.some(LEADER));
         assertThat(ctx.adoptedViewSequence()).isEqualTo(5L);
@@ -91,7 +91,7 @@ class PassiveEntryLeaderPullTest {
 
         // A record naming another leader at the adopted sequence: the equal-sequence gate refuses it.
         kvLeader.set(Option.some(leaderCommitted(SUCCESSOR, 5)));
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
 
         assertThat(manager.leader()).as("no adoption without a newer committed sequence")
                                     .isEqualTo(Option.some(LEADER));
@@ -102,10 +102,10 @@ class PassiveEntryLeaderPullTest {
     void passiveReentry_sameLeaderHigherObservedSequence_announcesNothing() {
         startLinked();
         commitDroppedWhileDormant(LEADER, 5);
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
         ctx.observeViewSequence(6L);
 
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
 
         assertThat(manager.leader()).as("same leader already in view: nothing adopted")
                                     .isEqualTo(Option.some(LEADER));
@@ -119,7 +119,7 @@ class PassiveEntryLeaderPullTest {
         commitDroppedWhileDormant(LEADER, 3);
         ctx.setAdoptedViewSequence(7L);
 
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
 
         assertThat(harness.state()).isInstanceOf(LeaderElectionState.Passive.class);
         assertThat(manager.leader()).as("a committed sequence older than the adopted one is not adopted")
@@ -138,7 +138,7 @@ class PassiveEntryLeaderPullTest {
         assertThat(ctx.committedViewSequence()).as("instrument: the push of an ineligible leader observed no sequence")
                                                .isEqualTo(0L);
 
-        harness.dispatch(new PassiveDirectory(List.of(LEADER, JOINED)));
+        OnDrainer.dispatch(harness, new PassiveDirectory(List.of(LEADER, JOINED)));
 
         assertThat(manager.leader()).as("eligibility comes from the members installed by this entry, not the configured cluster")
                                     .isEqualTo(Option.some(JOINED));
@@ -155,7 +155,7 @@ class PassiveEntryLeaderPullTest {
         assertThat(ctx.committedViewSequence()).as("instrument: the push of a not-yet-listed leader observed no sequence")
                                                .isEqualTo(5L);
 
-        harness.dispatch(new PassiveDirectory(List.of(LEADER, SUCCESSOR, JOINED)));
+        OnDrainer.dispatch(harness, new PassiveDirectory(List.of(LEADER, SUCCESSOR, JOINED)));
 
         assertThat(manager.leader()).as("the refresh reads the committed record naming the new leader")
                                     .isEqualTo(Option.some(JOINED));
@@ -171,7 +171,7 @@ class PassiveEntryLeaderPullTest {
         startPassiveHolding(LEADER, 5);
         dropLeaderOutOfView();
 
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
 
         assertThat(manager.leader()).as("a refresh with no newer commit keeps the out-of-view leader dropped")
                                     .isEqualTo(Option.none());
@@ -200,7 +200,7 @@ class PassiveEntryLeaderPullTest {
         startDormant();
         commitDroppedWhileDormant(LEADER, 5);
 
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
         assertThat(manager.leader()).as("the stored view is empty at the entry: not admitted").isEqualTo(Option.none());
 
         link(LEADER, List.of(SELF, LEADER));
@@ -214,7 +214,7 @@ class PassiveEntryLeaderPullTest {
     @Test
     void passivePush_leaderAbsentFromStoredView_notAdopted() {
         startDormant();
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
         kvLeader.set(Option.some(leaderCommitted(LEADER, 5)));
 
         manager.onLeaderCommitted(LEADER, 5);
@@ -228,7 +228,7 @@ class PassiveEntryLeaderPullTest {
     @Test
     void passivePush_refusedOutOfView_nextViewWriteAdoptsTheRecord() {
         startDormant();
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
         kvLeader.set(Option.some(leaderCommitted(LEADER, 5)));
         manager.onLeaderCommitted(LEADER, 5);
         assertThat(manager.leader()).as("instrument: the push was refused out of view").isEqualTo(Option.none());
@@ -246,12 +246,12 @@ class PassiveEntryLeaderPullTest {
     void passivePush_refusedOutOfView_nodeGoneViewHoldingItAdoptsTheRecord() {
         startDormant();
         link(SUCCESSOR, List.of(SELF, SUCCESSOR));
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
         kvLeader.set(Option.some(leaderCommitted(LEADER, 5)));
         manager.onLeaderCommitted(LEADER, 5);
         assertThat(manager.leader()).as("instrument: the push was refused out of view").isEqualTo(Option.none());
 
-        harness.dispatch(new ClusterFsmEvent.NodeGone(SUCCESSOR, List.of(SELF, LEADER), viewSequence.incrementAndGet()));
+        OnDrainer.dispatch(harness, new ClusterFsmEvent.NodeGone(SUCCESSOR, List.of(SELF, LEADER), viewSequence.incrementAndGet()));
 
         assertThat(manager.leader()).isEqualTo(Option.some(LEADER));
         assertThat(changes).containsExactly(Option.some(LEADER));
@@ -264,10 +264,10 @@ class PassiveEntryLeaderPullTest {
         startDormant();
         link(LEADER, List.of(LEADER));
         kvLeader.set(Option.some(leaderCommitted(LEADER, 5)));
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
         assertThat(manager.leader()).as("instrument: adopted in view").isEqualTo(Option.some(LEADER));
 
-        harness.dispatch(new PeerRemovedFromView(LEADER));
+        OnDrainer.dispatch(harness, new PeerRemovedFromView(LEADER));
 
         assertThat(ctx.currentTopology()).as("instrument: the storage kept the last node").containsExactly(LEADER);
         assertThat(manager.leader()).as("a leader named failed is not re-admitted by the pull").isEqualTo(Option.none());
@@ -282,7 +282,7 @@ class PassiveEntryLeaderPullTest {
         kvLeader.set(Option.some(leaderCommitted(JOINED, 6)));
         manager.onLeaderCommitted(JOINED, 6);
 
-        harness.dispatch(new PassiveDirectory(List.of(SUCCESSOR, JOINED)));
+        OnDrainer.dispatch(harness, new PassiveDirectory(List.of(SUCCESSOR, JOINED)));
 
         assertThat(manager.leader()).as("the departed leader is cleared, then the committed one adopted")
                                     .isEqualTo(Option.some(JOINED));
@@ -298,13 +298,13 @@ class PassiveEntryLeaderPullTest {
         startDormant();
         link(SUCCESSOR, List.of(SELF, SUCCESSOR));
         kvLeader.set(Option.some(leaderCommitted(LEADER, 5)));
-        harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(harness, new ClusterFsmEvent.QuorumEstablished());
         assertThat(harness.state()).as("instrument: FIX 1 adopted the committed leader absent from the view")
                                    .isInstanceOf(LeaderElectionState.Led.class);
         assertThat(manager.leader()).as("instrument: Led holds it").isEqualTo(Option.some(LEADER));
         assertThat(ctx.currentTopology()).as("instrument: the stored view lacks it").doesNotContain(LEADER);
 
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
 
         assertThat(harness.state()).as("instrument").isInstanceOf(LeaderElectionState.Passive.class);
         assertThat(manager.leader()).as("Passive does not hold a leader absent from its stored view")
@@ -320,7 +320,7 @@ class PassiveEntryLeaderPullTest {
     private void startPassiveHolding(NodeId leader, long sequence) {
         startLinked();
         kvLeader.set(Option.some(leaderCommitted(leader, sequence)));
-        harness.dispatch(new PassiveDirectory(CORES));
+        OnDrainer.dispatch(harness, new PassiveDirectory(CORES));
         manager.onLeaderCommitted(leader, sequence);
         assertThat(manager.leader()).as("instrument: setup adopted").isEqualTo(Option.some(leader));
         assertThat(ctx.adoptedViewSequence()).as("instrument: setup sequence").isEqualTo(sequence);
@@ -346,7 +346,7 @@ class PassiveEntryLeaderPullTest {
     }
 
     private void link(NodeId node, List<NodeId> topology) {
-        harness.dispatch(new ClusterFsmEvent.NodeAdded(node, topology, viewSequence.incrementAndGet()));
+        OnDrainer.dispatch(harness, new ClusterFsmEvent.NodeAdded(node, topology, viewSequence.incrementAndGet()));
     }
 
     private void startDormant() {

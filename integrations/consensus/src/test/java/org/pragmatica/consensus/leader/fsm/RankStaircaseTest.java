@@ -92,10 +92,10 @@ class RankStaircaseTest {
         var kvLeader = new AtomicReference<>(Option.<NodeId>none());
         var h = buildHarness(NODE_1, Option.some(trackingHandler), kvLeader);
 
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_1, CLUSTER, seq()));
-        h.dispatch(new ConsensusReady());
-        h.dispatch(new KvSyncGraceTimeout());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(NODE_1, CLUSTER, seq()));
+        OnDrainer.dispatch(h, new ConsensusReady());
+        OnDrainer.dispatch(h, new KvSyncGraceTimeout());
         assertThat(h.state())
                 .as("FSM in Electing after AwaitingKvSync grace fall-through")
                 .isInstanceOf(LeaderElectionState.Electing.class);
@@ -112,7 +112,7 @@ class RankStaircaseTest {
                 .as("proposal candidate is the rank-0 node (lowest in sorted cluster)")
                 .isEqualTo(NODE_1);
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     /// rank=4 (NODE_5) does NOT propose for `baseElectionDelay + 4*perRankDelay = 50ms + 800ms
@@ -129,10 +129,10 @@ class RankStaircaseTest {
         var kvLeader = new AtomicReference<>(Option.<NodeId>none());
         var h = buildHarness(NODE_5, Option.some(trackingHandler), kvLeader);
 
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_5, CLUSTER, seq()));
-        h.dispatch(new ConsensusReady());
-        h.dispatch(new KvSyncGraceTimeout());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(NODE_5, CLUSTER, seq()));
+        OnDrainer.dispatch(h, new ConsensusReady());
+        OnDrainer.dispatch(h, new KvSyncGraceTimeout());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Electing.class);
 
         // First tick on rank=4 is scheduled at 850ms. A peer commits leader BEFORE then by
@@ -143,7 +143,7 @@ class RankStaircaseTest {
         // sequence-gated Electing arm then adopts and cancels the pending tick in Electing.onExit.
         Thread.sleep(100);
         ((LeaderElectionState) h.state()).ctx().observeViewSequence(1L);
-        h.dispatch(new LeaderCommitted(NODE_1));
+        OnDrainer.dispatch(h, new LeaderCommitted(NODE_1));
 
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(NODE_1);
@@ -157,7 +157,7 @@ class RankStaircaseTest {
                     + "no proposal was ever submitted")
                 .isZero();
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     /// Symmetric coverage for `ReElecting`: re-election after a leader is lost ALSO uses the
@@ -177,14 +177,14 @@ class RankStaircaseTest {
 
         // Drive into Led first so hasEverHadLeader=true (puts the AwaitingKvSync fall-through
         // on the ReElecting path, not Electing).
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_5, CLUSTER, seq()));
-        h.dispatch(new LeaderCommitted(NODE_1));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(NODE_5, CLUSTER, seq()));
+        OnDrainer.dispatch(h, new LeaderCommitted(NODE_1));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
 
         // Drop the leader: a NodeGone for the current leader transitions Led → ReElecting.
         var topologyAfterLoss = List.of(NODE_2, NODE_3, NODE_4, NODE_5);
-        h.dispatch(new ClusterFsmEvent.NodeGone(NODE_1, topologyAfterLoss, seq()));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeGone(NODE_1, topologyAfterLoss, seq()));
         assertThat(h.state())
                 .as("Led → ReElecting on loss of the current leader")
                 .isInstanceOf(LeaderElectionState.ReElecting.class);
@@ -195,7 +195,7 @@ class RankStaircaseTest {
         // observed post-death sequence (1) > baseline — the sequence-gated ReElecting arm adopts.
         Thread.sleep(100);
         ((LeaderElectionState) h.state()).ctx().observeViewSequence(1L);
-        h.dispatch(new LeaderCommitted(NODE_2));
+        OnDrainer.dispatch(h, new LeaderCommitted(NODE_2));
 
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(NODE_2);
@@ -209,7 +209,7 @@ class RankStaircaseTest {
                     + "tick when peer-committed leader observed")
                 .isZero();
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     /// Edge case: rank-0 dead. rank-1 (NODE_2) proposes after `baseElectionDelay + 1*perRankDelay
@@ -249,10 +249,10 @@ class RankStaircaseTest {
                     return ctx.dormant();
                 });
 
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(NODE_2, survivingCluster, seq()));
-        h.dispatch(new ConsensusReady());
-        h.dispatch(new KvSyncGraceTimeout());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(NODE_2, survivingCluster, seq()));
+        OnDrainer.dispatch(h, new ConsensusReady());
+        OnDrainer.dispatch(h, new KvSyncGraceTimeout());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Electing.class);
 
         // NODE_2 is rank-0 in the surviving cluster (NODE_1 absent). first-tick = 50ms.
@@ -268,6 +268,6 @@ class RankStaircaseTest {
                 .isEqualTo(1);
         assertThat(lastCandidate.get()).isEqualTo(NODE_2);
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 }
