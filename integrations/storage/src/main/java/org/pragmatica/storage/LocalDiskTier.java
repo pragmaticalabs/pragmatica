@@ -571,12 +571,15 @@ public final class LocalDiskTier implements StorageTier {
         return readerOverride.fold(() -> readBlockDefault(id), reader -> reader.apply(id));
     }
 
+    /// None when no regular file is at the block path, including one deleted while it was being read: a check followed by a
+    /// read would fail for a block a delete removes between the two, so the read is the one operation and its failure is
+    /// told apart from absence afterwards (#3594), as [#statFile] does.
     private Result<Option<byte[]>> readBlockDefault(BlockId id) {
         var path = blockPath(id);
 
-        return FileOps.exists(path)
-               ? FileOps.readBytes(path).map(Option::some)
-               : Result.success(none());
+        return FileOps.readBytes(path)
+                      .fold(cause -> absentOr(path, cause),
+                            content -> Result.success(some(content)));
     }
 
     private Result<Unit> writeBlock(BlockId id, byte[] content) {

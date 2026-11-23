@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /// [LocalDiskTier#get] when the block file is gone by the time it is read (#3594). A delete lands at any moment of a read; a
 /// block that is not there is absent, never a read failure, as `stat` and `touch` already answer. The reclaim of a displaced
@@ -56,6 +58,28 @@ class LocalDiskTierReadVanishTest {
         churn.join();
 
         assertThat(failures.get()).as("reads of a block deleted under them that failed").isZero();
+    }
+
+    /// Control: the fix tells a vanished file from a broken read by the path afterwards. A regular file that is there and cannot
+    /// be read is still a failure, and a block that is there is still read.
+    @Test
+    void aRegularFileThatCannotBeRead_isStillAReadFailure_andAReadableOneIsRead() throws IOException {
+        var id = BlockId.blockId("held".getBytes()).unwrap();
+        var tier = LocalDiskTier.localDiskTier(dir, 1 << 20).unwrap();
+        var hex = id.hexString();
+        var file = dir.resolve(hex.substring(0, 2)).resolve(hex.substring(2, 4)).resolve(hex);
+
+        tier.put(id, "held".getBytes()).await().unwrap();
+        assertThat(tier.get(id).await().unwrap().or(() -> new byte[0])).isEqualTo("held".getBytes());
+
+        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("---------"));
+        try {
+            assumeFalse(Files.isReadable(file), "the user running the test reads any file (root)");
+
+            assertThat(tier.get(id).await().isFailure()).isTrue();
+        } finally {
+            Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));
+        }
     }
 
     private static void churn(LocalDiskTier tier, BlockId id, byte[] content, AtomicBoolean done) {
