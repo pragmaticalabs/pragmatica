@@ -1507,7 +1507,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// ```tla LeaderAdmission:L_Tick
     /// \* I3, local mode: a leaderless electing state's tick commits the first node of the stored view and adoptLocalCommit
     /// \* admits it (in view, no sequence gate; the mutant "seqgatelocal" puts it behind the cluster gate local mode never
-    /// \* passes); Led's local entry runs the I2 site, which keeps it (the view is read in the same step).
+    /// \* passes); Led's local entry (leftTheViewOnLocalEntry) keeps it (the view is read in the same step).
     /// L_Tick == /\ Local
     ///           /\ st = "electing"
     ///           /\ view # {}

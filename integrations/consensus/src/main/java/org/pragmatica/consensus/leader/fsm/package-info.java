@@ -21,8 +21,17 @@
 /// while the electorate votes, and the model drops that leader at once, so `VotingInView` is claimed for pre-vote
 /// disabled only; modelling it is #3589); the local view path's election (`LeaderManager`
 /// `electLocallyIfPossible`: I3 is claimed from ticks alone); `QuorumLost` (its entry clears the
-/// leader); `Passive` re-entry; and, without the fix `serial`, every handler but the push's admission stays one
-/// atomic step.
+/// leader); `Passive` re-entry; the lease trip (`LeaderSilent`, `LeaderElectionState` LES:574 -> 631-649 ->
+/// `loseLeader` LES:766: `Led` -> `ReElecting` for a leader that is still in the view; it only drops a held leader, as
+/// the model's out-of-view loss already does, and `ReElecting` is a state the model enters, so it carries no leader
+/// into a state the model checks); `QuorumWaiting` -> `Dormant` (`QuorumDisappeared`, LES:203) and `Dormant` ->
+/// `QuorumWaiting` (`QuorumEstablished`, LES:116) (neither state holds a leader, so no leader crosses either edge);
+/// the `LeaderManager` `reconnectPeer` view write (`LeaderManager` LM:633, `context.applyTopology` with no dispatch,
+/// taken only when `restoresTheView` (LM:639-645) is false, i.e. the reconnect's view is content-equal to the stored
+/// one: it moves only the sequence fence, never the content, so no I1/I2 decision changes; the only reachable
+/// difference is a `Led` holding a FIX-1 out-of-view leader (`cluster` mode) across the sequence bump, which is benign
+/// for `VotingInView`; a view whose content differs is dispatched to the FSM and modelled as `V_View`); and,
+/// without the fix `serial`, every handler but the push's admission stays one atomic step.
 ///
 /// ```tla LeaderAdmission:head
 /// EXTENDS Naturals, FiniteSets
@@ -102,8 +111,10 @@
 /// HiNext(S, q) == IF q > hi[2] THEN <<S, q>> ELSE hi
 /// RemovedNext(q) == IF q > hi[2] THEN {} ELSE removed
 ///
-/// \* holdLeaderToView then dropObservedLeader / loseLeader (dispatched synchronously, Fsm.dispatch): the held leader
-/// \* is lost iff it is absent from the stored view or named failed by the removal.
+/// \* The I2 site: holdLeaderToView after a view write (storeView, storeRemoval), then dropObservedLeader / loseLeader
+/// \* (dispatched synchronously, Fsm.dispatch); Passive's entry (dropLeaderOutOfViewOnEntry) and Led's local entry
+/// \* (leftTheViewOnLocalEntry, a follow-up LeaderOutOfView) apply the same predicate without a view write: the held
+/// \* leader is lost iff it is absent from the stored view or named failed by the removal.
 /// Lost(v, l, nf) == l # None /\ (l \notin v \/ l = nf) /\ ~Mut("nohold")
 ///
 /// \* observeCommittedLeader's gate (#3581): a real commit not older than the adopted one (an equal one only for the
