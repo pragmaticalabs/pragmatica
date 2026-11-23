@@ -133,6 +133,47 @@ want rows-error-never-distinct-from-a-pass "" "$(cell Fix broken distinct)"
 run rows-liveness-control 0 - small < <(live fail Done)
 want rows-liveness-actual fail "$(cell Fix live actual)"
 want rows-liveness-verdict OK "$(cell Fix live verdict)"
+# Resource guard (check.sh exit 75): a disk threshold of 0 percent is always crossed, so TLC is killed at the first check; that
+# reads RESOURCE (red, actual=error), never a pass or a fail, with the guard line as the note, and leaves no states dir behind.
+TLA_DISK_MAX=0 run guard-kill-reads-RESOURCE nonzero '^RESOURCE Fix/ok expect=pass got=resource RESOURCE-GUARD: killed TLC: disk [0-9]+%' small < <(rows pass - fail Small pass - | grep -v broken)
+want guard-kill-actual-error error "$(cell Fix ok actual)"
+want guard-kill-verdict RESOURCE "$(cell Fix ok verdict)"
+want guard-kill-leaves-no-states-dir 0 "$(find "$work/out" -type d -name 'run[0-9]*' | wc -l | tr -d ' ')"
+TLA_DISK_MAX=0 run guard-kill-never-satisfies-a-fail-row nonzero '^RESOURCE Fix/bad expect=fail got=resource' small < <(rows pass - fail Small pass - | grep -v broken)
+TLA_DISK_MAX=abc run guard-knob-not-a-number-is-an-error nonzero 'must be whole numbers' small < <(rows pass - fail Small pass - | grep -v broken)
+# check.sh itself, with a stub `java` that ignores TERM, creates its -metadir with a file in it and sleeps: the kill must
+# escalate to KILL, take only that PID, remove the run's states dir and exit 75; a TERM to check.sh must take TLC down too.
+mkdir -p "$work/stub"; cat > "$work/stub/java" <<'STUB'
+#!/usr/bin/env bash
+echo $$ > "$STUB_PID"
+while [[ $# -gt 0 ]]; do [[ $1 == -metadir ]] && { mkdir -p "$2" && echo x > "$2/f"; }; shift; done
+trap '' TERM
+while :; do sleep 1; done
+STUB
+chmod +x "$work/stub/java"
+stubcheck() { # stubcheck <out> <env assignments...>: run check.sh on the fixture with the stub java, under a 60 s cap
+  local o=$1; shift
+  rm -rf "$work/sc"; mkdir -p "$work/sc"
+  ( cd "$work" && env PATH="$work/stub:$PATH" STUB_PID="$work/stub.pid" TLA_OUT="$work/sc" TLA_GUARD_SECS=1 "$@" timeout 60 bash "$here/check.sh" Fix ok src > "$o" 2>&1 ); }
+alive() { kill -0 "$(cat "$work/stub.pid")" 2>/dev/null && echo alive || echo dead; }
+t0=$(date +%s); stubcheck "$work/sc.out" TLA_DISK_MAX=0; rc=$?; secs=$(( $(date +%s) - t0 ))
+want guard-kill-exit-code-75 75 "$rc"
+want guard-kill-escalates-to-KILL-after-10s dead "$(alive)"
+want guard-kill-prints-the-line 1 "$(grep -cE '^RESOURCE-GUARD: killed TLC: disk [0-9]+%$' "$work/sc.out")"
+want guard-kill-line-is-in-the-log 1 "$(grep -c '^RESOURCE-GUARD' "$work/sc/Fix_ok.log")"
+want guard-kill-removes-the-states-dir 0 "$(find "$work/sc" -path '*states*' | wc -l | tr -d ' ')"
+want guard-kill-takes-about-ten-seconds-not-the-whole-cap 1 "$([[ $secs -lt 40 ]] && echo 1 || echo 0)"
+# the boundary is >= : a limit equal to the current usage kills
+pct=$(df -P "$work" | awk 'NR == 2 { gsub("%", "", $5); print $5 }')
+stubcheck "$work/sc.out" TLA_DISK_MAX="$pct"; want guard-disk-limit-equal-to-usage-kills 75 "$?"
+[[ -r /proc/meminfo ]] && { stubcheck "$work/sc.out" TLA_MEM_MIN_MB=99999999; want guard-memory-floor-above-available-kills 75 "$?"
+  want guard-memory-line-names-MemAvailable 1 "$(grep -cE '^RESOURCE-GUARD: killed TLC: MemAvailable [0-9]+ MB$' "$work/sc.out")"; }
+# a TERM to check.sh (run.sh's timeout) takes the TLC it started down with it and removes the states dir
+rm -rf "$work/sc"; mkdir -p "$work/sc"
+( cd "$work" && exec env PATH="$work/stub:$PATH" STUB_PID="$work/stub.pid" TLA_OUT="$work/sc" TLA_DISK_MAX=101 TLA_MEM_MIN_MB=0 bash "$here/check.sh" Fix ok src > "$work/sc.out" 2>&1 ) & cpid=$!
+sleep 5; kill -TERM "$cpid"; wait "$cpid"; want term-to-check-exits-143 143 "$?"
+want term-to-check-kills-its-tlc dead "$(alive)"
+want term-to-check-removes-the-states-dir 0 "$(find "$work/sc" -path '*states*' | wc -l | tr -d ' ')"
 # a results file with another header is refused, never appended to
 printf 'commit\tother\n' > "$work/foreign.tsv"
 out=$(cd "$work" && MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out2" TLA_RESULTS="$work/foreign.tsv" bash "$here/run.sh" small Fix 2>&1); rc=$?

@@ -222,9 +222,16 @@ while any of the three disagrees or a job downloads from anywhere else. Re-run t
 
 Environment: `TLA_JAR` (default `~/tools/tla/tla2tools.jar`), `TLC_WORKERS`, `TLC_OPTS`, `TLA_OUT` (default
 `target/tla/<Module>` for `check.sh`, `target/tla` for `run.sh`), `TLC_CONST` (`check.sh`: space-separated
-`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it), `PINS_TSV` (`run.sh`: a different pinned-counts table). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
+`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options), `TLA_DISK_MAX`, `TLA_MEM_MIN_MB`, `TLA_GUARD_SECS` (`check.sh`: the resource guard, below), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it), `PINS_TSV` (`run.sh`: a different pinned-counts table). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
 is `<out>/<Module>_<Variant>.log`; the console gets the verdict, the counterexample as actions with their Java
 positions, and the state counts.
+
+**Resource guard** (`check.sh`, so every run has it): TLC runs in the background and is checked every `TLA_GUARD_SECS` (10)
+seconds. It is killed (TERM, then KILL after 10 s; only the PID `check.sh` started) when the filesystem holding the output dir is
+at or above `TLA_DISK_MAX` percent (default 90) or `MemAvailable` is below `TLA_MEM_MIN_MB` (default 2048; Linux `/proc/meminfo`
+only). `check.sh` prints `RESOURCE-GUARD: killed TLC: disk N%` (or `MemAvailable M MB`), removes the run's states dir and exits 75;
+`run.sh` records the row as verdict `RESOURCE` (actual `error`, red): a guard kill is never a pass or a fail, and `results-check.py`
+accepts and names it. Re-run on a freer host; never read it as a model result.
 
 Run TLC on a build host, not on a laptop: a model with two keys, two scopes and four acquires has tens of millions
 of states.

@@ -9,12 +9,12 @@ subject of a later PR.)
 
 Red (exit 1, one `file:line: RED ...` per row): a header other than run.sh's; a row that is not 13 tab-separated columns or
 has a malformed value; a row whose verdict contradicts its own columns (OK with an actual other than the expected one;
-ERROR without actual=error or the reverse; SKIPPED-HEAVY without actual=skipped, profile small and empty violated and
+ERROR or RESOURCE without actual=error or the reverse; SKIPPED-HEAVY without actual=skipped, profile small and empty violated and
 distinct, or the reverse); a commit that is not in the repository or is not an ancestor of head; a row made on a dirty tree
 (its commit does not name the code that ran); a commit recorded as `none` (the run was outside a git repository).
 
 Named, not red (one `file:line: NOTE ...` per row): a SKIPPED-HEAVY row (a heavy config the small profile did not run: it is
-never a pass) and a RED or ERROR row (the evidence records a failing config; the check verifies provenance, not health).
+never a pass) and a RED, ERROR or RESOURCE row (a RESOURCE row is a TLC run the resource guard killed: no verdict; the evidence records a failing config; the check verifies provenance, not health).
 The last line tallies the verdicts of the rows checked, so a skipped row is never folded into a pass count.
 Exit 2: an unusable invocation (unknown revision, missing file).
 
@@ -39,7 +39,7 @@ VALID = {
     'violated': re.compile(r'^(?:[A-Za-z][A-Za-z0-9_]*)?$'),
     'distinct': re.compile(r'^\d*$'),
     'tlc': re.compile(r'^[^\t]*$'),
-    'verdict': re.compile(r'^(?:OK|RED|ERROR|SKIPPED-HEAVY)$'),
+    'verdict': re.compile(r'^(?:OK|RED|ERROR|RESOURCE|SKIPPED-HEAVY)$'),
     'constants': re.compile(r'^[^\t]*$'),
 }
 
@@ -106,8 +106,8 @@ def check(repo, path, base, head):
         contradiction = None
         if skipped != (row['actual'] == 'skipped') or (skipped and (row['profile'] != 'small' or row['violated'] or row['distinct'])):
             contradiction = 'SKIPPED-HEAVY needs actual=skipped, profile small and no violated property or state count (and the reverse)'
-        elif (row['verdict'] == 'ERROR') != (row['actual'] == 'error'):
-            contradiction = f'verdict {row["verdict"]} with actual {row["actual"]}: ERROR and actual=error go together'
+        elif (row['verdict'] in ('ERROR', 'RESOURCE')) != (row['actual'] == 'error'):
+            contradiction = f'verdict {row["verdict"]} with actual {row["actual"]}: ERROR or RESOURCE and actual=error go together'
         elif row['verdict'] == 'OK' and row['actual'] != row['expect']:
             contradiction = f'verdict OK but actual {row["actual"]} is not the expected {row["expect"]}'
         if contradiction:
@@ -152,7 +152,7 @@ def main():
         sys.exit(2)
     for l in red + notes:
         print(l)
-    counts = ', '.join(f'{v} {tally.get(v, 0)}' for v in ('OK', 'RED', 'ERROR', 'SKIPPED-HEAVY'))
+    counts = ', '.join(f'{v} {tally.get(v, 0)}' for v in ('OK', 'RED', 'ERROR', 'RESOURCE', 'SKIPPED-HEAVY'))
     print(f'results-check: {"RED" if red else "GREEN"} {len(red)} bad of {count} rows checked in {a.file}; accepted rows by verdict: {counts}')
     sys.exit(1 if red else 0)
 
