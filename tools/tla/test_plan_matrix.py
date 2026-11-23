@@ -78,6 +78,19 @@ class PlanMatrix(unittest.TestCase):
         rc, _, err = plan('Alpha\trootA\tcode\tpass\n', '--event', 'push')
         self.assertEqual(rc, 2, err)
 
+    def test_a_row_one_column_short_of_the_seven_is_an_error_and_seven_is_not(self):
+        # models.tsv columns: module root variant expect property small what; run.sh reads all seven
+        rc, _, err = plan('Alpha\trootA\tcode\tpass\t-\t-\n', '--event', 'push')
+        self.assertEqual(rc, 2, err)
+        self.assertIn('row with 6 columns', err)
+        self.assertEqual(plan('Alpha\trootA\tcode\tpass\t-\t-\twhat\n', '--event', 'push')[0], 0)
+
+    def test_a_module_with_two_source_roots_is_an_error_naming_the_module(self):
+        # run.sh takes the first row's root for the whole module; a second root would be ignored, so it is refused
+        rc, out, err = plan('Alpha\trootA\tcode\tpass\t-\t-\tw\nAlpha\trootB\tbad\tfail\tP\t-\tw\n', '--event', 'push')
+        self.assertEqual((rc, out), (2, ''), err)
+        self.assertIn('module Alpha has two source roots', err)
+
     def test_real_models_tsv_every_module_is_a_small_shard_and_every_heavy_row_has_a_heavy_shard(self):
         real = os.path.join(HERE, 'models.tsv')
         rows = [l.split('\t') for l in open(real) if l.strip() and not l.lstrip().startswith('#')]

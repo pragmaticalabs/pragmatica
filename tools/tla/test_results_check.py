@@ -235,5 +235,32 @@ class ResultsCheck(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn('is not an ancestor of', out)
 
+    # the profile column holds every profile run.sh accepts: small, full, sim, heavy (a heavy run writes profile=heavy)
+    def test_a_row_of_the_heavy_profile_is_green_for_pass_fail_and_error(self):
+        c0 = self.commit()
+        self.commit(self.table(row(c0, profile='heavy', variant='a'),
+                               row(c0, profile='heavy', variant='b', expect='fail', actual='fail', violated='Agreement'),
+                               row(c0, profile='heavy', variant='c', actual='error', distinct='', verdict='ERROR'),
+                               row(c0, profile='full', variant='d'), row(c0, profile='sim', variant='e')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('malformed', out)
+        self.assertIn('GREEN 0 bad of 5 rows', out)
+
+    def test_a_profile_run_sh_does_not_know_is_still_malformed(self):
+        c0 = self.commit()
+        self.commit(self.table(row(c0, profile='huge')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('malformed value in column profile', out)
+
+    def test_a_heavy_profile_row_cannot_claim_skipped_heavy(self):
+        c0 = self.commit()
+        self.commit(self.table(self.skipped_row(c0, profile='heavy')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('SKIPPED-HEAVY needs actual=skipped', out)
+
+
 if __name__ == '__main__':
     unittest.main()

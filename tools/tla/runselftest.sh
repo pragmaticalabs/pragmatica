@@ -22,6 +22,7 @@ cat > "$work/src/Fix.java" <<'JAVA'
 /// Spec == Init /\ [][Next]_x
 /// Small == x <= 2
 /// Big == x <= 5
+/// Done == <>(x = 3)
 /// ```
 ///
 /// ```tlacfg Fix:common
@@ -44,14 +45,21 @@ cat > "$work/Broken.java.txt" <<'JAVA'
 /// ```
 class Broken {}
 JAVA
+cat > "$work/Live.java.txt" <<'JAVA'
+/// ```tlacfg Fix:live
+/// PROPERTY Done
+/// ```
+class Live {}
+JAVA
 rows() { # rows <ok-expect> <ok-prop> <bad-expect> <bad-prop> <broken-expect> <broken-prop>
   printf 'Fix\tsrc\tok\t%s\t%s\t-\tx\nFix\tsrc\tbad\t%s\t%s\t-\tx\nFix\tsrc\tbroken\t%s\t%s\t-\tx\n' "$@"; }
 fail=0
 run() { # run <name> <want-exit: 0|nonzero> <pattern or -> <profile> <tsv rows via stdin>
   local name=$1 want=$2 pattern=$3 profile=$4 out rc
   cat > "$work/models.tsv"
-  rm -f "$work/src/Broken.java"; rm -rf "$work/out"   # a config extracted by an earlier case must not reach this one
+  rm -f "$work/src/Broken.java" "$work/src/Live.java"; rm -rf "$work/out"   # a config extracted by an earlier case must not reach this one
   if grep -q broken "$work/models.tsv" || [[ ${KEEP_BROKEN:-} == 1 ]]; then cp "$work/Broken.java.txt" "$work/src/Broken.java"; fi
+  if grep -qF $'\tlive\t' "$work/models.tsv"; then cp "$work/Live.java.txt" "$work/src/Live.java"; fi
   printf '%b' "${PINS:-}" > "$work/pins.tsv"
   out=$(cd "$work" && MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out" TLC_WORKERS=1 SIM_SECONDS=3 SIM_TRACES=2000 bash "$here/run.sh" "$profile" 'Fix' "${VARIANTS:-.*}" 2>&1); rc=$?
   if { [[ $want == 0 && $rc == 0 ]] || [[ $want == nonzero && $rc != 0 ]]; } && { [[ $pattern == - ]] || grep -qE "$pattern" <<<"$out"; }; then
@@ -68,6 +76,10 @@ run tlc-error-never-satisfies-fail-row nonzero '^ERROR Fix/broken expect=fail go
 KEEP_BROKEN=1 run missing-row-is-red nonzero 'configs and models.tsv rows differ' small < <(rows pass - fail Small pass - | grep -v 'Fix.src.broken')
 run fail-row-without-property nonzero 'need expect pass.fail' small < <(rows pass - fail - pass - | grep -v broken)
 run sim-known-bad-must-still-fail nonzero '^RED Fix/bad expect=pass got=fail' sim < <(rows pass - pass - pass - | grep -v broken)
+# Liveness (#3593 survivors S6/S14): Fix/live names the temporal property Done, which stuttering violates (no fairness), so TLC
+# exits 13, not 12; that exit must read as a violation, not as a TLC error.
+live() { { rows pass - fail Small pass - | grep -v broken; printf 'Fix\tsrc\tlive\t%s\t%s\t-\tx\n' "$@"; }; }
+run liveness-exit-13-satisfies-a-known-bad-row 0 '^OK Fix/live expect=fail got=fail' small < <(live fail Done)
 # Pinned counts: Fix/ok reaches x = 0..3, four distinct states.
 PINS='Fix\tok\tsmall\t4\tx\n' run pinned-count-holds 0 '^OK Fix/ok expect=pass got=pass pinned=4 ' small < <(rows pass - fail Small pass - | grep -v broken)
 PINS='Fix\tok\tsmall\t5\tx\n' run pinned-count-differs-is-red nonzero '^RED Fix/ok expect=pass got=pass pinned=5 found=4' small < <(rows pass - fail Small pass - | grep -v broken)
@@ -92,6 +104,12 @@ run heavy-row-skipped-line-counts-in-summary 0 'configs=1 skipped-heavy=1 ' smal
 run heavy-profile-runs-the-heavy-row-and-it-is-red nonzero '^RED Fix/bad expect=pass got=fail' heavy < <(heavybad)
 run heavy-profile-runs-only-heavy-rows nonzero 'configs=1 skipped-heavy=0 .*RED' heavy < <(heavybad)
 run full-profile-runs-heavy-rows-as-written nonzero '^RED Fix/bad expect=pass got=fail' full < <(heavybad)
+# the heavy profile reads the pins of profile full (it runs as written, like full); Fix/ok is marked heavy and reaches four states
+heavyok() { rows pass - fail Small pass - | grep -v broken | awk -F'\t' -v OFS='\t' '$3 == "ok" { $6 = "heavy" } 1'; }
+PINS='Fix\tok\tfull\t4\tx\n' run heavy-profile-reads-the-full-pin-and-it-holds 0 '^OK Fix/ok expect=pass got=pass pinned=4 ' heavy < <(heavyok)
+PINS='Fix\tok\tfull\t5\tx\n' run heavy-profile-reads-the-full-pin-and-it-differs-is-red nonzero '^RED Fix/ok expect=pass got=pass pinned=5 found=4' heavy < <(heavyok)
+# an unknown profile is refused before anything runs (exit 2), so a typo cannot read as an empty green run
+run unknown-profile-is-an-error nonzero 'profile must be small, full, sim or heavy' bogus < <(rows pass - fail Small pass - | grep -v broken)
 run heavy-profile-without-a-heavy-row-is-an-error nonzero 'no row marked heavy' heavy < <(rows pass - fail Small pass - | grep -v broken)
 # Evidence rows (#3584): one row per config that ran, with the actual verdict read from TLC's exit code, never from the expectation.
 run rows-control 0 'evidence rows in' small < <(rows pass - fail Small pass - | grep -v broken)
@@ -111,6 +129,10 @@ run rows-error nonzero - small < <(rows pass - fail Small pass -)
 want rows-error-actual error "$(cell Fix broken actual)"
 want rows-error-verdict ERROR "$(cell Fix broken verdict)"
 want rows-error-never-distinct-from-a-pass "" "$(cell Fix broken distinct)"
+# exit 13 (a violated temporal property) is a violation in the evidence row too (#3593 survivor S6), not an error
+run rows-liveness-control 0 - small < <(live fail Done)
+want rows-liveness-actual fail "$(cell Fix live actual)"
+want rows-liveness-verdict OK "$(cell Fix live verdict)"
 # a results file with another header is refused, never appended to
 printf 'commit\tother\n' > "$work/foreign.tsv"
 out=$(cd "$work" && MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out2" TLA_RESULTS="$work/foreign.tsv" bash "$here/run.sh" small Fix 2>&1); rc=$?

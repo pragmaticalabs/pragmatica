@@ -31,7 +31,7 @@ VALID = {
     'commit': re.compile(r'^(?:[0-9a-f]{40}|none)$'),
     'dirty': re.compile(r'^(?:clean|dirty|unknown)$'),
     'date': re.compile(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$'),
-    'profile': re.compile(r'^(?:small|full|sim)$'),
+    'profile': re.compile(r'^(?:small|full|sim|heavy)$'),   # every profile run.sh accepts (test_workflow.py compares the two lists)
     'module': re.compile(r'^[A-Za-z][A-Za-z0-9_]*$'),
     'variant': re.compile(r'^[A-Za-z][A-Za-z0-9_]*$'),
     'expect': re.compile(r'^(?:pass|fail)$'),
