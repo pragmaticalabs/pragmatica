@@ -170,7 +170,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // to flip.
             log.debug("Consensus engine not ready on entry — scheduling periodic re-check at {}ms",
                       POLL_INTERVAL.millis());
-            var future = SharedScheduler.scheduleAtFixedRate(ctx.serialized(() -> pollConsensusAndKv(ctx)), POLL_INTERVAL);
+            var future = SharedScheduler.scheduleAtFixedRate(ctx.serialized(() -> pollConsensusAndKv(ctx)),
+                                                             POLL_INTERVAL);
 
             pollFuture.set(future);
         }
@@ -1007,9 +1008,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// `Passive.onEntry`'s I2 check (#3587): the predicate of [#holdLeaderToView] with no named node, applied without an
     /// event: the stored leader absent from the stored view is dropped and its loss announced ([#dropObservedLeader]).
     private static void dropLeaderOutOfViewOnEntry(LeaderElectionContext ctx) {
-        ctx.storedLeader()
-           .filter(leader -> !isInStoredView(ctx, leader))
-           .onPresent(_ -> clearLeaderAndNotify(ctx));
+        ctx.storedLeader().filter(leader -> !isInStoredView(ctx, leader)).onPresent(_ -> clearLeaderAndNotify(ctx));
     }
 
     /// `Passive` side of the I2 site: the observed leader the site found absent from the stored view is dropped

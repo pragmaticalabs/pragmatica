@@ -625,7 +625,9 @@ public interface LeaderManager {
             // node. A lower node coming back is not a reason to move the leader; I3's election ticks cover a node that
             // holds no leader.
             if (restoresTheView(peerReconnected.nodeId(), peerReconnected.topology())) {
-                context.submit(nodeAdded(peerReconnected.nodeId(), peerReconnected.topology(), peerReconnected.sequence()));
+                context.submit(nodeAdded(peerReconnected.nodeId(),
+                                         peerReconnected.topology(),
+                                         peerReconnected.sequence()));
             } else {
                 context.applyTopology(nodeAdded(peerReconnected.nodeId(),
                                                 peerReconnected.topology(),
