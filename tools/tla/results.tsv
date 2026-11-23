@@ -254,3 +254,28 @@ a35b0a006a29af93c97f3f2f7369b2270a92a7b9	clean	2026-11-23T03:15:46Z	small	Fsm2Le
 380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:31Z	small	LeaderAdmission	readmitnoadseq	fail	fail	AdSeqMono	1633	2026.11.06.222357	OK	
 380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:33Z	small	LeaderAdmission	readmitstale	fail	fail	NoOlderAdoption	2025	2026.11.06.222357	OK	
 380d47fa7e4f0c8a7ded5d8d64f8c896611a7b73	clean	2026-11-23T23:03:34Z	small	LeaderAdmission	nokvseq	fail	fail	NoOlderAdoption	626	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:06:19Z	full	LeaderAdmission	pushfirst	pass	pass		23614	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:06:50Z	full	LeaderAdmission	removal	pass	pass		366760	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:07:08Z	full	LeaderAdmission	stale	pass	pass		107730	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:09:08Z	full	LeaderAdmission	passive	pass	pass		788894	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:10:53Z	full	LeaderAdmission	local	pass	pass		4373	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:10:55Z	full	LeaderAdmission	noentrypull	fail	fail	PassiveLearns	2798	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:10:56Z	full	LeaderAdmission	pushnoview	fail	fail	PassiveInView	315	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:10:57Z	full	LeaderAdmission	pullnoview	fail	fail	PassiveInView	58	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:10:59Z	full	LeaderAdmission	norepull	fail	fail	PassiveLearns	3086	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:11:00Z	full	LeaderAdmission	removalpull	fail	fail	NotNamedFailed	1252	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:11:02Z	full	LeaderAdmission	mutdropempty	fail	fail	I1	188	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:11:03Z	full	LeaderAdmission	mutnostale	fail	fail	I1	307	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:11:04Z	full	LeaderAdmission	mutnohold	fail	fail	VotingInView	262	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:11:05Z	full	LeaderAdmission	mutnoholdp	fail	fail	PassiveInView	611	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:11:06Z	full	LeaderAdmission	mutnoholdr	fail	fail	NotNamedFailed	445	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:11:07Z	full	LeaderAdmission	mutseqgate	fail	fail	LocalProgress	307	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:11:09Z	full	LeaderAdmission	interleave	fail	fail	PassiveInView	2291	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:11:11Z	full	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4784	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:11:13Z	full	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2906	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:11:15Z	full	LeaderAdmission	noentryhold	fail	fail	PassiveInView	376	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:15:56Z	full	LeaderAdmission	readmit	pass	pass		6877278	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:15:58Z	full	LeaderAdmission	readmitnoadseq	fail	fail	AdSeqMono	1376	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:16:00Z	full	LeaderAdmission	readmitstale	fail	fail	NoOlderAdoption	2099	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:16:02Z	full	LeaderAdmission	nokvseq	fail	fail	NoOlderAdoption	640	2026.11.06.222357	OK	
+f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:35:08Z	full	LeaderAdmission	voting	pass	pass		2264977	2026.11.06.222357	OK	
