@@ -130,9 +130,9 @@ class LeaderSerialDispatchCensusTest {
     }
 
     /// A drainer held by another thread until [HeldDrainer#release].
-    private record HeldDrainer(Thread holder, CountDownLatch release) {
+    private record HeldDrainer(Thread holder, CountDownLatch latch) {
         void release() throws InterruptedException {
-            release.countDown();
+            latch.countDown();
             holder.join(TimeUnit.SECONDS.toMillis(10));
             assertThat(holder.isAlive()).as("instrument: the holder finished draining").isFalse();
         }
