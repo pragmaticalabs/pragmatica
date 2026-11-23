@@ -22,6 +22,7 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.Fsm;
@@ -167,7 +168,7 @@ class LeaderHookFollowUpTest {
 
         router.addRoute(LeaderChange.class, LeaderHookFollowUpTest::ignoreChange);
         var fsm = Fsm.<LeaderElectionState, ClusterFsmEvent> fsm("leader-follow-up",
-                                                                 f -> context(f, router).dormant(),
+                                                                 f -> context(f, router, local).dormant(),
                                                                  recorder());
 
         return new FsmBackedLeaderManager(fsm,
@@ -223,8 +224,15 @@ class LeaderHookFollowUpTest {
 
     private static void ignoreChange(LeaderChange change) {}
 
-    private LeaderElectionContext context(Fsm<LeaderElectionState, ClusterFsmEvent> fsm, MessageRouter router) {
-        Option<LeaderProposalHandler> noHandler = Option.none();
+    /// Local mode is the absence of a proposal handler ([LeaderElectionContext#isLocalMode]); a cluster-mode node gets
+    /// one that never settles.
+    private LeaderElectionContext context(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                                          MessageRouter router,
+                                          boolean local) {
+        LeaderProposalHandler neverSettling = (_, _) -> Promise.promise();
+        var handler = local
+                      ? Option.<LeaderProposalHandler> none()
+                      : Option.some(neverSettling);
 
         return new LeaderElectionContext(fsm,
                                          SELF,
