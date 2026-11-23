@@ -5,6 +5,7 @@
 package org.pragmatica.aether.ember;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -107,7 +108,7 @@ class EmberLedgerLostTest {
 
     /// With the stray dead, one legitimate peer is not a majority of three seats once its own offer is set aside: B stays wiped and
     /// links to nobody. Fails closed; the safe remedy is a new node id (known-limitations).
-    @Test
+    @RepeatedTest(10)
     @Timeout(1200)
     void oneHoldersLedgerFileLost_withOnlyOneLegitPeerOfThreeSeats_staysWiped() {
         harness.start();
@@ -118,7 +119,22 @@ class EmberLedgerLostTest {
         harness.relaunch(harness.coreA);
         var restartedB = harness.relaunch(harness.observer);
 
-        IdentityRestartHarness.sleep(20_000L);
+        var startNs = System.nanoTime();
+        var lastCount = -1;
+
+        while (System.nanoTime() - startNs < 20_000_000_000L) {
+            var count = restartedB.connectedNodeCount();
+
+            if (count != lastCount) {
+                System.out.println("DIAG2772 t=" + (System.nanoTime() - startNs) / 1_000_000L + "ms B.connectedNodeCount=" + count
+                                   + " B.connectedPeerIds=" + restartedB.connectedPeerIds()
+                                   + " B.refusals=" + IdentityRestartHarness.refusals(restartedB)
+                                   + " ledgerRetires=" + harness.ledgerRetires(harness.observer, harness.retired));
+                lastCount = count;
+            }
+
+            IdentityRestartHarness.sleep(50L);
+        }
 
         assertThat(restartedB.connectedNodeCount()).as("one peer is no majority without its own offer: B links to nobody").isZero();
         assertThat(harness.ledgerRetires(harness.observer, harness.retired)).as("and its ledger file stays missing").isFalse();
