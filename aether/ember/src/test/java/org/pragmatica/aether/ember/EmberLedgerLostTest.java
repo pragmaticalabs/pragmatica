@@ -129,11 +129,11 @@ class EmberLedgerLostTest {
     @RepeatedTest(20)
     @Timeout(1200)
     void oneHoldersLedgerFileLost_withOnlyOneLegitPeerOfThreeSeats_staysWiped() {
+        startLoad(48);
         harness.start();
         harness.retireXAtBothHolders();
         harness.killBothHolders();
         harness.deleteLedgerFile(harness.observer);
-        startLoad(32);
 
         harness.relaunch(harness.coreA);
         var restartedB = harness.relaunch(harness.observer);
