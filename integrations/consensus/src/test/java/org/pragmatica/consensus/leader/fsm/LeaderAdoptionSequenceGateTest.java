@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// Leader-adoption gating (FIX 1 + FIX-1 refinement). Adoption of a COMMITTED `LeaderKey` is:
 ///   - **sequence-gated WITHIN an election** (`Electing` / `ReElecting`): a node that decided to
@@ -59,7 +60,7 @@ class LeaderAdoptionSequenceGateTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         () -> true,
-                                                        kvLeader::get,
+                                                        () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                         LONG,
                                                         LONG);
                     return ctx.dormant();
@@ -85,6 +86,9 @@ class LeaderAdoptionSequenceGateTest {
         var h = harness(new AtomicReference<>(Option.<NodeId>none()));
         var ctx = ctxOf(h);
         var manager = new org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager(ctx.fsm(), ctx, false);
+        // #3581: the excluded core is a passive observer, which adopts a committed leader only while its stored view
+        // holds it, so the transport view names the cluster first.
+        h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, List.of(SELF, LEADER, SUCCESSOR), seq()));
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         manager.onLeaderCommitted(LEADER, 5);
         assertThat(manager.leader()).isEqualTo(Option.some(LEADER));

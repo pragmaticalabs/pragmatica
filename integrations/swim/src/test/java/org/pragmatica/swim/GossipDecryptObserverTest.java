@@ -3,9 +3,9 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.Test;
@@ -14,12 +14,15 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.testing.PollUntil.pollUntil;
+import static org.pragmatica.utility.warning.OperatorWarning.operatorWarning;
 
 /// #1200 — the seed-side operator event for a peer that gossips under a key this node does not hold, and its recovery.
 class GossipDecryptObserverTest {
     private static final InetSocketAddress STRANDED = new InetSocketAddress("10.0.0.7", 7000);
     private static final InetSocketAddress STRANDED_OTHER_PORT = new InetSocketAddress("10.0.0.7", 7999);
     private static final InetSocketAddress OTHER = new InetSocketAddress("10.0.0.8", 7000);
+    private static final String BARRIER_SUBJECT = "hand-off-barrier";
 
     private final List<OperatorWarning> published = new CopyOnWriteArrayList<>();
     private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(published::add);
@@ -67,7 +70,7 @@ class GossipDecryptObserverTest {
         observer.decrypted(STRANDED);
 
         awaitPublished(2);
-        Thread.sleep(200);
+        awaitHandedOff();
 
         assertThat(published).extracting(OperatorWarning::subject).containsExactly("10.0.0.7:7000", "10.0.0.7:7000");
         assertThat(published).extracting(OperatorWarning::code)
@@ -132,7 +135,7 @@ class GossipDecryptObserverTest {
         }
 
         awaitPublished(GossipDecryptObserver.Reporting.MAX_NEW_SENDERS_PER_WINDOW);
-        Thread.sleep(300);
+        awaitHandedOff();
 
         assertThat(published).as("the window budget, not 10,000")
                              .hasSize(GossipDecryptObserver.Reporting.MAX_NEW_SENDERS_PER_WINDOW)
@@ -171,7 +174,7 @@ class GossipDecryptObserverTest {
         clock.addAndGet(GossipDecryptObserver.Reporting.WINDOW_MILLIS + 1);
         quiet.unknownKey(spoofed(100), 1);
         awaitPublished(6);
-        Thread.sleep(300);
+        awaitHandedOff();
 
         assertThat(published).hasSize(6).extracting(OperatorWarning::code).containsOnly(OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER);
     }
@@ -196,8 +199,7 @@ class GossipDecryptObserverTest {
 
         var before = windows * GossipDecryptObserver.Reporting.MAX_NEW_SENDERS_PER_WINDOW;
 
-        awaitPublished(Math.min(before, OperatorWarningSink.HAND_OFF_CAPACITY));
-        Thread.sleep(300);
+        awaitAllAccountedFor(before);
         var raised = published.size();
 
         bounded.unknownKey(spoofed(0), 1);
@@ -228,7 +230,7 @@ class GossipDecryptObserverTest {
         clock.addAndGet(59_999L);
         windowed.unknownKey(spoofed(100), 1);
         awaitPublished(16);
-        Thread.sleep(200);
+        awaitHandedOff();
 
         assertThat(published).as("the 17th sender, 59.999 s in, is suppressed").hasSize(16);
 
@@ -258,7 +260,7 @@ class GossipDecryptObserverTest {
         }
 
         windowed.decrypted(OTHER);
-        Thread.sleep(300);
+        awaitHandedOff();
 
         var summaries = published.stream().filter(warning -> warning.code() == OperatorWarningCode.GOSSIP_KEY_UNKNOWN_SENDERS_SUPPRESSED).toList();
 
@@ -297,13 +299,27 @@ class GossipDecryptObserverTest {
         }
     }
 
-    private void awaitPublished(int expected) throws InterruptedException {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    private void awaitPublished(int expected) {
+        pollUntil(published::size, size -> size >= expected, Duration.ofSeconds(10)).assertMet("published " + expected + " warnings");
+    }
 
-        while (published.size() < expected && System.nanoTime() < deadline) {
-            Thread.sleep(10);
-        }
+    /// Everything raised before this call has crossed the hand-off: a barrier warning follows it through the same one-thread FIFO queue, so once
+    /// the barrier is published nothing earlier is still in flight. The barrier is removed again, so the caller asserts on its own warnings only.
+    private void awaitHandedOff() {
+        sink.accept(operatorWarning(OperatorWarningCode.JSON_CONFIG_APPLIED, BARRIER_SUBJECT, "barrier"));
+        pollUntil(() -> published.stream().anyMatch(GossipDecryptObserverTest::isBarrier), found -> found, Duration.ofSeconds(10)).assertMet("hand-off barrier published");
+        published.removeIf(GossipDecryptObserverTest::isBarrier);
+    }
 
-        assertThat(published.size()).as("published within the bound").isGreaterThanOrEqualTo(expected);
+    /// For a burst larger than the hand-off queue: each of `raised` warnings is either published or counted as dropped, so the queue is empty
+    /// once the two add up (a barrier could itself be dropped while the queue is full).
+    private void awaitAllAccountedFor(int raised) {
+        var handOff = (OperatorWarningSink.HandOff) sink;
+
+        pollUntil(() -> published.size() + handOff.dropped(), accounted -> accounted >= raised, Duration.ofSeconds(10)).assertMet(raised + " warnings published or dropped");
+    }
+
+    private static boolean isBarrier(OperatorWarning warning) {
+        return BARRIER_SUBJECT.equals(warning.subject());
     }
 }

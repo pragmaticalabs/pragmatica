@@ -5,6 +5,7 @@
 package org.pragmatica.aether.http;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.IntStream;
@@ -125,6 +126,26 @@ public interface HttpRoutePublisher {
         return Unit.unit();
     }
 
+    /// TEST SEAM (#3021 probe 2): HOLD route publication. While held, a publication step completes at once (slice activation
+    /// is NOT held back) but its routes are only recorded as PENDING: they are not in the local route table and not in the
+    /// cluster. [#unpublishRoutes] cancels a pending publication; [#releaseRoutePublication] publishes the pending set. The
+    /// hold is a condition the caller releases, never a duration. Not held (the default) is today's behaviour. The default
+    /// is for publishers that publish no routes (test doubles). Its only caller in main sources is `EmberCluster`.
+    default Unit holdRoutePublication() {
+        return Unit.unit();
+    }
+
+    /// End the hold and publish every pending publication; completes when they are all in the cluster. Publications made
+    /// after the release are published at once.
+    default Promise<Unit> releaseRoutePublication() {
+        return Promise.unitPromise();
+    }
+
+    /// True between [#holdRoutePublication] and [#releaseRoutePublication]; false for publishers that publish no routes.
+    default boolean routePublicationHeld() {
+        return false;
+    }
+
     /// #1573 B1: receives one [ExecutionOutcome] per finished HTTP route execution, into the SAME per-node
     /// counters the slice bridge feeds (`InvocationHandler.recordExecution`), so the leader's
     /// all-instances-failed detector sees HTTP traffic.
@@ -237,6 +258,14 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     private final AtomicReference<RouteOutcomeRecorder> routeOutcomeRecorder = new AtomicReference<>(RouteOutcomeRecorder.NONE);
 
+    /// #3021 probe 2 -- the route-publication HOLD seam. Both fields are guarded by `holdLock`: parking a publication,
+    /// withdrawing one and releasing the hold are each ONE critical section, so a publication is always in exactly one of
+    /// `pendingRoutes` (held, recorded, not yet visible) or `publishedRoutes` (visible), and an unpublish cannot slip
+    /// between the two.
+    private final Object holdLock = new Object();
+    private final Map<Artifact, List<HttpRouteDefinition>> pendingRoutes = new HashMap<>();
+    private boolean held = false;
+
     HttpRoutePublisherImpl(NodeId selfNodeId,
                            ClusterNode<KVCommand<AetherKey>> cluster,
                            GenerationSnapshotSource snapshotSource,
@@ -328,15 +357,36 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                 return Promise.unitPromise();
             }
 
-            publishedRoutes.put(artifact, routes);
-
-            return publishRoutesToCluster(routes, artifact);
+            return publishUnlessHeld(routes, artifact);
         }
 
         log.warn("SliceRouterFactory {} does not implement RouteSource, no routes published",
                  factory.getClass().getName());
 
         return Promise.unitPromise();
+    }
+
+    private Promise<Unit> publishUnlessHeld(List<HttpRouteDefinition> routes, Artifact artifact) {
+        return parkedWhileHeld(routes, artifact)
+               ? Promise.unitPromise()
+               : recordAndPublish(routes, artifact);
+    }
+
+    /// Records the publication as PENDING when the hold is on; true when it did.
+    private boolean parkedWhileHeld(List<HttpRouteDefinition> routes, Artifact artifact) {
+        synchronized (holdLock) {
+            if (held) {
+                pendingRoutes.put(artifact, routes);
+            }
+
+            return held;
+        }
+    }
+
+    private Promise<Unit> recordAndPublish(List<HttpRouteDefinition> routes, Artifact artifact) {
+        publishedRoutes.put(artifact, routes);
+
+        return publishRoutesToCluster(routes, artifact);
     }
 
     private static Option<SliceLoadingFailure.Fatal.RouteSecurityContractStale> staleContractRefusal(Artifact artifact,
@@ -496,13 +546,23 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     public Promise<Unit> unpublishRoutes(Artifact artifact) {
         sliceRouters.remove(artifact);
         deregisterRouteCells(artifact);
-        var routes = publishedRoutes.remove(artifact);
+        var routes = withdrawn(artifact);
 
         if (routes == null || routes.isEmpty()) {
             return Promise.unitPromise();
         }
 
         return unpublishRoutesFromCluster(artifact, routes);
+    }
+
+    /// Cancels a pending publication and forgets a published one, atomically against [#releasePending]; returns the
+    /// published routes (null when none), which are the only ones the cluster has to be told about.
+    private List<HttpRouteDefinition> withdrawn(Artifact artifact) {
+        synchronized (holdLock) {
+            pendingRoutes.remove(artifact);
+
+            return publishedRoutes.remove(artifact);
+        }
     }
 
     private Promise<Unit> unpublishRoutesFromCluster(Artifact artifact, List<HttpRouteDefinition> routes) {
@@ -551,6 +611,47 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         versioningMetricsSink.set(sink);
 
         return Unit.unit();
+    }
+
+    @Override
+    public Unit holdRoutePublication() {
+        synchronized (holdLock) {
+            held = true;
+        }
+
+        return Unit.unit();
+    }
+
+    @Override
+    public Promise<Unit> releaseRoutePublication() {
+        return Promise.allOf(releasePending().entrySet()
+                                           .stream()
+                                           .map(entry -> publishRoutesToCluster(entry.getValue(),
+                                                                                entry.getKey()))
+                                           .toList()).flatMap(results -> Result.allOf(results)
+                                                                               .mapToUnit()
+                                                                               .async());
+    }
+
+    /// Ends the hold and moves the pending set into `publishedRoutes` in the same critical section, so the routes become
+    /// visible, an unpublish finds them, and a later [#republishAllRoutes] includes them. Returns what was released.
+    private Map<Artifact, List<HttpRouteDefinition>> releasePending() {
+        synchronized (holdLock) {
+            held = false;
+            var released = Map.copyOf(pendingRoutes);
+
+            publishedRoutes.putAll(released);
+            pendingRoutes.clear();
+
+            return released;
+        }
+    }
+
+    @Override
+    public boolean routePublicationHeld() {
+        synchronized (holdLock) {
+            return held;
+        }
     }
 
     @Override

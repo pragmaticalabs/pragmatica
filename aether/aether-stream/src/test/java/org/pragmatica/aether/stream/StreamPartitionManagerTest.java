@@ -500,8 +500,10 @@ class StreamPartitionManagerTest {
             // Cap allows exactly one stream
             var cappedManager = StreamPartitionManager.streamPartitionManager(streamBytes + 1);
 
-            var config1 = StreamConfig.streamConfig("first", 1, retention, "latest");
-            var config2 = StreamConfig.streamConfig("second", 1, retention, "latest");
+            // The hot window is declared equal to the retention (a data region below one segment, so the event size does not
+            // move the floor): the cap above holds whether the ring is sized from retention or from the declared window.
+            var config1 = HotWindowFixture.declaredHot(StreamConfig.streamConfig("first", 1, retention, "latest"), 100, 4096);
+            var config2 = HotWindowFixture.declaredHot(StreamConfig.streamConfig("second", 1, retention, "latest"), 100, 4096);
 
             cappedManager.createStream(config1)
                          .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));

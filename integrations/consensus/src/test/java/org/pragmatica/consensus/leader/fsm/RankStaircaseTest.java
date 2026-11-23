@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// R6 verification: rank-staircase first-tick scheduling on entry to `Electing` AND `ReElecting`.
 /// Lowest-rank node proposes first; higher ranks delay one `perRankDelay` per position so they
@@ -70,7 +71,7 @@ class RankStaircaseTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         () -> true,
-                                                        kvLeader::get,
+                                                        () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                         KV_SYNC_GRACE_DELAY,
                                                         LONG_OBSERVATION_INTERVAL);
                     return ctx.dormant();
@@ -242,7 +243,7 @@ class RankStaircaseTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         () -> true,
-                                                        kvLeader::get,
+                                                        () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                         KV_SYNC_GRACE_DELAY,
                                                         LONG_OBSERVATION_INTERVAL);
                     return ctx.dormant();

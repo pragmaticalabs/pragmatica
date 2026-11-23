@@ -89,7 +89,7 @@ class EmberConsumerPathTripwireTest {
         var controlStream = "c16ctl";
         var controlKey = engineKey(controlStream);
 
-        StreamTripwireSupport.createStream(owner, StreamTripwireSupport.smallRingStream(controlStream, 1, RING_EVENTS, 3_600_000L));
+        StreamTripwireSupport.createStream(owner, StreamTripwireSupport.evictingRingStream(controlStream, 1, RING_EVENTS, 3_600_000L));
         StreamTripwireSupport.awaitFullIsr(cluster, controlKey, ISR_BUDGET_MS);
         for (var i = 0; i < 10; i++) {
             assertThat(StreamTripwireSupport.publishViaOnceActivated(cluster.getLeaderManagementPort().or(-1), controlStream, "ctl-" + i).acked()).isTrue();
@@ -183,7 +183,7 @@ class EmberConsumerPathTripwireTest {
         cluster = EmberTestPorts.startedCluster(StreamTripwireSupport.PORTS, this::threeNodes, START_BOUND);
         StreamTripwireSupport.awaitLeader(cluster);
         owner = cluster.allNodes().getFirst();
-        StreamTripwireSupport.createStream(owner, StreamTripwireSupport.smallRingStream(stream, 1, RING_EVENTS, 3_600_000L));
+        StreamTripwireSupport.createStream(owner, StreamTripwireSupport.evictingRingStream(stream, 1, RING_EVENTS, 3_600_000L));
 
         var record = StreamTripwireSupport.awaitFullIsr(cluster, engineKey, ISR_BUDGET_MS);
 

@@ -19,16 +19,20 @@ package org.pragmatica.testing;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
-/// Fails the build when a test source carries a line pattern that past flakes were fixed by removing (a fixed sleep, a literal
-/// port, an elapsed-time bound, an await deadline under 5 s) and the line is not in the shrink-only allow-list.
+/// Fails the build when a test source carries a pattern, on one line or wrapped over several, that past flakes were fixed by
+/// removing (a fixed sleep, a literal port, an elapsed-time bound, an await deadline under 5 s) and the hit is not in the
+/// shrink-only allow-list.
 ///
 /// The allow-list (`flake-scan-allowlist.txt`, beside this test's resources) is the census of what existed when the scan
 /// landed. It may only shrink: an entry that no longer matches fails the build (delete it), and a list whose size differs
@@ -36,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The wait to use instead is [PollUntil].
 class FlakeScanTest {
     /// The allow-list size as last committed. Lower it when entries are deleted; raising it is the change a reviewer must refuse.
-    static final int COMMITTED_ENTRIES = 1344;
+    static final int COMMITTED_ENTRIES = 1287;
 
     private static final String ALLOW_LIST = "testing/src/test/resources/flake-scan-allowlist.txt";
     private static final int MINIMUM_EXAMINED_FILES = 1_000;
@@ -164,6 +168,100 @@ class FlakeScanTest {
     }
 
     @Test
+    void scan_everyPattern_isFoundWhenTheFormatterWrapsIt() throws IOException {
+        var planted = new LinkedHashMap<String, FlakeScan.Kind>();
+
+        planted.put(wrapped("Thread", "    .sleep" + "(100);"), FlakeScan.Kind.SLEEP);
+        planted.put(wrapped("java.util.concurrent.TimeUnit.SECONDS", "    .sleep" + "(1);"), FlakeScan.Kind.SLEEP);
+        planted.put(wrapped("int httpPort", "    = 8080;"), FlakeScan.Kind.FIXED_PORT);
+        planted.put(wrapped("var s = new ServerSocket(", "    9100);"), FlakeScan.Kind.FIXED_PORT);
+        planted.put(wrapped("var d = new DatagramSocket(", "    9200);"), FlakeScan.Kind.FIXED_PORT);
+        planted.put(wrapped("server.bind" + "(", "    8081);"), FlakeScan.Kind.FIXED_PORT);
+        planted.put(wrapped("config.withPort" + "(", "    8083);"), FlakeScan.Kind.FIXED_PORT);
+        planted.put(wrapped("assertThat(elapsedMs)", "    .isLess" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs)", "    .isLessThan" + "OrEqualTo(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs)", "    .is" + "Between(1, 500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs)", "    .isGreater" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs)", "    .isGreaterThan" + "OrEqualTo(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs)", "    .isClose" + "To(500, offset);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(callTook)", "    .isLess" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs).as(\"bounded %d\", elapsedMs)", "    .isLess" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs)", "    // the bound", "    .isLess" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs) // the bound", "    .isLess" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs).as(\"bounded; {ok}\", elapsedMs)", "    .isLess" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs).as(\"say \\\"hi;\\\" now\", elapsedMs)", "    .isLess" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs).as(\";\" + '\"' + \"x;\", elapsedMs)", "    .isLess" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertThat(elapsedMs).as(\"\"\"", "    bounded; {x}", "    \"\"\", elapsedMs)", "    .isLess" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("assertTrue(", "    took < 100);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
+        planted.put(wrapped("await().atMost(", "    Duration.ofSeconds(2)).until(ready);"), FlakeScan.Kind.SHORT_AWAIT);
+        planted.put(wrapped("await().atMost(Duration", "    .ofMillis(500)).until(ready);"), FlakeScan.Kind.SHORT_AWAIT);
+        planted.put(wrapped("await().atMost(", "    300, TimeUnit.MILLISECONDS).until(ready);"), FlakeScan.Kind.SHORT_AWAIT);
+        planted.put(wrapped("await().atMost(", "    3, TimeUnit.SECONDS).until(ready);"), FlakeScan.Kind.SHORT_AWAIT);
+
+        var hits = FlakeScan.scan(plant("A.java", String.join("\n", planted.keySet()))).hits();
+        var expected = new ArrayList<String>();
+        var line = 1;
+
+        for (var entry : planted.entrySet()) {
+            expected.add(line + " " + entry.getValue() + " <- " + withoutComments(entry.getKey()));
+            line += entry.getKey().split("\n").length;
+        }
+        assertThat(hits.stream().map(hit -> hit.line() + " " + hit.kind() + " <- " + hit.text()).toList())
+            .as("each wrapped plant is found once, at its statement's first line, as exactly its own kind")
+            .containsExactlyElementsOf(expected);
+    }
+
+    @Test
+    void scan_aWrappedHit_startsAtItsStatementNotAtTheBlockBeforeIt() throws IOException {
+        var source = String.join("\n",
+                                 "@Test",
+                                 "void bounded() {",
+                                 "    var text = \"{ ; }\";",
+                                 "    int unrelated = 1;",
+                                 "    assertThat(elapsedMs)",
+                                 "        .isLess" + "Than(500);",
+                                 "}");
+
+        assertThat(FlakeScan.scan(plant("A.java", source)).hits()).extracting(FlakeScan.Hit::line).containsExactly(5);
+    }
+
+    @Test
+    void scan_aWrappedHit_isFoundWhenTheFileEndsWithoutAStatementTerminator() throws IOException {
+        var source = String.join("\n", "int unrelated = 1;", "assertThat(elapsedMs)", "    .isLess" + "Than(500)");
+
+        assertThat(FlakeScan.scan(plant("A.java", source)).hits()).extracting(FlakeScan.Hit::line).containsExactly(2);
+    }
+
+    @Test
+    void scan_aSingleLineHit_isReportedOnceAtItsLine_evenInsideAMultiLineStatement() throws IOException {
+        var source = String.join("\n", "run(", "    " + sleepLine(), "    more);");
+
+        assertThat(FlakeScan.scan(plant("A.java", source)).hits()).extracting(FlakeScan.Hit::line, FlakeScan.Hit::text)
+                                                                    .containsExactly(tuple(2, sleepLine()));
+    }
+
+    @Test
+    void scan_thePassingWrappedForms_areNotFlagged() throws IOException {
+        var source = String.join("\n",
+                                 "assertThat(attempts)",
+                                 "    .isLessThan(5);",
+                                 "await().atMost(",
+                                 "    Duration.ofSeconds(10)).until(ready);",
+                                 "var s = new ServerSocket(",
+                                 "    0);",
+                                 "var elapsed = 5;",
+                                 "check.isLessThan(5);",
+                                 "assertThat(elapsedMs);",
+                                 "    .isLessThan(5);",
+                                 "// assertThat(elapsedMs)",
+                                 "//     .isLessThan(5);",
+                                 "/* assertThat(elapsedMs)",
+                                 "   .isLessThan(5); */");
+
+        assertThat(FlakeScan.scan(plant("A.java", source)).hits()).isEmpty();
+    }
+
+    @Test
     void scan_aSleepUnderSrcItJava_isFlagged() throws IOException {
         write(tmp.resolve("m/src/it/java/SomeIT.java"), sleepLine());
 
@@ -223,6 +321,21 @@ class FlakeScanTest {
         write(root.resolve("m/src/test/resources/Data.java"), sleepLine());
 
         assertThat(FlakeScan.scan(root).examinedFiles()).isEmpty();
+    }
+
+    private static String wrapped(String... lines) {
+        return String.join("\n", lines);
+    }
+
+    /// The statement text the scan reports: comment lines and trailing comments dropped, whitespace collapsed.
+    private static String withoutComments(String statement) {
+        return String.join(" ",
+                           statement.lines()
+                                    .filter(line -> !line.strip().startsWith("//"))
+                                    .map(line -> line.replaceAll("\\s*//.*$", ""))
+                                    .collect(Collectors.joining(" "))
+                                    .strip()
+                                    .split("\\s+"));
     }
 
     /// Built from pieces so this file never carries the pattern it scans for.

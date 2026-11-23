@@ -42,12 +42,12 @@ import static org.pragmatica.lang.Result.unitResult;
 
 /// Off-heap ring of `capacity` index slots over a growable data region, on a shared arena.
 ///
-/// Concurrency model (#1340): readers take no lock. They snapshot tail/head, copy, and validate the copy
+/// Concurrency model (#1340): readers take no lock. They load R (the tail) and the head, copy, and validate the copy
 /// against the tail AFTER copying ([#retainedAfterCopy]); the writer publishes an advanced tail with a
-/// store-store fence before overwriting the freed slot ([#evictOldest]) and a new head with a release
+/// store-store fence before overwriting the freed slot ([#evictThrough]) and a new head with a release
 /// fence after the slot's stores ([#updateHeaderAfterAppend]). That protocol is sound for ONE appender
 /// per ring at a time: two concurrent `append`s would both read the same tail in
-/// [#countEvictionsForSpace], both store `tail + 1`, lose one eviction, and land the second write on a
+/// [#countEvictionsForSpace], both publish the same R, lose one eviction, and land the second write on a
 /// slot the tail still claims — a torn read the post-copy check cannot see. The single appender is
 /// `appendLock` (#1258): every header-writing path — `append`, `appendOrdered`, `appendBatch`,
 /// `appendOrderedAt`, `seedHead` and the retention sweeps via [#guardedSweep] — runs inside `synchronized (appendLock)`,
@@ -109,7 +109,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// rebuilt is told from the one it replaced.
     private static final AtomicLong INCARNATIONS = new AtomicLong();
 
+    /// How the ring answers a read below its tail. PERSISTENT (every factory here) answers `CursorExpired(offset, tail,
+    /// RETENTION)` and carries only the tail in R; MEMORY keeps what was removed and why, and answers from it.
+    enum Mode {
+        PERSISTENT,
+        MEMORY
+    }
+
     private final long incarnation = INCARNATIONS.incrementAndGet();
+    private final Mode mode;
     private final Arena arena;
     /// The control segment's header words; the only route to them (see [RingHeader]).
     private final RingHeader header;
@@ -157,6 +165,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Native accesses refused because index or offset arithmetic went out of bounds (#1247) — a ring
     /// defect, never the close race.
     private final AtomicLong indexCorruption = new AtomicLong(0);
+    /// Steps the ring refused because they would break one of its own invariants ([RingStateViolated]): a defect or a misuse,
+    /// counted where it is raised, never a close race.
+    private final AtomicLong stateViolations = new AtomicLong(0);
     /// Test-only seam (#1253), run by [#guardedRead] between its `closed` fast-path check and the native read.
     /// Deliberately NOT volatile: it is set before any reader thread starts, and `Thread.start` publishes it.
     private Runnable readWindowProbe = NO_READ_WINDOW_PROBE;
@@ -203,7 +214,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// ring with no durability gate aliases visible to appended); [#appendOrdered] leaves it to the caller.
     private final AtomicLong visibleOffset = new AtomicLong(NO_OFFSET);
 
-    private OffHeapRingBuffer(Arena arena,
+    private OffHeapRingBuffer(Mode mode,
+                              Arena arena,
                               RingHeader header,
                               MemorySegment index,
                               List<MemorySegment> firstDataSegments,
@@ -218,6 +230,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                               LongConsumer release,
                               LongSupplier budgetFreed,
                               long accountedBytes) {
+        this.mode = mode;
         this.arena = arena;
         this.header = header;
         this.index = index;
@@ -276,7 +289,34 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                       long maxEventSize,
                                                       EvictionListener listener,
                                                       EvictionPolicy policy) {
-        return buildFloor(Arena.ofShared(),
+        return offHeapRingBuffer(Mode.PERSISTENT,
+                                 streamName,
+                                 partition,
+                                 capacity,
+                                 dataRegionSize,
+                                 maxEventSize,
+                                 listener,
+                                 policy);
+    }
+
+    /// The plain factory with the ring's [Mode]: every public factory builds PERSISTENT, and the first caller to pass MEMORY is
+    /// the stream manager's own wiring. A capacity below 1 is refused BEFORE any allocation, thrown with a named message as
+    /// this factory's other failures are (the `Result` factories return it typed).
+    @SuppressWarnings("JBCT-EX-01")
+    static OffHeapRingBuffer offHeapRingBuffer(Mode mode,
+                                               String streamName,
+                                               int partition,
+                                               long capacity,
+                                               long dataRegionSize,
+                                               long maxEventSize,
+                                               EvictionListener listener,
+                                               EvictionPolicy policy) {
+        if (capacity < 1) {
+            throw new IllegalArgumentException("OffHeapRingBuffer capacity must be at least 1, got " + capacity);
+        }
+
+        return buildFloor(mode,
+                          Arena.ofShared(),
                           streamName,
                           partition,
                           capacity,
@@ -287,6 +327,32 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                           ALWAYS_ADMIT,
                           NOOP_RELEASE,
                           NO_BUDGET_FREED);
+    }
+
+    /// A [Mode#MEMORY] ring over a caller-supplied budget seam: `reserve` admits each growth and `budgetFreed` reports the
+    /// bytes the budget has freed since, the pair the freeze/thaw path reads. Nothing is released back (`NOOP_RELEASE`).
+    /// Package-private: the seam exists so tests drive a frozen ring and its thaw without reflection.
+    static OffHeapRingBuffer memoryRingBuffer(String streamName,
+                                              int partition,
+                                              long capacity,
+                                              long dataRegionSize,
+                                              long maxEventSize,
+                                              EvictionListener listener,
+                                              EvictionPolicy policy,
+                                              LongPredicate reserve,
+                                              LongSupplier budgetFreed) {
+        return buildFloor(Mode.MEMORY,
+                          Arena.ofShared(),
+                          streamName,
+                          partition,
+                          capacity,
+                          dataRegionSize,
+                          maxEventSize,
+                          listener,
+                          policy,
+                          reserve,
+                          NOOP_RELEASE,
+                          budgetFreed);
     }
 
     /// Floor bytes a buffer reserves at creation: control region (header + index) plus the first
@@ -371,6 +437,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                               LongPredicate reserve,
                                                               LongConsumer release,
                                                               LongSupplier budgetFreed) {
+        if (capacity < 1) {
+            return RingStateViolated.ringStateViolated("OffHeapRingBuffer capacity must be at least 1, got " + capacity).result();
+        }
+
         var arena = Arena.ofShared();
 
         return buildFloorGuarded(arena,
@@ -410,7 +480,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         try {
-            return success(buildFloor(arena,
+            return success(buildFloor(Mode.PERSISTENT,
+                                      arena,
                                       streamName,
                                       partition,
                                       capacity,
@@ -428,7 +499,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
     }
 
-    private static OffHeapRingBuffer buildFloor(Arena arena,
+    private static OffHeapRingBuffer buildFloor(Mode mode,
+                                                Arena arena,
                                                 String streamName,
                                                 int partition,
                                                 long capacity,
@@ -448,9 +520,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         header.initialize(dataRegionSize, capacity);
 
-        return new OffHeapRingBuffer(arena,
+        return new OffHeapRingBuffer(mode,
+                                     arena,
                                      header,
-                                     controlSegment.asSlice(HEADER_SIZE),
+                                     RingHeader.index(controlSegment),
                                      firstDataSegments,
                                      firstSegmentBytes,
                                      capacity,
@@ -750,10 +823,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_FULL.result();
         }
 
-        return evictForSpace(payload.length).map(_ -> writeAppend(payload, timestamp));
+        return evictForSpace(payload.length).flatMap(_ -> writeAppend(payload, timestamp));
     }
 
-    private long writeAppend(byte[] payload, long timestamp) {
+    private Result<Long> writeAppend(byte[] payload, long timestamp) {
         var currentHead = rawHeadOffset();
         var newOffset = currentHead + 1;
         var slotIndex = Math.floorMod(newOffset, capacity);
@@ -761,9 +834,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         writeDataBytes(dataPos, payload);
         writeIndexEntry(slotIndex, dataPos, payload.length, timestamp);
-        updateHeaderAfterAppend(newOffset, payload.length);
 
-        return newOffset;
+        return updateHeaderAfterAppend(newOffset, payload.length).map(_ -> newOffset);
     }
 
     /// Batch sibling of [#append]: visible at once when it succeeds.
@@ -879,7 +951,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_FULL.result();
         }
 
-        return evictForSpace((int) totalSize).map(_ -> appendPayloads(payloads, timestamps));
+        return evictForSpace((int) totalSize).flatMap(_ -> appendPayloads(payloads, timestamps));
     }
 
     /// Position a FRESH ring (no appends yet, `headOffset() == -1`) so the NEXT append is assigned
@@ -964,11 +1036,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         return durableCut.get()
-                         .map(_ -> {
-                             afterDurableCutProbe.run();
-
-                             return cutSuffix(keepThrough, head);
-                         })
+                         .flatMap(_ -> cutAfterProbe(keepThrough, head))
                          .onSuccess(afterCut::accept)
                          .onSuccess(_ -> notifyTruncated(keepThrough));
     }
@@ -991,7 +1059,13 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// parity is restored on ANY exit, so an exception inside the window (an arena closed mid-cut) can never leave readers spinning on an
     /// odd sequence. The rollback runs this far more often than the cut does.
     @SuppressWarnings("JBCT-EX-01")
-    private long cutSuffix(long keepThrough, long head) {
+    private Result<Long> cutAfterProbe(long keepThrough, long head) {
+        afterDurableCutProbe.run();
+
+        return cutSuffix(keepThrough, head);
+    }
+
+    private Result<Long> cutSuffix(long keepThrough, long head) {
         var opened = truncationSeq + 1;
 
         truncationSeq = opened;
@@ -999,18 +1073,22 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             VarHandle.storeStoreFence();
             insideCutProbe.run();
 
-            return cutHeader(keepThrough, head);
+            return cutChecked(keepThrough, head);
         } finally {
             VarHandle.storeStoreFence();
             truncationSeq = opened + 1;
         }
     }
 
-    private long cutHeader(long keepThrough, long head) {
+    /// The header after the cut: the head through [RingHeader#cut] (range-checked), then [#cutHeader] shrinks what followed it.
+    private Result<Long> cutChecked(long keepThrough, long head) {
         var removed = head - keepThrough;
         var removedBytes = bytesOf(keepThrough + 1, head);
 
-        header.setHead(keepThrough);
+        return tripped(header.cut(keepThrough)).map(_ -> cutHeader(keepThrough, removed, removedBytes));
+    }
+
+    private long cutHeader(long keepThrough, long removed, long removedBytes) {
         header.setEventCount(rawEventCount() - removed);
         header.setDataWritePos(dataWritePos() - removedBytes);
         durableOffset.updateAndGet(value -> Math.min(value, keepThrough));
@@ -1082,17 +1160,21 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         if (base < 0 || currentHead != -1 || visibleSeed < - 1 || visibleSeed > base) {
             return new StreamError.SeedRejected(base, currentHead).result();
         }
-        // Tail first, then fence, then head — as evictOldest orders it: a reader that saw head = base
-        // before tail = base + 1 would pass both range checks for an offset in [0, base] and copy an
-        // unwritten slot (#1340 review N-4).
-        header.setTail(base + 1);
-        VarHandle.storeStoreFence();
+        // R first (its publish carries the store-store fence), then head — as the eviction orders it: a reader that saw
+        // head = base before tail = base + 1 would pass both range checks for an offset in [0, base] and copy an
+        // unwritten slot (#1340 review N-4). The reader's half is the acquire fence before its R load (E3).
+        var published = tripped(header.ledger().seeded(base).flatMap(header::publish));
+
+        if (published.isFailure()) {
+            return published;
+        }
+
         header.setHead(base);
         lastSealedOffset = base;
         durableOffset.set(base);
         visibleOffset.set(visibleSeed);
 
-        return unitResult();
+        return published;
     }
 
     /// Grow the data region until it can hold a write of `writeLen` bytes at the current logical
@@ -1130,7 +1212,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         if (liveBytesUnwrapped()) {
             rebaseAndThaw();
         } else if (physicalWritePos() + writeLen > dataRing()) {
-            handOverAndEvict(countEvictionsToUnwrap()).onSuccess(_ -> rebaseAndThaw()).onFailure(this::thawDeferred);
+            handOverAndEvict(countEvictionsToUnwrap(),
+                             RemovalCause.RING_FROZEN).onSuccess(_ -> rebaseAndThaw())
+                            .onFailure(this::thawDeferred);
         }
     }
 
@@ -1272,24 +1356,30 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
     }
 
+    /// The non-owner form of [#readSlice(long, ReadAs)]. M-2r-2 deletes the forms without a [ReadAs] and moves their callers.
     public Result<MemorySegment> readSlice(long offset) {
+        return readSlice(offset, ReadAs.COPY);
+    }
+
+    public Result<MemorySegment> readSlice(long offset, ReadAs readAs) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
-        return guardedAccess(() -> stableAcrossTruncation(() -> readSliceChecked(offset)));
+        return boundRole(readAs).flatMap(_ -> guardedAccess(() -> stableAcrossTruncation(() -> readSliceChecked(offset,
+                                                                                                                readAs))));
     }
 
-    private Result<MemorySegment> readSliceChecked(long offset) {
+    private Result<MemorySegment> readSliceChecked(long offset, ReadAs readAs) {
         var head = rawHeadOffset();
-        var tail = rawTailOffset();
+        var ledger = header.ledger();
 
         if (head < 0) {
             return StreamError.General.BUFFER_EMPTY.result();
         }
 
-        if (offset < tail) {
-            return new StreamError.CursorExpired(offset, tail, RemovalCause.RETENTION).result();
+        if (offset < ledger.tail()) {
+            return answerBelowTail(ledger, offset, readAs).result();
         }
 
         if (offset > Math.min(head, visibleOffset.get())) {
@@ -1298,7 +1388,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         VarHandle.acquireFence();
 
-        return readSliceAtOffset(offset).flatMap(slice -> retainedAfterCopy(offset, slice));
+        return readSliceAtOffset(offset).flatMap(slice -> retainedAfterCopy(offset, slice, readAs));
     }
 
     /// Registers a listener invoked with the new VISIBLE offset each time [#advanceVisible] moves it
@@ -1358,35 +1448,51 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     /// Consumer read, bounded by the VISIBLE position (#1235): an appended event that is not yet durable
     /// and acknowledged reads as not yet written.
+    /// The non-owner form of [#read(long, int, ReadAs)]. M-2r-2 deletes the forms without a [ReadAs] and moves their callers.
     public Result<List<RawEvent>> read(long fromOffset, int maxEvents) {
+        return read(fromOffset, maxEvents, ReadAs.COPY);
+    }
+
+    public Result<List<RawEvent>> read(long fromOffset, int maxEvents, ReadAs readAs) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
-        return guardedAccess(() -> stableAcrossTruncation(() -> readChecked(fromOffset, maxEvents, visibleOffset.get())));
+        return boundRole(readAs).flatMap(_ -> guardedAccess(() -> stableAcrossTruncation(() -> readChecked(fromOffset,
+                                                                                                           maxEvents,
+                                                                                                           visibleOffset.get(),
+                                                                                                           readAs))));
     }
 
     /// Replication read, bounded by the APPENDED head: a replica catching up, a new owner pulling from a
     /// survivor, and the entity log fold all need events that are not yet visible. A replica that could
     /// only receive visible events could never supply the ack that makes them visible.
+    /// The non-owner form of [#readAppended(long, int, ReadAs)]. M-2r-2 deletes the forms without a [ReadAs].
     public Result<List<RawEvent>> readAppended(long fromOffset, int maxEvents) {
+        return readAppended(fromOffset, maxEvents, ReadAs.COPY);
+    }
+
+    public Result<List<RawEvent>> readAppended(long fromOffset, int maxEvents, ReadAs readAs) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
-        return guardedAccess(() -> stableAcrossTruncation(() -> readChecked(fromOffset, maxEvents, Long.MAX_VALUE)));
+        return boundRole(readAs).flatMap(_ -> guardedAccess(() -> stableAcrossTruncation(() -> readChecked(fromOffset,
+                                                                                                           maxEvents,
+                                                                                                           Long.MAX_VALUE,
+                                                                                                           readAs))));
     }
 
-    private Result<List<RawEvent>> readChecked(long fromOffset, int maxEvents, long bound) {
-        var tail = rawTailOffset();
+    private Result<List<RawEvent>> readChecked(long fromOffset, int maxEvents, long bound, ReadAs readAs) {
+        var ledger = header.ledger();
         var head = Math.min(rawHeadOffset(), bound);
 
         if (head < 0) {
             return success(List.of());
         }
 
-        if (fromOffset < tail) {
-            return new StreamError.CursorExpired(fromOffset, tail, RemovalCause.RETENTION).result();
+        if (fromOffset < ledger.tail()) {
+            return answerBelowTail(ledger, fromOffset, readAs).result();
         }
 
         if (fromOffset > head) {
@@ -1397,7 +1503,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         VarHandle.acquireFence();
 
-        return retainedAfterCopy(fromOffset, readEvents(fromOffset, count));
+        return retainedAfterCopy(fromOffset, readEvents(fromOffset, count), readAs);
     }
 
     private List<RawEvent> readEvents(long fromOffset, int count) {
@@ -1421,20 +1527,39 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// of the copy may have been reclaimed under it, and the whole read fails `CursorExpired` — the same
     /// typed refusal a read that arrived after the eviction gets, so every caller already handles it
     /// (`PartitionedStreamAccess.handleReadFailure` reroutes to the sealed tier). What makes the check a
-    /// guarantee rather than an x86 accident is the fence pairing: [#evictOldest] publishes the new tail
+    /// guarantee rather than an x86 accident is the fence pairing: [#evictThrough] publishes the new tail
     /// with a store-store fence BEFORE the slot is overwritten, and the reader's acquire fence here
     /// orders the copy's loads BEFORE the tail re-read. So a copy that observed the overwrite cannot
     /// observe the old tail. Holding the slot instead would put a lock on a path that has never had one
     /// and serialise every reader against the writer; the re-check keeps readers lock-free.
-    private <T> Result<T> retainedAfterCopy(long fromOffset, T copy) {
+    private <T> Result<T> retainedAfterCopy(long fromOffset, T copy, ReadAs readAs) {
         VarHandle.acquireFence();
-        var tailAfterCopy = rawTailOffset();
+        var ledgerAfterCopy = header.ledger();
 
-        if (tailAfterCopy > fromOffset) {
-            return new StreamError.CursorExpired(fromOffset, tailAfterCopy, RemovalCause.RETENTION).result();
+        if (ledgerAfterCopy.tail() > fromOffset) {
+            return answerBelowTail(ledgerAfterCopy, fromOffset, readAs).result();
         }
 
         return success(copy);
+    }
+
+    /// The answer to a read below the tail, from the ONE R the reader loaded. PERSISTENT answers `CursorExpired(offset, tail,
+    /// RETENTION)`, byte for byte as before; MEMORY answers from R and the reader's role (see [RemovalLedger#answer]).
+    private Cause answerBelowTail(RemovalLedger ledger, long offset, ReadAs readAs) {
+        return mode == Mode.PERSISTENT
+               ? new StreamError.CursorExpired(offset, ledger.tail(), RemovalCause.RETENTION)
+               : ledger.answer(offset, readAs.isOwner());
+    }
+
+    /// A role bound to another ring is refused, typed and counted: its owner gate vouched for a different partition or a
+    /// ring this one replaced.
+    private Result<Unit> boundRole(ReadAs readAs) {
+        return readAs.isOwner() && !readAs.isBoundTo(streamName, partition, incarnation)
+               ? tripped(RingStateViolated.ringStateViolated("read role bound to another ring (this is " + streamName
+                                                            + "[" + partition
+                                                            + "] #" + incarnation
+                                                            + ")").result())
+               : unitResult();
     }
 
     /// Guarded header reads (#999). See [#guardedRead] for why a `long`-returning accessor needs a
@@ -1444,7 +1569,24 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     public long tailOffset() {
-        return guardedRead(NO_OFFSET, this::rawTailOffset);
+        return guardedRead(NO_OFFSET, this::tailUnlessClosed);
+    }
+
+    /// A heap load of R never throws, so a close that landed between the fast-path check and this load is not seen as an ISE as a
+    /// header word would be: `closed` is re-checked AFTER the load (and after [#readWindowProbe], which runs before it) and the
+    /// read is refused as the #999 race, counted once.
+    private long tailUnlessClosed() {
+        var tail = rawTailOffset();
+
+        return closed.get()
+               ? closedUnderTailReader()
+               : tail;
+    }
+
+    private long closedUnderTailReader() {
+        reportClosedUnderReader();
+
+        return NO_OFFSET;
     }
 
     public long eventCount() {
@@ -1454,7 +1596,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Raw header reads — the form every INTERNAL caller uses. Internal callers already run inside
     /// [#guardedAccess] and must ABORT on a concurrent close, never continue with a refusal sentinel: a
     /// sentinel here would be actively harmful, because [#updateHeaderAfterAppend] persists
-    /// `rawEventCount() + 1` and [#evictOldest] persists `rawEventCount() - 1`, so a swallowed `0` would
+    /// `rawEventCount() + 1` and [#evictThrough] persists `rawEventCount() - 1`, so a swallowed `0` would
     /// write a NEGATIVE event count into the header. Letting the native exception propagate to the
     /// enclosing [#guardedAccess] is what makes those paths fail closed as `BUFFER_CLOSED`.
     private long rawHeadOffset() {
@@ -1462,7 +1604,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private long rawTailOffset() {
-        return header.tail();
+        return header.ledger()
+                     .tail();
     }
 
     private long rawEventCount() {
@@ -1561,6 +1704,29 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return indexCorruption.get();
     }
 
+    /// Count of steps this ring refused because they would break one of its own invariants ([RingStateViolated]). Zero on every
+    /// healthy ring.
+    public long stateViolationCount() {
+        return stateViolations.get();
+    }
+
+    /// A refusal is logged and counted where it is raised, as [#reportIndexCorruption] is: the refusals that travel through
+    /// [#handOverAndEvict] end in `retentionDeferred` / `thawDeferred`, which log at DEBUG only.
+    private <T> Result<T> tripped(Result<T> result) {
+        return result.onFailure(this::reportStateViolated);
+    }
+
+    @Contract
+    private void reportStateViolated(Cause cause) {
+        var occurrence = stateViolations.incrementAndGet();
+
+        log.error("OffHeapRingBuffer {}[{}]: {} (occurrence {} for this ring)",
+                  streamName,
+                  partition,
+                  cause.message(),
+                  occurrence);
+    }
+
     /// Report an out-of-bounds native access (#1247) distinctly from [#reportClosedUnderReader]: the arena
     /// was open, so the index or offset arithmetic is wrong and the ring's contents cannot be trusted.
     private StreamError.RingIndexCorrupted reportIndexCorruption(IndexOutOfBoundsException fault) {
@@ -1586,6 +1752,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     @Contract
     void readWindowProbe(Runnable probe) {
         readWindowProbe = probe;
+    }
+
+    /// Test-only seam: the ring's current R, for the pins on how R is published (once per change, never updated in place).
+    RemovalLedger removalLedger() {
+        return header.ledger();
     }
 
     public long allocatedBytes() {
@@ -1648,7 +1819,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var cutoff = System.currentTimeMillis() - maxAgeMs;
         var countToEvict = countEvictionsByAge(cutoff, maxEvents, maxBytes);
 
-        notifyAndEvict(countToEvict);
+        notifyAndEvict(countToEvict, RemovalCause.AGE);
     }
 
     @Contract
@@ -1707,7 +1878,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var allExceeded = (!countConfigured || countExcess > 0) && (!sizeConfigured || sizeExcess > 0) && (!ageConfigured || ageExcess > 0);
 
         if (allExceeded) {
-            notifyAndEvict(minConfiguredExcess(countExcess, sizeExcess, ageExcess));
+            notifyAndEvict(minConfiguredExcess(countExcess, sizeExcess, ageExcess), RemovalCause.RETENTION);
         }
     }
 
@@ -1737,7 +1908,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var sealedExcess = sealedCount - tierAware.postSealMaxCount();
 
         if (sealedExcess > 0) {
-            notifyAndEvict(sealedExcess);
+            notifyAndEvict(sealedExcess, RemovalCause.RETENTION);
         }
 
         evictSealedByAge(tierAware.postSealBufferMs());
@@ -1772,7 +1943,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             count++;
         }
 
-        notifyAndEvict(count);
+        notifyAndEvict(count, RemovalCause.RETENTION);
     }
 
     /// A plain append has no durability gate: durable and visible at once. Called inside the section.
@@ -1835,23 +2006,28 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return total;
     }
 
-    private long appendPayloads(List<byte[]> payloads, long[] timestamps) {
+    private Result<Long> appendPayloads(List<byte[]> payloads, long[] timestamps) {
         var currentHead = rawHeadOffset();
         var lastOffset = currentHead;
 
         for (int i = 0; i < payloads.size(); i++) {
             var payload = payloads.get(i);
-
-            lastOffset = currentHead + 1 + i;
-            var slotIndex = Math.floorMod(lastOffset, capacity);
+            var offset = currentHead + 1 + i;
+            var slotIndex = Math.floorMod(offset, capacity);
             var dataPos = physicalWritePos();
 
             writeDataBytes(dataPos, payload);
             writeIndexEntry(slotIndex, dataPos, payload.length, timestamps[i]);
-            updateHeaderAfterAppend(lastOffset, payload.length);
+            var appended = updateHeaderAfterAppend(offset, payload.length);
+
+            if (appended.isFailure()) {
+                return appended.map(_ -> offset);
+            }
+
+            lastOffset = offset;
         }
 
-        return lastOffset;
+        return success(lastOffset);
     }
 
     private Result<MemorySegment> readSliceAtOffset(long offset) {
@@ -1968,11 +2144,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// The slot's data and index stores must be visible before the head that publishes it (#1340): a
     /// reader that sees `newHeadOffset` copies that slot next, and without the release fence it could
     /// read the index entry the slot held `capacity` offsets ago — the head-side twin of the tail race.
-    private void updateHeaderAfterAppend(long newHeadOffset, int payloadLength) {
+    private Result<Unit> updateHeaderAfterAppend(long newHeadOffset, int payloadLength) {
         VarHandle.releaseFence();
-        header.setHead(newHeadOffset);
-        header.setDataWritePos(dataWritePos() + payloadLength);
-        header.setEventCount(rawEventCount() + 1);
+
+        return tripped(header.appended(newHeadOffset, payloadLength));
     }
 
     private RawEvent readSingleEvent(long offset) {
@@ -1999,9 +2174,16 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     /// Make room for an append. A refusal by the eviction listener (#1234) leaves every event in place and is
-    /// returned to the append, which then writes nothing.
+    /// returned to the append, which then writes nothing. The records the entry-count capacity forces out are `COUNT`, the rest
+    /// of the batch `BYTES`: one hand-over, one publish of R.
     private Result<Unit> evictForSpace(int payloadLength) {
-        return handOverAndEvict(countEvictionsForSpace(payloadLength));
+        var total = countEvictionsForSpace(payloadLength);
+        var byCount = Math.min(total, Math.max(0L, rawEventCount() - capacity + 1));
+        var tail = rawTailOffset();
+
+        return total <= 0
+               ? unitResult()
+               : advanceTail(tail + total, tail + byCount, RemovalCause.COUNT, RemovalCause.BYTES);
     }
 
     private long countEvictionsForSpace(int payloadLength) {
@@ -2031,33 +2213,18 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return count;
     }
 
-    private void evictOldest() {
-        var tail = rawTailOffset();
-
-        if (tail > rawHeadOffset()) {
-            return;
-        }
-
-        header.setTail(tail + 1);
-        header.setEventCount(rawEventCount() - 1);
-        header.setDataTailPos(dataTailPos() + dataLengthAt(Math.floorMod(tail, capacity)));
-        // The new tail must be visible before the slot it frees is overwritten — the writer half of
-        // the reader's post-copy check in retainedAfterCopy (#1340).
-        VarHandle.storeStoreFence();
-    }
-
     private void evictByCount(long maxCount) {
         var excess = rawEventCount() - maxCount;
 
         if (excess > 0) {
-            notifyAndEvict(excess);
+            notifyAndEvict(excess, RemovalCause.COUNT);
         }
     }
 
     private void evictBySize(long maxBytes) {
         var countToEvict = countEvictionsBySize(maxBytes);
 
-        notifyAndEvict(countToEvict);
+        notifyAndEvict(countToEvict, RemovalCause.BYTES);
     }
 
     /// Retention-driven reclamation. A refusal by the eviction listener is absorbed by design-out, not
@@ -2066,8 +2233,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// retention is a `void` sweep driven from [#applyRetention] / [#evictByAge], so the refusal has no caller
     /// to return to — the same shape as the other `void` sweep paths here.
     @Contract
-    private void notifyAndEvict(long count) {
-        handOverAndEvict(count).onFailure(this::retentionDeferred);
+    private void notifyAndEvict(long count, RemovalCause cause) {
+        handOverAndEvict(count, cause).onFailure(this::retentionDeferred);
     }
 
     private void retentionDeferred(Cause cause) {
@@ -2080,12 +2247,34 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Hand the oldest `count` events to the eviction listener and reclaim them once it has taken them. The
     /// listener takes ownership synchronously and seals asynchronously, so reclamation is immediate; the
     /// partition WAL holds the events until their seal lands (#1234).
-    private Result<Unit> handOverAndEvict(long count) {
-        if (count <= 0) {
-            return unitResult();
-        }
+    private Result<Unit> handOverAndEvict(long count, RemovalCause cause) {
+        return count <= 0
+               ? unitResult()
+               : advanceTail(rawTailOffset() + count, cause);
+    }
 
-        return handOver(count).onSuccess(_ -> evictOldest(count));
+    /// Move the tail to `to`, every removed record by `cause`. Under `appendLock`.
+    Result<Unit> advanceTail(long to, RemovalCause cause) {
+        return advanceTail(to, to, cause, cause);
+    }
+
+    /// Move the tail to `to`: the records below `split` removed by `low`, the rest by `high`. What can refuse is checked BEFORE the
+    /// hand-over (`to` above `head + 1`, or not above the tail), so no refusal follows a successful hand-over and no record is
+    /// handed to the listener twice. Then one publish of R moves the tail and its causes together.
+    private Result<Unit> advanceTail(long to, long split, RemovalCause low, RemovalCause high) {
+        var tail = rawTailOffset();
+
+        return tripped(admitted(tail, to)).flatMap(_ -> handOver(to - tail))
+                      .flatMap(_ -> evictThrough(tail, to, split, low, high));
+    }
+
+    private Result<Unit> admitted(long tail, long to) {
+        return to > rawHeadOffset() + 1 || to <= tail
+               ? RingStateViolated.ringStateViolated("advanceTail to " + to
+                                                    + " is outside (" + tail
+                                                    + ", " + (rawHeadOffset() + 1)
+                                                    + "]").result()
+               : unitResult();
     }
 
     private Result<Unit> handOver(long count) {
@@ -2099,10 +2288,36 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                        .onSuccess(_ -> updateSealedOffsetFromEvents(events));
     }
 
-    private void evictOldest(long count) {
-        for (long i = 0; i < count; i++) {
-            evictOldest();
-        }
+    /// Reclaim `[tail, to)` and publish R: the count and the data tail position first, then the ONE publish of R (its
+    /// store-store fence comes before any slot it frees is overwritten, the writer half of [#retainedAfterCopy]).
+    private Result<Unit> evictThrough(long tail, long to, long split, RemovalCause low, RemovalCause high) {
+        reclaim(tail, to);
+
+        return tripped(successor(header.ledger(), to, split, low, high).flatMap(header::publish));
+    }
+
+    @Contract
+    private void reclaim(long tail, long to) {
+        var reclaimedBytes = bytesOf(tail, to - 1);
+
+        header.setEventCount(rawEventCount() - (to - tail));
+        header.setDataTailPos(dataTailPos() + reclaimedBytes);
+    }
+
+    private Result<RemovalLedger> successor(RemovalLedger current,
+                                            long to,
+                                            long split,
+                                            RemovalCause low,
+                                            RemovalCause high) {
+        return mode == Mode.PERSISTENT
+               ? current.advanced(to)
+               : removedTo(current, split, low).flatMap(lowered -> removedTo(lowered, to, high));
+    }
+
+    private Result<RemovalLedger> removedTo(RemovalLedger current, long to, RemovalCause cause) {
+        return to > current.tail()
+               ? current.removed(to, cause)
+               : success(current);
     }
 
     private void updateSealedOffsetFromEvents(List<RawEvent> events) {

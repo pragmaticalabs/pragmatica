@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -12,11 +13,13 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import org.pragmatica.lang.io.FileError;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -51,6 +54,9 @@ public final class LocalDiskTier implements StorageTier {
     private static final Logger log = LoggerFactory.getLogger(LocalDiskTier.class);
 
     private static final Fn1<Cause, Throwable> READ_ERROR = t -> StorageError.ReadError.readError(t.getMessage());
+
+    /// What a read of a block file that is not there fails with; [#readBlockDefault] answers it as absent.
+    private static final Cause VANISHED = Causes.cause("block file is gone");
 
     private static final Fn1<Cause, Throwable> WRITE_ERROR = t -> StorageError.WriteError.writeError(t.getMessage());
 
@@ -571,12 +577,30 @@ public final class LocalDiskTier implements StorageTier {
         return readerOverride.fold(() -> readBlockDefault(id), reader -> reader.apply(id));
     }
 
+    /// None when there is no file at the block path, including one deleted while it was being read: a check followed by a
+    /// read would fail for a block a delete removes between the two, so the read is the one operation (#3594). Absence is what
+    /// the read itself reports, a `NoSuchFileException`; a directory or special file at the path, or any other failure, is a
+    /// read failure. The path is not looked at after a failed read: a put can place the block again between the read and any
+    /// later look, and a read that found nothing is still a read that found nothing.
     private Result<Option<byte[]>> readBlockDefault(BlockId id) {
         var path = blockPath(id);
 
-        return FileOps.exists(path)
-               ? FileOps.readBytes(path).map(Option::some)
-               : Result.success(none());
+        return Result.lift(e -> readFailure(path, e),
+                           () -> Files.readAllBytes(path))
+                     .fold(LocalDiskTier::absentOrFailed,
+                           content -> Result.success(some(content)));
+    }
+
+    private static Cause readFailure(Path path, Throwable failure) {
+        return failure instanceof NoSuchFileException
+               ? VANISHED
+               : new FileError.ReadFailed(path, failure.getMessage());
+    }
+
+    private static Result<Option<byte[]>> absentOrFailed(Cause cause) {
+        return cause == VANISHED
+               ? Result.success(none())
+               : cause.result();
     }
 
     private Result<Unit> writeBlock(BlockId id, byte[] content) {

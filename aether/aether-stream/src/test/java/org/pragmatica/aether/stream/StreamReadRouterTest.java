@@ -245,8 +245,17 @@ class StreamReadRouterTest {
         return Promise.unitPromise();
     }
 
+    /// The stream under test: a 10-entry ring. The hot window is declared equal to the retention so the ring holds the same
+    /// 10 entries whether it is sized from retention or from the declared window; `max_event_size` is pinned to the first
+    /// segment (256 KiB) so the ring's first data region is the same in both.
     private static StreamConfig config() {
-        return StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10, 1_048_576L, 600_000L), "earliest");
+        return HotWindowFixture.declaredHot(StreamConfig.streamConfig(STREAM,
+                                                                      1,
+                                                                      RetentionPolicy.retentionPolicy(10, 1_048_576L, 600_000L),
+                                                                      "earliest",
+                                                                      256 * 1024L),
+                                            10,
+                                            1_048_576L);
     }
 
     private static ConsumerCursorStore nullStore() {

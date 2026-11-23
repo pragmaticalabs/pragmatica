@@ -60,17 +60,21 @@ class HeldNotMaterializedProbeTest {
     private StreamForwardHandler handler;
     private final List<ReadForwardResponse> answers = new CopyOnWriteArrayList<>();
 
+    /// The hot window is declared equal to the retention (a data region below one segment, so the event size does not move the
+    /// floor): the floor holds whether the ring is sized from retention or from the declared window.
     private static StreamConfig config(String name, int partitions) {
-        return StreamConfig.streamConfig(name,
-                                         partitions,
-                                         RetentionPolicy.retentionPolicy(100, 64 * 1024L, 3_600_000L),
-                                         "latest",
-                                         1_048_576L,
-                                         ConsistencyMode.EVENTUAL,
-                                         1,
-                                         1,
-                                         StreamCompression.NONE,
-                                         Option.none());
+        var config = StreamConfig.streamConfig(name,
+                                               partitions,
+                                               RetentionPolicy.retentionPolicy(100, 64 * 1024L, 3_600_000L),
+                                               "latest",
+                                               1_048_576L,
+                                               ConsistencyMode.EVENTUAL,
+                                               1,
+                                               1,
+                                               StreamCompression.NONE,
+                                               Option.none());
+
+        return HotWindowFixture.declaredHot(config, 100, 64 * 1024L);
     }
 
     private static ValuePut<StreamConfigKey, StreamConfigValue> configPut(StreamConfig config) {

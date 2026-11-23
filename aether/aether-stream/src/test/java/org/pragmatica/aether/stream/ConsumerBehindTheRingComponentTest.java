@@ -77,7 +77,7 @@ class ConsumerBehindTheRingComponentTest {
     @BeforeEach
     void setUp() {
         manager = streamPartitionManager();
-        manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10, 1_048_576L, 600_000L), "earliest"))
+        manager.createStream(config())
                .onFailure(cause -> fail(cause.message()));
         publish(30);
         manager.tieredReader(tier.reader());
@@ -248,7 +248,7 @@ class ConsumerBehindTheRingComponentTest {
 
         assigneeManager.set(assignee);
         assignee.placementRoleSupplier((_, _) -> ReplicaSetController.Role.NONE);
-        assignee.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10, 1_048_576L, 600_000L), "earliest"))
+        assignee.createStream(config())
                 .onFailure(cause -> fail(cause.message()));
         var clientRef = new StreamForwardClient[1];
         StreamForwardTransport ownerToAssignee = AcceptingStreamForwardTransport.accepting((_, message) -> clientRef[0].onReadForwardResponse((ReadForwardResponse) message));
@@ -347,5 +347,18 @@ class ConsumerBehindTheRingComponentTest {
         var owner = NodeId.nodeId("owner").unwrap();
 
         return new StreamPartitionOwnershipValue(owner, E2, 2L, HlcTimestamp.ZERO, List.of(owner), 3L, false, List.of(), starts);
+    }
+
+    /// The stream under test: a 10-entry ring. The hot window is declared equal to the retention so the ring holds the same
+    /// 10 entries whether it is sized from retention or from the declared window; `max_event_size` is pinned to the first
+    /// segment (256 KiB) so the ring's first data region is the same in both.
+    private static StreamConfig config() {
+        return HotWindowFixture.declaredHot(StreamConfig.streamConfig(STREAM,
+                                                                      1,
+                                                                      RetentionPolicy.retentionPolicy(10, 1_048_576L, 600_000L),
+                                                                      "earliest",
+                                                                      256 * 1024L),
+                                            10,
+                                            1_048_576L);
     }
 }

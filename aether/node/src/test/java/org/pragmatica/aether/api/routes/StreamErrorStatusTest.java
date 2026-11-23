@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.segment.SegmentError;
@@ -93,6 +94,7 @@ class StreamErrorStatusTest {
         all.put(new StreamError.RetentionCountUnindexable("s", 1, 2), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.RetentionBoundInvalid("s", "b", -1), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.ReplicationRefused("s", Causes.cause("c")), HttpStatus.CONFLICT);
+        all.put(new StreamError.StreamStorageUnknown("s"), HttpStatus.CONFLICT);
         all.put(new StreamError.PartitionCapExceeded("s", 1, 1, 1, 1), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.StaleEpochAppend("s", 0, EPOCH, EPOCH), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.ProvenanceRegression("s", 0, EPOCH, EPOCH), HttpStatus.INTERNAL_SERVER_ERROR);
@@ -296,7 +298,7 @@ class StreamErrorStatusTest {
         var retention = RetentionPolicy.retentionPolicy(5, 1024 * 1024, 600_000);
 
         try {
-            manager.createStream(StreamConfig.streamConfig(StreamManager.engineKey(address), 1, retention, "earliest")).onFailure(cause -> fail(cause.message()));
+            manager.createStream(rolledStreamConfig(StreamManager.engineKey(address), retention)).onFailure(cause -> fail(cause.message()));
             namespaces.registry()
                       .register(org.pragmatica.aether.slice.stream.StreamRegistryEntry.operator(address, retention, java.time.Instant.now()))
                       .onFailure(cause -> fail(cause.message()));
@@ -311,6 +313,15 @@ class StreamErrorStatusTest {
         } finally {
             manager.close();
         }
+    }
+
+    /// A 5-entry ring: the hot window is declared equal to the retention so the ring holds the same 5 entries whether it is
+    /// sized from retention or from the declared window; `max_event_size` is pinned to the first segment (256 KiB) so the
+    /// ring's first data region is the same in both.
+    private static StreamConfig rolledStreamConfig(String engineKey, RetentionPolicy retention) {
+        return HotWindowFixture.declaredHot(StreamConfig.streamConfig(engineKey, 1, retention, "earliest", 256 * 1024L),
+                                            retention.maxCount(),
+                                            retention.maxBytes());
     }
 
     /// `STREAMS_EVENTS` must read the engine by `StreamManager#engineKey`, not the address string: the two differ only for the
