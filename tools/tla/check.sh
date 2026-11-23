@@ -30,7 +30,7 @@ for v in "$disk_max" "$mem_min" "$guard_secs"; do [[ $v =~ ^[0-9]+$ ]] || { echo
 [[ $guard_secs -ge 1 ]] || guard_secs=1
 raw="$out/${module}_${variant}.raw"
 metadir="states/run$$"   # this run's own states dir (relative to $out): the only dir a guard kill removes
-( cd "$out" && exec java -XX:+UseParallelGC ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" -cleanup -deadlock ${TLC_OPTS:-} \
+( cd "$out" && exec java -XX:+UseParallelGC -XX:+UseCompactObjectHeaders ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" -cleanup -deadlock ${TLC_OPTS:-} \
     -metadir "$metadir" -config "${module}_${variant}.cfg" "$module.tla" ) > "$raw" 2>&1 &
 tlc=$!
 # a TERM/INT to this script (run.sh's timeout) takes the TLC it started down with it, never a pattern match

@@ -175,6 +175,34 @@ property and the pinned count. A results file with another header is refused (ex
 - **What a row does not say.** It records that TLC explored a model extracted from the code at that commit, within the
   profile's bounds; it does not say the code still matches the model after later commits (that is `touched.py`'s job).
 
+### Making the PR checks required (owner)
+
+`fragment-touched` and `fragment-paths` are fit to be required contexts of the merge-queue ruleset (`rc6-merge-queue`, id
+27494155; add them next to `fragment`, GitHub Actions as the integration). What makes them fit, and what each decision rests on:
+
+- **They report on the merge queue.** The workflow also triggers on `merge_group`; a required context that never reports there
+  holds the queue forever. A merge_group run takes the sha concurrency group and is never cancelled by another.
+- **The merge group is re-judged, per queued squash commit.** `fragment-touched` has no PR body on a merge group, and the tree
+  of a PR queued behind another is not the tree its pull_request run judged, so passing with a line would be an unearned claim.
+  It walks the first-parent commits of `base_sha..head` and runs `touched.py` on each `commit^1..commit`, with the excuses read
+  (`gh api`) from the body of the PR that commit's subject names (`(#N)`, which a squash adds; a commit that names none is
+  judged without excuse). Judging each commit on its own patch, not the group's sum, matters: a later PR that changes the
+  fragment would otherwise excuse an earlier one that left it alone. `fragment-paths` reads no body and no diff (the tree
+  against itself), so it runs unchanged on the queue's commit, which is the tree that will be merged. `evidence-rows` states
+  that a squash drops the PR commits the ancestry of its rows is checked against, and passes with that line (it is not a
+  proposed required check).
+- **The instrument is the base's.** Each job reads `tools/tla` from the base revision (`git archive`) into a temp dir and runs
+  the scripts and their self-tests from there against the PR's tree, so a branch older than the instrument is judged
+  (#3605 failed with `NO TESTS RAN`: its own checkout had no `test_touched.py`) and a PR cannot weaken the judge that judges it.
+  When the change edits `tools/tla/*.py` or its fixtures, the head's copy and tests also run. An instrument the base lacks is
+  one `INSTRUMENT ABSENT:` line (exit 1), never exit 5 or a pass. `test_workflow.py` is the exception: it reads the head's
+  workflows, README and scripts against each other, so it is the head's, and a branch too old to carry it is told to merge the base.
+- **Not closed by this:** a PR can still edit the workflow file itself (it comes from the PR's merge commit). A ruleset
+  `workflows` rule or CODEOWNERS on `.github/workflows/` closes that and is the owner's.
+- **Tests:** `test_workflow.py` classes `QueueAndInstrument` (the wiring), `MergeGroupDryRun` (the merge_group step's own shell
+  executed over a scratch queue history with a `gh` shim) and `InstrumentFromBase` (the #3605 shape: a branch whose
+  `tools/tla` lacks `test_touched.py`).
+
 ### In CI
 
 The `TLA+ models` workflow (`.github/workflows/tla-models.yml`) runs on demand, on a push to `release-1.0.0-rc6` that
@@ -223,7 +251,7 @@ while any of the three disagrees or a job downloads from anywhere else. Re-run t
 
 Environment: `TLA_JAR` (default `~/tools/tla/tla2tools.jar`), `TLC_WORKERS`, `TLC_OPTS`, `TLA_OUT` (default
 `target/tla/<Module>` for `check.sh`, `target/tla` for `run.sh`), `TLC_CONST` (`check.sh`: space-separated
-`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options), `TLA_DISK_MAX`, `TLA_MEM_MIN_MB`, `TLA_GUARD_SECS` (`check.sh`: the resource guard, below), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it), `PINS_TSV` (`run.sh`: a different pinned-counts table). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
+`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options; TLC always runs with `-XX:+UseCompactObjectHeaders`, JDK 25+, measured on DHTDepartureDrain `strand`: heap after GC -21% at peak, RSS -8%, state counts unchanged), `TLA_DISK_MAX`, `TLA_MEM_MIN_MB`, `TLA_GUARD_SECS` (`check.sh`: the resource guard, below), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it), `PINS_TSV` (`run.sh`: a different pinned-counts table). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
 is `<out>/<Module>_<Variant>.log`; the console gets the verdict, the counterexample as actions with their Java
 positions, and the state counts.
 
