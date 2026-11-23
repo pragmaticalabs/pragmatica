@@ -2,9 +2,10 @@
 # Runs: on demand (workflow_dispatch), on a push to release-1.0.0-rc6 that touches tools/tla/** or a Java file carrying a
 # tla fragment (the paths list below is generated: tools/tla/fragment-paths.py --sync, checked by a step of this job), and
 # on a schedule. Never on a pull request, and not a required check: a red run is a flake-priority issue.
-# The schedule fires only from the DEFAULT branch's copy of this file (today release-1.0.0-rc5, stale), so it is dormant
-# until the default branch moves; it checks out RELEASE_BRANCH explicitly, whatever the default is. Until then the push
-# trigger is what runs the models. Scheduled and pushed runs use profile small and every module.
+# The schedule fires only from the DEFAULT branch's copy of this file. The default branch is release-1.0.0-rc6 and its copy
+# of this file has the dispatch trigger only, so the schedule starts when this file reaches release-1.0.0-rc6; the schedule
+# checks out RELEASE_BRANCH explicitly, whatever the default is. Scheduled and pushed runs use profile small and every
+# module; the schedule adds profile heavy for the models that have a heavy row.
 # Trigger by hand: gh workflow run tla-models.yml -f profile=small -f modules='.*'
 # One job per model (a matrix planned by tools/tla/plan-matrix.py from models.tsv), so the wall time of a run is the slowest
 # model's, not the sum. A row marked `heavy` in models.tsv (it does not finish inside the small budget) is not run by the
@@ -68,7 +69,9 @@ concurrency:
 
 env:
   RELEASE_BRANCH: release-1.0.0-rc6
-  TLA_VERSION: v1.8.0
+  # The jar is the owner-approved asset of this repository's release tla2tools-2026.11.06, not a download from the TLA+ project
+  # (tools/tla/README.md, "Where the jar comes from"). The checksum is the pin: it is the only thing a job trusts.
+  TLA_JAR_URL: https://github.com/pragmaticalabs/pragmatica/releases/download/tla2tools-2026.11.06/tla2tools.jar
   TLA_SHA256: e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f
 
 jobs:
@@ -120,23 +123,24 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tla/tla2tools.jar
-          key: tla2tools-${{ env.TLA_VERSION }}-${{ env.TLA_SHA256 }}
+          key: tla2tools-${{ env.TLA_SHA256 }}
 
       - name: Download tla2tools.jar
         if: steps.tla-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p .tla
-          curl -fsSL -o .tla/tla2tools.jar "https://github.com/tlaplus/tlaplus/releases/download/${TLA_VERSION}/tla2tools.jar"
+          curl -fsSL -o .tla/tla2tools.jar "${TLA_JAR_URL}"
 
       - name: Verify tla2tools.jar checksum
         run: echo "${TLA_SHA256}  .tla/tla2tools.jar" | sha256sum -c -
 
-      - name: Python self-tests (fragment paths, shard plan, evidence rows)
+      - name: Python self-tests (fragment paths, shard plan, evidence rows, workflow wiring)
         run: |
           set -euo pipefail
           python3 -m unittest discover -s tools/tla -p 'test_fragment_paths.py' -v
           python3 -m unittest discover -s tools/tla -p 'test_plan_matrix.py' -v
           python3 -m unittest discover -s tools/tla -p 'test_results_check.py' -v
+          python3 -m unittest discover -s tools/tla -p 'test_workflow.py' -v
           python3 tools/tla/fragment-paths.py --check
 
       - name: Runner self-test
@@ -169,13 +173,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tla/tla2tools.jar
-          key: tla2tools-${{ env.TLA_VERSION }}-${{ env.TLA_SHA256 }}
+          key: tla2tools-${{ env.TLA_SHA256 }}
 
       - name: Download tla2tools.jar
         if: steps.tla-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p .tla
-          curl -fsSL -o .tla/tla2tools.jar "https://github.com/tlaplus/tlaplus/releases/download/${TLA_VERSION}/tla2tools.jar"
+          curl -fsSL -o .tla/tla2tools.jar "${TLA_JAR_URL}"
 
       - name: Verify tla2tools.jar checksum
         run: echo "${TLA_SHA256}  .tla/tla2tools.jar" | sha256sum -c -

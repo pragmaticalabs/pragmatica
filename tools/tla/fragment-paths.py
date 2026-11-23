@@ -6,10 +6,12 @@ generated from extract.py's own discovery (extract.scan over every Java file und
 
   fragment-paths.py --print   one path per line (files under tools/tla/ are left out: the workflow's tools/tla/** covers them)
   fragment-paths.py --sync    rewrite the generated block of the workflow between the BEGIN and END markers
-  fragment-paths.py --check   exit 1, naming every file that carries a fragment but is not listed, and every listed file
-                              that carries none (a stale entry)
+  fragment-paths.py --check   exit 1, naming every file that carries a fragment but is not listed, every listed file
+                              that carries none (a stale entry), and every model module that has fragments in a Java
+                              file but no row in models.tsv (such a module is never run, so nothing else would notice)
 
-Options: --base DIR (default .), --workflow FILE (default .github/workflows/tla-models.yml).
+Options: --base DIR (default .), --workflow FILE (default .github/workflows/tla-models.yml), --models FILE (default
+models.tsv beside this script).
 """
 import argparse
 import os
@@ -25,9 +27,10 @@ SKIP_DIRS = {'.git', 'target', 'node_modules', '.m2-local', '.tla'}
 COVERED = 'tools/tla/'
 
 
-def discover(base):
-    """Sorted relative paths of the Java files under base that hold at least one fragment, outside tools/tla/."""
-    found = []
+def scan_files(base):
+    """{relative path: set of module names} of the Java files under base that hold at least one fragment, outside tools/tla/
+    (tools/tla/fixtures holds the extractor's own test models, which are not run by models.tsv)."""
+    found = {}
     for d, dirs, files in os.walk(base):
         dirs[:] = sorted(x for x in dirs if x not in SKIP_DIRS)
         for name in files:
@@ -40,9 +43,21 @@ def discover(base):
             with open(path, encoding='utf-8', errors='replace') as f:
                 if '```tla' not in f.read():
                     continue
-            if any(True for _ in extract.scan(path, rel)):
-                found.append(rel)
-    return sorted(found)
+            modules = {m for _, m, _, _, _, _ in extract.scan(path, rel)}
+            if modules:
+                found[rel] = modules
+    return found
+
+
+def discover(base):
+    """Sorted relative paths of the Java files under base that hold at least one fragment, outside tools/tla/."""
+    return sorted(scan_files(base))
+
+
+def model_rows(models):
+    """The module names of models.tsv (first column of every row that is not blank or a comment)."""
+    with open(models, encoding='utf-8') as f:
+        return {l.split('\t')[0] for l in f if l.strip() and not l.lstrip().startswith('#')}
 
 
 def block_bounds(lines):
@@ -84,9 +99,11 @@ def main():
     g.add_argument('--check', action='store_true')
     ap.add_argument('--base', default='.')
     ap.add_argument('--workflow', default='.github/workflows/tla-models.yml')
+    ap.add_argument('--models', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.tsv'))
     a = ap.parse_args()
     try:
-        paths = discover(a.base)
+        files = scan_files(a.base)
+        paths = sorted(files)
     except extract.Fail as e:
         print(f'fragment-paths: ERROR {e}', file=sys.stderr)
         sys.exit(2)
@@ -106,10 +123,22 @@ def main():
             print(f'fragment-paths: RED {p} is in the paths list of {a.workflow} but carries no tla fragment (or does not exist)')
         for p in dup:
             print(f'fragment-paths: RED {p} is listed twice in {a.workflow}')
+        try:
+            rows = model_rows(a.models)
+        except OSError as e:
+            print(f'fragment-paths: ERROR {e}', file=sys.stderr)
+            sys.exit(2)
+        unrun = {}
+        for p, mods in files.items():
+            for m in mods - rows:
+                unrun.setdefault(m, []).append(p)
+        for m in sorted(unrun):
+            print(f'fragment-paths: RED module {m} has tla fragments in {", ".join(sorted(unrun[m]))} but no row in {a.models}: it is never model-checked')
         if missing or stale or dup:
             print('fragment-paths: run tools/tla/fragment-paths.py --sync')
+        if missing or stale or dup or unrun:
             sys.exit(1)
-        print(f'fragment-paths: OK {len(paths)} fragment files, all listed in {a.workflow}')
+        print(f'fragment-paths: OK {len(paths)} fragment files, all listed in {a.workflow}; {len({m for v in files.values() for m in v})} modules, all with a row in {a.models}')
 
 
 if __name__ == '__main__':

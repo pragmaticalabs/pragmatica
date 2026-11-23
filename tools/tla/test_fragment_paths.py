@@ -36,6 +36,8 @@ class FragmentPaths(unittest.TestCase):
         self.d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.d)
         self.wf = os.path.join(self.d, 'wf.yml')
+        self.models = os.path.join(self.d, 'models.tsv')
+        self.model_rows('M')
 
     def java(self, rel, text=FRAGMENT):
         p = os.path.join(self.d, rel)
@@ -47,8 +49,12 @@ class FragmentPaths(unittest.TestCase):
         with open(self.wf, 'w') as f:
             f.write(WORKFLOW.format(entries='\n'.join(f"      - '{e}'" for e in entries)))
 
+    def model_rows(self, *modules, extra=''):
+        with open(self.models, 'w') as f:
+            f.write(extra + ''.join(f'{m}\tsrc\tok\tpass\t-\t-\twhat\n' for m in modules))
+
     def check(self):
-        return run(['--check', '--base', self.d, '--workflow', self.wf])
+        return run(['--check', '--base', self.d, '--workflow', self.wf, '--models', self.models])
 
     def test_all_fragment_files_listed_is_green(self):
         self.java('m/A.java'); self.java('m/B.java')
@@ -130,6 +136,53 @@ class FragmentPaths(unittest.TestCase):
         self.assertIn("      - 'tools/tla/**'\n", text)
         self.assertNotIn('Stale', text)
         self.assertTrue(text.endswith('# END fragment-paths\n'), repr(text[-40:]))
+
+    # F4 (#3593): a model module that has fragments in a Java file but no row in models.tsv is never run; that is RED.
+    def test_module_without_a_models_row_is_red_and_named_with_its_file(self):
+        self.java('m/A.java'); self.java('m/Newbie.java', FRAGMENT.replace('M:head', 'Newbie:head'))
+        self.workflow('m/A.java', 'm/Newbie.java')
+        rc, out = self.check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('RED module Newbie has tla fragments in m/Newbie.java but no row in', out)
+        self.assertNotIn('RED module M ', out)
+
+    def test_module_whose_only_fragments_are_tlacfg_still_needs_a_row(self):
+        self.java('m/A.java'); self.java('m/Cfg.java', '/// ```tlacfg Cfg:ok\n/// INVARIANT X\n/// ```\nclass Cfg {}\n')
+        self.workflow('m/A.java', 'm/Cfg.java')
+        rc, out = self.check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('RED module Cfg ', out)
+
+    def test_a_commented_out_models_row_is_not_a_row(self):
+        self.model_rows('Other', extra='# M\tsrc\tok\tpass\t-\t-\tcommented out\n')
+        self.java('m/A.java'); self.workflow('m/A.java')
+        rc, out = self.check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('RED module M ', out)
+
+    def test_one_module_across_two_files_needs_one_row(self):
+        self.java('m/A.java'); self.java('m/B.java')
+        self.workflow('m/A.java', 'm/B.java')
+        rc, out = self.check()
+        self.assertEqual(rc, 0, out)
+        self.assertIn('1 modules, all with a row', out)
+
+    def test_unreadable_models_file_is_an_error_not_a_pass(self):
+        self.java('m/A.java'); self.workflow('m/A.java')
+        os.remove(self.models)
+        rc, out = self.check()
+        self.assertEqual(rc, 2, out)
+
+    def test_real_models_tsv_with_one_module_removed_is_red(self):
+        with open(os.path.join(HERE, 'models.tsv')) as f:
+            lines = f.read().split('\n')
+        kept = [l for l in lines if not l.startswith('Stalled\t')]
+        self.assertLess(len(kept), len(lines))
+        with open(self.models, 'w') as f:
+            f.write('\n'.join(kept))
+        rc, out = run(['--check', '--base', REPO, '--workflow', REAL_WORKFLOW, '--models', self.models])
+        self.assertEqual(rc, 1, out)
+        self.assertIn('RED module Stalled has tla fragments in aether/aether-stream/', out)
 
     def test_real_repository_workflow_lists_every_fragment_file(self):
         rc, out = run(['--check', '--base', REPO, '--workflow', REAL_WORKFLOW])

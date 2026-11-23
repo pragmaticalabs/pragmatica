@@ -139,7 +139,7 @@ line that holds code (not a blank line, not a comment) falls inside such a regio
   region early or late.
 - **Excuse**: a line `tla-unchanged: <Module>: <reason>` in the PR body (the reason is required; the marker covers every
   fragment of that module in the PR). Use it when the model still describes the code, e.g. metrics-only edits.
-- The base is reduced to `merge-base(base, head)`; a rename is followed; a file new in the PR has no fragment to keep.
+- The base is reduced to `merge-base(base, head)`; a rename is followed (`git diff -M`, explicit so a `diff.renames=false` config cannot hide it; a move below git's similarity threshold is matched through the deleted file's fragments by Module:Part); a deletion of code that follows a fragment's doc comment counts as a change of its region; a file new in the PR has no fragment to keep. Deleting a fragment together with its code is not checked (a removed model has no region left to compare).
 - Not a required check (a ruleset edit, the owner's). Tests: `python3 -m unittest discover -s tools/tla -p test_touched.py`
   (fixture repositories for every case, plus the real rc6 commits of #3455 and #3278 as positive controls, and the live case of
   2026-11-22: #3576 over the not-yet-landed #3580 fragments of `DHTDepartureDrain` is RED for Plan, Retarget and Halt, while
@@ -172,7 +172,8 @@ property and the pinned count. A results file with another header is refused (ex
 
 The `TLA+ models` workflow (`.github/workflows/tla-models.yml`) runs on demand, on a push to `release-1.0.0-rc6` that
 touches `tools/tla/**` or a Java file carrying a fragment, and on a schedule (daily: small for every model, heavy for the models with a heavy row). It
-never runs on a pull request and is not a required check; a red run is a flake-priority issue.
+never runs TLC on a pull request and is not a required check; a red run is a flake-priority issue. (The cheap checks that need no
+TLC run on a pull request in `TLA+ PR checks`: `fragment-touched`, `evidence-rows` and `fragment-paths`.)
 
 - **One job per model.** `tools/tla/plan-matrix.py --event E --profile P --modules REGEX` reads `models.tsv` and prints the
   GitHub matrix; the workflow's `plan` job feeds it to the `model-check` job (`fail-fast: false`, so a red model hides no
@@ -184,10 +185,16 @@ never runs on a pull request and is not a required check; a red run is a flake-p
   markers from `extract.py`'s own discovery (every Java file with a fragment, outside `tools/tla/`, which the glob
   covers). `fragment-paths.py --check` names every fragment file missing from the list and every stale entry; the
   workflow runs it, and `test_fragment_paths.py` (a fragment file missing turns it red) before the models. A PR that
-  adds a fragment to a new file runs `--sync`.
-- **The schedule is dormant while the default branch is stale.** GitHub fires `schedule:` only from the default
-  branch's copy of the workflow (today `release-1.0.0-rc5`). Until the default branch moves, the push trigger is what
-  runs the models. A scheduled run checks out `RELEASE_BRANCH` (the `env:` of the workflow), not the default branch.
+  adds a fragment to a new file runs `--sync`. The same `--check` runs on every pull request (job `fragment-paths` of
+  `TLA+ PR checks`, no TLC), so a PR that skipped `--sync` is red at PR time, not after the merge. `--check` also reads
+  `models.tsv`: a model module that has fragments in a Java file but no row there is RED and named (it would never be
+  model-checked), and `test_workflow.py` pins this wiring (the jar pin, the PR job, one list of profiles: `small`, `full`,
+  `sim`, `heavy`, which `run.sh`, `results-check.py`, `plan-matrix.py`, the dispatch input and this README must agree on).
+- **The schedule starts when the workflow reaches the default branch.** GitHub fires `schedule:` only from the default
+  branch's copy of the workflow. The default branch is `release-1.0.0-rc6` (`gh repo view --json defaultBranchRef`) and
+  its copy has the dispatch trigger only, so the schedule is dormant until this file is merged there; a push trigger on the
+  same branch fires from the pushed commit's own copy. A scheduled run checks out `RELEASE_BRANCH` (the `env:` of the
+  workflow), not the default branch; when the default branch moves, `RELEASE_BRANCH` and the `push:` branch move with it.
 
 ```
 gh workflow run tla-models.yml -f profile=small -f modules='.*'
@@ -195,8 +202,17 @@ gh workflow run tla-models.yml --ref <branch> -f profile=full -f modules=SharedP
 gh run watch                                   # then download the tla-models-* artifact for the TLC logs
 ```
 
-It pins `tla2tools.jar` (version and sha256 in the workflow); each shard runs `selftest.sh` for its module, then `run.sh` at
-its profile for that module, and uploads `target/tla/` (every config's TLC log with Java positions) and its evidence rows.
+Each shard runs `selftest.sh` for its module, then `run.sh` at its profile for that module, and uploads `target/tla/`
+(every config's TLC log with Java positions) and its evidence rows.
+
+**Where the jar comes from.** Every job downloads `tla2tools.jar` from one asset of this repository: the release
+`tla2tools-2026.11.06` of `pragmaticalabs/pragmatica` (`env.TLA_JAR_URL` of the workflow), approved by the owner, and
+verifies it against `env.TLA_SHA256` (`e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f`, the jar every
+build host carries) in a step that runs on a cache hit too. The cache key is the sha, so a new pin never reads an old
+cache. The TLA+ project's own release page is not used: its `v1.8.0` asset has another sha256, so the pin there never matched.
+**To move the pin:** upload the new jar as an asset of a new release (a new tag, never a replaced asset), then change
+`TLA_JAR_URL` and `TLA_SHA256` together in the workflow and the two lines above in this README; `test_workflow.py` fails
+while any of the three disagrees or a job downloads from anywhere else. Re-run the build hosts' jars too (`sha256sum`).
 
 Environment: `TLA_JAR` (default `~/tools/tla/tla2tools.jar`), `TLC_WORKERS`, `TLC_OPTS`, `TLA_OUT` (default
 `target/tla/<Module>` for `check.sh`, `target/tla` for `run.sh`), `TLC_CONST` (`check.sh`: space-separated
