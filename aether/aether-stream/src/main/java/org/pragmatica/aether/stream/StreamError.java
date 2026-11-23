@@ -644,6 +644,17 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A stream config whose declared storage mode this build cannot read (#3458 M-1): the config was decoded from a newer
+    /// build's value, so its `storage` is `UNKNOWN`, and `UNKNOWN` is decode-only. Refused at the WRITE of a config, so a
+    /// decoded `UNKNOWN` is never written back as a mode a newer build would read as one of its own. A fatal config error for
+    /// this build, never retried.
+    record StreamStorageUnknown(String streamName) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' declares a storage mode this build does not know".formatted(streamName);
+        }
+    }
+
     /// Cluster-wide aggregate partition-cap breach (#265 increment 4, spec §7/§10/§11): admitting this stream
     /// would push the cluster's total materialized-ring count (Σ `partitions × replicas` across every committed
     /// stream plus this one) past the aggregate guard `100 × nodes × maxDeclaredReplicas` — the Kafka-style

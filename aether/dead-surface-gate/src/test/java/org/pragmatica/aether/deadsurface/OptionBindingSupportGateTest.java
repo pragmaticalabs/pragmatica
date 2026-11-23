@@ -138,6 +138,7 @@ class OptionBindingSupportGateTest {
                                                                          "StreamDeclaration.expectedIngressBytesPerSecond : org.pragmatica.lang.Option<java.lang.Long>",
                                                                          "StreamDeclaration.hot : org.pragmatica.lang.Option<org.pragmatica.aether.slice.HotWindowDeclaration>",
                                                                          "StreamDeclaration.retention : org.pragmatica.lang.Option<org.pragmatica.aether.slice.RetentionDeclaration>",
+                                                                         "StreamDeclaration.storage : org.pragmatica.lang.Option<org.pragmatica.aether.slice.StreamStorage>",
                                                                          "StreamDeclaration.truncation : org.pragmatica.lang.Option<org.pragmatica.aether.slice.TruncationDeclaration>",
                                                                          "TopicConfig.confirmationFactor : org.pragmatica.lang.Option<java.lang.Integer>",
                                                                          "TopicConfig.partitions : org.pragmatica.lang.Option<java.lang.Integer>",
