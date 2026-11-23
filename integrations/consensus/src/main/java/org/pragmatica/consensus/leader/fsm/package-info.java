@@ -13,10 +13,11 @@
 /// proofs: a passing config says no violation exists within its constants.
 ///
 /// Abstractions (what the model leaves out, so a result says nothing about it): eligibility (every candidate is
-/// eligible, this node is none of them); the electing states' KV pull and proposals (an electing node learns a
-/// leader only from a pushed commit or, in local mode, its own tick; the waiting states' KV pulls, at entry, on the
-/// poll and at the grace timeout, are the one unconditional adoption `V_Grace` models, with the local KV replica equal
-/// to the committed record); the grace timer's re-arm while KV sync is pending (the timeout may fire at any time, or
+/// eligible, this node is none of them); proposals (an electing node learns a leader from a pushed commit, from its
+/// KV pull `E_Pull` or, in local mode, its own tick; the waiting states' KV pulls, at entry, on the poll and at the
+/// grace timeout, are `V_Grace`; every pull reads a local KV replica equal to the committed record); the electing
+/// states' hold of a leader (an election from a waiting state drops the leader the context carries: `ReElecting`'s
+/// entry clears it, `Electing`, entered only by a node never `Led`, keeps one a passive pull adopted); the grace timer's re-arm while KV sync is pending (the timeout may fire at any time, or
 /// never); the pre-vote (consensus mode's `enableLeaderPreVote`: `loseLeader` keeps `Led` with an out-of-view leader
 /// while the electorate votes, and the model drops that leader at once, so `VotingInView` is claimed for pre-vote
 /// disabled only; modelling it is #3589); the local view path's election (`LeaderManager`
@@ -43,7 +44,7 @@
 /// \* and removals. Env: the environment events enabled in a run ("view", "stale", "remove", "commit", "demote": a
 /// \* PassiveDirectory reaching a voting state, and "readmit": VoterReadmitted reaching Passive).
 /// \* Fixed: the fixes the modelled code carries. AllFixes is the code as it stands (release-1.0.0-rc6, with #3581,
-/// \* #3605 and #3588 finding A). A config that drops one models the code without it and must fail:
+/// \* #3605 and #3588 finding A and F1). A config that drops one models the code without it and must fail:
 /// \*   serial        - Passive's push admission check and its write are one step against the view (#3587, know
 /// \*                   45a9e2fdd9; fixed by #3605: LeaderManager runs observeViewSequence and the push's dispatch in
 /// \*                   one task of the node's serial executor, which every view write also enters; before it,
@@ -65,13 +66,18 @@
 /// \*                   monotonically (#3588 finding A, know 900c63b485: rc6's AwaitingKvSync re-adopted the held
 /// \*                   leader at the observed sequence, below the one a passive pull had adopted, and QuorumWaiting
 /// \*                   adopted an older push outright; configs `readmitnoadseq`, `readmitstale` drop it)
+/// \*   kvseq         - every voting state's KV pull dispatches the record with its own sequence and follows up no
+/// \*                   record older than the adopted leader (#3588 F1, 74769fea20, kvCommitToAdopt: before it the
+/// \*                   pull was sequence-less, so the pulled leader recorded only the observed sequence and a queued
+/// \*                   older push then swapped it out; config `nokvseq` drops it)
 /// \* Mutant: vacuity controls, edits no version of the code carried; each must break the invariant it names:
 /// \*   dropempty (I1: an empty view is not stored), nostalegate (I1: a stale view is applied), nohold (I2: the I2
 /// \*   site holds nothing), seqgatelocal (I3: a local commit takes the cluster sequence gate)
 /// CONSTANTS NodeCount, Role, Local, MaxSeq, MaxCommits, EnvSteps, Env, Fixed, Mutant
 ///
 /// Nodes == 1..NodeCount
-/// AllFixes == {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull", "adseq"}
+/// AllFixes == {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull", "adseq",
+///              "kvseq"}
 /// Fix(f) == f \in Fixed
 /// Mut(m) == m \in Mutant
 /// ASSUME Fixed \subseteq AllFixes
@@ -99,10 +105,12 @@
 ///     removed,  \* ghost: the nodes removed view-free since that view (I1)
 ///     named,    \* ghost: the node the step's view-free removal named failed, None after any other step (I2)
 ///     suspect,  \* ghost: a held leader a removal named failed, until an applied view or a newer commit (liveness)
-///     cluster   \* ghost: Led's leader came from a cluster commit and no view checked it since (FIX 1)
+///     cluster,  \* ghost: Led's leader came from a cluster commit and no view checked it since (FIX 1)
+///     taken     \* ghost: the highest sequence of a committed record an adoption took in this node's life (the
+///               \* record's own, whatever adSeq recorded; a sequence-less re-adoption of the held leader takes none)
 ///
 /// vars == <<st, leader, view, vseq, kv, pend, adSeq, lastAd, obsSeq, base, adm, env, hi, removed, named, suspect,
-///           cluster>>
+///           cluster, taken>>
 ///
 /// \* LeaderElectionContext.applyTopology (I1): a sequenced view replaces the stored one, an empty one included, iff
 /// \* its sequence is above the stored one (#2971), check and write in one getAndUpdate.
@@ -123,7 +131,8 @@
 ///
 /// \* isOlderThanAdopted, the one staleness rule (Passive's since #3581, every voting adoption's with "adseq", #3588
 /// \* finding A): a commit with a real sequence below the adopted one, or equal to it for a leader other than the one
-/// \* adopted at it. A sequence-less commit (the waiting states' KV pull, V_Grace) is never older.
+/// \* adopted at it. A sequence-less commit (AwaitingKvSync's re-adoption of the held leader; without "kvseq" the voting
+/// \* states' KV pull) is never older.
 /// OlderThanAdopted(r) == r[2] > 0 /\ (r[2] < adSeq \/ (r[2] = adSeq /\ lastAd # r[1]))
 ///
 /// \* skippedAsOlderThanAdopted, at a voting adoption (adoptLeaderUnconditionally, adoptLeaderIfPostElectionCommit):
@@ -133,6 +142,12 @@
 /// \* recordAdoptedSequence for a commit at sequence s with the observed committed sequence o: with "adseq" the largest
 /// \* of the adopted sequence, s and o, so adSeq never moves down; rc6 recorded the larger of s and o.
 /// RecordAd(s, o) == IF Fix("adseq") THEN Max(adSeq, Max(s, o)) ELSE Max(s, o)
+///
+/// \* The commit a voting state's KV pull dispatches: with "kvseq" the record with its own sequence (#3588 F1), without
+/// \* it (rc6) the record's leader with no sequence. KvTakes is kvCommitToAdopt's staleness filter (graceTimeoutFallthrough
+/// \* applies the same one): a record to adopt, not older than the adopted leader.
+/// KvRec == IF Fix("kvseq") THEN kv ELSE <<kv[1], 0>>
+/// KvTakes == kv # NoRec /\ ~OlderThanAdopted(KvRec)
 ///
 /// \* observeCommittedLeader's gate (#3581): a real commit not older than the adopted one (isOlderThanAdopted), and
 /// \* the leader in the stored view v (admittedToView), on the push and the pull alike.
@@ -149,7 +164,7 @@
 ///                /\ named' = None
 ///
 /// \* observeCommittedLeader's write: setAdoptedViewSequence, then setCurrentLeader (which records lastAdoptedLeader).
-/// AdoptP(r) == leader' = r[1] /\ adSeq' = r[2] /\ lastAd' = r[1]
+/// AdoptP(r) == leader' = r[1] /\ adSeq' = r[2] /\ lastAd' = r[1] /\ taken' = Max(taken, r[2])
 ///
 /// \* -- Environment: transport sequences and LeaderKey commits from other components --
 /// Ev == env > 0 /\ env' = env - 1
@@ -164,7 +179,7 @@
 ///              /\ pend' = pend \cup {kv'}
 ///              /\ named' = None
 ///              /\ UNCHANGED <<st, leader, view, vseq, adSeq, lastAd, obsSeq, base, adm, env, hi, removed, suspect,
-///                             cluster>>
+///                             cluster, taken>>
 /// ```
 ///
 /// ```tla LeaderAdmission:tail
@@ -185,12 +200,13 @@
 ///         /\ named = None
 ///         /\ suspect = None
 ///         /\ cluster = FALSE
+///         /\ taken = 0
 ///
 /// EnvNext == \E l \in Nodes : Commit(l)
 /// ViewNext == \/ \E S \in SUBSET Nodes, q \in 1..MaxSeq : P_View(S, q) \/ V_View(S, q)
 ///             \/ \E n \in Nodes : P_Remove(n) \/ V_Remove(n)
 /// Push(r) == D_Push(r) \/ P_Push(r) \/ P_Check(r) \/ V_PushWaiting(r) \/ V_PushElecting(r) \/ V_PushLed(r)
-/// SysNext == \/ P_Enter \/ P_Write \/ L_Tick \/ V_Grace \/ P_Readmit
+/// SysNext == \/ P_Enter \/ P_Write \/ L_Tick \/ V_Grace \/ E_Pull \/ P_Readmit
 ///            \/ \E r \in pend : \/ D_Push(r) \/ P_Push(r) \/ P_Check(r)
 ///                             \/ V_PushWaiting(r) \/ V_PushElecting(r) \/ V_PushLed(r)
 /// Next == EnvNext \/ ViewNext \/ SysNext
@@ -210,8 +226,10 @@
 /// \* I2, Passive: Passive holds a leader only inside its stored view (no admission in flight) and never the node the
 /// \* step's removal named failed.
 /// PassiveInView == st = "passive" /\ leader # None /\ adm = NoRec => leader \in view
-/// \* I2, every state: the held leader is not the node the step's view-free removal named failed.
-/// NotNamedFailed == leader # None => leader # named
+/// \* I2, every state that holds a leader (heldLeader: Led and Passive): the held leader is not the node the step's
+/// \* view-free removal named failed. A waiting state after a readmission keeps the context's leader, which no I2 site
+/// \* holds to the view.
+/// NotNamedFailed == st \in {"passive", "led"} /\ leader # None => leader # named
 /// \* I2, voting: Led's leader is in the stored view unless a cluster commit adopted it and no view checked it since
 /// \* (FIX 1: a consensus decision the node took part in is adopted when absent; the next view checks it). Pre-vote
 /// \* disabled: with the pre-vote Led keeps an out-of-view leader while the electorate votes (an abstraction, above).
@@ -227,11 +245,11 @@
 /// \* adoptedViewSequence never moves back: an adoption at an older sequence is a lost update (the split admission
 /// \* writes a push the view write's re-pull has overtaken).
 /// AdSeqMono == [][adSeq' >= adSeq]_vars
-/// \* No push is adopted while older than the adopted leader (know 900c63b485, #3588 finding A): a push below the
-/// \* adopted sequence, or at it for another leader, leaves the held leader as it was (written out, not through
-/// \* OlderThanAdopted, so it does not share the premise of the rule it checks).
-/// NoOlderAdoption == [][\A r \in pend \ pend' :
-///                          (r[2] < adSeq \/ (r[2] = adSeq /\ r[1] # lastAd)) => leader' = leader]_vars
+/// \* No push older than a record already adopted displaces the held leader (know 900c63b485, #3588 finding A and F1):
+/// \* checked against the ghost taken, the records' own sequences, not against adSeq or OlderThanAdopted, so it does
+/// \* not share the premise of the rule it checks (a commit's sequence names one commit, so an older record is one with
+/// \* a lower sequence). A pull reads the newest record, so only a push can be older.
+/// NoOlderAdoption == [][\A r \in pend \ pend' : r[2] < taken => leader' = leader]_vars
 /// \* I3: a leaderless electing state in local mode makes progress on its own ticks: a stable non-empty view ends Led.
 /// LocalProgress == <>[](view # {}) => <>[](st = "led")
 /// ```
@@ -340,7 +358,8 @@
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"serial", "entryhold", "pushinview", "pullinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "pushinview", "pullinview", "repull", "removalnopull", "adseq",
+///                   "kvseq"}
 /// PROPERTY PassiveLearns
 /// ```
 ///
@@ -352,7 +371,8 @@
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pullinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pullinview", "repull", "removalnopull", "adseq",
+///                   "kvseq"}
 /// INVARIANT PassiveInView
 /// ```
 ///
@@ -364,7 +384,8 @@
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "repull", "removalnopull", "adseq",
+///                   "kvseq"}
 /// INVARIANT PassiveInView
 /// ```
 ///
@@ -376,7 +397,8 @@
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "removalnopull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "removalnopull", "adseq",
+///                   "kvseq"}
 /// PROPERTY PassiveLearns
 /// ```
 ///
@@ -388,7 +410,8 @@
 ///           EnvSteps = 3
 ///           Env = {"view", "remove", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "repull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "repull", "adseq",
+///                   "kvseq"}
 /// INVARIANT NotNamedFailed
 /// ```
 ///
@@ -472,7 +495,8 @@
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull", "adseq",
+///                   "kvseq"}
 /// INVARIANT PassiveInView
 /// ```
 ///
@@ -484,7 +508,8 @@
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull", "adseq",
+///                   "kvseq"}
 /// PROPERTY PassiveLearns
 /// ```
 ///
@@ -496,7 +521,8 @@
 ///           EnvSteps = 3
 ///           Env = {"view", "commit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull", "adseq",
+///                   "kvseq"}
 /// PROPERTY AdSeqMono
 /// ```
 ///
@@ -508,7 +534,8 @@
 ///           EnvSteps = 3
 ///           Env = {"view", "commit", "demote"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"serial", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"serial", "entrypull", "pushinview", "pullinview", "repull", "removalnopull", "adseq",
+///                   "kvseq"}
 /// INVARIANT PassiveInView
 /// ```
 ///
@@ -520,7 +547,8 @@
 ///           EnvSteps = 3
 ///           Env = {"view", "commit", "readmit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull",
+///                   "kvseq"}
 /// PROPERTY AdSeqMono
 /// ```
 ///
@@ -532,7 +560,21 @@
 ///           EnvSteps = 3
 ///           Env = {"view", "commit", "readmit"}
 ///           Mutant = {}
-/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull"}
+/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull",
+///                   "kvseq"}
+/// PROPERTY NoOlderAdoption
+/// ```
+///
+/// ```tlacfg LeaderAdmission:nokvseq
+/// CONSTANTS Role = "voting"
+///           Local = FALSE
+///           MaxSeq = 3
+///           MaxCommits = 2
+///           EnvSteps = 3
+///           Env = {"view", "commit"}
+///           Mutant = {}
+/// CONSTANT Fixed = {"serial", "entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull",
+///                   "adseq"}
 /// PROPERTY NoOlderAdoption
 /// ```
 package org.pragmatica.consensus.leader.fsm;

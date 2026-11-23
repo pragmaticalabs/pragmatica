@@ -104,7 +104,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// \* dropped, the case #3414's entry pull covers.
     /// D_Push(r) == /\ st = "dormant"
     ///              /\ PushStep(r)
-    ///              /\ UNCHANGED <<st, leader, view, vseq, kv, adSeq, lastAd, base, adm, env, hi, removed, suspect, cluster>>
+    ///              /\ UNCHANGED <<st, leader, view, vseq, kv, adSeq, lastAd, base, adm, env, hi, removed, suspect, cluster,
+    ///                             taken>>
     /// ```
     @Contract
     record Dormant(LeaderElectionContext ctx) implements LeaderElectionState {
@@ -306,19 +307,29 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// cluster that shows no leader and no sync in flight is genuinely leaderless and lets this node elect.
     ///
     /// ```tla LeaderAdmission:V_Grace
-    /// \* The waiting states' KV pull (AwaitingKvSync's entry and grace timeout, QuorumWaiting's poll; after a
-    /// \* readmission the entries' pull re-adopts the held leader, `.orElse(ctx::currentLeader)`, which the KV record
-    /// \* names), cluster mode: a committed leader in the KV record is adopted unconditionally (FIX 1, sequence-less, so
-    /// \* never older: recordAdoptedSequence records the observed sequence, with "adseq" never below the adopted one);
-    /// \* with none, the grace timeout elects (Electing or ReElecting, whose entry snapshots the baseline). The re-arm
-    /// \* while KV sync is pending changes no modelled variable, so it is left out.
+    /// \* The waiting states' KV pull (AwaitingKvSync's entry and grace timeout, QuorumWaiting's entry and poll), cluster
+    /// \* mode. With "kvseq" (#3588 F1) the pull dispatches the record with its own sequence, and a record older than the
+    /// \* adopted leader is no leader to adopt (kvCommitToAdopt; this method's filter): the grace timeout adopts the
+    /// \* record unconditionally w.r.t. the view (FIX 1) or, with none to adopt, elects; AwaitingKvSync's entry, with none
+    /// \* to adopt (the record names the held leader, or is older), re-adopts the held leader sequence-less
+    /// \* (`.orElse(ctx::currentLeader)`, #1803); QuorumWaiting's entry and poll adopt the record or do nothing. Without it
+    /// \* (rc6) the pull is sequence-less: a committed leader in the KV record is adopted and records the observed sequence
+    /// \* (recordAdoptedSequence; with "adseq" never below the adopted one), AwaitingKvSync's entry re-adopts the held
+    /// \* leader the same way when the record names it or is absent, and with none the grace timeout elects. An
+    /// \* election enters Electing or ReElecting, whose entry snapshots the baseline, and drops the context's leader (an
+    /// \* abstraction for Electing, above). The re-arm while KV sync is pending changes no modelled variable, so it is
+    /// \* left out.
     /// V_Grace == /\ st = "waiting"
-    ///            /\ IF kv # NoRec
-    ///               THEN /\ st' = "led" /\ leader' = kv[1] /\ lastAd' = kv[1] /\ adSeq' = RecordAd(0, obsSeq)
-    ///                    /\ cluster' = TRUE
-    ///                    /\ UNCHANGED base
-    ///               ELSE /\ st' = "electing" /\ base' = obsSeq
-    ///                    /\ UNCHANGED <<leader, lastAd, adSeq, cluster>>
+    ///            /\ \/ /\ KvTakes
+    ///                  /\ st' = "led" /\ leader' = kv[1] /\ lastAd' = kv[1] /\ adSeq' = RecordAd(KvRec[2], obsSeq)
+    ///                  /\ taken' = Max(taken, kv[2]) /\ cluster' = TRUE
+    ///                  /\ UNCHANGED base
+    ///               \/ /\ leader # None /\ (kv[1] = leader \/ ~KvTakes)
+    ///                  /\ st' = "led" /\ lastAd' = leader /\ adSeq' = RecordAd(0, obsSeq) /\ cluster' = TRUE
+    ///                  /\ UNCHANGED <<leader, base, taken>>
+    ///               \/ /\ ~KvTakes
+    ///                  /\ st' = "electing" /\ base' = obsSeq /\ leader' = None
+    ///                  /\ UNCHANGED <<lastAd, adSeq, cluster, taken>>
     ///            /\ named' = None
     ///            /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, adm, env, hi, removed, suspect>>
     /// ```
@@ -708,7 +719,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///                 /\ hi' = HiNext(S, q)
     ///                 /\ removed' = RemovedNext(q)
     ///                 /\ named' = None
-    ///                 /\ UNCHANGED <<kv, pend, adSeq, lastAd, obsSeq, adm>>
+    ///                 /\ UNCHANGED <<kv, pend, adSeq, lastAd, obsSeq, adm, taken>>
     /// ```
     private static boolean storeView(LeaderElectionContext ctx, ClusterFsmEvent.TopologyChange event) {
         var applied = ctx.applyTopology(event);
@@ -738,7 +749,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///                      /\ base' = IF lose THEN obsSeq ELSE base
     ///                 /\ named' = n
     ///                 /\ cluster' = FALSE
-    ///                 /\ UNCHANGED <<vseq, kv, pend, adSeq, lastAd, obsSeq, adm, hi, suspect>>
+    ///                 /\ UNCHANGED <<vseq, kv, pend, adSeq, lastAd, obsSeq, adm, hi, suspect, taken>>
     /// ```
     private static boolean storeRemoval(LeaderElectionContext ctx, PeerRemovedFromView event) {
         var removed = ctx.removeFromView(event.node());
@@ -808,9 +819,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// V_PushLed(r) == /\ st = "led"
     ///                 /\ PushStep(r)
     ///                 /\ IF r[1] # leader /\ r[2] > adSeq
-    ///                    THEN /\ leader' = r[1] /\ lastAd' = r[1] /\ cluster' = TRUE
+    ///                    THEN /\ leader' = r[1] /\ lastAd' = r[1] /\ cluster' = TRUE /\ taken' = Max(taken, r[2])
     ///                         /\ adSeq' = IF Fix("adseq") THEN RecordAd(r[2], obsSeq') ELSE r[2]
-    ///                    ELSE UNCHANGED <<leader, lastAd, adSeq, cluster>>
+    ///                    ELSE UNCHANGED <<leader, lastAd, adSeq, cluster, taken>>
     ///                 /\ UNCHANGED <<st, view, vseq, kv, base, adm, env, hi, removed, suspect>>
     /// ```
     private static void handleLeaderCommittedInLed(LeaderElectionContext ctx,
@@ -1033,7 +1044,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         ///            /\ IF Fix("entrypull") /\ kv # NoRec /\ Admits(kv, "pull", view)
         ///               THEN AdoptP(kv) /\ suspect' = IF kv[2] > adSeq THEN None ELSE suspect
         ///               ELSE /\ leader' = IF Fix("entryhold") /\ Lost(view, leader, None) THEN None ELSE leader
-        ///                    /\ UNCHANGED <<adSeq, lastAd, suspect>>
+        ///                    /\ UNCHANGED <<adSeq, lastAd, suspect, taken>>
         ///            /\ named' = None
         ///            /\ cluster' = FALSE
         ///            /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, base, adm, env, hi, removed>>
@@ -1069,7 +1080,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         ///                         THEN /\ AdoptP(kv)
         ///                              /\ suspect' = IF kv[2] > adSeq THEN None ELSE IF leader = n THEN n ELSE suspect
         ///                         ELSE /\ leader' = IF Lost(v1, leader, n) THEN None ELSE leader
-        ///                              /\ UNCHANGED <<adSeq, lastAd>>
+        ///                              /\ UNCHANGED <<adSeq, lastAd, taken>>
         ///                              /\ suspect' = IF leader = n THEN n ELSE suspect
         ///                /\ named' = n
         ///                /\ UNCHANGED <<st, vseq, kv, pend, obsSeq, base, adm, hi, cluster>>
@@ -1085,7 +1096,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         ///              /\ st' = "waiting"
         ///              /\ named' = None
         ///              /\ UNCHANGED <<leader, view, vseq, kv, pend, adSeq, lastAd, obsSeq, base, adm, env, hi, removed,
-        ///                             suspect, cluster>>
+        ///                             suspect, cluster, taken>>
         /// ```
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
@@ -1127,7 +1138,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///                          THEN /\ AdoptP(kv)
     ///                               /\ suspect' = IF ap \/ kv[2] > adSeq THEN None ELSE suspect
     ///                          ELSE /\ leader' = IF Lost(v1, leader, None) THEN None ELSE leader
-    ///                               /\ UNCHANGED <<adSeq, lastAd>>
+    ///                               /\ UNCHANGED <<adSeq, lastAd, taken>>
     ///                               /\ suspect' = IF ap THEN None ELSE suspect
     ///                 /\ hi' = HiNext(S, q)
     ///                 /\ removed' = RemovedNext(q)
@@ -1151,7 +1162,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///              /\ PushStep(r)
     ///              /\ IF Admits(r, "push", view)
     ///                 THEN AdoptP(r) /\ suspect' = IF r[2] > adSeq THEN None ELSE suspect
-    ///                 ELSE UNCHANGED <<leader, adSeq, lastAd, suspect>>
+    ///                 ELSE UNCHANGED <<leader, adSeq, lastAd, suspect, taken>>
     ///              /\ UNCHANGED <<st, view, vseq, kv, base, adm, env, hi, removed, cluster>>
     /// ```
     ///
@@ -1163,7 +1174,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///               /\ adm = NoRec
     ///               /\ PushStep(r)
     ///               /\ adm' = IF Admits(r, "push", view) THEN r ELSE NoRec
-    ///               /\ UNCHANGED <<st, leader, view, vseq, kv, adSeq, lastAd, base, env, hi, removed, suspect, cluster>>
+    ///               /\ UNCHANGED <<st, leader, view, vseq, kv, adSeq, lastAd, base, env, hi, removed, suspect, cluster,
+    ///                              taken>>
     /// ```
     ///
     /// ```tla LeaderAdmission:P_Write
@@ -1230,12 +1242,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// V_PushWaiting(r) == /\ st = "waiting"
     ///                     /\ PushStep(r)
     ///                     /\ IF VotingSkips(r)
-    ///                        THEN UNCHANGED <<st, leader, lastAd, adSeq, cluster>>
+    ///                        THEN UNCHANGED <<st, leader, lastAd, adSeq, cluster, taken>>
     ///                        ELSE /\ st' = "led"
     ///                             /\ leader' = r[1]
     ///                             /\ lastAd' = r[1]
     ///                             /\ adSeq' = RecordAd(r[2], obsSeq')
     ///                             /\ cluster' = TRUE
+    ///                             /\ taken' = Max(taken, r[2])
     ///                     /\ UNCHANGED <<view, vseq, kv, base, adm, env, hi, removed, suspect>>
     /// ```
     private static void adoptLeaderUnconditionally(LeaderElectionContext ctx,
@@ -1278,8 +1291,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///                      /\ PushStep(r)
     ///                      /\ IF obsSeq' > base /\ ~VotingSkips(r)
     ///                         THEN /\ st' = "led" /\ leader' = r[1] /\ lastAd' = r[1] /\ adSeq' = RecordAd(r[2], obsSeq')
-    ///                              /\ cluster' = TRUE
-    ///                         ELSE UNCHANGED <<st, leader, lastAd, adSeq, cluster>>
+    ///                              /\ cluster' = TRUE /\ taken' = Max(taken, r[2])
+    ///                         ELSE UNCHANGED <<st, leader, lastAd, adSeq, cluster, taken>>
     ///                      /\ UNCHANGED <<view, vseq, kv, base, adm, env, hi, removed, suspect>>
     /// ```
     private static void adoptLeaderIfPostElectionCommit(LeaderElectionContext ctx,
@@ -1425,6 +1438,29 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// The KV pull's one decision: the committed record the KV-Store holds, with its own sequence (#3588 F1), unless it
     /// names the leader already held or is older than the adopted leader ([#isOlderThanAdopted]). A record the adoption
     /// would refuse is never a follow-up, so an entry hook that finds one falls through to its own no-leader branch.
+    ///
+    /// ```tla LeaderAdmission:E_Pull
+    /// \* The electing states' KV pull (Electing / ReElecting: the entry follow-up, followUpKvLeader; the tick and the
+    /// \* peer-observation timer, adoptLeaderFromKvIfPresent), cluster mode: the pulled commit (KvRec: with "kvseq" the
+    /// \* record with its own sequence, #3588 F1; without it sequence-less), unless it names the held leader or is older
+    /// \* than the adopted one (KvTakes), goes through the LeaderCommitted arm, adoptLeaderIfPostElectionCommit: adopted
+    /// \* iff the observed committed sequence postdates the entry baseline and the commit is not skipped as older. A pull
+    /// \* this refuses changes nothing. The waiting states' use of this decision is V_Grace; local mode has no record.
+    /// E_Pull == /\ st = "electing"
+    ///           /\ ~Local
+    ///           /\ KvTakes
+    ///           /\ kv[1] # leader
+    ///           /\ obsSeq > base
+    ///           /\ ~VotingSkips(KvRec)
+    ///           /\ st' = "led"
+    ///           /\ leader' = kv[1]
+    ///           /\ lastAd' = kv[1]
+    ///           /\ adSeq' = RecordAd(KvRec[2], obsSeq)
+    ///           /\ taken' = Max(taken, kv[2])
+    ///           /\ cluster' = TRUE
+    ///           /\ named' = None
+    ///           /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, base, adm, env, hi, removed, suspect>>
+    /// ```
     private static Option<LeaderCommitted> kvCommitToAdopt(LeaderElectionContext ctx) {
         return ctx.currentLeaderFromKvSupplier()
                   .get()
@@ -1592,7 +1628,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///           /\ adSeq' = RecordAd(0, obsSeq)
     ///           /\ cluster' = FALSE
     ///           /\ named' = None
-    ///           /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, base, adm, env, hi, removed, suspect>>
+    ///           /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, base, adm, env, hi, removed, suspect, taken>>
     /// ```
     private static void electLocallyOnTick(LeaderElectionContext ctx, LeaderElectionState owner) {
         if (ctx.fsm().current() != owner) {
