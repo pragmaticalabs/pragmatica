@@ -1,0 +1,3 @@
+### Added (2026-11-23 — #3580: embedded TLA+ model of the DHT departure drain)
+- **An embedded TLA+ model of the DHT departure drain** (`DHTDepartureDrain`): plan, re-plan on a view change or an exit, halt, and receiver acceptance after #3576. The skeleton and the configs sit in `integrations/dht/.../dht/package-info.java`; the actions sit in doc comments on `DeparturePushRun`, `DHTAntiEntropy` and `DHTTopologyListener` (comments only, no behaviour change). Known-bad configs are listed with the property each must violate.
+- The model does not distinguish a non-holder credit at its bounds (#3590): #3576's defect is pinned by its Java tests only.
