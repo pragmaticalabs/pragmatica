@@ -33,6 +33,7 @@ import java.util.function.Supplier;
 
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// #1803 (b): a node that has just JOINED a live cluster (an observer admitted as a voter) must not
 /// start an election while a committed leader is live. The incident: a replacement sorting first by
@@ -85,7 +86,7 @@ class JoinerElectionTest {
                                             LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                             LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                             () -> true,
-                                            kvLeader,
+                                            () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                             grace);
 
         context.set(ctx);
@@ -94,8 +95,10 @@ class JoinerElectionTest {
     }
 
     /// The path a replacement core takes: passive observer of the formed electorate (it sees the committed
-    /// leader), then admitted as a voter, then consensus ready.
+    /// leader), then admitted as a voter, then consensus ready. The transport links the leader first: a passive
+    /// observer adopts only a committed leader in its stored view (#3581).
     private void joinAsObserverThenVoter(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) {
+        h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
         h.dispatch(new PassiveDirectory(List.of(LEADER, PEER)));
         h.dispatch(new LeaderCommitted(LEADER, 1L));
         context.get().installVoters(ELECTORATE);
@@ -168,6 +171,8 @@ class JoinerElectionTest {
     void awaitingKvSync_observedLeaderVotedOutOfTheReadmittingConfiguration_isNotFollowed() {
         var h = harness(Option.none(), LONG);
 
+        // A passive observer adopts only a committed leader in its stored view (#3581): the transport links it first.
+        h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
         h.dispatch(new PassiveDirectory(List.of(LEADER, PEER)));
         h.dispatch(new LeaderCommitted(LEADER, 1L));
         assertThat(context.get().currentLeader()).as("precondition: observed while passive").isEqualTo(Option.some(LEADER));

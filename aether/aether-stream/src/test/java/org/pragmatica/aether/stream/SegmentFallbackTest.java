@@ -34,6 +34,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.stream.HotWindowFixture.declaredHot;
 import static org.pragmatica.aether.stream.PartitionedStreamAccess.streamAccess;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
@@ -75,13 +76,20 @@ class SegmentFallbackTest {
 
         // Wire SegmentSealer as the eviction listener so evicted events get sealed
         partitionManager = streamPartitionManager(Long.MAX_VALUE, sealer);
-        var retention = RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_DATA_BYTES, 600_000);
-        partitionManager.createStream(StreamConfig.streamConfig(STREAM, PARTITION_COUNT, retention, "earliest"));
+        partitionManager.createStream(ringConfig());
 
         PartitionedStreamAccess.CursorCheckpointWriter noopWriter = (_, _, _, _) -> org.pragmatica.lang.Promise.unitPromise();
         access = streamAccess(partitionManager, identitySerializer(), identityDeserializer(),
                               STREAM, PARTITION_COUNT, Option.<Function<byte[], Object>>none(),
                               noopWriter, tieredReader);
+    }
+
+    /// The fixture's ring: retention and declared hot window agree (count, bytes), so the ring holds the same entries
+    /// whether it is sized from retention or from the hot window.
+    private static StreamConfig ringConfig() {
+        var retention = RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_DATA_BYTES, 600_000);
+
+        return declaredHot(StreamConfig.streamConfig(STREAM, PARTITION_COUNT, retention, "earliest"), RING_CAPACITY, RING_DATA_BYTES);
     }
 
     @AfterEach
@@ -158,9 +166,8 @@ class SegmentFallbackTest {
         @Test
         void fetch_offsetInNeitherTier_failsExplicitly_insteadOfEmpty() {
             var unsealedManager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP);
-            var retention = RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_DATA_BYTES, 600_000);
 
-            unsealedManager.createStream(StreamConfig.streamConfig(STREAM, PARTITION_COUNT, retention, "earliest"));
+            unsealedManager.createStream(ringConfig());
 
             PartitionedStreamAccess.CursorCheckpointWriter noopWriter = (_, _, _, _) -> org.pragmatica.lang.Promise.unitPromise();
             var unsealedAccess = streamAccess(unsealedManager, identitySerializer(), identityDeserializer(),
@@ -185,9 +192,8 @@ class SegmentFallbackTest {
         void fetch_offsetWhoseSealIsPending_failsInFlightAndTransient() {
             var pendingSeals = new CopyOnWriteArrayList<Promise<Unit>>();
             var inFlightManager = streamPartitionManager(Long.MAX_VALUE, segmentSealer((_, _) -> pendingSeal(pendingSeals)));
-            var retention = RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_DATA_BYTES, 600_000);
 
-            inFlightManager.createStream(StreamConfig.streamConfig(STREAM, PARTITION_COUNT, retention, "earliest"));
+            inFlightManager.createStream(ringConfig());
 
             PartitionedStreamAccess.CursorCheckpointWriter noopWriter = (_, _, _, _) -> Promise.unitPromise();
             var inFlightAccess = streamAccess(inFlightManager, identitySerializer(), identityDeserializer(),

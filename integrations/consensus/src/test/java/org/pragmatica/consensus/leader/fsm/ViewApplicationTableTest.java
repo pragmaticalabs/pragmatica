@@ -47,6 +47,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// #3092 + #3426 (ruling d73377451d): view application in the leader-election FSM, pinned cell by cell as
 /// (state x view event x mode) -> (resulting state, leader). The leader column is [LeaderElectionContext#currentLeader()],
@@ -65,8 +66,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// - I3: a leaderless electing state progresses on its own tick in local mode (it elects the first node of the
 ///   view); in cluster mode a tick submits a proposal and the leader comes from the consensus commit.
 /// States that hold no leader and do not adopt one (`Dormant`, `QuorumLost`, `Stopped`) only store the view, in both
-/// modes; `Passive` stores it and drops an observed leader the view lacks (I2, F-a4). (`Stopped` and `Passive` used to
-/// ignore views in cluster mode, so a readmitted worker read a replaced view.)
+/// modes; `Passive` stores it, drops an observed leader the view lacks (I2, F-a4), and re-runs the pull of the committed
+/// record after the write, so it holds the committed leader iff the view holds it (#3581: `REJOIN` re-admits N1).
+/// (`Stopped` and `Passive` used to ignore views in cluster mode, so a readmitted worker read a replaced view.)
 @Timeout(30)
 class ViewApplicationTableTest {
     private static final NodeId N1 = new NodeId("node-1");
@@ -82,7 +84,7 @@ class ViewApplicationTableTest {
     /// evicted, view [N2] (#3426, Led :600); EMPTY = N1 evicted, view [] (#3092); REJOIN = EMPTY, then N1 rejoins
     /// with view [N1 N2] at sequence 3 (#3092, v3436a P1a); TICK = an election tick; REMOVED_LEADER = SWIM marks N1
     /// faulty, the view-free removal (`PeerRemovedFromView`), view [N2] (#3436 F-a2). `Passive` starts observing the
-    /// committed N1 and drops it when a view lacks it (I2 binds every state, F-a4).
+    /// committed N1 (the KV-Store holds its record) and drops it when a view lacks it (I2 binds every state, F-a4).
     private static final String TABLE = """
         DORMANT          NODE_ADDED           LOCAL   Dormant         -
         DORMANT          NODE_ADDED_NO_LEADER LOCAL   Dormant         -
@@ -234,7 +236,7 @@ class ViewApplicationTableTest {
         PASSIVE          GONE_OTHER           LOCAL   Passive         N1
         PASSIVE          GONE_OTHER_NO_LEADER LOCAL   Passive         -
         PASSIVE          EMPTY                LOCAL   Passive         -
-        PASSIVE          REJOIN               LOCAL   Passive         -
+        PASSIVE          REJOIN               LOCAL   Passive         N1
         PASSIVE          TICK                 LOCAL   Passive         N1
         PASSIVE          NODE_ADDED           CLUSTER Passive         N1
         PASSIVE          NODE_ADDED_NO_LEADER CLUSTER Passive         -
@@ -242,7 +244,7 @@ class ViewApplicationTableTest {
         PASSIVE          GONE_OTHER           CLUSTER Passive         N1
         PASSIVE          GONE_OTHER_NO_LEADER CLUSTER Passive         -
         PASSIVE          EMPTY                CLUSTER Passive         -
-        PASSIVE          REJOIN               CLUSTER Passive         -
+        PASSIVE          REJOIN               CLUSTER Passive         N1
         PASSIVE          TICK                 CLUSTER Passive         N1
         PASSIVE          REMOVED_LEADER       LOCAL   Passive         -
         PASSIVE          REMOVED_LEADER       CLUSTER Passive         -
@@ -360,7 +362,7 @@ class ViewApplicationTableTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         () -> true,
-                                                        kvLeader,
+                                                        () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                         LONG,
                                                         LONG,
                                                         LONG,
@@ -375,7 +377,9 @@ class ViewApplicationTableTest {
         }
 
         static Node startedIn(StartState start, Mode mode) {
-            var node = new Node(start.initial, mode);
+            var node = start == StartState.PASSIVE
+                       ? new Node(start.initial, mode, () -> Option.some(N1), LONG)
+                       : new Node(start.initial, mode);
 
             if (start == StartState.LED) {
                 node.harness.dispatch(new ClusterFsmEvent.QuorumEstablished());

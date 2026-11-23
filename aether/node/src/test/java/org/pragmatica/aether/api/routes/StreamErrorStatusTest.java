@@ -94,6 +94,7 @@ class StreamErrorStatusTest {
         all.put(new StreamError.RetentionCountUnindexable("s", 1, 2), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.RetentionBoundInvalid("s", "b", -1), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.ReplicationRefused("s", Causes.cause("c")), HttpStatus.CONFLICT);
+        all.put(new StreamError.StreamStorageUnknown("s"), HttpStatus.CONFLICT);
         all.put(new StreamError.PartitionCapExceeded("s", 1, 1, 1, 1), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.StaleEpochAppend("s", 0, EPOCH, EPOCH), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.ProvenanceRegression("s", 0, EPOCH, EPOCH), HttpStatus.INTERNAL_SERVER_ERROR);

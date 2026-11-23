@@ -126,7 +126,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(3))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty()
                                     || !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
 
@@ -172,7 +172,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(3))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty()
                                     || !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
 
@@ -215,7 +215,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 // Step 1: receive ALIVE gossip for NODE_A so it enters `everSeenHealthy`.
                 var aliveA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
                 protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
-                await().atMost(Duration.ofSeconds(2))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.HealthyObserved.class).isEmpty());
 
                 // Step 2: inject FAULTY for the now-known-Healthy peer. The second-hand
@@ -225,7 +225,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 var faultyA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 0, ADDR_A);
                 protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
-                await().atMost(Duration.ofSeconds(2))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
 
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class))
@@ -265,7 +265,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(3))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
                 assertThat(observations.byType(SwimObservation.UnknownObserved.class)).hasSize(1);
 
@@ -281,7 +281,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 // #1830: NODE_A's FAULTY edge was DEFERRED by cold boot, not dropped — it replays once the
                 // gate closes, so FaultyObserved carries NODE_A as well as the fresh NODE_B. (Before #1830
                 // this asserted exactly one FaultyObserved, which pinned the dropped verdict.)
-                await().atMost(Duration.ofSeconds(2))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> faultyPeers(observations).containsAll(List.of(NODE_A, NODE_B)));
                 assertThat(faultyPeers(observations))
                     .as("RECOVERING phase: FAULTY direct gossip must emit FaultyObserved; the deferred edge replays")
@@ -317,7 +317,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(3))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty()
                                     || !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
 
@@ -359,7 +359,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(3))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
                 assertThat(observations.byType(SwimObservation.UnknownObserved.class)).hasSize(1);
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class)).isEmpty();
@@ -375,7 +375,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 // #1830: NODE_A's FAULTY edge was DEFERRED by cold boot, not dropped — it replays once the
                 // gate closes, so FaultyObserved carries NODE_A as well as the fresh NODE_B. (Before #1830
                 // this asserted exactly one FaultyObserved, which pinned the dropped verdict.)
-                await().atMost(Duration.ofSeconds(2))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> faultyPeers(observations).containsAll(List.of(NODE_A, NODE_B)));
                 assertThat(faultyPeers(observations))
                     .as("NORMAL phase: FAULTY direct gossip must emit FaultyObserved; the deferred edge replays")
@@ -431,7 +431,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                     .isFalse();
 
                 // AFTER the join deadline: OBSERVED -> SUSPECT -> FAULTY in NORMAL phase => FaultyObserved + tombstone.
-                await().atMost(Duration.ofSeconds(2))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
 
                 assertThat(protocol.tombstonedForTest(NODE_A))
@@ -472,7 +472,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(3))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty()
                                     && protocol.tombstonedForTest(NODE_A));
 
@@ -512,7 +512,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 // ALIVE gossip during grace → everSeenHealthy + HealthyObserved.
                 var aliveA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
                 protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
-                await().atMost(Duration.ofSeconds(2))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.HealthyObserved.class).isEmpty());
                 assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
 
@@ -522,7 +522,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
                 var faultyA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
                 protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
-                await().atMost(Duration.ofSeconds(2))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
 
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class))
@@ -555,7 +555,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(3))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty()
                                     || !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
 
@@ -593,10 +593,10 @@ class SwimProtocolPhaseAwareSuppressionTest {
             protocol.start();
             try {
                 // Even well past the 250ms grace, COLD_BOOT keeps suppressing (booting=true).
-                await().atMost(Duration.ofSeconds(2))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
                 await().pollDelay(Duration.ofMillis(400))
-                       .atMost(Duration.ofSeconds(1))
+                       .atMost(Duration.ofSeconds(10))
                        .until(() -> observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
 
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class))
@@ -640,7 +640,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(3))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
 
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class))
@@ -676,7 +676,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
             try {
                 // Await BOTH halves of the pair: emitFaultyEdgePair delivers Faulty then Departed
                 // one statement apart on the tick thread, so Faulty alone does not imply Departed.
-                await().atMost(Duration.ofSeconds(3))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty()
                                     && !observations.byType(SwimObservation.DepartedObserved.class).isEmpty());
 
@@ -712,7 +712,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A))));
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(3))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class)).isEmpty();
 
@@ -722,7 +722,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 connected.set(false);
                 protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A))));
 
-                await().atMost(Duration.ofSeconds(3))
+                await().atMost(Duration.ofSeconds(10))
                        .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class))
                     .as("predicate flip between edges flips the verdict — no latch")

@@ -39,6 +39,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.pragmatica.aether.stream.PartitionedStreamAccess.streamAccess;
+import static org.pragmatica.aether.stream.HotWindowFixture.declaredHot;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
@@ -69,6 +70,10 @@ class StreamRestartVisibleWatermarkTest {
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId PEER = NodeId.randomNodeId();
     private static final long RING_CAPACITY = 2;
+    /// The ring's data region (retention bytes and declared hot bytes alike) and the event size: 256 KiB keeps the first
+    /// data segment at today's 256 KiB when the ring is sized from the hot window (`RingGeometry.firstSegmentBytes`).
+    private static final long RING_BYTES = 1_048_576L;
+    private static final long MAX_EVENT_BYTES = 256 * 1024L;
     private static final long ONE_GB = 1024 * 1024 * 1024L;
     private static final int PUBLISHED = 5;
     private static final long SEALED_THROUGH = 2;
@@ -238,16 +243,18 @@ class StreamRestartVisibleWatermarkTest {
     }
 
     private static StreamConfig config(int minSyncReplicas) {
-        return StreamConfig.streamConfig(STREAM,
-                                         1,
-                                         RetentionPolicy.retentionPolicy(RING_CAPACITY, 1_048_576L, 60_000L),
-                                         "earliest",
-                                         1_048_576L,
-                                         ConsistencyMode.EVENTUAL,
-                                         3,
-                                         minSyncReplicas,
-                                         StreamCompression.NONE,
-                                         Option.none());
+        return declaredHot(StreamConfig.streamConfig(STREAM,
+                                                     1,
+                                                     RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_BYTES, 60_000L),
+                                                     "earliest",
+                                                     MAX_EVENT_BYTES,
+                                                     ConsistencyMode.EVENTUAL,
+                                                     3,
+                                                     minSyncReplicas,
+                                                     StreamCompression.NONE,
+                                                     Option.none()),
+                           RING_CAPACITY,
+                           RING_BYTES);
     }
 
     private static PartitionedStreamAccess.CursorCheckpointWriter noopCheckpointWriter() {

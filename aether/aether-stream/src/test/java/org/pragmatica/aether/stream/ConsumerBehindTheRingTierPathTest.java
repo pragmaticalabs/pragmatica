@@ -51,7 +51,7 @@ class ConsumerBehindTheRingTierPathTest {
     @BeforeEach
     void setUp() {
         manager = streamPartitionManager();
-        manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10, 1_048_576L, 600_000L), "earliest"))
+        manager.createStream(config())
                .onFailure(cause -> fail(cause.message()));
         for (var offset = 0L; offset < 30; offset++) {
             manager.publishLocal(STREAM, PARTITION, SealedTierFixture.payload(offset), 1_000L + offset)
@@ -147,7 +147,7 @@ class ConsumerBehindTheRingTierPathTest {
 
         assigneeManager.set(assignee);
         assignee.placementRoleSupplier((_, _) -> org.pragmatica.aether.stream.replication.ReplicaSetController.Role.NONE);
-        assignee.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10, 1_048_576L, 600_000L), "earliest"))
+        assignee.createStream(config())
                 .onFailure(cause -> fail(cause.message()));
         var clientRef = new org.pragmatica.aether.stream.forward.StreamForwardClient[1];
         org.pragmatica.aether.stream.forward.StreamForwardTransport ownerToAssignee =
@@ -226,5 +226,18 @@ class ConsumerBehindTheRingTierPathTest {
             Thread.onSpinWait();
         }
         assertThat(done.getAsBoolean()).as("%s within 10 s (delivered %s, warnings %s)", what, delivered, codes()).isTrue();
+    }
+
+    /// The stream under test: a 10-entry ring. The hot window is declared equal to the retention so the ring holds the same
+    /// 10 entries whether it is sized from retention or from the declared window; `max_event_size` is pinned to the first
+    /// segment (256 KiB) so the ring's first data region is the same in both.
+    private static StreamConfig config() {
+        return HotWindowFixture.declaredHot(StreamConfig.streamConfig(STREAM,
+                                                                      1,
+                                                                      RetentionPolicy.retentionPolicy(10, 1_048_576L, 600_000L),
+                                                                      "earliest",
+                                                                      256 * 1024L),
+                                            10,
+                                            1_048_576L);
     }
 }
