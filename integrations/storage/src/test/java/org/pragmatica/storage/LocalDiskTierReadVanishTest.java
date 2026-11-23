@@ -25,9 +25,8 @@ class LocalDiskTierReadVanishTest {
     @TempDir
     Path dir;
 
-    /// The window between "the file is there" and "the read" cannot be paused from outside, so the block path holds a
-    /// directory: it exists, a read of it fails, and the path is no regular file, which is the state a vanished file leaves
-    /// when the read finds it gone. The read must answer absent.
+    /// A directory squatting at the block path is no block: a read of it fails, and the path is no regular file, so it answers
+    /// absent as `stat` does. The block file deleted under a read is the race test below; this one pins the other absent branch.
     @Test
     void aReadWhoseFileIsNoRegularFile_isAbsent_notAReadFailure() throws IOException {
         var id = BlockId.blockId("block".getBytes()).unwrap();
@@ -60,7 +59,7 @@ class LocalDiskTierReadVanishTest {
         assertThat(failures.get()).as("reads of a block deleted under them that failed").isZero();
     }
 
-    /// Control: the fix tells a vanished file from a broken read by the path afterwards. A regular file that is there and cannot
+    /// Control: the fix tells a vanished file from a broken read by what failed the read. A regular file that is there and cannot
     /// be read is still a failure, and a block that is there is still read.
     @Test
     void aRegularFileThatCannotBeRead_isStillAReadFailure_andAReadableOneIsRead() throws IOException {
