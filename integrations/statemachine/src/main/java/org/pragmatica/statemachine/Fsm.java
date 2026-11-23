@@ -6,6 +6,7 @@
  */
 package org.pragmatica.statemachine;
 
+import java.lang.reflect.UndeclaredThrowableException;
 import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.atomic.AtomicReference;
@@ -21,12 +22,17 @@ import org.pragmatica.lang.Option;
 /// entry/exit hooks.
 ///
 /// A hook ([`FsmState#onEntry`], [`FsmState#onExit`]) never dispatches; a follow-up event it decides goes through
-/// [`#followUp`]. GUARANTEE: the follow-up is dispatched when the dispatch whose transition ran the hook returns, after
-/// that transition's observer callback, FIFO among that dispatch's follow-ups, each one a full dispatch step (its own
-/// follow-ups are delivered before the next sibling's). MECHANISM: every [`#dispatch`] opens a follow-up frame for the
-/// calling thread, restores the enclosing frame when its handler returns, then drains its own. Code that runs after
-/// that dispatch (the rest of the caller's handler or task) therefore sees the follow-up's outcome, exactly as a nested
-/// dispatch inside the hook would have shown it, and observers see the transitions in the order they happen.
+/// [`#followUp`]. GUARANTEE: a dispatch returns only after every follow-up queued by its completed transition is
+/// dispatched, after that transition's observer callback, FIFO among that dispatch's follow-ups, each one a full
+/// dispatch step (its own follow-ups are delivered before the next sibling's). A follow-up whose dispatch throws stops
+/// neither its later siblings nor the rest of any enclosing frame: the drain continues, and once the queue is empty the
+/// first [Throwable] is rethrown (a checked one, which only a sneaky throw raises, wrapped in
+/// [UndeclaredThrowableException]), with every later distinct one added to it as suppressed. A handler that throws
+/// delivers none of its own follow-ups. MECHANISM: every [`#dispatch`] opens a follow-up frame for the calling thread,
+/// restores the enclosing frame when its handler returns or throws, then drains its own frame only if the handler
+/// returned; the drain catches each follow-up's throwable per step. Code that runs after that dispatch (the rest of the
+/// caller's handler or task) therefore sees the follow-up's outcome, exactly as a nested dispatch inside the hook would
+/// have shown it, and observers see the transitions in the order they happen.
 ///
 /// State identity is by reference. Data-free states must be singletons; data-carrying states
 /// are typically immutable records created fresh per transition. See [`FsmState`] for details.
@@ -136,7 +142,8 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     /// decides whether to request a transition; the CAS happens inside
     /// [`TransitionRequest#transitionTo`].
     ///
-    /// The follow-ups the transition's hooks decided ([`#followUp`]) are dispatched before this returns.
+    /// The follow-ups the transition's hooks decided ([`#followUp`]) are dispatched before this returns; a throwing
+    /// follow-up surfaces here only after the rest are dispatched (see the class GUARANTEE).
     @Contract
     public void dispatch(E event) {
         Queue<E> pending = new ArrayDeque<>();
@@ -154,8 +161,8 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     }
 
     /// The handler runs with `pending` as this thread's frame; the enclosing frame comes back on every exit. A handler
-    /// that throws delivers none of its follow-ups: the exception propagates out of [`#dispatch`] before the drain, so a
-    /// half-run transition starts no further steps (the caller decides what a failed dispatch means).
+    /// that throws delivers none of its follow-ups: the exception propagates out of [`#dispatch`] before the drain, so
+    /// a half-run transition starts no further steps (the caller decides what a failed dispatch means).
     private void handleInFrame(E event, Queue<E> pending) {
         var enclosing = followUps.get();
 
@@ -169,9 +176,52 @@ public final class Fsm<S extends FsmState<S, E>, E> {
         }
     }
 
+    /// Dispatch every queued follow-up in FIFO order, each to completion, a throwing one included: the first throwable
+    /// is rethrown once the queue is empty, later ones suppressed into it (the #3605 ruling: one failed follow-up never
+    /// drops the events queued after it; the caller still sees that a step failed).
     private void drain(Queue<E> pending) {
+        Option<Throwable> failure = Option.none();
+
         for (var next = pending.poll(); next != null; next = pending.poll()) {
-            dispatch(next);
+            failure = dispatchRecordingFailure(next, failure);
+        }
+
+        failure.onPresent(Fsm::rethrow);
+    }
+
+    /// One drain step: dispatch `event`; a throwable becomes the first failure, or is suppressed into the earlier one.
+    @SuppressWarnings("JBCT-EX-01")  // #3605 ruling: a throwing follow-up never stops the drain; rethrown after it
+    private Option<Throwable> dispatchRecordingFailure(E event, Option<Throwable> failure) {
+        try {
+            dispatch(event);
+
+            return failure;
+        } catch (Throwable thrown) {
+            return Option.some(firstWithLaterSuppressed(failure, thrown));
+        }
+    }
+
+    private static Throwable firstWithLaterSuppressed(Option<Throwable> first, Throwable later) {
+        return first.onPresent(earlier -> suppressInto(earlier, later))
+                    .or(later);
+    }
+
+    /// The same instance thrown twice (a shared exception) is kept once: [Throwable#addSuppressed] refuses
+    /// self-suppression with an exception that would escape the drain and drop the follow-ups after it.
+    private static void suppressInto(Throwable earlier, Throwable later) {
+        if (earlier != later) {
+            earlier.addSuppressed(later);
+        }
+    }
+
+    /// Rethrow `failure` unchanged when unchecked. A checked one (only a sneaky throw raises it: [`#dispatch`] declares
+    /// none) is wrapped in [UndeclaredThrowableException], the JDK's carrier for an undeclared checked throwable.
+    @SuppressWarnings("JBCT-EX-01")  // #3605 ruling: the first throwable surfaces after the drain
+    private static void rethrow(Throwable failure) {
+        switch (failure) {
+            case RuntimeException unchecked -> throw unchecked;
+            case Error error -> throw error;
+            default -> throw new UndeclaredThrowableException(failure);
         }
     }
 
