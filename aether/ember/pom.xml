@@ -132,6 +132,11 @@
             <artifactId>assertj-core</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>testing</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- M-1 S6 harness (#2512): the slice it deploys. Declared, not left to reactor luck, so `-pl aether/ember -am` builds it first.
              `package-slices`/`install-slices` run at package/install, so a test-phase run still depends on M1EchoPreflight's content check. -->
         <dependency>
