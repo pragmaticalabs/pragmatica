@@ -162,8 +162,8 @@ case "${CHAOS_HARNESS_SELFTEST:-}" in
         exit 0
         ;;
     hang)
-        ( while :; do command sleep 1; done ) &
-        while :; do command sleep 1; done
+        ( while :; do command sleep 1; done ) &  # sleep-ok: fixture process that must outlive the probe
+        while :; do command sleep 1; done  # sleep-ok: fixture process that must outlive the probe
         ;;
 esac
 
@@ -246,7 +246,7 @@ stub_api_get() {
     local key n f
     key=$(printf '%s' "$1" | tr '/' '_')
     printf '%s\n' "$1" >> "$STUB_DIR/api-calls"
-    [ -f "$STUB_DIR/api${key}.delay" ] && command sleep "$(cat "$STUB_DIR/api${key}.delay")"
+    [ -f "$STUB_DIR/api${key}.delay" ] && command sleep "$(cat "$STUB_DIR/api${key}.delay")"  # sleep-ok: the stub API answer is delayed on purpose
     n=$(grep -cxF -- "$1" "$STUB_DIR/api-calls")
     f="$STUB_DIR/api${key}.${n}"
     [ -f "$f" ] || f="$STUB_DIR/api${key}"

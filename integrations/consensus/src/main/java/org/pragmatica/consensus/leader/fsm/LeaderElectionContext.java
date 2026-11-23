@@ -798,6 +798,13 @@ public final class LeaderElectionContext {
                             .filter(this::isEligible);
     }
 
+    /// The leader as stored, unfiltered by eligibility: the leader the #3092 I2 site holds to the view (#3581). An
+    /// installed voter set can make the stored leader ineligible, which hides it from [#currentLeader()] while the last
+    /// notification still names it, so the site reads the stored one and its loss is announced.
+    public Option<NodeId> storedLeader() {
+        return currentLeader.get();
+    }
+
     @Contract
     public void setCurrentLeader(Option<NodeId> leader) {
         currentLeader.set(leader);

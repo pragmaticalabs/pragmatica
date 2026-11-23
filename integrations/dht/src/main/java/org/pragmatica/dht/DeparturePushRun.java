@@ -15,26 +15,32 @@
  */
 package org.pragmatica.dht;
 
-import java.util.Collections;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.dht.storage.KeyStamp;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -52,166 +58,186 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// One graceful-departure push (#427, #2034): the plan, the per-page resend loop, the windows and the events.
+/// One graceful-departure push (#427, #2034, #3345), restated from one definition: WHO IS A HOLDER.
 ///
-/// **Classification (S).** A key is SOLE when no node outside the leaving set can be shown to hold it:
-/// `|currentSet \ leaving| - |leaving \ ring.nodes()| <= 0`, where `currentSet` is the key's responsible set on this node's ring
-/// and `leaving` is self plus the co-departing nodes. A leaving node already pruned from the ring vacated a slot that a node which
-/// never held the key may now fill, so each one is subtracted; a leaving node still in the ring is already removed by the set
-/// difference. The bound is a lower bound on surviving holders, so it errs toward "sole". When no leaving node is pruned the
-/// survivors `currentSet \ leaving` are known exactly and kept as `existingAtPlan`; otherwise `existingAtPlan` is empty.
+/// **(I) Holder.** Node x holds key k for this drain iff this run has an applied ack for a page carrying k that (i) answered a
+/// page registered in x's CURRENT tenure (a tenure is one stay of x in this node's ring view V; every entry of x into V starts a
+/// new one, and a page carries the tenure it was registered in), (ii) arrived while x was in V in that tenure, and (iii) carries
+/// the boot token x's first counted ack recorded. Safe is per (key, stamp): an ack counts only for the stamps its page carried, so
+/// a newer local stamp of an acked key is owed again. `Safe(k)` = some holder of k at k's current stamp is one of k's deliverers
+/// in V ([#drainTargets]); at a close (a passed exit or the deadline) that holder must also have passed a probe sent after the ack.
+/// Every decision asks this ONE predicate ([#safe], I2): the re-plan, the send, resend and split of a page, the exit and the close.
+/// `Owed = inventory - Safe`. Nothing else counts: not responsible-set membership, not a plan-time survivor,
+/// not a target without an ack. A page of x's previous tenure is dead from the next re-plan on (never sent, split or acked, its keys
+/// are paged again in the current tenure); within one tenure a late ack (its page cancelled by a re-plan) still counts.
 ///
-/// **Resend.** Every page is resent to the SAME target until an applied ack arrives: after `resendAfter` without an answer, after
-/// `resendAfter` following a refused send, and after an exponential backoff (from `min(resendAfter, nackBackoffCap)` up to
-/// `nackBackoffCap`) following a nack. A target is replaced only when it has left this node's ring; its keys are then re-planned
-/// with the removed node added to `leaving`. `EncodeFailed` is final for the page. A replicated page stops at `baseDeadline`, a page
-/// still holding an unacknowledged sole key at `soleDeadline`.
+/// **Owed targets (P1).** [#owedTargets] is the ONE definition of whom a key is owed to: the nodes that gain it in V, less its
+/// confirmed holders. The first plan and every re-plan desire exactly those pairs, and a re-plan cancels a page only when its target
+/// is owed none of the keys it carries. Safe at one deliverer is a close condition (the exit and the deadline), never a reason to
+/// cancel: a planned page to a target still owed its key is sent, and no exit starts before its chain ends.
 ///
-/// **Re-evaluation at `baseDeadline` (F7).** A replicated key whose every `existingAtPlan` member has left the ring is promoted to
-/// sole, so its page continues to `soleDeadline`. A key with an empty `existingAtPlan` (a pruned leaving node) is never promoted:
-/// its survivors are unknown, which is disclosed rather than guessed. A key's death detected later than `baseDeadline` is not seen.
+/// **May act (P2).** One predicate, [#mayAct(Page)] (registered, not cancelled, current: its target in V in the page's tenure),
+/// is asked by send, resend, split and the count of live chains alike, read from V and never from the live ring, so a page a
+/// re-plan cancelled is dead like a page of an earlier tenure: never sent, resent or split, and it holds no exit.
 ///
-/// **Delivery.** A key is delivered by an applied ack from one of its deliverers ([#drainTargets]): the delta targets, or, when the
-/// drain set names a node ahead of the final replica set, only the first node the set does not name. A target the drain set names is
-/// pushed to only because the entry may be stale (#3208, [#finalPrimaryCandidates]); it may equally halt with the copy, so its ack ends
-/// the page and proves nothing.
+/// **Probe.** A probe that gets no answer is sent again while its window lasts and is never a lost holder (no re-push follows);
+/// only a refusal in its answer (a "draining" nack or a token mismatch) is.
 ///
-/// **Events.** `onSoleCopyAtRisk` once, at the first of: plan time (a sole key without a deliverer, or a window already used up), the
-/// re-evaluation, or an inventory not enumerated in time. `onSoleCopyDelivered` at the end iff it was raised and no sole key is left
-/// unacknowledged. `onIncompleteReport` at the end iff any key is unacknowledged. Each event's promise is awaited until the window's
-/// event deadline. After a halt nothing more is sent or raised.
+/// **Re-plan.** One serial [#reconcile] on exactly three triggers: a change of V ([#onViewChange], called after each ring change),
+/// a holder lost (a token mismatch, a "draining" nack, a refused probe), and the start and each exit attempt. Acks and nacks never
+/// trigger it: an ack records a holder and settles its page, a nack splits a page of several keys in halves after a backoff and
+/// resends a single-key page after a growing one, and an attempt timed out splits likewise without the backoff (P1); a split, a
+/// send and a resend carry only the keys not yet safe at the target, and a page with none left is not sent. A reconcile observes
+/// the ring ONCE (I1: one snapshot gives V, `L = self + drainSet`, the tenures and every target of the re-plan), computes the
+/// desired pages {(t, k): t in [#owedTargets](k)}, cancels every live page whose target is owed none of its keys (it stays
+/// registered, so its late ack still counts), and registers the missing ones.
 ///
-/// **Concurrency.** The re-evaluation (scheduler or chain thread), the at-risk raise and `finish` (often the thread that delivered
-/// the last ack) mutate shared run state. Each such transition runs under one per-run lock, `transitions`, which guards ONLY in-memory
-/// state: the transition records its log lines and observer calls as effects, and they run after the lock is released, in the
-/// order their transitions queued them, one thread at a time ([#runEffects]). The lock is never held across a network send, a
-/// promise await or an observer callback, so a thread that waits for it (the ack thread included) waits only for another thread's
-/// short in-memory transition, never for I/O. This is what makes `finish` and every losing re-evaluation see the winner's promotion
-/// and its raise: an event decided before `finish` is always in `events` when `finish` collects them, and a page is never stopped at
-/// `baseDeadline` while a promotion that would extend it is in flight (#2684 F1, F2).
+/// **Inventory and the fence (#3345 R4, marked guess G3).** Owed is frozen at the fence: owed keys are the keys of the first
+/// inventory plus keys a later re-read finds whose stamp's HLC wall time is before the window's `drainStartMillis`. Anything else a
+/// re-read finds came from a current holder through anti-entropy and is not owed. A key a page read no longer finds is ABSENT: it
+/// does not block the exit attempt, whose re-read drops it (a removed key is never reported delivered) or finds it again.
 ///
-/// A late nack of an earlier attempt can settle the current one, since a page keeps its correlation id across resends; it costs
-/// one backoff step.
+/// **Exit.** When nothing sendable is owed: re-read the inventory, reconcile, and if `Owed` is empty send an EMPTY page to every
+/// distinct holder Safe relies on. The exit passes iff each answers (ack or plain nack) within `resendAfter`, in its tenure, with
+/// its recorded token, and no holder was lost meanwhile; a failure clears that holder and the run re-plans.
+///
+/// **Undeliverable.** A page that cannot be encoded is split once into single-key pages; a key whose own page still fails is
+/// UNDELIVERABLE: it stays owed (it is in the owed digest) and is counted apart.
+///
+/// **Deadline and events.** At the window deadline less `eventDeliveryWait` (the attempts deadline) no data page or exit starts;
+/// unless the node halted (then it sends nothing), the run sends ONE probe round to every holder whose counted ack for a key owed
+/// at the close no passed probe covers yet, waits at most `resendAfter` (a silent probe is sent again while that time lasts), and
+/// resolves with its owed set: a key whose holder passed that probe is delivered, any other is owed; a probe the deadline cuts
+/// short is no lost holder and covers nothing ([#onDeadline]). The cost: a deadline close may resolve up to one `resendAfter`
+/// after the attempts deadline. This is the one resolve point of this step besides a passed exit. Classification (S) of a key as SOLE (`|currentSet \ L| - |L \ ring| <= 0` at
+/// the time it entered the inventory) only shapes the events: `onSoleCopyAtRisk` once, at plan time when a sole key has no
+/// deliverer or the window is already used up (or the inventory was not enumerated), else at the deadline when a sole key is
+/// owed; `onSoleCopyDelivered` at the end iff it was raised and no sole key is owed, `onIncompleteReport` at the end iff anything
+/// is owed. After a halt nothing more is sent or raised, and the run resolves within one `resendAfter` of it.
+///
+/// **Concurrency.** Every read and write of run state happens under `transitions`, which is never held across a send, an await or
+/// an observer call; log lines and observer calls queued under it run after it is released, in queue order ([#runEffects]).
 final class DeparturePushRun {
     private static final Logger log = LoggerFactory.getLogger(DeparturePushRun.class);
     private static final int SAMPLE_LIMIT = 16;
+    private static final long MIN_HALT_WATCH_NANOS = 1_000_000L;
     private static final HexFormat HEX = HexFormat.of();
+    private static final long FNV_OFFSET = 0xcbf29ce484222325L;
+    private static final long FNV_PRIME = 0x100000001b3L;
 
     enum AttemptResult {
         ACKED,
         NACKED,
+        FAILED,
+        IGNORED,
         TIMED_OUT
     }
 
-    /// One held key and its departure state, shared by every page that carries it.
+    /// One copy's identity: the key and the stamp it carried.
+    record StampId(String key, long version, long epochIncarnation, long epochTerm, long epochCounter) {
+        static StampId stampId(KeyStamp stamp) {
+            return new StampId(HEX.formatHex(stamp.key()),
+                               stamp.version(),
+                               stamp.epochIncarnation(),
+                               stamp.epochTerm(),
+                               stamp.epochCounter());
+        }
+
+        String digestText() {
+            return key + ":" + version + ":" + epochIncarnation + ":" + epochTerm + ":" + epochCounter;
+        }
+    }
+
+    /// One inventory key. Guarded by `transitions`.
     static final class DepartureKey {
-        private final KeyStamp stamp;
-        private final AtomicBoolean sole;
-        private final Set<NodeId> existingAtPlan;
-        private final AtomicBoolean delivered = new AtomicBoolean(false);
-        private final Set<NodeId> plannedTargets = ConcurrentHashMap.newKeySet();
-        private final Set<NodeId> deliverers = ConcurrentHashMap.newKeySet();
-        private final Set<NodeId> acked = ConcurrentHashMap.newKeySet();
+        private KeyStamp stamp;
+        private final boolean sole;
+        private boolean absent;
+        private boolean undeliverable;
 
-        private DepartureKey(KeyStamp stamp, boolean sole, Set<NodeId> existingAtPlan) {
+        private DepartureKey(KeyStamp stamp, boolean sole) {
             this.stamp = stamp;
-            this.sole = new AtomicBoolean(sole);
-            this.existingAtPlan = existingAtPlan;
-        }
-
-        boolean isSole() {
-            return sole.get();
-        }
-
-        boolean isDelivered() {
-            return delivered.get();
-        }
-
-        boolean isLiveSole() {
-            return isSole() && !isDelivered();
-        }
-
-        boolean isAtRisk() {
-            return ! isDelivered();
+            this.sole = sole;
         }
 
         String hex() {
             return HEX.formatHex(stamp.key());
         }
 
-        @Contract
-        void markDelivered() {
-            delivered.set(true);
-        }
-
-        /// Names a target whose applied ack shows the key delivered (#3208, #3209): an ack already received counts at once.
-        @Contract
-        void allowDelivery(NodeId target) {
-            deliverers.add(target);
-            deliverIfAcked();
-        }
-
-        boolean hasDeliverer() {
-            return ! deliverers.isEmpty();
-        }
-
-        /// An applied ack from `target` for a page carrying this key: it delivers only if the target is one of the key's deliverers.
-        @Contract
-        void ackedBy(NodeId target) {
-            acked.add(target);
-            deliverIfAcked();
-        }
-
-        private void deliverIfAcked() {
-            if (deliverers.stream().anyMatch(acked::contains)) {
-                markDelivered();
-            }
-        }
-
-        /// True when this target was not yet planned for the key (and records it).
-        boolean claimTarget(NodeId target) {
-            return plannedTargets.add(target);
-        }
-
-        /// F7: promotable when its plan-time survivors are known and every one has left the ring.
-        boolean promoteIfSurvivorsGone(Set<NodeId> ringNodes) {
-            return ! isSole()
-                   && !isDelivered()
-                   && !existingAtPlan.isEmpty()
-                   && Collections.disjoint(existingAtPlan, ringNodes)
-                   && sole.compareAndSet(false, true);
+        StampId stampId() {
+            return StampId.stampId(stamp);
         }
     }
 
-    /// One departure page, registered under its correlation id until an applied ack arrives.
+    /// A holder's record in one tenure, guarded by `transitions`: the tenure its first counted ack answered, that ack's token, each
+    /// counted stamp with the sequence number of its ack, and the mark of the last probe it passed.
+    private static final class Holder {
+        private final long token;
+        private final int tenure;
+        private final Map<StampId, Long> copies = new HashMap<>();
+        private long probedAt;
+
+        private Holder(long token, int tenure) {
+            this.token = token;
+            this.tenure = tenure;
+        }
+
+        static Holder holder(long token, int tenure) {
+            return new Holder(token, tenure);
+        }
+    }
+
+    /// The targets of one key in the current view, and those whose holding makes it safe.
+    private record Targets(List<NodeId> all, List<NodeId> deliverers) {}
+
+    /// The outcome of one reconcile: the chains to start once `transitions` is released.
+    private record Plan(List<List<Page>> chains) {}
+
+    /// One departure page, registered under its correlation id until the end of the run; a page that is no longer current never counts.
     static final class Page {
+        private final DeparturePushRun run;
         private final String correlationId;
         private final NodeId target;
+        private final int tenure;
         private final List<DepartureKey> keys;
+        private final boolean split;
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private final AtomicBoolean finished = new AtomicBoolean(false);
 
         private final AtomicReference<Promise<AttemptResult>> attempt = new AtomicReference<>(Promise.promise());
 
-        private Page(String correlationId, NodeId target, List<DepartureKey> keys) {
-            this.correlationId = correlationId;
+        private final AtomicReference<List<StampId>> sent = new AtomicReference<>(List.of());
+
+        private Page(DeparturePushRun run, NodeId target, int tenure, List<DepartureKey> keys, boolean split) {
+            this.run = run;
+            this.correlationId = IdGenerator.generate();
             this.target = target;
+            this.tenure = tenure;
             this.keys = keys;
+            this.split = split;
         }
 
         String correlationId() {
             return correlationId;
         }
 
-        /// An ack for this page's correlation id: an applied ack is recorded on every key (a key is delivered only when the ack comes
-        /// from one of its deliverers, [DepartureKey#allowDelivery]), then settles the current attempt.
-        @Contract
-        void settle(boolean applied) {
-            if (applied) {
-                keys.forEach(key -> key.ackedBy(target));
-            }
+        NodeId target() {
+            return target;
+        }
 
-            attempt.get().succeed(applied
-                                  ? AttemptResult.ACKED
-                                  : AttemptResult.NACKED);
+        boolean isProbe() {
+            return keys.isEmpty();
+        }
+
+        /// An ack for this page's correlation id: the run decides whether it counts.
+        @Contract
+        void onAck(DHTMessage.MigrationDataAck ack) {
+            run.onAck(this, ack);
+        }
+
+        @Contract
+        void settle(AttemptResult result) {
+            attempt.get().succeed(result);
         }
 
         /// Install the next attempt BEFORE the send: a network that answers inside `send` must find it.
@@ -223,39 +249,59 @@ final class DeparturePushRun {
             return next;
         }
 
-        boolean holdsLiveSoleKey() {
-            return keys.stream()
-                       .anyMatch(DepartureKey::isLiveSole);
-        }
-
         List<KeyStamp> stamps() {
-            return keys.stream()
-                       .map(key -> key.stamp)
-                       .toList();
+            return run.underTransitions(() -> keys.stream()
+                                                  .map(key -> key.stamp)
+                                                  .toList());
         }
     }
 
     private record Dispatched(Promise<AttemptResult> attempt, WriteOutcome outcome) {}
 
-    private record TargetedKey(NodeId target, DepartureKey key) {}
-
     private final DHTNode node;
     private final DHTNetwork network;
     private final ConcurrentHashMap<String, Page> registry;
     private final int replicationFactor;
-    private final Set<NodeId> leaving;
+    private final Supplier<Set<NodeId>> drainSet;
     private final DeparturePushTuning tuning;
     private final DepartureWindow window;
     private final DeparturePushObserver observer;
     private final long attemptsDeadline;
-    private final long baseDeadline;
-    private final long soleDeadline;
-    private final List<DepartureKey> keys = new CopyOnWriteArrayList<>();
-    private final List<Page> pages = new CopyOnWriteArrayList<>();
+    private final Promise<DeparturePushReport> result = Promise.promise();
+    // --- run state, guarded by `transitions` ---
+    private final Map<String, DepartureKey> inventory = new HashMap<>();
+    private final Map<NodeId, Holder> holders = new HashMap<>();
+    private final Map<NodeId, Integer> tenures = new HashMap<>();
+    private final List<Page> pages = new ArrayList<>();
+    // The targets lost to a "draining" nack to a data page (ac517fb077): terminal within the run, so they leave every owed set ([#owedTargets]).
+    private final Set<NodeId> lost = new HashSet<>();
+    // The one observation of the last re-plan (I1): the ring, its members V and L, read together; every target, tenure tag and
+    // page of a re-plan, and every Safe decision until the next one, come from it.
+    private ConsistentHashRing<NodeId> observed = ConsistentHashRing.consistentHashRing();
+    private Set<NodeId> view = Set.of();
+    private Set<NodeId> observedLeaving = Set.of();
+    // Orders counted acks against probes: a probe passed with mark m covers the acks numbered below m.
+    private long sequence;
+    private boolean closed;
+    // The attempts deadline passed (P3): no exit starts, and the deadline probe round owns the close.
+    private boolean closing;
+    private boolean exitInFlight;
+    private int enumeratedKeys;
+    private boolean atRiskRaised;
+    private int atRiskCount;
+
+    // The deadline task, cancelled when the run resolves.
+    private final AtomicReference<Option<ScheduledFuture<?>>> deadlineTimer = new AtomicReference<>(Option.none());
+
+    // The halt watch (#3345 P2), cancelled when the run resolves.
+    private final AtomicReference<Option<ScheduledFuture<?>>> haltWatch = new AtomicReference<>(Option.none());
+
+    // --- counters (tests and logs) ---
+    private final AtomicInteger reconciles = new AtomicInteger();
+    private final AtomicInteger viewChanges = new AtomicInteger();
+    private final AtomicInteger holderLosses = new AtomicInteger();
+    private final AtomicInteger exitAttempts = new AtomicInteger();
     private final List<Promise<Unit>> events = new CopyOnWriteArrayList<>();
-    private final AtomicBoolean atRiskRaised = new AtomicBoolean(false);
-    private final AtomicInteger atRiskCount = new AtomicInteger();
-    private final AtomicBoolean reevaluated = new AtomicBoolean(false);
     private final Object transitions = new Object();
     private final ConcurrentLinkedQueue<Runnable> effects = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean drainingEffects = new AtomicBoolean(false);
@@ -264,7 +310,7 @@ final class DeparturePushRun {
                              DHTNetwork network,
                              ConcurrentHashMap<String, Page> registry,
                              int replicationFactor,
-                             Set<NodeId> leaving,
+                             Supplier<Set<NodeId>> drainSet,
                              long t0,
                              DepartureWindow window,
                              DeparturePushTuning tuning,
@@ -273,19 +319,12 @@ final class DeparturePushRun {
         this.network = network;
         this.registry = registry;
         this.replicationFactor = replicationFactor;
-        this.leaving = ConcurrentHashMap.newKeySet();
-        this.leaving.addAll(leaving);
+        this.drainSet = drainSet;
         this.tuning = tuning;
         this.window = window;
         this.observer = observer;
         this.attemptsDeadline = Math.max(t0,
                                          window.deadlineNanos() - tuning.eventDeliveryWait().nanos());
-        this.baseDeadline = Math.max(t0,
-                                     Math.min(t0 + tuning.baseBudget().nanos(),
-                                              attemptsDeadline));
-        this.soleDeadline = Math.max(t0,
-                                     Math.min(t0 + tuning.baseBudget().nanos() + tuning.soleExtra().nanos(),
-                                              attemptsDeadline));
     }
 
     /// `t0` is taken by the caller on entry, before the inventory is enumerated (F2): a slow `stamps()` eats the window.
@@ -293,140 +332,340 @@ final class DeparturePushRun {
                                              DHTNetwork network,
                                              ConcurrentHashMap<String, Page> registry,
                                              int replicationFactor,
-                                             Set<NodeId> leaving,
+                                             Supplier<Set<NodeId>> drainSet,
                                              long t0,
                                              DepartureWindow window,
                                              DeparturePushTuning tuning,
                                              DeparturePushObserver observer) {
-        return new DeparturePushRun(node, network, registry, replicationFactor, leaving, t0, window, tuning, observer);
+        return new DeparturePushRun(node, network, registry, replicationFactor, drainSet, t0, window, tuning, observer);
     }
 
     /// Enumerate, plan, push, report. Always succeeds.
     Promise<DeparturePushReport> run() {
-        return node.storage()
-                   .stamps()
-                   .timeout(remainingUntil(attemptsDeadline))
-                   .fold(enumerated -> enumerated.fold(this::notEnumerated, this::execute));
+        node.storage()
+            .stamps()
+            .timeout(remainingUntil(attemptsDeadline))
+            .onResult(enumerated -> enumerated.fold(this::notEnumerated, this::start));
+
+        return result.onResultRun(this::cancelTimers);
     }
 
-    // --- enumeration and plan ---
-    /// The inventory could not be listed before the attempts deadline (or listing failed): the at-risk set is unknown. FER: the
-    /// push degrades forward to an at-risk report with count 0, because it must never gate the halt.
-    private Promise<DeparturePushReport> notEnumerated(Cause cause) {
+    /// A resolved run releases its deadline task and its halt watch at once, so nothing the run references (its observer) stays
+    /// reachable until the deadline.
+    @Contract
+    private void cancelTimers() {
+        deadlineTimer.get().onPresent(timer -> timer.cancel(false));
+        haltWatch.get().onPresent(timer -> timer.cancel(false));
+    }
+
+    int reconciles() {
+        return reconciles.get();
+    }
+
+    int viewChanges() {
+        return viewChanges.get();
+    }
+
+    int holderLosses() {
+        return holderLosses.get();
+    }
+
+    int exitAttempts() {
+        return exitAttempts.get();
+    }
+
+    // --- enumeration and start ---
+    /// The inventory could not be listed before the attempts deadline (or listing failed): the owed set is unknown. FER: the push
+    /// degrades forward to an at-risk report with count 0, because it must never gate the halt.
+    private Unit notEnumerated(Cause cause) {
         log.warn("Departure push: inventory not enumerated before the drain deadline ({}): at-risk set unknown",
                  cause.message());
         if (!window.halted().getAsBoolean()) {
             transition(() -> raiseAtRisk(List.of()));
         }
 
-        return awaitEvents(DeparturePushReport.NOT_ENUMERATED);
+        succeedAfterEvents(DeparturePushReport.NOT_ENUMERATED);
+
+        return Unit.unit();
     }
 
-    private Promise<DeparturePushReport> execute(List<KeyStamp> stamps) {
-        var chains = plan(stamps);
-
-        raiseAtPlan();
-        var reevaluation = SharedScheduler.schedule(this::reevaluate, remainingUntil(baseDeadline));
-
-        return Promise.allOf(chains)
-                      .timeout(remainingUntil(backstopDeadline()))
-                      .withResult(_ -> reevaluation.cancel(false))
-                      .fold(_ -> finish());
+    /// Resolves the run with `report` once every event already decided has been delivered; the run's promise carries the outcome.
+    @Contract
+    private void succeedAfterEvents(DeparturePushReport report) {
+        awaitEvents(report).onSuccess(result::succeed);
     }
 
-    /// Classify every key, then group its targets into two chains per target (sole pages, replicated pages), so a stuck page of
-    /// one kind cannot starve the other (N2).
-    private List<Promise<Unit>> plan(List<KeyStamp> stamps) {
+    private Unit start(List<KeyStamp> stamps) {
+        transition(() -> armThenEnumerate(stamps));
+        reconcile();
+        transition(this::raiseAtPlan);
+        if (result.isResolved()) {
+            cancelTimers();
+        }
+
+        maybeExit();
+
+        return Unit.unit();
+    }
+
+    /// Under `transitions`: the deadline and the halt watch are armed before anything else of the run can fail, so a run always
+    /// resolves; both take `transitions`, so neither runs before the inventory below is complete.
+    private Unit armThenEnumerate(List<KeyStamp> stamps) {
+        deadlineTimer.set(Option.some(SharedScheduler.schedule(this::onDeadline, remainingUntil(attemptsDeadline))));
+        haltWatch.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::onHaltWatch, haltWatchPeriod())));
+
+        return enumerate(stamps);
+    }
+
+    /// Under `transitions`: the first inventory, every key owed.
+    private Unit enumerate(List<KeyStamp> stamps) {
         var ringNodes = Set.copyOf(node.ring().nodes());
-        var targeted = stamps.stream().map(stamp -> classify(stamp, ringNodes)).flatMap(this::initialTargets).toList();
+        var leaving = leavingSet();
 
-        return Stream.of(true, false)
-                     .flatMap(sole -> chainsOfKind(targeted, sole))
-                     .toList();
+        stamps.forEach(stamp -> inventory.put(HEX.formatHex(stamp.key()),
+                                              classify(stamp, ringNodes, leaving)));
+        enumeratedKeys = inventory.size();
+
+        return Unit.unit();
     }
 
-    private DepartureKey classify(KeyStamp stamp, Set<NodeId> ringNodes) {
-        var currentSet = node.ring().nodesFor(stamp.key(), replicationFactor);
-        var survivors = new HashSet<>(currentSet);
+    /// Classification (S): SOLE when no node outside L can be shown to hold the key. A leaving node already gone from the ring
+    /// vacated a slot that a node which never held the key may now fill, so each one is subtracted; the bound errs toward "sole".
+    private DepartureKey classify(KeyStamp stamp, Set<NodeId> ringNodes, Set<NodeId> leaving) {
+        var survivors = new HashSet<>(node.ring().nodesFor(stamp.key(), replicationFactor));
 
         survivors.removeAll(leaving);
         var pruned = leaving.stream().filter(member -> !ringNodes.contains(member)).count();
-        var key = new DepartureKey(stamp,
-                                   survivors.size() - pruned <= 0,
-                                   pruned == 0
-                                   ? Set.copyOf(survivors)
-                                   : Set.of());
 
-        keys.add(key);
-
-        return key;
+        return new DepartureKey(stamp, survivors.size() - pruned <= 0);
     }
 
-    /// A replicated key with no target already has every post-departure replica (a copy self held outside its responsible set):
-    /// nothing is owed. A sole key with no target is unpushable and stays at risk.
-    private Stream<TargetedKey> initialTargets(DepartureKey key) {
-        var targets = drainTargets(key, Set.copyOf(leaving));
+    /// Under `transitions`: a re-read at an exit attempt (R4, G3). A known key takes the stamp read now (a newer stamp is owed again)
+    /// and is no longer absent; a key the re-read misses was removed meanwhile and leaves the inventory, never delivered; a new key is
+    /// owed only when its stamp predates the fence.
+    private Unit reread(List<KeyStamp> stamps) {
+        var ringNodes = Set.copyOf(node.ring().nodes());
+        var leaving = leavingSet();
+        var read = new HashMap<String, KeyStamp>();
 
-        if (targets.isEmpty() && !key.isSole()) {
-            key.markDelivered();
+        stamps.forEach(stamp -> read.put(HEX.formatHex(stamp.key()),
+                                         stamp));
+        inventory.keySet().retainAll(read.keySet());
+        read.forEach((hex, stamp) -> mergeRead(hex, stamp, ringNodes, leaving));
+
+        return Unit.unit();
+    }
+
+    private void mergeRead(String hex, KeyStamp stamp, Set<NodeId> ringNodes, Set<NodeId> leaving) {
+        var known = inventory.get(hex);
+
+        if (known != null) {
+            known.stamp = stamp;
+            known.absent = false;
+        } else if (beforeFence(stamp)) {
+            inventory.put(hex, classify(stamp, ringNodes, leaving));
+            enumeratedKeys++;
+        }
+    }
+
+    private boolean beforeFence(KeyStamp stamp) {
+        return HlcTimestamp.physicalMillis(stamp.version()) < window.drainStartMillis();
+    }
+
+    private Set<NodeId> leavingSet() {
+        var leaving = new HashSet<>(drainSet.get());
+
+        leaving.add(node.nodeId());
+
+        return Set.copyOf(leaving);
+    }
+
+    // --- triggers ---
+    /// Trigger 1: V changed. Called after each ring change.
+    @Contract
+    void onViewChange() {
+        viewChanges.incrementAndGet();
+        reconcile();
+    }
+
+    /// Trigger 2: a holder lost. Its record is cleared and the run re-plans.
+    @Contract
+    private void holderLost(NodeId holder, String why) {
+        var lost = underTransitions(() -> holders.remove(holder) != null);
+
+        holderLosses.incrementAndGet();
+        log.info("Departure push: holder {} lost ({}){}",
+                 holder.id(),
+                 why,
+                 lost
+                 ? ""
+                 : " before it held anything");
+        reconcile();
+    }
+
+    /// The one serial re-plan. Pages are registered under `transitions`; their chains start after it is released.
+    @Contract
+    private void reconcile() {
+        var plan = transition(this::replan);
+
+        plan.chains().forEach(this::startChain);
+    }
+
+    /// Under `transitions`.
+    private Plan replan() {
+        if (closed || window.halted().getAsBoolean()) {
+            return new Plan(List.of());
         }
 
-        return targets.stream()
-                      .filter(key::claimTarget)
-                      .map(target -> new TargetedKey(target, key));
+        reconciles.incrementAndGet();
+        observeView();
+        var desired = new HashMap<NodeId, List<DepartureKey>>();
+
+        inventory.values()
+                 .stream()
+                 .filter(key -> !key.absent && !key.undeliverable)
+                 .forEach(key -> desire(key, desired));
+        pages.stream().filter(this::liveInChain).forEach(page -> keepOrCancel(page, desired));
+
+        return new Plan(desired.entrySet()
+                               .stream()
+                               .filter(entry -> !entry.getValue()
+                                                      .isEmpty())
+                               .map(entry -> registerPages(entry.getKey(),
+                                                           entry.getValue()))
+                               .toList());
     }
 
-    private Stream<Promise<Unit>> chainsOfKind(List<TargetedKey> targeted, boolean sole) {
-        return targeted.stream()
-                       .filter(entry -> entry.key()
-                                             .isSole() == sole)
-                       .collect(Collectors.groupingBy(TargetedKey::target,
-                                                      Collectors.mapping(TargetedKey::key,
-                                                                         Collectors.toList())))
-                       .entrySet()
-                       .stream()
-                       .map(entry -> runChain(registerPages(entry.getKey(),
-                                                            entry.getValue()),
-                                              0));
+    /// Under `transitions`, I1: the ring is read ONCE per re-plan, as one snapshot; V, L, the tenures and every target of the
+    /// re-plan come from it, so a node that enters the ring after the snapshot gets no page (and no tenure tag) until the next
+    /// re-plan observes it. Tenures start at entry into V; a page of an earlier tenure, or of a node no longer in V, is not
+    /// [#current(Page)], so it never counts again.
+    private void observeView() {
+        var ring = node.ring().snapshot();
+        var now = Set.copyOf(ring.nodes());
+
+        now.stream().filter(member -> !view.contains(member)).forEach(member -> tenures.merge(member, 1, Integer::sum));
+        observed = ring;
+        view = now;
+        observedLeaving = leavingSet();
     }
 
-    /// Every target of one key: the delta targets ([#departureTargets]) plus, when the drain set may be stale, the primary of every
-    /// possible final replica set ([#finalPrimaryCandidates]). The second list only ever adds targets (#3208, #3209); a node in both lists is deduplicated by `claimTarget` at each call site.
-    ///
-    /// Also records which of them may show the key delivered. Without candidates the delta targets do. With candidates only the first
-    /// unnamed node does: the named prefix may halt with the copy (#3208), and a delta target may lie outside the final replica set
-    /// while the candidate that is its primary never answers (#3209). A copy on the first unnamed node, plus the pushes to the named
-    /// prefix, puts a holder in every possible final replica set.
-    private List<NodeId> drainTargets(DepartureKey key, Set<NodeId> excluded) {
-        var delta = departureTargets(key.stamp.key(), excluded);
-        var candidates = finalPrimaryCandidates(key.stamp.key(), excluded);
+    /// Under `transitions`, P4: a page lives in ONE tenure of its target. It is current iff its target is in V, the last
+    /// observation, and its tenure tag is the target's tenure there. [#mayAct(Page)] asks it, and so does the ack (`inTenure`).
+    /// A page that is not current is dead from the observation on: never counted live, sent, split or acked, so its keys are
+    /// desired again and paged in the current tenure.
+    private boolean current(Page page) {
+        return view.contains(page.target) && tenures.getOrDefault(page.target, 0) == page.tenure;
+    }
+
+    private void drop(Page page) {
+        page.cancelled.set(true);
+        registry.remove(page.correlationId());
+    }
+
+    /// Under `transitions`: a key wants a page on every target it is owed to ([#owedTargets]).
+    private void desire(DepartureKey key, Map<NodeId, List<DepartureKey>> desired) {
+        owedTargets(key).forEach(target -> desired.computeIfAbsent(target,
+                                                                   _ -> new ArrayList<>())
+                                                  .add(key));
+    }
+
+    /// Under `transitions`, P1, the ONE owed-to definition: planned minus delivered minus lost. Planned: the nodes that gain `key`
+    /// in V ([#drainTargets], read from the last observation); delivered: its confirmed holders ([#safe] at that target); lost: the
+    /// targets that refused with a "draining" nack, terminal within the run, so no re-plan (the exit's re-read re-plan included)
+    /// pages them again. The plan, every re-plan and the cancel of a page compute from it alone; no caller filters again.
+    private List<NodeId> owedTargets(DepartureKey key) {
+        return drainTargets(key.stamp.key()).all()
+                           .stream()
+                           .filter(target -> !safe(key, target, false))
+                           .filter(target -> !lost.contains(target))
+                           .toList();
+    }
+
+    /// Under `transitions`, P2: the ONE answer to "may this page send or resend": registered, not cancelled and [#current(Page)],
+    /// read from V (the last observation), never from the live ring. A page a re-plan cancelled is dead exactly like a page of an
+    /// earlier tenure. Send and resend (`probeStopped`), split (`halvePage`, `splitPage`) and the count of live chains
+    /// (`liveInChain`) ask only this; a late ack of a cancelled page still counts (`inTenure` asks only [#current(Page)]).
+    private boolean mayAct(Page page) {
+        return registry.containsKey(page.correlationId())
+               && !page.cancelled.get()
+               && current(page);
+    }
+
+    /// Under `transitions`: a data page of a running chain, not yet run to its end, that is [#mayAct(Page)]. The re-plan keeps or
+    /// cancels exactly these, and no exit starts while one exists.
+    private boolean liveInChain(Page page) {
+        return ! page.isProbe()
+               && !page.finished.get()
+               && mayAct(page);
+    }
+
+    /// Under `transitions`: a live page stays when its target is still owed one of its keys ([#owedTargets]), and those pairs need
+    /// no new page; otherwise it is cancelled and stays registered, so a late ack still counts. No other reason cancels it. Only a
+    /// [#mayAct(Page)] page gets here (`liveInChain`): one that is not covers nothing, so its keys are desired again.
+    private void keepOrCancel(Page page, Map<NodeId, List<DepartureKey>> desired) {
+        var covered = page.keys.stream().filter(key -> owedTargets(key).contains(page.target)).toList();
+
+        if (covered.isEmpty()) {
+            page.cancelled.set(true);
+        } else {
+            Option.option(desired.get(page.target)).onPresent(wanted -> wanted.removeAll(covered));
+        }
+    }
+
+    /// Under `transitions`: Safe(k) = k is safe at one of its deliverers. A close condition only (the exit, the deadline): never a
+    /// reason to cancel a page ([#owedTargets] decides that).
+    private boolean isSafe(DepartureKey key, Targets targets, boolean atClose) {
+        return targets.deliverers()
+                      .stream()
+                      .anyMatch(target -> safe(key, target, atClose));
+    }
+
+    /// Under `transitions`, I2, the ONE safe predicate: `target` is in the observed V, its holder record belongs to its current
+    /// tenure, and it has a counted ack for `key` at the key's current stamp; at a close (`atClose`) that holder must also have
+    /// passed a probe sent after that ack. The re-plan, the resend and the split of a page, the skip of a page, the exit
+    /// decision and every close ask only this.
+    private boolean safe(DepartureKey key, NodeId target, boolean atClose) {
+        return view.contains(target) && Option.option(holders.get(target))
+                                              .filter(holder -> holder.tenure == tenures.getOrDefault(target, 0))
+                                              .flatMap(holder -> Option.option(holder.copies.get(key.stampId())).filter(ackedAt -> !atClose || ackedAt < holder.probedAt))
+                                              .isPresent();
+    }
+
+    /// Under `transitions`: every key not Safe (at a close: not Safe through a probe passed since its ack).
+    private List<DepartureKey> owed(boolean atClose) {
+        return inventory.values()
+                        .stream()
+                        .filter(key -> !isSafe(key,
+                                               drainTargets(key.stamp.key()),
+                                               atClose))
+                        .toList();
+    }
+
+    // --- targets ---
+    /// Every target of one key: the delta targets ([#departureTargets]) plus, when a node of L lies ahead in the key's walk, the
+    /// named prefix and the first node outside L ([#finalPrimaryCandidates]). The deliverers, whose holding makes the key safe, are
+    /// the delta targets when no candidates exist, else only the first node outside L: a node of L may halt with the copy (#3208),
+    /// and a delta target may lie outside the final replica set (#3209).
+    /// Under `transitions`; read from the last observation only (I1).
+    private Targets drainTargets(byte[] key) {
+        var excluded = observedLeaving;
+        var delta = departureTargets(key, excluded);
+        var candidates = finalPrimaryCandidates(key, excluded);
         var deliverers = candidates.isEmpty()
                          ? delta
                          : candidates.stream().filter(candidate -> !excluded.contains(candidate)).toList();
 
-        deliverers.forEach(key::allowDelivery);
-
-        return Stream.concat(delta.stream(),
-                             candidates.stream())
-                     .toList();
+        return new Targets(Stream.concat(delta.stream(), candidates.stream()).distinct().toList(),
+                           deliverers);
     }
 
-    /// The primary of the key's FINAL replica set, whichever drain-set entries turn out stale (#3208, #3209). Truly departing are
-    /// this node (`DHTRebalancer.leavingSet` adds self) and every node already gone from the ring (pruned at its DEPARTING edge,
-    /// `DHTTopologyListener.onNodeDeparting`, or removed mid-push). A drain-set entry still in the ring is only advisory: it may be a
-    /// live node named by a stale entry (#1818). The final ring is therefore the ring without self and without SOME subset of the
-    /// named ring members, and its replica set's primary is the first unnamed node of the walk without self, or any named node before
-    /// it. Targeting that whole prefix puts a copy on a member of every possible final replica set, without assuming that a current
-    /// replica outside the drain set already holds the key: an under-replicated key breaks that assumption, and a stale entry then
-    /// shifts the delta newcomer past the final replica set (#3209). When no unnamed node follows, the prefix is every named ring
-    /// member: the only candidates that may survive (#3208), whose acks cannot prove it ([Page#settle]).
-    ///
-    /// Empty when no named node lies within the first `replicationFactor` nodes of the walk: no subset of the named nodes can then
-    /// change the final replica set, which is the delta targets' own `newSet`.
+    /// The primary of the key's FINAL replica set, whichever L entries turn out stale (#3208, #3209): the named prefix of the walk
+    /// without self, plus the first node outside L. Empty when no node of L lies within the first `replicationFactor` nodes.
     private List<NodeId> finalPrimaryCandidates(byte[] key, Set<NodeId> excluded) {
-        var walk = node.ring().nodesFor(key,
-                                        node.ring().nodeCount(),
-                                        candidate -> !candidate.equals(node.nodeId()));
+        var walk = observed.nodesFor(key,
+                                     observed.nodeCount(),
+                                     candidate -> !candidate.equals(node.nodeId()));
         var namedAhead = walk.stream().limit(replicationFactor).anyMatch(excluded::contains);
 
         return namedAhead
@@ -442,23 +681,14 @@ final class DeparturePushRun {
                      .toList();
     }
 
-    /// Post-departure delta target set for one key (issue #427, D3). `newSet` is the responsible set with every `leaving` node
-    /// excluded — self and each co-departing node (issue #1818), plus any target that left the ring mid-push (#2034) — via the
-    /// filtered ring overload, robust whether or not they are still in the ring. When self is still a ring member (the designed
-    /// drain ordering), the nodes already holding the key are the members of the current responsible set that are NOT leaving, so
-    /// only the genuine newcomers (`newSet \ existing`) are targeted. When self has ALREADY been pruned (the ring can no longer
-    /// identify the newcomer), fall back to the whole `newSet`: the versioned puts are idempotent, so re-sending to an existing
-    /// replica is harmless, and this guarantees no loss regardless of the prune-vs-drain ordering. The same fallback applies when
-    /// the exclusion exhausts the ring (`newSet` shorter than the replication factor): no node lies beyond the vacated slots to
-    /// absorb the push, so a node wrongly in `leaving` would otherwise remove the only newcomer and leave the copy resting on
-    /// survivors that may not hold it. The fallback applies too when any excluded node has already left the ring: the node now in
-    /// its slot may never have held the key, the same rule by which classification counts the key sole (#2684 F3).
+    /// Post-departure delta targets (issue #427, D3): the responsible set without L, less the current replicas outside L when self
+    /// is still a ring member, the set is full and every node of L is still in the ring; otherwise the whole new set (idempotent
+    /// versioned puts make a resend to an existing replica harmless).
     private List<NodeId> departureTargets(byte[] key, Set<NodeId> excluded) {
-        var newSet = node.ring().nodesFor(key, replicationFactor, candidate -> !excluded.contains(candidate));
-        var currentSet = node.ring().nodesFor(key, replicationFactor);
-        var ringNodes = Set.copyOf(node.ring().nodes());
+        var newSet = observed.nodesFor(key, replicationFactor, candidate -> !excluded.contains(candidate));
+        var currentSet = observed.nodesFor(key, replicationFactor);
 
-        return currentSet.contains(node.nodeId()) && newSet.size() >= replicationFactor && ringNodes.containsAll(excluded)
+        return currentSet.contains(node.nodeId()) && newSet.size() >= replicationFactor && view.containsAll(excluded)
                ? excludeExistingReplicas(newSet, currentSet, excluded)
                : newSet;
     }
@@ -475,23 +705,31 @@ final class DeparturePushRun {
                      .toList();
     }
 
-    /// Every page of a chain is registered before the first leaves, so a window that ends mid-push reports the unsent pages too.
-    private List<Page> registerPages(NodeId target, List<DepartureKey> chainKeys) {
+    // --- pages ---
+    /// Under `transitions`: one target's keys split by the page budget, each page tagged with the target's current tenure.
+    private List<Page> registerPages(NodeId target, List<DepartureKey> keys) {
         var byStamp = new IdentityHashMap<KeyStamp, DepartureKey>();
 
-        chainKeys.forEach(key -> byStamp.put(key.stamp, key));
+        keys.forEach(key -> byStamp.put(key.stamp, key));
 
         return node.repair()
                    .pageBudget()
-                   .pages(chainKeys.stream().map(key -> key.stamp).toList())
+                   .pages(keys.stream().map(key -> key.stamp).toList())
                    .stream()
                    .map(page -> registerPage(target,
-                                             page.stream().map(byStamp::get).toList()))
+                                             page.stream().map(byStamp::get).toList(),
+                                             false))
                    .toList();
     }
 
-    private Page registerPage(NodeId target, List<DepartureKey> pageKeys) {
-        var page = new Page(IdGenerator.generate(), target, pageKeys);
+    /// Under `transitions`.
+    private Page registerPage(NodeId target, List<DepartureKey> keys, boolean split) {
+        return registerPage(target, tenures.getOrDefault(target, 0), keys, split);
+    }
+
+    /// Under `transitions`.
+    private Page registerPage(NodeId target, int tenure, List<DepartureKey> keys, boolean split) {
+        var page = new Page(this, target, tenure, keys, split);
 
         registry.put(page.correlationId(), page);
         pages.add(page);
@@ -499,27 +737,39 @@ final class DeparturePushRun {
         return page;
     }
 
-    // --- chains and the attempt loop ---
+    /// The end of a chain is an exit trigger; whether a chain still counts is [#liveInChain(Page)]'s answer, not a counter.
+    @Contract
+    private void startChain(List<Page> chain) {
+        runChain(chain, 0).onResultRun(this::maybeExit);
+    }
+
     private Promise<Unit> runChain(List<Page> chain, int index) {
         return index >= chain.size()
                ? Promise.unitPromise()
-               : runPage(chain.get(index)).flatMap(_ -> runChain(chain, index + 1));
+               : runPage(chain.get(index)).fold(result -> finished(chain.get(index),
+                                                                   result))
+                        .flatMap(_ -> runChain(chain, index + 1));
     }
 
-    /// The page's entries are read once and the same list is resent (N5): every apply is versioned, tombstones included, so a stale
-    /// resend never overwrites a newer copy. A read that fails or outlives the page's window leaves the page pending (FER: it is
-    /// reported at risk instead of gating the halt).
+    /// A page is finished BEFORE the chain's result completes: the exit trigger at the chain's end must see it (a side effect
+    /// attached to the same promise is not ordered against the dependent steps that complete the chain).
+    private static Promise<Unit> finished(Page page, Result<Unit> result) {
+        return Promise.resolved(result.onResultRun(() -> page.finished.set(true)));
+    }
+
+    /// The page's entries are read once and the same list is resent (N5): every apply is versioned, so a stale resend never
+    /// overwrites a newer copy. A key the read no longer finds is marked absent; a read that fails leaves its keys owed.
     private Promise<Unit> runPage(Page page) {
         return shouldStop(page)
                ? Promise.unitPromise()
                : node.readEntries(page.stamps())
-                     .timeout(remainingUntil(deadlineOf(page)))
+                     .timeout(remainingUntil(attemptsDeadline))
                      .fold(read -> read.fold(cause -> unreadable(page, cause),
                                              entries -> sendRead(page, entries)));
     }
 
     private Promise<Unit> unreadable(Page page, Cause cause) {
-        log.warn("Departure push: page {} for {} not read ({}); its keys stay at risk",
+        log.warn("Departure push: page {} for {} not read ({}); its keys stay owed",
                  page.correlationId(),
                  page.target.id(),
                  cause.message());
@@ -527,35 +777,60 @@ final class DeparturePushRun {
         return Promise.unitPromise();
     }
 
+    /// No send of an empty read: its keys are absent, and the exit attempt's re-read settles them (never as delivered).
     private Promise<Unit> sendRead(Page page, List<DHTMessage.KeyValue> entries) {
+        transition(() -> markAbsent(page, entries));
+
         return entries.isEmpty()
-               ? Promise.success(settleEmptyPage(page))
+               ? Promise.unitPromise()
                : attempt(page, entries, initialNackBackoff());
     }
 
-    /// Every key of the page was removed meanwhile: nothing is owed, so nothing is at risk.
-    private Unit settleEmptyPage(Page page) {
-        registry.remove(page.correlationId());
-        page.keys.forEach(DepartureKey::markDelivered);
+    /// Under `transitions`.
+    private Unit markAbsent(Page page, List<DHTMessage.KeyValue> entries) {
+        var found = entries.stream().map(entry -> HEX.formatHex(entry.key())).collect(Collectors.toSet());
+
+        page.keys.stream().filter(key -> !found.contains(key.hex())).forEach(key -> key.absent = true);
 
         return Unit.unit();
     }
 
     private Promise<Unit> attempt(Page page, List<DHTMessage.KeyValue> entries, TimeSpan nackBackoff) {
-        if (shouldStop(page)) {
-            return Promise.unitPromise();
-        }
-
-        return node.ring()
-                   .nodes()
-                   .contains(page.target)
-               ? dispatch(page, entries).flatMap(dispatched -> afterSend(page, entries, dispatched, nackBackoff))
-               : retarget(page);
+        return shouldStop(page)
+               ? Promise.unitPromise()
+               : send(page, transition(() -> openEntries(page, entries)), nackBackoff);
     }
 
-    /// The push carries `leaving` (plus every target removed mid-push), the set excluded when choosing its target (#1818 L1), so the
-    /// receiver checks placement against the same view rather than its own.
-    private Promise<Dispatched> dispatch(Page page, List<DHTMessage.KeyValue> entries) {
+    /// I2: each send and resend carries only the entries whose keys are not yet safe at the target (a late ack of an earlier page
+    /// may have made some safe), only their stamps count for its ack, and nothing goes out when none is left.
+    private Promise<Unit> send(Page page, List<DHTMessage.KeyValue> open, TimeSpan nackBackoff) {
+        page.sent.set(open.stream().map(KeyStamp::keyStamp).map(StampId::stampId).toList());
+
+        return open.isEmpty()
+               ? Promise.unitPromise()
+               : dispatch(page, open, attemptsDeadline).flatMap(dispatched -> afterSend(page,
+                                                                                        open,
+                                                                                        dispatched,
+                                                                                        nackBackoff));
+    }
+
+    /// Under `transitions`.
+    private List<DHTMessage.KeyValue> openEntries(Page page, List<DHTMessage.KeyValue> entries) {
+        var open = page.keys.stream()
+                            .filter(key -> !safe(key, page.target, false))
+                            .map(DepartureKey::hex)
+                            .collect(Collectors.toSet());
+
+        return entries.stream()
+                      .filter(entry -> open.contains(HEX.formatHex(entry.key())))
+                      .toList();
+    }
+
+    /// The push carries L, the set excluded when choosing its target (#1818 L1), and V, both from the run's last observation (I1),
+    /// so the receiver checks placement against the same view rather than its own. The send itself is bounded by `until` (every wait
+    /// of the run is): FER, a send that fails or is not resolved by then is a dead connection, waited out like one (the data path
+    /// pauses and retries while the window lasts; a probe counts as unanswered), so no chain or probe round outlives its deadline.
+    private Promise<Dispatched> dispatch(Page page, List<DHTMessage.KeyValue> entries, long until) {
         var attempt = page.nextAttempt();
 
         log.debug("Departure-pushing a page of {} chunk(s) to {} (ack {})",
@@ -569,29 +844,41 @@ final class DeparturePushRun {
                                                                  node.nodeId(),
                                                                  entries,
                                                                  true,
-                                                                 List.copyOf(leaving),
-                                                                 List.copyOf(node.ring().nodes())))
+                                                                 List.copyOf(underTransitions(() -> observedLeaving)),
+                                                                 List.copyOf(underTransitions(() -> view))))
+                      .timeout(remainingUntil(until))
                       .recover(_ -> new WriteOutcome.ConnectionDead(page.target))
                       .map(outcome -> new Dispatched(attempt, outcome));
     }
 
-    /// Per `WriteOutcome`: `Sent` waits for the attempt; a refusal proves nothing about the ring, so the SAME target is retried
-    /// after `resendAfter` (H2); `EncodeFailed` cannot be helped by a retry, so the page stays pending and is reported.
+    /// Per `WriteOutcome`: `Sent` waits for the attempt; a refusal proves nothing, so the SAME target is retried after
+    /// `resendAfter` (H2); `EncodeFailed` is split once, then undeliverable.
     private Promise<Unit> afterSend(Page page,
                                     List<DHTMessage.KeyValue> entries,
                                     Dispatched dispatched,
                                     TimeSpan nackBackoff) {
         return switch (dispatched.outcome()) {
-            case WriteOutcome.Sent _ -> dispatched.attempt().timeout(attemptWait(page)).recover(_ -> AttemptResult.TIMED_OUT).flatMap(result -> afterAttempt(page,
-                                                                                                                                                             entries,
-                                                                                                                                                             result,
-                                                                                                                                                             nackBackoff));
+            case WriteOutcome.Sent _ -> awaitAttempt(dispatched).flatMap(result -> afterAttempt(page,
+                                                                                                entries,
+                                                                                                result,
+                                                                                                nackBackoff));
             case WriteOutcome.EncodeFailed failed -> encodeFailed(page, failed);
-            case WriteOutcome.BackpressureRefused _, WriteOutcome.ConnectionDead _, WriteOutcome.NoPeerState _ -> pause(page,
-                                                                                                                        tuning.resendAfter()).flatMap(_ -> attempt(page,
+            case WriteOutcome.BackpressureRefused _, WriteOutcome.ConnectionDead _, WriteOutcome.NoPeerState _ -> pause(tuning.resendAfter()).flatMap(_ -> attempt(page,
                                                                                                                                                                    entries,
                                                                                                                                                                    nackBackoff));
         };
+    }
+
+    private Promise<AttemptResult> awaitAttempt(Dispatched dispatched) {
+        return awaitAttempt(dispatched, attemptsDeadline);
+    }
+
+    /// FER: an attempt unanswered within `resendAfter` or by `until` is TIMED_OUT (a page split, a probe failed), never awaited on.
+    private Promise<AttemptResult> awaitAttempt(Dispatched dispatched, long until) {
+        return dispatched.attempt()
+                         .timeout(timeSpan(Math.min(tuning.resendAfter().nanos(),
+                                                    remainingNanos(until))).nanos())
+                         .recover(_ -> AttemptResult.TIMED_OUT);
     }
 
     private Promise<Unit> afterAttempt(Page page,
@@ -599,80 +886,126 @@ final class DeparturePushRun {
                                        AttemptResult result,
                                        TimeSpan nackBackoff) {
         return switch (result) {
-            case ACKED -> Promise.unitPromise();
-            case NACKED -> pause(page, nackBackoff).flatMap(_ -> attempt(page, entries, nextNackBackoff(nackBackoff)));
-            case TIMED_OUT -> attempt(page, entries, nackBackoff);
+            case ACKED, FAILED, IGNORED -> Promise.unitPromise();
+            case NACKED -> pause(nackBackoff).flatMap(_ -> afterNackPause(page, entries, nackBackoff));
+            case TIMED_OUT -> afterSilence(page, entries, nackBackoff);
         };
     }
 
+    /// #3345 P1, silence: a page whose ack does not come within `resendAfter` is split like a nacked one (a receiver that cannot
+    /// decode one entry drops the whole message, so silence can be one key's as well); a single key is resent unchanged. Cost on
+    /// a silent target: N - 1 sends of inner pages, then each key resent once per `resendAfter`, all ending at the deadline.
+    private Promise<Unit> afterSilence(Page page, List<DHTMessage.KeyValue> entries, TimeSpan nackBackoff) {
+        return page.keys.size() > 1
+               ? runHalves(transition(() -> halvePage(page)))
+               : attempt(page, entries, nackBackoff);
+    }
+
+    /// #3345 P1: a receiver nacks a whole page when one entry fails its check, and the nack names no key, so a nacked page of
+    /// several keys is split in halves that run at once, down to single keys: one key the receiver cannot take never keeps another
+    /// key from becoming safe, at most log2(page size) extra rounds per refused page. A single key still nacked is resent with
+    /// the growing pause, owed until acked and reported at the deadline. A nack that clears on the resend costs one split.
+    private Promise<Unit> afterNackPause(Page page, List<DHTMessage.KeyValue> entries, TimeSpan nackBackoff) {
+        return page.keys.size() > 1
+               ? runHalves(transition(() -> halvePage(page)))
+               : attempt(page, entries, nextNackBackoff(nackBackoff));
+    }
+
+    private Promise<Unit> runHalves(List<Page> halves) {
+        return Promise.allOf(halves.stream().map(half -> runChain(List.of(half), 0)).toList()).mapToUnit();
+    }
+
+    /// Under `transitions`: the page is cancelled and its keys not yet safe at its target (I2: a late ack of an earlier page may
+    /// have made some safe) go to at most two pages on the same target, in the page's tenure; none when every key is safe or the
+    /// page is not [#mayAct(Page)] (a page cancelled by a re-plan or of an earlier tenure is never split).
+    private List<Page> halvePage(Page page) {
+        var open = mayAct(page)
+                   ? page.keys.stream().filter(key -> !safe(key, page.target, false)).toList()
+                   : List.<DepartureKey> of();
+
+        page.cancelled.set(true);
+        var middle = open.size() / 2;
+
+        return Stream.of(open.subList(0, middle),
+                         open.subList(middle,
+                                      open.size()))
+                     .filter(half -> !half.isEmpty())
+                     .map(half -> registerPage(page.target,
+                                               page.tenure,
+                                               List.copyOf(half),
+                                               false))
+                     .toList();
+    }
+
+    /// A page that cannot be encoded is split once into single-key pages on the same target and tenure; a key whose own page still
+    /// fails is undeliverable: it stays owed and is counted apart.
     private Promise<Unit> encodeFailed(Page page, WriteOutcome.EncodeFailed failed) {
-        log.error("Departure push: page {} for {} cannot be encoded ({}); its keys stay at risk",
+        log.error("Departure push: page {} for {} cannot be encoded ({})",
                   page.correlationId(),
                   page.target.id(),
                   failed.messageType());
 
-        return Promise.unitPromise();
+        return page.split || page.keys.size() == 1
+               ? Promise.success(transition(() -> undeliverable(page)))
+               : runChain(transition(() -> splitPage(page)), 0);
     }
 
-    /// Ring removal is the only retarget (H2): a target still in the ring is never replaced, because a replacement would be a stray.
-    /// The removed node joins `leaving`, so the receiver computes the same post-departure view (#1818 L1: an extra copy, never a
-    /// missing one). A key with no new target stays at risk.
-    private Promise<Unit> retarget(Page page) {
-        return Option.option(registry.remove(page.correlationId())).fold(Promise::unitPromise, this::replan);
+    /// Under `transitions`.
+    private Unit undeliverable(Page page) {
+        page.keys.forEach(key -> key.undeliverable = true);
+        page.cancelled.set(true);
+
+        return Unit.unit();
     }
 
-    private Promise<Unit> replan(Page page) {
-        leaving.add(page.target);
-        log.info("Departure push: target {} left the ring; re-planning {} chunk(s)", page.target.id(), page.keys.size());
-        var excluded = Set.copyOf(leaving);
-        var regrouped = page.keys.stream()
-                                 .flatMap(key -> retargets(key, excluded))
-                                 .collect(Collectors.groupingBy(TargetedKey::target,
-                                                                Collectors.mapping(TargetedKey::key,
-                                                                                   Collectors.toList())));
+    /// Under `transitions`: single-key pages in the page's tenure; none when the page is not [#mayAct(Page)].
+    private List<Page> splitPage(Page page) {
+        var singles = mayAct(page)
+                      ? page.keys.stream()
+                                 .map(key -> registerPage(page.target,
+                                                          page.tenure,
+                                                          List.of(key),
+                                                          true))
+                                 .toList()
+                      : List.<Page> of();
 
-        return Promise.allOf(regrouped.entrySet()
-                                      .stream()
-                                      .map(entry -> runChain(registerPages(entry.getKey(),
-                                                                           entry.getValue()),
-                                                             0))
-                                      .toList()).mapToUnit();
+        page.cancelled.set(true);
+
+        return singles;
     }
 
-    private Stream<TargetedKey> retargets(DepartureKey key, Set<NodeId> excluded) {
-        return drainTargets(key, excluded).stream()
-                           .filter(key::claimTarget)
-                           .map(target -> new TargetedKey(target, key));
-    }
-
+    /// No data page or exit probe starts once the attempts window is used up: the deadline resolves the run (P3: after its own
+    /// probe round), so a send then is never counted.
     private boolean shouldStop(Page page) {
-        return window.halted()
-                     .getAsBoolean() || !registry.containsKey(page.correlationId()) || pastDeadline(page);
+        return probeStopped(page, attemptsDeadline) || isSettled(page);
     }
 
-    /// Past `baseDeadline` the F7 re-evaluation runs (once) before a replicated page gives up, so a promotion is never missed by a
-    /// page that reaches its deadline before the timer fires.
-    private boolean pastDeadline(Page page) {
-        if (System.nanoTime() >= baseDeadline) {
-            reevaluate();
+    /// A page (a probe: any page) is not sent once the node halted, the page is not [#mayAct(Page)], the run closed, or `until`
+    /// passed.
+    private boolean probeStopped(Page page, long until) {
+        if (window.halted().getAsBoolean()) {
+            onHalt();
         }
 
-        return System.nanoTime() >= deadlineOf(page);
+        return ! underTransitions(() -> mayAct(page)) || isClosed() || System.nanoTime() >= until;
     }
 
-    private long deadlineOf(Page page) {
-        return page.holdsLiveSoleKey()
-               ? soleDeadline
-               : baseDeadline;
+    /// I2: a data page every key of which is already safe at its target is not sent (nor resent).
+    private boolean isSettled(Page page) {
+        return ! page.isProbe() && underTransitions(() -> page.keys.stream()
+                                                                   .allMatch(key -> safe(key, page.target, false)));
     }
 
-    private TimeSpan attemptWait(Page page) {
-        return timeSpan(Math.min(tuning.resendAfter().nanos(),
-                                 remainingNanos(deadlineOf(page)))).nanos();
+    private boolean isClosed() {
+        return underTransitions(() -> closed);
     }
 
-    private Promise<Unit> pause(Page page, TimeSpan delay) {
-        return Promise.promise(timeSpan(Math.min(delay.nanos(), remainingNanos(deadlineOf(page)))).nanos(),
+    private Promise<Unit> pause(TimeSpan delay) {
+        return pause(delay, attemptsDeadline);
+    }
+
+    private Promise<Unit> pause(TimeSpan delay, long until) {
+        return Promise.promise(timeSpan(Math.min(delay.nanos(), remainingNanos(until))).nanos(),
                                Result::unitResult);
     }
 
@@ -686,69 +1019,433 @@ final class DeparturePushRun {
                                  tuning.nackBackoffCap().nanos())).nanos();
     }
 
-    /// E3: the backstop must not cut off a page promoted at `baseDeadline`, so it is `soleDeadline` whenever a sole key exists or a
-    /// replicated key could be promoted.
-    private long backstopDeadline() {
-        return keys.stream()
-                   .anyMatch(key -> key.isSole() || !key.existingAtPlan.isEmpty())
-               ? soleDeadline
-               : baseDeadline;
+    // --- acks ---
+    /// Under `transitions`: a "draining" nack, on a data page or on a probe alike (the class comes from the nack's cause, never
+    /// from the page type, ac517fb077), refuses the target for the rest of the run; it leaves the owed set ([#owedTargets]).
+    private AttemptResult drained(NodeId target) {
+        lost.add(target);
+
+        return AttemptResult.FAILED;
+    }
+
+    /// An ack for one of this run's pages. It counts (records a holder of the stamps its page carried) only when the page belongs
+    /// to the target's current tenure, the target is in V, and the token matches the one recorded in that tenure. A "draining" nack
+    /// or a token mismatch is a holder lost. Never a re-plan by itself.
+    @Contract
+    void onAck(Page page, DHTMessage.MigrationDataAck ack) {
+        var outcome = transition(() -> recordAck(page, ack));
+
+        if (outcome != AttemptResult.IGNORED) {
+            page.settle(outcome);
+        }
+
+        if (outcome == AttemptResult.FAILED && !page.isProbe()) {
+            holderLost(page.target,
+                       ack.draining()
+                       ? "draining"
+                       : "token mismatch");
+        }
+    }
+
+    /// Under `transitions`.
+    private AttemptResult recordAck(Page page, DHTMessage.MigrationDataAck ack) {
+        if (!inTenure(page)) {
+            return AttemptResult.IGNORED;
+        }
+
+        if (ack.draining()) {
+            return drained(page.target);
+        }
+
+        var holder = holders.compute(page.target, (_, known) -> currentHolder(known, page, ack));
+
+        if (holder.token != ack.bootToken()) {
+            return AttemptResult.FAILED;
+        }
+
+        if (ack.applied()) {
+            var ackedAt = ++sequence;
+
+            page.sent.get().forEach(stamp -> holder.copies.put(stamp, ackedAt));
+        }
+
+        return ack.applied()
+               ? AttemptResult.ACKED
+               : AttemptResult.NACKED;
+    }
+
+    /// Under `transitions`: a record of an earlier tenure is replaced by a new one, which records this ack's token.
+    private static Holder currentHolder(Holder known, Page page, DHTMessage.MigrationDataAck ack) {
+        return Option.option(known)
+                     .filter(holder -> holder.tenure == page.tenure)
+                     .or(() -> Holder.holder(ack.bootToken(),
+                                             page.tenure));
+    }
+
+    /// Under `transitions`: registered and [#current(Page)] (P4), read from V like [#mayAct(Page)], never from the live ring; a
+    /// cancelled page's late ack still counts.
+    private boolean inTenure(Page page) {
+        return registry.containsKey(page.correlationId()) && current(page);
+    }
+
+    // --- exit ---
+    /// Trigger 3: when nothing sendable is owed and no chain runs, one exit attempt at a time.
+    @Contract
+    private void maybeExit() {
+        if (transition(this::claimExit)) {
+            exitAttempt();
+        }
+    }
+
+    /// Under `transitions`.
+    private boolean claimExit() {
+        var ready = !closed && !closing && !exitInFlight && pages.stream().noneMatch(this::liveInChain) && owed(false).stream()
+                                                                                                               .allMatch(key -> key.absent);
+
+        exitInFlight = exitInFlight || ready;
+
+        return ready;
+    }
+
+    @Contract
+    private void exitAttempt() {
+        exitAttempts.incrementAndGet();
+        node.storage()
+            .stamps()
+            .timeout(remainingUntil(attemptsDeadline))
+            .onResult(read -> read.fold(this::rereadFailed, this::afterReread));
+    }
+
+    /// FER: a failed re-read leaves the run to its deadline, which reports what is still owed.
+    private Unit rereadFailed(Cause cause) {
+        log.warn("Departure push: inventory re-read failed ({}); the run ends at its deadline", cause.message());
+
+        return Unit.unit();
+    }
+
+    private Unit afterReread(List<KeyStamp> stamps) {
+        transition(() -> reread(stamps));
+        reconcile();
+
+        return transition(this::probeTargets).fold(this::reopen, this::probe);
+    }
+
+    /// Under `transitions`: empty when something is still owed (the exit fails and the re-plan's chains carry on), else the distinct
+    /// holders Safe relies on.
+    private Option<Set<NodeId>> probeTargets() {
+        return owed(false).isEmpty()
+               ? Option.some(inventory.values()
+                                      .stream()
+                                      .flatMap(key -> drainTargets(key.stamp.key()).deliverers()
+                                                                  .stream()
+                                                                  .filter(target -> safe(key, target, false)))
+                                      .collect(Collectors.toSet()))
+               : Option.none();
+    }
+
+    private Unit reopen() {
+        transition(this::releaseExit);
+        maybeExit();
+
+        return Unit.unit();
+    }
+
+    /// Under `transitions`.
+    private Unit releaseExit() {
+        exitInFlight = false;
+
+        return Unit.unit();
+    }
+
+    /// Send an EMPTY page to every holder Safe relies on; pass iff each answers in its tenure with its token before the attempts
+    /// deadline, and no holder was lost meanwhile (a loss between a passed probe and the close re-opens the run).
+    private Unit probe(Set<NodeId> reliedOn) {
+        var lossesAtStart = holderLosses.get();
+        var mark = transition(this::nextMark);
+        var probes = transition(() -> registerProbes(reliedOn));
+
+        sendProbes(probes, attemptsDeadline).onSuccess(results -> afterProbe(probes, results, lossesAtStart, mark));
+
+        return Unit.unit();
+    }
+
+    /// Under `transitions`: one EMPTY page per holder, each in the holder's current tenure.
+    private List<Page> registerProbes(Set<NodeId> reliedOn) {
+        return reliedOn.stream()
+                       .map(target -> registerPage(target,
+                                                   List.of(),
+                                                   false))
+                       .toList();
+    }
+
+    /// Each probe ends answered (ACKED or NACKED), refused (FAILED: a draining nack or a token mismatch) or unanswered (TIMED_OUT,
+    /// once it can no longer be sent: `until` passed, the run closed, or the probe is no longer [#mayAct(Page)]).
+    private Promise<List<Result<AttemptResult>>> sendProbes(List<Page> probes, long until) {
+        return Promise.allOf(probes.stream().map(page -> probeOne(page, until)).toList());
+    }
+
+    /// A probe not answered within `resendAfter` is sent again, on the same page, while it may be sent; a late answer
+    /// to an earlier send counts. Silence is never a loss.
+    private Promise<AttemptResult> probeOne(Page page, long until) {
+        return probeStopped(page, until)
+               ? Promise.success(AttemptResult.TIMED_OUT)
+               : dispatch(page,
+                          List.of(),
+                          until).flatMap(dispatched -> probeAnswer(dispatched, until))
+                         .flatMap(result -> resendIfSilent(page, result, until));
+    }
+
+    /// A refusal to take the probe proves nothing: it is waited out like silence.
+    private Promise<AttemptResult> probeAnswer(Dispatched dispatched, long until) {
+        return dispatched.outcome() instanceof WriteOutcome.Sent
+               ? awaitAttempt(dispatched, until)
+               : pause(tuning.resendAfter(), until).map(_ -> AttemptResult.TIMED_OUT);
+    }
+
+    private Promise<AttemptResult> resendIfSilent(Page page, AttemptResult result, long until) {
+        return result == AttemptResult.TIMED_OUT
+               ? probeOne(page, until)
+               : Promise.success(result);
+    }
+
+    /// Under `transitions`: every ack counted from here on is numbered above the mark, so a probe registered after it covers only
+    /// the acks counted before.
+    private long nextMark() {
+        return++sequence;
+    }
+
+    @Contract
+    private void afterProbe(List<Page> probes, List<Result<AttemptResult>> results, int lossesAtStart, long mark) {
+        var passed = passedProbes(probes, results);
+        var refused = refusedProbes(probes, results);
+
+        transition(() -> markProbed(passed, mark));
+        transition(() -> retireProbes(probes));
+        if (passed.size() == probes.size() && transition(() -> closeIfClean(lossesAtStart))) {
+            return;
+        }
+        // P3: past the deadline the deadline probe round owns the close; a probe the deadline cut short proves no loss.
+        if (underTransitions(() -> closing)) {
+            return;
+        }
+
+        transition(this::releaseExit);
+        // Only an explicit refusal is a lost holder; an unanswered probe is not, and triggers no re-push.
+        refused.forEach(target -> holderLost(target, "probe refused"));
+        maybeExit();
+    }
+
+    /// The targets whose probe answer refused it (a draining nack or a token mismatch).
+    private static List<NodeId> refusedProbes(List<Page> probes, List<Result<AttemptResult>> results) {
+        return IntStream.range(0,
+                               probes.size())
+                        .filter(i -> results.get(i)
+                                            .fold(_ -> false, result -> result == AttemptResult.FAILED))
+                        .mapToObj(i -> probes.get(i).target)
+                        .toList();
+    }
+
+    private static List<Page> passedProbes(List<Page> probes, List<Result<AttemptResult>> results) {
+        return IntStream.range(0,
+                               probes.size())
+                        .filter(i -> results.get(i)
+                                            .fold(_ -> false, DeparturePushRun::probePassed))
+                        .mapToObj(probes::get)
+                        .toList();
+    }
+
+    private static boolean probePassed(AttemptResult result) {
+        return result == AttemptResult.ACKED || result == AttemptResult.NACKED;
+    }
+
+    /// Under `transitions`: a passed probe covers the acks its holder counted before `mark`, in the tenure it was sent in.
+    private Unit markProbed(List<Page> passed, long mark) {
+        passed.forEach(probe -> Option.option(holders.get(probe.target))
+                                      .filter(holder -> holder.tenure == probe.tenure)
+                                      .onPresent(holder -> holder.probedAt = Math.max(holder.probedAt, mark)));
+
+        return Unit.unit();
+    }
+
+    /// Under `transitions`.
+    private Unit retireProbes(List<Page> probes) {
+        probes.forEach(this::drop);
+        pages.removeAll(probes);
+
+        return Unit.unit();
+    }
+
+    /// Under `transitions`: closes when no holder was lost since the probe started and nothing is owed.
+    private boolean closeIfClean(int lossesAtStart) {
+        var clean = holderLosses.get() == lossesAtStart && owed(true).isEmpty() && !closed;
+
+        if (clean) {
+            closeUnder(false);
+        }
+
+        return clean;
+    }
+
+    // --- close ---
+    /// #3345 P3: a halted run closes at once and sends nothing (P2); otherwise ONE probe round goes to every holder of a key owed
+    /// at the close only for want of a probe passed since its ack, it waits at most one `resendAfter`, then the run closes. A holder
+    /// that fails or does not answer covers nothing: its keys stay owed.
+    @Contract
+    private void onDeadline() {
+        if (window.halted().getAsBoolean()) {
+            onHalt();
+        } else {
+            transition(this::claimDeadline).onPresent(this::probeAtDeadline);
+        }
+    }
+
+    /// Under `transitions`: past the deadline no exit starts; the holders to probe, none once closed.
+    private Option<Set<NodeId>> claimDeadline() {
+        closing = true;
+
+        return closed
+               ? Option.none()
+               : Option.some(uncoveredHolders());
+    }
+
+    /// Under `transitions`: every holder Safe would rely on for a key owed at a close, with an ack for it no passed probe covers.
+    private Set<NodeId> uncoveredHolders() {
+        return owed(true).stream()
+                   .flatMap(key -> drainTargets(key.stamp.key()).deliverers()
+                                               .stream()
+                                               .filter(target -> safe(key, target, false)))
+                   .collect(Collectors.toSet());
+    }
+
+    /// The pre-exit probe path with the probe deadline as its bound; an empty set closes at once.
+    private Unit probeAtDeadline(Set<NodeId> uncovered) {
+        var until = System.nanoTime() + tuning.resendAfter().nanos();
+        var mark = transition(this::nextMark);
+        var probes = transition(() -> registerProbes(uncovered));
+
+        sendProbes(probes, until).onSuccess(results -> afterDeadlineProbe(probes, results, mark));
+
+        return Unit.unit();
+    }
+
+    @Contract
+    private void afterDeadlineProbe(List<Page> probes, List<Result<AttemptResult>> results, long mark) {
+        transition(() -> markProbed(passedProbes(probes, results), mark));
+        transition(() -> retireProbes(probes));
+        transition(() -> closeUnder(window.halted().getAsBoolean()));
+    }
+
+    @Contract
+    private void onHalt() {
+        transition(() -> closeUnder(true));
+    }
+
+    /// #3345 P2: the run observes the halt itself, every resend interval, so a run with nothing in flight (no page send polls
+    /// the window) resolves within one interval of the halt, not at its deadline.
+    @Contract
+    private void onHaltWatch() {
+        if (window.halted().getAsBoolean()) {
+            onHalt();
+        }
+    }
+
+    /// The resend interval, floored at 1 ms: a fixed-rate period must be positive.
+    private TimeSpan haltWatchPeriod() {
+        return timeSpan(Math.max(tuning.resendAfter().nanos(),
+                                 MIN_HALT_WATCH_NANOS)).nanos();
+    }
+
+    /// Under `transitions`, once: report what is owed, raise the closing events (not after a halt), drop every page of the run.
+    private boolean closeUnder(boolean halted) {
+        if (closed) {
+            return false;
+        }
+
+        closed = true;
+        var owed = owed(true);
+        var sole = owed.stream().filter(key -> key.sole).toList();
+        var report = new DeparturePushReport(sole.size(),
+                                             owed.size() - sole.size(),
+                                             true,
+                                             owed.size(),
+                                             enumeratedKeys,
+                                             (int) owed.stream().filter(key -> key.undeliverable).count(),
+                                             digest(owed));
+
+        if (!halted && !sole.isEmpty()) {
+            raiseAtRisk(sole);
+        }
+
+        if (!halted) {
+            reportOutcome(sole, owed);
+        }
+
+        pages.forEach(this::drop);
+        effects.add(() -> awaitEvents(report).onSuccess(result::succeed));
+
+        return true;
+    }
+
+    /// Under `transitions`.
+    private void reportOutcome(List<DepartureKey> sole, List<DepartureKey> owed) {
+        if (atRiskRaised && sole.isEmpty()) {
+            effects.add(() -> log.info("Departure push: every sole-copy chunk has a holder"));
+            observe(() -> observer.onSoleCopyDelivered(atRiskCount));
+        }
+
+        if (!owed.isEmpty()) {
+            effects.add(() -> log.warn("Departure push incomplete: {} chunk(s) owed ({} sole-copy): {}",
+                                       owed.size(),
+                                       sole.size(),
+                                       hexOf(owed)));
+            observe(() -> observer.onIncompleteReport(owed.size(), sole.size(), sample(owed)));
+        }
+    }
+
+    /// FNV-1a 64 over the sorted (key, stamp) pairs; 0 when nothing is owed.
+    private static long digest(List<DepartureKey> owed) {
+        return owed.isEmpty()
+               ? 0L
+               : owed.stream()
+                     .map(key -> key.stampId()
+                                    .digestText())
+                     .sorted()
+                     .map(text -> text.getBytes(StandardCharsets.UTF_8))
+                     .reduce(FNV_OFFSET,
+                             DeparturePushRun::fnv,
+                             (left, _) -> left);
+    }
+
+    private static long fnv(long hash, byte[] bytes) {
+        var h = hash;
+
+        for (var b : bytes) {
+            h = (h ^ (b & 0xff)) * FNV_PRIME;
+        }
+
+        return (h ^ '\n') * FNV_PRIME;
     }
 
     // --- events ---
-    /// Plan time: a sole key without a target outside the drain set can never be shown delivered (no target at all, or only named
-    /// targets that may halt with it, #3208), and a window already used up delivers nothing.
-    private void raiseAtPlan() {
-        var unpushable = keys.stream().anyMatch(key -> key.isSole() && !key.hasDeliverer());
+    /// Under `transitions`: a sole owed key without a deliverer can never be shown safe, and a window already used up delivers
+    /// nothing.
+    private Unit raiseAtPlan() {
+        var soleOwed = owed(false).stream().filter(key -> key.sole).toList();
+        var unpushable = soleOwed.stream().anyMatch(key -> drainTargets(key.stamp.key()).deliverers()
+                                                                       .isEmpty());
 
-        if (!window.halted().getAsBoolean() && (unpushable || System.nanoTime() >= attemptsDeadline)) {
-            transition(this::raiseIfSoleAtRisk);
-        }
-    }
-
-    /// F7 re-evaluation, once, at `baseDeadline` (or at the end, whichever comes first): promote, then raise if sole keys remain.
-    /// A caller that loses the race waits on `transitions` until the winner's promotion and raise are complete (#2684 F2).
-    @Contract
-    private void reevaluate() {
-        if (!window.halted().getAsBoolean()) {
-            transition(this::reevaluateOnce);
-        }
-    }
-
-    /// Under `transitions`.
-    private Unit reevaluateOnce() {
-        return reevaluated.compareAndSet(false, true)
-               ? promoteThenRaise()
+        return ! closed && !window.halted()
+                                  .getAsBoolean() && !soleOwed.isEmpty() && (unpushable || System.nanoTime() >= attemptsDeadline)
+               ? raiseAtRisk(soleOwed)
                : Unit.unit();
     }
 
-    /// Under `transitions`. The ring read takes only the ring's own in-memory lock.
-    private Unit promoteThenRaise() {
-        var ringNodes = Set.copyOf(node.ring().nodes());
-        var promoted = keys.stream().filter(key -> key.promoteIfSurvivorsGone(ringNodes)).count();
-
-        if (promoted > 0) {
-            effects.add(() -> log.warn("Departure push: {} replicated chunk(s) lost every plan-time survivor; treated as sole copies",
-                                       promoted));
-        }
-
-        return raiseIfSoleAtRisk();
-    }
-
-    /// Under `transitions`.
-    private Unit raiseIfSoleAtRisk() {
-        var atRisk = soleAtRisk();
-
-        return atRisk.isEmpty()
-               ? Unit.unit()
-               : raiseAtRisk(atRisk);
-    }
-
-    /// Once per push, under `transitions`; the caller has checked `halted`. An empty list means the inventory is unknown (count 0).
+    /// Once per push, under `transitions`. An empty list means the inventory is unknown (count 0).
     private Unit raiseAtRisk(List<DepartureKey> atRisk) {
-        if (atRiskRaised.compareAndSet(false, true)) {
-            atRiskCount.set(atRisk.size());
-            effects.add(() -> log.warn("Departure push: {} sole-copy chunk(s) not yet acknowledged by any target: {}",
+        if (!atRiskRaised) {
+            atRiskRaised = true;
+            atRiskCount = atRisk.size();
+            effects.add(() -> log.warn("Departure push: {} sole-copy chunk(s) without a holder: {}",
                                        atRisk.size(),
                                        hexOf(atRisk)));
             observe(() -> observer.onSoleCopyAtRisk(atRisk.size(), sample(atRisk)));
@@ -757,59 +1454,14 @@ final class DeparturePushRun {
         return Unit.unit();
     }
 
-    /// The closing transition waits for any re-evaluation in flight, so an at-risk raise decided by another thread is always
-    /// followed by its delivered event and is in `events` before they are awaited (#2684 F1).
-    private Promise<DeparturePushReport> finish() {
-        var halted = window.halted().getAsBoolean();
-        var report = transition(() -> close(halted));
-
-        pages.forEach(page -> registry.remove(page.correlationId()));
-
-        return awaitEvents(report);
-    }
-
-    /// Under `transitions`.
-    private DeparturePushReport close(boolean halted) {
-        if (!halted) {
-            reevaluateOnce();
-        }
-
-        var sole = soleAtRisk();
-        var replicated = keys.stream().filter(key -> !key.isSole() && key.isAtRisk()).toList();
-
-        if (!halted) {
-            reportOutcome(sole, replicated);
-        }
-
-        return new DeparturePushReport(sole.size(), replicated.size(), true);
-    }
-
-    /// Under `transitions`.
-    private void reportOutcome(List<DepartureKey> sole, List<DepartureKey> replicated) {
-        if (atRiskRaised.get() && sole.isEmpty()) {
-            effects.add(() -> log.info("Departure push: every sole-copy chunk was acknowledged"));
-            observe(() -> observer.onSoleCopyDelivered(atRiskCount.get()));
-        }
-
-        if (!sole.isEmpty() || !replicated.isEmpty()) {
-            var atRisk = Stream.concat(sole.stream(), replicated.stream()).toList();
-
-            effects.add(() -> log.warn("Departure push incomplete: {} chunk(s) unacknowledged ({} sole-copy): {}",
-                                       atRisk.size(),
-                                       sole.size(),
-                                       hexOf(atRisk)));
-            observe(() -> observer.onIncompleteReport(atRisk.size(), sole.size(), sample(atRisk)));
-        }
-    }
-
     /// One state transition: `change` runs under `transitions` and touches in-memory state only; the effects it queued run after
     /// the lock is released.
     private <T> T transition(Supplier<T> change) {
-        var result = underTransitions(change);
+        var value = underTransitions(change);
 
         runEffects();
 
-        return result;
+        return value;
     }
 
     private <T> T underTransitions(Supplier<T> change) {
@@ -847,8 +1499,8 @@ final class DeparturePushRun {
                         .fold(_ -> Promise.success(report));
     }
 
-    /// Under `transitions`: the event's promise joins `events` now, so a later `finish` awaits it; the observer is called later, as
-    /// an effect. An observer that throws is isolated: its event is lost, never the push.
+    /// Under `transitions`: the event's promise joins `events` now; the observer is called later, as an effect. An observer that
+    /// throws is isolated: its event is lost, never the push.
     private void observe(Supplier<Promise<Unit>> raise) {
         Promise<Unit> event = Promise.promise();
 
@@ -868,23 +1520,17 @@ final class DeparturePushRun {
         return Promise.unitPromise();
     }
 
-    private List<DepartureKey> soleAtRisk() {
+    private static List<String> sample(List<DepartureKey> keys) {
         return keys.stream()
-                   .filter(DepartureKey::isLiveSole)
+                   .limit(SAMPLE_LIMIT)
+                   .map(DepartureKey::hex)
                    .toList();
     }
 
-    private static List<String> sample(List<DepartureKey> atRisk) {
-        return atRisk.stream()
-                     .limit(SAMPLE_LIMIT)
-                     .map(DepartureKey::hex)
-                     .toList();
-    }
-
-    private static String hexOf(List<DepartureKey> atRisk) {
-        return atRisk.stream()
-                     .map(DepartureKey::hex)
-                     .collect(Collectors.joining(","));
+    private static String hexOf(List<DepartureKey> keys) {
+        return keys.stream()
+                   .map(DepartureKey::hex)
+                   .collect(Collectors.joining(","));
     }
 
     private static long remainingNanos(long deadline) {

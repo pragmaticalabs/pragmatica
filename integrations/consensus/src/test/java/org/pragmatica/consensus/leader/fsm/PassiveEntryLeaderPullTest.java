@@ -289,6 +289,34 @@ class PassiveEntryLeaderPullTest {
         assertThat(changes).containsExactly(Option.some(LEADER), Option.none(), Option.some(JOINED));
     }
 
+    /// #3581 (v3588 F2): a voting state entering `Passive` hands over the leader it holds, and a voting state may
+    /// hold a leader absent from its view (FIX 1). `Passive`'s entry holds that leader to the stored view before it
+    /// pulls, so the observer keeps it only if the view holds it (I2 at every entry, whatever the predecessor), and
+    /// the view write that brings it into view re-admits the committed record.
+    @Test
+    void passiveEntry_fromLedHoldingLeaderAbsentFromView_entryDropsIt() {
+        startDormant();
+        link(SUCCESSOR, List.of(SELF, SUCCESSOR));
+        kvLeader.set(Option.some(leaderCommitted(LEADER, 5)));
+        harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        assertThat(harness.state()).as("instrument: FIX 1 adopted the committed leader absent from the view")
+                                   .isInstanceOf(LeaderElectionState.Led.class);
+        assertThat(manager.leader()).as("instrument: Led holds it").isEqualTo(Option.some(LEADER));
+        assertThat(ctx.currentTopology()).as("instrument: the stored view lacks it").doesNotContain(LEADER);
+
+        harness.dispatch(new PassiveDirectory(CORES));
+
+        assertThat(harness.state()).as("instrument").isInstanceOf(LeaderElectionState.Passive.class);
+        assertThat(manager.leader()).as("Passive does not hold a leader absent from its stored view")
+                                    .isEqualTo(Option.none());
+
+        link(LEADER, LINKED);
+
+        assertThat(manager.leader()).as("the view write that brings it into view re-admits the committed record")
+                                    .isEqualTo(Option.some(LEADER));
+        assertThat(changes).containsExactly(Option.some(LEADER), Option.none(), Option.some(LEADER));
+    }
+
     private void startPassiveHolding(NodeId leader, long sequence) {
         startLinked();
         kvLeader.set(Option.some(leaderCommitted(leader, sequence)));
