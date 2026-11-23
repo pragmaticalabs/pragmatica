@@ -348,7 +348,7 @@ public interface SystemTags {
         pin(table, 709, "org.pragmatica.aether.slice.StreamCompression");
         // Known limit of the #3334 flag day: this tag did not move when `StreamConfig` gained `declaration`, so an OLD node decodes a
         // bare new `StreamConfig` silently (the trailing declaration byte is ignored; probe, v3361). Safe while `StreamConfigValue`
-        // (tag 2920) is the only wire carrier of a `StreamConfig`; a mixed-version cluster is not supported.
+        // (tag 3014) is the only wire carrier of a `StreamConfig`; a mixed-version cluster is not supported.
         pin(table, 710, "org.pragmatica.aether.slice.StreamConfig");
         pin(table, 711, "org.pragmatica.aether.slice.TierAwareRetention");
         pin(table, 712, "org.pragmatica.aether.slice.RetentionDimensions");
@@ -825,9 +825,14 @@ public interface SystemTags {
         // #2981 step 1: the node lease renewal row. Inside the impl2981s1 reservation 2910..2911 of wire-tag-ranges.txt.
         pin(table, 2910, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey");
         pin(table, 2911, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeLeaseValue");
-        // #3334 S2a1-1: the stream declaration model and the flag-day tag of `StreamConfigValue` (old tag 1647, retired above).
-        // Inside the S2a1-1 sub-allocation 2920..2925 of the rc6-streams-wire reservation in wire-tag-ranges.txt.
-        pin(table, 2920, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue");
+        // RETIRED 2026-11-22 (#3458 stream-mem M-1, flag day, know 7753703955): `StreamConfigValue` moved to 3014 when
+        // `StreamDeclaration` gained its trailing `storage` component. The codec is positional, with no count and no length, so a build
+        // that reads a value written by the other shape misreads `createdAt` silently, and a value an older build persisted would be
+        // misread the same way. A node of an older build fails the new value on an unknown tag instead. Second recorded renumber
+        // exception, pre-GA, no decoder kept (ST-RP-8). The pin STAYS, under a name that resolves to no class, so the tag is never reused.
+        pin(table, 2920, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValueRetiredRc6b");
+        // #3334 S2a1-1: the stream declaration model, in the S2a1-1 sub-allocation 2920..2925 of the rc6-streams-wire reservation in
+        // wire-tag-ranges.txt (2920, the flag-day tag of `StreamConfigValue` after old tag 1647, is retired above).
         pin(table, 2921, "org.pragmatica.aether.slice.StreamDeclaration");
         pin(table, 2922, "org.pragmatica.aether.slice.RetentionDeclaration");
         pin(table, 2923, "org.pragmatica.aether.slice.TruncationDeclaration");
@@ -857,8 +862,13 @@ public interface SystemTags {
         // #420 flag day: the artifact-content binding with its block manifest, and the flag-day tag of `ArtifactContentValue` (old tag
         // 2118, retired above). Inside the 2990..2999 reservation of wire-tag-ranges.txt (know d2ce3461aa).
         pin(table, 2990, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+        // #3458 M-1: the stream storage mode, and the flag-day tag of `StreamConfigValue` (old tag 2920, retired above). Inside the
+        // 3010..3017 reservation of wire-tag-ranges.txt (stream-mem).
+        pin(table, 3010, "org.pragmatica.aether.slice.StreamStorage");
+        pin(table, 3014, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue");
         // #3458 M-1b: the named removal cause a refused read carries. Inside the 3010..3017 reservation of wire-tag-ranges.txt (stream-mem);
-        // 3017 is its last free tag, so the next stream-mem wire addition reserves a block first.
+        // 3011..3013 and 3016 are assigned to later stream-mem lanes, and 3015 is held (design ledger r12 snapshot, RQ-3/10 (b);
+        // not re-read against r24), so no tag of the block is free after M-1: the next stream-mem wire addition reserves a block first.
         pin(table, 3017, "org.pragmatica.aether.slice.stream.RemovalCause");
         // #3303 A3a: the entity seed-offer and arc-waiver keys. Inside the arc-3303 reservation 3018..3037 of wire-tag-ranges.txt (know f3033886ee).
         pin(table, 3018, "org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey");

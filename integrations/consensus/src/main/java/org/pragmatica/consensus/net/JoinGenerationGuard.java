@@ -54,7 +54,8 @@ public interface JoinGenerationGuard {
     /// 10: #3458 M-1c (`ReadRefusal` gained its removal-cause set, `causes`).
     /// 11: #3458 W-4 (`ReadRefusal.Kind` gained `BELOW_COPY_TAIL`; `UNKNOWN`'s ordinal moved from 16 to 17).
     /// 12: #3345 (`DHTMessage.MigrationDataAck` gained `bootToken`, `storeGeneration` and `draining`).
-    int WIRE_GENERATION = 12;
+    /// 13: #3458 M-1 (`StreamDeclaration` gained `storage`; `StreamConfigValue` moved from tag 2920 to 3014).
+    int WIRE_GENERATION = 13;
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.

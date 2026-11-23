@@ -194,6 +194,7 @@ import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -807,9 +808,11 @@ public interface AetherNode extends ManageableNode {
         // node's process is gone; a restart is a fresh NTT-gated join, so there is no stale KV
         // STOPPED record to refuse rejoin against.
         Predicate<NodeId> isDecommissioned = _ -> false;
-        Supplier<Option<NodeId>> currentLeaderFromKvSupplier = () -> kvStore.getTyped(LeaderKey.INSTANCE,
-                                                                                      LeaderValue.class)
-                                                                            .map(LeaderValue::leader);
+        // #3581: the committed record, leader AND its own viewSequence, so the passive pull adopts what was committed.
+        Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier = () -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                               LeaderValue.class)
+                                                                                     .map(value -> LeaderCommitted.leaderCommitted(value.leader(),
+                                                                                                                                   value.viewSequence()));
         // Leader-acting lease (zero-leader-wedge recovery edge): the leader-election FSM, while in
         // Led(X) where X != self, re-elects when X's leader-stamped ClusterSync ping goes silent
         // for the silence threshold. The freshness signal is the follower's observed leader-ping
