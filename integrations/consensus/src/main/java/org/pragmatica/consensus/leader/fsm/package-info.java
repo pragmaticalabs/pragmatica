@@ -33,14 +33,16 @@
 /// \* commits; a tick elects). MaxSeq bounds view sequences, MaxCommits the LeaderKey commits, EnvSteps the view writes
 /// \* and removals. Env: the environment events enabled in a run ("view", "stale", "remove", "commit", and "demote": a
 /// \* PassiveDirectory reaching a voting state).
-/// \* Fixed: the fixes the modelled code carries. AllFixes is the code as it stands plus two fixes it does not carry
-/// \* yet, so a config with AllFixes models the intended code: "serial" (#3587, open) and "entryhold" (#3581, until it
-/// \* carries the entry hold). A config that drops one models the code without it and must fail:
+/// \* Fixed: the fixes the modelled code carries. AllFixes is the code as it stands (release-1.0.0-rc6, with #3581
+/// \* and #3605). A config that drops one models the code without it and must fail:
 /// \*   serial        - Passive's push admission check and its write are one step against the view (#3587, know
-/// \*                   45a9e2fdd9: the code as it stands splits them, Fsm.dispatch runs on the caller thread and a
-/// \*                   view write on another thread may run between; configs `interleave`, `interleavelearns`, `interleavemono` drop it, a FINDING)
-/// \*   entryhold     - Passive's entry holds an inherited leader to the stored view, whatever the predecessor (#3581:
-/// \*                   without it a Led holding a FIX 1 leader absent from the view enters Passive still holding it)
+/// \*                   45a9e2fdd9; fixed by #3605: LeaderManager runs observeViewSequence and the push's dispatch in
+/// \*                   one task of the node's serial executor, which every view write also enters; before it,
+/// \*                   Fsm.dispatch ran on the caller thread and a view write on another thread could run between;
+/// \*                   configs `interleave`, `interleavelearns`, `interleavemono` drop it: the known-bad of #3587)
+/// \*   entryhold     - Passive's entry holds an inherited leader to the stored view, whatever the predecessor (#3581,
+/// \*                   dropLeaderOutOfViewOnEntry: without it a Led holding a FIX 1 leader absent from the view
+/// \*                   enters Passive still holding it)
 /// \*   entrypull     - Passive's entry pulls the committed LeaderKey (#3414: a worker entering Passive after the push
 /// \*                   passed in Dormant never learned the leader)
 /// \*   pushinview    - Passive's push passes the in-view admission (78e44f01a8; before, FIX 1 applied to an observer

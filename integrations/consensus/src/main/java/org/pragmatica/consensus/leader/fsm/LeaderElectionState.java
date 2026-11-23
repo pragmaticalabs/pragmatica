@@ -1017,9 +1017,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         /// ```tla LeaderAdmission:P_Enter
         /// \* PassiveDirectory: Dormant -> Passive, and with "demote" every voting state -> Passive (the arms in
         /// \* QuorumWaiting, AwaitingKvSync, Electing, Led and ReElecting); the context's leader, adopted sequence
-        /// \* and last adopted leader carry over (Led.onExit does not clear them). With the fix "entryhold" (#3581)
-        /// \* the entry holds the inherited leader to the stored view first; then it pulls the committed LeaderKey
-        /// \* through the one admission (#3414), and a refused pull keeps what the hold left.
+        /// \* and last adopted leader carry over (Led.onExit does not clear them). With the fix "entryhold" (#3581,
+        /// \* dropLeaderOutOfViewOnEntry) the entry holds the inherited leader to the stored view first; then it
+        /// \* pulls the committed LeaderKey through the one admission (#3414), and a refused pull keeps what the hold
+        /// \* left.
         /// P_Enter == /\ \/ st = "dormant"
         ///               \/ st \in {"waiting", "electing", "led"} /\ "demote" \in Env
         ///            /\ st' = "passive"
@@ -1124,7 +1125,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// only for the leader adopted at it), and the leader is in the stored view ([#admittedToView], I2's admission).
     ///
     /// ```tla LeaderAdmission:P_Push
-    /// \* Passive's one admission for a pushed commit (#3581), one atomic step with the fix "serial" (#3587).
+    /// \* Passive's one admission for a pushed commit (#3581), one atomic step with the fix "serial" (#3587, #3605).
     /// P_Push(r) == /\ Fix("serial")
     ///              /\ st = "passive"
     ///              /\ PushStep(r)
@@ -1135,8 +1136,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// ```
     ///
     /// ```tla LeaderAdmission:P_Check
-    /// \* Without "serial" (the code as it stands, #3587): the gate and admittedToView read the stored view, then the
-    /// \* writes follow; a view write on another thread (Fsm.dispatch runs on the caller thread) may run in between.
+    /// \* Without "serial" (the code before #3605, #3587): the gate and admittedToView read the stored view, then the
+    /// \* writes follow; a view write on another thread (Fsm.dispatch ran on the caller thread) may run in between.
     /// P_Check(r) == /\ ~Fix("serial")
     ///               /\ st = "passive"
     ///               /\ adm = NoRec
