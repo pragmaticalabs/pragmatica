@@ -196,7 +196,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case ClusterFsmEvent.NodeAdded na -> storeView(ctx, na);
                 case ClusterFsmEvent.NodeGone ng -> storeView(ctx, ng);
                 case PeerRemovedFromView removed -> storeRemoval(ctx, removed);
-                case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, tx);
+                case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, "QuorumWaiting", tx);
                 default -> tx.ignore();
             }
         }
@@ -278,7 +278,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
-                case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, tx);
+                case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, "AwaitingKvSync", tx);
                 case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, tx, this);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
@@ -311,7 +311,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                            TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
         log.info("AwaitingKvSync grace window elapsed with committed leader {} visible — following it, not electing",
                  leader);
-        adoptLeaderUnconditionally(ctx, new LeaderCommitted(leader), tx);
+        adoptLeaderUnconditionally(ctx, new LeaderCommitted(leader), "AwaitingKvSync", tx);
     }
 
     private static void electOrKeepWaiting(LeaderElectionContext ctx,
@@ -767,8 +767,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         // Valid leader swap (different committed leader, advancing sequence) — record the adopted
         // sequence (fence reference for the NEXT swap) and transition to a new Led instance. This
         // covers local-mode topology-driven re-election and consensus re-elections that commit
-        // directly without passing through ReElecting.
-        ctx.setAdoptedViewSequence(event.viewSequence());
+        // directly without passing through ReElecting. The sequence is recorded by the one rule every adoption takes
+        // (#3588 finding A): a sequence-less swap keeps the fence where it was instead of resetting it to NO_SEQUENCE.
+        recordAdoptedSequence(ctx, event);
         tx.transitionTo(Led.fresh(ctx, event.leader()));
     }
 
@@ -978,11 +979,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     /// Passive's one admission (#3581), for the commit `LeaderManager` pushes and the record the entry pulls alike: the
     /// leader is eligible and not this node, the sequence is a real commit not older than the adopted one (an equal one
-    /// only for the leader adopted at it), and the leader is in the stored view ([#admittedToView], I2's admission).
+    /// only for the leader adopted at it, [#isOlderThanAdopted]), and the leader is in the stored view ([#admittedToView],
+    /// I2's admission).
     private static void observeCommittedLeader(LeaderElectionContext ctx, LeaderCommitted committed) {
-        if (!ctx.isEligible(committed.leader()) || committed.leader().equals(ctx.self()) || committed.viewSequence() <= LeaderCommitted.NO_SEQUENCE || committed.viewSequence() < ctx.adoptedViewSequence() || (committed.viewSequence() == ctx.adoptedViewSequence() && ctx.lastAdoptedLeader()
-                                                                                                                                                                                                                                                                            .filter(committed.leader()::equals)
-                                                                                                                                                                                                                                                                            .isEmpty())) {
+        if (!ctx.isEligible(committed.leader()) || committed.leader().equals(ctx.self()) || committed.viewSequence() <= LeaderCommitted.NO_SEQUENCE || isOlderThanAdopted(ctx,
+                                                                                                                                                                          committed)) {
             return;
         }
 
@@ -1024,9 +1025,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// (`QuorumWaiting`, `AwaitingKvSync`, and the `Led` leader-swap) — there, a committed leader
     /// is plain truth and is adopted as-is (this preserves the stuck-joiner fix: a joiner adopts
     /// in `AwaitingKvSync` before ever reaching `Electing`). A transport-absent adoption logs WARN.
+    /// Unconditional w.r.t. transport, not w.r.t. sequence: a commit older than the adopted leader is skipped
+    /// ([#skippedAsOlderThanAdopted], #3588 finding A).
     private static void adoptLeaderUnconditionally(LeaderElectionContext ctx,
                                                    LeaderCommitted event,
+                                                   String stateLabel,
                                                    TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        if (skippedAsOlderThanAdopted(ctx, event, stateLabel)) {
+            return;
+        }
+
         if (!isInStoredView(ctx, event.leader())) {
             log.warn("Adopting committed LeaderCommitted({}) NOT YET in transport topology {} — "
                     + "consensus decision overrides observed transport state (FIX 1); SWIM/FSM "
@@ -1071,6 +1079,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                      committed,
                      entryBaseline);
 
+            return;
+        }
+
+        if (skippedAsOlderThanAdopted(ctx, event, stateLabel)) {
             return;
         }
 
@@ -1122,13 +1134,48 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         return false;
     }
 
+    /// The one staleness rule of every sequenced adoption (#3588 finding A; `Passive`'s rule since #3581): a commit that
+    /// carries a real sequence is older than the adopted leader iff its sequence is below
+    /// [LeaderElectionContext#adoptedViewSequence], or equal to it for a leader other than the one adopted at it. A
+    /// sequence-less commit ([`LeaderCommitted#NO_SEQUENCE`], KV-pull synthesis / local mode) is never older: it names
+    /// the record the KV-Store holds now. The adopted sequence can be ahead of `committedViewSequence` (a passive pull
+    /// adopts the record's own sequence before the push that observes it runs), so this rule, not the observed baseline,
+    /// is what keeps a queued older push from displacing the newer leader.
+    private static boolean isOlderThanAdopted(LeaderElectionContext ctx, LeaderCommitted event) {
+        return event.viewSequence() > LeaderCommitted.NO_SEQUENCE
+               && (event.viewSequence() < ctx.adoptedViewSequence() || (event.viewSequence() == ctx.adoptedViewSequence() && ctx.lastAdoptedLeader()
+                                                                                                                                .filter(event.leader()::equals)
+                                                                                                                                .isEmpty()));
+    }
+
+    /// [#isOlderThanAdopted] at a voting state's adoption ([#adoptLeaderUnconditionally],
+    /// [#adoptLeaderIfPostElectionCommit]): an older commit is skipped and logged. Returns `true` iff it was skipped.
+    private static boolean skippedAsOlderThanAdopted(LeaderElectionContext ctx,
+                                                     LeaderCommitted event,
+                                                     String stateLabel) {
+        if (!isOlderThanAdopted(ctx, event)) {
+            return false;
+        }
+
+        log.info("{}: skipping STALE LeaderCommitted({}, seq={}) — older than the adopted sequence {} of leader {}",
+                 stateLabel,
+                 event.leader(),
+                 event.viewSequence(),
+                 ctx.adoptedViewSequence(),
+                 ctx.lastAdoptedLeader());
+
+        return true;
+    }
+
     /// Records the sequence at which a leader is being adopted into [`Led`], the fence reference
-    /// for the next swap (FIX 2). Uses the larger of the commit's own `viewSequence` and the
-    /// node's observed committed baseline, so a sequence-less synthetic commit (KV-pull / local
-    /// mode, [`LeaderCommitted#NO_SEQUENCE`]) still records the true committed sequence the node
-    /// has seen rather than the sentinel.
+    /// for the next swap (FIX 2). Uses the largest of the sequence already adopted, the commit's own `viewSequence` and
+    /// the node's observed committed baseline: a sequence-less synthetic commit (KV-pull / local mode,
+    /// [`LeaderCommitted#NO_SEQUENCE`]) still records the true committed sequence the node has seen rather than the
+    /// sentinel, and the adopted sequence never moves down within the node's life (#3588 finding A: a readmitted voter
+    /// re-adopting the leader it pulled while passive kept the pulled sequence, which can be ahead of the baseline).
     private static void recordAdoptedSequence(LeaderElectionContext ctx, LeaderCommitted event) {
-        ctx.setAdoptedViewSequence(Math.max(event.viewSequence(), ctx.committedViewSequence()));
+        ctx.setAdoptedViewSequence(Math.max(ctx.adoptedViewSequence(),
+                                            Math.max(event.viewSequence(), ctx.committedViewSequence())));
     }
 
     /// Pull-side complement to the push-based `KVStoreNotification.ValuePut<LeaderKey>` listener.
