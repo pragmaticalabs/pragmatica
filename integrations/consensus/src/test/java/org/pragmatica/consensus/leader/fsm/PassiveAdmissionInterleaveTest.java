@@ -8,7 +8,7 @@
 package org.pragmatica.consensus.leader.fsm;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.RepeatedTest;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager;
@@ -49,7 +49,7 @@ import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCom
 /// The stress drives exactly those two calls into one worker's `LeaderManager` from two threads, released together
 /// by a barrier, with a random spin on the view side to sweep the offset between them, once per fresh worker. The
 /// outcome checked after both calls returned is I2 for `Passive`: a held leader is in the stored view. Before the fix
-/// (the two calls dispatched on their own threads) the racy outcome was observed within 0.3 s of this budget; with
+/// (the two calls dispatched on their own threads) the racy outcome was observed within 0.3 s of a 20,000-race run; with
 /// every event of the node in one serial executor (#3587) the two calls are handled one after the other.
 class PassiveAdmissionInterleaveTest {
     private static final NodeId SELF = new NodeId("worker-1");
@@ -57,7 +57,9 @@ class PassiveAdmissionInterleaveTest {
     private static final NodeId OTHER = new NodeId("core-2");
     private static final List<NodeId> CORES = List.of(LEADER, OTHER);
     private static final long COMMIT_SEQUENCE = 5;
-    private static final int ITERATIONS = 20_000;
+    /// 30 repetitions of 1,000 races each (30,000 fresh workers): the repeat count #3587 asks for, run on every build.
+    private static final int REPETITIONS = 30;
+    private static final int ITERATIONS = 1_000;
     private static final int MAX_VIEW_SPIN = 64;
     private static final TimeSpan LONG = TimeSpan.timeSpan(60).seconds();
 
@@ -69,7 +71,7 @@ class PassiveAdmissionInterleaveTest {
     }
 
     /// The real assertion: no interleaving of the push admission and the view write leaves a held leader out of view.
-    @Test
+    @RepeatedTest(REPETITIONS)
     void passiveNeverHoldsALeaderAbsentFromItsStoredView() throws Exception {
         assertThat(violations(ITERATIONS)).as("iterations ending with a held leader absent from the stored view")
                                           .isZero();
