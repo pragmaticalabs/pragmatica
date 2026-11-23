@@ -95,7 +95,7 @@ controls rest on, so they passed; the pins hold the Fsm2Leader off-mode `LATE = 
 ## Running
 
 ```
-tools/tla/run.sh [small|full|sim] [module-regex] [variant-regex]   # the configs with their expected verdicts
+tools/tla/run.sh [small|heavy|full|sim] [module-regex] [variant-regex]   # the configs with their expected verdicts
 tools/tla/runselftest.sh                              # run.sh's own verdict logic, on a fixture with wrong expectations
 tools/tla/check.sh <Module> <Variant> <source roots...>  # one config
 tools/tla/selftest.sh <Module> <source root>           # the extractor's own checks, on a copy of the root
@@ -105,13 +105,24 @@ tools/tla/run.sh small SharedPools
 tools/tla/check.sh SharedPools leak aether/resource/api/src/main/java
 ```
 
-`small` applies the row's overrides (minutes in total); `full` runs every config as written (hours: liveness at the
+`small` applies the row's overrides (about two hours for the whole table run sequentially; CI shards it by model) and does
+not run a row marked `heavy` (see below); `heavy` runs only the rows marked `heavy`, as written; `full` runs every config as written (hours: liveness at the
 written bounds is the long pole). `sim` runs every config as written under TLC's random simulation
 (`-simulate num=<SIM_TRACES> -depth <SIM_DEPTH>`, stopped after `SIM_SECONDS` per config by
 `-Dtlc2.TLC.stopAfter`): each row prints its wall time, the trace count and the mean trace length. **Simulation is
 sampling, not a proof**: a `pass` row means no violation among the sampled traces; its gate is that every known-bad
 row still FAILS (a bug the sampler cannot find in the budget turns that row red). Every row of every profile prints its
 wall time, which is the reference for a timing budget.
+
+### Heavy rows (`heavy` in the `small` column of `models.tsv`)
+
+A row that does not finish inside the small profile's per-config budget (`TLC_TIMEOUT` 1200 s; measured on cloudbb-5 at
+`a35b0a006a`: `RabiaSlot/live` and `Fsm2Leader/code_goals`, both exit 124) is marked `heavy`. The small profile does not run it
+and never counts it as a pass: `run.sh` prints `SKIPPED-HEAVY <module>/<variant>` and appends an evidence row with
+`actual=skipped`, `verdict=SKIPPED-HEAVY`, and `results-check.py` names every such row (`NOTE SKIPPED-HEAVY ...`) and tallies
+the verdicts, so a skipped row is never folded into a pass count. The `heavy` profile runs only these rows as written (the
+`full` pinned counts apply to it); the schedule and a manual dispatch (`profile=heavy`) run it. A known-red row is recorded as
+it is: `RabiaAdopt/ballotlossD5` is RED (Agreement violated, #3592) and stays RED in the rows until the defect is fixed.
 
 ### Fragment-touched check (pull requests)
 
@@ -160,9 +171,15 @@ property and the pinned count. A results file with another header is refused (ex
 ### In CI
 
 The `TLA+ models` workflow (`.github/workflows/tla-models.yml`) runs on demand, on a push to `release-1.0.0-rc6` that
-touches `tools/tla/**` or a Java file carrying a fragment, and on a schedule (daily, small profile, every module). It
+touches `tools/tla/**` or a Java file carrying a fragment, and on a schedule (daily: small for every model, heavy for the models with a heavy row). It
 never runs on a pull request and is not a required check; a red run is a flake-priority issue.
 
+- **One job per model.** `tools/tla/plan-matrix.py --event E --profile P --modules REGEX` reads `models.tsv` and prints the
+  GitHub matrix; the workflow's `plan` job feeds it to the `model-check` job (`fail-fast: false`, so a red model hides no
+  other verdict). A push runs profile small for every model; the schedule adds profile heavy for each model that has a heavy
+  row; a dispatch runs the chosen profile (heavy: only models with a heavy row). A regex that matches no model is exit 2, never
+  an empty green run. The `selftests` job runs the python tests and `runselftest.sh` once per run. Tests:
+  `python3 -m unittest discover -s tools/tla -p test_plan_matrix.py`.
 - **The `paths:` list is generated.** `tools/tla/fragment-paths.py --sync` rewrites the block between its BEGIN and END
   markers from `extract.py`'s own discovery (every Java file with a fragment, outside `tools/tla/`, which the glob
   covers). `fragment-paths.py --check` names every fragment file missing from the list and every stale entry; the
@@ -178,8 +195,8 @@ gh workflow run tla-models.yml --ref <branch> -f profile=full -f modules=SharedP
 gh run watch                                   # then download the tla-models-* artifact for the TLC logs
 ```
 
-It pins `tla2tools.jar` (version and sha256 in the workflow), runs `selftest.sh` for every selected module, then
-`run.sh` at the chosen profile, and uploads `target/tla/` (every config's TLC log with Java positions).
+It pins `tla2tools.jar` (version and sha256 in the workflow); each shard runs `selftest.sh` for its module, then `run.sh` at
+its profile for that module, and uploads `target/tla/` (every config's TLC log with Java positions) and its evidence rows.
 
 Environment: `TLA_JAR` (default `~/tools/tla/tla2tools.jar`), `TLC_WORKERS`, `TLC_OPTS`, `TLA_OUT` (default
 `target/tla/<Module>` for `check.sh`, `target/tla` for `run.sh`), `TLC_CONST` (`check.sh`: space-separated
