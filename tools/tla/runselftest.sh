@@ -133,6 +133,14 @@ want rows-error-never-distinct-from-a-pass "" "$(cell Fix broken distinct)"
 run rows-liveness-control 0 - small < <(live fail Done)
 want rows-liveness-actual fail "$(cell Fix live actual)"
 want rows-liveness-verdict OK "$(cell Fix live verdict)"
+# Resource guard (check.sh exit 75): a disk threshold of 0 percent is always crossed, so TLC is killed at the first check; that
+# reads RESOURCE (red, actual=error), never a pass or a fail, with the guard line as the note, and leaves no states dir behind.
+TLA_DISK_MAX=0 run guard-kill-reads-RESOURCE nonzero '^RESOURCE Fix/ok expect=pass got=resource RESOURCE-GUARD: killed TLC: disk [0-9]+%' small < <(rows pass - fail Small pass - | grep -v broken)
+want guard-kill-actual-error error "$(cell Fix ok actual)"
+want guard-kill-verdict RESOURCE "$(cell Fix ok verdict)"
+want guard-kill-leaves-no-states-dir 0 "$(find "$work/out" -type d -name 'run[0-9]*' | wc -l | tr -d ' ')"
+TLA_DISK_MAX=0 run guard-kill-never-satisfies-a-fail-row nonzero '^RESOURCE Fix/bad expect=fail got=resource' small < <(rows pass - fail Small pass - | grep -v broken)
+TLA_DISK_MAX=abc run guard-knob-not-a-number-is-an-error nonzero 'must be whole numbers' small < <(rows pass - fail Small pass - | grep -v broken)
 # a results file with another header is refused, never appended to
 printf 'commit\tother\n' > "$work/foreign.tsv"
 out=$(cd "$work" && MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out2" TLA_RESULTS="$work/foreign.tsv" bash "$here/run.sh" small Fix 2>&1); rc=$?

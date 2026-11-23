@@ -178,7 +178,7 @@ class ResultsCheck(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn('tools/tla/results.tsv:3: NOTE SKIPPED-HEAVY RabiaSlot/live', out)
         self.assertIn('not a pass', out)
-        self.assertIn('OK 1, RED 0, ERROR 0, SKIPPED-HEAVY 1', out)
+        self.assertIn('OK 1, RED 0, ERROR 0, RESOURCE 0, SKIPPED-HEAVY 1', out)
 
     def test_skipped_row_claiming_a_pass_is_red(self):
         c0 = self.commit()
@@ -213,7 +213,23 @@ class ResultsCheck(unittest.TestCase):
         self.commit(self.table(row(c0, verdict='ERROR')))
         rc, out = self.run_check()
         self.assertEqual(rc, 1, out)
-        self.assertIn('ERROR and actual=error go together', out)
+        self.assertIn('ERROR or RESOURCE and actual=error go together', out)
+
+    def test_resource_verdict_with_actual_error_is_accepted_and_named_never_a_pass(self):
+        # check.sh's resource guard killed TLC (exit 75): run.sh records RESOURCE with actual=error
+        c0 = self.commit()
+        self.commit(self.table(row(c0, expect='pass', actual='error', distinct='', verdict='RESOURCE')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0, out)
+        self.assertIn('NOTE RESOURCE', out)
+        self.assertIn('OK 0, RED 0, ERROR 0, RESOURCE 1, SKIPPED-HEAVY 0', out)
+
+    def test_resource_verdict_without_actual_error_is_red(self):
+        c0 = self.commit()
+        self.commit(self.table(row(c0, verdict='RESOURCE')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('ERROR or RESOURCE and actual=error go together', out)
 
     def test_recorded_red_row_is_green_provenance_and_named(self):
         # RabiaAdopt/ballotlossD5 (#3592): the evidence records the failure; the check verifies where the row came from
@@ -223,7 +239,7 @@ class ResultsCheck(unittest.TestCase):
         rc, out = self.run_check()
         self.assertEqual(rc, 0, out)
         self.assertIn('NOTE RED RabiaAdopt/ballotlossD5: expect pass, actual fail, violated Agreement', out)
-        self.assertIn('OK 0, RED 1, ERROR 0, SKIPPED-HEAVY 0', out)
+        self.assertIn('OK 0, RED 1, ERROR 0, RESOURCE 0, SKIPPED-HEAVY 0', out)
 
     def test_skipped_row_naming_a_foreign_commit_is_still_red(self):
         self.commit()

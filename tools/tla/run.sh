@@ -17,7 +17,9 @@
 # named in its `property` column (comma-separated list; the violated one must be in it), so a different violation, or
 # a "fail" that is really a TLC error, cannot satisfy it. If a known-bad config passes, the model no longer reaches the
 # code it pins, and the run is red. Any other TLC exit (parse, config or semantic error, timeout) reads ERROR and is
-# red. Every config the extractor finds must have a row, so no config is skipped silently.
+# red. Exit 75 is check.sh's resource guard (TLC killed for disk >= TLA_DISK_MAX percent or MemAvailable < TLA_MEM_MIN_MB):
+# it reads RESOURCE (actual=error in the evidence row), red, never a pass or a fail, with the RESOURCE-GUARD line as the note.
+# Every config the extractor finds must have a row, so no config is skipped silently.
 # Every row prints its wall time; a sim row also prints the trace count and mean trace length of TLC's last progress line.
 # Env: TLA_JAR, TLC_WORKERS, TLC_OPTS (passed to check.sh), TLA_OUT (default target/tla), TLC_TIMEOUT (seconds per
 # config, needs coreutils timeout), MODELS_TSV (default: models.tsv beside this script; used by runselftest.sh),
@@ -29,7 +31,7 @@
 # commit = HEAD of the repository run.sh is started in ("none" outside a git repository); dirty = "dirty" when tracked
 # files differed from HEAD when the run started (the commit then does not name the code that ran), "clean", or "unknown";
 # actual = pass | fail | error from TLC's exit code, or skipped for a heavy row that small did not run (the verdict column,
-# OK | RED | ERROR | SKIPPED-HEAVY, also reads the violated property and the pinned count); distinct = TLC's distinct-state count; tlc = TLC's version; date = UTC end of the row.
+# OK | RED | ERROR | RESOURCE | SKIPPED-HEAVY, also reads the violated property and the pinned count); distinct = TLC's distinct-state count; tlc = TLC's version; date = UTC end of the row.
 # A results file with another header is refused (exit 2), never appended to.
 # Pinned counts (pinned-counts.tsv: module variant profile distinct why): a listed pass row must also find exactly that
 # many distinct states at that profile, or it is RED. A spec that extends a model by a mode switch must leave the old
@@ -108,6 +110,7 @@ while IFS=$'\t' read -r module root variant expect property small _; do
   case $rc in
     0) got=pass ;;
     12|13) got=fail ;;
+    75) got=resource ;;   # check.sh's resource guard killed TLC (disk or memory): no verdict at all
     *) got="error(exit $rc)" ;;
   esac
   note=""
@@ -115,7 +118,10 @@ while IFS=$'\t' read -r module root variant expect property small _; do
     if [[ ,$property, == *,"$violated",* && -n $violated ]]; then note=" violated=$violated"
     else got="fail(violated=${violated:-none}, expected one of ${property})"; fi
   fi
-  if [[ $got == error* ]]; then verdict=ERROR; red=1
+  if [[ $got == resource ]]; then
+    verdict=RESOURCE; red=1
+    note=" $(grep -m1 '^RESOURCE-GUARD' "$outroot/$module/run_${variant}.txt" 2>/dev/null || echo 'RESOURCE-GUARD: (line missing)')"
+  elif [[ $got == error* ]]; then verdict=ERROR; red=1
   elif [[ $got == "$expect" ]]; then verdict=OK
   else verdict=RED; red=1; fi
   states=$(grep -oE '[0-9,]+ distinct states found' "$log" 2>/dev/null | tail -1)
