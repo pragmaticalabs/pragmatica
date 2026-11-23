@@ -39,6 +39,10 @@ on:
       - 'integrations/consensus/src/main/java/org/pragmatica/consensus/rabia/PhaseData.java'
       - 'integrations/consensus/src/main/java/org/pragmatica/consensus/rabia/RabiaEngine.java'
       - 'integrations/consensus/src/main/java/org/pragmatica/consensus/rabia/package-info.java'
+      - 'integrations/dht/src/main/java/org/pragmatica/dht/DHTAntiEntropy.java'
+      - 'integrations/dht/src/main/java/org/pragmatica/dht/DHTTopologyListener.java'
+      - 'integrations/dht/src/main/java/org/pragmatica/dht/DeparturePushRun.java'
+      - 'integrations/dht/src/main/java/org/pragmatica/dht/package-info.java'
       # END fragment-paths
   schedule:
     - cron: '17 3 * * *'

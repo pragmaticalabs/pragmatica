@@ -17,6 +17,7 @@ and constants, e.g. "SharedPools `code`, 2 keys, 2 scopes, MaxAcquires 3: no vio
 | `Stalled` | owner catch-up all-stalled warning, level-triggered (#2967) | `aether/aether-stream/.../replication/package-info.java` | `PartitionBackfill.java` |
 | `RabiaSlot`, `RabiaEpoch`, `RabiaAdopt` | Rabia: slot sequence, in-log reconfiguration, state adoption (#3164) | `integrations/consensus/.../rabia/package-info.java` | `RabiaEngine.java`, `PhaseData.java` |
 | `Fsm2Leader` | FSM2 leader: open-warning set, leader fence, `Rebuild` inherit and rule O, publish after commit (#2763, #2834, #3085, #3274) | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Lifecycle.java`, `Warnings.java`, `Reconcile.java`, `Failures.java`, `Outbox.java`, `ClusterFsm.java` |
+| `DHTDepartureDrain` | DHT departure drain: plan, retarget, halt, receiver acceptance (#3049) | `integrations/dht/.../dht/package-info.java` | `DeparturePushRun.java`, `DHTAntiEntropy.java`, `DHTTopologyListener.java` |
 
 Scope (owner ruling 2026-11-13): protocols with a written race or ordering ruling (consensus, FSM2 leader and
 reconcile, stream ownership, catch-up and ISR, SharedPools, quorum re-admission). Not mandated elsewhere.
@@ -47,6 +48,10 @@ reconcile, stream ownership, catch-up and ISR, SharedPools, quorum re-admission)
 - **Every filed concurrency defect in a listed protocol adds a known-bad config**: a config that models the code
   before the fix (the model's `Fixed` constant drops the fix's name) and must FAIL. It is listed in `models.tsv` with
   `expect` = `fail`. A known-bad config that passes means the model no longer reaches the code it pins.
+  A fix name added to a model later is OFF in every existing known-bad's `Fixed` unless that row's defect needs it ON:
+  the config models the code the defect lived in, so a later fix cannot mask it (#3580). The exception: a row that pins a
+  residual of the current code, not a fixed defect (DHTDepartureDrain `abandon`, `wavesset`, `flap`, `allnamedflap`,
+  `nohaltfair`), keeps the new fixes ON, as code residuals and controls.
 - **Configs** are blocks tagged `tlacfg <Module>:<Variant>`, written to `<Module>_<Variant>.cfg`. Variant `common`
   is prepended to every other variant. One variant per property keeps each counterexample attributable.
 - Assembly order is deterministic: `head`, then the action fragments ordered by (source path, line), then `tail`.
@@ -107,7 +112,8 @@ tools/tla/check.sh SharedPools leak aether/resource/api/src/main/java
 
 `small` applies the row's overrides (about two hours for the whole table run sequentially; CI shards it by model) and does
 not run a row marked `heavy` (see below); `heavy` runs only the rows marked `heavy`, as written; `full` runs every config as written (hours: liveness at the
-written bounds is the long pole). `sim` runs every config as written under TLC's random simulation
+written bounds is the long pole). `full` is not expected to finish `DHTDepartureDrain` `code`: its config as written (N=5 RF=3 MaxDrain=2
+MaxStale=1) did not finish in 150 minutes even before #3225 added state; the row records that bounded result. `sim` runs every config as written under TLC's random simulation
 (`-simulate num=<SIM_TRACES> -depth <SIM_DEPTH>`, stopped after `SIM_SECONDS` per config by
 `-Dtlc2.TLC.stopAfter`): each row prints its wall time, the trace count and the mean trace length. **Simulation is
 sampling, not a proof**: a `pass` row means no violation among the sampled traces; its gate is that every known-bad

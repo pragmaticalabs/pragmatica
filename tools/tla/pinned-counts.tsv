@@ -7,3 +7,12 @@ Fsm2Leader	code_nolate_show	full	13734978	STAMP=off LATE=FALSE: the off mode rea
 Fsm2Leader	code_nolate_persist	full	13734978	STAMP=off LATE=FALSE: the off mode reaches the base states (TLC at ba2474d1a2, PR #3443 round g)
 Fsm2Leader	code_nolate_agree	small	13734978	STAMP=off LATE=FALSE, no small overrides: same as full
 Fsm2Leader	code_nolate_notify	small	13734978	STAMP=off LATE=FALSE, no small overrides: same as full
+DHTDepartureDrain	code	small	5208872	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
+DHTDepartureDrain	live	small	4729016	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
+DHTDepartureDrain	flaplive	small	90350	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
+DHTDepartureDrain	removed	small	129902	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
+DHTDepartureDrain	wideaccept	small	5699456	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
+DHTDepartureDrain	allnamed	small	321620	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
+DHTDepartureDrain	strand	small	5208872	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
+DHTDepartureDrain	report	small	5208872	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
+DHTDepartureDrain	flapcode	small	18396824	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)

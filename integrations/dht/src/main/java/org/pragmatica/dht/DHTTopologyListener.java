@@ -103,6 +103,19 @@ public final class DHTTopologyListener {
 
     /// Handle a node-removed decision by removing the node from the consistent hash ring
     /// and triggering rebalance to restore replication factor.
+    /// ```tla DHTDepartureDrain:Removed
+    /// \* A halted drainer reaches `o` as NodeRemoved: `o` prunes it from its ring. The departing set keeps it.
+    /// \* Then DHTRebalancer.onViewChange (#3576): `o`'s push re-plans in a later step (Replan: its ring is no longer its V).
+    /// \* The code also drops the drainer from the recorded-prune set (`pruned.remove`, #3415), so a later recovery restores nothing;
+    /// \* the model reaches the same state because Recover is enabled only for stale entries. NodeDecommissioned does the same.
+    /// Removed(o, x) ==
+    ///     /\ phase[o] # "halted"
+    ///     /\ x \in drainers /\ phase[x] = "halted"
+    ///     /\ x \notin pruned[o]
+    ///     /\ pruned' = [pruned EXCEPT ![o] = @ \cup {x}]
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, flapped, store, phase, view, leaving, inv, rfAt, pages, claimed,
+    ///                strayNack, deliverers, acked, delivered>>
+    /// ```
     @Contract
     public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
         pruned.remove(event.nodeId());
@@ -148,6 +161,20 @@ public final class DHTTopologyListener {
     /// sustained-absence down-hysteresis). The transient transport-disconnect edge that caused the
     /// reverted rebalance storm never reaches `Departing` — see the not-wired note below — so this
     /// seam cannot reintroduce the per-flap storm.
+    /// ```tla DHTDepartureDrain:DepartingEdge
+    /// \* `o` sees `x` enter DEPARTING (a drainer once its drain began, or a stale entry flapping once): departing add, ring prune.
+    /// \* Then DHTRebalancer.onViewChange (#3576): `o`'s push re-plans in a later step (Replan: its ring is no longer its V).
+    /// \* `o` may be `x` itself: nothing in the listener skips self. Which stale flaps happen is the Flap switch.
+    /// DepartingEdge(o, x) ==
+    ///     /\ phase[o] # "halted"
+    ///     /\ x \notin pruned[o]
+    ///     /\ \/ x \in drainers /\ phase[x] \in {"draining", "pushing"}
+    ///        \/ x \in stale /\ x \notin flapped[o] /\ (Flap = "self" \/ (Flap \in {"peer", "settle"} /\ o # x))
+    ///     /\ pruned' = [pruned EXCEPT ![o] = @ \cup {x}]
+    ///     /\ flapped' = IF x \in stale THEN [flapped EXCEPT ![o] = @ \cup {x}] ELSE flapped
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, store, phase, view, leaving, inv, rfAt, pages, claimed,
+    ///                strayNack, deliverers, acked, delivered>>
+    /// ```
     @Contract
     public void onNodeDeparting(NodeId departingNodeId) {
         log.info("DHT: Node {} entering DEPARTING, pruning ring ahead of halt", departingNodeId.id());
@@ -178,6 +205,19 @@ public final class DHTTopologyListener {
     /// this ring (a worker: a refuted worker drain recovers DEPARTING→MEMBER on every core) or that was not pruned here
     /// leaves the ring unchanged. A core member that reaches MEMBER for the first time through DEPARTING is not lost by
     /// this: that first MEMBER entry emits its JOINED edge, so [`#onNodeJoined`] adds it.
+    /// ```tla DHTDepartureDrain:Recover
+    /// \* A flapped stale entry recovers on `o`: departing remove, ring re-add. The guard `x \in pruned[o]` is the code's
+    /// \* `pruned.remove` returning true (the DEPARTING edge recorded the prune, #3415); the model's `pruned[o]` is ring absence,
+    /// \* which for a stale entry (never a drainer, so never removed by NodeRemoved) is exactly the recorded set. Not recorded:
+    /// \* the else branch leaves the ring unchanged, which is the action being disabled.
+    /// \* Then DHTRebalancer.onViewChange (#3576): `o`'s push re-plans in a later step (Replan: its ring is no longer its V).
+    /// Recover(o, x) ==
+    ///     /\ phase[o] # "halted"
+    ///     /\ x \in stale /\ x \in pruned[o]
+    ///     /\ pruned' = [pruned EXCEPT ![o] = @ \ {x}]
+    ///     /\ UNCHANGED <<drainers, held0, stale, drainSet, known, flapped, store, phase, view, leaving, inv, rfAt, pages, claimed,
+    ///                strayNack, deliverers, acked, delivered>>
+    /// ```
     @Contract
     public void onNodeRecovered(NodeId recoveredNodeId) {
         departing.remove(recoveredNodeId);
