@@ -131,6 +131,8 @@ class LeaderSerialDispatchCensusTest {
         manager.context().serially(LeaderSerialDispatchCensusTest::failingTask);
         manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 1));
         held.release();
+        assertThat(observedSequences()).as("the event queued behind a failing task ran in the same drain")
+                  .containsExactly(1L);
         manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 2));
         assertThat(observedSequences()).as("the event queued behind a failing task, then a later one, are handled")
                   .containsExactly(1L, 2L);
