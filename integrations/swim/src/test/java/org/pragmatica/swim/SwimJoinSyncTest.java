@@ -22,9 +22,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -61,6 +63,8 @@ class SwimJoinSyncTest {
     private final List<SwimProtocol> started = new ArrayList<>();
     /// Per receiving port, every message whose handler has returned.
     private final Map<Integer, List<SwimMessage>> handled = new ConcurrentHashMap<>();
+    /// Per sending port, every message handed to the transport's `send` (recorded synchronously on the calling thread).
+    private final Map<Integer, List<SwimMessage>> sent = new ConcurrentHashMap<>();
 
     @AfterEach
     void tearDown() {
@@ -108,6 +112,7 @@ class SwimJoinSyncTest {
                                                                                           .containsKey(new NodeId("joiner-b")));
         awaitJoinAckHandledBy(JOINER_ADDR.getPort());
         joiner.setMembershipEligibility(_ -> true);
+        awaitScopeChangeSettled(joiner, JOINER_ADDR.getPort());
 
         assertThat(joiner.members()).as("a scope that grew, with no re-ask, recovers nothing").doesNotContainKey(X);
 
@@ -115,6 +120,30 @@ class SwimJoinSyncTest {
 
         await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> assertThat(joiner.members()).as("the re-ask returns the member")
                                                                                               .containsKey(X));
+    }
+
+    /// Barrier for an ABSENCE assertion after `setMembershipEligibility` (a time window is not one). That call runs on the
+    /// protocol's state executor; a no-op through the same executor returns only after it ran, and anything it sent was
+    /// handed to the transport synchronously, so the outbound check is then exact: exactly the one ANNOUNCE the test sent,
+    /// no re-ask. Whatever was sent is queued on the wire thread before the wire no-op, so after it every delivery (and
+    /// every handler effect on the joiner's view) has happened and the caller's map-absence check reads the final state.
+    private void awaitScopeChangeSettled(SwimProtocol node, int port) {
+        node.onStateExecutorForTest(() -> {});
+        assertThat(sent.getOrDefault(port, List.of())).as("the scope growing sent no re-ask: only the test's own ANNOUNCE")
+                                                      .filteredOn(Announce.class::isInstance)
+                                                      .hasSize(1);
+        awaitWireDrained();
+    }
+
+    private void awaitWireDrained() {
+        try {
+            wire.submit(() -> {})
+                .get(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException | TimeoutException e) {
+            throw new AssertionError("the wire thread did not drain", e);
+        }
     }
 
     /// The join ack reached the joiner and its handler returned (the transport records a message only after the handler did), so the ack's
@@ -125,6 +154,8 @@ class SwimJoinSyncTest {
                   Duration.ofSeconds(10)).assertMet("the join ack handled by the node on port " + port);
     }
 
+    /// Matches the FIRST sequence-0 Ack, so it is a "nothing left in flight" barrier only for a 1-member snapshot
+    /// (this test: the seed knows one member). `replyWithMembershipSnapshot` may send several pages plus a notice ack.
     private static boolean isJoinAck(SwimMessage message) {
         return message instanceof Ack ack && ack.sequence() == 0L;
     }
@@ -266,6 +297,7 @@ class SwimJoinSyncTest {
 
         @Override
         public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
+            sent.computeIfAbsent(self.getPort(), _ -> new CopyOnWriteArrayList<>()).add(message);
             wire.submit(() -> deliver(target, message));
 
             return Promise.success(Unit.unit());
