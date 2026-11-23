@@ -6,6 +6,7 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -29,6 +30,7 @@ import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.statemachine.FsmTags;
 
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -78,6 +80,29 @@ class LeaderHookFollowUpTest {
         assertThat(manager.leader()).isEqualTo(Option.some(SELF));
     }
 
+    /// cx06 (v3605f), local `Led` path: the commit enters `Led(core-0)` while core-0 is not in the stored view, so the
+    /// entry follows up with `LeaderOutOfView` and the tenure moves to `ReElecting`. Observers see `Led` before that
+    /// `ReElecting`. RED with the follow-up dispatched nested inside the hook (`ctx.fsm().dispatch` in place of
+    /// `ctx.followUp` in `Led#leftTheViewOnLocalEntry`): the inner transition is observed first. The commit is a task and
+    /// the QuorumWaiting poll may hold the drainer when it is submitted, so the test awaits the `ReElecting` the
+    /// follow-up produces before it reads the order.
+    @Test
+    void localLedEntry_outOfViewFollowUp_observedAfterTheOuterTransition() {
+        var manager = localQuorumWaiting();
+
+        transitions.clear();
+        manager.onLeaderCommitted(SELF);
+        Awaitility.await("the out-of-view follow-up moved the tenure to ReElecting")
+                  .atMost(Duration.ofSeconds(10))
+                  .pollInterval(Duration.ofMillis(5))
+                  .until(() -> indexOf(LeaderElectionState.ReElecting.class) >= 0);
+        assertThat(indexOf(LeaderElectionState.Led.class)).as("observers see Led before the ReElecting its follow-up causes; "
+                                                               + "transitions %s",
+                                                               transitions)
+                  .isNotNegative()
+                  .isLessThan(indexOf(LeaderElectionState.ReElecting.class));
+    }
+
     /// F4, `QuorumWaiting` path: consensus ready on entry, so the entry follows up with `ConsensusReady`. Observers see
     /// `QuorumWaiting` before `AwaitingKvSync`. RED with the follow-up dispatched nested inside the hook (6684f6257d):
     /// the nested transition is observed first.
@@ -125,6 +150,13 @@ class LeaderHookFollowUpTest {
         assertThat(manager.context().fsm().current()).isInstanceOf(LeaderElectionState.Led.class);
         assertThat(manager.leader()).as("the local election, decided after the known leader, wins")
                   .isEqualTo(Option.some(SELF));
+    }
+
+    private int indexOf(Class<? extends LeaderElectionState> state) {
+        return transitions.stream()
+                          .map(LeaderElectionState::getClass)
+                          .toList()
+                          .indexOf(state);
     }
 
     private FsmBackedLeaderManager localQuorumWaiting() {

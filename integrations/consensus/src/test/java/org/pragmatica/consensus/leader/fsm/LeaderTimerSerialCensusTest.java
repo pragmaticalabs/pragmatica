@@ -6,6 +6,9 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -14,26 +17,34 @@ import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ElectionTick;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeout;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ProposalSettled;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.topology.TransportView;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.statemachine.FsmTags;
 
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -41,9 +52,15 @@ import org.junit.jupiter.params.provider.MethodSource;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// #3605 timer census: every timer callback of the leader election (pre-vote round and retry, the QuorumWaiting poll,
-/// the Electing and ReElecting peer observation, the Led lease, the view re-assertion) runs its WHOLE body as one task
-/// of the node's serial executor. [LeaderSerialDispatchCensusTest] cannot see this: a callback's own event goes through
+/// #3605 timer census: every callback of the leader election that runs off the drainer (pre-vote round and retry, the
+/// QuorumWaiting poll, the Electing and ReElecting peer observation, the Led lease, the view re-assertion, the
+/// AwaitingKvSync grace timer and its re-arm, the first and the retry election tick, the proposal timeout and the
+/// proposal's success and failure callbacks) runs its WHOLE body as one task of the node's serial executor.
+///
+/// Round-3 ruling (know 6c68615e20, item 1): such a callback enters the node order through ONE path,
+/// `ctx.serialized(...)`; `dispatchSelf` is for already-confined code and has no queueing path of its own. This census
+/// has one row per `serialized(` call in leader main, and [#census_hasOneRowPerSerializedSiteOfLeaderMain] counts the
+/// calls in the source, so a new site cannot go unlisted. [LeaderSerialDispatchCensusTest] cannot see this: a callback's own event goes through
 /// `submit`, which queues on its own; what the `serialized` wrap adds is that the callback's READS (the KV leader, the
 /// ping freshness, the jitter, the transport view, the pre-vote episode) and its sends happen in the order.
 ///
@@ -52,9 +69,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// while the drainer is held. Every input the callback reads is a test supplier that records the read, every send and
 /// every FSM event is recorded, all in one trace. The test awaits the condition the firing produces: the callback's task
 /// queued in the executor (an unserialized callback produces a read in the trace instead). Asserted: (a) nothing in the
-/// trace before the release; (b) after it, the callback's read (and its event, where it has one) comes before a marker
-/// task queued after the callback's task: handled in order. An unserialized callback reads on the scheduler thread:
-/// RED on (a).
+/// trace before the release; (b) after it, the callback's first effect (a read it makes, or, for a callback whose body
+/// only dispatches, its event) and its event, where it has one, come before a marker task queued after the callback's
+/// task: handled in order. An unserialized callback reads or dispatches on its own thread: RED on (a). The proposal
+/// callbacks fire on the thread that settles the proposal, a scheduler thread `SHORT` after the tick (a foreign thread,
+/// as in production, where the consensus engine settles it).
 ///
 /// The queue is read through the test seam [LeaderElectionContext#pendingSerialTasksForTest]: the only way to observe that
 /// a serialized callback fired, since it does nothing else until the drainer runs it. The 200 ms timer delay is the
@@ -74,16 +93,54 @@ class LeaderTimerSerialCensusTest {
     private static final String READ_VIEW = "read: transport view";
     private static final String MARKER = "marker: the task queued after the timer's";
 
+    private static final Path LEADER_MAIN = Path.of("src/main/java/org/pragmatica/consensus/leader");
+    private static final Pattern SERIALIZED_CALL = Pattern.compile("\\bserialized\\(");
+    private static final Pattern SERIALIZED_DECLARATION = Pattern.compile("\\bserialized\\(\\w[^)]*\\)\\s*\\{");
+
     private final List<Object> trace = new CopyOnWriteArrayList<>();
     private final AtomicReference<Option<LeaderCommitted>> kvLeader = new AtomicReference<>(Option.none());
+    private final Promise<Unit> proposal = Promise.promise();
 
     /// The delays the case shortens; every other delay of the context is [#LONG].
     record Timings(TimeSpan proposalRetryDelay,
+                   TimeSpan baseElectionDelay,
+                   TimeSpan proposalTimeout,
+                   TimeSpan kvSyncGraceDelay,
                    TimeSpan peerObservationInterval,
                    TimeSpan leaseCheckInterval,
                    TimeSpan leaseWarmup) {
         static Timings allLong() {
-            return new Timings(LONG, LONG, LONG, LONG);
+            return new Timings(LONG, LONG, LONG, LONG, LONG, LONG, LONG);
+        }
+
+        Timings shortRetry() {
+            return new Timings(SHORT, baseElectionDelay, proposalTimeout, kvSyncGraceDelay, peerObservationInterval,
+                               leaseCheckInterval, leaseWarmup);
+        }
+
+        Timings shortFirstTick() {
+            return new Timings(proposalRetryDelay, SHORT, proposalTimeout, kvSyncGraceDelay, peerObservationInterval,
+                               leaseCheckInterval, leaseWarmup);
+        }
+
+        Timings shortProposalTimeout() {
+            return new Timings(proposalRetryDelay, baseElectionDelay, SHORT, kvSyncGraceDelay, peerObservationInterval,
+                               leaseCheckInterval, leaseWarmup);
+        }
+
+        Timings shortGrace() {
+            return new Timings(proposalRetryDelay, baseElectionDelay, proposalTimeout, SHORT, peerObservationInterval,
+                               leaseCheckInterval, leaseWarmup);
+        }
+
+        Timings shortObservation() {
+            return new Timings(proposalRetryDelay, baseElectionDelay, proposalTimeout, kvSyncGraceDelay, SHORT,
+                               leaseCheckInterval, leaseWarmup);
+        }
+
+        Timings shortLease() {
+            return new Timings(proposalRetryDelay, baseElectionDelay, proposalTimeout, kvSyncGraceDelay,
+                               peerObservationInterval, SHORT, SHORT);
         }
     }
 
@@ -92,7 +149,7 @@ class LeaderTimerSerialCensusTest {
                 Function<LeaderElectionContext, LeaderElectionState> initial,
                 Consumer<LeaderElectionContext> prepare,
                 BiFunction<LeaderTimerSerialCensusTest, LeaderElectionContext, Runnable> arm,
-                Predicate<Object> read,
+                Predicate<Object> effect,
                 Option<Predicate<Object>> event) {}
 
     static Stream<Arguments> timers() {
@@ -104,7 +161,7 @@ class LeaderTimerSerialCensusTest {
                                         READ_JITTER::equals,
                                         Option.none())),
                          timer("pv03 pre-vote retry",
-                               new Case(new Timings(SHORT, LONG, LONG, LONG),
+                               new Case(Timings.allLong().shortRetry(),
                                         ctx -> LeaderElectionState.Led.fresh(ctx, PEER),
                                         ctx -> ctx.enablePreVote(LONG),
                                         LeaderTimerSerialCensusTest::backOffPreVoteRound,
@@ -118,21 +175,21 @@ class LeaderTimerSerialCensusTest {
                                         READ_KV::equals,
                                         Option.some(LeaderTimerSerialCensusTest::commitsPeer))),
                          timer("st03 Electing peer observation",
-                               new Case(new Timings(LONG, SHORT, LONG, LONG),
+                               new Case(Timings.allLong().shortObservation(),
                                         LeaderElectionContext::dormant,
                                         LeaderTimerSerialCensusTest::nothing,
                                         LeaderTimerSerialCensusTest::armElectingObservation,
                                         READ_KV::equals,
                                         Option.some(LeaderTimerSerialCensusTest::commitsPeer))),
                          timer("st04 ReElecting peer observation",
-                               new Case(new Timings(LONG, SHORT, LONG, LONG),
+                               new Case(Timings.allLong().shortObservation(),
                                         LeaderElectionContext::dormant,
                                         LeaderTimerSerialCensusTest::nothing,
                                         LeaderTimerSerialCensusTest::armReElectingObservation,
                                         READ_KV::equals,
                                         Option.some(LeaderTimerSerialCensusTest::commitsPeer))),
                          timer("st05 Led leader-acting lease",
-                               new Case(new Timings(LONG, LONG, SHORT, SHORT),
+                               new Case(Timings.allLong().shortLease(),
                                         LeaderElectionContext::dormant,
                                         LeaderTimerSerialCensusTest::nothing,
                                         LeaderTimerSerialCensusTest::armLease,
@@ -144,7 +201,99 @@ class LeaderTimerSerialCensusTest {
                                         LeaderTimerSerialCensusTest::nothing,
                                         LeaderTimerSerialCensusTest::removePeerFromView,
                                         READ_VIEW::equals,
-                                        Option.some(LeaderTimerSerialCensusTest::addsTheView))));
+                                        Option.some(LeaderTimerSerialCensusTest::addsTheView))),
+                         timer("st01a AwaitingKvSync grace timer",
+                               new Case(Timings.allLong().shortGrace(),
+                                        LeaderElectionContext::dormant,
+                                        LeaderTimerSerialCensusTest::nothing,
+                                        LeaderTimerSerialCensusTest::armGraceTimer,
+                                        KvSyncGraceTimeout.class::isInstance,
+                                        Option.none())),
+                         timer("st01b AwaitingKvSync grace re-arm",
+                               new Case(Timings.allLong().shortGrace(),
+                                        LeaderElectionState.AwaitingKvSync::fresh,
+                                        LeaderTimerSerialCensusTest::syncPending,
+                                        LeaderTimerSerialCensusTest::rearmGrace,
+                                        KvSyncGraceTimeout.class::isInstance,
+                                        Option.none())),
+                         timer("st01c first election tick",
+                               new Case(Timings.allLong().shortFirstTick(),
+                                        LeaderElectionContext::dormant,
+                                        LeaderTimerSerialCensusTest::nothing,
+                                        LeaderTimerSerialCensusTest::enterElecting,
+                                        ElectionTick.class::isInstance,
+                                        Option.none())),
+                         timer("st01d election tick retry",
+                               new Case(Timings.allLong().shortRetry(),
+                                        LeaderElectionState.Electing::fresh,
+                                        LeaderTimerSerialCensusTest::nothing,
+                                        LeaderTimerSerialCensusTest::tickWithoutView,
+                                        ElectionTick.class::isInstance,
+                                        Option.none())),
+                         timer("st01e proposal timeout",
+                               new Case(Timings.allLong().shortProposalTimeout(),
+                                        LeaderElectionState.Electing::fresh,
+                                        LeaderTimerSerialCensusTest::viewWithPeer,
+                                        LeaderTimerSerialCensusTest::propose,
+                                        LeaderTimerSerialCensusTest::settledFailed,
+                                        Option.none())),
+                         timer("st01f proposal success callback",
+                               new Case(Timings.allLong(),
+                                        LeaderElectionState.Electing::fresh,
+                                        LeaderTimerSerialCensusTest::viewWithPeer,
+                                        LeaderTimerSerialCensusTest::proposeThenSucceed,
+                                        LeaderTimerSerialCensusTest::settledSucceeded,
+                                        Option.none())),
+                         timer("st01g proposal failure callback",
+                               new Case(Timings.allLong(),
+                                        LeaderElectionState.Electing::fresh,
+                                        LeaderTimerSerialCensusTest::viewWithPeer,
+                                        LeaderTimerSerialCensusTest::proposeThenFail,
+                                        LeaderTimerSerialCensusTest::settledFailed,
+                                        Option.none())));
+    }
+
+    /// The census guard (round-3 ruling, know 6c68615e20): every off-drainer callback of leader main enters the node
+    /// order through `ctx.serialized(...)`, and every such call has a row in [#timers]. A `serialized(` call added
+    /// without its row (or a row left for a removed call) fails here. Comment lines and the two declarations are not
+    /// counted.
+    @Test
+    void census_hasOneRowPerSerializedSiteOfLeaderMain() throws IOException {
+        assertThat(LEADER_MAIN).as("instrument: the leader main sources are readable from the module directory")
+                               .isDirectory();
+        assertThat(serializedCallSites()).as("#3605 rule: every callback that runs off the serial drainer enters the node "
+                                             + "order through ONE path, ctx.serialized(...), and every serialized( call in "
+                                             + "leader main has its row in LeaderTimerSerialCensusTest#timers")
+                                         .isEqualTo(timers().count());
+    }
+
+    private static long serializedCallSites() throws IOException {
+        try (var files = Files.walk(LEADER_MAIN)) {
+            return files.filter(file -> file.toString()
+                                            .endsWith(".java"))
+                        .flatMap(LeaderTimerSerialCensusTest::codeLines)
+                        .mapToLong(LeaderTimerSerialCensusTest::callsOnLine)
+                        .sum();
+        }
+    }
+
+    private static Stream<String> codeLines(Path file) {
+        try {
+            return Files.readAllLines(file)
+                        .stream()
+                        .map(String::strip)
+                        .filter(line -> !line.startsWith("//") && !line.startsWith("*") && !line.startsWith("/*"));
+        } catch (IOException e) {
+            throw new AssertionError("instrument: cannot read " + file, e);
+        }
+    }
+
+    private static long callsOnLine(String line) {
+        return SERIALIZED_CALL.matcher(line)
+                              .results()
+                              .count() - SERIALIZED_DECLARATION.matcher(line)
+                                                               .results()
+                                                               .count();
     }
 
     private static Arguments timer(String name, Case testCase) {
@@ -171,13 +320,14 @@ class LeaderTimerSerialCensusTest {
             held.release();
             var beforeMarker = beforeMarker();
 
-            assertThat(beforeMarker).as("%s: its read ran in the order, before the task queued after it", name)
-                      .anyMatch(testCase.read());
+            assertThat(beforeMarker).as("%s: its effect ran in the order, before the task queued after it", name)
+                      .anyMatch(testCase.effect());
             testCase.event()
                     .onPresent(event -> assertThat(beforeMarker).as("%s: its event was handled in the order", name)
                                                   .anyMatch(event));
         } finally {
             cleanup.run();
+            ctx.stop();
         }
     }
 
@@ -190,6 +340,83 @@ class LeaderTimerSerialCensusTest {
         kvLeader.set(Option.some(new LeaderCommitted(PEER)));
 
         return waiting::onExit;
+    }
+
+    /// st01a: `AwaitingKvSync`'s entry, with no KV leader and none known, arms the grace timer.
+    private Runnable armGraceTimer(LeaderElectionContext ctx) {
+        var waiting = LeaderElectionState.AwaitingKvSync.fresh(ctx);
+
+        waiting.onEntry();
+
+        return waiting::onExit;
+    }
+
+    private static void syncPending(LeaderElectionContext ctx) {
+        ctx.installKvSyncPending(() -> true);
+    }
+
+    /// st01b: a grace timeout handled while KV sync is still pending and the wait is short of its maximum re-arms the
+    /// grace timer. The cleanup ends the pending sync first, so a late re-armed timeout elects instead of re-arming.
+    private Runnable rearmGrace(LeaderElectionContext ctx) {
+        ctx.fsm()
+           .dispatch(new KvSyncGraceTimeout());
+
+        return () -> endWait(ctx);
+    }
+
+    private static void endWait(LeaderElectionContext ctx) {
+        ctx.installKvSyncPending(() -> false);
+        ctx.fsm()
+           .current()
+           .onExit();
+    }
+
+    /// st01c: a fresh `Electing` arms its first tick at the rank-staircase delay (rank 0: the base delay).
+    private Runnable enterElecting(LeaderElectionContext ctx) {
+        return LeaderElectionState.Electing.fresh(ctx)::onCasLost;
+    }
+
+    /// st01d: a tick with an empty stored view sends no proposal and reschedules the tick (GUARD 2).
+    private Runnable tickWithoutView(LeaderElectionContext ctx) {
+        ctx.fsm()
+           .dispatch(new ElectionTick());
+
+        return currentState(ctx)::onCasLost;
+    }
+
+    private static void viewWithPeer(LeaderElectionContext ctx) {
+        ctx.applyTopology(new ClusterFsmEvent.NodeAdded(PEER, CORES, 1));
+    }
+
+    /// st01e: a tick with a view sends a proposal and arms its timeout; the proposal never settles.
+    private Runnable propose(LeaderElectionContext ctx) {
+        ctx.fsm()
+           .dispatch(new ElectionTick());
+
+        return currentState(ctx)::onCasLost;
+    }
+
+    /// st01f: the proposal succeeds on a scheduler thread after the tick.
+    private Runnable proposeThenSucceed(LeaderElectionContext ctx) {
+        var cleanup = propose(ctx);
+
+        SharedScheduler.schedule(() -> proposal.succeed(Unit.unit()), SHORT);
+
+        return cleanup;
+    }
+
+    /// st01g: the proposal fails on a scheduler thread after the tick.
+    private Runnable proposeThenFail(LeaderElectionContext ctx) {
+        var cleanup = propose(ctx);
+
+        SharedScheduler.schedule(() -> proposal.fail(Causes.cause("census: the proposal failed")), SHORT);
+
+        return cleanup;
+    }
+
+    private static LeaderElectionState currentState(LeaderElectionContext ctx) {
+        return ctx.fsm()
+                  .current();
     }
 
     private Runnable armElectingObservation(LeaderElectionContext ctx) {
@@ -278,6 +505,14 @@ class LeaderTimerSerialCensusTest {
                                                                       .equals(PEER);
     }
 
+    private static boolean settledSucceeded(Object event) {
+        return event instanceof ProposalSettled settled && settled.success();
+    }
+
+    private static boolean settledFailed(Object event) {
+        return event instanceof ProposalSettled settled && !settled.success();
+    }
+
     private static boolean addsTheView(Object event) {
         return event instanceof ClusterFsmEvent.NodeAdded added && added.topology()
                                                                         .equals(CORES);
@@ -354,23 +589,23 @@ class LeaderTimerSerialCensusTest {
     private LeaderElectionContext context(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
                                           MessageRouter router,
                                           Timings timings) {
-        LeaderProposalHandler neverSettling = (_, _) -> Promise.promise();
+        LeaderProposalHandler pending = (_, _) -> proposal;
 
         return new LeaderElectionContext(fsm,
                                          SELF,
-                                         Option.some(neverSettling),
+                                         Option.some(pending),
                                          CORES,
                                          router,
                                          timings.proposalRetryDelay(),
+                                         timings.baseElectionDelay(),
                                          LONG,
-                                         LONG,
-                                         LONG,
+                                         timings.proposalTimeout(),
                                          LeaderElectionContext.DEFAULT_STUCK_ELECTION_THRESHOLD,
                                          this::jitter,
                                          LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                          () -> false,
                                          this::kv,
-                                         LONG,
+                                         timings.kvSyncGraceDelay(),
                                          timings.peerObservationInterval(),
                                          timings.leaseCheckInterval(),
                                          this::pingFresh,
