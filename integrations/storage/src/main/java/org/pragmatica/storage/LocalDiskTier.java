@@ -577,9 +577,7 @@ public final class LocalDiskTier implements StorageTier {
     private Result<Option<byte[]>> readBlockDefault(BlockId id) {
         var path = blockPath(id);
 
-        return FileOps.readBytes(path)
-                      .fold(cause -> absentOr(path, cause),
-                            content -> Result.success(some(content)));
+        return FileOps.readBytes(path).fold(cause -> absentOr(path, cause), content -> Result.success(some(content)));
     }
 
     private Result<Unit> writeBlock(BlockId id, byte[] content) {
