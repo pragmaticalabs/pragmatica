@@ -59,14 +59,19 @@ import org.slf4j.LoggerFactory;
 /// `ViewApplicationTableTest`; no state keeps a local rule of its own about a view:
 /// - I1: an applied view is stored as it is, an empty one included ([LeaderElectionContext#currentTopology()] never
 ///   returns a view the transport has replaced).
-/// - I2: after every view write and every local leader adoption, the leader the state holds (`Led`'s leader,
-///   `Passive`'s observed leader) is in the stored eligible view and is not the node a removal just named failed, or
-///   it is lost. ONE predicate decides membership (`isInStoredView`; every in-view test reads it), and I2 is decided
-///   at two places only: the local-commit admission (`adoptLocalCommit`) and the post-change site `holdLeaderToView`,
-///   which every state's view arms run
-///   through `storeView` / `storeRemoval` and a local `Led` runs on entry (a leader adopted while a concurrent view
-///   dropped it is caught after the transition). A cluster commit is still adopted when absent from the view (FIX 1: a
-///   consensus decision; the next view checks it).
+/// - I2: after every view write, every local leader adoption and every `Passive` entry, the leader the state holds
+///   (`Led`'s leader, `Passive`'s observed leader) is in the stored eligible view and is not the node a removal just
+///   named failed, or it is lost. ONE predicate decides membership (`isInStoredView`; every in-view test reads it),
+///   and I2 is decided at two places only: the admission `admittedToView` and the post-change site
+///   `holdLeaderToView`, which every state's view arms run through `storeView` / `storeRemoval`, a local `Led` runs on
+///   entry (a leader adopted while a concurrent view dropped it is caught after the transition), and `Passive` runs on
+///   every entry, whatever the predecessor, before its pull. The admission splits by state (#3581):
+///   - the VOTING states adopt a cluster commit even when absent from the view (FIX 1: a consensus decision the node
+///     took part in; the next view checks it); only a local commit passes `admittedToView`.
+///   - `Passive` is an observer: a committed leader, pushed or pulled, passes the ONE admission
+///     `observeCommittedLeader`, which includes `admittedToView`, and every sequenced `Passive` view write re-runs the
+///     pull after `holdLeaderToView`, so `Passive` holds a leader iff it is committed AND in the stored view (a refused
+///     or lagging push heals on the next view write; a view-free removal only shrinks the view and re-pulls nothing).
 /// - I3: a leaderless electing state makes progress on its own ticks in local mode as in cluster mode: a local tick
 ///   elects the first node of the view, and a local commit is not gated on a sequence local mode never advances.
 public sealed interface LeaderElectionState extends FsmState<LeaderElectionState, ClusterFsmEvent> permits LeaderElectionState.Dormant, LeaderElectionState.QuorumWaiting, LeaderElectionState.AwaitingKvSync, LeaderElectionState.Electing, LeaderElectionState.Led, LeaderElectionState.ReElecting, LeaderElectionState.QuorumLost, LeaderElectionState.Stopped, LeaderElectionState.Passive {
@@ -299,8 +304,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     private static void graceTimeoutFallthrough(LeaderElectionContext ctx,
                                                 TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx,
                                                 AwaitingKvSync waiting) {
+        // The transitioning states keep the sequence-less pull (NO_SEQUENCE, FIX 1); only Passive adopts the record (#3581).
         ctx.currentLeaderFromKvSupplier()
            .get()
+           .map(LeaderCommitted::leader)
            .onPresent(leader -> adoptVisibleLeader(ctx, leader, tx))
            .onEmpty(() -> electOrKeepWaiting(ctx, tx, waiting));
     }
@@ -633,7 +640,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// `Passive` drops it). It reads the STORED view after the write, whether or not the event's own view applied: a
     /// stale event (#2971) writes nothing, so the view it checks is the newer one, and a view that `LeaderManager`'s
     /// local paths applied ahead of the dispatch (#3044) is checked here too. Runs after every view write
-    /// ([#storeView], [#storeRemoval]) and on a local `Led` entry; no other path checks the leader against the view.
+    /// ([#storeView], [#storeRemoval]), on a local `Led` entry and on every `Passive` entry; no other path checks the
+    /// leader against the view.
     /// `namedFailed` is the node a view-free removal named (#3044): SWIM evidence that it failed, so a held leader it
     /// names is lost even where the storage KEPT it (it is this node, or the last node left), the one case the stored
     /// view cannot express. A view write names none.
@@ -645,7 +653,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     }
 
     /// The one #3092 I2 membership predicate: `node` is in the stored eligible view. Every in-view test in this file
-    /// reads it; the I2 decisions are [#adoptLocalCommit]'s admission and [#holdLeaderToView].
+    /// reads it; the I2 decisions are the admission [#admittedToView] and [#holdLeaderToView].
     private static boolean isInStoredView(LeaderElectionContext ctx, NodeId node) {
         return ctx.currentTopology()
                   .contains(node);
@@ -654,7 +662,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     private static Option<NodeId> heldLeader(LeaderElectionState state) {
         return switch (state) {
             case Led led -> Option.some(led.leader());
-            case Passive passive -> passive.ctx().currentLeader();
+            case Passive passive -> passive.ctx().storedLeader();
             default -> Option.none();
         };
     }
@@ -937,10 +945,14 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     record Passive(LeaderElectionContext ctx, java.util.List<NodeId> members) implements LeaderElectionState {
         @Override
         public void onEntry() {
-            var previous = ctx.currentLeader();
-
             ctx.installVoters(members);
-            previous.filter(node -> !ctx.isEligible(node)).onPresent(_ -> clearLeaderAndNotify(ctx));
+            // #3581 I2 at every entry, whatever the predecessor: the stored leader handed over (a voting state's, which
+            // FIX 1 may hold out of view; or one the entered members make ineligible) is held to the stored eligible
+            // view by the one I2 site, which announces its loss, BEFORE the pull, so no later clear undoes the pull.
+            holdLeaderToView(ctx, Option.none());
+            // #3414: Passive can be entered after the committed leader's notification passed (Dormant drops it), so the
+            // entry reads the committed leader key, as the other entry states do.
+            observeCommittedLeaderFromKv(ctx);
         }
 
         @Override
@@ -953,18 +965,35 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderOutOfView out -> tx.handle(() -> dropObservedLeader(ctx, out));
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 // #3092 I1: a readmitted worker elects from the view the transport last applied, not a replaced one.
-                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> storeView(ctx, na));
-                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> storeView(ctx, ng));
+                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> storePassiveView(ctx, na));
+                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> storePassiveView(ctx, ng));
+                // No re-pull after a view-free removal: it only shrinks the view, so it cannot admit a leader the view
+                // refused before it, and a re-pull would re-admit the held leader it named failed where the storage
+                // kept it (I2's second half, [#holdLeaderToView]).
                 case PeerRemovedFromView removed -> tx.handle(() -> storeRemoval(ctx, removed));
                 default -> tx.ignore();
             }
         }
     }
 
+    /// `Passive`'s sequenced view write (#3581): I1 then I2 as in every state ([#storeView]), then the pull re-runs, so
+    /// the committed leader is admitted on the view write that brings it into the stored view.
+    private static void storePassiveView(LeaderElectionContext ctx, ClusterFsmEvent.TopologyChange event) {
+        storeView(ctx, event);
+        observeCommittedLeaderFromKv(ctx);
+    }
+
+    /// Passive's one admission (#3581), for the commit `LeaderManager` pushes and the record the entry pulls alike: the
+    /// leader is eligible and not this node, the sequence is a real commit not older than the adopted one (an equal one
+    /// only for the leader adopted at it), and the leader is in the stored view ([#admittedToView], I2's admission).
     private static void observeCommittedLeader(LeaderElectionContext ctx, LeaderCommitted committed) {
         if (!ctx.isEligible(committed.leader()) || committed.leader().equals(ctx.self()) || committed.viewSequence() <= LeaderCommitted.NO_SEQUENCE || committed.viewSequence() < ctx.adoptedViewSequence() || (committed.viewSequence() == ctx.adoptedViewSequence() && ctx.lastAdoptedLeader()
                                                                                                                                                                                                                                                                             .filter(committed.leader()::equals)
                                                                                                                                                                                                                                                                             .isEmpty())) {
+            return;
+        }
+
+        if (!admittedToView(ctx, committed, "Passive")) {
             return;
         }
 
@@ -976,7 +1005,17 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// `Passive` side of the I2 site: the observed leader the site found absent from the stored view is dropped
     /// (F-a4), unless a newer commit replaced it meanwhile.
     private static void dropObservedLeader(LeaderElectionContext ctx, LeaderOutOfView event) {
-        ctx.currentLeader().filter(event.leader()::equals).onPresent(_ -> clearLeaderAndNotify(ctx));
+        ctx.storedLeader().filter(event.leader()::equals).onPresent(_ -> clearLeaderAndNotify(ctx));
+    }
+
+    /// Passive's pull of the committed `LeaderKey` (#3414), the counterpart of [#adoptLeaderFromKvIfPresent] for a
+    /// state that observes leadership instead of transitioning on it. It adopts exactly the committed record, the
+    /// leader AND its own `viewSequence` (#3581), through [#observeCommittedLeader], the one admission the push takes:
+    /// the pull is the push of the record the KV-Store holds. Run on every entry and after every sequenced view write,
+    /// it adopts and announces nothing new on a repeat, never resurrects a leader the I2 site dropped while the view
+    /// still lacks it, and admits the committed leader on the view write that brings it into view.
+    private static void observeCommittedLeaderFromKv(LeaderElectionContext ctx) {
+        ctx.currentLeaderFromKvSupplier().get().onPresent(committed -> observeCommittedLeader(ctx, committed));
     }
 
     // --- Shared action helpers ---
@@ -1056,12 +1095,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                          LeaderCommitted event,
                                          String stateLabel,
                                          TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
-        if (!isInStoredView(ctx, event.leader())) {
-            log.info("{}: skipping local-mode LeaderCommitted({}) — absent from the applied view {}",
-                     stateLabel,
-                     event.leader(),
-                     ctx.currentTopology());
-
+        if (!admittedToView(ctx, event, stateLabel)) {
             return;
         }
 
@@ -1070,6 +1104,23 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                  event.leader());
         recordAdoptedSequence(ctx, event);
         tx.transitionTo(Led.fresh(ctx, event.leader()));
+    }
+
+    /// I2's admission half, the one in-view test a commit passes before it is adopted where I2 decides at admission
+    /// (a local commit, [#adoptLocalCommit]; a passive observation, [#observeCommittedLeader], #3581): a leader absent
+    /// from the stored view is skipped, so a later re-read of the same commit cannot re-admit what the post-change site
+    /// [#holdLeaderToView] dropped. Returns `true` iff the leader is in the stored view.
+    private static boolean admittedToView(LeaderElectionContext ctx, LeaderCommitted event, String stateLabel) {
+        if (isInStoredView(ctx, event.leader())) {
+            return true;
+        }
+
+        log.info("{}: skipping LeaderCommitted({}) — absent from the applied view {}",
+                 stateLabel,
+                 event.leader(),
+                 ctx.currentTopology());
+
+        return false;
     }
 
     /// Records the sequence at which a leader is being adopted into [`Led`], the fence reference
@@ -1091,8 +1142,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// it once per state-entry and once per election tick guarantees the FSM cannot stay in
     /// `Electing` while consensus has already named a leader visible to this node's local KV.
     private static void adoptLeaderFromKvIfPresent(LeaderElectionContext ctx) {
+        // The transitioning states keep the sequence-less pull (NO_SEQUENCE, FIX 1); only Passive adopts the record (#3581).
         ctx.currentLeaderFromKvSupplier()
            .get()
+           .map(LeaderCommitted::leader)
            .onPresent(leader -> {
                           if (ctx.currentLeader()
                                  .filter(leader::equals)

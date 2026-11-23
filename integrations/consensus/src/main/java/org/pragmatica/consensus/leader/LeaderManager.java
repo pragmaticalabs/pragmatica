@@ -16,6 +16,7 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.fsm.ClusterFsmRouter;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionFsm;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
@@ -284,7 +285,7 @@ public interface LeaderManager {
     /// Full-arity factory accepting all injectable suppliers including the cluster KV-Store
     /// leader accessor. Production wiring (Aether's `RabiaNode`) plumbs:
     ///   - `RabiaEngine::isActive` as `consensusReadySupplier` (push-side: ready-state poll)
-    ///   - `() -> kvStore.get(LeaderKey).map(LeaderValue::leader)` as `currentLeaderFromKvSupplier`
+    ///   - `LeaderKey` read as the committed `LeaderCommitted(leader, viewSequence)` as `currentLeaderFromKvSupplier`
     ///     (pull-side: cluster's source-of-truth leader read)
     /// The pull-side closes the gap where a rejoining node misses the
     /// `KVStoreNotification.ValuePut<LeaderKey>` notification (e.g. snapshot-restored state didn't
@@ -295,7 +296,7 @@ public interface LeaderManager {
                                        List<NodeId> expectedCluster,
                                        Supplier<Long> rabiaTermSupplier,
                                        Supplier<Boolean> consensusReadySupplier,
-                                       Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
+                                       Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier) {
         return build(self,
                      router,
                      Option.some(proposalHandler),
@@ -320,7 +321,7 @@ public interface LeaderManager {
                                        List<NodeId> expectedCluster,
                                        Supplier<Long> rabiaTermSupplier,
                                        Supplier<Boolean> consensusReadySupplier,
-                                       Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                       Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                        Predicate<NodeId> leaderPingFreshFn) {
         return buildWithLease(self,
                               router,
@@ -344,7 +345,7 @@ public interface LeaderManager {
                                        TimeSpan perRankDelay,
                                        Supplier<Long> rabiaTermSupplier,
                                        Supplier<Boolean> consensusReadySupplier,
-                                       Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
+                                       Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier) {
         return buildWithLease(self,
                               router,
                               proposalHandler,
@@ -367,7 +368,7 @@ public interface LeaderManager {
                                                 TimeSpan perRankDelay,
                                                 Supplier<Long> rabiaTermSupplier,
                                                 Supplier<Boolean> consensusReadySupplier,
-                                                Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                 Predicate<NodeId> leaderPingFreshFn) {
         var built = LeaderElectionFsm.leaderElectionFsm(self,
                                                         proposalHandler,

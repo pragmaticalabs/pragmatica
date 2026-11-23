@@ -28,6 +28,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.SealedTierFallback.sealedTierFallback;
+import static org.pragmatica.aether.stream.HotWindowFixture.declaredHot;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
@@ -41,6 +42,10 @@ import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 class SealedTierFallbackTest {
     private static final String STREAM = "behind";
     private static final int PARTITION = 0;
+    /// The ring's data region (retention bytes and declared hot bytes alike) and the event size: 256 KiB keeps the first
+    /// data segment at today's 256 KiB when the ring is sized from the hot window (`RingGeometry.firstSegmentBytes`).
+    private static final long RING_BYTES = 1_048_576L;
+    private static final long MAX_EVENT_BYTES = 256 * 1024L;
 
     private final SealedTierFixture tier = new SealedTierFixture();
     private StreamPartitionManager manager;
@@ -86,16 +91,18 @@ class SealedTierFallbackTest {
         registry.registerReplica(STREAM, PARTITION, peer);
         ReplicationManager replication = replicationManager(self, registry);
         manager = streamPartitionManager(Long.MAX_VALUE, segmentSealer(SegmentSink.DISCARD), replication);
-        manager.createStream(StreamConfig.streamConfig(STREAM,
-                                                       1,
-                                                       RetentionPolicy.retentionPolicy(2, 1_048_576L, 600_000L),
-                                                       "earliest",
-                                                       1_048_576L,
-                                                       ConsistencyMode.EVENTUAL,
-                                                       3,
-                                                       2,
-                                                       StreamCompression.NONE,
-                                                       Option.none()))
+        manager.createStream(declaredHot(StreamConfig.streamConfig(STREAM,
+                                                                   1,
+                                                                   RetentionPolicy.retentionPolicy(2, RING_BYTES, 600_000L),
+                                                                   "earliest",
+                                                                   MAX_EVENT_BYTES,
+                                                                   ConsistencyMode.EVENTUAL,
+                                                                   3,
+                                                                   2,
+                                                                   StreamCompression.NONE,
+                                                                   Option.none()),
+                                         2,
+                                         RING_BYTES))
                .onFailure(cause -> fail(cause.message()));
         publish(4);
         replication.handleAck(replicateAck(peer, STREAM, PARTITION, 0));
@@ -156,10 +163,13 @@ class SealedTierFallbackTest {
     }
 
     private void createStream(long ringEvents, int partitions) {
-        manager.createStream(StreamConfig.streamConfig(STREAM,
-                                                       partitions,
-                                                       RetentionPolicy.retentionPolicy(ringEvents, 1_048_576L, 600_000L),
-                                                       "earliest"))
+        manager.createStream(declaredHot(StreamConfig.streamConfig(STREAM,
+                                                                   partitions,
+                                                                   RetentionPolicy.retentionPolicy(ringEvents, RING_BYTES, 600_000L),
+                                                                   "earliest",
+                                                                   MAX_EVENT_BYTES),
+                                         ringEvents,
+                                         RING_BYTES))
                .onFailure(cause -> fail(cause.message()));
     }
 

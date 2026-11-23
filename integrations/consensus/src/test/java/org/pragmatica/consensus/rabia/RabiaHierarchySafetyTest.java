@@ -16,6 +16,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.TransportObservation;
 
 import java.util.List;
 import java.util.Set;
@@ -263,6 +264,9 @@ class RabiaHierarchySafetyTest {
         assertThat(engine.installPassiveCoreDirectory(List.of(STAGED_CORE, STAGED_CORE), leader::installPassiveCoreDirectory).isFailure()).isTrue();
         assertThat(engine.installPassiveCoreDirectory(List.of(WORKER), leader::installPassiveCoreDirectory).isFailure()).isTrue();
         assertThat(engine.installPassiveCoreDirectory(List.of(STAGED_CORE), leader::installPassiveCoreDirectory).isSuccess()).isTrue();
+        // #3581: a passive node adopts a committed leader only while its stored view holds it, so the transport view
+        // names the staged core first (the directory installs voters, never the transport view).
+        leader.peerJoined(new TransportObservation.PeerJoined(STAGED_CORE, List.of(WORKER, STAGED_CORE), TransportObservation.ObservationSource.QUIC, 1L));
         leader.onLeaderCommitted(STAGED_CORE, 10);
         assertThat(leader.leader().unwrap()).isEqualTo(STAGED_CORE);
         leader.onLeaderCommitted(WORKER, 11);

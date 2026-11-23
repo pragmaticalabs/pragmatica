@@ -34,6 +34,11 @@ public final class LeaderElectionEvents {
         public LeaderCommitted(NodeId leader) {
             this(leader, NO_SEQUENCE);
         }
+
+        /// The committed record as the KV-Store holds it: the leader and its own `viewSequence`.
+        public static LeaderCommitted leaderCommitted(NodeId leader, long viewSequence) {
+            return new LeaderCommitted(leader, viewSequence);
+        }
     }
 
     /// Verified current core directory on an immutable passive worker. It grants routing only.
