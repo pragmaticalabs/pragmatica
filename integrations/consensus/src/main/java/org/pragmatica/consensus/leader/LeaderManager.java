@@ -21,6 +21,7 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionFsm;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
@@ -421,7 +422,7 @@ public interface LeaderManager {
             return org.pragmatica.lang.Unit.unit();
         }
 
-        private void applyVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration configuration) {
+        private void applyVoterConfiguration(VoterConfiguration configuration) {
             if (configuration.contains(context.self())) {
                 installLeaderEligibility(configuration.members());
                 context.submit(new LeaderElectionEvents.VoterReadmitted());

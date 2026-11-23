@@ -44,8 +44,9 @@ import org.slf4j.LoggerFactory;
 ///   before the stop task ran in order before it, and every task after it (already queued, or submitted later) is dropped,
 ///   logged at DEBUG, never run. Shutdown therefore drains up to the stop and rejects the rest, deterministically.
 ///
-/// A task that throws is logged at ERROR and the drain continues with the next task, for any [Throwable]: otherwise one
-/// failing task would strand the queue (no drainer, queued tasks never run). A [VirtualMachineError] is logged and then
+/// A task that throws is logged at ERROR and the drain continues with the next task, for any [Throwable] (FER, degrade
+/// forward: the failed event is lost, every later event still runs): otherwise one failing task would strand the queue
+/// (no drainer, queued tasks never run). Pinned by `LeaderSerialDispatchCensusTest#failingTask_doesNotStallTheQueue`. A [VirtualMachineError] is logged and then
 /// propagates to the drainer's caller; the drainer is released on EVERY exit (a `finally` around the drain).
 ///
 /// The same mechanism as SWIM's `org.pragmatica.swim.SerialExecutor` (#3529), without its test-only quiescing mode and with

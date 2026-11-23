@@ -121,6 +121,22 @@ class LeaderSerialDispatchCensusTest {
                                        .containsExactly(1L);
     }
 
+    /// FER at the executor: a task that throws is logged and dropped, and the next event still reaches the FSM.
+    @Test
+    void failingTask_doesNotStallTheQueue() {
+        var manager = dormantManager();
+
+        manager.context()
+               .serially(LeaderSerialDispatchCensusTest::failingTask);
+        manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 1));
+
+        assertThat(observedSequences()).as("the event after a failing task is handled").containsExactly(1L);
+    }
+
+    private static void failingTask() {
+        throw new IllegalStateException("#3587 probe: a failing task");
+    }
+
     private List<Long> observedSequences() {
         return observed.stream()
                        .filter(ClusterFsmEvent.NodeAdded.class::isInstance)
