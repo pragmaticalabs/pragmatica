@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.DoubleSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -1141,9 +1142,17 @@ public final class LeaderElectionContext {
         return serial.pendingForTest();
     }
 
-    /// #3587: `task` as a callback (a timer's, a listener's) that runs it in the node's one total order.
+    /// #3587: `task` as a callback (a timer's, a listener's) that runs it in the node's one total order. The ONE path by
+    /// which a callback that runs off the drainer enters that order (#3605 round-3 ruling): every `serialized(` call in
+    /// leader main has a row in `LeaderTimerSerialCensusTest`, which counts them in the source.
     public Runnable serialized(Runnable task) {
         return () -> serial.execute(task);
+    }
+
+    /// As [#serialized(Runnable)] for a callback that receives a value (a promise completion's result or cause): the
+    /// value is captured on the completing thread and `callback` runs with it in the node's one total order.
+    public <T> Consumer<T> serialized(Consumer<T> callback) {
+        return value -> serial.execute(() -> callback.accept(value));
     }
 
     /// #3587: deliver `event` to the FSM in the node's one total order. Inside a task (a handler following up, a

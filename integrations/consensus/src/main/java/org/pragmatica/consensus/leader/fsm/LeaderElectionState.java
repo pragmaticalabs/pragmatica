@@ -84,12 +84,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     LeaderElectionContext ctx();
 
-    /// Delivers an event to this FSM instance in the node's one total order (#3587, [LeaderElectionContext#submit]):
-    /// from a handler (already inside a task) it is dispatched at once; from a timer or a proposal completion it is
-    /// queued behind every event submitted before it. A hook never takes this path: it follows up
+    /// Dispatches an event to this FSM instance from code that is ALREADY confined to the node's serial executor
+    /// (#3587): a handler, or a callback body wrapped in [LeaderElectionContext#serialized]. It has no queueing path of
+    /// its own (#3605 round-3 ruling): every callback that runs off the drainer (a timer, a promise completion) enters
+    /// the node's order through ONE path, `ctx.serialized(...)`, and calls this only inside it. An unwrapped callback
+    /// would dispatch on its own thread, which `LeaderTimerSerialCensusTest` pins per site (one row per
+    /// `serialized(` call in leader main, counted against the source). A hook never takes this path: it follows up
     /// ([LeaderElectionContext#followUp]).
     private static void dispatchSelf(LeaderElectionContext ctx, ClusterFsmEvent event) {
-        ctx.submit(event);
+        ctx.fsm()
+           .dispatch(event);
     }
 
     // --- State records ---
@@ -253,7 +257,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         private void armGraceTimer() {
             log.info("Entering AwaitingKvSync: deferring leader-proposal for {}ms to absorb KV-sync from peers",
                      ctx.kvSyncGraceDelay().millis());
-            var future = SharedScheduler.schedule(() -> dispatchSelf(ctx, new KvSyncGraceTimeout()),
+            var future = SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx, new KvSyncGraceTimeout())),
                                                   ctx.kvSyncGraceDelay());
 
             graceTimeoutFuture.set(future);
@@ -336,8 +340,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         log.info("AwaitingKvSync: KV state still catching up and no committed leader visible yet — waiting another {}ms",
                  ctx.kvSyncGraceDelay().millis());
         waiting.graceTimeoutFuture()
-               .set(SharedScheduler.schedule(() -> dispatchSelf(ctx,
-                                                                new KvSyncGraceTimeout()),
+               .set(SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx, new KvSyncGraceTimeout())),
                                              ctx.kvSyncGraceDelay()));
     }
 
@@ -1268,7 +1271,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                  ctx.perRankDelay().millis(),
                  ctx.peerObservationInterval().millis());
 
-        return SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
+        return SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx, new ElectionTick())),
                                         TimeSpan.timeSpan(delayMs).millis());
     }
 
@@ -1283,7 +1286,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         var jitterMs = (long)(ctx.proposalRetryDelay().millis() * (1.0 + ctx.jitterSource().getAsDouble()));
 
         log.debug("Scheduling election tick #{} in {}ms", retry, jitterMs);
-        var future = SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
+        var future = SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx, new ElectionTick())),
                                               TimeSpan.timeSpan(jitterMs).millis());
 
         Option.option(holder.getAndSet(future)).onPresent(prior -> prior.cancel(false));
@@ -1415,20 +1418,23 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         var viewSeq = ctx.nextViewSequence();
 
         log.info("Submitting leader proposal: candidate={}, viewSequence={}, epoch={}", candidate, viewSeq, epoch);
-        var timeoutFuture = SharedScheduler.schedule(() -> dispatchSelf(ctx,
-                                                                        new ProposalSettled(candidate,
-                                                                                            false,
-                                                                                            "timeout@epoch=" + epoch)),
+        var timeoutFuture = SharedScheduler.schedule(ctx.serialized(() -> dispatchSelf(ctx,
+                                                                                       new ProposalSettled(candidate,
+                                                                                                           false,
+                                                                                                           "timeout@epoch="
+                                                                                                           + epoch))),
                                                      ctx.proposalTimeout());
 
         storeProposalTimeoutFuture(owner, timeoutFuture);
         handler.propose(candidate, viewSeq)
-               .onSuccess(_ -> dispatchSelf(ctx,
-                                            new ProposalSettled(candidate, true, "submitted@epoch=" + epoch)))
-               .onFailure(cause -> dispatchSelf(ctx,
-                                                new ProposalSettled(candidate,
-                                                                    false,
-                                                                    cause.message() + "@epoch=" + epoch)));
+               .onSuccess(ctx.serialized(_ -> dispatchSelf(ctx,
+                                                           new ProposalSettled(candidate,
+                                                                               true,
+                                                                               "submitted@epoch=" + epoch))))
+               .onFailure(ctx.serialized(cause -> dispatchSelf(ctx,
+                                                               new ProposalSettled(candidate,
+                                                                                   false,
+                                                                                   cause.message() + "@epoch=" + epoch))));
     }
 
     /// Stores the proposal-timeout future onto the owning Electing/ReElecting record so that
