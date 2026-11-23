@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
@@ -196,8 +197,13 @@ class ForwardedStreamReadRouteTest {
         assertThat(owner.partitionInfo(engineKey, 0).unwrap().tailOffset()).as("retention rolled the tail past 0").isGreaterThan(0);
     }
 
+    /// A 5-entry ring: the hot window is declared equal to the retention so the ring holds the same 5 entries whether it is
+    /// sized from retention or from the declared window; `max_event_size` is pinned to the first segment (256 KiB) so the
+    /// ring's first data region is the same in both.
     private StreamConfig config(int partitions) {
-        return StreamConfig.streamConfig(engineKey, partitions, RETENTION, "earliest");
+        return HotWindowFixture.declaredHot(StreamConfig.streamConfig(engineKey, partitions, RETENTION, "earliest", 256 * 1024L),
+                                            RETENTION.maxCount(),
+                                            RETENTION.maxBytes());
     }
 
     private static ValuePut<StreamConfigKey, StreamConfigValue> configPut(StreamConfig config) {

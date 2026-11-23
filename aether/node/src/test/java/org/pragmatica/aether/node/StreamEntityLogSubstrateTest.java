@@ -11,8 +11,8 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.resource.entity.EntityLogError;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.aether.stream.EvictionListener;
-import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
@@ -243,9 +243,11 @@ class StreamEntityLogSubstrateTest {
     /// `StreamPartitionManager`'s entity prefix there) cannot drift apart unnoticed.
     @Test
     void append_failsWithEventDropped_whenFrozenRingCannotFitRecord_evenAtReplicationFactorOneWithoutWal() {
-        // Exactly one entity partition floor (10k index slots + the 256 KiB first segment of the 64 MiB
-        // cap, per StreamEntityLogSubstrate's ring sizing): creation fits, every growth is refused.
-        var floor = OffHeapRingBuffer.floorBytes(10_000L, 64L * 1024 * 1024);
+        // The budget is the entity partition floor: 10k index slots + the first data region the entity ring reserves
+        // (the 1 MiB entity max_event_size, within the 64 MiB cap, per StreamEntityLogSubstrate's ring sizing). Creation
+        // fits, no growth beyond it is admitted, and the record below is exactly one max-size record, which cannot fit
+        // beside the first one in that region whichever way the ring is sized (retention or hot window).
+        var floor = RingGeometry.floorBytes(10_000L, 64L * 1024 * 1024, 1_048_576L);
         var partitionManager = StreamPartitionManager.streamPartitionManager(floor);
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
@@ -259,7 +261,7 @@ class StreamEntityLogSubstrateTest {
         substrate.ensureLog("ledger", 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
         substrate.append("ledger", 0, new byte[16]).await().unwrap();
 
-        substrate.append("ledger", 0, new byte[300_000])
+        substrate.append("ledger", 0, new byte[1_048_576])
                  .await()
                  .onSuccess(offset -> fail("an entity record the frozen ring dropped was acked at offset " + offset))
                  .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
