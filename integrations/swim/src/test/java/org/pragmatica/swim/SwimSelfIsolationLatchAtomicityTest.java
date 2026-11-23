@@ -16,6 +16,7 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +35,7 @@ import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.swim.SwimConfig.swimConfig;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #1990: the all-peers-FAULTY check and the self-isolation latch write are one atomic step against a
 /// revival's "store ALIVE, then clear the latch". Without it a revival that lands between the check and the
@@ -155,12 +157,10 @@ class SwimSelfIsolationLatchAtomicityTest {
 
     /// The reviver either finishes (its task is queued behind the held check on the serial state executor) or
     /// parks waiting for it to run; both mean it has done everything it can do while the check is held open.
-    private static void awaitBlockedOrDone(Thread thread) throws InterruptedException {
-        var deadline = System.currentTimeMillis() + WAIT_MS;
-
-        while (thread.isAlive() && thread.getState() == Thread.State.RUNNABLE && System.currentTimeMillis() < deadline) {
-            Thread.sleep(1);
-        }
+    private static void awaitBlockedOrDone(Thread thread) {
+        pollUntil(() -> thread.isAlive() && thread.getState() == Thread.State.RUNNABLE,
+                  busy -> !busy,
+                  Duration.ofMillis(WAIT_MS));
     }
 
     private static void await(CountDownLatch latch) {

@@ -5,9 +5,9 @@ package org.pragmatica.swim;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.serialization.Deserializer;
@@ -17,6 +17,7 @@ import java.net.InetSocketAddress;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #1200 — the real transport reports, per sender, the datagrams it cannot open for want of the key and the ones it can. Real UDP, real AES-GCM
 /// encryptors on both sides; nothing is hand-fed to the observer.
@@ -98,11 +99,7 @@ class NettySwimTransportDecryptObserverTest {
                 send(sender, port, AesGcmGossipEncryptor.aesGcmGossipEncryptor(ROTATED_KEY, 2).unwrap().encrypt(PAYLOAD).unwrap());
             }
 
-            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-
-            while (log.messages().size() < 3 && System.nanoTime() < deadline) {
-                Thread.sleep(10);
-            }
+            pollUntil(() -> log.messages().size(), count -> count >= 3, Duration.ofSeconds(10)).assertMet("three undecryptable-datagram WARN lines");
 
             assertThat(log.messages()).hasSize(3).allMatch(message -> message.startsWith("Failed to decrypt gossip from /127.0.0.1:") && message.contains("Unknown gossip key ID: 2"));
         } finally {
@@ -124,12 +121,8 @@ class NettySwimTransportDecryptObserverTest {
         };
     }
 
-    private void awaitEvents(int expected) throws InterruptedException {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-
-        while (events.size() < expected && System.nanoTime() < deadline) {
-            Thread.sleep(10);
-        }
+    private void awaitEvents(int expected) {
+        pollUntil(events::size, count -> count >= expected, Duration.ofSeconds(10)).assertMet(expected + " decrypt-observer events");
     }
 
     private static void send(DatagramSocket sender, int port, byte[] datagram) throws Exception {

@@ -16,10 +16,12 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -42,6 +44,7 @@ import org.pragmatica.swim.SwimProtocolTest.RecordingTransport;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #1783: membership must converge for a joiner independent of piggyback retention. The seed answers an
 /// ANNOUNCE with its membership view (unsolicited `Ack`s, sequence 0); the joiner merges it through the
@@ -56,6 +59,8 @@ class SwimJoinSyncTest {
     private final Map<InetSocketAddress, SwimTransport.SwimMessageHandler> net = new ConcurrentHashMap<>();
     private final ExecutorService wire = Executors.newSingleThreadExecutor();
     private final List<SwimProtocol> started = new ArrayList<>();
+    /// Per receiving port, every message whose handler has returned.
+    private final Map<Integer, List<SwimMessage>> handled = new ConcurrentHashMap<>();
 
     @AfterEach
     void tearDown() {
@@ -101,8 +106,8 @@ class SwimJoinSyncTest {
 
         await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> assertThat(seed.members()).as("the seed received the ANNOUNCE")
                                                                                           .containsKey(new NodeId("joiner-b")));
+        awaitJoinAckHandledBy(JOINER_ADDR.getPort());
         joiner.setMembershipEligibility(_ -> true);
-        sleepQuietly(500);
 
         assertThat(joiner.members()).as("a scope that grew, with no re-ask, recovers nothing").doesNotContainKey(X);
 
@@ -112,12 +117,16 @@ class SwimJoinSyncTest {
                                                                                               .containsKey(X));
     }
 
-    private static void sleepQuietly(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+    /// The join ack reached the joiner and its handler returned (the transport records a message only after the handler did), so the ack's
+    /// entries were merged or dropped under the eligibility in force BEFORE the caller changes it, and nothing is left in flight to wait out.
+    private void awaitJoinAckHandledBy(int port) {
+        pollUntil(() -> handled.getOrDefault(port, List.of()).stream().anyMatch(SwimJoinSyncTest::isJoinAck),
+                  received -> received,
+                  Duration.ofSeconds(10)).assertMet("the join ack handled by the node on port " + port);
+    }
+
+    private static boolean isJoinAck(SwimMessage message) {
+        return message instanceof Ack ack && ack.sequence() == 0L;
     }
 
     @Test
@@ -267,6 +276,7 @@ class SwimJoinSyncTest {
 
             if (handler != null) {
                 handler.onMessage(self, message);
+                handled.computeIfAbsent(target.getPort(), _ -> new CopyOnWriteArrayList<>()).add(message);
             }
         }
 

@@ -57,13 +57,14 @@ class NettySwimTransportBoundedShutdownTest {
     private static final String FAILURE_LINE = "SWIM transport shutdown did NOT complete";
     private static final int WEDGED_PORT = 19731;
     private static final int HEALTHY_PORT = 19732;
-    /// Must outlast `NettySwimTransport.SHUTDOWN_TIMEOUT_MS` (5 s) so the bound is what ends the
-    /// wait, not the wedge clearing.
-    private static final long WEDGE_MS = 9_000L;
     private static final long WEDGE_ARMED_BOUND_MS = 5_000L;
     private static final long GROUP_CLEANUP_TIMEOUT_MS = 10_000L;
 
     private LogCapture capture;
+    /// Holds the wedging task on the event loop until [`#tearDown`] releases it, so the wedge outlasts
+    /// `NettySwimTransport.SHUTDOWN_TIMEOUT_MS` (5 s) by construction: the bound is what ends the wait,
+    /// never the wedge clearing, and no wall-clock guess of how long the bound takes is baked in.
+    private final CountDownLatch wedgeRelease = new CountDownLatch(1);
     /// Every group this test creates, shut down in [`#tearDown`] whatever the outcome. A Netty
     /// `NioEventLoopGroup` runs NON-daemon threads: a group left alive by a failing assertion keeps
     /// the surefire fork from exiting, which is how a first cut of this class turned a 6 s run into
@@ -78,6 +79,7 @@ class NettySwimTransportBoundedShutdownTest {
     @AfterEach
     void tearDown() {
         capture.close();
+        wedgeRelease.countDown();
         groups.forEach(group -> group.shutdownGracefully(0L, GROUP_CLEANUP_TIMEOUT_MS, TimeUnit.MILLISECONDS));
         groups.clear();
     }
@@ -196,15 +198,15 @@ class NettySwimTransportBoundedShutdownTest {
                                  .unwrap();
     }
 
-    /// Occupy the group's only event loop for longer than the shutdown bound, and wait until the
+    /// Occupy the group's only event loop until teardown (longer than the shutdown bound), and wait until the
     /// task has actually started — otherwise the shutdown could win the race and the probe would
     /// measure nothing.
-    private static void wedge(EventLoopGroup group) {
+    private void wedge(EventLoopGroup group) {
         var armed = new CountDownLatch(1);
 
         group.execute(() -> {
             armed.countDown();
-            sleepQuietly(WEDGE_MS);
+            awaitReleaseQuietly();
         });
 
         try {
@@ -216,9 +218,9 @@ class NettySwimTransportBoundedShutdownTest {
         }
     }
 
-    private static void sleepQuietly(long millis) {
+    private void awaitReleaseQuietly() {
         try {
-            Thread.sleep(millis);
+            wedgeRelease.await();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
