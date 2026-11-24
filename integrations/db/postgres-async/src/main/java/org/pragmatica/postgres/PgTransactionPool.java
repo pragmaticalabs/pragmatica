@@ -14,6 +14,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.postgres.net.ReleaseChain.releasingOnFailure;
 
 
 /**
@@ -99,12 +100,7 @@ public class PgTransactionPool extends PgConnectible {
 
     private void createPhysicalConnection() {
         obtainStream.get()
-                    .flatMap(stream -> {
-                                 var conn = new PgConnection(stream, dataConverter, 0);
-
-                                 return conn.connect(username, password, database, applicationName);
-                             })
-                    .flatMap(this::validateConnection)
+                    .flatMap(this::connectPhysical)
                     .withResult(result -> result.fold(cause -> {
                                                           propagateFailure(cause);
 
@@ -115,6 +111,16 @@ public class PgTransactionPool extends PgConnectible {
 
                                                           return null;
                                                       }));
+    }
+
+    /// The stream is open once obtained: a failed connect or validation shuts the connection down (ReleaseChain
+    /// invariant, #3635).
+    private Promise<Connection> connectPhysical(ProtocolStream stream) {
+        var conn = new PgConnection(stream, dataConverter, 0);
+
+        return releasingOnFailure(conn.connect(username, password, database, applicationName)
+                                      .flatMap(this::validateConnection),
+                                  conn::shutdown);
     }
 
     private Promise<Connection> validateConnection(Connection connection) {

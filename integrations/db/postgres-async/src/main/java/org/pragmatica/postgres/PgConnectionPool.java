@@ -28,6 +28,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.postgres.net.ReleaseChain.releasingOnFailure;
 
 
 /**
@@ -120,22 +121,16 @@ public class PgConnectionPool extends PgConnectible {
             case PoolResult.Available available -> Promise.success(available.connection());
             case PoolResult.Pending pendingResult -> {
                 if (pendingResult.makeNew()) {
-                    obtainStream.get().flatMap(stream -> {
-                        var conn = new PgConnection(stream, dataConverter, maxStatements);
+                    obtainStream.get().flatMap(this::connectPooled).withResult(result -> result.fold(cause -> {
+                                                                                                         propagateFailure(cause);
 
-                        conn.onRelease(() -> release(conn));
+                                                                                                         return null;
+                                                                                                     },
+                                                                                                     connected -> {
+                                                                                                         release((PgConnection) connected);
 
-                        return conn.connect(username, password, database, applicationName);
-                    }).flatMap(this::validateConnection).withResult(result -> result.fold(cause -> {
-                                                                                              propagateFailure(cause);
-
-                                                                                              return null;
-                                                                                          },
-                                                                                          connected -> {
-                                                                                              release((PgConnection) connected);
-
-                                                                                              return null;
-                                                                                          }));
+                                                                                                         return null;
+                                                                                                     }));
                 }
 
                 yield pendingResult.deferred();
@@ -158,6 +153,18 @@ public class PgConnectionPool extends PgConnectible {
         actions.forEach(Promise::async);
     }
 
+    /// The stream is open once obtained: a failed connect or validation shuts the connection down (ReleaseChain
+    /// invariant, #3635). `close()` would only hand it back to this pool.
+    private Promise<Connection> connectPooled(ProtocolStream stream) {
+        var conn = new PgConnection(stream, dataConverter, maxStatements);
+
+        conn.onRelease(() -> release(conn));
+
+        return releasingOnFailure(conn.connect(username, password, database, applicationName)
+                                      .flatMap(this::validateConnection),
+                                  conn::shutdown);
+    }
+
     private Promise<Connection> validateConnection(Connection connection) {
         if (validationQuery != null && !validationQuery.isBlank()) {
             return runValidationQuery(connection);
@@ -168,9 +175,7 @@ public class PgConnectionPool extends PgConnectible {
 
     private Promise<Connection> runValidationQuery(Connection connection) {
         return connection.completeScript(validationQuery)
-                         .fold(result -> result.fold(cause -> ((PgConnection) connection).shutdown()
-                                                                                         .flatMap(_ -> Promise.failure(cause)),
-                                                     _ -> Promise.success(connection)));
+                         .map(_ -> connection);
     }
 
     @Override

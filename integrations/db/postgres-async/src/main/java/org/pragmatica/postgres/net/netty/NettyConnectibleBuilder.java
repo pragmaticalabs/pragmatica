@@ -16,6 +16,8 @@ package org.pragmatica.postgres.net.netty;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.Charset;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.pragmatica.postgres.PgConnectionPool;
 import org.pragmatica.postgres.PgDatabase;
@@ -28,8 +30,6 @@ import org.pragmatica.postgres.net.PoolMode;
 import org.pragmatica.lang.Promise;
 
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.nio.NioIoHandler;
 
 
 /**
@@ -39,30 +39,61 @@ import io.netty.channel.nio.NioIoHandler;
  * @author Marat Gainullin
  */
 public class NettyConnectibleBuilder extends ConnectibleBuilder {
-    private EventLoopGroup eventLoopGroup;
-    private boolean ownsEventLoopGroup;
+    private final OwnedEventLoopGroup owned = new OwnedEventLoopGroup(() -> properties.ioThreads());
+    private EventLoopGroup suppliedGroup;
 
+    /// Use a shared group: it is never released by this builder or by anything it builds.
     public NettyConnectibleBuilder eventLoopGroup(EventLoopGroup eventLoopGroup) {
-        this.eventLoopGroup = eventLoopGroup;
-        this.ownsEventLoopGroup = false;
+        this.suppliedGroup = eventLoopGroup;
 
         return this;
     }
 
-    public EventLoopGroup eventLoopGroup() {
-        return resolveEventLoopGroup();
+    /// Without a supplied group, every `pool()`/`plain()` result holds a lease on one builder-owned group, created on
+    /// first use, and so does every open stream until its channel closes. The group is shut down when the last lease is
+    /// released: `close()` of the last Connectible resolves on the group's termination only when no stream lease is
+    /// outstanding; with a borrowed connection still open it resolves at once and the group ends when that channel
+    /// closes. Close every Connectible built from this builder, and every connection taken from them (#3635).
+    public Connectible pool() {
+        return build(obtainStream -> properties.poolMode() == PoolMode.TRANSACTION
+                                     ? new PgTransactionPool(properties, obtainStream)
+                                     : new PgConnectionPool(properties, obtainStream));
     }
 
-    private EventLoopGroup resolveEventLoopGroup() {
-        if (eventLoopGroup == null) {
-            eventLoopGroup = new MultiThreadIoEventLoopGroup(properties.ioThreads(), NioIoHandler.newFactory());
-            ownsEventLoopGroup = true;
+    public Connectible plain() {
+        return build(obtainStream -> new PgDatabase(properties, obtainStream));
+    }
+
+    /// Leases currently held on the owned group: the Connectibles' own plus one per open stream.
+    int leaseCount() {
+        return owned.leases();
+    }
+
+    /// The group currently owned by this builder, or null: nothing created yet, or the last lease was released.
+    EventLoopGroup ownedGroup() {
+        return owned.current();
+    }
+
+    private Connectible build(Function<Supplier<Promise<ProtocolStream>>, Connectible> factory) {
+        if (suppliedGroup != null) {
+            return factory.apply(() -> obtainStream(Promise.success(suppliedGroup),
+                                                    () -> {}));
         }
 
-        return eventLoopGroup;
+        var lease = new OwnedConnectible(owned);
+
+        lease.delegate(factory.apply(() -> obtainStream(lease.group(), owned::release)));
+
+        return lease;
     }
 
-    private Promise<ProtocolStream> obtainStream() {
+    /// `onChannelClosed` is the release of the stream's own lease on the group (already taken by `group` for an owned
+    /// group): the stream runs it once, when its channel closes by any path.
+    private Promise<ProtocolStream> obtainStream(Promise<EventLoopGroup> group, Runnable onChannelClosed) {
+        return group.flatMap(g -> openStream(g, onChannelClosed));
+    }
+
+    private Promise<ProtocolStream> openStream(EventLoopGroup group, Runnable onChannelClosed) {
         try {
             var address = InetAddress.getByName(properties.hostname());
             var sockAddr = new InetSocketAddress(address, properties.port());
@@ -71,23 +102,12 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
                                                              properties.hostname(),
                                                              properties.sslConfig(),
                                                              Charset.forName(properties.encoding()),
-                                                             resolveEventLoopGroup()));
+                                                             group,
+                                                             onChannelClosed));
         } catch (Exception e) {
+            onChannelClosed.run();
+
             return Promise.failure(SqlError.fromThrowable(e));
         }
-    }
-
-    public Connectible pool() {
-        return properties.poolMode() == PoolMode.TRANSACTION
-               ? new PgTransactionPool(properties, this::obtainStream)
-               : new PgConnectionPool(properties, this::obtainStream);
-    }
-
-    public Connectible plain() {
-        return new PgDatabase(properties, this::obtainStream);
-    }
-
-    public boolean ownsEventLoopGroup() {
-        return ownsEventLoopGroup;
     }
 }

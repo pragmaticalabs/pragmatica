@@ -20,6 +20,7 @@ import java.net.SocketAddress;
 import java.nio.charset.Charset;
 import java.security.cert.X509Certificate;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.postgres.PgProtocolStream;
 import org.pragmatica.postgres.SqlError;
@@ -51,6 +52,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.postgres.net.ReleaseChain.releaseAll;
 
 
 /**
@@ -67,7 +69,11 @@ public class NettyPgProtocolStream extends PgProtocolStream {
     private final SocketAddress address;
     private final Bootstrap channelPipeline;
     private StartupMessage startupWith;
-    private ChannelHandlerContext ctx;
+    private volatile ChannelHandlerContext ctx;
+    private volatile Channel channel;
+    /// Runs exactly once, when this stream's channel is closed by any path (local close, remote close, failed connect).
+    private final Runnable onChannelClosed;
+    private final AtomicBoolean channelReleased = new AtomicBoolean();
 
     private final GenericFutureListener<Future<? super Object>> outboundErrorListener = written -> {
         if (!written.isSuccess()) {
@@ -79,8 +85,21 @@ public class NettyPgProtocolStream extends PgProtocolStream {
                                  String hostname,
                                  SslConfig sslConfig,
                                  Charset encoding,
-                                 EventLoopGroup eventLoopGroup) {
+                                 EventLoopGroup eventLoopGroup,
+                                 Runnable onChannelClosed) {
+        this(address, hostname, sslConfig, encoding, eventLoopGroup, onChannelClosed, NioSocketChannel::new);
+    }
+
+    /// `channelFactory` is the test seam for a channel that cannot be created (#3635).
+    NettyPgProtocolStream(SocketAddress address,
+                          String hostname,
+                          SslConfig sslConfig,
+                          Charset encoding,
+                          EventLoopGroup eventLoopGroup,
+                          Runnable onChannelClosed,
+                          ChannelFactory<? extends Channel> channelFactory) {
         super(encoding);
+        this.onChannelClosed = onChannelClosed;
         this.address = address;
         this.hostname = hostname;
         this.sslConfig = sslConfig;
@@ -95,7 +114,7 @@ public class NettyPgProtocolStream extends PgProtocolStream {
         }
 
         this.channelPipeline = new Bootstrap().group(eventLoopGroup)
-                                              .channel(NioSocketChannel.class)
+                                              .channelFactory(channelFactory)
                                               .handler(newProtocolInitializer());
     }
 
@@ -104,10 +123,38 @@ public class NettyPgProtocolStream extends PgProtocolStream {
         startupWith = startup;
 
         return offerRoundTrip(new ActiveQuery.SingleMessage(),
-                              () -> channelPipeline.connect(address)
-                                                   .addListener(outboundErrorListener),
+                              this::connectChannel,
                               false).flatMap(this::send)
                              .flatMap(message -> connectSslOrDirect(message, startup));
+    }
+
+    private io.netty.channel.ChannelFuture connectChannel() {
+        var connecting = channelPipeline.connect(address);
+
+        channel = connecting.channel();
+        channel.closeFuture().addListener(_ -> releaseChannel());
+        connecting.addListener(outboundErrorListener);
+        connecting.addListener(this::releaseOnFailedConnect);
+
+        return connecting;
+    }
+
+    /// A failed connect ends the channel, but its closeFuture may never complete then: Netty 4.2.18
+    /// AbstractBootstrap.initAndRegister answers a failed newChannel() with a FailedChannel and a failed init() or
+    /// register() with closeForcibly(), and neither completes closeFuture (only AbstractChannel.register's rejected-task
+    /// path and register0 call closeFuture.setClosed()). A channel left open by a failed connect is still registered, so
+    /// the group's shutdown closes it.
+    private void releaseOnFailedConnect(Future<? super Void> connected) {
+        if (!connected.isSuccess()) {
+            releaseChannel();
+        }
+    }
+
+    /// The first of the channel's terminal signals (its close, a failed connect) runs `onChannelClosed`; later ones do not.
+    private void releaseChannel() {
+        if (channelReleased.compareAndSet(false, true)) {
+            onChannelClosed.run();
+        }
     }
 
     private Promise<Message> connectSslOrDirect(Message message, StartupMessage startup) {
@@ -124,30 +171,52 @@ public class NettyPgProtocolStream extends PgProtocolStream {
                   .isOpen();
     }
 
+    /// Terminate, then close the channel on either outcome of that write (ReleaseChain invariant, #3635); resolves with the
+    /// first failure. A stream whose channel never became active has no session to terminate: only its channel is closed.
     @Override
     public Promise<Unit> close() {
-        var uponClose = Promise.<Unit> promise();
+        if (ctx == null) {
+            return closeUnconnected();
+        }
 
-        ctx.writeAndFlush(Terminate.INSTANCE).addListener(written -> handleWriteResult(written, uponClose));
-
-        return uponClose;
+        return releaseAll(() -> settled(ctx.writeAndFlush(Terminate.INSTANCE)), () -> settled(ctx.close()));
     }
 
-    private void handleWriteResult(io.netty.util.concurrent.Future<? super Void> written, Promise<Unit> uponClose) {
-        if (written.isSuccess()) {
-            ctx.close().addListener(closed -> handleCloseResult(closed, uponClose));
+    /// Before `connect` there is no channel whose close would run `onChannelClosed`, so the lease goes back here; the
+    /// once-guard keeps a later channel signal from releasing it again.
+    private Promise<Unit> closeUnconnected() {
+        var unconnected = channel;
+
+        return unconnected == null
+               ? releasedWithoutChannel()
+               : settled(unconnected.close());
+    }
+
+    private Promise<Unit> releasedWithoutChannel() {
+        releaseChannel();
+
+        return Promise.success(unit());
+    }
+
+    private static Promise<Unit> settled(Future<? super Void> operation) {
+        var settled = Promise.<Unit> promise();
+
+        operation.addListener(done -> settle(done, settled));
+
+        return settled;
+    }
+
+    private static void settle(Future<? super Void> done, Promise<Unit> settled) {
+        if (done.isSuccess()) {
+            settled.succeed(unit());
         } else {
-            uponClose.fail(SqlError.fromThrowable(written.cause()));
+            settled.fail(SqlError.fromThrowable(done.cause()));
         }
     }
 
-    private static void handleCloseResult(io.netty.util.concurrent.Future<? super Void> closed,
-                                          Promise<Unit> uponClose) {
-        if (closed.isSuccess()) {
-            uponClose.succeed(unit());
-        } else {
-            uponClose.fail(SqlError.fromThrowable(closed.cause()));
-        }
+    /// The channel of this stream, or null before `connect` (test access).
+    Channel channel() {
+        return channel;
     }
 
     @Override
