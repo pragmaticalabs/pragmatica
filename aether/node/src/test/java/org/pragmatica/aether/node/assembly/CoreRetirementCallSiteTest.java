@@ -91,6 +91,7 @@ class CoreRetirementCallSiteTest {
         var voters = new VoterConfiguration(1L, new ClusterConfig(List.of(SELF, VOTER_B)));
 
         when(leader.isLeader()).thenReturn(true);
+        when(leader.leader()).thenReturn(Option.some(SELF));
         when(cluster.leaderManager()).thenReturn(leader);
         when(cluster.topologyManager()).thenReturn(observer);
         when(cluster.network()).thenReturn(mock(ClusterNetwork.class));
