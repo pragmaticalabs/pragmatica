@@ -1599,8 +1599,9 @@ public final class MembershipFsm {
 
     /// Timers currently armed across all tracked members (#3557 observability seam, package-private): the join grace, the
     /// eviction backstop, the DEPARTING timeout and the rejoin re-offer, each counted while its future has neither fired nor
-    /// been cancelled. Zero after [`#close`]. Read-only snapshot, no hot-path cost.
-    int pendingTimerCount() {
+    /// been cancelled. Zero after [`#close`]. Read-only snapshot, no hot-path cost. Public so a real-node test in the
+    /// node module can observe it across the module boundary (#2721).
+    public int pendingTimerCount() {
         return members.values()
                       .stream()
                       .mapToInt(MemberTracking::pendingTimers)
