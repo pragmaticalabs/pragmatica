@@ -26,6 +26,7 @@ import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -222,8 +223,7 @@ class StreamReadRouterTest {
 
             committedEpoch.set(Epoch.epoch(1L, 1L, 2L));
 
-            assertThat(router.read(STREAM, PARTITION, 0L, 3, ReadPreference.GOVERNOR).await()
-                             .fold(cause -> cause, events -> fail("served " + texts(events))))
+            assertThat(refusalOf(router.read(STREAM, PARTITION, 0L, 3, ReadPreference.GOVERNOR)))
                 .as("the timeout is the answer, never the copy").isEqualTo(StreamForwardError.General.READ_FORWARD_TIMEOUT);
         } finally {
             copy.close();
@@ -245,8 +245,7 @@ class StreamReadRouterTest {
             assertThat(stranger.readServing(STREAM, PARTITION, 0L, 3).isFailure()).as("control: the asked node does not hold the partition").isTrue();
             committedEpoch.set(Epoch.epoch(1L, 1L, 2L));
 
-            assertThat(routerOver(copy, stranger, TimeSpan.timeSpan(5).seconds()).read(STREAM, PARTITION, 1L, 3, ReadPreference.GOVERNOR).await()
-                                                                                  .fold(cause -> cause, events -> fail("served " + texts(events))))
+            assertThat(refusalOf(routerOver(copy, stranger, TimeSpan.timeSpan(5).seconds()).read(STREAM, PARTITION, 1L, 3, ReadPreference.GOVERNOR)))
                 .isEqualTo(new StreamError.ReplicaNotVerified(STREAM, PARTITION, 1L));
             assertThat(forwardedReads.get()).as("control: the read was forwarded").isEqualTo(1);
         } finally {
@@ -296,6 +295,12 @@ class StreamReadRouterTest {
         copy.markVerifiedForEpoch(STREAM, PARTITION, epochA);
 
         return copy;
+    }
+
+    /// The cause a read failed with; a served read fails the test with what it served.
+    private static Cause refusalOf(Promise<List<OffHeapRingBuffer.RawEvent>> read) {
+        return read.await()
+                   .fold(cause -> cause, events -> fail("served " + texts(events)));
     }
 
     private static List<String> texts(List<OffHeapRingBuffer.RawEvent> events) {
