@@ -229,7 +229,7 @@ class LeaderKvFollowUpTest {
         assertThat(ctx.adoptedViewSequence()).as("adoptedViewSequence after the older record was passed over")
                                              .isEqualTo(4L);
 
-        commitLeader(ctx::submit, OTHER);
+        commitLeader(ctx, ctx::submit, OTHER);
 
         assertThat(heldLeader(fsm)).as("instrument: the sequence-less local commit was adopted")
                                    .isEqualTo(Option.some(OTHER));
