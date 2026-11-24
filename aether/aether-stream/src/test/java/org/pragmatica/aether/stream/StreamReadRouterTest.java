@@ -187,12 +187,12 @@ class StreamReadRouterTest {
             assertThat(forwardedReads.get()).as("control: nothing was forwarded").isZero();
 
             committedEpoch.set(epochB);
+            copy.markVerifiedForEpoch(STREAM, PARTITION, epochB);
             router.read(STREAM, PARTITION, 0L, 3, ReadPreference.GOVERNOR).await();
 
             assertThat(forwardedReads.get()).as("the previous owner life's mark is void: the read goes to the owner").isEqualTo(1);
 
             copy.commitAdvanced(STREAM, PARTITION, 2L, epochB);
-            copy.markVerifiedForEpoch(STREAM, PARTITION, epochB);
             router.read(STREAM, PARTITION, 0L, 3, ReadPreference.GOVERNOR).await();
 
             assertThat(forwardedReads.get()).as("control: the new owner's own announcement is served from again").isEqualTo(1);
