@@ -2047,7 +2047,8 @@ public final class LeaderReconciler {
               .filter(InFlightEntry::isDispatching)
               .onPresent(entry -> inFlightProvisioning.replace(placeholder,
                                                                entry,
-                                                               entry.dispatchedWith(ceiling, timeSource.nanoTime())));
+                                                               entry.dispatchedWith(ceiling,
+                                                                                    timeSource.nanoTime())));
     }
 
     @Contract

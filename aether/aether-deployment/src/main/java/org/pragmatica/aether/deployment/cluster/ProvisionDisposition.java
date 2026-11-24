@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.lang.io.TimeSpan;
 
+
 /// Membership v2 / E2 — the outcome of a [`ClusterTopologyManager#provisionReplacement`] call,
 /// distinguishing a real boot from a no-boot deferral so the `LeaderReconciler` can decide whether
 /// its in-flight placeholder still represents an arriving VM.

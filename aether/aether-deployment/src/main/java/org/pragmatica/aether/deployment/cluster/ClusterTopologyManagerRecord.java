@@ -1439,8 +1439,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// of a declaring source before that source's ceiling.
     @Override
     public TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed) {
-        return healSource(departed, intendedRole).fold(_ -> longestCeilingDeclaring(intendedRole),
-                                                       this::ceilingOf);
+        return healSource(departed, intendedRole).fold(_ -> longestCeilingDeclaring(intendedRole), this::ceilingOf);
     }
 
     /// The `replacement_ceiling` of the named source: source-level, so no role filter (a source that stopped declaring `core` is still the
