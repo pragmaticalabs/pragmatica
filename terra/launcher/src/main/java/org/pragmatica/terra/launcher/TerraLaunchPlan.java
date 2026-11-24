@@ -12,6 +12,7 @@ import java.util.ServiceLoader;
 
 import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -19,7 +20,10 @@ import org.pragmatica.terra.TerraApplication;
 import org.pragmatica.terra.TerraBlueprint;
 import org.pragmatica.terra.TerraFactory;
 import org.pragmatica.terra.TerraMigrations;
+import org.pragmatica.terra.http.TerraHttpMount;
 import org.pragmatica.terra.http.TerraHttpServer;
+import org.pragmatica.terra.management.ManagementConfig;
+import org.pragmatica.terra.management.TerraManagement;
 
 
 /// Immutable, checked selection and startup configuration. Loading does not construct slices,
@@ -31,19 +35,22 @@ public final class TerraLaunchPlan {
     private final Map<String, ConfigurationProvider> configuration;
     private final ConfigurationProvider deployment;
     private final LaunchHttp http;
+    private final List<TerraHttpMount> mounts;
 
     private TerraLaunchPlan(Path directory,
                             TerraBlueprint blueprint,
                             List<TerraFactory<?>> factories,
                             Map<String, ConfigurationProvider> configuration,
                             ConfigurationProvider deployment,
-                            LaunchHttp http) {
+                            LaunchHttp http,
+                            List<TerraHttpMount> mounts) {
         this.directory = directory;
         this.blueprint = blueprint;
         this.factories = List.copyOf(factories);
         this.configuration = Map.copyOf(configuration);
         this.deployment = deployment;
         this.http = http;
+        this.mounts = List.copyOf(mounts);
     }
 
     public static Promise<TerraLaunchPlan> load(Path directory) {
@@ -71,20 +78,34 @@ public final class TerraLaunchPlan {
                                                      List<TerraFactory<?>> factories) {
         return TerraConfiguration.deployment(directory).flatMap(deployment -> TerraConfiguration.host(directory,
                                                                                                       deployment)
-                                                                                                .flatMap(settings -> LaunchHttp.launchHttp(directory,
-                                                                                                                                           settings))
-                                                                                                .flatMap(http -> configureSlices(directory,
-                                                                                                                                 blueprint,
-                                                                                                                                 factories,
-                                                                                                                                 deployment,
-                                                                                                                                 http)));
+                                                                                                .flatMap(settings -> configureHost(directory,
+                                                                                                                                   blueprint,
+                                                                                                                                   factories,
+                                                                                                                                   deployment,
+                                                                                                                                   settings)));
+    }
+
+    private static Result<TerraLaunchPlan> configureHost(Path directory,
+                                                         TerraBlueprint blueprint,
+                                                         List<TerraFactory<?>> factories,
+                                                         TerraConfiguration.Deployment deployment,
+                                                         ConfigurationProvider settings) {
+        return Result.all(LaunchHttp.launchHttp(directory, settings),
+                          managementSettings(settings))
+                     .flatMap((http, management) -> management(http, management).flatMap(mounts -> configureSlices(directory,
+                                                                                                                    blueprint,
+                                                                                                                    factories,
+                                                                                                                    deployment,
+                                                                                                                    http,
+                                                                                                                    mounts)));
     }
 
     private static Result<TerraLaunchPlan> configureSlices(Path directory,
                                                            TerraBlueprint blueprint,
                                                            List<TerraFactory<?>> factories,
                                                            TerraConfiguration.Deployment deployment,
-                                                           LaunchHttp http) {
+                                                           LaunchHttp http,
+                                                           List<TerraHttpMount> mounts) {
         var configurations = new LinkedHashMap<String, ConfigurationProvider>();
 
         for (var factory : factories) {
@@ -102,7 +123,33 @@ public final class TerraLaunchPlan {
                                                   factories,
                                                   configurations,
                                                   deployment.provider(),
-                                                  http));
+                                                  http,
+                                                  mounts));
+    }
+
+    // #3651: the management.* and info.* settings of terra.toml, read and checked at load like the HTTP settings.
+    private static Result<ManagementConfig> managementSettings(ConfigurationProvider settings) {
+        var keys = new LinkedHashMap<String, String>();
+
+        settings.keys()
+                .stream()
+                .filter(key -> key.startsWith("management.") || key.startsWith("info."))
+                .forEach(key -> settings.getString(key)
+                                        .onPresent(value -> keys.put(key, value)));
+
+        return ManagementConfig.managementConfig(keys);
+    }
+
+    // The management endpoints mount beside the slice routes; a default configuration exposes only health at
+    // /actuator/health on the application listener. Build info comes from the launcher's class path.
+    private static Result<List<TerraHttpMount>> management(LaunchHttp http, ManagementConfig config) {
+        return TerraManagement.buildInfo(TerraLaunchPlan.class.getClassLoader())
+                              .flatMap(build -> TerraManagement.terraManagement(config, Map.of(), build, Option.empty()))
+                              .flatMap(management -> management.mount(http.config()
+                                                                          .transport()
+                                                                          .port()))
+                              .map(mount -> mount.stream()
+                                                 .toList());
     }
 
     private Promise<TerraLaunchPlan> checkMigrations() {
@@ -140,6 +187,7 @@ public final class TerraLaunchPlan {
                                                                       .async()),
                            authenticator -> TerraHttpServer.start(application,
                                                                   http.config(),
-                                                                  authenticator));
+                                                                  authenticator,
+                                                                  mounts));
     }
 }

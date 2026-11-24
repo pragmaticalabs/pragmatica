@@ -53,7 +53,8 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                                    List<SliceRouterFactory<?>> factories,
                                                    TerraHttpConfig config,
                                                    HttpAuthenticator authenticator,
-                                                   JsonMapper mapper) {
+                                                   JsonMapper mapper,
+                                                   List<String> reservedPrefixes) {
         var routes = new ArrayList<Route<?>>();
         var owners = new IdentityHashMap<Route<?>, SliceRouter>();
         var sliceNames = new IdentityHashMap<Route<?>, String>();
@@ -83,7 +84,7 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                                            factory.sliceType().getName()));
         }
 
-        return checkRoutes(routes, sliceNames).map(_ -> routingIndex(routes,
+        return checkRoutes(routes, sliceNames, reservedPrefixes).map(_ -> routingIndex(routes,
                                                                      owners,
                                                                      config.mountMode().isHeaderMode()));
     }
@@ -119,7 +120,8 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
     /// Precedence when several shapes admit a request: arity must equal the request's trailing segments, then a
     /// shape whose spacers (literal segments) all match beats a spacer-free (all-variable) one -- as in Aether.
     private static Result<org.pragmatica.lang.Unit> checkRoutes(List<Route<?>> routes,
-                                                                Map<Route<?>, String> sliceNames) {
+                                                                Map<Route<?>, String> sliceNames,
+                                                                List<String> reservedPrefixes) {
         var identities = new java.util.HashSet<String>();
         var shapeOwners = new HashMap<String, String>();
 
@@ -146,8 +148,13 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                 return new TerraHttpError.InvalidRoutes("Duplicate route: " + identity).result();
             }
 
-            if (route.path().startsWith("/__terra/") || "/__terra/".startsWith(route.path())) {
-                return new TerraHttpError.InvalidRoutes("Route overlaps reserved /__terra/ namespace: " + route.path()).result();
+            var reserved = reservedPrefixes.stream()
+                                           .filter(prefix -> route.path().startsWith(prefix) || prefix.startsWith(route.path()))
+                                           .findFirst();
+
+            if (reserved.isPresent()) {
+                return new TerraHttpError.InvalidRoutes("Route overlaps reserved " + reserved.get() + " namespace: "
+                                                       + route.path()).result();
             }
 
             if (! (route.security() instanceof SecurityPolicy) || route.security() instanceof SecurityPolicy.unused) {
@@ -209,8 +216,14 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
         var policy = route.security() instanceof SecurityPolicy.Unspecified
                      ? defaultPolicy
                      : (SecurityPolicy) route.security();
-        var request = ((SliceRequestContext) context).original();
+        return authorize(((SliceRequestContext) context).original(), policy, authenticator);
+    }
 
+    /// One authentication path for slice routes and host mounts (#3651): the validator's refusal keeps its challenge,
+    /// and a context the policy does not admit is refused 403.
+    static Promise<SecurityContext> authorize(HttpRequestContext request,
+                                              SecurityPolicy policy,
+                                              HttpAuthenticator authenticator) {
         return Promise.lift(Causes::fromThrowable,
                             () -> authenticator.validate(request, policy))
                       .flatMap(Result::async)

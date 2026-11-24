@@ -593,6 +593,35 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
             </plugin>
+            <!-- #3651 (owner, 2026-11-24): the Actuator-compatible management endpoints are Terra-only. No Aether module
+                 may depend on a Terra artifact, directly or transitively, in any scope; TerraOnlyManagementTripwireTest
+                 (terra/management) is the source-side twin and also covers the standalone blueprint poms this parent
+                 does not reach. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>ban-terra-dependencies</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <excludes>
+                                        <exclude>org.pragmatica-lite:terra*</exclude>
+                                    </excludes>
+                                    <searchTransitive>true</searchTransitive>
+                                    <message>Aether modules must not depend on Terra artifacts (#3651: management endpoints are Terra-only)</message>
+                                </bannedDependencies>
+                            </rules>
+                            <fail>true</fail>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 

@@ -1,0 +1,41 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>terra</artifactId>
+        <version>1.0.0-rc5</version>
+    </parent>
+    <artifactId>terra-management</artifactId>
+    <name>Terra Management Endpoints</name>
+    <description>Actuator-compatible management endpoints for Terra applications only (#3651); never an Aether dependency.</description>
+    <properties>
+        <!-- Root default is true. This module opts back in so format-check and lint examine its sources. -->
+        <jbct.skip>false</jbct.skip>
+    </properties>
+    <dependencies>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>terra-http</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>test-logging</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
