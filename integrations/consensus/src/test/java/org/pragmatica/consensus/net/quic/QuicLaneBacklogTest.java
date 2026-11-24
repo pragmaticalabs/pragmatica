@@ -570,6 +570,7 @@ class QuicLaneBacklogTest {
             holdFrames(network, lane, StreamType.CONSENSUS, 1);
             // The give-up ends this episode (the stream reads writable from the moment it is counted), so the open count
             // is not asserted after the hold: the entry WARN is the record that the episode opened.
+            stallPastTheGiveUpBudget();
             assertThat(entered(capture)).as("the held frame opened an episode").hasSize(1);
 
             awaitWithin("the held frame is given up",
