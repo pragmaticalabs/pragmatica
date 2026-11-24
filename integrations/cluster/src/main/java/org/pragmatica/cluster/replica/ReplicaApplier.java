@@ -12,6 +12,7 @@ import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
@@ -37,6 +38,20 @@ public final class ReplicaApplier<K extends StructuredKey, V> {
         REJECTED
     }
 
+    /// The refusal of [#install]: the snapshot is of the incarnation the store holds and below the revision the store has applied.
+    public record SnapshotBehind(long revision, long applied) implements Cause {
+        public static SnapshotBehind snapshotBehind(long revision, long applied) {
+            return new SnapshotBehind(revision, applied);
+        }
+
+        @Override
+        public String message() {
+            return "snapshot at revision " + revision
+                 + " is below the applied revision " + applied
+                 + " of the same incarnation";
+        }
+    }
+
     private static final int MESSAGE_OVERHEAD_BYTES = 64;
     private static final int EFFECT_BYTES = 320;
 
@@ -44,6 +59,7 @@ public final class ReplicaApplier<K extends StructuredKey, V> {
     private final long bufferLimitBytes;
     private final List<ReplicaEntries> buffer = new ArrayList<>();
     private volatile ReplicaPosition position = ReplicaPosition.none();
+    private IncarnationTag followed = IncarnationTag.NONE;
     private boolean buffering;
     private long lastSubSeq;
     private long bufferedBytes;
@@ -193,11 +209,24 @@ public final class ReplicaApplier<K extends StructuredKey, V> {
     /// dispatcher design §3.3: the replica path sequences on `awaitDelivered` as the engine's apply path does), so whatever the client does
     /// next (readiness, going live) follows the handlers' view of the install. A failed install changes nothing about the position; a store
     /// closed during the wait fails the install with the store's outcome-unknown cause.
+    ///
+    /// Forward-only within an incarnation (#3359): a snapshot of the incarnation the store's content belongs to, below the revision the store has
+    /// applied, is refused before anything is touched (it is a lagging source's older state; installing it would regress every key and notify the
+    /// difference as ordinary puts and removes). The incarnation survives [#discardPosition], which is exactly the `AHEAD` path. Another incarnation
+    /// is a different history and may start lower.
     public Result<Step> install(byte[] bytes, IncarnationTag tag, long revision, List<AnchorPair> anchor) {
-        return store.restoreCommittedSnapshot(bytes, revision)
-                    .map(_ -> adopt(tag, revision, anchor))
-                    .map(_ -> drainBuffer())
-                    .flatMap(this::afterDelivery);
+        return forwardOnly(tag, revision).flatMap(_ -> store.restoreCommittedSnapshot(bytes, revision))
+                          .map(_ -> adopt(tag, revision, anchor))
+                          .map(_ -> drainBuffer())
+                          .flatMap(this::afterDelivery);
+    }
+
+    private Result<Unit> forwardOnly(IncarnationTag tag, long revision) {
+        var applied = store.committedRevision();
+
+        return followed.matches(tag) && revision < applied
+               ? SnapshotBehind.snapshotBehind(revision, applied).result()
+               : Result.unitResult();
     }
 
     private Result<Step> afterDelivery(Step drained) {
@@ -217,6 +246,7 @@ public final class ReplicaApplier<K extends StructuredKey, V> {
 
     private Unit adopt(IncarnationTag tag, long revision, List<AnchorPair> anchor) {
         store.replayNotifications();
+        followed = tag;
         position = ReplicaPosition.replicaPosition(tag, revision, anchor);
 
         return Unit.unit();

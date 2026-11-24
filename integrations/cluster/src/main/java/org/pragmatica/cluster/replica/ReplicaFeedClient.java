@@ -18,6 +18,7 @@ import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
+import org.pragmatica.cluster.replica.ReplicaApplier.SnapshotBehind;
 import org.pragmatica.cluster.replica.ReplicaApplier.Step;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaEntries;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaHeartbeat;
@@ -31,6 +32,7 @@ import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -559,8 +561,18 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
                                          hash -> hash.equals(transfer.hash))
                  .flatMap(_ -> applier.install(transfer.bytes, transfer.tag, transfer.revision, transfer.anchor))
                  .onSuccess(step -> installed(open, step))
-                 .onFailure(cause -> abandonTransfer(open,
-                                                     cause.message()));
+                 .onFailure(cause -> installFailed(open, cause));
+    }
+
+    /// A snapshot that did not install abandons the transfer. A lagging source's (#3359: below what this replica has applied) is also left: the
+    /// replica keeps its state, and the selector keeps a current source that is not avoided, so without this the same core would be asked again and
+    /// again while a caught-up one is never tried.
+    private void installFailed(Session open, Cause cause) {
+        if (cause instanceof SnapshotBehind) {
+            avoided.add(open.source);
+        }
+
+        abandonTransfer(open, cause.message());
     }
 
     private void installed(Session open, Step drained) {
