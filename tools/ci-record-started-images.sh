@@ -7,8 +7,9 @@
 #
 # Why the daemon: Testcontainers applies the mirror prefix from the environment (TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX), not from a
 # per-module file, so a recorder inside the tests would need a test dependency in every pom; the daemon sees every create.
-# `docker events` shows only events after it attached, so `start` returns once the stream is live (a control container
-# create is not possible without an image: liveness is proven by the check, which fails on an empty record).
+# `docker events --since <start second>` makes the daemon replay events from the moment `start` began, so the time the stream
+# takes to attach is not a race (the settle below only gives a recorder that cannot run, e.g. no docker permission, time to
+# exit; a dead recorder is then caught here and again by `stop`).
 set -u
 DOCKER="${CI_RECORD_DOCKER:-docker}"
 mode="${1:-}"
@@ -18,7 +19,7 @@ file="${2:-}"
 case "$mode" in
   start)
     : > "$file"
-    nohup "$DOCKER" events --filter type=container --filter event=create --format '{{.Actor.Attributes.image}}' \
+    nohup "$DOCKER" events --since "$(date +%s)" --filter type=container --filter event=create --format '{{.Actor.Attributes.image}}' \
       >> "$file" 2> "$file.err" < /dev/null &
     echo $! > "$file.pid"
     sleep "${CI_RECORD_SETTLE:-2}"

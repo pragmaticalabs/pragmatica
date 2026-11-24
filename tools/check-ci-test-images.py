@@ -22,7 +22,11 @@ which compares what a test-group job STARTED with the list (tools/ci-record-star
 the Docker daemon sees; the image-name substitutor is configured by environment, so a daemon-side record needs no test dependency):
 
   - an image started in the group that the list does not name for the group's modules fails by name;
-  - a group whose list names images but whose record is empty fails: a dead recorder reads as "nothing started".
+  - an image started in a group is covered only when the group's pre-pull pulls it: a row with the `!` (excluded) never does, so a
+    start of an excluded image fails by name; one table (VERDICT) maps (row state, started?) to the verdict;
+  - a group whose pre-pull pulls a non-Ryuk image but whose record is empty fails: a dead recorder reads as "nothing started".
+    A group whose modules start nothing and list only excluded rows (g1) expects nothing and is green;
+  - names are compared through canonical(): mirror prefix, Docker Hub host, `library/` and an implicit :latest are one spelling.
 
   check-ci-test-images.py [--root DIR]                          exit 0 consistent, 1 drift, 2 cannot read
   check-ci-test-images.py --started FILE --plan MODULES_FILE    the started-image comparison for one test group
@@ -164,32 +168,100 @@ def problems(root):
     return errors, len(found), len(entries), versions
 
 
+HUB_HOSTS = ("docker.io/", "index.docker.io/", "registry-1.docker.io/")
+IMAGE_ID = re.compile(r"^(?:sha256:)?[0-9a-f]{12}(?:[0-9a-f]{52})?$")
+
+
+def canonical(image, prefix=""):
+    """The one spelling of an image name, for the list's rows and the daemon's records alike (#3646 F3).
+
+    Removed: the registry-mirror prefix, a Docker Hub host (docker.io, index.docker.io, registry-1.docker.io) and the official-image
+    `library/`; an absent tag becomes `:latest`. Kept: a digest (the list pins minio by digest) and every other registry host."""
+    image = image.strip()
+    if IMAGE_ID.match(image):
+        return image
+    if prefix and image.startswith(prefix):
+        image = image[len(prefix):]
+    for host in HUB_HOSTS:
+        if image.startswith(host):
+            image = image[len(host):]
+            break
+    if image.startswith("library/") and image.count("/") == 1:
+        image = image[len("library/"):]
+    name = image.split("@", 1)[0]
+    if "@" not in image and ":" not in name.rsplit("/", 1)[-1]:
+        image += ":latest"
+    return image
+
+
 def started_images(text, prefix):
-    """The set of image names in a recorded `docker events` file, one per line, with the registry-mirror prefix removed."""
-    images = set()
-    for raw in text.splitlines():
-        image = raw.strip()
-        if prefix and image.startswith(prefix):
-            image = image[len(prefix):]
-        if image:
-            images.add(image)
-    return images
+    """The set of image names in a recorded `docker events` file, one per line, each through canonical()."""
+    return {canonical(line, prefix) for line in text.splitlines() if line.strip()}
+
+
+def lookup(index, image):
+    """The list key for a recorded canonical name: exact, else the same name without a digest where the list pins none."""
+    if image in index:
+        return index[image]
+    bare = image.split("@", 1)[0]
+    return index.get(bare) if "@" in image else None
+
+
+# One image row, seen from one test group's plan (what prepull's wanted() selects is LISTED):
+#   LISTED    a row names `*` or a non-`!` module of the plan: the pre-pull pulls the image for this group
+#   EXCLUDED  every row naming a plan module has the `!`: inventoried, never pre-pulled
+#   ELSEWHERE rows exist, none names a plan module
+#   BY_ID     the daemon recorded an image ID, not a name: it cannot be matched to a row
+#   ABSENT    no row
+LISTED, EXCLUDED, ELSEWHERE, BY_ID, ABSENT = "listed", "excluded", "elsewhere", "by_id", "absent"
+# (state, started in this group) -> verdict; None is green. Every cell is named: a started image is covered only when LISTED.
+VERDICT = {
+    (LISTED, True): None, (LISTED, False): None,
+    (EXCLUDED, True): "STARTED image {image} is listed only as excluded (`!`) for {modules}: the pre-pull never pulls it, "
+                      "so this start is not covered; drop the `!` in {list} if its tests belong in the required jobs, else find why this group ran them",
+    (EXCLUDED, False): None,
+    (ELSEWHERE, True): "STARTED image {image} is listed for {modules}, none in this group's modules: "
+                       "add the starting module to its {list} entry",
+    (ELSEWHERE, False): None,
+    (BY_ID, True): "STARTED a container from image ID {image}: an ID cannot be matched to {list}; start the image by name",
+    (BY_ID, False): None,
+    (ABSENT, True): "STARTED image {image} is not in {list}: add it with the module that starts it",
+    (ABSENT, False): None,
+}
+
+
+def row_state(modules, plan):
+    if modules is None:
+        return ABSENT
+    if "*" in modules or any(m in plan for m in modules if not m.endswith("!")):
+        return LISTED
+    if any(m[:-1] in plan for m in modules if m.endswith("!")):
+        return EXCLUDED
+    return ELSEWHERE
+
+
+def expected_images(entries, plan):
+    """The images this group's pre-pull pulls for its own modules (not the `*` Ryuk row): a group that lists one starts a container."""
+    return sorted(i for i, m in entries.items() if "*" not in m and any(x in plan for x in m if not x.endswith("!")))
 
 
 def started_problems(root, started, plan):
-    """Errors for images a test group started that the list does not name for the group's modules (`plan` = the group's modules)."""
+    """Errors for a test group (`plan` = its modules) by VERDICT, plus NOTHING RECORDED when an expected image has no record at all."""
     entries = listed(root)
+    index = {canonical(image): image for image in entries}
     errors = []
-    for image in sorted(started):
-        modules = {m.rstrip("!") for m in entries.get(image, set())}
-        if image not in entries:
-            errors.append(f"STARTED image {image} is not in {LIST}: add it with the module that starts it")
-        elif "*" not in modules and not modules & plan:
-            errors.append(f"STARTED image {image} is listed for {sorted(modules)}, none in this group's modules: "
-                          f"add the starting module to its {LIST} entry")
-    pulled = [i for i, m in entries.items() if {x.rstrip("!") for x in m} & plan]
-    if pulled and not started:
-        errors.append(f"NOTHING RECORDED although this group's modules start containers (e.g. {sorted(pulled)[0]}): "
+    for image in sorted(index.keys() | started):
+        key = lookup(index, image)
+        if IMAGE_ID.match(image):
+            state = BY_ID
+        else:
+            state = row_state(entries.get(key) if key else None, plan)
+        template = VERDICT[(state, image in started)]
+        if template:
+            errors.append(template.format(image=image, modules=sorted(entries.get(key, ())), list=LIST))
+    expected = expected_images(entries, plan)
+    if expected and not started:
+        errors.append(f"NOTHING RECORDED although this group's modules start containers (e.g. {expected[0]}): "
                       f"the recorder was not running, so this run proves nothing")
     return errors
 
@@ -204,17 +276,24 @@ def main_started(args):
         return 2
     for error in errors:
         print(f"::error::{error}")
+    expected = expected_images(listed(args.root), plan)
     print(f"ci-test-images: {len(started)} image(s) started in this group: {', '.join(sorted(started)) or 'none'}; "
+          f"{'expected ' + str(len(expected)) + ' listed image(s)' if expected else 'nothing expected (no non-excluded row for this group)'}; "
           f"{len(errors)} problem(s)")
     return 1 if errors else 0
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--started", type=Path, help="recorded started images, one per line (compares them with the list)")
     parser.add_argument("--plan", type=Path, help="the test group's modules, one per line (with --started)")
     parser.add_argument("--prefix", default="", help="registry-mirror prefix to strip from recorded images (with --started)")
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
     if args.started or args.plan:
         if not (args.started and args.plan):
