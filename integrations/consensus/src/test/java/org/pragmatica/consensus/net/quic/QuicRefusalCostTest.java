@@ -38,8 +38,6 @@ import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.connected
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.connection;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.countingSerializer;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.network;
-import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.networkWithoutGiveUp;
-import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.stallFor;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.stream;
 
 /// #2583 P0: a refusal is cheap. A frame bound for a fast-fail lane whose stream is not writable is refused BEFORE it is
@@ -51,8 +49,6 @@ class QuicRefusalCostTest {
     private static final String GAVE_UP_WARN = "gave up after retries";
     private static final int REFUSALS = 50;
     private static final TimeSpan SHORT = TimeSpan.timeSpan(5).millis();
-    /// Five times the 10 ms a retry of [#SHORT] needs to give up (#3686).
-    private static final TimeSpan PAST_THE_GIVE_UP = TimeSpan.timeSpan(50).millis();
 
     /// The capture is on the QuicClusterNetwork logger name, so it sees every network instance in the JVM. A held DHT frame
     /// of a sibling test giving up late logs the give-up WARN into this capture (#3168); that WARN is not a refusal of
@@ -225,13 +221,12 @@ class QuicRefusalCostTest {
     /// (here a DHT retry on a live stream) logs the rate-limited refusal WARN.
     @Test
     void refusalInAnOpenEpisode_stillLogsTheRefusalWarn_control() {
-        var network = networkWithoutGiveUp(SHORT);
+        var network = network(SHORT);
         var inactive = stream(false);
 
         when(inactive.isActive()).thenReturn(false);
         try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
             var _ = network.writeIfWritableForTest(stream(false), new byte[]{1}, PEER, StreamType.DHT);
-            stallFor(PAST_THE_GIVE_UP);
             var outcome = network.writeIfWritableForTest(inactive, new byte[]{1}, PEER, StreamType.DHT);
 
             assertThat(outcome).isInstanceOf(WriteOutcome.BackpressureRefused.class);
