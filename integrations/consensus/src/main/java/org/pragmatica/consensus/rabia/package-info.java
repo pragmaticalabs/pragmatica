@@ -242,6 +242,11 @@
 ///                 logv[n][s] \in Values => logv[n][s] \in UNION {pend0[v] : v \in Voters}
 /// LogPrefix == \A n \in Nodes, s \in Slots : s < cur[n] => logv[n][s] # NoVal
 /// VotedImpliesMarker == \A m \in msgs : m.src \in Voters => marker[m.src]
+/// \* Search constraint of ctl_logprefix only (#3627): no node holds a client batch, so every proposal is the empty
+/// \* value. pend0 never changes, so this restricts Init alone. LogPrefix reads whether a slot is applied, never its
+/// \* value, and on a known-bad row a constraint only removes behaviours: the violation it reaches is one of Spec.
+/// \* Without it the row needs 21,147,965 distinct states (977 s, 4 workers) to reach its depth-30 counterexample.
+/// NoBatches == \A n \in Nodes : pend0[n] = {}
 ///
 /// Opened(s) == \E m \in msgs : m.t = "P" /\ m.slot = s /\ m.src \in Voters
 /// CapHit(s) == \E n \in Voters : s \in capped[n]
@@ -828,6 +833,8 @@
 /// ```tlacfg RabiaSlot:ctl_logprefix
 /// \* RabiaSlot config ctl_logprefix: the expected verdict is its row in tools/tla/models.tsv
 /// \* negative control: current-slot gates dropped at two slots, a later slot is applied before an earlier one
+/// \* CONSTRAINT NoBatches keeps the search inside the small budget (#3627): 1,054,662 distinct, depth 30, 56 s. The flip
+/// \* (every fix on, same constraint) finds no violation through depth 34 (22.4M distinct, stopped at 1500 s: incomplete).
 /// SPECIFICATION Spec
 /// CONSTANTS
 ///     Voters = {n1, n2, n3}
@@ -841,6 +848,7 @@
 ///     CommonCoin = TRUE
 ///     Byz = {}
 /// INVARIANTS LogPrefix
+/// CONSTRAINT NoBatches
 /// SYMMETRY Sym
 /// ```
 ///
