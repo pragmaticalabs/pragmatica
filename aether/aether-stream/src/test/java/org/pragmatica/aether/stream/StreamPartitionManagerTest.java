@@ -140,7 +140,10 @@ class StreamPartitionManagerTest {
             var rejected = fenced.publishLocal(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L, Epoch.epoch(0L, 1, 2));
 
             assertThat(rejected.isFailure()).isTrue();
-            rejected.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.StaleEpochAppend.class));
+            rejected.onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.StaleEpochAppend(FENCE_STREAM,
+                                                                                                     FENCE_PARTITION,
+                                                                                                     Epoch.epoch(0L, 1, 2),
+                                                                                                     Epoch.epoch(0L, 1, 3))));
             fenced.close();
         }
 
