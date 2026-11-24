@@ -50,18 +50,16 @@ jobs:
         run: mvn install -B -DskipTests -pl integrations/storage,aether/node -am
         timeout-minutes: 25
 
-      # Ryuk comes through the mirror (`*` in tools/ci-test-images.txt); MinIO is on cgr.dev and is `!`, so the plan below pulls Ryuk only.
+      # Ryuk comes through the mirror (`*` in tools/ci-test-images.txt); the digest-pinned MinIO image is on cgr.dev and its
+      # modules are `!` (excluded from the required jobs), which CI_PREPULL_INCLUDE_EXCLUDED=1 lifts for this job (#3629).
+      # One list, kept equal to the test constants by tools/check-ci-test-images.py: the workflow cannot drift from the tests.
       - name: Pre-pull Testcontainers images
+        env:
+          CI_PREPULL_INCLUDE_EXCLUDED: '1'
         run: |
-          echo "aether/node" > s3-modules.txt
+          printf '%s\n' aether/node integrations/storage > s3-modules.txt
           tools/ci-prepull-images.sh s3-modules.txt
         timeout-minutes: 10
-
-      # #3629: Testcontainers' own pull of the cgr.dev image errored a run once. Pull the exact pinned digest here with
-      # bounded retries; the digest is read from the test constants (checked equal across both classes), never copied.
-      - name: Pre-pull the pinned MinIO image
-        run: .github/scripts/pull-s3-image.sh 3 10
-        timeout-minutes: 5
 
       - name: Run the S3 group
         run: >
