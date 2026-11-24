@@ -182,7 +182,8 @@ run" is not trusted: zero rows is NOT-GREEN); RED names each failing `<module>/<
 usable host or no resolvable head is NOT-GREEN with a reason. Nothing here writes the tracker. A run that did not happen leaves no
 row, and that is noticed by the router, not by launchd: no verdict row in 8 days is the event `TLC-MISSING`. Selftests:
 `test_weekly_verdict.py` (verdict rule) and `weekly-host.selftest.sh` (a fake ssh: least-loaded pick, busy host skipped, forced red
-row, zero rows, stall, no host). Not covered: the Mac off at Sunday 02:00 (the fire is lost; the next one is a week later, MISSING
+row, zero rows, stall, no host, the detach flags, install/uninstall with a fake launchctl). Remove the weekly job with
+`tools/tla/install-weekly.sh --uninstall` (boots both agents out, removes the plists, keeps the state dir; `--dry-run` only prints). Not covered: the Mac off at Sunday 02:00 (the fire is lost; the next one is a week later, MISSING
 fires after 8 days), and the load reading cannot see a build-queue job that has not started yet.
 
 ### Fragment-touched check (pull requests)

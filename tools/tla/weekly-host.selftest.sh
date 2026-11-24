@@ -36,6 +36,8 @@ reset; probe cloudbb-5 3.2 free; probe cloudbb-6 0.8 free; probe cloudbb-7 0.0 b
 bash "$here/weekly-host.sh" start >/dev/null
 check "start picks the least-loaded FREE host" "$(sed -n 's/^host=//p' "$t/state/run.json")" cloudbb-6
 check "start launched run-host.sh full detached on it" "$(grep -c 'run-host.sh full' "$fix/launched.cloudbb-6")" 1
+check "start detaches the run: setsid -f" "$(grep -c 'setsid -f bash -c' "$fix/launched.cloudbb-6")" 1
+check "start detaches the run: stdin from /dev/null" "$(grep -c '</dev/null' "$fix/launched.cloudbb-6")" 1
 check "start never touched the busy host" "$([[ -e $fix/launched.cloudbb-7 ]] && echo touched || echo untouched)" untouched
 check "start never touched the unreachable host" "$([[ -e $fix/launched.cloudbb-8 ]] && echo touched || echo untouched)" untouched
 bash "$here/weekly-host.sh" start | grep -q 'pending' ; check "a second start while one is pending is refused" "$?" 0
@@ -77,4 +79,23 @@ check "stalled run clears the pending marker" "$([[ -e $t/state/run.json ]] && e
 reset; probe cloudbb-5 0.5 busy; bash "$here/weekly-host.sh" start >/dev/null
 check "no free host: status/reason" "$(last 5)/$(last 8)" NOT-GREEN/no-free-host
 check "no free host: no pending run" "$([[ -e $t/state/run.json ]] && echo pending || echo clear)" clear
+
+# 7 install / uninstall into a scratch LaunchAgents dir with a fake launchctl (install-weekly.sh)
+cat > "$t/bin/launchctl" <<'SH'
+#!/bin/bash
+echo "$*" >> "$FIX/launchctl.log"
+SH
+chmod +x "$t/bin/launchctl"; reset
+inst() { LAUNCHCTL=$t/bin/launchctl LAUNCH_DIR=$t/la TLA_WEEKLY_DIR=$t/wstate bash "$here/install-weekly.sh" "$@"; }
+inst >/dev/null
+check "install writes both plists" "$(ls "$t/la" | wc -l | tr -d ' ')" 2
+check "install bootstraps both agents" "$(grep -c '^bootstrap' "$fix/launchctl.log")" 2
+inst >/dev/null; : > "$fix/launchctl.log"; inst --uninstall --dry-run >/dev/null
+check "uninstall --dry-run removes nothing" "$(ls "$t/la" | wc -l | tr -d ' ')" 2
+check "uninstall --dry-run boots nothing out" "$(grep -c "^bootout" "$fix/launchctl.log")" 0
+: > "$fix/launchctl.log"; inst --uninstall >/dev/null
+check "uninstall removes both plists" "$(ls "$t/la" | wc -l | tr -d ' ')" 0
+check "uninstall boots both agents out" "$(grep -c '^bootout' "$fix/launchctl.log")" 2
+check "uninstall keeps the state dir" "$([[ -f $t/wstate/installed ]] && echo kept || echo lost)" kept
+inst --uninstall >/dev/null; check "uninstall is idempotent" "$?" 0
 exit $fail
