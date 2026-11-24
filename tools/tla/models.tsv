@@ -12,11 +12,11 @@
 SharedPools	aether/resource/api/src/main/java	code	pass	-	MaxAcquires=3	the code: every safety invariant
 SharedPools	aether/resource/api/src/main/java	codeslice	pass	-	MaxAcquires=3	the code with the per-slice path
 SharedPools	aether/resource/api/src/main/java	live	pass	-	MaxAcquires=2	the code: closeAll completes, shared pools settle
-SharedPools	aether/resource/api/src/main/java	wedge	fail	NoWedge	MaxAcquires=3	v2978a F1: a throwing factory wedges the pool
-SharedPools	aether/resource/api/src/main/java	wedgeslice	fail	NoWedge	MaxAcquires=3	v2978a F1 on the per-slice path
-SharedPools	aether/resource/api/src/main/java	stale	fail	NoStaleRelease	MaxAcquires=3	v2978a F3: a stop releases another holding
-SharedPools	aether/resource/api/src/main/java	leak	fail	NoLeakAfterStop	MaxAcquires=3	v2978a F2: no post-admission drain
-SharedPools	aether/resource/api/src/main/java	afterclosed	fail	NoHandleAfterClosed	MaxAcquires=3	v2978c F3: a view after closed was seen
+SharedPools	aether/resource/api/src/main/java	wedge	fail	NoWedge	MaxAcquires=3	#2978 (336dca8f30): a throwing factory wedges the pool
+SharedPools	aether/resource/api/src/main/java	wedgeslice	fail	NoWedge	MaxAcquires=3	#2978 (336dca8f30): the same wedge on the per-slice path
+SharedPools	aether/resource/api/src/main/java	stale	fail	NoStaleRelease	MaxAcquires=3	#2978 (336dca8f30): a stop releases another holding
+SharedPools	aether/resource/api/src/main/java	leak	fail	NoLeakAfterStop	MaxAcquires=3	#2978 (336dca8f30): no post-admission drain
+SharedPools	aether/resource/api/src/main/java	afterclosed	fail	NoHandleAfterClosed	MaxAcquires=3	#2978 (adb7a765da): a view after closed was seen
 SharedPools	aether/resource/api/src/main/java	noguard	fail	NoHandleAfterClosed	MaxAcquires=3	#3176: no stop re-read before the view is handed out
 SharedPools	aether/resource/api/src/main/java	isemptydrain	fail	NoLeakAfterStop	MaxAcquires=3	N1: closeAll drains on isEmpty()
 SharedPools	aether/resource/api/src/main/java	strict	fail	NoOpenAfterStop	MaxAcquires=3	closeAll returns before in-flight closes
@@ -25,8 +25,8 @@ Stalled	aether/aether-stream/src/main/java	live	pass	-	-	the code: an unbacked w
 Stalled	aether/aether-stream/src/main/java	liveremove	pass	-	-	the code, membership events only
 Stalled	aether/aether-stream/src/main/java	livedestroy	pass	-	-	the code, destroy and recreate only
 Stalled	aether/aether-stream/src/main/java	liveowner	pass	-	-	the code, owner and quarantine only
-Stalled	aether/aether-stream/src/main/java	edgeremove	fail	UnbackedClears	-	v2967b F1: edge-triggered warning outlives removal
-Stalled	aether/aether-stream/src/main/java	edgedestroy	fail	UnbackedClears	-	v2967b F2: edge-triggered warning outlives destroy
+Stalled	aether/aether-stream/src/main/java	edgeremove	fail	UnbackedClears	-	#2967 (bcc2102db6): edge-triggered warning outlives removal
+Stalled	aether/aether-stream/src/main/java	edgedestroy	fail	UnbackedClears	-	#2967 (bcc2102db6): edge-triggered warning outlives destroy
 Stalled	aether/aether-stream/src/main/java	edgeowner	pass	-	-	edge-triggered, owner flips only: no defect there
 Stalled	aether/aether-stream/src/main/java	settled	pass	-	-	#3155 narrowed: settled as of the next reconcile pass (a pass with no change after its snapshot)
 Stalled	aether/aether-stream/src/main/java	settledweak	fail	SettledIsBacked	-	a pass that does not re-derive the stream, replica and counter leaves an unbacked report settled
@@ -242,7 +242,7 @@ LeaderAdmission	integrations/consensus/src/main/java	voting	pass	-	NodeCount=2,E
 LeaderAdmission	integrations/consensus/src/main/java	local	pass	-	NodeCount=2,EnvSteps=3,MaxSeq=3,MaxCommits=2	the code: local mode, I1, I2, I3 progress on ticks, adSeq monotone
 LeaderAdmission	integrations/consensus/src/main/java	noentrypull	fail	PassiveLearns	-	#3414: no entry pull, a worker entering Passive after the push never learns the leader
 LeaderAdmission	integrations/consensus/src/main/java	pushnoview	fail	PassiveInView	-	78e44f01a8: the Passive push adopted into an empty or leader-less view (FIX 1 on an observer)
-LeaderAdmission	integrations/consensus/src/main/java	pullnoview	fail	PassiveInView	-	v3581 A3: the pull re-adopts a leader holdLeaderToView dropped
+LeaderAdmission	integrations/consensus/src/main/java	pullnoview	fail	PassiveInView	-	#3581: the pull re-adopts a leader holdLeaderToView dropped
 LeaderAdmission	integrations/consensus/src/main/java	norepull	fail	PassiveLearns	-	78e44f01a8: without the re-pull a refused push never heals
 LeaderAdmission	integrations/consensus/src/main/java	removalpull	fail	NotNamedFailed	-	5f412d7cdb: a re-pull after a view-free removal re-admits the held leader it named failed
 LeaderAdmission	integrations/consensus/src/main/java	mutdropempty	fail	I1	-	vacuity control (mutant): an empty view is not stored
@@ -254,7 +254,7 @@ LeaderAdmission	integrations/consensus/src/main/java	mutseqgate	fail	LocalProgre
 LeaderAdmission	integrations/consensus/src/main/java	interleave	fail	PassiveInView	-	known-bad of #3587 (know 45a9e2fdd9, fixed by #3605): without serial, Passive's push admission check and write are split by a concurrent view write (before #3605 Fsm.dispatch ran on the caller thread; the KV and QUIC threads both dispatched): PassiveInView, PassiveLearns and AdSeqMono (a lost update) all break, each pinned by its own row (interleave, interleavelearns, interleavemono: run.sh accepts any one property of a list, so one row cannot pin three), and a re-check at the write alone still breaks the last two
 LeaderAdmission	integrations/consensus/src/main/java	interleavelearns	fail	PassiveLearns	-	known-bad of #3587 (fixed by #3605): without serial the split admission check and write leave the worker holding the older leader forever (same window as interleave)
 LeaderAdmission	integrations/consensus/src/main/java	interleavemono	fail	AdSeqMono	-	known-bad of #3587 (fixed by #3605): without serial the split admission check and write move adSeq backwards, a lost update (same window as interleave)
-LeaderAdmission	integrations/consensus/src/main/java	noentryhold	fail	PassiveInView	-	v3588 F2 (#3581): without the entry hold a Led holding a FIX 1 leader absent from the view enters Passive still holding it
+LeaderAdmission	integrations/consensus/src/main/java	noentryhold	fail	PassiveInView	-	#3588 review of #3581: without the entry hold a Led holding a FIX 1 leader absent from the view enters Passive still holding it
 LeaderAdmission	integrations/consensus/src/main/java	readmit	pass	-	NodeCount=2,EnvSteps=3,MaxSeq=3,MaxCommits=2	the code (#3588 finding A and F1): a worker readmitted as a voter (Passive -> QuorumWaiting) after its pull adopted a leader; every voting adoption skips a commit older than the adopted one, every KV pull carries the record's sequence, adSeq monotone, no older push displaces a newer adopted leader
 LeaderAdmission	integrations/consensus/src/main/java	readmitnoadseq	fail	AdSeqMono	-	known-bad of #3588 finding A (know 900c63b485, fixed by 2124f0cf01): without adseq a readmitted voter re-adopts its held leader at the observed sequence, below the one its passive pull adopted
 LeaderAdmission	integrations/consensus/src/main/java	readmitstale	fail	NoOlderAdoption	-	known-bad of #3588 finding A (fixed by 2124f0cf01): without adseq a readmitted voter's QuorumWaiting adopts a queued push older than the leader its passive pull adopted

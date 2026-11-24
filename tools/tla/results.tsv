@@ -279,3 +279,53 @@ f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:15:58Z	full	LeaderA
 f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:16:00Z	full	LeaderAdmission	readmitstale	fail	fail	NoOlderAdoption	2099	2026.11.06.222357	OK	
 f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:16:02Z	full	LeaderAdmission	nokvseq	fail	fail	NoOlderAdoption	640	2026.11.06.222357	OK	
 f375d8ad8e41d8a6a970963958485a69ce31bec1	clean	2026-11-23T23:35:08Z	full	LeaderAdmission	voting	pass	pass		2264977	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:42Z	small	LeaderAdmission	pushfirst	pass	pass		672	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:44Z	small	LeaderAdmission	removal	pass	pass		3315	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:45Z	small	LeaderAdmission	stale	pass	pass		1812	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:47Z	small	LeaderAdmission	passive	pass	pass		5921	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:50Z	small	LeaderAdmission	voting	pass	pass		14565	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:51Z	small	LeaderAdmission	local	pass	pass		247	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:53Z	small	LeaderAdmission	noentrypull	fail	fail	PassiveLearns	2798	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:54Z	small	LeaderAdmission	pushnoview	fail	fail	PassiveInView	330	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:55Z	small	LeaderAdmission	pullnoview	fail	fail	PassiveInView	58	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:57Z	small	LeaderAdmission	norepull	fail	fail	PassiveLearns	3086	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:58Z	small	LeaderAdmission	removalpull	fail	fail	NotNamedFailed	1467	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:53:59Z	small	LeaderAdmission	mutdropempty	fail	fail	I1	178	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:00Z	small	LeaderAdmission	mutnostale	fail	fail	I1	361	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:01Z	small	LeaderAdmission	mutnohold	fail	fail	VotingInView	266	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:03Z	small	LeaderAdmission	mutnoholdp	fail	fail	PassiveInView	615	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:04Z	small	LeaderAdmission	mutnoholdr	fail	fail	NotNamedFailed	505	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:05Z	small	LeaderAdmission	mutseqgate	fail	fail	LocalProgress	307	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:07Z	small	LeaderAdmission	interleave	fail	fail	PassiveInView	2450	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:09Z	small	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4784	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:10Z	small	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2859	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:11Z	small	LeaderAdmission	noentryhold	fail	fail	PassiveInView	379	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:13Z	small	LeaderAdmission	readmit	pass	pass		33529	2026.11.06.222357	OK	NodeCount=2 EnvSteps=3 MaxSeq=3 MaxCommits=2
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:14Z	small	LeaderAdmission	readmitnoadseq	fail	fail	AdSeqMono	1648	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:16Z	small	LeaderAdmission	readmitstale	fail	fail	NoOlderAdoption	2085	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:18Z	small	LeaderAdmission	nokvseq	fail	fail	NoOlderAdoption	653	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:22Z	full	LeaderAdmission	pushfirst	pass	pass		23614	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:54:48Z	full	LeaderAdmission	removal	pass	pass		366760	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:55:03Z	full	LeaderAdmission	stale	pass	pass		107730	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:56:49Z	full	LeaderAdmission	passive	pass	pass		788894	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:19Z	full	LeaderAdmission	voting	pass	pass		2264977	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:21Z	full	LeaderAdmission	local	pass	pass		4373	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:23Z	full	LeaderAdmission	noentrypull	fail	fail	PassiveLearns	2798	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:24Z	full	LeaderAdmission	pushnoview	fail	fail	PassiveInView	300	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:25Z	full	LeaderAdmission	pullnoview	fail	fail	PassiveInView	58	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:27Z	full	LeaderAdmission	norepull	fail	fail	PassiveLearns	3086	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:28Z	full	LeaderAdmission	removalpull	fail	fail	NotNamedFailed	1314	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:29Z	full	LeaderAdmission	mutdropempty	fail	fail	I1	188	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:30Z	full	LeaderAdmission	mutnostale	fail	fail	I1	361	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:32Z	full	LeaderAdmission	mutnohold	fail	fail	VotingInView	263	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:33Z	full	LeaderAdmission	mutnoholdp	fail	fail	PassiveInView	621	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:34Z	full	LeaderAdmission	mutnoholdr	fail	fail	NotNamedFailed	491	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:35Z	full	LeaderAdmission	mutseqgate	fail	fail	LocalProgress	307	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:36Z	full	LeaderAdmission	interleave	fail	fail	PassiveInView	2290	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:38Z	full	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4784	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:40Z	full	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2843	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-23T23:58:41Z	full	LeaderAdmission	noentryhold	fail	fail	PassiveInView	383	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-24T00:02:47Z	full	LeaderAdmission	readmit	pass	pass		6877278	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-24T00:02:48Z	full	LeaderAdmission	readmitnoadseq	fail	fail	AdSeqMono	1613	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-24T00:02:50Z	full	LeaderAdmission	readmitstale	fail	fail	NoOlderAdoption	1992	2026.11.06.222357	OK	
+a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-24T00:02:51Z	full	LeaderAdmission	nokvseq	fail	fail	NoOlderAdoption	591	2026.11.06.222357	OK	
