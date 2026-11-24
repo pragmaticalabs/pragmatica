@@ -9,6 +9,7 @@ import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -36,6 +37,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
@@ -58,6 +60,8 @@ class StreamReadRouterTest {
     /// When set, every answer carries exactly these bounds (earliest retained, visible head).
     private volatile long[] forcedBounds = null;
     private final AtomicInteger answers = new AtomicInteger();
+    /// Reads the assignee's router sent to the owner (every `ReadForward` that reached the owner's handler).
+    private final AtomicInteger forwardedReads = new AtomicInteger();
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
     private final List<Long> delivered = new CopyOnWriteArrayList<>();
     private StreamPartitionManager owner;
@@ -152,6 +156,48 @@ class StreamReadRouterTest {
         }
     }
 
+    /// #3325: the mark a replica heard from owner A belongs to A's life. Ownership moves to B (the committed epoch advances) and
+    /// B has announced nothing, as while its activation is blocked: the replica's GOVERNOR read is forwarded to the owner instead
+    /// of being served from A's mark. Control: under A's epoch the same copy, with the same mark, serves locally; and once B
+    /// announces under its own epoch the copy serves again.
+    @Test
+    void governorRead_afterAnOwnerChange_forwardsInsteadOfServingThePreviousOwnersMark() {
+        var epochA = Epoch.epoch(1L, 1L, 1L);
+        var epochB = Epoch.epoch(1L, 1L, 2L);
+        var committedEpoch = new AtomicReference<>(epochA);
+        var copy = streamPartitionManager();
+
+        try {
+            copy.placementRoleSupplier((_, _) -> Role.REPLICA);
+            copy.ownerEpochSource((_, _) -> committedEpoch.get());
+            copy.createStream(config()).onFailure(cause -> fail(cause.message()));
+            for (var record = 0; record < 3; record++) {
+                copy.appendRecovered(STREAM, PARTITION, ("copy-" + record).getBytes(UTF_8), 1L + record)
+                    .onFailure(cause -> fail("append: " + cause.message()));
+            }
+            copy.commitAdvanced(STREAM, PARTITION, 2L, epochA);
+            var router = forwardingRouter(copy);
+
+            assertThat(router.read(STREAM, PARTITION, 0L, 3, ReadPreference.GOVERNOR).await().unwrap())
+                .as("control: under the epoch that announced the mark, the copy serves its own records")
+                .extracting(event -> new String(event.data(), UTF_8))
+                .containsExactly("copy-0", "copy-1", "copy-2");
+            assertThat(forwardedReads.get()).as("control: nothing was forwarded").isZero();
+
+            committedEpoch.set(epochB);
+            router.read(STREAM, PARTITION, 0L, 3, ReadPreference.GOVERNOR).await();
+
+            assertThat(forwardedReads.get()).as("the previous owner life's mark is void: the read goes to the owner").isEqualTo(1);
+
+            copy.commitAdvanced(STREAM, PARTITION, 2L, epochB);
+            router.read(STREAM, PARTITION, 0L, 3, ReadPreference.GOVERNOR).await();
+
+            assertThat(forwardedReads.get()).as("control: the new owner's own announcement is served from again").isEqualTo(1);
+        } finally {
+            copy.close();
+        }
+    }
+
     private StreamReadRouter forwardingRouter() {
         return forwardingRouter(assignee);
     }
@@ -160,7 +206,7 @@ class StreamReadRouterTest {
         var clientRef = new StreamForwardClient[1];
         StreamForwardTransport ownerToAssignee = AcceptingStreamForwardTransport.accepting((_, message) -> clientRef[0].onReadForwardResponse(boundsOf((ReadForwardResponse) message)));
         var ownerHandler = StreamForwardHandler.streamForwardHandler(OWNER, owner, ownerToAssignee);
-        StreamForwardTransport assigneeToOwner = AcceptingStreamForwardTransport.accepting((_, message) -> ownerHandler.onReadForward((ReadForward) message));
+        StreamForwardTransport assigneeToOwner = AcceptingStreamForwardTransport.accepting((_, message) -> forwardToOwnerHandler(ownerHandler, (ReadForward) message));
 
         clientRef[0] = StreamForwardClient.streamForwardClient(ASSIGNEE, assigneeToOwner, TimeSpan.timeSpan(5).seconds());
 
@@ -170,6 +216,11 @@ class StreamReadRouterTest {
                                                  ASSIGNEE,
                                                  (_, _) -> Option.some(OWNER),
                                                  StreamReadForwardMetrics.NOOP);
+    }
+
+    private void forwardToOwnerHandler(StreamForwardHandler ownerHandler, ReadForward message) {
+        forwardedReads.incrementAndGet();
+        ownerHandler.onReadForward(message);
     }
 
     /// What the wire carries when the owner's ring is closing: `tailOffset()` answers -1, the visible head is as it was.
