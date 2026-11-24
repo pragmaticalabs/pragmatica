@@ -20,8 +20,7 @@ record ForwardedRequestContext(HttpRequestContext source,
     /// Empty when the forwarded method names no [HttpMethod] (a mixed-version peer or a malformed frame): the receiver
     /// refuses it with an error reply instead of throwing out of the dispatch (#3550).
     static Option<ForwardedRequestContext> forwardedRequestContext(HttpRequestContext source) {
-        return HttpMethod.fromString(source.method())
-                         .map(method -> forwardedRequestContext(source, method));
+        return HttpMethod.fromString(source.method()).map(method -> forwardedRequestContext(source, method));
     }
 
     private static ForwardedRequestContext forwardedRequestContext(HttpRequestContext source, HttpMethod method) {
