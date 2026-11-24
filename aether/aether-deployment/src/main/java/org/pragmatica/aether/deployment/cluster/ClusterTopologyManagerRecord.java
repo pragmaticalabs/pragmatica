@@ -1234,9 +1234,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// A refusal before any provider effect (source admission, incomplete inventory) is a deferral for the reconciler: nothing was
-    /// provisioned and the placeholder is removed. It is still a refused provision, so it is counted and logged through
-    /// [#recordProvisioningFailure] (WARN, last failure, circuit after 3): a permanent refusal (fleet limit reached) must not retry
-    /// invisibly on every reconcile tick for ever.
+    /// provisioned and the placeholder is removed. It is NOT counted as a provisioning failure: [#recordAdmissionDeferral] keeps it as the
+    /// last failure for diagnostics and paces it with its own refusal window ([#recordRefusal]), and tells the operator once per run, so a
+    /// permanent refusal (fleet limit reached) neither retries invisibly on every reconcile tick nor trips the circuit. Any other failure
+    /// stays in the failure channel and is counted by [#recordProvisioningFailure] (WARN, last failure, circuit after 3).
     private Promise<ProvisionDisposition> completeProvision(Result<ProvisionDisposition> result,
                                                             SourceName sourceName) {
         return result.fold(cause -> provisionRefused(cause, sourceName), this::provisionAccepted);
@@ -1422,21 +1423,35 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return ReplacementInstanceState.UNKNOWN;
     }
 
-    /// #1049 — the in-flight ceiling for a replacement of `intendedRole`, resolved through the SAME
-    /// [#cloudSourceFor] lookup as the replacement's zones, instance type and source name, so all four
-    /// ride one source profile. The ten-minute default applies when there is no committed TOML (the
-    /// bootstrap seed) or it is unparseable, or no cloud source backs the role (Docker / forge).
+    /// #1049, #2811 — the in-flight ceiling for a replacement of `departed`, read from the SAME source [#healSource] resolves for it
+    /// and `provisionReplacement` dispatches it to, so the ceiling, zones, instance type and provider ride one source profile. The
+    /// ten-minute default applies when there is no committed TOML (the bootstrap seed), it is unparseable, or that source declares
+    /// none (Docker / forge). When [#healSource] refuses (several sources declare the role and the node carries none) the answer is
+    /// the LONGEST ceiling over the sources declaring the role ([#longestCeilingDeclaring]): the source the replacement goes to is
+    /// not known, and the longest bound never abandons a replacement before its own source's ceiling.
     @Override
     public TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed) {
-        return persistedCloudSource(intendedRole).map(SourceProfile::effectiveReplacementCeiling)
-                                   .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
+        return healSource(departed, intendedRole).fold(_ -> longestCeilingDeclaring(intendedRole),
+                                                       source -> ceilingOf(source, intendedRole));
     }
 
-    /// The cloud [SourceProfile] backing `intendedRole` in the persisted cluster TOML, or empty when there
-    /// is no committed TOML (the bootstrap seed) or it is unparseable or no cloud source declares the role.
-    private Option<SourceProfile> persistedCloudSource(NodeRole intendedRole) {
+    private TimeSpan ceilingOf(SourceName sourceName, NodeRole intendedRole) {
         return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
-                            .flatMap(config -> cloudSourceFor(config, intendedRole));
+                            .flatMap(config -> sourceFor(config, sourceName, intendedRole))
+                            .map(SourceProfile::effectiveReplacementCeiling)
+                            .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
+    }
+
+    private TimeSpan longestCeilingDeclaring(NodeRole intendedRole) {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> Option.from(config.sources()
+                                                                 .values()
+                                                                 .stream()
+                                                                 .filter(source -> source.roles()
+                                                                                         .containsKey(intendedRole))
+                                                                 .map(SourceProfile::effectiveReplacementCeiling)
+                                                                 .max(Comparator.comparingLong(TimeSpan::millis))))
+                            .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
     }
 
     /// #334 — auto-heal zone rotation. Mirrors the bootstrap rotation (`BootstrapPhaseProvision`):

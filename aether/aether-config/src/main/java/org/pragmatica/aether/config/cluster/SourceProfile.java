@@ -18,7 +18,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// provisioned from this source may stay in-flight while its provider still reports it existing or
 /// booting — past it the leader stops waiting and re-dispatches. Absent → [#DEFAULT_REPLACEMENT_CEILING].
 /// Read at runtime by `ClusterTopologyManagerRecord.replacementCeiling` from the persisted cluster
-/// config, through the same cloud-source lookup that resolves a replacement's zones and instance type.
+/// config, for the source the replacement is dispatched to (#2811), resolved as its zones and instance type are.
 public record SourceProfile(SourceName name,
                             SourceType type,
                             Option<CloudProviderName> provider,

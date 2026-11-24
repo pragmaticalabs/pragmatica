@@ -519,7 +519,8 @@ public final class LeaderReconciler {
     /// skipped — the provision already fulfilled.
     ///
     /// #1049 — an inherited entry is UNCONFIRMED (the prior leader's create call has returned or never
-    /// will; this leader has not yet seen the instance), carries the per-source ceiling, and the status
+    /// will; this leader has not yet seen the instance), carries the ceiling (#2811: the retained set holds ids only, so the departed
+    /// node is unknown here and the ceiling is the one source's, or the longest over the sources declaring the role), and the status
     /// poll is armed so this leader keeps it by what the provider reports rather than by age. Its ceiling
     /// runs from the replacement's mint time where the node id carries one, so a leader change does not
     /// restart it; its absence count and first-listing floor start at inheritance — see [`#inheritedEntry`].
@@ -1949,7 +1950,7 @@ public final class LeaderReconciler {
                                          Option<NodeId> departed) {
         inFlightProvisioning.put(placeholder,
                                  InFlightEntry.inFlightEntry(nowNanos,
-                                                             ctm.replacementCeiling(NodeRole.CORE, none()),
+                                                             ctm.replacementCeiling(NodeRole.CORE, departed),
                                                              InFlightState.DISPATCHING,
                                                              nowNanos,
                                                              generation,
