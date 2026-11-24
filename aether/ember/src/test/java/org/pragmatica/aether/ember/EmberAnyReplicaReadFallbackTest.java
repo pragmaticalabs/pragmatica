@@ -67,6 +67,7 @@ class EmberAnyReplicaReadFallbackTest {
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long ISR_BUDGET_MS = 60_000L;
     private static final long REPLICA_VISIBLE_BUDGET_MS = 30_000L;
+    private static final long OWNER_ACTIVE_BUDGET_MS = 60_000L;
     private static final int ACKED = 3;
     private static final int PARTITION = 0;
     private static final String NAMESPACE = "ember";
@@ -104,8 +105,14 @@ class EmberAnyReplicaReadFallbackTest {
         var survivor = owner;
         var killed = peers.stream().map(member -> member.id()).toList();
 
+        // The owner admits writes only once activated for the partition; an ISR of three says nothing about that. A publish
+        // that lands earlier is refused (OwnerNotActivated), so wait for the one condition that admits it: the owner's own gate.
+        awaitUntil(() -> owner.streamPartitionManager().mayServeAsOwner(ENGINE_KEY, PARTITION),
+                   OWNER_ACTIVE_BUDGET_MS,
+                   "the owner is activated for " + ENGINE_KEY + "[" + PARTITION + "]");
+
         for (var i = 0; i < ACKED; i++) {
-            assertThat(publishAcked(owner, "acked-" + i).acked()).isTrue();
+            assertThat(publishAcked(owner, "acked-" + i)).as("offset of acked-" + i).isEqualTo(i);
         }
 
         awaitUntil(() -> peers.stream().allMatch(member -> payloads(cluster.getNode(member.id()).unwrap()).size() == ACKED),
@@ -160,14 +167,17 @@ class EmberAnyReplicaReadFallbackTest {
                    .toString();
     }
 
-    private Response publishAcked(AetherNode owner, String payload) {
+    /// Appends and waits for the acknowledgement of the offset the append returned. A refused append fails the test with its
+    /// cause: a refusal is never turned into an offset, so no record is counted as acknowledged that does not exist.
+    private long publishAcked(AetherNode owner, String payload) {
         var deadline = System.currentTimeMillis() + ISR_BUDGET_MS;
         var manager = owner.streamPartitionManager();
         var confirmations = manager.confirmationFactorFor(ENGINE_KEY) - 1;
-        var appended = manager.publishLocalAtFloor(ENGINE_KEY, PARTITION, payload.getBytes(StandardCharsets.UTF_8), System.currentTimeMillis(), confirmations)
-                              .async()
-                              .await(TimeSpan.timeSpan(30).seconds());
-        var offset = appended.fold(_ -> -1L, value -> value);
+        var offset = manager.publishLocalAtFloor(ENGINE_KEY, PARTITION, payload.getBytes(StandardCharsets.UTF_8), System.currentTimeMillis(), confirmations)
+                            .async()
+                            .await(TimeSpan.timeSpan(30).seconds())
+                            .fold(cause -> Assertions.<Long>fail("append of " + payload + " refused: " + cause.message()),
+                                  value -> value);
         var last = awaitedAck(manager, confirmations, offset);
 
         while (!last.acked() && System.currentTimeMillis() < deadline) {
@@ -175,7 +185,9 @@ class EmberAnyReplicaReadFallbackTest {
             last = awaitedAck(manager, confirmations, offset);
         }
 
-        return last;
+        assertThat(last.acked()).as("offset " + offset + " of " + payload + " acknowledged: " + last.body()).isTrue();
+
+        return offset;
     }
 
     private static Response awaitedAck(StreamPartitionManager manager, int confirmations, long offset) {
