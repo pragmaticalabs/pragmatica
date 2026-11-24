@@ -60,6 +60,13 @@ public sealed interface FileOps {
     /// creates a temp file and renames it) can lose an entry between the directory read and the attribute read,
     /// and such an entry is skipped while every other entry is still listed. Any other I/O failure -- an unreadable
     /// directory, a missing `start` -- fails the walk.
+    ///
+    /// A failure carries `WalkFailed(start, detail)` where `detail` is always the `IOException`'s `getMessage()`
+    /// (for an unreadable path, the bare path), on the lift path and the visitor path alike: that is what the walk
+    /// reported before the visitor existed and what [#list] and every other operation here reports.
+    ///
+    /// A root removed during the walk yields the entries listed before it went: the root's children are read
+    /// before the root is reported, exactly as `Files.walk` behaves, so the result is `Success` with those entries.
     static Result<List<Path>> walk(Path start, Predicate<? super Path> predicate) {
         var found = new ArrayList<Path>();
         var failure = new AtomicReference<IOException>();
@@ -126,7 +133,7 @@ public sealed interface FileOps {
 
     private static Result<List<Path>> walkOutcome(Path start, List<Path> found, AtomicReference<IOException> failure) {
         return Option.option(failure.get()).fold(() -> success(List.copyOf(found)),
-                                                 cause -> new FileError.WalkFailed(start, cause.toString()).result());
+                                                 cause -> new FileError.WalkFailed(start, cause.getMessage()).result());
     }
 
     /// Walk a directory tree, collecting all paths.

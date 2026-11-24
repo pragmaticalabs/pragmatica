@@ -388,6 +388,49 @@ class FileOpsTest {
         }
 
         @Test
+        void walk_detailIsTheBareMessage_forUnreadableRootAndUnreadableSubdirectory() throws IOException {
+            var root = tempDir.resolve("detail-root");
+            var locked = root.resolve("locked");
+            createDirectories(locked);
+            setPosixPermissions(locked, "---------");
+            try {
+                assumeTrue(!Files.isReadable(locked), "running as a user that ignores directory permissions");
+
+                var subdirDetail = walk(root).fold(cause -> ((FileError.WalkFailed) cause).detail(), _ -> "SUCCESS");
+
+                setPosixPermissions(locked, "rwx------");
+                setPosixPermissions(root, "---------");
+
+                var rootDetail = walk(root).fold(cause -> ((FileError.WalkFailed) cause).detail(), _ -> "SUCCESS");
+
+                assertThat(subdirDetail).isEqualTo(locked.toString());
+                assertThat(rootDetail).isEqualTo(root.toString());
+            } finally {
+                setPosixPermissions(root, "rwx------");
+                setPosixPermissions(locked, "rwx------");
+            }
+        }
+
+        @Test
+        void walk_rootRemovedDuringWalk_yieldsTheEntriesListedBeforeItWent() {
+            var root = tempDir.resolve("vanishing-root");
+            createDirectories(root);
+
+            var result = walk(root, path -> deletingRoot(root, path));
+
+            assertThat(result.isSuccess()).as("same as Files.walk: %s", result).isTrue();
+            assertThat(result.unwrap()).containsExactly(root);
+        }
+
+        private boolean deletingRoot(Path root, Path path) {
+            if (path.equals(root)) {
+                delete(root).unwrap();
+            }
+
+            return true;
+        }
+
+        @Test
         void walk_fails_forUnreadableDirectory() throws IOException {
             var locked = tempDir.resolve("locked");
             createDirectories(locked);
