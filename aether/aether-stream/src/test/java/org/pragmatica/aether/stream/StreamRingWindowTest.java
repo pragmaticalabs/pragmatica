@@ -6,11 +6,8 @@ package org.pragmatica.aether.stream;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -24,6 +21,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamDeclaration;
 import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.lang.Option;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -433,7 +431,6 @@ class StreamRingWindowTest {
     private static final Pattern UNQUALIFIED_CAPACITY = Pattern.compile("(?<![.\\w])MAX_CAPACITY\\b");
     private static final Pattern UNQUALIFIED_FACTORY = Pattern.compile("(?<![.\\w])offHeapRingBuffer\\s*\\(");
     private static final Pattern STATIC_IMPORT = Pattern.compile("import\\s+static\\s+[\\w.]*\\bOffHeapRingBuffer\\.(\\w+|\\*)\\s*;");
-    private static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules", ".bb", ".idea");
 
     private record Source(Path path, String text) {}
 
@@ -501,23 +498,13 @@ class StreamRingWindowTest {
         assertThat(root.resolve("aether/aether-stream/src/main/java")).isDirectory();
         var sources = new ArrayList<Source>();
         try {
-            Files.walkFileTree(root, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                    return SKIPPED_DIRECTORIES.contains(String.valueOf(dir.getFileName()))
-                           ? FileVisitResult.SKIP_SUBTREE
-                           : FileVisitResult.CONTINUE;
-                }
+            for (var file : SourceWalk.files(root)) {
+                var name = file.toString();
 
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                    var name = file.toString();
-                    if (name.endsWith(".java") && name.contains("/src/main/java/") && !file.getFileName().toString().equals("OffHeapRingBuffer.java")) {
-                        sources.add(new Source(root.relativize(file), Files.readString(file)));
-                    }
-                    return FileVisitResult.CONTINUE;
+                if (name.endsWith(".java") && name.contains("/src/main/java/") && !file.getFileName().toString().equals("OffHeapRingBuffer.java")) {
+                    sources.add(new Source(root.relativize(file), Files.readString(file)));
                 }
-            });
+            }
         } catch (IOException e) {
             throw new AssertionError("Cannot walk production sources under " + root, e);
         }
