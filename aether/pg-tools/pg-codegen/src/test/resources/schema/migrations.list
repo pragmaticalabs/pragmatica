@@ -3,3 +3,4 @@ V002__documents.sql
 V003__pairing.sql
 V004__public.sql
 V005__nullables.sql
+V006__not_null_forms.sql
