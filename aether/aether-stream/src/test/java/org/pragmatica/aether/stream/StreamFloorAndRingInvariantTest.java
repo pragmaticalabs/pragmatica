@@ -75,21 +75,57 @@ class StreamFloorAndRingInvariantTest {
             }
         }
 
+        /// F2's report-only floor ([StreamPartitionManager#hydrationSnapshot]): when the floor of a stream's rings cannot be
+        /// represented, the view reports the bound `Long.MAX_VALUE`, never a wrapped or zero floor. Reachable: a same-life `[hot]`
+        /// change is adopted onto the live rings (here 2), and its floor product overflows. Mutant: the report's fallback `0L`.
         @Test
-        void retentionCountPastTheOldIndexBound_noLongerSizesTheRing_andLeavesTheBudget() {
+        void snapshot_floorPastALong_reportsTheLongBound_notZero() {
+            var enforced = userStream("rpt", 2, MIB).withIncarnation(7L);
+            var adopted = withHot(enforced, some(4 * MIB), some(COUNT));
+            var follower = streamPartitionManager(128 * MIB);
+
+            try {
+                follower.onStreamConfigPut(put(enforced));
+                follower.onStreamConfigPut(put(adopted));
+
+                assertThat(follower.enforcedConfig("rpt")).as("the [hot] change is adopted onto the 2 live rings").isEqualTo(some(adopted));
+
+                var view = follower.hydrationSnapshot()
+                                   .streams()
+                                   .stream()
+                                   .filter(stream -> stream.name().equals("rpt"))
+                                   .findFirst();
+
+                assertThat(view).as("the stream is reported").isPresent();
+                assertThat(view.get().ringsMaterialized()).isEqualTo(2);
+                assertThat(view.get().floorBytesAllocated()).as("the floor past a long is reported as the bound").isEqualTo(Long.MAX_VALUE);
+            } finally {
+                follower.close();
+            }
+        }
+
+        /// The ring invariant (know e8888553b4): a ring is sized from the hot window and retention bounds what is kept, not what
+        /// is held. So a retention count the old index bound refused is ACCEPTED, and the ring it builds is the default-window
+        /// floor per partition: that exact amount leaves the budget. Mutant: the retention count sizes the ring again (a different
+        /// floor, or a refusal).
+        @Test
+        void retentionCountPastTheOldIndexBound_noLongerSizesTheRing_createdWithTheHotWindowRings() {
             var count = OffHeapRingBuffer.MAX_CAPACITY / 2 + 1;
+            var floor = OffHeapRingBuffer.floorBytes(RingGeometry.HOT_WINDOW_ENTRIES, RingGeometry.hotWindowBytes(MIB), MIB);
             var manager = streamPartitionManager(128 * MIB);
 
             try {
                 var before = manager.availableBytes();
-                var created = manager.createStream(StreamConfig.streamConfig("ovfr",
-                                                                             2,
-                                                                             RetentionPolicy.retentionPolicy(count, 256 * MIB, HOUR_MS),
-                                                                             "latest",
-                                                                             MIB));
 
-                assertThat(manager.availableBytes()).as("available after %s (before %d)", created, before).isBetween(0L, before);
-                created.onFailure(_ -> assertThat(manager.availableBytes()).as("refused: budget intact").isEqualTo(before));
+                manager.createStream(StreamConfig.streamConfig("ovfr",
+                                                               2,
+                                                               RetentionPolicy.retentionPolicy(count, 256 * MIB, HOUR_MS),
+                                                               "latest",
+                                                               MIB))
+                       .onFailure(cause -> fail("a retention count no longer sizes the ring, so it is accepted: " + cause.message()));
+                assertThat(manager.streamExists("ovfr")).as("created").isTrue();
+                assertThat(manager.totalAllocatedBytes()).as("two rings sized from the hot window").isEqualTo(2 * floor);
+                assertThat(manager.availableBytes()).as("the budget gave exactly the two floors").isEqualTo(before - 2 * floor);
             } finally {
                 manager.close();
             }
