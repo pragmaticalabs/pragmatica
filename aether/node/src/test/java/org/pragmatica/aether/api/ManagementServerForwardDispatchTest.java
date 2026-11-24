@@ -150,8 +150,8 @@ class ManagementServerForwardDispatchTest {
         assertThat(writer.writes()).containsExactly(HttpStatus.BAD_REQUEST);
     }
 
-    /// #1964, CTO ruling (guess, s55): roster = `membershipFsm().memberStates()`. A WELL-FORMED node id the membership roster does not list
-    /// is not a cluster member: 404, nothing sent. It is a statement about the id, not about reachability.
+    /// #1964: roster = `membershipFsm().memberStates()`. A WELL-FORMED node id that is neither listed by the roster nor a connected peer
+    /// is not a cluster member: 404, nothing sent.
     @Test
     void dispatchManagementRequest_answers404AndSendsNothing_whenTheNodeIdIsWellFormedButNotAClusterMember() {
         dispatch(server(Option.some(OWNER)), "/api/v1/nodes/status/node-nobody");
@@ -178,6 +178,17 @@ class ManagementServerForwardDispatchTest {
     @Test
     void dispatchManagementRequest_forwardsToAListedConnectedMember() {
         fsm.onSwimHealthy(OWNER, 1L);
+
+        dispatch(server(Option.some(OWNER)), "/api/v1/nodes/status/node-owner");
+
+        assertThat(network.targets()).containsExactly(OWNER);
+        assertThat(writer.writes()).isEmpty();
+    }
+
+    /// Regression guard for the 404: a peer that is connected but not (yet) observed by the roster is a normal state, so it is forwarded to, not 404.
+    @Test
+    void dispatchManagementRequest_forwardsToAConnectedPeerTheRosterDoesNotList() {
+        assertThat(fsm.memberStates()).doesNotContainKey(OWNER);
 
         dispatch(server(Option.some(OWNER)), "/api/v1/nodes/status/node-owner");
 
