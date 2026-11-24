@@ -258,6 +258,18 @@ class NettyConnectibleBuilderGroupReleaseTest {
         assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
     }
 
+    @Test
+    void unresolvableHost_releasesTheStreamLease() {
+        var builder = new NettyConnectibleBuilder();
+
+        builder.hostname("no-such-host.invalid").port(5432).username("u").password("p").database("d");
+        var plain = builder.plain();
+
+        assertThat(plain.getConnection().await(GUARD).isFailure()).isTrue();
+        assertThat(builder.leaseCount()).as("no stream was created, so no lease is left behind").isEqualTo(1);
+        assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
+    }
+
     private static void awaitLeaseCount(NettyConnectibleBuilder builder, int expected) {
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
 
