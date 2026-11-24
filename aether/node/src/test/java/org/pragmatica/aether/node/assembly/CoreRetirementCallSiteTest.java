@@ -104,6 +104,9 @@ class CoreRetirementCallSiteTest {
         when(cluster.voterConfiguration()).thenReturn(Option.none());
         when(cluster.retirementSafeVoters()).thenReturn(Option.some(voters));
         when(cluster.verifiedVoterHistoryIds()).thenReturn(Set.of(SELF, VOTER_B));
+        // #3626: a real observer always knows its own node (its construction requires it); the topology manager compares every
+        // DRAIN target with it, so the mock answers it as the real one would.
+        when(observer.self()).thenReturn(NodeInfo.nodeInfo(SELF, new NodeAddress("127.0.0.1", 9001)));
         when(observer.inQuorum()).thenReturn(() -> true);
         when(observer.reportedActiveNodeCount()).thenReturn(2);
 
