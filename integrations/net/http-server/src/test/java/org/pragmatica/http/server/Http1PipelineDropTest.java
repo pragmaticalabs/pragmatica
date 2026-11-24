@@ -27,6 +27,7 @@ import io.netty.handler.codec.DecoderResult;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpVersion;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.http.HttpRequest;
@@ -78,6 +79,44 @@ class Http1PipelineDropTest {
         channel.writeInbound(undecodable, valid);
 
         assertThat(seen).as("no request is dispatched after the undecodable one").isEmpty();
+        channel.finishAndReleaseAll();
+    }
+
+    /// #3679, below the gate: the request handler itself refuses an unknown method (`PROPFIND`, and `POſT`, whose `ſ`
+    /// upper-cases to `S`) with 501, whichever transport stage precedes it, and never dispatches it.
+    @Test
+    void unknownMethod_atTheHandler_isRefused501_andNeverDispatched() {
+        for (var name : new String[]{"PROPFIND", "PO\u017fT"}) {
+            var seen = new ArrayList<String>();
+            var channel = new EmbeddedChannel(new NettyHttpServer.HttpRequestHandler((request, writer) -> record(seen, request, writer),
+                                                                                     Map.of()));
+            var unknown = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, new HttpMethod(name), "/resource");
+
+            unknown.headers().set(HttpHeaderNames.HOST, "localhost");
+            channel.writeInbound(unknown);
+            channel.runPendingTasks();
+
+            Object response = channel.readOutbound();
+
+            assertThat(seen).as("%s must not be dispatched", name).isEmpty();
+            assertThat(response).as("%s is answered", name).isInstanceOf(HttpResponse.class);
+            assertThat(((HttpResponse) response).status().code()).as("%s status", name).isEqualTo(501);
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    /// The control for the test above: the same handler dispatches a known method.
+    @Test
+    void knownMethod_atTheHandler_isDispatched() {
+        var seen = new ArrayList<String>();
+        var channel = new EmbeddedChannel(new NettyHttpServer.HttpRequestHandler((request, writer) -> record(seen, request, writer),
+                                                                                 Map.of()));
+        var known = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/resource");
+
+        known.headers().set(HttpHeaderNames.HOST, "localhost");
+        channel.writeInbound(known);
+
+        assertThat(seen).containsExactly("/resource");
         channel.finishAndReleaseAll();
     }
 
