@@ -499,6 +499,12 @@
                 <configuration>
                     <forkCount>${aether.test.forks}</forkCount>
                     <reuseForks>true</reuseForks>
+                    <!-- The parent's <excludes> replaces surefire's default `**/*$*`, so @Nested classes were scanned as test classes
+                         of their own. One launcher dedups Outer + Outer$Inner (serial); forks hand them to different JVMs and the
+                         nested tests ran twice (+26 BlueprintServiceTest, +0..5 AppHttpServerSecurityModeTest, #3664). -->
+                    <excludes combine.children="append">
+                        <exclude>**/*$*</exclude>
+                    </excludes>
                 </configuration>
             </plugin>
         </plugins>
