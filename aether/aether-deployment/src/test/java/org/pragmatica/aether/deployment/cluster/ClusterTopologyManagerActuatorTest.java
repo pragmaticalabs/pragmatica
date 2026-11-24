@@ -66,6 +66,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -427,6 +429,30 @@ class ClusterTopologyManagerActuatorTest {
 
         assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await().isSuccess()).isTrue();
         assertThat(drainCommandSinkCalls).containsExactly(PEER_D);
+    }
+
+    /// #3626: the leader never queues a drain of its own id, whichever caller asks. The retirement refusal is lifted for
+    /// every node, as it is for a core that is no longer an installed voter while it still leads: the window in which a
+    /// replacement retirement (`REPLACED`) or the voter-excluded core trim (`OVERPROVISION_SCALE_DOWN`) reaches its own
+    /// id. The surplus trim and the join-grace reaper are included so the rule holds for every reason, not per caller. Asked
+    /// twice, so the refusal is not the duplicate-drain short cut.
+    @ParameterizedTest
+    @EnumSource(value = DrainReason.class, names = {"REPLACED", "OVERPROVISION_SCALE_DOWN", "OVERPROVISION_PARTITION_HEAL", "JOIN_GRACE_REAP"})
+    void drainNode_ownId_refusedByNameWithNothingQueued(DrainReason reason) {
+        var shortGrace = ctmWithDrainGrace(timeSpan(50).millis());
+        shortGrace.setRetirementRefusal(_ -> Option.none());
+        shortGrace.activate();
+
+        var first = shortGrace.drainNode(SELF, reason).await();
+        var second = shortGrace.drainNode(SELF, reason).await();
+
+        assertThat(List.of(first, second)).allSatisfy(result -> assertThat(result.fold(cause -> cause, _ -> "success"))
+                                                                    .isEqualTo(new ClusterTopologyManager.LeaderCannotDrainItself(SELF)));
+        assertThat(drainCommandSinkCalls).as("no DRAIN command, so no DEPARTING, for the leader's own id").isEmpty();
+        settleFor(Duration.ofMillis(300));
+        assertThat(lifecycleManager.terminateCount.get()).as("no grace-terminate backstop reaps the leader").isZero();
+        assertThat(drainCommandClearCalls).isEmpty();
+        shortGrace.deactivate();
     }
 
     @Test

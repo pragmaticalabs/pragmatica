@@ -2334,8 +2334,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// #1543: a SURPLUS trim of a node a live replacement pairing protects is refused — the `LeaderReconciler`
     /// surplus drain picks a fresh ephemeral core first, which is exactly the +1 replacement. Non-surplus
     /// reasons are not gated by the pairing: a never-joined zombie (`JOIN_GRACE_REAP`) has no other reaper.
+    ///
+    /// #3626: the one point that refuses a drain of the node this manager runs on, for every reason and before any other
+    /// check, so nothing is enqueued, no DEPARTING is raised for it and no grace-terminate backstop reaps it. A core retired
+    /// by a replacement (`REPLACED`) or left outside the installed voters (`OVERPROVISION_SCALE_DOWN`) passes the retirement
+    /// refusal once it is no longer a voter, while it may still lead. The two rejoin evictions below call the sink directly:
+    /// they act on a node whose join this leader observed, never on itself.
     @Override
     public synchronized Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
+        if (targetNodeId.equals(observer.self().id())) {
+            return new LeaderCannotDrainItself(targetNodeId).promise();
+        }
+
         if (!active.get() || retirementRefusal.get().apply(targetNodeId).isPresent()) {
             return org.pragmatica.lang.utils.Causes.cause("Node retirement awaits certified voter handoff")
                                                    .promise();
