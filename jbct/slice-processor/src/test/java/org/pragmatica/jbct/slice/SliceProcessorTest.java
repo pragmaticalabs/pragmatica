@@ -1235,9 +1235,19 @@ class SliceProcessorTest {
         assertCompilation(compilation).hadErrorContaining("com.example.app.steps.Notifier");
         assertCompilation(compilation).hadErrorContaining("no static factory method 'notifier'");
         assertCompilation(compilation).hadErrorContaining("is not a slice");
-        assertThat(compilation.generatedSourceFiles()
-                              .stream()
-                              .anyMatch(file -> file.getName().contains("OrderServiceFactory"))).isFalse();
+    }
+
+    /// A refused dependency stops generation: no factory is written for the consumer. A failed compilation exposes
+    /// no generated files through the compile-testing handle, so the output directory is read directly.
+    @Test
+    void nonSliceInterfaceWithoutFactory_generatesNoFactoryForTheConsumer(@TempDir Path classes) throws IOException {
+        var errors = errorsFor(compileWithOutputDir(classes, sharedStepSources("com.example.app.steps")));
+
+        assertThat(errors.stream().anyMatch(message -> message.contains("is not a slice"))).isTrue();
+        try (var written = Files.walk(classes)) {
+            assertThat(written.filter(path -> path.getFileName().toString().contains("OrderServiceFactory")).toList())
+                .isEmpty();
+        }
     }
 
     @Test
@@ -1422,10 +1432,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService {
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1472,8 +1485,10 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService {
                 Promise<Integer> checkStock(String productId);
 
@@ -1482,6 +1497,7 @@ class SliceProcessorTest {
                 default String describe() { return "inventory"; }
 
                 static String version() { return "1"; }
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1525,10 +1541,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Result;
 
+            @Slice
             public interface PricingService {
                 Result<Integer> quote(String productId);
+                static PricingService pricingService() { return null; }
             }
             """);
 
@@ -1595,10 +1614,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService extends StockQuery {
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1665,10 +1687,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService extends KeyedQuery<String> {
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1727,10 +1752,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService extends LegacyQuery {
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1788,11 +1816,14 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService extends StockQuery {
                 @Override
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1841,12 +1872,15 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService {
                 Promise<Integer> checkStock(String productId);
 
                 Promise<String> nameOf(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1911,10 +1945,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService extends CachedQuery {
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1979,10 +2016,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService extends CachedQuery {
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -2059,10 +2099,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService extends AuditedQuery {
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -2135,10 +2178,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService extends AlphaQuery, BetaQuery {
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -2216,10 +2262,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService extends KeyedQuery<String> {
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -2266,10 +2315,13 @@ class SliceProcessorTest {
                                                              """
             package payments;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface PaymentService {
                 Promise<Boolean> processPayment(String paymentRequest);
+                static PaymentService paymentService() { return null; }
             }
             """);
 
@@ -2385,13 +2437,16 @@ class SliceProcessorTest {
                                                     """
             package pricing;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface Quote {
                 Promise<Response> price(Request request);
 
                 record Request(String event) {}
                 record Response(String event, long amountMinor) {}
+                static Quote quote() { return null; }
             }
             """);
 
@@ -2695,9 +2750,12 @@ class SliceProcessorTest {
         var healthService = JavaFileObjects.forSourceString("external.HealthService",
                                                              """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
+            @Slice
             public interface HealthService {
                 Promise<String> check();
+                static HealthService healthService() { return null; }
             }
             """);
         var source = JavaFileObjects.forSourceString("test.MonitorService",
@@ -2730,9 +2788,12 @@ class SliceProcessorTest {
         var searchService = JavaFileObjects.forSourceString("external.SearchService",
                                                              """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
+            @Slice
             public interface SearchService {
                 Promise<String> search(String query, int limit);
+                static SearchService searchService() { return null; }
             }
             """);
         var source = JavaFileObjects.forSourceString("test.AggregatorService",
@@ -2822,9 +2883,12 @@ class SliceProcessorTest {
         var searchService = JavaFileObjects.forSourceString("external.SearchService",
                                                              """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
+            @Slice
             public interface SearchService {
                 Promise<String> search(String query, int limit);
+                static SearchService searchService() { return null; }
             }
             """);
         var source = JavaFileObjects.forSourceString("test.AggregatorService",
@@ -2966,8 +3030,13 @@ class SliceProcessorTest {
         var inventoryService = JavaFileObjects.forSourceString("external.InventoryService",
                                                                """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
-            public interface InventoryService { Promise<Integer> checkStock(String productId); }
+            @Slice
+            public interface InventoryService {
+                Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
+            }
             """);
         var source = JavaFileObjects.forSourceString("test.OrderRepository",
                                                      """
@@ -3855,11 +3924,14 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
             public interface PaymentGateway {
+                @Slice
                 interface Processor {
                     Promise<Boolean> process(String payment);
+                    static Processor processor() { return null; }
                 }
             }
             """);
@@ -6406,10 +6478,13 @@ class SliceProcessorTest {
         var dependency = JavaFileObjects.forSourceString("external.HeadersService",
                                                          """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
             import org.pragmatica.aether.http.handler.RequestHeaders;
+            @Slice
             public interface HeadersService {
                 %s
+                static HeadersService headersService() { return null; }
             }
             """.formatted(method));
         var caller = JavaFileObjects.forSourceString("test.CallerService",
@@ -6438,7 +6513,9 @@ class SliceProcessorTest {
         var manyOps = JavaFileObjects.forSourceString("external.ManyOps",
                                                       """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
+            @Slice
             public interface ManyOps {
                 Promise<String> op0(String x);
                 Promise<String> op1(String x);
@@ -6456,6 +6533,7 @@ class SliceProcessorTest {
                 Promise<String> op13(String x);
                 Promise<String> op14(String x);
                 Promise<String> op15(String x);
+                static ManyOps manyOps() { return null; }
             }
             """);
         var source = JavaFileObjects.forSourceString("test.OverloadedService",
