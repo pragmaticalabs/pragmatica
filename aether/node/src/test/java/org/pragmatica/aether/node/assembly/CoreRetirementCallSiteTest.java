@@ -119,7 +119,7 @@ class CoreRetirementCallSiteTest {
                                                                                                   cluster,
                                                                                                   new AtomicReference<>(fsm),
                                                                                                   mock(org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.class),
-                                                                                                  mock(DeploymentMap.class),
+                                                                                                  DeploymentMap.deploymentMap(),
                                                                                                   () -> Set.of(SELF, VOTER_B, YOUNG, MATURE),
                                                                                                   replacements,
                                                                                                   mock(ClusterSyncCollector.class),
