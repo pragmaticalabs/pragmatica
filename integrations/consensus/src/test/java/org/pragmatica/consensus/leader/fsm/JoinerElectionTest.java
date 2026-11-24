@@ -13,7 +13,6 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeout;
-import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.PassiveDirectory;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.VoterReadmitted;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
@@ -31,6 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeader;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
@@ -100,7 +100,7 @@ class JoinerElectionTest {
     private void joinAsObserverThenVoter(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) {
         h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
         h.dispatch(new PassiveDirectory(List.of(LEADER, PEER)));
-        h.dispatch(new LeaderCommitted(LEADER, 1L));
+        commitLeader(h, LEADER, 1L);
         context.get().installVoters(ELECTORATE);
         h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
         h.dispatch(new VoterReadmitted());
@@ -174,7 +174,7 @@ class JoinerElectionTest {
         // A passive observer adopts only a committed leader in its stored view (#3581): the transport links it first.
         h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
         h.dispatch(new PassiveDirectory(List.of(LEADER, PEER)));
-        h.dispatch(new LeaderCommitted(LEADER, 1L));
+        commitLeader(h, LEADER, 1L);
         assertThat(context.get().currentLeader()).as("precondition: observed while passive").isEqualTo(Option.some(LEADER));
 
         var ctx = context.get();

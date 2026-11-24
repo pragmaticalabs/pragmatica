@@ -46,6 +46,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeaderOnDrainer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
@@ -385,12 +386,12 @@ class ViewApplicationTableTest {
                 OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumEstablished());
                 OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeAdded(N2, INITIAL_VIEW, 1L));
                 OnDrainer.dispatch(node.harness, new ConsensusReady());
-                OnDrainer.dispatch(node.harness, new LeaderCommitted(N1, 1L));
+                commitLeaderOnDrainer(node.harness, N1, 1L);
             } else {
                 node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N2, INITIAL_VIEW, 1L));
             }
             if (start == StartState.PASSIVE) {
-                OnDrainer.dispatch(node.harness, new LeaderCommitted(N1, 1L));
+                commitLeaderOnDrainer(node.harness, N1, 1L);
             }
 
             return node;
@@ -594,7 +595,7 @@ class ViewApplicationTableTest {
     void f_a1_localLed_staleCommitOfANodeOutsideTheView_neverFollowsIt() {
         node = Node.startedIn(StartState.LED, Mode.LOCAL);
 
-        OnDrainer.dispatch(node.harness, new LeaderCommitted(N3));
+        commitLeaderOnDrainer(node.harness, N3);
 
         assertThat(node.state() + " " + node.leader()).as("I2: the leader is in the view or none").isEqualTo("ReElecting -");
     }
@@ -617,7 +618,7 @@ class ViewApplicationTableTest {
         localNode(StartState.RE_ELECTING, Option::none, LONG);
         node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N1, List.of(), 2L));
 
-        OnDrainer.dispatch(node.harness, new LeaderCommitted(N1));
+        commitLeaderOnDrainer(node.harness, N1);
 
         assertThat(node.state() + " " + node.leader()).isEqualTo("ReElecting -");
         assertThat(enteredLed()).as("no Led tenure for a leader outside the view").isFalse();
@@ -630,7 +631,7 @@ class ViewApplicationTableTest {
         localNode(StartState.LED, () -> Option.some(N1), LONG);
         OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumEstablished());
         OnDrainer.dispatch(node.harness, new ConsensusReady());
-        OnDrainer.dispatch(node.harness, new LeaderCommitted(N1, 1L));
+        commitLeaderOnDrainer(node.harness, N1, 1L);
         assertThat(node.state() + " " + node.leader()).as("control: Led N1").isEqualTo("Led N1");
         var before = node.harness.transitions().size();
 
@@ -650,9 +651,9 @@ class ViewApplicationTableTest {
         localNode(StartState.RE_ELECTING, Option::none, LONG);
         node.ctx.observeViewSequence(5L);
 
-        OnDrainer.dispatch(node.harness, new LeaderCommitted(N1));
+        commitLeaderOnDrainer(node.harness, N1);
         assertThat(node.ctx.adoptedViewSequence()).as("recorded at adoption").isEqualTo(5L);
-        OnDrainer.dispatch(node.harness, new LeaderCommitted(N2, 3L));
+        commitLeaderOnDrainer(node.harness, N2, 3L);
 
         assertThat(node.state() + " " + node.leader()).as("the lower-sequence swap is fenced").isEqualTo("Led N1");
     }

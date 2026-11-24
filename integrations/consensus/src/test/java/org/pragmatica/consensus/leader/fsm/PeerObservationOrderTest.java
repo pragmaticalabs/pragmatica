@@ -22,7 +22,6 @@ import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
-import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.PeerRemovedFromView;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
@@ -50,6 +49,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeaderOnDrainer;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2971: the transport's view-carrying observations reach the leader FSM on different threads, and the FSM stores
@@ -137,7 +137,7 @@ class PeerObservationOrderTest {
             OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumEstablished());
             OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeAdded(N2, ALL, 1L));
             OnDrainer.dispatch(node.harness, new ConsensusReady());
-            OnDrainer.dispatch(node.harness, new LeaderCommitted(N1, 1L));
+            commitLeaderOnDrainer(node.harness, N1, 1L);
 
             return node;
         }
@@ -857,7 +857,7 @@ class PeerObservationOrderTest {
     @Test
     void removalOfSelf_asLeader_inLed_stepsDown() {
         node = Node.following(true);
-        OnDrainer.dispatch(node.harness, new LeaderCommitted(N2, 2L));
+        commitLeaderOnDrainer(node.harness, N2, 2L);
         assertThat(node.harness.state()).as("control: self leads")
                   .isInstanceOfSatisfying(LeaderElectionState.Led.class, led -> assertThat(led.leader()).isEqualTo(N2));
 

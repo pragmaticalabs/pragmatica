@@ -15,7 +15,6 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
-import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
@@ -39,6 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeaderOnDrainer;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -168,7 +168,7 @@ class LeaderPreVoteTest {
             OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumEstablished());
             OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeAdded(node.id, ALL, seq()));
             OnDrainer.dispatch(node.harness, new ConsensusReady());
-            OnDrainer.dispatch(node.harness, new LeaderCommitted(believes.getOrDefault(node.id, N1), 1L));
+            commitLeaderOnDrainer(node.harness, believes.getOrDefault(node.id, N1), 1L);
         }
 
         private void route(NodeId from, Send send) {
@@ -485,7 +485,7 @@ class LeaderPreVoteTest {
 
             router.addRoute(Send.class, (Consumer<Send>) requests::add);
             var h = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness("single-voter", fsm -> {
-                var ctx = new LeaderElectionContext(fsm, N3, Option.none(), List.of(N3), router, RETRY, LONG, LONG, LONG,
+                var ctx = new LeaderElectionContext(fsm, N3, Option.none(), List.of(N3, N1), router, RETRY, LONG, LONG, LONG,
                                                     LeaderElectionContext.DEFAULT_STUCK_ELECTION_THRESHOLD,
                                                     LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER, () -> true, Option::none,
@@ -498,7 +498,9 @@ class LeaderPreVoteTest {
             OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
             OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(N3, List.of(N3, N1), seq()));
             OnDrainer.dispatch(h, new ConsensusReady());
-            OnDrainer.dispatch(h, new LeaderCommitted(N1, 1L));
+            commitLeaderOnDrainer(h, N1, 1L);
+            // N1 leaves the electorate with its leadership: the voter set shrinks to this node alone, as production's does.
+            h.state().ctx().installVoters(List.of(N3));
             OnDrainer.dispatch(h, new ClusterFsmEvent.NodeGone(N1, List.of(N3), seq()));
 
             assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);

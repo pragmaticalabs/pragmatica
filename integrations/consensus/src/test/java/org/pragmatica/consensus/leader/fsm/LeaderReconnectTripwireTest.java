@@ -18,7 +18,6 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
-import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
@@ -34,6 +33,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeader;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -113,7 +113,7 @@ class LeaderReconnectTripwireTest {
             harness.dispatch(new ClusterFsmEvent.NodeAdded(N2, ALL, seq()));
             harness.dispatch(new ConsensusReady());
             if (led) {
-                harness.dispatch(new LeaderCommitted(N1, 1L));
+                commitLeader(harness, N1, 1L);
             } else {
                 harness.dispatch(new LeaderElectionEvents.KvSyncGraceTimeout());
             }

@@ -18,7 +18,6 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
-import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.quic.TransportTripwireFixtures.TripwireTopology;
@@ -35,6 +34,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeader;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.AWAIT;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.awaitTrue;
@@ -88,7 +88,7 @@ class LeaderReconnectTransportTest {
         built.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
         built.fsm().dispatch(new ClusterFsmEvent.NodeAdded(FOLLOWER, ALL, 1L));
         built.fsm().dispatch(new ConsensusReady());
-        built.fsm().dispatch(new LeaderCommitted(LEADER, 1L));
+        commitLeader(built.context(), built.fsm()::dispatch, LEADER, 1L);
 
         return built;
     }
