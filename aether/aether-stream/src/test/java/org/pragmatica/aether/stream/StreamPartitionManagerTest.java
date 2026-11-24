@@ -80,6 +80,8 @@ class StreamPartitionManagerTest {
                                                          .isEqualTo(new StreamError.OwnershipNotApplied(FENCE_STREAM,
                                                                                                         FENCE_PARTITION,
                                                                                                         Epoch.epoch(0L, 1, 3))));
+            rejected.onFailure(cause -> assertThat(cause.message()).contains("has not yet applied the committed ownership record")
+                                                                   .contains("0:1:3"));
             assertThat(fenced.nextExpectedOffset(FENCE_STREAM, FENCE_PARTITION)).as("nothing appended").isZero();
             fenced.close();
         }
