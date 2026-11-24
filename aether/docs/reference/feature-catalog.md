@@ -59,7 +59,7 @@ Migration execution/history now lives in the shared [`db-migrations`](../../db-m
 | 8 | minInstances enforcement | Complete | Blueprint minimum instance count as hard floor across auto-scaler, manual API, and rolling updates |
 | 9 | Manual scale API | Complete | `POST /api/v1/scale` with blueprint membership guard and minInstances validation |
 | 10 | Dynamic controller config | Complete | Runtime-adjustable CPU thresholds and evaluation interval |
-| 12 | Dynamic aspects | Removed (superseded by #42) | The `DynamicAspect` system and the `Aspect<T>` factory parameter were removed; runtime instrumentation is #42 / #42a (`ObservabilityStrategyCell`) |
+| 12 | Dynamic aspects | Complete (superseded by #42) | **Removed (#3649, 2026-11-24).** The `DynamicAspect` system and the `Aspect<T>` factory parameter were removed; runtime instrumentation is #42 / #42a (`ObservabilityStrategyCell`) |
 
 ## Cluster & Consensus
 
