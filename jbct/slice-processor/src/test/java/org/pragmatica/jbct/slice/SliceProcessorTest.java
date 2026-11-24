@@ -1234,6 +1234,9 @@ class SliceProcessorTest {
         assertCompilation(compilation).hadErrorContaining("Dependency parameter 'notifier'");
         assertCompilation(compilation).hadErrorContaining("com.example.app.steps.Notifier");
         assertCompilation(compilation).hadErrorContaining("is not a slice");
+        assertThat(compilation.generatedSourceFiles()
+                              .stream()
+                              .anyMatch(file -> file.getName().contains("OrderServiceFactory"))).isFalse();
     }
 
     @Test
@@ -1250,36 +1253,61 @@ class SliceProcessorTest {
     /// The refusal must not catch a real external slice: `jbct:collect-slice-deps` lists it in
     /// `slice-deps.properties` even where its interface carries no `@Slice` the consumer can see.
     @Test
-    void nonSliceInterfaceListedInSliceDeps_isAccepted(@TempDir Path classes) throws IOException {
+    void nonSliceInterfaceListedInSliceDeps_isAcceptedAndResolvedToTheListedCoordinate(@TempDir Path classes)
+    throws IOException {
         Files.writeString(classes.resolve("slice-deps.properties"),
                           "com.example.app.steps.Notifier=org.example:notifier:2.0.0\n");
-        var errors = errorsFor(compileWithOutputDir(classes, sharedStepSources()));
+        var errors = errorsFor(compileWithOutputDir(classes, sharedStepSources("com.example.app.steps")));
+        var manifest = loadManifest(classes);
 
         assertThat(errors).isEmpty();
+        assertThat(manifest.getProperty("dependency.0.artifact")).isEqualTo("org.example:notifier");
+        assertThat(manifest.getProperty("dependency.0.version")).isEqualTo("2.0.0");
+    }
+
+    /// A slice whose interface sits in an `api` subpackage is listed under the key without that segment.
+    @Test
+    void nonSliceInterfaceListedWithoutItsApiSegment_isAcceptedAndResolved(@TempDir Path classes) throws IOException {
+        Files.writeString(classes.resolve("slice-deps.properties"),
+                          "com.example.app.steps.Notifier=org.example:notifier:2.0.0\n");
+        var errors = errorsFor(compileWithOutputDir(classes, sharedStepSources("com.example.app.steps.api")));
+        var manifest = loadManifest(classes);
+
+        assertThat(errors).isEmpty();
+        assertThat(manifest.getProperty("dependency.0.artifact")).isEqualTo("org.example:notifier");
+        assertThat(manifest.getProperty("dependency.0.version")).isEqualTo("2.0.0");
+    }
+
+    private static java.util.Properties loadManifest(Path classes) throws IOException {
+        var props = new java.util.Properties();
+
+        props.load(Files.newBufferedReader(classes.resolve("META-INF/slice/OrderService.manifest")));
+
+        return props;
     }
 
     private Compilation compileSharedStepConsumer(String... options) {
         return javac().withProcessors(new SliceProcessor())
                       .withOptions(options)
-                      .compile(sharedStepSources());
+                      .compile(sharedStepSources("com.example.app.steps"));
     }
 
-    private List<JavaFileObject> sharedStepSources() {
-        var sharedStep = JavaFileObjects.forSourceString("com.example.app.steps.Notifier",
+    private List<JavaFileObject> sharedStepSources(String stepPackage) {
+        var sharedStep = JavaFileObjects.forSourceString(stepPackage + ".Notifier",
                                                          """
-            package com.example.app.steps;
+            package %s;
 
             import org.pragmatica.lang.Promise;
 
             public interface Notifier {
                 Promise<Boolean> notifyUser(String userId);
             }
-            """);
+            """.formatted(stepPackage));
         var consumer = JavaFileObjects.forSourceString("com.example.app.orders.OrderService",
                                                        """
             package com.example.app.orders;
 
-            import com.example.app.steps.Notifier;
+            import %s.Notifier;
             import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
@@ -1291,7 +1319,7 @@ class SliceProcessorTest {
                     return null;
                 }
             }
-            """);
+            """.formatted(stepPackage));
         var sources = commonSources();
 
         sources.add(sharedStep);
