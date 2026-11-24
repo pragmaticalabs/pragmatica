@@ -34,7 +34,7 @@ public final class TerraMain {
                     plan -> run(plan, args.length == 2));
     }
 
-    private static Promise<TerraLaunchPlan> loaded(String[] args) {
+    static Promise<TerraLaunchPlan> loaded(String[] args) {
         return args.length == 2
                ? TerraLaunchPlan.check(Path.of(args[0]))
                : TerraLaunchPlan.load(Path.of(args[0]));
@@ -51,7 +51,7 @@ public final class TerraMain {
                    .reduce(passed, String::concat);
     }
 
-    private static Unit run(TerraLaunchPlan plan, boolean checkOnly) {
+    static Unit run(TerraLaunchPlan plan, boolean checkOnly) {
         if (checkOnly) {
             System.out.println(checkReport(plan));
 

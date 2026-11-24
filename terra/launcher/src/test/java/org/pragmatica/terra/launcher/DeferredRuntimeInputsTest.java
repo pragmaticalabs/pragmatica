@@ -3,6 +3,9 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.terra.launcher;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
@@ -84,6 +87,15 @@ class DeferredRuntimeInputsTest {
     }
 
     @Test
+    void deferred_jwksMode_reportsNothing() {
+        var settings = ConfigurationProvider.builder()
+                                            .withDefaults(Map.of("http.security_mode", "jwt", "jwt.jwks_url", "https://auth.example.com/jwks.json"))
+                                            .build();
+
+        assertThat(LaunchHttp.launchHttp(Path.of("."), settings, RuntimeInputs.DEFERRED).unwrap().unsupplied()).isEmpty();
+    }
+
+    @Test
     void required_hs256WithoutSecret_stillRefusesTheLaunch() {
         assertRefused(LaunchHttp.launchHttp(Path.of("."),
                                             ConfigurationProvider.builder()
@@ -145,5 +157,33 @@ class DeferredRuntimeInputsTest {
                        .await(timeSpan(5).seconds())
                        .onSuccess(_ -> fail("a check plan with a missing secret must not start"))
                        .onFailure(cause -> assertThat(cause.message()).contains("Runtime inputs not supplied: jwt.secret"));
+    }
+
+    @Test
+    void loaded_checkFlag_defersTheSecret_noFlag_refusesIt() throws Exception {
+        writeHost("[http]\nsecurity_mode = \"jwt\"\n[jwt]\nalgorithm = \"HS256\"\n");
+
+        assertThat(TerraMain.loaded(new String[] {directory.toString(), "--check"}).await(timeSpan(5).seconds()).isSuccess()).isTrue();
+        assertThat(TerraMain.loaded(new String[] {directory.toString()}).await(timeSpan(5).seconds()).isFailure()).isTrue();
+    }
+
+    @Test
+    void run_checkOnly_printsTheReportToTheCheckLog() throws Exception {
+        writeHost("[http]\nsecurity_mode = \"jwt\"\n[jwt]\nalgorithm = \"HS256\"\n");
+
+        var plan = TerraLaunchPlan.check(directory).await(timeSpan(5).seconds()).unwrap();
+        var captured = new ByteArrayOutputStream();
+        var original = System.out;
+
+        System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
+
+        try {
+            TerraMain.run(plan, true);
+        } finally {
+            System.setOut(original);
+        }
+
+        assertThat(captured.toString(StandardCharsets.UTF_8)).contains("Terra check passed: 1 selected slices")
+                                                             .contains("Runtime input not supplied (required at launch): jwt.secret");
     }
 }
