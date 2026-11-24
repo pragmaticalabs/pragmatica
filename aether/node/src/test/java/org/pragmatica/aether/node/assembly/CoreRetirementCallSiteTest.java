@@ -15,6 +15,7 @@ import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.mockito.stubbing.Answer;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
@@ -59,6 +60,11 @@ class CoreRetirementCallSiteTest {
     private static final NodeId YOUNG = new NodeId("young-excluded-core");
     private static final NodeId MATURE = new NodeId("mature-excluded-core");
 
+    /// A collaborator this test does not script answers every `Option` read with "absent" instead of null.
+    private static final Answer<Object> ABSENT_OPTIONS = invocation -> invocation.getMethod().getReturnType() == Option.class
+                                                                       ? Option.none()
+                                                                       : Mockito.RETURNS_DEFAULTS.answer(invocation);
+
     @SuppressWarnings("unchecked")
     @Test
     void retirementTask_readsTheReconcilerHolderTheAssemblyReturns_drainsMatureNotYoung() throws Exception {
@@ -85,7 +91,7 @@ class CoreRetirementCallSiteTest {
         Mockito.doReturn(Option.none()).when(store).getTyped(any(), any());
         Mockito.doReturn(Option.some(clusterConfig)).when(store).getTyped(eq(AetherKey.ClusterConfigKey.CURRENT), any());
 
-        var observer = mock(TopologyObserver.class);
+        var observer = mock(TopologyObserver.class, ABSENT_OPTIONS);
         var leader = mock(LeaderManager.class);
         var cluster = (RabiaNode<KVCommand<AetherKey>>) mock(RabiaNode.class);
         var voters = new VoterConfiguration(1L, new ClusterConfig(List.of(SELF, VOTER_B)));
@@ -119,7 +125,7 @@ class CoreRetirementCallSiteTest {
                                                                                                   store,
                                                                                                   cluster,
                                                                                                   new AtomicReference<>(fsm),
-                                                                                                  mock(org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.class),
+                                                                                                  mock(org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.class, ABSENT_OPTIONS),
                                                                                                   DeploymentMap.deploymentMap(),
                                                                                                   () -> Set.of(SELF, VOTER_B, YOUNG, MATURE),
                                                                                                   replacements,
@@ -128,7 +134,7 @@ class CoreRetirementCallSiteTest {
                                                                                                   registry,
                                                                                                   () -> Option.some(clusterConfig),
                                                                                                   _ -> org.pragmatica.lang.Promise.success(List.of()),
-                                                                                                  mock(GenerationSnapshotSource.class),
+                                                                                                  mock(GenerationSnapshotSource.class, ABSENT_OPTIONS),
                                                                                                   deferred::add));
         var reconciler = mock(LeaderReconciler.class);
 
