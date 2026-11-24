@@ -446,9 +446,15 @@ DataType        <- ArrayType
 ArrayType       <- ScalarType (('[' NumericLiteral? ']')+ / ArrayKW ('[' NumericLiteral ']')?)?
 ScalarType      <- NumericType / CharType / DateTimeType / BooleanType / JsonType / UuidType / ByteaType / XmlType / BitType / NetworkType / MoneyType / SerialType / TsvectorType / QualifiedTypeName TypeModifiers?
 
-NumericType     <- < ('double'i [ \t\r\n]+ 'precision'i / 'smallint'i / 'integer'i / 'bigint'i / 'int8'i / 'int4'i / 'int2'i / 'int'i / 'float8'i / 'float4'i / 'float'i / 'numeric'i / 'decimal'i / 'real'i) ![a-zA-Z0-9_$] > TypeModifiers?
+# Multi-word types are written as CONSECUTIVE keywords, never with `[ \t\r\n]+` between them: these are
+# PARSER rules over lexemes, whitespace is trivia the lexer already skipped, and a character class
+# is tested against the next TOKEN's first character, so it never matches the skipped gap (#3672:
+# `DOUBLE PRECISION` fell through to a plain type name and left `PRECISION` unconsumed). The captured
+# text then spans the gap verbatim; CstExtractor collapses it. A rule made only of literals is a
+# LEXER rule instead (GroupingSetsKW, SecurityLabelKW below), where the class does match.
+NumericType     <- < ('double'i 'precision'i / 'smallint'i / 'integer'i / 'bigint'i / 'int8'i / 'int4'i / 'int2'i / 'int'i / 'float8'i / 'float4'i / 'float'i / 'numeric'i / 'decimal'i / 'real'i) ![a-zA-Z0-9_$] > TypeModifiers?
 
-CharType        <- < ('character'i [ \t\r\n]+ 'varying'i / 'varchar'i / 'character'i / 'char'i / 'text'i / 'name'i / 'citext'i) ![a-zA-Z0-9_$] > TypeModifiers?
+CharType        <- < ('character'i 'varying'i / 'varchar'i / 'character'i / 'char'i / 'text'i / 'name'i / 'citext'i) ![a-zA-Z0-9_$] > TypeModifiers?
 
 DateTimeType    <- TimestampType / TimeType / DateType / IntervalType
 TimestampType   <- < 'timestamptz'i ![a-zA-Z0-9_$] > TypeModifiers? / < 'timestamp'i ![a-zA-Z0-9_$] > TypeModifiers? (WithKW TimeKW ZoneKW / WithoutKW TimeKW ZoneKW)?
@@ -464,7 +470,7 @@ ByteaType       <- < 'bytea'i ![a-zA-Z0-9_$] >
 XmlType         <- < 'xml'i ![a-zA-Z0-9_$] >
 MoneyType       <- < 'money'i ![a-zA-Z0-9_$] >
 SerialType      <- < ('bigserial'i / 'smallserial'i / 'serial8'i / 'serial4'i / 'serial2'i / 'serial'i) ![a-zA-Z0-9_$] >
-BitType         <- < ('varbit'i / 'bit'i [ \t\r\n]+ 'varying'i / 'bit'i) ![a-zA-Z0-9_$] > TypeModifiers?
+BitType         <- < ('varbit'i / 'bit'i 'varying'i / 'bit'i) ![a-zA-Z0-9_$] > TypeModifiers?
 NetworkType     <- < ('inet'i / 'cidr'i / 'macaddr8'i / 'macaddr'i) ![a-zA-Z0-9_$] >
 TsvectorType    <- < ('tsvector'i / 'tsquery'i) ![a-zA-Z0-9_$] >
 

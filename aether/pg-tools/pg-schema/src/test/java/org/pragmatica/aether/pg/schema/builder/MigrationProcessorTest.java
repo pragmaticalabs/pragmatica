@@ -104,6 +104,19 @@ class MigrationProcessorTest {
             assertThat(users.column("phone").isPresent()).isTrue();
         }
 
+        @Test void addDoublePrecisionColumnResolvesToFloat8Type() {
+            var schema = processor.processAll(List.of(
+                "CREATE TABLE m (id bigint NOT NULL, a FLOAT8)",
+                "ALTER TABLE m ADD COLUMN b DOUBLE PRECISION",
+                "ALTER TABLE m ADD COLUMN c double\n    precision NOT NULL"
+            )).unwrap();
+
+            var m = schema.table("m").unwrap();
+            assertThat(m.column("b").unwrap().type()).isEqualTo(m.column("a").unwrap().type());
+            assertThat(m.column("c").unwrap().type()).isEqualTo(m.column("a").unwrap().type());
+            assertThat(m.column("c").unwrap().type().name()).isEqualTo("double precision");
+        }
+
         @Test void dropColumn() {
             var schema = processor.processAll(List.of(
                 "CREATE TABLE users (id bigint, name text, legacy text)",
