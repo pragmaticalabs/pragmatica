@@ -28,7 +28,7 @@ for part in start collect; do
   label=com.pragmatica.tla-weekly-$part; out=$launch/$label.plist
   if (( dry )); then echo "dry-run: render $label.plist.example -> $out (TOOLS=$here)"; continue; fi
   sed -e "s|@TOOLS@|$here|g" -e "s|@HOME@|$HOME|g" "$here/$label.plist.example" > "$out"
-  plutil -lint "$out" >/dev/null
+  if command -v plutil >/dev/null; then plutil -lint "$out" >/dev/null; fi  # macOS only: the CI selftest runs on Linux, which has no plutil
   "$lctl" bootout "gui/$(id -u)/$label" 2>/dev/null || true
   "$lctl" bootstrap "gui/$(id -u)" "$out"
   echo "installed $label"
