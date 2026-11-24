@@ -5,16 +5,20 @@ package org.pragmatica.terra.example;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.ServiceLoader;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.example.catalog.Catalog;
 import org.pragmatica.aether.example.catalog.CatalogRoutes;
 import org.pragmatica.aether.example.pricing.PricingService;
 import org.pragmatica.aether.example.shared.Money;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.resource.SpiResourceProvider;
+import org.pragmatica.aether.resource.interceptor.CacheBackendError.BackendUnavailable;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.terra.TerraApplication;
 import org.pragmatica.terra.TerraBlueprint;
+import org.pragmatica.terra.TerraFactory;
 import org.pragmatica.terra.example.shop.Shop;
 import org.pragmatica.terra.example.sink.Sink;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,9 +37,9 @@ class TerraExamplesTest {
         var config = ConfigurationProvider.builder().withDefaults(Map.of(
             "cache.calls.cache_name", "calls", "cache.calls.strategy", "CACHE_ASIDE",
             "cache.calls.ttl_seconds", "60", "cache.calls.max_entries", "100", "cache.calls.mode", "LOCAL")).build();
-        var provider = org.pragmatica.aether.resource.SpiResourceProvider.spiResourceProvider();
-        var factories = java.util.ServiceLoader.load(org.pragmatica.terra.TerraFactory.class).stream()
-            .<org.pragmatica.terra.TerraFactory<?>>map(java.util.ServiceLoader.Provider::get).toList();
+        var provider = SpiResourceProvider.spiResourceProvider();
+        var factories = ServiceLoader.load(TerraFactory.class).stream()
+            .<TerraFactory<?>>map(ServiceLoader.Provider::get).toList();
         var app = TerraApplication.start(TerraBlueprint.parse(toml).unwrap(), factories, _ -> config, provider.facade())
                                   .await(timeSpan(10).seconds()).unwrap();
         try {
@@ -76,16 +80,16 @@ class TerraExamplesTest {
         var config = ConfigurationProvider.builder().withDefaults(Map.of(
             "cache.calls.cache_name", "calls", "cache.calls.strategy", "CACHE_ASIDE",
             "cache.calls.ttl_seconds", "60", "cache.calls.max_entries", "100", "cache.calls.mode", "DISTRIBUTED")).build();
-        var provider = org.pragmatica.aether.resource.SpiResourceProvider.spiResourceProvider();
-        var factories = java.util.ServiceLoader.load(org.pragmatica.terra.TerraFactory.class).stream()
-            .<org.pragmatica.terra.TerraFactory<?>>map(java.util.ServiceLoader.Provider::get).toList();
+        var provider = SpiResourceProvider.spiResourceProvider();
+        var factories = ServiceLoader.load(TerraFactory.class).stream()
+            .<TerraFactory<?>>map(ServiceLoader.Provider::get).toList();
         var started = TerraApplication.start(TerraBlueprint.parse(toml).unwrap(), factories, _ -> config, provider.facade())
                                       .await(timeSpan(10).seconds());
         started.onSuccess(app -> app.close().await(timeSpan(5).seconds()));
         assertThat(started.isFailure()).as("start must refuse the dht-backed cache section").isTrue();
         var cause = started.fold(c -> c, _ -> null);
-        assertThat(chain(cause)).contains("cache.calls", "\"dht\"", "\"calls\"", "TERRA");
-        assertThat(anyInChain(cause, org.pragmatica.aether.resource.interceptor.CacheBackendError.BackendUnavailable.class)).isTrue();
+        assertThat(chain(cause)).contains("cache.calls", "'dht'", "'calls'", "TERRA");
+        assertThat(anyInChain(cause, BackendUnavailable.class)).isTrue();
     }
 
     private static String chain(Cause cause) {

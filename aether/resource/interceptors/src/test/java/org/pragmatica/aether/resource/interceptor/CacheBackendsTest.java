@@ -153,7 +153,7 @@ class CacheBackendsTest {
         @Test
         void dhtOnTerra_messageNamesBackendStoreAndRuntime() {
             assertThat(failureOf(CacheBackends.cacheBackend(cache(CacheMode.DISTRIBUTED, none()), terra)).message())
-                .contains("\"dht\"", "\"calls\"", "TERRA");
+                .contains("'dht'", "'calls'", "TERRA");
         }
 
         @Test
