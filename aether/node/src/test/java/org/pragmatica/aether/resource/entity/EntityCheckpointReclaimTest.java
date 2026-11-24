@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.stream.IntStream;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
@@ -812,6 +813,20 @@ class EntityCheckpointReclaimTest {
         pause(3_000L);
         assertThat(readable(stale)).as("the block a pointer names is kept").isTrue();
         assertThat(deletesOf(stale)).isZero();
+    }
+
+    /// The record is bounded (16 per pointer): past it the oldest block is forgotten and stays in storage; the rest are deleted. The 16 is
+    /// pinned here on purpose: a changed bound is a decision, not a refactor.
+    @Test
+    void moreFailedPutsThanTheBound_forgetTheOldest_andDeleteTheRest() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var stale = IntStream.range(0, 17).mapToObj(_ -> failedPutThatLanded(substrate, 0, 1L)).toList();
+
+        save(substrate, 0, 1L, snapshot("v1"), Option.none());
+        eventually("the 16 newest are deleted", 10_000L, () -> stale.stream().skip(1).noneMatch(this::readable));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(stale.getFirst())).as("the oldest was forgotten, and stays").isTrue();
+        assertThat(deletesOf(stale.getFirst())).isZero();
     }
 
     /// Fails one save at `through` after its block landed, and answers that block.
