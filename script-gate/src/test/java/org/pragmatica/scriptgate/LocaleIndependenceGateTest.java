@@ -83,10 +83,6 @@ class LocaleIndependenceGateTest {
     // console report of the jbct CLI (human text); the CLI's JSON writers are gated, see HUMAN_ONLY_METHODS
     "jbct/jbct-lint/src/main/java/org/pragmatica/jbct/lint/cst/shape/ShapeCensus.java",
 
-    // NOT human (#3643): a JSON result file the harness parses. Left unfixed only because pre-push-check cannot gate a loose
-    // single-file source (no Maven module owns it: "rc 0 but no count line"); delete this entry together with the fix.
-    "aether/tests/cloud/armxk/driver/ArmKDriver.java",
-
     // benchmark console table; example slice's tax description shown to a person
     "integrations/serialization/benchmark/src/main/java/org/pragmatica/serialization/benchmark/SliceCodecBenchmark.java",
                                                          "examples/ecommerce/pricing/src/main/java/org/pragmatica/aether/example/pricing/PricingService.java");
