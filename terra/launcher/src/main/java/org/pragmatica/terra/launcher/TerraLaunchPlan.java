@@ -18,6 +18,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.terra.TerraApplication;
 import org.pragmatica.terra.TerraBlueprint;
 import org.pragmatica.terra.TerraFactory;
+import org.pragmatica.terra.TerraMetrics;
 import org.pragmatica.terra.TerraMigrations;
 import org.pragmatica.terra.http.TerraHttpServer;
 
@@ -31,19 +32,22 @@ public final class TerraLaunchPlan {
     private final Map<String, ConfigurationProvider> configuration;
     private final ConfigurationProvider deployment;
     private final LaunchHttp http;
+    private final TerraMetrics.Settings metrics;
 
     private TerraLaunchPlan(Path directory,
                             TerraBlueprint blueprint,
                             List<TerraFactory<?>> factories,
                             Map<String, ConfigurationProvider> configuration,
                             ConfigurationProvider deployment,
-                            LaunchHttp http) {
+                            LaunchHttp http,
+                            TerraMetrics.Settings metrics) {
         this.directory = directory;
         this.blueprint = blueprint;
         this.factories = List.copyOf(factories);
         this.configuration = Map.copyOf(configuration);
         this.deployment = deployment;
         this.http = http;
+        this.metrics = metrics;
     }
 
     public static Promise<TerraLaunchPlan> load(Path directory) {
@@ -71,20 +75,23 @@ public final class TerraLaunchPlan {
                                                      List<TerraFactory<?>> factories) {
         return TerraConfiguration.deployment(directory).flatMap(deployment -> TerraConfiguration.host(directory,
                                                                                                       deployment)
-                                                                                                .flatMap(settings -> LaunchHttp.launchHttp(directory,
-                                                                                                                                           settings))
-                                                                                                .flatMap(http -> configureSlices(directory,
-                                                                                                                                 blueprint,
-                                                                                                                                 factories,
-                                                                                                                                 deployment,
-                                                                                                                                 http)));
+                                                                                                .flatMap(settings -> Result.all(LaunchHttp.launchHttp(directory,
+                                                                                                                                                      settings),
+                                                                                                                                TerraMetrics.Settings.settings(settings))
+                                                                                                                           .flatMap((http, metrics) -> configureSlices(directory,
+                                                                                                                                                                       blueprint,
+                                                                                                                                                                       factories,
+                                                                                                                                                                       deployment,
+                                                                                                                                                                       http,
+                                                                                                                                                                       metrics))));
     }
 
     private static Result<TerraLaunchPlan> configureSlices(Path directory,
                                                            TerraBlueprint blueprint,
                                                            List<TerraFactory<?>> factories,
                                                            TerraConfiguration.Deployment deployment,
-                                                           LaunchHttp http) {
+                                                           LaunchHttp http,
+                                                           TerraMetrics.Settings metrics) {
         var configurations = new LinkedHashMap<String, ConfigurationProvider>();
 
         for (var factory : factories) {
@@ -102,7 +109,8 @@ public final class TerraLaunchPlan {
                                                   factories,
                                                   configurations,
                                                   deployment.provider(),
-                                                  http));
+                                                  http,
+                                                  metrics));
     }
 
     private Promise<TerraLaunchPlan> checkMigrations() {
@@ -127,7 +135,8 @@ public final class TerraLaunchPlan {
                                                                                                                             factories,
                                                                                                                             configuration::get,
                                                                                                                             resources.facade(),
-                                                                                                                            migrations));
+                                                                                                                            migrations,
+                                                                                                                            metrics));
     }
 
     private Promise<TerraHttpServer> host(TerraApplication application) {

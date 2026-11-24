@@ -32,14 +32,21 @@ public final class TerraApplication {
     private final TerraTopics topics = new TerraTopics();
     private final Promise<Unit> closed = Promise.promise();
     private final List<TerraMigrations.Report> migrations;
+    private final TerraMetrics metrics;
     private boolean closing;
 
-    private TerraApplication(List<TerraMigrations.Report> migrations) {
+    private TerraApplication(List<TerraMigrations.Report> migrations, TerraMetrics metrics) {
         this.migrations = List.copyOf(migrations);
+        this.metrics = metrics;
     }
 
     public List<TerraMigrations.Report> migrations() {
         return migrations;
+    }
+
+    /// The application's meters and their sinks (#3650); closed by [#close()].
+    public TerraMetrics metrics() {
+        return metrics;
     }
 
     /// Read an exploded blueprint and its sibling schema directory before constructing any slice.
@@ -89,19 +96,34 @@ public final class TerraApplication {
                                                   Fn1<ConfigurationProvider, String> configuration,
                                                   ResourceProviderFacade resources,
                                                   TerraMigrations migrations) {
+        return start(blueprint, factories, configuration, resources, migrations, TerraMetrics.Settings.disabled());
+    }
+
+    /// The metric sinks are built only after the graph resolves and migrations apply, so a refused start leaves no
+    /// sink (and no OTLP publishing thread) behind; from then on the application owns and closes them.
+    public static Promise<TerraApplication> start(TerraBlueprint blueprint,
+                                                  List<TerraFactory<?>> factories,
+                                                  Fn1<ConfigurationProvider, String> configuration,
+                                                  ResourceProviderFacade resources,
+                                                  TerraMigrations migrations,
+                                                  TerraMetrics.Settings metrics) {
         return ordered(blueprint, factories).async()
                       .flatMap(order -> migrations.apply()
-                                                  .flatMap(reports -> constructApplication(order,
-                                                                                           configuration,
-                                                                                           resources,
-                                                                                           reports)));
+                                                  .flatMap(reports -> TerraMetrics.terraMetrics(metrics)
+                                                                                  .async()
+                                                                                  .flatMap(meters -> constructApplication(order,
+                                                                                                                          configuration,
+                                                                                                                          resources,
+                                                                                                                          reports,
+                                                                                                                          meters))));
     }
 
     private static Promise<TerraApplication> constructApplication(List<TerraFactory<?>> order,
                                                                   Fn1<ConfigurationProvider, String> configuration,
                                                                   ResourceProviderFacade resources,
-                                                                  List<TerraMigrations.Report> reports) {
-        var application = new TerraApplication(reports);
+                                                                  List<TerraMigrations.Report> reports,
+                                                                  TerraMetrics metrics) {
+        var application = new TerraApplication(reports, metrics);
 
         return application.construct(order, configuration, resources)
                           .fold(result -> result.fold(application::cleanupAfterFailure,
@@ -154,7 +176,8 @@ public final class TerraApplication {
                                        slices,
                                        configuration.apply(factory.artifact()),
                                        resources,
-                                       topics);
+                                       topics,
+                                       metrics.registry());
 
         contexts.add(context);
 
@@ -179,10 +202,19 @@ public final class TerraApplication {
     public synchronized Promise<Unit> close() {
         if (!closing) {
             closing = true;
-            topics.close().flatMap(_ -> releaseScopes()).withResult(closed::resolve);
+            topics.close().flatMap(_ -> releaseScopes())
+                  .fold(this::closeMetrics)
+                  .withResult(closed::resolve);
         }
 
         return closed;
+    }
+
+    // Sinks close after every scope released, whatever the release outcome; both failures are preserved.
+    private Promise<Unit> closeMetrics(Result<Unit> released) {
+        return Result.allOf(List.of(released, metrics.close()))
+                     .async()
+                     .mapToUnit();
     }
 
     private Promise<Unit> releaseScopes() {
