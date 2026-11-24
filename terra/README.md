@@ -20,14 +20,16 @@ For AI-assisted development the structure is fixed: slices, resources and routes
 | --- | --- | --- |
 | One process you start with `bin/terra` | yes | no, a cluster |
 | Slices spread across nodes by a cluster runtime | no | yes |
-| Pub-sub across processes, durable topics, streams, durable entities | no, refused at startup | yes |
+| Streams, durable entities, schedules | no, refused when the slice is compiled | yes |
+| Durable topics | no, refused at startup (`durability` other than `ephemeral`) | yes |
+| Pub-sub across processes | no, not refused: a publish with no local subscriber succeeds and reaches no other process | yes |
 | The same slice sources and blueprint syntax | yes | yes |
 
 Terra does not start an Aether node, and distributed collaborators are outside its supported runtime.
 
 ## Deployment shape
 
-Direction (2026-11-06, not a shipped guarantee): Terra will ship resource clients that work from both runtimes, so the runtime and each resource's backend are chosen independently, and the standard deployment becomes two Terra instances with state in external standard infrastructure. Today the contract is narrower: one application process per database (migrations have no cross-process lock), and pub-sub is in-process, so two instances do not share events. See [the reference](SPEC.md#database-startup).
+Direction (2026-11-06, not a shipped guarantee): Terra will ship resource clients that work from both runtimes, so the runtime and each resource's backend are chosen independently, and the standard deployment becomes two Terra instances with state in external standard infrastructure. Today the contract is narrower: two instances may start against one database, because the migration engine's database fence (PostgreSQL `pg_try_advisory_lock`, per database) lets one run at a time and a second instance's startup fails with a refusal instead of waiting (guarantee in the reference); pub-sub is in-process, so two instances do not share events. See [the reference](SPEC.md#database-startup).
 
 ## Run the demo distribution
 
