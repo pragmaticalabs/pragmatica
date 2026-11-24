@@ -6,26 +6,28 @@ import org.pragmatica.http.HttpClientError;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.jbct.init.ResultViews.causeOf;
+import static org.pragmatica.jbct.init.ResultViews.tagOf;
 
 /// #2363: the AI-tools ref is derived from the JBCT build version, never `main`.
 class AiToolsRefTest {
     @Test
     void aiToolsRef_isDerivedFromTheVersion_notHardCoded() {
-        assertThat(AiToolsRef.aiToolsRef("1.0.0-rc5").fold(_ -> "failure", AiToolsRef::tag)).isEqualTo("ai-tools-v1.0.0-rc5");
-        assertThat(AiToolsRef.aiToolsRef("2.3.4").fold(_ -> "failure", AiToolsRef::tag)).isEqualTo("ai-tools-v2.3.4");
+        assertThat(tagOf(AiToolsRef.aiToolsRef("1.0.0-rc5"))).isEqualTo("ai-tools-v1.0.0-rc5");
+        assertThat(tagOf(AiToolsRef.aiToolsRef("2.3.4"))).isEqualTo("ai-tools-v2.3.4");
     }
 
     @Test
     void aiToolsRef_ofTheRunningBuild_usesTheVersionStampedIntoTheJar() {
         var stamped = GitHubVersionResolver.defaultJbctVersion();
 
-        assertThat(AiToolsRef.aiToolsRef().fold(cause -> cause.message(), AiToolsRef::tag))
-            .isEqualTo(AiToolsRef.aiToolsRef(stamped).fold(cause -> cause.message(), AiToolsRef::tag));
+        assertThat(tagOf(AiToolsRef.aiToolsRef()))
+            .isEqualTo(tagOf(AiToolsRef.aiToolsRef(stamped)));
     }
 
     @Test
     void aiToolsRef_snapshotBuild_isRefusedNamingTheTagLookedFor() {
-        var cause = AiToolsRef.aiToolsRef("1.0.0-rc6-SNAPSHOT").fold(failure -> failure, _ -> null);
+        var cause = causeOf(AiToolsRef.aiToolsRef("1.0.0-rc6-SNAPSHOT"));
 
         assertThat(cause).isInstanceOf(AiToolsRefError.UnreleasedBuild.class);
         assertThat(cause.message()).contains("ai-tools-v1.0.0-rc6-SNAPSHOT").contains("siy/coding-technology").contains("no fallback to main");
@@ -33,8 +35,8 @@ class AiToolsRefTest {
 
     @Test
     void aiToolsRef_unknownVersion_isRefused() {
-        assertThat(AiToolsRef.aiToolsRef("unknown").fold(failure -> failure, _ -> null)).isInstanceOf(AiToolsRefError.UnreleasedBuild.class);
-        assertThat(AiToolsRef.aiToolsRef("${project.version}").fold(failure -> failure, _ -> null)).isInstanceOf(AiToolsRefError.UnreleasedBuild.class);
+        assertThat(causeOf(AiToolsRef.aiToolsRef("unknown"))).isInstanceOf(AiToolsRefError.UnreleasedBuild.class);
+        assertThat(causeOf(AiToolsRef.aiToolsRef("${project.version}"))).isInstanceOf(AiToolsRefError.UnreleasedBuild.class);
     }
 
     @Test
@@ -42,7 +44,7 @@ class AiToolsRefTest {
         var ref = new AiToolsRef("ai-tools-v9.9.9");
 
         for (var status : new int[]{404, 422}) {
-            var cause = ref.resolveSha(FakeGitHub.fakeGitHub().withRefStatus("ai-tools-v9.9.9", status)).fold(failure -> failure, _ -> null);
+            var cause = causeOf(ref.resolveSha(FakeGitHub.fakeGitHub().withRefStatus("ai-tools-v9.9.9", status)));
 
             assertThat(cause).as("status " + status).isInstanceOf(AiToolsRefError.TagNotFound.class);
             assertThat(cause.message()).contains("ai-tools-v9.9.9").contains("no fallback to main");
@@ -51,8 +53,7 @@ class AiToolsRefTest {
 
     @Test
     void resolveSha_otherFailure_isNotReportedAsAMissingTag() {
-        var cause = new AiToolsRef("ai-tools-v9.9.9").resolveSha(FakeGitHub.fakeGitHub().withRefStatus("ai-tools-v9.9.9", 500))
-                                                      .fold(failure -> failure, _ -> null);
+        var cause = causeOf(new AiToolsRef("ai-tools-v9.9.9").resolveSha(FakeGitHub.fakeGitHub().withRefStatus("ai-tools-v9.9.9", 500)));
 
         assertThat(cause).isInstanceOf(HttpClientError.RequestFailed.class);
     }
