@@ -179,7 +179,7 @@ class ForwardingReadRouterTest {
     /// PR-2f S2 (know `e10cf838c9`): a copy behind the owner forwards a GOVERNOR read without reading local.
     @Test
     void route_forwardsToOwner_whenGovernorCopyIsBehindTheOwner() {
-        var router = staleRouter(true, owner(OWNER));
+        var router = staleRouter(ReplicaStaleness.BEHIND, owner(OWNER));
 
         router.route(STREAM, PARTITION, 0, 10)
               .await()
@@ -189,7 +189,7 @@ class ForwardingReadRouterTest {
 
     @Test
     void route_readsLocal_whenGovernorCopyIsNotBehindTheOwner() {
-        var router = staleRouter(false, owner(OWNER));
+        var router = staleRouter(ReplicaStaleness.CURRENT, owner(OWNER));
 
         router.route(STREAM, PARTITION, 0, 10)
               .await()
@@ -199,7 +199,7 @@ class ForwardingReadRouterTest {
 
     @Test
     void route_readsLocal_whenGovernorCopyIsBehindButTheOwnerIsSelf() {
-        var router = staleRouter(true, owner(SELF));
+        var router = staleRouter(ReplicaStaleness.BEHIND, owner(SELF));
 
         router.route(STREAM, PARTITION, 0, 10)
               .await()
@@ -223,7 +223,7 @@ class ForwardingReadRouterTest {
                                                                                                                                               Epoch.ZERO))),
                                                                Option.none(),
                                                                Option.none(),
-                                                               (_, _) -> true);
+                                                               (_, _) -> ReplicaStaleness.BEHIND);
 
         router.route(STREAM, PARTITION, 0, 10)
               .await()
@@ -247,7 +247,7 @@ class ForwardingReadRouterTest {
                                                                                                                                               Epoch.ZERO))),
                                                                Option.none(),
                                                                Option.none(),
-                                                               (_, _) -> true);
+                                                               (_, _) -> ReplicaStaleness.BEHIND);
 
         router.route(STREAM, PARTITION, 0, 10)
               .await()
@@ -255,19 +255,118 @@ class ForwardingReadRouterTest {
               .onSuccess(events -> assertThat(events).containsExactly("owner-served"));
     }
 
-    private static ForwardingReadRouter<String> staleRouter(boolean behind, OwnerResolver ownerResolver) {
+    // ---- GOVERNOR, a mark an ended owner life announced (#3325) ---------------------------------
+
+    /// The owner of the void mark's partition times out: the read fails with the transient timeout, never the copy's records.
+    /// Control: the same failure under `BEHIND` degrades to the copy, as before #3325.
+    @Test
+    void route_voidOwnerMark_ownerTimesOut_failsWithTheTimeoutInsteadOfReadingLocal() {
+        var timeout = StreamForwardError.General.READ_FORWARD_TIMEOUT;
+
+        assertThat(governorRead(ReplicaStaleness.BEHIND, Option.some(forwardClientFailing(timeout)), owner(OWNER), Option.none()))
+            .as("control: a BEHIND copy degrades to its own answer").isEqualTo(List.of("local"));
+        assertThat(governorFailure(ReplicaStaleness.VOID_OWNER_MARK, Option.some(forwardClientFailing(timeout)), owner(OWNER), Option.none()))
+            .as("the void mark serves nothing: the timeout is the answer").isEqualTo(timeout);
+    }
+
+    /// An owner that does not hold the partition (`PARTITION_NOT_LOCAL`) and a failure the peer reported only as text say
+    /// nothing a retry may use: the read is refused with the transient `ReplicaNotVerified`. Control: under `BEHIND` they
+    /// degrade to the copy.
+    @Test
+    void route_voidOwnerMark_ownerCouldNotBeAskedNonTransiently_isRefusedReplicaNotVerified() {
+        var refused = new StreamError.ReplicaNotVerified(STREAM, PARTITION, 0L);
+
+        for (var cause : List.<Cause>of(StreamError.General.PARTITION_NOT_LOCAL, new StreamForwardError.ReadForwardFailed("peer text"))) {
+            assertThat(governorRead(ReplicaStaleness.BEHIND, Option.some(forwardClientFailing(cause)), owner(OWNER), Option.none()))
+                .as("control: %s under BEHIND degrades to the copy", cause).isEqualTo(List.of("local"));
+            assertThat(governorFailure(ReplicaStaleness.VOID_OWNER_MARK, Option.some(forwardClientFailing(cause)), owner(OWNER), Option.none()))
+                .as("%s under a void mark", cause).isEqualTo(refused);
+        }
+        assertThat(refused.isTransient()).as("the refusal is retryable").isTrue();
+    }
+
+    /// A fault no retry changes (`FAULT_DEGRADE`) is returned as it is under a void mark: it is not the owner change's.
+    @Test
+    void route_voidOwnerMark_forwardFaultNoRetryChanges_returnsThatFault() {
+        var oversized = StreamForwardError.General.READ_RESPONSE_OVERSIZED;
+
+        assertThat(governorFailure(ReplicaStaleness.VOID_OWNER_MARK, Option.some(forwardClientFailing(oversized)), owner(OWNER), Option.none()))
+            .isEqualTo(oversized);
+    }
+
+    /// With no owner to ask -- none known, no forward client, or a committed owner that is this node (where `BEHIND` goes on to
+    /// the HRW owner) -- the void mark's read is refused with `ReplicaNotVerified`. Control: `BEHIND` with no owner reads local.
+    @Test
+    void route_voidOwnerMark_noForwardTarget_isRefusedReplicaNotVerified() {
+        var refused = new StreamError.ReplicaNotVerified(STREAM, PARTITION, 0L);
+        Option<CommittedStreamOwnerSource> committedSelf = Option.some((_, _) -> Option.some(new CommittedStreamOwnerSource.CommittedOwner(SELF,
+                                                                                                                                           Epoch.ZERO)));
+
+        assertThat(governorRead(ReplicaStaleness.BEHIND, Option.some(forwardClientServing("owner-served")), noOwner(), Option.none()))
+            .as("control: BEHIND with no owner reads local").isEqualTo(List.of("local"));
+        assertThat(governorFailure(ReplicaStaleness.VOID_OWNER_MARK, Option.some(forwardClientServing("owner-served")), noOwner(), Option.none()))
+            .as("owner unknown").isEqualTo(refused);
+        assertThat(governorFailure(ReplicaStaleness.VOID_OWNER_MARK, Option.some(forwardClientServing("owner-served")), owner(SELF), Option.none()))
+            .as("the HRW owner is this node").isEqualTo(refused);
+        assertThat(governorFailure(ReplicaStaleness.VOID_OWNER_MARK, Option.none(), owner(OWNER), Option.none()))
+            .as("no forward client").isEqualTo(refused);
+        assertThat(governorRead(ReplicaStaleness.BEHIND, Option.some(forwardClientServingOnly(OWNER, "owner-served")), owner(OWNER), committedSelf))
+            .as("control: BEHIND with the committed owner self goes on to the HRW owner").isEqualTo(List.of("owner-served"));
+        assertThat(governorFailure(ReplicaStaleness.VOID_OWNER_MARK, Option.some(forwardClientServingOnly(OWNER, "owner-served")), owner(OWNER), committedSelf))
+            .as("the committed owner is this node").isEqualTo(refused);
+    }
+
+    /// The owner's typed refusal (not yet activated) is the answer, as it is; and an owner that answers serves the read.
+    @Test
+    void route_voidOwnerMark_ownerRefusesTyped_returnsThatRefusal_andAnAnswerIsServed() {
+        var notActivated = new StreamError.OwnerNotActivated(STREAM, PARTITION);
+
+        assertThat(governorRead(ReplicaStaleness.VOID_OWNER_MARK, Option.some(forwardClientServing("owner-served")), owner(OWNER), Option.none()))
+            .as("control: the owner's answer is served").isEqualTo(List.of("owner-served"));
+        assertThat(governorFailure(ReplicaStaleness.VOID_OWNER_MARK, Option.some(forwardClientFailing(notActivated)), owner(OWNER), Option.none()))
+            .isEqualTo(notActivated);
+    }
+
+    private static List<String> governorRead(ReplicaStaleness staleness,
+                                             Option<StreamForwardClient> forwardClient,
+                                             OwnerResolver ownerResolver,
+                                             Option<CommittedStreamOwnerSource> committedOwnerSource) {
+        return governorRouter(staleness, forwardClient, ownerResolver, committedOwnerSource).route(STREAM, PARTITION, 0, 10)
+                                                                                           .await()
+                                                                                           .onFailure(ForwardingReadRouterTest::failUnexpected)
+                                                                                           .or(List.of());
+    }
+
+    private static Cause governorFailure(ReplicaStaleness staleness,
+                                         Option<StreamForwardClient> forwardClient,
+                                         OwnerResolver ownerResolver,
+                                         Option<CommittedStreamOwnerSource> committedOwnerSource) {
+        return governorRouter(staleness, forwardClient, ownerResolver, committedOwnerSource).route(STREAM, PARTITION, 0, 10)
+                                                                                           .await()
+                                                                                           .fold(cause -> cause,
+                                                                                                 events -> Assertions.fail("expected a refusal, got " + events));
+    }
+
+    private static ForwardingReadRouter<String> governorRouter(ReplicaStaleness staleness,
+                                                               Option<StreamForwardClient> forwardClient,
+                                                               OwnerResolver ownerResolver,
+                                                               Option<CommittedStreamOwnerSource> committedOwnerSource) {
         return ForwardingReadRouter.forwardingReadRouter(Option.none(),
                                                          SELF,
-                                                         Option.some(forwardClientServing("owner-served")),
+                                                         forwardClient,
                                                          ReadPreference.GOVERNOR,
                                                          ownerResolver,
                                                          successReader("local"),
                                                          ForwardingReadRouterTest::decode,
                                                          StreamReadForwardMetrics.NOOP,
+                                                         committedOwnerSource,
                                                          Option.none(),
                                                          Option.none(),
-                                                         Option.none(),
-                                                         (_, _) -> behind);
+                                                         (_, _) -> staleness);
+    }
+
+    private static ForwardingReadRouter<String> staleRouter(ReplicaStaleness staleness, OwnerResolver ownerResolver) {
+        return governorRouter(staleness, Option.some(forwardClientServing("owner-served")), ownerResolver, Option.none());
     }
 
     // ---- ANY_REPLICA: a read whose every remote pick failed (#946) ------------------------------

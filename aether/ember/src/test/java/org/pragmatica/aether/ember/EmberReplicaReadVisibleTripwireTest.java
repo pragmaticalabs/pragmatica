@@ -43,7 +43,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// T-07 (stream-storage design §9.1, S0, #3333): tripwire on §8 row 2 -- a replica never serves a record above the visible
 /// offset it learned from the owner. The gate under test is ST-RP-2 facts (4)-(6): a non-owner GOVERNOR read is forwarded to
-/// the owner while this copy is behind the announced mark (`behindCommittedOwner`), a replica's `visible` never exceeds
+/// the owner while this copy is behind the announced mark (`replicaStaleness`), a replica's `visible` never exceeds
 /// `min(durable, announced mark)` (`exposeReplicaCommitted`), and an unverified tail is refused `ReplicaNotVerified`.
 ///
 /// Three real nodes (Ember refuses fewer, #3302), one partition at the default replication (RF 3, CF 2): owner O, replica R

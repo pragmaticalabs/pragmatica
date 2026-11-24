@@ -324,10 +324,27 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
-    /// The owner's reported visible position ([PartitionState.Standing#replicaCommitted]). `announced` is whether the owner of
-    /// `epoch` has reported it in this node's life (PR-2f S2, know `e10cf838c9`): a mark a batch opened, or carried over from
-    /// an earlier epoch, is not one, and [#behindCommittedOwner] treats this copy as stale until it is.
-    record CommittedMark(Epoch epoch, long through, boolean announced) {}
+    /// The owner's reported visible position ([PartitionState.Standing#replicaCommitted]). `epoch` is the owner epoch this copy
+    /// follows. `announcedUnder` is the epoch of the owner life that reported `through` in this node's life (PR-2f S2, know
+    /// `e10cf838c9`): none for a mark a batch opened, and an earlier epoch than `epoch` for one a batch of a newer epoch carried
+    /// over. [#replicaStaleness] decides from it, so a carried mark stays the ended life's (#3325).
+    record CommittedMark(Epoch epoch, long through, Option<Epoch> announcedUnder) {
+        static CommittedMark announced(Epoch epoch, long through) {
+            return new CommittedMark(epoch, through, some(epoch));
+        }
+
+        static CommittedMark openedByBatch(Epoch epoch) {
+            return new CommittedMark(epoch, -1L, none());
+        }
+
+        CommittedMark carriedInto(Epoch newerEpoch) {
+            return new CommittedMark(newerEpoch, through, announcedUnder);
+        }
+
+        CommittedMark loweredTo(long keep) {
+            return new CommittedMark(epoch, keep, announcedUnder);
+        }
+    }
 
     private volatile Option<TimeSpan> repairReportBound = Option.none();
 
@@ -3172,7 +3189,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     ///   ([#repeatVisible]) announces again once a renewal lands.
     /// - an ownership that has not activated. A replica that heard a mark of ANY value from a not-yet-activated owner -- the
     ///   empty log's `-1` included, which replaces a lagging replica's mark under the new epoch ([#newerMark]) -- would read
-    ///   itself caught up ([#behindCommittedOwner]) and serve its own stale copy for as long as activation stays blocked;
+    ///   itself caught up ([#replicaStaleness]) and serve its own stale copy for as long as activation stays blocked;
     ///   hearing nothing, it forwards. A never-written partition's `-1` is only delayed: its owner activates with no demand
     ///   through the committed-record hook (`OwnerActivation.onCommittedOwnership`, #2682).
     ///
@@ -3223,7 +3240,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// PR-2f S2 (know `e10cf838c9`): an owner whose log holds nothing reports `-1` to its replicas, so they stop forwarding
-    /// reads of a never-written partition after one tick ([#behindCommittedOwner]). Only an EMPTY log: an owner holding records
+    /// reads of a never-written partition after one tick ([#replicaStaleness]). Only an EMPTY log: an owner holding records
     /// below its visible position may be waiting for its activation to raise it from the marker, and a `-1` from it would
     /// tell its replicas that nothing is acknowledged. Nothing is committed, so the partition log is told nothing. #3307
     /// (F-c1): and only from an ACTIVATED owner, [#announceMark]'s gate; a never-written partition's owner activates with no
@@ -3270,7 +3287,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         standing(streamName).replicaCommitted()
                 .merge(partition,
-                       new CommittedMark(ownerEpoch, through, true),
+                       CommittedMark.announced(ownerEpoch, through),
                        StreamPartitionManager::newerMark);
         resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeReplicaCommitted(streamName,
                                                                                                partition,
@@ -3279,7 +3296,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         logAnnouncedMark(streamName, partition, through, ownerEpoch);
     }
 
-    /// #3307: what [#behindCommittedOwner] decides from -- the announced mark, its epoch and this copy's visible position.
+    /// #3307: what [#replicaStaleness] decides from -- the announced mark, its epoch and this copy's visible position.
     /// DEBUG only: it runs once per announcement. Positions and epochs only, no payload.
     @Contract
     private void logAnnouncedMark(String streamName, int partition, long through, Epoch ownerEpoch) {
@@ -3301,32 +3318,53 @@ public final class StreamPartitionManager implements AutoCloseable {
                : committedMarkThrough(streamName, partition);
     }
 
-    /// PR-2f S2 (owner ruling `ab33af11c6`, mechanism `e10cf838c9`): whether a GOVERNOR read of `(streamName, partition)` on
-    /// this node must go to the owner instead of this node's ring. Never on the owner. Elsewhere, true while the owner of the
-    /// recorded epoch has announced nothing in this node's life (after a restart the owner raises visible from its acked
-    /// marker when its ownership activates, #3307), while the announced mark belongs to an owner life that has ended
-    /// ([#markVoidedByOwnerChange], #3325), or while this ring's visible position is below the announced one (a lagging copy,
-    /// or a recovered tail still held until verified).
-    public boolean behindCommittedOwner(String streamName, int partition) {
+    /// PR-2f S2 (owner ruling `ab33af11c6`, mechanism `e10cf838c9`): what a GOVERNOR read of `(streamName, partition)` may make
+    /// of this node's ring, and, when it must go to the owner instead, why. `CURRENT` on the owner. Elsewhere `BEHIND` while no
+    /// owner has announced anything in this node's life (after a restart the owner raises visible from its acked marker when its
+    /// ownership activates, #3307); otherwise [#stalenessUnder] the mark last announced.
+    public ReplicaStaleness replicaStaleness(String streamName, int partition) {
         if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
-            return false;
+            return ReplicaStaleness.CURRENT;
         }
 
         return existingStanding(streamName).flatMap(standing -> option(standing.replicaCommitted().get(partition)))
-                               .filter(CommittedMark::announced)
-                               .filter(mark -> !markVoidedByOwnerChange(streamName, partition, mark))
-                               .map(mark -> localVisible(streamName, partition) < mark.through())
-                               .or(true);
+                               .flatMap(mark -> mark.announcedUnder()
+                                                    .map(announcedUnder -> stalenessUnder(streamName,
+                                                                                          partition,
+                                                                                          mark,
+                                                                                          announcedUnder)))
+                               .or(ReplicaStaleness.BEHIND);
     }
 
-    /// #3325 (ruling, issue comment): the mark an owner announced is that owner life's. Once the committed ownership epoch is
-    /// strictly after the epoch the mark was announced under, the arc changed owner, and the new owner announces nothing until
-    /// it holds the role, a valid lease and an activated ownership ([#announceMark]); the old mark then bounds nothing this
-    /// copy may serve. A mark under an epoch this node has not yet applied (the owner's view runs ahead of this node's) is the
-    /// newer life's and stands. The same read serves persistent and in-memory streams: the mark is not tied to a WAL.
-    private boolean markVoidedByOwnerChange(String streamName, int partition, CommittedMark mark) {
-        return ownerEpochSource.currentOwnerEpoch(streamName, partition)
-                               .isStrictlyAfter(mark.epoch());
+    /// `VOID_OWNER_MARK` while the mark belongs to an owner life that has ended ([#markVoidedByOwnerChange], #3325); `BEHIND`
+    /// while this ring's visible position is below the announced one (a lagging copy, or a recovered tail still held until
+    /// verified).
+    private ReplicaStaleness stalenessUnder(String streamName,
+                                            int partition,
+                                            CommittedMark mark,
+                                            Epoch announcedUnder) {
+        if (markVoidedByOwnerChange(streamName, partition, mark, announcedUnder)) {
+            return ReplicaStaleness.VOID_OWNER_MARK;
+        }
+
+        return localVisible(streamName, partition) < mark.through()
+               ? ReplicaStaleness.BEHIND
+               : ReplicaStaleness.CURRENT;
+    }
+
+    /// #3325 (ruling, issue comment): the mark an owner announced is that owner life's. Once a later life is known here -- the
+    /// committed ownership epoch, or the epoch of a batch this copy took, is strictly after the epoch the mark was announced
+    /// under -- the arc changed owner, and the new owner announces nothing until it holds the role, a valid lease and an
+    /// activated ownership ([#announceMark]); the old mark then bounds nothing this copy may serve. A mark under an epoch this
+    /// node has not yet applied (the owner's view runs ahead of this node's) is the newer life's and stands. The same read
+    /// serves persistent and in-memory streams: the mark is not tied to a WAL.
+    private boolean markVoidedByOwnerChange(String streamName,
+                                            int partition,
+                                            CommittedMark mark,
+                                            Epoch announcedUnder) {
+        return mark.epoch()
+                   .isStrictlyAfter(announcedUnder) || ownerEpochSource.currentOwnerEpoch(streamName, partition)
+                                                                       .isStrictlyAfter(announcedUnder);
     }
 
     private long localVisible(String streamName, int partition) {
@@ -3336,17 +3374,16 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// A batch landed under `epoch`: the owner of that epoch is the one this replica now follows, so a position reported
     /// under an OLDER epoch -- a deposed owner's, still in flight -- must be refused from here on (#2087). The recorded
-    /// position carries over: what was acknowledged under the earlier lineage stays acknowledged.
+    /// position carries over, with the epoch that announced it: what was acknowledged under the earlier lineage stays
+    /// acknowledged, and the mark stays the ended life's until the owner of `epoch` announces its own (#3325).
     @Contract
     private void noteBatchEpoch(String streamName, int partition, Epoch epoch) {
         standing(streamName).replicaCommitted()
                 .merge(partition,
-                       new CommittedMark(epoch, -1L, false),
+                       CommittedMark.openedByBatch(epoch),
                        (known, batch) -> batch.epoch()
                                               .isStrictlyAfter(known.epoch())
-                                         ? new CommittedMark(batch.epoch(),
-                                                             known.through(),
-                                                             false)
+                                         ? known.carriedInto(batch.epoch())
                                          : known);
     }
 
@@ -3357,9 +3394,8 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         return reported.epoch()
                        .equals(known.epoch())
-               ? new CommittedMark(known.epoch(),
-                                   Math.max(known.through(), reported.through()),
-                                   true)
+               ? CommittedMark.announced(known.epoch(),
+                                         Math.max(known.through(), reported.through()))
                : known;
     }
 
@@ -4273,9 +4309,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         standing.replicaCommitted()
                 .computeIfPresent(partition,
                                   (_, mark) -> mark.through() > keep
-                                               ? new CommittedMark(mark.epoch(),
-                                                                   keep,
-                                                                   mark.announced())
+                                               ? mark.loweredTo(keep)
                                                : mark);
         standing.lastReplicatedWalWrite().computeIfPresent(partition,
                                                            (_, write) -> write.offset() > keep

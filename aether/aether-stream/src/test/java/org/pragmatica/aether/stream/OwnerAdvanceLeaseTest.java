@@ -288,8 +288,8 @@ class OwnerAdvanceLeaseTest {
 
     /// #3307 (F-a3): an owner holding the OWNER role and a valid lease whose ownership has NOT activated announces nothing,
     /// neither from the append listener (the ack raised its visible to 0 through the replica-life mark) nor from any tick. A
-    /// replica that holds the record durably therefore hears no mark, so [StreamPartitionManager#behindCommittedOwner] reads
-    /// `true` (no mark announced in its life: the `or(true)` arm) and its GOVERNOR reads go to the owner instead of its own copy.
+    /// replica that holds the record durably therefore hears no mark, so [StreamPartitionManager#replicaStaleness] reads
+    /// `BEHIND` (no mark announced in its life) and its GOVERNOR reads go to the owner instead of its own copy.
     @Test
     void notActivatedOwner_announcesNothingOverSeveralTicks_soAReplicaHoldingTheRecordStillForwards() {
         ownerVisibleAtZero(false);
@@ -299,7 +299,7 @@ class OwnerAdvanceLeaseTest {
         manager.repeatVisible();
         deliverAnnouncementsToTheReplica();
         assertThat(announced).as("a not-yet-activated owner announces no visible mark").isEmpty();
-        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the replica heard nothing: it forwards").isTrue();
+        assertThat(replica.replicaStaleness(STREAM, PARTITION)).as("the replica heard nothing: it forwards").isEqualTo(ReplicaStaleness.BEHIND);
     }
 
     /// Control for the test above: the same owner, activated, announces its visible mark on the tick, and the same replica then
@@ -313,7 +313,7 @@ class OwnerAdvanceLeaseTest {
         assertThat(announced).as("an activated owner announces visible on the tick")
                              .extracting(CommitAdvance::committedThrough)
                              .contains(0L);
-        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the replica heard the mark: it serves locally").isFalse();
+        assertThat(replica.replicaStaleness(STREAM, PARTITION)).as("the replica heard the mark: it serves locally").isEqualTo(ReplicaStaleness.CURRENT);
     }
 
     /// #3307 (F-c1): the empty-log `-1` is a mark too. An owner holding the OWNER role, a valid lease and the record, with an
@@ -336,8 +336,8 @@ class OwnerAdvanceLeaseTest {
         emptyReplica();
         manager.repeatVisible();
         deliverAnnouncementsToTheReplica();
-        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("before activation the replica heard nothing: it forwards")
-                                                                   .isTrue();
+        assertThat(replica.replicaStaleness(STREAM, PARTITION)).as("before activation the replica heard nothing: it forwards")
+                                                                   .isEqualTo(ReplicaStaleness.BEHIND);
         activated.set(true);
         manager.repeatVisible();
         deliverAnnouncementsToTheReplica();
@@ -345,13 +345,13 @@ class OwnerAdvanceLeaseTest {
                              .extracting(CommitAdvance::committedThrough)
                              .containsOnly(-1L)
                              .isNotEmpty();
-        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the replica heard -1: it answers the never-written partition")
-                                                                   .isFalse();
+        assertThat(replica.replicaStaleness(STREAM, PARTITION)).as("the replica heard -1: it answers the never-written partition")
+                                                                   .isEqualTo(ReplicaStaleness.CURRENT);
     }
 
     /// #3307 (F-c1): a replica lagging behind the mark it heard from the previous owner (epoch ZERO, through 0; its own copy
     /// is empty) keeps that mark while the new owner (epoch of [#RECORD]) has not activated: no `-1` arrives to replace it
-    /// under the newer epoch ([StreamPartitionManager] `newerMark`), so `behindCommittedOwner` keeps reading `true`.
+    /// under the newer epoch ([StreamPartitionManager] `newerMark`), so `replicaStaleness` keeps reading `BEHIND`.
     @Test
     void laggingReplica_keepsItsMark_whileTheNewOwnerWithAnEmptyLogIsNotActivated() {
         ownerWithAnEmptyLog(false);
@@ -361,7 +361,7 @@ class OwnerAdvanceLeaseTest {
         manager.repeatVisible();
         deliverAnnouncementsToTheReplica();
         assertThat(announced).as("a not-yet-activated owner announces nothing").isEmpty();
-        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the lagging replica still forwards").isTrue();
+        assertThat(replica.replicaStaleness(STREAM, PARTITION)).as("the lagging replica still forwards").isEqualTo(ReplicaStaleness.BEHIND);
     }
 
     /// Control for the test above: the same owner, activated, announces `-1` under its newer epoch, which replaces the lagging
@@ -376,7 +376,7 @@ class OwnerAdvanceLeaseTest {
                              .extracting(CommitAdvance::committedThrough)
                              .containsOnly(-1L)
                              .isNotEmpty();
-        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the -1 under the newer epoch replaced the mark").isFalse();
+        assertThat(replica.replicaStaleness(STREAM, PARTITION)).as("the -1 under the newer epoch replaced the mark").isEqualTo(ReplicaStaleness.CURRENT);
     }
 
     /// #3325: owner A announces mark 0 and the replica holding that record serves from it. Ownership then moves (the committed
@@ -393,7 +393,7 @@ class OwnerAdvanceLeaseTest {
         replica.ownerEpochSource((_, _) -> committedEpoch.get());
         manager.repeatVisible();
         deliverAnnouncementsToTheReplica();
-        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("control: the replica serves from the announcing owner's mark").isFalse();
+        assertThat(replica.replicaStaleness(STREAM, PARTITION)).as("control: the replica serves from the announcing owner's mark").isEqualTo(ReplicaStaleness.CURRENT);
 
         committedEpoch.set(RECORD.ownerEpoch());
         activated.set(false);
@@ -402,7 +402,7 @@ class OwnerAdvanceLeaseTest {
         manager.repeatVisible();
         deliverAnnouncementsToTheReplica();
         assertThat(announced).as("the new owner, not activated, announces nothing").isEmpty();
-        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the ended life's mark is void: the replica forwards").isTrue();
+        assertThat(replica.replicaStaleness(STREAM, PARTITION)).as("the ended life's mark is void: the replica forwards").isEqualTo(ReplicaStaleness.VOID_OWNER_MARK);
 
         activated.set(true);
         manager.repeatVisible();
@@ -411,7 +411,7 @@ class OwnerAdvanceLeaseTest {
                              .extracting(CommitAdvance::ownerEpoch)
                              .containsOnly(RECORD.ownerEpoch())
                              .isNotEmpty();
-        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("control: the new owner's mark is served from").isFalse();
+        assertThat(replica.replicaStaleness(STREAM, PARTITION)).as("control: the new owner's mark is served from").isEqualTo(ReplicaStaleness.CURRENT);
     }
 
     // ---- structural rule ----------------------------------------------------------------------------------------------------
@@ -495,7 +495,7 @@ class OwnerAdvanceLeaseTest {
     private void laggingReplica() {
         emptyReplica();
         replica.commitAdvanced(STREAM, PARTITION, 0L, Epoch.ZERO);
-        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("control: the replica lags the mark it heard").isTrue();
+        assertThat(replica.replicaStaleness(STREAM, PARTITION)).as("control: the replica lags the mark it heard").isEqualTo(ReplicaStaleness.BEHIND);
         assertThat(RECORD.ownerEpoch().isStrictlyAfter(Epoch.ZERO)).as("control: the new owner's epoch is newer").isTrue();
     }
 

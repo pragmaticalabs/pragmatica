@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import org.pragmatica.aether.stream.ReplicaStaleness;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -121,7 +122,7 @@ class ReplicaDivergentTailRepairTest {
         seedReplica(10, 3);
         manager.commitAdvanced(STREAM, PARTITION, 9L, committedEpoch);
 
-        assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("control: announced 9 and visible 9 before the cut").isFalse();
+        assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("control: announced 9 and visible 9 before the cut").isEqualTo(ReplicaStaleness.CURRENT);
 
         // The first run finds the divergence and quarantines; the next run cuts before it refetches (PartitionBackfill.repairThenRun).
         backfill(owner(5, 3, new AtomicLong()));
@@ -131,7 +132,7 @@ class ReplicaDivergentTailRepairTest {
         assertThat(manager.committedThrough(STREAM, PARTITION)).as("control: the cut lowered the reported position to 2").isEqualTo(2L);
         assertThat(manager.visibleBounds(STREAM, PARTITION).map(bounds -> bounds.visibleHead()).or(-2L)).as("control: visible is at the cut")
                                                                                                          .isEqualTo(2L);
-        assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("the lowered mark is still the owner's announcement").isFalse();
+        assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("the lowered mark is still the owner's announcement").isEqualTo(ReplicaStaleness.CURRENT);
     }
 
     /// Same head, different records from offset 3: nothing is above the owner, and the replica is still not trusted
