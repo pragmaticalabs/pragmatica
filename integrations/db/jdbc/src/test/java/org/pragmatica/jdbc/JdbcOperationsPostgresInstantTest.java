@@ -143,9 +143,11 @@ class JdbcOperationsPostgresInstantTest {
     void getInstant_ofSqlNull_isNone() {
         jdbc.update("INSERT INTO instants VALUES (NULL, NULL)").await().unwrap();
 
-        var read = jdbc.queryOne("SELECT tz, ts FROM instants", InstantPair::fromColumnIndexes).await().unwrap();
+        var byIndex = jdbc.queryOne("SELECT tz, ts FROM instants", InstantPair::fromColumnIndexes).await().unwrap();
+        var byLabel = jdbc.queryOne("SELECT tz, ts FROM instants", InstantPair::fromColumnLabels).await().unwrap();
 
-        assertThat(read).isEqualTo(new InstantPair(Option.none(), Option.none()));
+        assertThat(byIndex).isEqualTo(new InstantPair(Option.none(), Option.none()));
+        assertThat(byLabel).isEqualTo(new InstantPair(Option.none(), Option.none()));
     }
 
     @Test
