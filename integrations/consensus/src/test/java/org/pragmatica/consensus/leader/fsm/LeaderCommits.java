@@ -19,6 +19,10 @@ import org.pragmatica.statemachine.FsmTestHarness;
 /// event pair by hand could build a state production never reaches (a sequenced commit the node never observed, or an
 /// observation with a sequence-less event); the order lives here, once.
 ///
+/// Production drops a commit for a leader the context deems ineligible (`LeaderElectionContext#isEligible`, the installed
+/// voter set or the expected cluster) before observing or dispatching anything; the sequenced entries here make the same
+/// decision, with the same predicate, so a test cannot observe a sequence for a leader production would drop.
+///
 /// The sequence-less overloads are production's `onLeaderCommitted(leader)` and local-election path: no observation
 /// precedes them, so none is made. The observation is a max-merge, so a straggling commit below the observed sequence
 /// observes nothing new and dispatches as production does.
@@ -64,8 +68,10 @@ public final class LeaderCommits {
                                           Consumer<ClusterFsmEvent> entry,
                                           NodeId leader,
                                           long viewSequence) {
-        ctx.observeViewSequence(viewSequence);
-        entry.accept(LeaderCommitted.leaderCommitted(leader, viewSequence));
+        if (ctx.isEligible(leader)) {
+            ctx.observeViewSequence(viewSequence);
+            entry.accept(LeaderCommitted.leaderCommitted(leader, viewSequence));
+        }
     }
 
     private static LeaderElectionContext contextOf(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness) {

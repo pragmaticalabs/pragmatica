@@ -152,7 +152,7 @@ class LeaderAdoptionSequenceGateTest {
         assertThat(((LeaderElectionState.Electing) h.state()).entryBaseline()).isEqualTo(5L);
 
         // Stale pull/push: the corpse (LEADER) is still LeaderKey at seq 5 (== baseline). IGNORED.
-        commitLeader(h, LEADER, 5L);
+        commitLeader(h, LEADER);
         assertThat(h.state())
                 .as("stale pre-death commit (seq == baseline) must NOT be adopted")
                 .isInstanceOf(LeaderElectionState.Electing.class);
