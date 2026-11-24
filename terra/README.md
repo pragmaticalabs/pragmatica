@@ -91,4 +91,19 @@ sh terra/examples/target/terra-examples-terra/bin/terra
 curl http://localhost:8080/api/catalog/v2/items
 ```
 
+### JVM options (`JAVA_OPTS`)
+
+Both launchers (`bin/terra`, `bin/terra.cmd`) read `JAVA_OPTS` and place it after `--enable-preview` and before `-cp`; unset or empty adds nothing. Use it for heap, GC and system properties without bypassing the launcher; run each instance of a multi-instance deployment with its own value:
+
+```sh
+JAVA_OPTS="-Xms512m -Xmx512m -XX:+UseZGC" sh bin/terra
+```
+
+- `bin/terra` splits the value on whitespace and does no quote parsing or `*` expansion, so one option cannot contain whitespace. For such an option (for example `-Dname="a b"`) use the JVM's own `JAVA_TOOL_OPTIONS`, which the JVM parses itself.
+- `bin/terra.cmd` expands `%JAVA_OPTS%` in place, so cmd quoting applies.
+- There is no `TERRA_OPTS`: the `TERRA_` environment prefix is reserved for slice configuration, where `TERRA_OPTS` would read as a slice property.
+- The check run during assembly (`--check`) does not use `JAVA_OPTS`; it runs the JVM the plugin was given.
+
+[verified: terra/maven-plugin/src/test/java/org/pragmatica/terra/maven/LauncherTest.java] for `bin/terra` (stub `java` argv and a real JVM's `-XX:+PrintFlagsFinal`); `bin/terra.cmd` is pinned by text only, [design intent — unverified] at runtime.
+
 The ZIP at `terra/examples/target/terra-examples-1.0.0-rc5-terra.zip` includes its dependencies and can run outside the repository. The example explicitly uses public default routes; configure API keys or JWT for protected deployments.
