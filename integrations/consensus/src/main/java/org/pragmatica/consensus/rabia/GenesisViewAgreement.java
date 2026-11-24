@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.stream.Collectors;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
@@ -71,6 +72,7 @@ final class GenesisViewAgreement {
     private long round;
     private long roundsSinceChange;
     private Option<Set<NodeId>> agreed = Option.none();
+    private volatile Set<NodeId> stableReporters = Set.of();
 
     private GenesisViewAgreement(NodeId self, int configuredCount, Option<Set<NodeId>> fixedView) {
         this.self = self;
@@ -100,6 +102,7 @@ final class GenesisViewAgreement {
         }
 
         evaluate();
+        publishStableReporters();
 
         return new Report(round, view);
     }
@@ -120,6 +123,7 @@ final class GenesisViewAgreement {
         }
 
         evaluate();
+        publishStableReporters();
 
         return Unit.unit();
     }
@@ -188,6 +192,19 @@ final class GenesisViewAgreement {
     private boolean announcedStably() {
         return announced.size() == 2 && announced.stream()
                                                  .allMatch(view::equals);
+    }
+
+    /// Read-only snapshot for tests (#1654 Ember): the members, other than this node, whose last two reports are consecutive rounds of
+    /// exactly this node's current view. Safe to read from any thread; the agreement itself stays executor-confined and never reads it.
+    Set<NodeId> stableReporters() {
+        return stableReporters;
+    }
+
+    private void publishStableReporters() {
+        stableReporters = view.stream()
+                              .filter(member -> !member.equals(self))
+                              .filter(this::reportedStably)
+                              .collect(Collectors.toUnmodifiableSet());
     }
 
     private boolean reportedStably(NodeId member) {

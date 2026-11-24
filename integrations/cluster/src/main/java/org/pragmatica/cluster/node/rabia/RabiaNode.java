@@ -203,7 +203,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     }
 
     default java.util.Set<NodeId> verifiedVoterHistoryIds() {
-        return java.util.Set.of();
+        return Set.of();
     }
 
     default Result<Unit> initializeVoters(VoterConfiguration configuration) {
@@ -256,6 +256,13 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     default Option<VoterConfiguration> voterConfiguration() {
         return Option.none();
+    }
+
+    /// Test seam (#1654 Ember): genesis members whose last two reports this pending node holds as consecutive rounds of its own view.
+    /// Read-only diagnostic for tests: it is not a consensus decision input and nothing in the protocol reads it.
+    /// Empty for a node that is not genesis-pending or whose engine is a test double.
+    default Set<NodeId> genesisStableReporters() {
+        return Set.of();
     }
 
     default org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {
@@ -911,6 +918,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public Option<VoterConfiguration> voterConfiguration() {
                 return consensus().voterConfiguration();
+            }
+
+            @Override
+            public Set<NodeId> genesisStableReporters() {
+                return consensus().genesisStableReporters();
             }
 
             @Override

@@ -124,6 +124,27 @@ class GenesisViewAgreementSimulationTest {
         assertThat(agreementA.agreed().unwrap()).isEqualTo(all);
     }
 
+    /// The read-only snapshot the Ember seat test waits on (#1654): a member is listed only after two consecutive rounds of exactly this
+    /// node's view, one round is not enough, and a report of a different view never counts.
+    @Test
+    void stableReporters_listsAMemberOnlyAfterTwoConsecutiveRoundsOfThisNodesView() {
+        var a = new NodeId("a");
+        var b = new NodeId("b");
+        var c = new NodeId("c");
+        var all = Set.of(a, b, c);
+        var agreement = GenesisViewAgreement.genesisViewAgreement(a, 3, Option.none());
+
+        agreement.tick(all);
+        assertThat(agreement.stableReporters()).isEmpty();
+        agreement.receive(b, 1, all);
+        assertThat(agreement.stableReporters()).isEmpty();
+        agreement.receive(b, 2, all);
+        assertThat(agreement.stableReporters()).containsExactly(b);
+        agreement.receive(c, 1, Set.of(a, c));
+        agreement.receive(c, 2, Set.of(a, c));
+        assertThat(agreement.stableReporters()).containsExactly(b);
+    }
+
     @Test
     void genesisVoters_fixTheView_andAMismatchedPeerNeverAgrees() {
         var a = new NodeId("a");

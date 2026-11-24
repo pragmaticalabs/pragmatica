@@ -862,6 +862,13 @@ public class RabiaEngine<C extends Command> {
         return voters;
     }
 
+    /// Test seam (#1654 Ember): the genesis members whose last two reports this pending node holds as consecutive rounds of its own view.
+    /// Empty once genesis agreement is gone and for a node that never ran one. Read-only snapshot, safe from any thread.
+    public Set<NodeId> genesisStableReporters() {
+        return genesisAgreement.map(GenesisViewAgreement::stableReporters)
+                               .or(Set.of());
+    }
+
     public org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {
         voterListeners.add(listener);
         voterConfiguration().onPresent(listener);
