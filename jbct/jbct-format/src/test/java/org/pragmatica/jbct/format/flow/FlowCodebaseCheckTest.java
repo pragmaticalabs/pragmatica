@@ -49,7 +49,7 @@ class FlowCodebaseCheckTest {
                 var result = formatter.format(source);
                 if (result.isFailure()) {
                     errors++;
-                    errorFiles.add(projectRoot.relativize(file) + ": format failed");
+                    errorFiles.add(projectRoot.relativize(file) + ": " + result.fold(cause -> cause.message(), ok -> "format failed"));
                     continue;
                 }
                 var formattedSource = result.unwrap();
@@ -82,8 +82,8 @@ class FlowCodebaseCheckTest {
         System.out.println("Non-idempotent:   " + nonIdempotent);
 
         if (!errorFiles.isEmpty()) {
-            System.out.println("\n--- ERRORS (first 30) ---");
-            errorFiles.stream().limit(30).forEach(System.out::println);
+            System.out.println("\n--- ERRORS (all; a content-guard refusal names the first lost or changed item, #3691) ---");
+            errorFiles.forEach(System.out::println);
         }
         if (!changedFiles.isEmpty()) {
             System.out.println("\n--- WOULD REFORMAT (first 50) ---");
