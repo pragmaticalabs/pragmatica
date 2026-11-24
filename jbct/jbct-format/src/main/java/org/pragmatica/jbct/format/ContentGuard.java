@@ -1,5 +1,7 @@
 package org.pragmatica.jbct.format;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -31,6 +33,7 @@ public interface ContentGuard {
     enum Category {
         COMMENT,
         CODE,
+        IMPORT,
         BLANK
     }
 
@@ -43,20 +46,81 @@ public interface ContentGuard {
 
     /// Return success when `output` carries the content of `input`; otherwise the typed refusal for `fileName`.
     static Result<Unit> verify(String fileName, String input, String output) {
-        var before = Java25Lexer.lex(input);
-        var after = Java25Lexer.lex(output);
+        var before = split(items(Java25Lexer.lex(input)));
+        var after = split(items(Java25Lexer.lex(output)));
 
         return firstDifference(fileName,
                                input,
-                               items(before, Category.COMMENT),
-                               items(after, Category.COMMENT),
+                               before.comments(),
+                               after.comments(),
                                "comment").orElse(() -> firstDifference(fileName,
                                                                        input,
-                                                                       items(before, Category.CODE),
-                                                                       items(after, Category.CODE),
+                                                                       before.code(),
+                                                                       after.code(),
                                                                        "token"))
+                              .orElse(() -> firstDifference(fileName,
+                                                            input,
+                                                            before.imports(),
+                                                            after.imports(),
+                                                            "import"))
                               .<Result<Unit>> fold(() -> unitResult(),
                                                    cause -> cause.result());
+    }
+
+    /// The lexed items of one text, split by what the comparison does with them.
+    ///
+    /// Import declarations are the one place the formatter's rules reorder tokens (it sorts and groups them), so each
+    /// declaration is folded into one `IMPORT` item and the declarations are compared as a sorted list: a lost,
+    /// added or changed declaration is still refused, a reorder of declarations is not.
+    record Split(List<Item> comments, List<Item> code, List<Item> imports) {
+        static Split split(List<Item> comments, List<Item> code, List<Item> imports) {
+            return new Split(comments, code, imports);
+        }
+    }
+
+    private static Split split(List<Item> all) {
+        var code = all.stream().filter(item -> item.category() == Category.CODE).toList();
+        var folded = foldImports(code);
+
+        return Split.split(all.stream().filter(item -> item.category() == Category.COMMENT).toList(),
+                           folded.stream().filter(item -> item.category() == Category.CODE).toList(),
+                           folded.stream()
+                                 .filter(item -> item.category() == Category.IMPORT)
+                                 .sorted(Comparator.comparing(Item::text))
+                                 .toList());
+    }
+
+    private static List<Item> foldImports(List<Item> code) {
+        var result = new ArrayList<Item>();
+        var index = 0;
+
+        while (index < code.size()) {
+            var end = code.get(index).text().equals("import")
+                      ? endOfImport(code, index)
+                      : index;
+
+            result.add(end == index
+                       ? code.get(index)
+                       : Item.item(Category.IMPORT,
+                                   code.subList(index, end + 1)
+                                       .stream()
+                                       .map(Item::text)
+                                       .collect(Collectors.joining(" ")),
+                                   code.get(index).offset()));
+            index = end + 1;
+        }
+
+        return result;
+    }
+
+    private static int endOfImport(List<Item> code, int start) {
+        return IntStream.range(start,
+                               code.size())
+                        .filter(index -> code.get(index)
+                                             .text()
+                                             .equals(";"))
+                        .findFirst()
+                        .orElse(code.size() - 1);
     }
 
     private static Option<FormattingError> firstDifference(String fileName,
@@ -149,12 +213,11 @@ public interface ContentGuard {
                       : text) + "`";
     }
 
-    private static List<Item> items(TokenArray tokens, Category category) {
+    private static List<Item> items(TokenArray tokens) {
         return IntStream.range(0,
                                tokens.count())
                         .mapToObj(index -> item(tokens, index))
-                        .filter(item -> item.category() == category)
-                        .collect(Collectors.toList());
+                        .toList();
     }
 
     private static Item item(TokenArray tokens, int index) {

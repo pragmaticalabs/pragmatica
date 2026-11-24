@@ -122,6 +122,26 @@ class ContentGuardTest {
     }
 
     @Test
+    void importReorder_isAcceptedAsTheFormatterSortsImports() {
+        var input = "import org.b.B;\nimport static org.a.A.f;\nimport java.util.List;\n\nclass C {}\n";
+        var output = "import java.util.List;\n\nimport org.b.B;\n\nimport static org.a.A.f;\n\nclass C {}\n";
+
+        assertThat(verdict(input, output)).isEqualTo(OK);
+    }
+
+    @Test
+    void lostImport_isRefused() {
+        assertThat(verdict("import java.util.List;\nimport java.util.Map;\n\nclass C {}\n",
+                           "import java.util.Map;\n\nclass C {}\n")).contains("import lost: `import java . util . List ;` (input line 1)");
+    }
+
+    @Test
+    void changedImport_isRefused() {
+        assertThat(verdict("import java.util.List;\n\nclass C {}\n",
+                           "import java.util.Set;\n\nclass C {}\n")).contains("import changed: `import java . util . List ;` became `import java . util . Set ;`");
+    }
+
+    @Test
     void lostToken_isRefused() {
         assertThat(verdict("class A {\n    int x;\n}\n", "class A {\n    int ;\n}\n")).contains("token lost: `x` (input line 2)");
     }
