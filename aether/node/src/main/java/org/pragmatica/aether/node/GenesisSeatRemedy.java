@@ -5,7 +5,10 @@
 package org.pragmatica.aether.node;
 
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
+import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.environment.AutoHealConfig;
 
 
@@ -18,6 +21,14 @@ import org.pragmatica.aether.environment.AutoHealConfig;
 ///   timeout; the reconcile tick, join and voter swap come on top).
 /// - Provider present, auto-heal off: no replacement can come; the manual remedies are named.
 public interface GenesisSeatRemedy {
+    /// The binding the node hands the consensus engine: each read takes the live auto-heal state and the lifecycle manager's own provider gate
+    /// ([NodeLifecycleManager#isCloudManaged]: a local compute integration or a committed cluster source), then picks the arm.
+    static Supplier<String> remedyBinding(BooleanSupplier autoHealEnabled,
+                                          NodeLifecycleManager lifecycleManager,
+                                          AutoHealConfig config) {
+        return () -> genesisSeatRemedy(autoHealEnabled.getAsBoolean(), lifecycleManager.isCloudManaged(), config);
+    }
+
     static String genesisSeatRemedy(boolean autoHealEnabled, boolean providerPresent, AutoHealConfig config) {
         return providerPresent
                ? autoHealArm(autoHealEnabled, config)

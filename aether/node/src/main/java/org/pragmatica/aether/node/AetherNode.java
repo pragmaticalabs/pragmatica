@@ -3035,10 +3035,10 @@ public interface AetherNode extends ManageableNode {
         // #1654: genesis seat warnings raised by the consensus engine reach THIS node's event log.
         clusterNode.useOperatorWarningSink(operatorWarningSink);
         // #1654: the remedy sentence is chosen at raise time from the live auto-heal state and from whether a compute provider exists (the
-        // lifecycle manager's own gate: a local compute integration or a committed cluster source), so the warning is true in every state.
-        clusterNode.useGenesisSeatRemedy(() -> GenesisSeatRemedy.genesisSeatRemedy(clusterTopologyManager.isAutoHealEnabled(),
-                                                                                   lifecycleManager.isCloudManaged(),
-                                                                                   config.autoHeal()));
+        // lifecycle manager's own gate), so the warning is true in every state. The binding is `GenesisSeatRemedy.remedyBinding`, tested there.
+        clusterNode.useGenesisSeatRemedy(GenesisSeatRemedy.remedyBinding(clusterTopologyManager::isAutoHealEnabled,
+                                                                         lifecycleManager,
+                                                                         config.autoHeal()));
         // FDB-2a: a migration fenced in the database for long, and an unfenced CockroachDB run, reach the event log.
         schemaOrchestrator.setOperatorWarningSink(operatorWarningSink);
         var appHttpServerOut = SliceRuntimeAssembly.appHttpServer(new SliceRuntimeAssembly.AppHttpServerInputs(config,

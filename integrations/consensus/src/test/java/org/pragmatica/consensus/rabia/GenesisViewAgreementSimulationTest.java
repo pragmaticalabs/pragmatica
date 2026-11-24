@@ -178,6 +178,52 @@ class GenesisViewAgreementSimulationTest {
         assertThat(agreement.stableReporters()).isEmpty();
     }
 
+    /// A repeated or older report of a round already held, with the same view, changes nothing: the member stays stable and the agreement's
+    /// inputs (stage, view, missing, round, rounds since change) stay as they were.
+    @Test
+    void aRepeatedReportOfAHeldRoundWithTheSameView_unsettlesNothing() {
+        var a = new NodeId("a");
+        var b = new NodeId("b");
+        var all = Set.of(a, b);
+        var agreement = GenesisViewAgreement.genesisViewAgreement(a, 3, Option.none());
+
+        agreement.tick(all);
+        agreement.receive(b, 1, all);
+        agreement.receive(b, 2, all);
+        var status = agreement.status();
+        var round = agreement.round();
+        var sinceChange = agreement.roundsSinceChange();
+
+        assertThat(agreement.stableReporters()).containsExactly(b);
+        agreement.receive(b, 2, all);
+        agreement.receive(b, 1, all);
+        assertThat(agreement.stableReporters()).containsExactly(b);
+        assertThat(agreement.status()).isEqualTo(status);
+        assertThat(agreement.round()).isEqualTo(round);
+        assertThat(agreement.roundsSinceChange()).isEqualTo(sinceChange);
+    }
+
+    /// Agreement is decided by the receive that completes the last member's two consecutive reports, with no further tick: the tick-side
+    /// evaluation cannot mask a receive that forgets to evaluate (both ticks come BEFORE the reports here).
+    @Test
+    void agreed_isDecidedByTheDecidingReceive_withoutAFurtherTick() {
+        var a = new NodeId("a");
+        var b = new NodeId("b");
+        var c = new NodeId("c");
+        var all = Set.of(a, b, c);
+        var agreement = GenesisViewAgreement.genesisViewAgreement(a, 3, Option.none());
+
+        agreement.tick(all);
+        agreement.tick(all);
+        agreement.receive(b, 1, all);
+        agreement.receive(b, 2, all);
+        agreement.receive(c, 1, all);
+        assertThat(agreement.agreed().isEmpty()).as("one report of c is not enough").isTrue();
+        agreement.receive(c, 2, all);
+        assertThat(agreement.agreed().isPresent()).as("decided by the receive itself, no tick since").isTrue();
+        assertThat(agreement.agreed().unwrap()).isEqualTo(all);
+    }
+
     @Test
     void genesisVoters_fixTheView_andAMismatchedPeerNeverAgrees() {
         var a = new NodeId("a");
