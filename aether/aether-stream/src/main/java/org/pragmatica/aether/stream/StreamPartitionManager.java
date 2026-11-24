@@ -3325,7 +3325,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// copy may serve. A mark under an epoch this node has not yet applied (the owner's view runs ahead of this node's) is the
     /// newer life's and stands. The same read serves persistent and in-memory streams: the mark is not tied to a WAL.
     private boolean markVoidedByOwnerChange(String streamName, int partition, CommittedMark mark) {
-        return ownerEpochSource.currentOwnerEpoch(streamName, partition).isStrictlyAfter(mark.epoch());
+        return ownerEpochSource.currentOwnerEpoch(streamName, partition)
+                               .isStrictlyAfter(mark.epoch());
     }
 
     private long localVisible(String streamName, int partition) {
