@@ -34,6 +34,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #946, multi-node: an `ANY_REPLICA` read of a user stream (the router the `GET /api/events` read-back also uses; `/api/events`
 /// itself is not read here) answers from a node that is up while every peer it would have selected is dead.
@@ -68,6 +69,10 @@ class EmberAnyReplicaReadFallbackTest {
     private static final long ISR_BUDGET_MS = 60_000L;
     private static final long REPLICA_VISIBLE_BUDGET_MS = 30_000L;
     private static final long OWNER_ACTIVE_BUDGET_MS = 60_000L;
+    private static final Duration CONDITION_POLL = Duration.ofMillis(200);
+    private static final Duration ISR_POLL = Duration.ofMillis(250);
+    private static final Duration LEADER_POLL = Duration.ofMillis(500);
+    private static final Duration ACK_POLL = Duration.ofMillis(500);
     private static final int ACKED = 3;
     private static final int PARTITION = 0;
     private static final String NAMESPACE = "ember";
@@ -170,7 +175,6 @@ class EmberAnyReplicaReadFallbackTest {
     /// Appends and waits for the acknowledgement of the offset the append returned. A refused append fails the test with its
     /// cause: a refusal is never turned into an offset, so no record is counted as acknowledged that does not exist.
     private long publishAcked(AetherNode owner, String payload) {
-        var deadline = System.currentTimeMillis() + ISR_BUDGET_MS;
         var manager = owner.streamPartitionManager();
         var confirmations = manager.confirmationFactorFor(ENGINE_KEY) - 1;
         var offset = manager.publishLocalAtFloor(ENGINE_KEY, PARTITION, payload.getBytes(StandardCharsets.UTF_8), System.currentTimeMillis(), confirmations)
@@ -178,14 +182,10 @@ class EmberAnyReplicaReadFallbackTest {
                             .await(TimeSpan.timeSpan(30).seconds())
                             .fold(cause -> Assertions.<Long>fail("append of " + payload + " refused: " + cause.message()),
                                   value -> value);
-        var last = awaitedAck(manager, confirmations, offset);
-
-        while (!last.acked() && System.currentTimeMillis() < deadline) {
-            sleepQuietly(500L);
-            last = awaitedAck(manager, confirmations, offset);
-        }
-
-        assertThat(last.acked()).as("offset " + offset + " of " + payload + " acknowledged: " + last.body()).isTrue();
+        pollUntil(() -> awaitedAck(manager, confirmations, offset),
+                  Response::acked,
+                  Duration.ofMillis(ISR_BUDGET_MS),
+                  ACK_POLL).assertMet("offset " + offset + " of " + payload + " acknowledged");
 
         return offset;
     }
@@ -219,28 +219,19 @@ class EmberAnyReplicaReadFallbackTest {
     }
 
     private static void awaitUntil(BooleanSupplier condition, long budgetMs, String what) {
-        var deadline = System.currentTimeMillis() + budgetMs;
-
-        while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
-            sleepQuietly(200L);
-        }
-        assertThat(condition.getAsBoolean()).as("within %dms: %s", budgetMs, what).isTrue();
+        pollUntil(condition::getAsBoolean,
+                  met -> met,
+                  Duration.ofMillis(budgetMs),
+                  CONDITION_POLL).assertMet("within " + budgetMs + "ms: " + what);
     }
 
     private StreamPartitionOwnershipValue awaitFullIsr() {
-        var deadline = System.currentTimeMillis() + ISR_BUDGET_MS;
-
-        while (System.currentTimeMillis() < deadline) {
-            var record = committedRecord().filter(value -> value.isrVersion() > 0 && value.isr().size() == 3);
-
-            if (record.isPresent()) {
-                return record.unwrap();
-            }
-
-            sleepQuietly(250L);
-        }
-
-        throw new AssertionError("no committed ISR of three for " + ENGINE_KEY + " within " + ISR_BUDGET_MS + "ms; last: " + committedRecord());
+        return pollUntil(() -> committedRecord().filter(value -> value.isrVersion() > 0 && value.isr().size() == 3),
+                         Option::isPresent,
+                         Duration.ofMillis(ISR_BUDGET_MS),
+                         ISR_POLL).assertMet("a committed ISR of three for " + ENGINE_KEY + " within " + ISR_BUDGET_MS + "ms")
+                                  .finalValue()
+                                  .unwrap();
     }
 
     private Option<StreamPartitionOwnershipValue> committedRecord() {
@@ -283,13 +274,10 @@ class EmberAnyReplicaReadFallbackTest {
     }
 
     private void awaitLeader() {
-        var deadline = System.currentTimeMillis() + LEADER_BUDGET_MS;
-
-        while (System.currentTimeMillis() < deadline && cluster.getLeaderManagementPort().isEmpty()) {
-            sleepQuietly(500L);
-        }
-
-        assertThat(cluster.getLeaderManagementPort().isPresent()).as("a leader is elected").isTrue();
+        pollUntil(cluster::getLeaderManagementPort,
+                  Option::isPresent,
+                  Duration.ofMillis(LEADER_BUDGET_MS),
+                  LEADER_POLL).assertMet("a leader is elected within " + LEADER_BUDGET_MS + "ms");
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -307,15 +295,6 @@ class EmberAnyReplicaReadFallbackTest {
             return new Response(response.statusCode(), response.body());
         } catch (Exception e) {
             return new Response(-1, e.toString());
-        }
-    }
-
-    @SuppressWarnings("JBCT-EX-01")
-    private static void sleepQuietly(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
         }
     }
 }
