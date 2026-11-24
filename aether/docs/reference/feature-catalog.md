@@ -275,7 +275,7 @@ HTTP API-key and JWT/JWKS verification is shared with Terra through `aether/http
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 73 | Ember embeddable cluster | Complete | Headless cluster runtime extracted from Forge as `aether/ember/` module. Fluent builder API: `Ember.cluster(5).withH2().start()`. Programmatic lifecycle management via `EmberInstance` |
+| 73 | Ember in-process test and dev-loop cluster | Complete | Dev tool only (product ruling 2026-11-06): not an embeddable production runtime and not a strangler-fig path; incremental adoption starts with Pragmatica Terra. Headless cluster runtime extracted from Forge as `aether/ember/` module. Fluent builder API: `Ember.cluster(5).withH2().start()`. Programmatic lifecycle management via `EmberInstance` |
 | 74 | Remote Maven repositories | Complete | Resolve slices from Maven Central or private Nexus. SHA-256 verification (SHA-1 fallback), mandatory checksums, XXE-hardened XML parsing, local `~/.m2/repository` cache, `settings.xml` auth |
 | 75 | Load Balancer | Complete | Standalone `aether/lb/` module. Round-robin routing, active health checking, automatic retry, X-Forwarded-* headers, hop-by-hop stripping |
 

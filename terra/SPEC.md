@@ -164,7 +164,7 @@ The live ecommerce proof exposed unsupported `Instant` arguments in shared JDBC 
 | Keyed interceptors | DONE | Terra generation registers `TypeToken`; the original banking account methods compile and sequential credit/read/transfer operations pass with LOCAL caching. |
 | Application-only embedding | DONE | `TerraLaunchPlan.startApplication()` uses the same migration/construction path; banking, step, and persistence tests await owned close. |
 | Shared defects discovered by examples | DONE | JDBC Instant normalization; native PostgreSQL generic conversion preserving binary/text format; cache-aside population and write-around invalidation awaited before business completion. Shared tests and live examples pass. |
-| Streams/entities investigation | DONE | `STREAMS-AND-ENTITIES.md` traces local WAL, consumer cursors, entity state machine, timers, codec and ownership requirements. It labels the next contract as proposed, with no implemented Terra durability claim. |
+| Streams/entities investigation | DONE | [`RFC-0020`](../docs/rfc/RFC-0020-terra-streams-and-entities.md) (moved from `STREAMS-AND-ENTITIES.md`; partly superseded by #2099 and #2100) traces local WAL, consumer cursors, entity state machine, timers, codec and ownership requirements. It labels the next contract as proposed, with no implemented Terra durability claim. |
 
 Executed on 2026-10-08 using JDK 25, the isolated Maven repository, and local PostgreSQL 14.20:
 
