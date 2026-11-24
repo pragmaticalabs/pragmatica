@@ -213,8 +213,8 @@ class QuicClusterNetworkLifecycleTest {
         }
 
         assertThat(built).as("control: the failed attempt built a server and a client").hasSize(1);
-        assertThat(built.getFirst().server().isTerminated()).as("the failed attempt's server group is terminated").isTrue();
-        assertThat(built.getFirst().client().isTerminated()).as("the failed attempt's client group is terminated").isTrue();
+        assertThat(built.getFirst().server().isTerminated()).as("the failed attempt's server group is terminated before the failure is reported").isTrue();
+        assertTerminatesSoon(built.getFirst().client(), "the failed attempt's client group");
     }
 
     /// #3635, L2: the retry after the failure orphans nothing — the failed attempt's groups are gone, the retry's are live,
@@ -230,19 +230,21 @@ class QuicClusterNetworkLifecycleTest {
         network.startOnPort(0).await(AWAIT).onFailure(cause -> fail("retry failed: " + cause.message()));
 
         assertThat(built).as("control: two attempts were built").hasSize(2);
-        assertThat(built.get(0).server().isTerminated() && built.get(0).client().isTerminated()).as("failed attempt released").isTrue();
+        assertThat(built.get(0).server().isTerminated()).as("failed attempt's server group released").isTrue();
+        assertTerminatesSoon(built.get(0).client(), "failed attempt's client group");
         assertThat(built.get(1).server().isShuttingDown() || built.get(1).client().isShuttingDown()).as("control: the retry's groups are live").isFalse();
 
         network.stop().await(AWAIT).onFailure(cause -> fail("stop failed: " + cause.message()));
 
-        assertThat(built.get(1).server().isTerminated() && built.get(1).client().isTerminated()).as("stop releases the retry's groups").isTrue();
+        assertTerminatesSoon(built.get(1).server(), "stop releases the retry's server group");
+        assertTerminatesSoon(built.get(1).client(), "stop releases the retry's client group");
     }
 
     /// #3635, L1: certificate rotation keeps ONE client — and so one owned group and one datagram-channel map — and only
     /// swaps the TLS context its later dials use. Mutations that redden it: rebuild the client in `rebuildAndStart` (identity),
     /// drop `renewSslContext` from `stopAndRestartServer` (context).
     @Test
-    void rotations_keepOneClientAndItsLiveGroup_andRenewItsDialContext() {
+    void rotations_keepOneClientAndItsLiveGroup_andRenewItsDialContext() throws Exception {
         var network = started();
         var client = (QuicClusterClientInstance) network.clientForTests();
         var clientGroup = client.eventLoopGroupForTest();
@@ -260,7 +262,12 @@ class QuicClusterNetworkLifecycleTest {
 
         network.stop().await(AWAIT).onFailure(cause -> fail("stop failed: " + cause.message()));
 
-        assertThat(clientGroup.isTerminated()).as("the one client's group is released by stop()").isTrue();
+        assertTerminatesSoon(clientGroup, "the one client's group, released by stop()");
+    }
+
+    /// Netty's default shutdown has a 2 s quiet period, so a client group terminates shortly AFTER its close was initiated.
+    private static void assertTerminatesSoon(io.netty.channel.EventLoopGroup group, String what) throws InterruptedException {
+        assertThat(group.terminationFuture().await(AWAIT.millis(), java.util.concurrent.TimeUnit.MILLISECONDS)).as("%s terminates", what).isTrue();
     }
 
     /// The server and client one `startOnPort` built. The server's group exists only once it has started binding, so it is read late.

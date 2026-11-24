@@ -1494,18 +1494,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// #3635: a failed start releases what it built, server AND client, before the failure is reported: both own an
     /// event-loop group, and the fields are overwritten by the next `startOnPort`, so an unreleased pair is orphaned for
-    /// the life of the process. `isRunning` is cleared only after the release has settled, so a retry never meets the
-    /// half-released pair; a release failure is logged, the start's own cause is what the caller sees.
+    /// the life of the process. The fields are cleared and both releases are INITIATED here; the client's group then
+    /// terminates after Netty's default 2 s quiet period, which a failed start does not wait for (the server's own group was
+    /// already terminated by its failed bind). A retry therefore finds the fields empty and builds its own pair. A release
+    /// failure is logged; the start's own cause is what the caller sees.
     private Promise<Unit> onStartFailed(Cause cause) {
         log.error("Failed to start QUIC server: {}", cause.message());
+        stopServerAndClient(unit()).onFailure(releaseCause -> log.warn("Release after failed QUIC start did not complete: {}",
+                                                                       releaseCause.message()));
+        isRunning.set(false);
 
-        return stopServerAndClient(unit()).onFailure(releaseCause -> log.warn("Release after failed QUIC start did not complete: {}",
-                                                                              releaseCause.message()))
-                                  .fold(_ -> {
-                                      isRunning.set(false);
-
-                                      return cause.<Unit> promise();
-                                  });
+        return cause.<Unit> promise();
     }
 
     /// Routes incoming messages received from peers after Hello handshake.
