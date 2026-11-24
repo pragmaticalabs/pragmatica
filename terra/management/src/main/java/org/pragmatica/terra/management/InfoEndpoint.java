@@ -4,6 +4,7 @@
 package org.pragmatica.terra.management;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -32,7 +33,7 @@ final class InfoEndpoint {
             body.put("build", build);
         }
 
-        var answer = Map.copyOf(body);
+        var answer = Collections.unmodifiableMap(body);
 
         return ManagementEndpoint.managementEndpoint("info",
                                                      false,

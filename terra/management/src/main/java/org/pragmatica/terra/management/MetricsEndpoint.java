@@ -121,7 +121,7 @@ final class MetricsEndpoint {
 
         var rendered = new ArrayList<Map<String, Object>>();
 
-        merged.forEach((statistic, value) -> rendered.add(Map.of("statistic", statistic.name(), "value", value)));
+        merged.forEach((statistic, value) -> rendered.add(ordered("statistic", statistic.name(), "value", value)));
 
         return rendered;
     }
@@ -140,10 +140,20 @@ final class MetricsEndpoint {
 
         return available.entrySet()
                         .stream()
-                        .<Map<String, Object>> map(entry -> Map.of("tag",
-                                                                   entry.getKey(),
-                                                                   "values",
-                                                                   List.copyOf(entry.getValue())))
+                        .<Map<String, Object>> map(entry -> ordered("tag",
+                                                                    entry.getKey(),
+                                                                    "values",
+                                                                    List.copyOf(entry.getValue())))
                         .toList();
+    }
+
+    // Rendered JSON bodies are insertion-ordered: Map.of iterates in a per-JVM salted order.
+    private static Map<String, Object> ordered(String firstKey, Object first, String secondKey, Object second) {
+        var body = new LinkedHashMap<String, Object>();
+
+        body.put(firstKey, first);
+        body.put(secondKey, second);
+
+        return body;
     }
 }
