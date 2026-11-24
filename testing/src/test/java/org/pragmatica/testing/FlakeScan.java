@@ -18,11 +18,8 @@ package org.pragmatica.testing;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -30,8 +27,9 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.regex.Pattern;
+
+import org.pragmatica.testlogging.SourceWalk;
 
 /// The line scanner behind `FlakeScanTest`: finds the line patterns that past flakes were fixed by removing, in every
 /// `src/test/java` and `src/it/java` tree under a root, and checks the hits against a shrink-only allow-list.
@@ -50,8 +48,15 @@ import java.util.regex.Pattern;
 /// entry. The corollary is that the list pins counts per file, not locations: moving a listed line elsewhere in the same
 /// file is accepted. A pattern the regex does not describe (`assertThat(elapsed).as("x").isLessThan(`) is invisible to both
 /// passes; wrapping is the only blind spot this closes.
+///
+/// `REPO_WALK` is not a flake pattern in a line but a hazard in a walk (#3703): `Files.walk`, `Files.walkFileTree` and `Files.find`
+/// stat every entry before any filter runs, so a scan rooted above several modules fails with `NoSuchFileException` when a parallel
+/// build deletes a file in another module's `target/`. The scan SEES a call to one of the three in a test source (one line or
+/// wrapped, any qualification of `Files`); it CANNOT see the root the call is given, so it refuses every call that is not declared
+/// in [RepoWalkExceptions] with the reason its root cannot meet build output, and counts declarations per file like allow-list
+/// entries. It does not see a walk through another API (`File.listFiles` recursion, `Files.newDirectoryStream`, a library walker), a
+/// walk in `src/main`, or a declared root that is later changed; those are left to review. The fix it asks for is `SourceWalk`.
 final class FlakeScan {
-    private static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules");
     private static final List<String> SCANNED_SOURCES = List.of("/src/test/java/", "/src/it/java/");
 
     /// A pattern with a fixed flake behind it, and the fix the failure message points at.
@@ -66,7 +71,9 @@ final class FlakeScan {
                          + "|assertTrue\\s*\\(\\s*\\w*(elapsed|took)\\w*\\s*[<>]",
                          "assert the ordering structurally (a latch, a returned-before-released flag, an injected clock), not an elapsed time against a bound: a loaded host stretches any bound"),
         SHORT_AWAIT("\\batMost\\s*\\(\\s*(Duration\\s*\\.\\s*ofMillis\\s*\\(|Duration\\s*\\.\\s*ofSeconds\\s*\\(\\s*[1-4]\\s*\\)|[0-9_]+\\s*,\\s*TimeUnit\\s*\\.\\s*MILLISECONDS|[1-4]\\s*,\\s*(TimeUnit\\s*\\.\\s*)?SECONDS)",
-                    "give the wait a deadline of at least 5 s (PollUntil.pollUntil(..., Duration.ofSeconds(10)) or atMost(Duration.ofSeconds(10))): the deadline bounds only the failure, a pass returns at once");
+                    "give the wait a deadline of at least 5 s (PollUntil.pollUntil(..., Duration.ofSeconds(10)) or atMost(Duration.ofSeconds(10))): the deadline bounds only the failure, a pass returns at once"),
+        REPO_WALK("\\bFiles\\s*\\.\\s*(walk|walkFileTree|find)\\s*\\(",
+                  "scan source files with org.pragmatica.testlogging.SourceWalk.files(root): the java.nio walks (walk, walkFileTree, find) list and stat every entry before any filter runs, so a walk from a repository or multi-module root visits other modules' target/ while a parallel build rewrites it and fails with NoSuchFileException. A walk of a directory nothing else writes (a directory the test creates, the module's own fixed source path, a class directory complete before the forks start) is declared in RepoWalkExceptions with its reason (#3703)");
 
         private final Pattern pattern;
         private final String fix;
@@ -108,25 +115,14 @@ final class FlakeScan {
         var hits = new ArrayList<Hit>();
         var examined = new ArrayList<String>();
 
-        Files.walkFileTree(root, new SimpleFileVisitor<>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                return !dir.equals(root) && SKIPPED_DIRECTORIES.contains(dir.getFileName().toString())
-                       ? FileVisitResult.SKIP_SUBTREE
-                       : FileVisitResult.CONTINUE;
-            }
+        for (var file : SourceWalk.files(root)) {
+            var relative = root.relativize(file).toString().replace('\\', '/');
 
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                var relative = root.relativize(file).toString().replace('\\', '/');
-
-                if (relative.endsWith(".java") && isScanned("/" + relative)) {
-                    examined.add(relative);
-                    scanFile(relative, file, hits);
-                }
-                return FileVisitResult.CONTINUE;
+            if (relative.endsWith(".java") && isScanned("/" + relative)) {
+                examined.add(relative);
+                scanFile(relative, file, hits);
             }
-        });
+        }
         hits.sort(Comparator.comparing(Hit::file).thenComparingInt(Hit::line));
         return new Scan(hits, examined);
     }
@@ -267,21 +263,42 @@ final class FlakeScan {
     }
 
     /// Everything wrong between the hits and the allow-list; empty means green. Entries are a multiset: two identical
-    /// lines in one file need two entries. `committedCount` is the size the list was last committed at.
+    /// lines in one file need two entries. `committedCount` is the size the list was last committed at. A `REPO_WALK` hit is
+    /// never an allow-list entry: it needs SourceWalk, or a declaration in [RepoWalkExceptions].
     static List<String> problems(List<Hit> hits, List<String> entries, int committedCount) {
+        return problems(hits, entries, committedCount, Map.of());
+    }
+
+    /// As [#problems(List, List, int)], with `declaredWalks` (file to the number of walk calls declared in it) excusing `REPO_WALK`
+    /// hits: a file's hits beyond its declared count are reported, and a declared count the hits do not reach is reported stale.
+    static List<String> problems(List<Hit> hits, List<String> entries, int committedCount, Map<String, Integer> declaredWalks) {
         var problems = new ArrayList<String>();
         var remaining = new HashMap<String, Integer>();
+        var walksLeft = new HashMap<>(declaredWalks);
 
         entries.forEach(entry -> remaining.merge(entry, 1, Integer::sum));
         for (var hit : hits) {
-            if (remaining.merge(hit.key(), -1, Integer::sum) < 0) {
+            if (hit.kind() == Kind.REPO_WALK
+                ? walksLeft.merge(hit.file(), -1, Integer::sum) < 0
+                : remaining.merge(hit.key(), -1, Integer::sum) < 0) {
                 problems.add("flake pattern " + hit.kind() + " at " + hit.file() + ":" + hit.line() + ": " + hit.text()
                              + "\n    fix: " + hit.kind().fix());
             }
         }
         problems.addAll(staleEntries(remaining));
+        problems.addAll(staleWalks(walksLeft));
         problems.addAll(sizeProblems(entries.size(), committedCount));
         return problems;
+    }
+
+    private static List<String> staleWalks(Map<String, Integer> walksLeft) {
+        return walksLeft.entrySet()
+                        .stream()
+                        .filter(entry -> entry.getValue() > 0)
+                        .map(entry -> "stale REPO_WALK declaration (the file holds no such walk any more, x" + entry.getValue() + "): " + entry.getKey()
+                                      + "\n    fix: delete it from RepoWalkExceptions")
+                        .sorted()
+                        .toList();
     }
 
     private static List<String> staleEntries(Map<String, Integer> remaining) {
