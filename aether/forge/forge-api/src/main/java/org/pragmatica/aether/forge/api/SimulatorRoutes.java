@@ -5,6 +5,7 @@
 package org.pragmatica.aether.forge.api;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -150,12 +151,12 @@ public sealed interface SimulatorRoutes {
 
     private static PlaceOrderResponse buildPlaceOrderResponse() {
         var random = ThreadLocalRandom.current();
-        var orderId = String.format("ORD-%08d", random.nextInt(100_000_000));
+        var orderId = String.format(Locale.ROOT, "ORD-%08d", random.nextInt(100_000_000));
 
         DataGenerator.OrderIdGenerator.trackOrderId(orderId);
         var total = 10.00 + random.nextDouble() * 990.00;
 
-        return new PlaceOrderResponse(true, orderId, "CONFIRMED", String.format("USD %.2f", total));
+        return new PlaceOrderResponse(true, orderId, "CONFIRMED", String.format(Locale.ROOT, "USD %.2f", total));
     }
 
     private static Promise<OrderStatusResponse> getOrderStatus(Supplier<SimulatorConfig> configSupplier,
@@ -170,7 +171,7 @@ public sealed interface SimulatorRoutes {
         var total = 10.00 + random.nextDouble() * 990.00;
         var itemCount = 1 + random.nextInt(5);
 
-        return new OrderStatusResponse(true, orderId, status, String.format("USD %.2f", total), itemCount);
+        return new OrderStatusResponse(true, orderId, status, String.format(Locale.ROOT, "USD %.2f", total), itemCount);
     }
 
     private static Promise<CancelOrderResponse> cancelOrder(Supplier<SimulatorConfig> configSupplier, String orderId) {
@@ -199,7 +200,7 @@ public sealed interface SimulatorRoutes {
         var random = ThreadLocalRandom.current();
         var price = 5.00 + random.nextDouble() * 495.00;
 
-        return new GetPriceResponse(true, productId, String.format("USD %.2f", price));
+        return new GetPriceResponse(true, productId, String.format(Locale.ROOT, "USD %.2f", price));
     }
 
     private static Promise<Unit> applySimulation(Supplier<SimulatorConfig> configSupplier, String sliceName) {

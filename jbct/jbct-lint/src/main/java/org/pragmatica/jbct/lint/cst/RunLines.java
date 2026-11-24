@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.lint.cst;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -850,7 +851,7 @@ record RunLines(Invocation invocation,
     private String goal() {
         return invocation.command()
                          .name()
-                         .toLowerCase()
+                         .toLowerCase(Locale.ROOT)
                          .replace('_', '-');
     }
 

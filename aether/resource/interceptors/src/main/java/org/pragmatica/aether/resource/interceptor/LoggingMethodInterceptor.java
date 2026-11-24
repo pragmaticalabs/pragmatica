@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
+import java.util.Locale;
 import java.util.Map;
 
 import org.pragmatica.aether.slice.MethodInterceptor;
@@ -82,7 +83,7 @@ public record LoggingMethodInterceptor(LogConfig config, Logger log) implements 
     @Contract
     private <R> void logExit(Result<R> result, long startNanos) {
         var durationMs = (System.nanoTime() - startNanos) / 1_000_000.0;
-        var formattedDuration = String.format("%.2f", durationMs);
+        var formattedDuration = String.format(Locale.ROOT, "%.2f", durationMs);
 
         logExitDetails(result, formattedDuration);
     }

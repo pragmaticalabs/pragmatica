@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.schema;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
@@ -489,7 +490,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     /// caller's raw request parameter; `"U<version>__undo"` is the analogous marker for undo, new
     /// with this fix since undo previously never reached a real completion at all.
     private static String lastMigrationFor(String operation, AetherSchemaManager.SchemaResult result) {
-        var version = String.format("%03d", result.currentVersion());
+        var version = String.format(Locale.ROOT, "%03d", result.currentVersion());
 
         return "baseline".equals(operation)
                ? "V" + version + "__baseline"

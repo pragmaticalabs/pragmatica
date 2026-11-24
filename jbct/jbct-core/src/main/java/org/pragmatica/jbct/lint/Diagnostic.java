@@ -1,5 +1,7 @@
 package org.pragmatica.jbct.lint;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Option;
 
 
@@ -59,7 +61,7 @@ public record Diagnostic(String ruleId,
     public String toHumanReadable() {
         var sb = new StringBuilder();
 
-        sb.append("%s:%d:%d: %s [%s] %s%n".formatted(file, line, column, severity, ruleId, message));
+        sb.append(String.format(Locale.ROOT, "%s:%d:%d: %s [%s] %s%n", file, line, column, severity, ruleId, message));
         if (!details.isEmpty()) {
             sb.append("  ").append(details).append("\n");
         }
@@ -80,6 +82,6 @@ public record Diagnostic(String ruleId,
 
     /// Format location as file:line:column.
     public String location() {
-        return "%s:%d:%d".formatted(file, line, column);
+        return String.format(Locale.ROOT, "%s:%d:%d", file, line, column);
     }
 }
