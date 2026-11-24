@@ -38,6 +38,14 @@ class HttpMethodTest {
         });
     }
 
+    /// Every method parses from its lower-case spelling too, so the ASCII fold covers each letter a method uses.
+    @Test
+    void all_methods_are_parseable_in_lower_case() {
+        for (HttpMethod method : HttpMethod.values()) {
+            assertEquals(method, HttpMethod.httpMethod(method.name().toLowerCase(java.util.Locale.ROOT)).fold(_ -> null, v -> v));
+        }
+    }
+
     @Test
     void all_methods_are_parseable() {
         for (HttpMethod method : HttpMethod.values()) {

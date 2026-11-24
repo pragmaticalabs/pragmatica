@@ -26,7 +26,9 @@ import java.util.function.BiConsumer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpRequest;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -37,6 +39,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class HttpUnknownMethodTest {
     private final Recorder recorder = new Recorder();
     private final List<HttpRequest> classified = new CopyOnWriteArrayList<>();
+    private final RecordingSink sink = new RecordingSink();
     private HttpServer server;
 
     @BeforeEach
@@ -44,7 +47,9 @@ class HttpUnknownMethodTest {
         RequestClassifier classifier = head -> {
             classified.add(head);
 
-            return Disposition.aggregate(1024);
+            return head.path().equals("/stream")
+                   ? new Disposition.Stream(1024, Option.none(), sink)
+                   : Disposition.aggregate(1024);
         };
         var config = HttpServerConfig.httpServerConfig("unknown-method", 0).withClassifier(classifier);
 
@@ -66,6 +71,30 @@ class HttpUnknownMethodTest {
         assertThat(recorder.requests()).hasSize(1);
     }
 
+    /// The classifier, and so routing and authorization by head, sees the method the client sent.
+    @Test
+    void classifier_seesTheMethodTheClientSent() throws IOException {
+        assertThat(status("DELETE")).isEqualTo(200);
+        assertThat(classified.getFirst().method()).isEqualTo(HttpMethod.DELETE);
+        assertThat(recorder.requests().getFirst().method()).isEqualTo(HttpMethod.DELETE);
+    }
+
+    /// A streamed request reaches its sink with the method the client sent.
+    @Test
+    void streamedRequest_reachesItsSinkWithTheMethodTheClientSent() throws Exception {
+        assertThat(status("PUT", "/stream", "Content-Length: 4\r\n", "data")).isEqualTo(200);
+        assertThat(classified.getFirst().method()).isEqualTo(HttpMethod.PUT);
+        assertThat(sink.awaitComplete(10).method()).isEqualTo(HttpMethod.PUT);
+    }
+
+    /// A streamed route is refused too: the sink is never given the request.
+    @Test
+    void propfindToAStreamedRoute_isRefused501_andTheSinkNeverSeesIt() throws IOException {
+        assertThat(status("PROPFIND", "/stream", "Content-Length: 4\r\n", "data")).isEqualTo(501);
+        assertThat(classified).isEmpty();
+        assertThat(sink.terminals()).isEmpty();
+    }
+
     @Test
     void propfind_isRefused501_beforeClassifierAndHandler() throws IOException {
         assertThat(status("PROPFIND")).isEqualTo(501);
@@ -83,17 +112,17 @@ class HttpUnknownMethodTest {
     /// A body does not change the answer: the request is refused on its head.
     @Test
     void propfindWithBody_isRefused501_andNeverDispatched() throws IOException {
-        assertThat(status("PROPFIND", "Content-Length: 4\r\n", "body")).isEqualTo(501);
+        assertThat(status("PROPFIND", "/resource", "Content-Length: 4\r\n", "body")).isEqualTo(501);
         assertThat(classified).isEmpty();
         assertThat(recorder.requests()).isEmpty();
     }
 
     private int status(String method) throws IOException {
-        return status(method, "", "");
+        return status(method, "/resource", "", "");
     }
 
-    private int status(String method, String extraHeaders, String body) throws IOException {
-        var raw = method + " /resource HTTP/1.1\r\nHost: localhost\r\n" + extraHeaders + "Connection: close\r\n\r\n" + body;
+    private int status(String method, String path, String extraHeaders, String body) throws IOException {
+        var raw = method + " " + path + " HTTP/1.1\r\nHost: localhost\r\n" + extraHeaders + "Connection: close\r\n\r\n" + body;
 
         try (var socket = new Socket("127.0.0.1", server.port())) {
             socket.setSoTimeout(10_000);

@@ -15,6 +15,7 @@
  */
 package org.pragmatica.http.server;
 
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -431,11 +432,13 @@ class Http3RequestHandlerTest {
     void knownMethod_reachesClassifierAndHandler() {
         var channel = classifyingChannel();
 
-        channel.writeInbound(headersWith("GET", "/resource"));
+        channel.writeInbound(headersWith("DELETE", "/resource"));
         endInput(channel);
 
         assertThat(classified).hasSize(1);
+        assertThat(classified.getFirst().method()).as("the classifier sees the method sent").isEqualTo(HttpMethod.DELETE);
         assertThat(dispatched).hasSize(1);
+        assertThat(dispatched.getFirst().method()).as("the handler gets the method sent").isEqualTo(HttpMethod.DELETE);
         assertThat(responseStatus(channel)).isEqualTo("200");
         channel.finishAndReleaseAll();
     }
