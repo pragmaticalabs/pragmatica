@@ -325,19 +325,23 @@ public sealed interface TopologyAssembly {
                                                                           FailedVoterEvidence.forNode(metricsCollector,
                                                                                                       membershipFsmRef::get),
                                                                           clusterNode::reconfigure);
+        var surplusRefusals = SurplusRefusals.surplusRefusals((node, cause) -> LOG.warn("Core voter reconciliation: surplus core {} not drained: {}",
+                                                                                        node,
+                                                                                        cause.message()));
 
-        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(() -> coreVoterReconciler.reconcile()
-                                                                                        .flatMap(_ -> retireExcludedCores(clusterNode,
-                                                                                                                          membershipFsmRef::get,
-                                                                                                                          kvStore,
-                                                                                                                          nodeReplacements,
-                                                                                                                          deploymentMap,
-                                                                                                                          clusterTopologyManager,
-                                                                                                                          leaderReconcilerRef::get,
-                                                                                                                          readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
-                                                                                                                                              membershipFsmRef::get)))
-                                                                                        .onFailure(cause -> LOG.warn("Core voter reconciliation: {}",
-                                                                                                                     cause.message())),
+        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(() -> retirementPass(coreVoterReconciler.reconcile(),
+                                                                                    surplusRefusals,
+                                                                                    () -> retireExcludedCores(clusterNode,
+                                                                                                              membershipFsmRef::get,
+                                                                                                              kvStore,
+                                                                                                              nodeReplacements,
+                                                                                                              deploymentMap,
+                                                                                                              clusterTopologyManager,
+                                                                                                              leaderReconcilerRef::get,
+                                                                                                              readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
+                                                                                                                                  membershipFsmRef::get),
+                                                                                                              surplusRefusals)).onFailure(cause -> LOG.warn("Core voter reconciliation: {}",
+                                                                                                                                                            cause.message())),
                                                                TimeSpan.timeSpan(1).seconds()));
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
@@ -841,6 +845,16 @@ public sealed interface TopologyAssembly {
                          .option();
     }
 
+    /// #3626: one 1 s pass of the core retirement. A pass that tries nothing forgets every refusal told so far (a failed voter
+    /// reconcile skips the retirement here, a non-leader skips it in [#retireExcludedCores]), so a refusal that returns after
+    /// leadership came back is told again.
+    static Promise<Unit> retirementPass(Promise<Unit> reconciled,
+                                        SurplusRefusals refusals,
+                                        Supplier<Promise<Unit>> retirement) {
+        return reconciled.onFailure(_ -> refusals.retainOnly(List.of()))
+                         .flatMap(_ -> retirement.get());
+    }
+
     /// #1055: the grace gate is built HERE from the reconciler holder, not handed in as a predicate, so the one line that applies
     /// the drain-safety grace to the retirement path is reachable by a test that drives this method (`CoreRetirementWiringTest`).
     static Promise<Unit> retireExcludedCores(RabiaNode<KVCommand<AetherKey>> cluster,
@@ -850,8 +864,11 @@ public sealed interface TopologyAssembly {
                                              DeploymentMap deployments,
                                              ClusterTopologyManager topology,
                                              Supplier<LeaderReconciler> reconciler,
-                                             Set<NodeId> ready) {
+                                             Set<NodeId> ready,
+                                             SurplusRefusals refusals) {
         if (!cluster.leaderManager().isLeader()) {
+            refusals.retainOnly(List.of());
+
             return Promise.unitPromise();
         }
 
@@ -860,7 +877,7 @@ public sealed interface TopologyAssembly {
                                                            .isEmpty(),
                                         pastDrainGrace(reconciler));
 
-        return retireSurplusCores(victims, topology);
+        return retireSurplusCores(victims, topology, refusals);
     }
 
     /// #1055: the voter-excluded core retirement drains as `OVERPROVISION_SCALE_DOWN`, a surplus trim, so it obeys the same rule as
@@ -886,29 +903,45 @@ public sealed interface TopologyAssembly {
 
     /// #3324: the production wiring of the voter-excluded core retirement: the hold asked is `topology`'s own, for the subject `core`,
     /// and every victim leaves as an `OVERPROVISION_SCALE_DOWN` drain (the reason that keeps the retirement refusal and the grace re-check).
-    static Promise<Unit> retireSurplusCores(List<NodeId> victims, ClusterTopologyManager topology) {
+    static Promise<Unit> retireSurplusCores(List<NodeId> victims,
+                                            ClusterTopologyManager topology,
+                                            SurplusRefusals refusals) {
         return drainSurplusCores(victims,
                                  () -> topology.scalingHeld(ClusterTopologyManager.coreSubject()),
-                                 node -> topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN));
+                                 node -> topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN),
+                                 refusals);
     }
 
     /// #3324: a core excluded from the voter set is core surplus; with auto-heal disabled it is not drained on the cluster's own
     /// initiative. `coreHeld` is asked only when there is a victim, so it is the worker and community gates' accessor
     /// ([ClusterTopologyManager#scalingHeld]) and raises the same operator warning only for a surplus that is really held back.
+    /// #3626: a refused victim (the leader's own id among them) skips only itself; every victim after it is still tried, and the
+    /// refusal is warned once per transition through `refusals`.
     static Promise<Unit> drainSurplusCores(List<NodeId> victims,
                                            BooleanSupplier coreHeld,
-                                           Function<NodeId, Promise<Unit>> drain) {
+                                           Function<NodeId, Promise<Unit>> drain,
+                                           SurplusRefusals refusals) {
         if (victims.isEmpty() || coreHeld.getAsBoolean()) {
+            refusals.retainOnly(List.of());
+
             return Promise.unitPromise();
         }
 
+        refusals.retainOnly(victims);
         var work = Promise.unitPromise();
 
         for (var node : victims) {
-            work = work.flatMap(_ -> drain.apply(node));
+            work = work.flatMap(_ -> drainVictim(node, drain, refusals));
         }
 
         return work;
+    }
+
+    private static Promise<Unit> drainVictim(NodeId node,
+                                             Function<NodeId, Promise<Unit>> drain,
+                                             SurplusRefusals refusals) {
+        return drain.apply(node)
+                    .replaceResult(result -> refusals.settle(node, result));
     }
 
     private static void restoreRetirementIndex(KVStore<AetherKey, AetherValue> store, CommunityRetirementIndex index) {

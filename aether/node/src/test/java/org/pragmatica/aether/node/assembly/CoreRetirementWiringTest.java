@@ -7,6 +7,7 @@ package org.pragmatica.aether.node.assembly;
 
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
@@ -32,7 +33,9 @@ import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
@@ -62,6 +65,15 @@ class CoreRetirementWiringTest {
                                         Supplier<LeaderReconciler> reconciler,
                                         boolean leaderNode,
                                         DeploymentMap deployments) {
+        return retire(topology, reconciler, leaderNode, deployments, SurplusRefusals.surplusRefusals((_, _) -> {}));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Promise<Unit> retire(ClusterTopologyManager topology,
+                                        Supplier<LeaderReconciler> reconciler,
+                                        boolean leaderNode,
+                                        DeploymentMap deployments,
+                                        SurplusRefusals refusals) {
         var cluster = (RabiaNode<KVCommand<AetherKey>>) mock(RabiaNode.class);
         var leader = mock(LeaderManager.class);
 
@@ -94,7 +106,8 @@ class CoreRetirementWiringTest {
                                                     deployments,
                                                     topology,
                                                     reconciler,
-                                                    Set.of(VOTER_A, VOTER_B));
+                                                    Set.of(VOTER_A, VOTER_B),
+                                                    refusals);
     }
 
     private static ClusterTopologyManager topology() {
@@ -179,5 +192,29 @@ class CoreRetirementWiringTest {
         retire(topology, () -> reconciler, false, DeploymentMap.deploymentMap()).await();
 
         verify(topology, never()).drainNode(any(), any());
+    }
+
+    /// #3626: a pass that tries nothing forgets every refusal told so far (SurplusRefusals). A node that is not the leader tries
+    /// nothing, so a refusal that returns once it leads again is a new transition and is warned again; while it keeps leading, the
+    /// same refusal stays silent.
+    @Test
+    void retireExcludedCores_nonLeaderPass_forgetsTheToldRefusal_soItIsWarnedAgainOnceLeadingAgain() {
+        var warned = new CopyOnWriteArrayList<String>();
+        var refusals = SurplusRefusals.surplusRefusals((node, cause) -> warned.add(node.id() + ": " + cause.message()));
+        var topology = mock(ClusterTopologyManager.class);
+        var reconciler = reconcilerWhereYoungIsInsideTheGrace();
+        var empty = DeploymentMap.deploymentMap();
+
+        when(topology.scalingHeld(anyString())).thenReturn(false);
+        when(topology.drainNode(any(), any())).thenReturn(Causes.cause("refused")
+                                                                .<Unit>promise());
+
+        retire(topology, () -> reconciler, true, empty, refusals).await();
+        retire(topology, () -> reconciler, true, empty, refusals).await();
+        assertThat(warned).as("two leading passes, one cause: told once").containsExactly("mature-excluded-core: refused");
+
+        retire(topology, () -> reconciler, false, empty, refusals).await();
+        retire(topology, () -> reconciler, true, empty, refusals).await();
+        assertThat(warned).as("leadership lost for one pass: the refusal is told again").hasSize(2);
     }
 }

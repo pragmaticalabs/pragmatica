@@ -2358,6 +2358,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// #1543: a SURPLUS trim of a node a live replacement pairing protects is refused — the `LeaderReconciler`
     /// surplus drain picks a fresh ephemeral core first, which is exactly the +1 replacement. Non-surplus
     /// reasons are not gated by the pairing: a never-joined zombie (`JOIN_GRACE_REAP`) has no other reaper.
+    ///
+    /// #3626: the refusals are one table, ordered by specificity: the voter-handoff refusal (it resolves itself), then the
+    /// replacement pairing, then, at [#writeDrainCommand], the leader's own id. A leader that is still a voter is therefore told
+    /// that its retirement awaits the voter handoff, never told to stop its process. Nothing is recorded as pending, no DEPARTING
+    /// is raised and no grace-terminate backstop is scheduled for a refused target.
     @Override
     public synchronized Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
         if (!active.get() || retirementRefusal.get().apply(targetNodeId).isPresent()) {
@@ -2370,17 +2375,39 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                    .promise();
         }
 
-        var epoch = activationEpoch.get();
-
-        if (Option.option(pendingDrains.putIfAbsent(targetNodeId, epoch)).isPresent()) {
+        if (pendingDrains.containsKey(targetNodeId)) {
             return Promise.unitPromise();
         }
 
         log.info("CTM v2: drainNode requested (target={}, reason={}) — enqueuing DRAIN command", targetNodeId, reason);
-        drainCommandSink.accept(targetNodeId);
+
+        return writeDrainCommand(targetNodeId).map(_ -> trackPendingDrain(targetNodeId, reason))
+                                .async();
+    }
+
+    /// The pending entry is recorded only once the DRAIN command is written, so a refused target never reads as pending (a
+    /// second request is refused again, not short-cut as a duplicate). `drainNode`'s monitor makes the presence check and this
+    /// record one step: it is the only writer that adds to `pendingDrains`.
+    private Unit trackPendingDrain(NodeId targetNodeId, DrainReason reason) {
+        var epoch = activationEpoch.get();
+
+        pendingDrains.put(targetNodeId, epoch);
         scheduleGraceTerminate(targetNodeId, reason, epoch);
 
-        return Promise.success(unit());
+        return unit();
+    }
+
+    /// #3626: the ONE place a DRAIN command is written, by every writer ([#drainNode] and the two rejoin evictions), and the one
+    /// enforcer of the rule that this manager never drains the node it runs on: that node carries the DRAIN commands while it
+    /// leads. It is the last row of the refusal table, so a more specific refusal is told first.
+    private Result<Unit> writeDrainCommand(NodeId targetNodeId) {
+        if (targetNodeId.equals(observer.self().id())) {
+            return new LeaderCannotDrainItself(targetNodeId).result();
+        }
+
+        drainCommandSink.accept(targetNodeId);
+
+        return Result.unitResult();
     }
 
     @Override
@@ -3644,7 +3671,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var refused = cause instanceof NodeLifecycleManager.ReadmissionRefused;
 
         if (refused) {
-            drainCommandSink.accept(nodeId);
+            evict(nodeId);
         }
 
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
@@ -3674,7 +3701,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// A node a replacement retired joined again: its identity is superseded. It is refused and evicted (the DRAIN command, no reap), never admitted again, and the
     /// operator is told which node replaced it.
     private void refuseSupersededIdentity(NodeId nodeId, NodeLifecycleManager.RetiredIdentityRejoined retired) {
-        drainCommandSink.accept(nodeId);
+        evict(nodeId);
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
                                                               org.pragmatica.utility.warning.OperatorWarningCode.NODE_RETIRED_IDENTITY_REJOINED,
@@ -3682,6 +3709,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               "Node {} joined again but it was retired by a replacement ({}): its identity is superseded, so it is refused and is being drained; it is not admitted beside its replacement",
                                                               nodeId.id(),
                                                               retired.replacement());
+    }
+
+    /// A rejoin eviction writes the DRAIN command through [#writeDrainCommand]. FER: refused for this manager's own node, the
+    /// eviction degrades to the logged refusal; the operator warning beside it is still raised, and the node is drained by the
+    /// next leader once leadership moves. Nothing retries it here: a later join of the node runs the eviction again.
+    @Contract
+    private void evict(NodeId nodeId) {
+        writeDrainCommand(nodeId).onFailure(cause -> log.warn("CTM: the eviction of {} was not queued: {}",
+                                                              nodeId,
+                                                              cause.message()));
     }
 
     /// A drain was issued to the previous incarnation: it does not apply to the one that has just joined. The pending entry is removed, so the grace expiry
