@@ -1888,9 +1888,14 @@ class ManagementServerImpl implements ManagementServer {
                                     String requestId,
                                     Cause cause,
                                     Option<Cause> unlisted) {
-        unlisted.filter(_ -> cause instanceof ManagementRouteError.TargetDisconnected)
-                .onPresent(notMember -> ProblemResponses.writeProblem(response, notMember, path, requestId))
+        notMemberAnswer(cause, unlisted).onPresent(notMember -> ProblemResponses.writeProblem(response, notMember, path, requestId))
                 .onEmpty(() -> sendForwardError(response, path, requestId, cause));
+    }
+
+    /// Package-visible pure decision behind [#sendForwardFailure]: the 404 replaces ONLY `targetDisconnected`; a failure of a forward that
+    /// did reach a connected peer (timeout, send failure) says nothing about membership and keeps the forwarder's answer.
+    static Option<Cause> notMemberAnswer(Cause cause, Option<Cause> unlisted) {
+        return unlisted.filter(_ -> cause instanceof ManagementRouteError.TargetDisconnected);
     }
 
     private void sendForwardError(InstrumentedResponseWriter response, String path, String requestId, Cause cause) {

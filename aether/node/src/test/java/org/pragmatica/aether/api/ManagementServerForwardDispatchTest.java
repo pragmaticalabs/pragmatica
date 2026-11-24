@@ -14,6 +14,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.management.route.ManagementRouteError;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -47,9 +48,11 @@ import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -194,6 +197,16 @@ class ManagementServerForwardDispatchTest {
 
         assertThat(network.targets()).containsExactly(OWNER);
         assertThat(writer.writes()).isEmpty();
+    }
+
+    /// The 404 replaces only `targetDisconnected`: any other forward failure for an unlisted id (the peer was reached) keeps its own answer.
+    @Test
+    void notMemberAnswer_replacesOnlyTargetDisconnected() {
+        var notMember = Option.<Cause>some(Causes.cause("not a member"));
+
+        assertThat(ManagementServerImpl.notMemberAnswer(ManagementRouteError.targetDisconnected("node-x"), notMember).isPresent()).isTrue();
+        assertThat(ManagementServerImpl.notMemberAnswer(Causes.cause("timeout"), notMember).isPresent()).isFalse();
+        assertThat(ManagementServerImpl.notMemberAnswer(ManagementRouteError.targetDisconnected("node-x"), Option.none()).isPresent()).isFalse();
     }
 
     /// Scope limit of #1964: a node whose roster is scoped (a worker, `hasCompleteClusterView() == false`) cannot call an absent id unknown,
