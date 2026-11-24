@@ -226,7 +226,10 @@ class PlanMatrix(unittest.TestCase):
         heavy = [m for m in modules if any(c[0] == m and c[5] == 'heavy' for c in rows)]
         p = subprocess.run([sys.executable, SCRIPT, '--event', 'schedule'], capture_output=True, text=True)
         got = [(s['module'], s['profile']) for s in json.loads(p.stdout)['include']]
-        self.assertEqual([m for m, pr in got if pr == 'small'], modules)
+        with open(os.path.join(HERE, 'shards.tsv')) as f:
+            nshards = [l.split('\t')[0] for l in f if l.strip() and not l.lstrip().startswith('#')]
+        expected = [m for m in modules for _ in range(max(1, nshards.count(m)))]   # a sharded module is one small job per shards.tsv row
+        self.assertEqual([m for m, pr in got if pr == 'small'], expected)
         self.assertEqual([m for m, pr in got if pr == 'heavy'], heavy)
         self.assertTrue(heavy, 'models.tsv has no heavy row: the heavy shard path is untested against the real table')
 
