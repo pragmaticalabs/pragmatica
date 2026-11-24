@@ -616,13 +616,13 @@ aether blueprints validate <file.toml>
 aether blueprints delete <blueprintId> [-f|--force]
 
 # Deploy a blueprint from an artifact in the cluster repository
-aether blueprints deploy <coords> [--wait] [--timeout <seconds>]
+aether blueprints deploy <coords> [--wait] [--timeout <seconds>] [--force]
 
 # Publish a blueprint already present in the artifact repository
-aether blueprints publish <coords>
+aether blueprints publish <coords> [--force]
 
 # Upload a blueprint JAR file and deploy it
-aether blueprints upload <file> -g <groupId> -a <artifactId> -v <version>
+aether blueprints upload <file> -g <groupId> -a <artifactId> -v <version> [--force]
 ```
 
 Example blueprint file (`order-system.toml`):
@@ -1521,13 +1521,12 @@ version fails with `409 Conflict` (``Baseline conflict for datasource '<name>': 
 migrations already applied up to version <existingVersion>``) — undo to the target version instead,
 or baseline at (or above) the existing version.
 
-`undo` (and, for the same declarative-contract reason, `baseline`) is not sticky across a
-republish: the artifact's declared version wins on every publish, so republishing (or
-redeploying) a blueprint that declares a version higher than the undo target re-arms migration
-and re-applies from scratch whatever rows the undo removed — nothing compares the live record to
-the request first. To keep an undo, deploy a blueprint that declares the lower version instead of
-republishing the higher one, or accept the re-migration. A guard that refuses (or requires
-`force` for) such a publish is tracked separately in #834, not implemented here.
+A republish does not silently undo an `undo` or a `baseline` (#834). The declared version still wins on a publish, but
+`aether blueprints deploy`, `publish` and `upload` refuse with `409 Conflict` when the blueprint declares a version above the one
+the operator left. The message names the datasource, the intervention (`undo` or `baseline`), the version left, and the versions
+that would be applied again. To keep the undo, deploy a blueprint that declares the lower version. To accept the re-migration,
+repeat the command with `--force`. Declaring only versions at or below the one left is not refused. A record undone or baselined
+by a build older than #834 is not guarded. [verified: `BlueprintPublishOwnershipTest` `UndoneRepublishGuard`; `BlueprintForceOptionTest` for the flag]
 
 `migrate` similarly refuses (#760 review BLOCKING 1) when the record is `COMPLETED` **and** the
 owning blueprint has at least one slice instance already `ACTIVE` — re-arming to `MIGRATING` would

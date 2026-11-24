@@ -1185,6 +1185,9 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 }
 ```
 
+`force` (boolean, optional, absent means `false`) accepts a publish that would re-apply schema versions an
+operator undid or baselined; see [Republish over an undo or baseline](#republish-over-an-undo-or-baseline-409-conflict).
+
 **Response:**
 ```json
 {
@@ -1315,12 +1318,51 @@ Why refuse rather than namespace: datasource names are cluster-global (the defau
 same node-global config section), so two blueprints migrating one physical database would
 interleave unrelated version sequences.
 
+#### Republish over an undo or baseline (409 Conflict)
+
+The declared version wins on every publish, but an operator's `undo` or `baseline` deliberately leaves a datasource at a version
+below what its blueprint declares. Publishing the unchanged blueprint would write the declared version over that record, and the
+migration would then re-apply every version the undo removed (or the baseline skipped). Both artifact-based entry points
+(`/deploy` and `/publish`) therefore refuse, with **409 Conflict**, a request that declares a version above a record an operator
+left behind:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Publish refused — datasource 'orders_db' was left at version 1 by an operator undo, and this blueprint declares versions [2] which would be applied again. Deploy a blueprint that declares version 1, or repeat the publish with force to accept the re-application."
+}
+```
+
+Rules:
+
+- Every schema record carries how its version was reached: a forward migration (or a publish), an `undo`, a `baseline`, or
+  unknown. Only a record left by `undo` or `baseline` guards. A record reached by forward migration, an unknown reach, and a
+  datasource with no record never refuse.
+- The refusal names the datasource, the intervention (`undo` or `baseline`), the version the operator left, and the declared
+  versions above it that would be applied again. Declaring only versions at or below the one the operator left is not refused.
+- The check runs before any KV command is applied, so a refused publish writes nothing. It reports the first datasource that fails;
+  an artifact that declares migrations for several datasources may need the operator's fix repeated.
+- `force: true` (CLI `--force`) skips the check for the whole request. The publish then writes the declared version, the record is
+  a forward migration from then on, and the removed versions are applied again. Unlike `baseline` with `force` (`SCHEMA_BASELINE_FORCED`), the override leaves no audit entry of its own. `POST /api/v1/blueprints/deploy` writes only the ordinary blueprint-deployed entry; `POST /api/v1/blueprints/publish` (register-only) writes none.
+- A record written by a build older than #834 has no recorded reach and reads as a forward migration, so an undo or baseline made
+  before the upgrade is not guarded.
+- `POST /api/v1/blueprints` (raw blueprint content) carries no migrations and is not subject to the check.
+- Like the single-migrator gate it is a read of the record followed by a write of the publish commands, not a compare-and-swap: an
+  undo that commits between the two is not seen.
+
+[verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/cluster/BlueprintPublishOwnershipTest.java` `UndoneRepublishGuard` (refusal for undo and baseline, forced acceptance, no refusal for a forward-migrated record or a declared version not above the record)]
+[verified: `aether/node/src/test/java/org/pragmatica/aether/api/routes/BlueprintForceFieldTest.java` (the route body field reaches the service on both routes, absent reads false)]
+[mechanism: `BlueprintService.ensureNoUndoneReapplied` short-circuits on `force`; `SchemaReach.guardsRepublish` is true for UNDONE and BASELINED only; `SchemaOrchestratorService` records the reach]
+
 ### POST /api/v1/blueprints/publish
 
 Publish a blueprint from an artifact already present in the cluster's artifact
 repository. Orthogonal to `POST /api/v1/blueprints` (which takes raw blueprint
-content in the body). Same body shape as `POST /api/v1/blueprints/deploy`, and subject to the same
-[single-migrator gate](#single-migrator-gate-409-conflict).
+content in the body). Same body shape (including the optional `force`) as `POST /api/v1/blueprints/deploy`, and
+subject to the same [single-migrator gate](#single-migrator-gate-409-conflict) and
+[republish guard](#republish-over-an-undo-or-baseline-409-conflict).
 
 **Request Body:**
 ```json
@@ -5494,15 +5536,12 @@ A target version with no matching undo script in the artifact, or one whose scri
 longer matches its recorded checksum, is rejected rather than silently no-op'd — see
 `UndoNotAvailable` / `ChecksumMismatch` in the status-code table.
 
-> **Not sticky across a republish.** The deployment contract is declarative — the artifact's
-> declared version wins on every publish — so an undo is an operator intervention performed
-> between deploys, not a persistent state change. Republishing (or redeploying) a blueprint that
-> declares a version higher than the undo target re-arms migration at that declared version and
-> migrates forward from the live (now-rolled-back) record: rows removed by the undo are
-> re-applied from scratch, with nothing comparing the live record to the request first. To keep
-> the undo, deploy a blueprint that declares the lower version instead of republishing the higher
-> one — or accept the re-migration. A guard that refuses (or requires `force` for) a publish that
-> would do this is tracked separately in #834, not implemented here.
+> **Guarded against a republish.** The deployment contract is declarative, so the declared version still wins on a publish, but a
+> publish that declares a version above the one an undo left is refused with `409 Conflict` instead of silently re-applying the
+> rows the undo removed (#834). To keep the undo, deploy a blueprint that declares the lower version. To accept the re-migration,
+> repeat the publish with `force`. See [Republish over an undo or baseline](#republish-over-an-undo-or-baseline-409-conflict) for
+> the exact rule. A record undone by a build older than #834 is not guarded.
+> [verified: `BlueprintPublishOwnershipTest` `UndoneRepublishGuard`]
 
 ### POST /api/v1/schema/retry/{datasource}
 
@@ -5560,11 +5599,11 @@ is checked again under the orchestrator's migration fence, before the database i
 refusal names the stage (after the second check the database baseline has already run).
 [verified: `aether/node/src/test/java/org/pragmatica/aether/api/routes/SchemaRoutesBaselineTest.java` `InFlightGuard` — route plus the real orchestrator over a fake schema manager, not a cluster run]
 
-> **Likewise not sticky across a republish**, for the same declarative-contract reason as undo
-> above: the artifact's declared version wins on every publish. A republish (or redeploy) that
-> declares a version different from the one baseline established resumes forward migration from
-> the live record rather than treating baseline's version as pinned — see the undo section above
-> for the operator's correct sequence and #834.
+> **Likewise guarded against a republish**: a publish that declares a version above the one baseline left is refused with
+> `409 Conflict` naming the baseline and the versions that would be applied from scratch, unless it carries `force`. A publish that
+> declares only versions at or below the baseline version is not refused. See the undo section above and
+> [Republish over an undo or baseline](#republish-over-an-undo-or-baseline-409-conflict).
+> [verified: `BlueprintPublishOwnershipTest` `UndoneRepublishGuard.publishFromArtifact_isRefused_whenRecordWasBaselinedBelowTheDeclaredVersion`]
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -5612,10 +5651,10 @@ refusal names the stage (after the second check the database baseline has alread
 > failure, or either of these two should one day be wired up, still answers `500`.
 > [design intent — unverified]**
 >
-> **A thirteenth variant, `DatasourceOwnershipConflict`, is deliberately absent from this table** —
-> it is a publish-time blueprint-validation check (compares datasource *names* across blueprints,
-> not one of these six routes' own failure modes) and is documented instead alongside blueprint
-> publish. Its migration-time companion `PhysicalDatasourceOwnershipConflict` (which compares the
+> **Two variants, `DatasourceOwnershipConflict` and `RepublishWouldReapply` (#834), are deliberately absent from this table** —
+> they are publish-time blueprint-validation checks (the first compares datasource *names* across blueprints, the second compares
+> the declared versions with a record left by `undo` or `baseline`; neither is one of these six routes' own failure modes) and are
+> documented instead alongside blueprint publish. Its migration-time companion `PhysicalDatasourceOwnershipConflict` (which compares the
 > underlying physical database and IS reachable from `migrate`/`undo`/`baseline` alike, via the
 > shared ownership claim) is in the table above.
 
