@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -41,8 +42,8 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// three, so that killing both peers leaves a consensus majority: the owner's local read needs a valid node lease, and a
 /// 3-node cluster that lost two nodes has no quorum to renew it ("owner admission paused"), which fails the read for a reason that is not #946. Records are
 /// acknowledged first, and the owner -- the node whose replica registry lists the other two as caught-up peers -- serves them through the router (the control: the instrument can see
-/// the records and the router reaches them). Then both other nodes are killed -- the survivor's registry still lists them as
-/// caught-up peers, which is the state a degraded cluster is in until membership catches up -- and the survivor is read again
+/// the records and the router reaches them). Then both other nodes are black-holed -- the survivor's registry lists them as
+/// caught-up peers for the whole read (membership and ISR changes are held beyond it), which is the state a degraded cluster is in until membership catches up -- and the survivor is read again
 /// through the same router. The read must return the acknowledged records from the survivor's own caught-up copy; before #946 it
 /// forwarded to a dead peer, retried the other, and surfaced the failure.
 @PortBudget
@@ -60,6 +61,8 @@ class EmberAnyReplicaReadFallbackTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(180).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan READ_BOUND = TimeSpan.timeSpan(60).seconds();
+    private static final TimeSpan READ_FORWARD = TimeSpan.timeSpan(3).seconds();
+    private static final TimeSpan ISR_LAG_MAX = TimeSpan.timeSpan(10).minutes();
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long ISR_BUDGET_MS = 60_000L;
@@ -114,19 +117,29 @@ class EmberAnyReplicaReadFallbackTest {
         assertThat(outcome(routed(survivor))).as("control: the router reads the records while every peer is alive")
                                                                          .isEqualTo(List.of("acked-0", "acked-1", "acked-2"));
 
-        killed.forEach(id -> cluster.killNode(id)
+        // Silent death, not a stop: a killed node leaves membership, and the next reconcile pass unregisters it from the survivor's
+        // registry, so a read that started after that pass would take the local step and pass without the fix. A black-holed node
+        // stays a member (raised SWIM/membership timeouts, ISR shrink pushed beyond the test) and silently drops the forward: no
+        // producer of "unregister" exists inside the read window, and each forward fails by timing out (bounded by READ_FORWARD).
+        killed.forEach(id -> cluster.blackhole(id)
                                     .await(STOP_BOUND)
-                                    .onFailure(cause -> Assertions.fail("kill of " + id + " failed: " + cause.message())));
+                                    .onFailure(cause -> Assertions.fail("blackhole of " + id + " failed: " + cause.message())));
 
-        // The path ran only if the read started while the survivor's registry still listed both dead peers CAUGHT_UP: then the
-        // router picked one, forwarded to a dead node, retried the other, and degraded. A registry already purged of them would
-        // send the read to step 4 (local) and pass without the fix. The snapshot is taken at read start and asserted, never inferred.
-        var registryAtReadStart = registryRows(survivor);
+        // The path ran only if the registry listed both dead peers CAUGHT_UP for the whole read: then the router picked one,
+        // forwarded to a silent node, retried the other, and degraded. The same rows bracket the read (before and after), so
+        // the router's decision snapshot, taken between the two, is the one asserted; nothing is inferred from timing.
+        var registryBeforeRead = registryRows(survivor);
 
-        assertThat(listsAllAsCaughtUp(survivor, killed)).as("registry at read start lists both dead peers CAUGHT_UP: " + registryAtReadStart)
+        assertThat(listsAllAsCaughtUp(survivor, killed)).as("registry before the read lists both silent peers CAUGHT_UP: " + registryBeforeRead)
                                                         .isTrue();
-        assertThat(outcome(routed(survivor))).as("the survivor answers from its own copy; registry at read start: " + registryAtReadStart)
-                                                                         .isEqualTo(List.of("acked-0", "acked-1", "acked-2"));
+
+        var read = outcome(routed(survivor));
+        var registryAfterRead = registryRows(survivor);
+
+        assertThat(registryAfterRead).as("the registry did not change across the read (no reconcile pass reached it)")
+                                     .isEqualTo(registryBeforeRead);
+        assertThat(read).as("the survivor answers from its own copy; registry across the read: " + registryBeforeRead)
+                        .isEqualTo(List.of("acked-0", "acked-1", "acked-2"));
     }
 
     private boolean listsAllAsCaughtUp(AetherNode node, List<String> peerIds) {
@@ -239,8 +252,16 @@ class EmberAnyReplicaReadFallbackTest {
 
     private EmberCluster clusterNodes(int basePort) {
         var built = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "anyreplica");
+        var defaults = StreamingConfig.streamingConfig();
 
         built.withDataBaseDir(dataDir);
+        // Hold the producers of a registry change beyond the read window: membership (SWIM suspect 60 s, split 60 s) and the
+        // committed ISR (isrLagMax); and bound each forward by READ_FORWARD, so the read ends in about two of them.
+        built.withRaisedSwimTimeouts();
+        built.withStreamingConfig(StreamingConfig.streamingConfig(defaults.publishForwardTimeout(),
+                                                                  READ_FORWARD,
+                                                                  defaults.maxReadResponseBytes())
+                                                 .withIsrLagMax(ISR_LAG_MAX));
 
         return built;
     }
