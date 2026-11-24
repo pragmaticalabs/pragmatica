@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jooq.async;
 
+import java.util.function.Function;
+
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.db.jooq.JooqSharedPoolSupport;
 import org.pragmatica.aether.resource.db.jooq.JooqConnectorView;
@@ -15,9 +17,12 @@ import org.pragmatica.aether.resource.NodeShareable;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.jooq.JooqConnector;
+import org.pragmatica.postgres.net.Connectible;
 import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 import org.pragmatica.postgres.r2dbc.PgAsyncConnectionFactory;
 import org.pragmatica.lang.Promise;
+
+import static org.pragmatica.postgres.net.ReleaseChain.releasingOnFailure;
 
 
 /// A [NodeShareable] factory (#2973): slices on one node whose datasource resolves to the same connection settings share
@@ -49,7 +54,11 @@ public final class AsyncJooqConnectorFactory implements ResourceFactory<JooqConn
         // D2.8 (#2973): the driver and the pool's event-loop threads are created under this factory's class loader, never a
         // slice's, because the pool may be shared by every slice on the node and outlive the slice that opened it.
         return Promise.lift(DatabaseConnectorError::databaseFailure,
-                            () -> SharedPoolSupport.underClassLoaderOf(getClass(), () -> connector(config)));
+                            () -> SharedPoolSupport.underClassLoaderOf(getClass(),
+                                                                       () -> connector(config,
+                                                                                       new NettyConnectibleBuilder(),
+                                                                                       pool -> over(config, pool))))
+                      .flatMap(connecting -> connecting);
     }
 
     /// #2973: the effective endpoint, credentials, pool settings, properties and application name of the ASYNC transport (this connector sends no application name; the configured value is keyed all the same).
@@ -74,9 +83,13 @@ public final class AsyncJooqConnectorFactory implements ResourceFactory<JooqConn
         return JooqSharedPoolSupport.probe(pool);
     }
 
-    private static JooqConnector connector(DatabaseConnectorConfig config) {
-        var builder = new NettyConnectibleBuilder();
-
+    /// BER (#3635): `builder.pool()` holds a lease from the moment it returns, so a failure of the connector built over it
+    /// closes that pool before the failure is reported. Guarantee earned: no pool lease outlives a failed assembly; the
+    /// close outcome is dropped, the assembly failure is the result. `over` is the construction of the connector over the pool
+    /// (the test seam for its failure).
+    static Promise<JooqConnector> connector(DatabaseConnectorConfig config,
+                                            NettyConnectibleBuilder builder,
+                                            Function<Connectible, JooqConnector> over) {
         builder.hostname(config.effectiveHost(DatabaseConnectorConfig.Transport.ASYNC))
                .port(config.effectivePort(DatabaseConnectorConfig.Transport.ASYNC))
                .database(config.effectiveDatabase(DatabaseConnectorConfig.Transport.ASYNC));
@@ -85,8 +98,13 @@ public final class AsyncJooqConnectorFactory implements ResourceFactory<JooqConn
         builder.maxConnections(config.poolConfig().maxConnections());
         config.poolConfig().validationQuery().onPresent(builder::validationQuery);
         var connectible = builder.pool();
-        var connectionFactory = PgAsyncConnectionFactory.pgAsyncConnectionFactory(connectible);
 
-        return AsyncJooqConnector.asyncJooqConnector(config, connectionFactory);
+        return releasingOnFailure(Promise.lift(DatabaseConnectorError::databaseFailure,
+                                               () -> over.apply(connectible)),
+                                  connectible::close);
+    }
+
+    private static JooqConnector over(DatabaseConnectorConfig config, Connectible connectible) {
+        return AsyncJooqConnector.asyncJooqConnector(config, PgAsyncConnectionFactory.pgAsyncConnectionFactory(connectible));
     }
 }

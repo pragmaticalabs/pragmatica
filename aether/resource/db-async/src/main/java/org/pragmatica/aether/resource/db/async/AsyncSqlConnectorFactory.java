@@ -15,7 +15,10 @@ import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.postgres.net.Connectible;
 import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
+
+import static org.pragmatica.postgres.net.ReleaseChain.releasingOnFailure;
 
 
 /// A [NodeShareable] factory (#2973): slices on one node whose datasource resolves to the same connection settings share
@@ -48,7 +51,8 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
         // slice's, because the pool may be shared by every slice on the node and outlive the slice that opened it.
         return Promise.lift(DatabaseConnectorError::databaseFailure,
                             () -> SharedPoolSupport.underClassLoaderOf(getClass(),
-                                                                       () -> assemble(config)))
+                                                                       () -> assemble(config, new NettyConnectibleBuilder())))
+                      .flatMap(assembling -> assembling)
                       .flatMap(assembled -> warmed(assembled, config));
     }
 
@@ -86,13 +90,23 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
         return SharedPoolSupport.probe(pool).map(probe -> probe.mapError(PgPoolSettings::typedProbeFailure));
     }
 
-    private static PgPoolSettings.Assembled<SqlConnector> assemble(DatabaseConnectorConfig config) {
-        var builder = new NettyConnectibleBuilder();
-
+    /// BER (#3635): `builder.pool()` holds a lease from the moment it returns, so a failure of everything built after it
+    /// (the dedicated `plain()` Connectible, the connector) closes that pool before the failure is reported. Guarantee
+    /// earned: no pool lease outlives a failed assembly; the close outcome is dropped, the assembly failure is the result.
+    static Promise<PgPoolSettings.Assembled<SqlConnector>> assemble(DatabaseConnectorConfig config,
+                                                                    NettyConnectibleBuilder builder) {
         configureConnection(builder, config);
         configurePool(builder, config);
         var pool = builder.pool();
 
+        return releasingOnFailure(Promise.lift(DatabaseConnectorError::databaseFailure,
+                                               () -> assembled(config, builder, pool)),
+                                  pool::close);
+    }
+
+    private static PgPoolSettings.Assembled<SqlConnector> assembled(DatabaseConnectorConfig config,
+                                                                    NettyConnectibleBuilder builder,
+                                                                    Connectible pool) {
         return new PgPoolSettings.Assembled<>(PgAsyncSqlConnector.pgAsyncSqlConnector(config, pool, builder.plain()),
                                               pool);
     }

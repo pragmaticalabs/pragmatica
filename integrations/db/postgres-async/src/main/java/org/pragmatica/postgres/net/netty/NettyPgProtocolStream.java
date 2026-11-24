@@ -182,12 +182,20 @@ public class NettyPgProtocolStream extends PgProtocolStream {
         return releaseAll(() -> settled(ctx.writeAndFlush(Terminate.INSTANCE)), () -> settled(ctx.close()));
     }
 
+    /// Before `connect` there is no channel whose close would run `onChannelClosed`, so the lease goes back here; the
+    /// once-guard keeps a later channel signal from releasing it again.
     private Promise<Unit> closeUnconnected() {
         var unconnected = channel;
 
         return unconnected == null
-               ? Promise.success(unit())
+               ? releasedWithoutChannel()
                : settled(unconnected.close());
+    }
+
+    private Promise<Unit> releasedWithoutChannel() {
+        releaseChannel();
+
+        return Promise.success(unit());
     }
 
     private static Promise<Unit> settled(Future<? super Void> operation) {

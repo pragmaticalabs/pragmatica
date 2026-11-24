@@ -57,9 +57,12 @@ class LeaseReleaseOnFailureTest {
     private final List<Socket> accepted = new ArrayList<>();
     private final List<EventLoopGroup> groups = new ArrayList<>();
     private final CountDownLatch startupReceived = new CountDownLatch(1);
+    private final CountDownLatch parked = new CountDownLatch(1);
 
     @AfterEach
     void cleanUp() throws IOException {
+        parked.countDown();
+
         for (var socket : accepted) {
             socket.close();
         }
@@ -144,6 +147,56 @@ class LeaseReleaseOnFailureTest {
         stream.channel().closeFuture().addListener(_ -> bothSignalled.countDown());
         assertThat(bothSignalled.await(10, TimeUnit.SECONDS)).as("closeFuture completed").isTrue();
         assertThat(released.get()).as("releases after the failed connect and the channel close").isEqualTo(1);
+    }
+
+    /// R8: a stream closed before `connect` has no channel whose close could return the lease, so the close itself does; a
+    /// second close must not return it again.
+    @Test
+    void closeBeforeConnect_releasesTheStreamLeaseExactlyOnce() throws IOException {
+        var released = new AtomicInteger();
+        var stream = streamTo(closedPort(), released);
+
+        assertThat(stream.close().await(GUARD).isSuccess()).isTrue();
+        assertThat(stream.close().await(GUARD).isSuccess()).isTrue();
+        assertThat(stream.channel()).as("never connected").isNull();
+        assertThat(released.get()).as("lease returned once by the closes of an unconnected stream").isEqualTo(1);
+    }
+
+    /// R8: `connect` has created the channel but the event loop has not run it yet (parked here), so no session exists to
+    /// terminate: the close must still close that channel, which returns the lease, instead of reporting success and leaving
+    /// the channel to connect later.
+    @Test
+    void closeBeforeTheChannelIsActive_closesTheChannelAndReleasesTheLease() throws Exception {
+        var released = new AtomicInteger();
+        var group = group();
+        var stream = new NettyPgProtocolStream(new InetSocketAddress("127.0.0.1", silentServerPort()),
+                                               "127.0.0.1",
+                                               SslConfig.disabled(),
+                                               StandardCharsets.UTF_8,
+                                               group,
+                                               released::incrementAndGet);
+
+        group.execute(this::parkEventLoop);
+        var connecting = stream.connect(new StartupMessage("u", "d"));
+
+        assertThat(stream.channel()).as("channel created by connect").isNotNull();
+        assertThat(stream.channel().isOpen()).as("channel not yet run by the parked event loop").isTrue();
+        var closing = stream.close();
+
+        parked.countDown();
+
+        assertThat(closing.await(GUARD).isSuccess()).as("close of an inactive channel").isTrue();
+        assertThat(awaitReleased(released, 1)).as("channel lease released by the close").isEqualTo(1);
+        assertThat(stream.channel().isOpen()).as("channel closed").isFalse();
+        assertThat(connecting.await(GUARD).isFailure()).as("the connect that was closed under way").isTrue();
+    }
+
+    private void parkEventLoop() {
+        try {
+            parked.await();
+        } catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /// The transaction pool hands out a logical connection and connects on the first statement, so the statement is part of
