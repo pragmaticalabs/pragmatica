@@ -190,6 +190,17 @@ public class SliceProcessor extends AbstractProcessor {
     private void generateArtifacts(TypeElement interfaceElement,
                                    SliceModel sliceModel,
                                    Set<? extends Element> roundRoots) {
+        var notSlices = sliceModel.dependencies()
+                                  .stream()
+                                  .flatMap(dependency -> versionResolver.notASlice(dependency).stream())
+                                  .toList();
+
+        if (!notSlices.isEmpty()) {
+            notSlices.forEach(message -> error(sliceModel.factoryMethod(), message));
+
+            return;
+        }
+
         if ("terra".equals(processingEnv.getOptions().get("slice.target")) && !terraGenerator.validate(sliceModel)) {
             return;
         }

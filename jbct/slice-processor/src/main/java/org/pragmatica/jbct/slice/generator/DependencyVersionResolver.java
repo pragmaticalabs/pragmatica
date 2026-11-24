@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.util.Properties;
 
 import org.pragmatica.jbct.slice.model.DependencyModel;
+import org.pragmatica.lang.Option;
 
 
 /// Resolves dependency artifact coordinates and versions from slice-deps.properties.
@@ -49,21 +50,40 @@ public class DependencyVersionResolver {
         if (interfaceFqn == null || interfaceFqn.isEmpty()) {
             return dependency.withResolved("unknown:unknown", "UNRESOLVED");
         }
-        // Lookup by interface FQN
-        var artifactCoords = sliceDeps.getProperty(interfaceFqn);
 
-        if (artifactCoords == null) {
-            // Try with .api suffix removed (in case interface is in api subpackage)
-            var apiInterfaceFqn = interfaceFqn.replace(".api.", ".");
+        return listedCoordinates(interfaceFqn).map(coords -> parseCoordinates(dependency, coords))
+                                              .or(() -> fallbackResolve(dependency));
+    }
 
-            artifactCoords = sliceDeps.getProperty(apiInterfaceFqn);
-        }
+    /// The compile-time refusal for a dependency that is classified as a slice dependency but carries
+    /// no evidence of being a slice (#2798). Two things are evidence: the `@Slice` annotation, which
+    /// is `RUNTIME`-retained and so readable from a sibling's source and from an external jar alike,
+    /// and an entry in `slice-deps.properties`. Without either, [#resolve] can only invent a
+    /// coordinate (`<base>-<kebab(name)>:UNRESOLVED`) that names no artifact, and the failure moves to
+    /// assemble time on Terra and deploy time on Aether. The usual cause is a shared step interface
+    /// that declares no static factory, which is therefore not recognised as a plain-interface step.
+    public Option<String> notASlice(DependencyModel dependency) {
+        var carriesNoSliceEvidence = dependency.isSliceDependency()
+                            && !dependency.isSlice()
+                            && listedCoordinates(dependency.interfaceQualifiedName()).isEmpty();
 
-        if (artifactCoords != null) {
-            return parseCoordinates(dependency, artifactCoords);
-        }
-        // Fallback: derive from package (may be inaccurate)
-        return fallbackResolve(dependency);
+        return carriesNoSliceEvidence
+               ? Option.some(notASliceMessage(dependency))
+               : Option.none();
+    }
+
+    private static String notASliceMessage(DependencyModel dependency) {
+        return "Dependency parameter '" + dependency.parameterName() + "' of type '"
+               + dependency.interfaceQualifiedName() + "' is not a slice: it is not annotated @Slice, it is not"
+               + " listed in slice-deps.properties, it is not a resource and it declares no static factory method '"
+               + FactoryClassGenerator.lowercaseFirst(dependency.interfaceSimpleName())
+               + "' (which would make it a plain-interface step)";
+    }
+
+    private Option<String> listedCoordinates(String interfaceFqn) {
+        // Lookup by interface FQN, then with the .api segment removed (interface in an api subpackage)
+        return Option.option(sliceDeps.getProperty(interfaceFqn))
+                     .orElse(() -> Option.option(sliceDeps.getProperty(interfaceFqn.replace(".api.", "."))));
     }
 
     private DependencyModel parseCoordinates(DependencyModel dependency, String coords) {
