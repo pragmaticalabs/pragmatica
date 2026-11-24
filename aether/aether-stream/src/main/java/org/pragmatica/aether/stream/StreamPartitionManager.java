@@ -38,9 +38,9 @@ import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.HotWindowDeclaration;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.ReplicationFactorsError;
-import org.pragmatica.aether.slice.HotWindowDeclaration;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamDeclaration;
@@ -57,6 +57,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKi
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.stream.RemovalCause;
+import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.segment.StreamRetentionSource.EnforcedRetention;
@@ -1760,12 +1761,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// A hydration that built no entry (native OOM, WAL refusal) has already been flagged; the caller may retry.
+    /// #3390 F1: a committed config the ring invariant refuses answers that typed refusal ([#hydrateEntry] refuses it the same
+    /// way), never the transient `StreamConfigNotYetVisible`, which would have the publish forwarder retry it forever.
     private Result<Unit> adoptCommittedLife(StreamConfig committed, CommitMode commitMode) {
+        return checkRetentionCapacity(committed).flatMap(_ -> reconcileCommittedLife(committed))
+                                     .flatMap(_ -> commitMode.alreadyCommitted());
+    }
+
+    private Result<StreamEntry> reconcileCommittedLife(StreamConfig committed) {
         return option(streams.compute(committed.name(),
                                       (_, existing) -> reconcileCommittedConfig(committed,
                                                                                 existing,
-                                                                                StreamPartitionManager::noAdoptionHere))).toResult(new StreamError.StreamConfigNotYetVisible(committed.name()))
-                     .flatMap(_ -> commitMode.alreadyCommitted());
+                                                                                StreamPartitionManager::noAdoptionHere))).toResult(new StreamError.StreamConfigNotYetVisible(committed.name()));
     }
 
     /// #3554: [#adoptCommittedLife] re-reconciles the config this node last APPLIED, which only [#onStreamConfigPut] applies,
@@ -1806,11 +1813,29 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Result<Unit> createFreshStream(StreamConfig requested, CommitMode commitMode) {
         var config = ownLife(withIncarnation(requested));
 
+        return validateCommit(config, config).flatMap(_ -> checkPartitionCaps(config))
+                             .flatMap(_ -> adoptIfUnclustered(config))
+                             .flatMap(_ -> materializeFreshStream(config, commitMode));
+    }
+
+    /// THE commit validator (#3390 F1, ruling know e8888553b4): every config that is committed, by any path, passes this one
+    /// function, so no commit path can check less than a fresh create. [#publishStreamConfig], the one commit choke point,
+    /// runs it on every commit; [#createFreshStream] runs the same function once more BEFORE materialisation, so a refused
+    /// config leaves no entry and no floor reservation. `life` is the config of the life the commit belongs to (the entry's
+    /// own; on a fresh create, the config itself). Admission against the cluster ([#checkPartitionCaps]) is not here: it
+    /// counts this stream's slots against the others', and the re-publish keeps the life's count (#3263), which a fresh
+    /// create admitted.
+    private static Result<Unit> validateCommit(StreamConfig config, StreamConfig life) {
         return checkReplicationMinimum(config).flatMap(_ -> checkStorageKnown(config))
                                       .flatMap(_ -> checkRetentionCapacity(config))
-                                      .flatMap(_ -> checkPartitionCaps(config))
-                                      .flatMap(_ -> adoptIfUnclustered(config))
-                                      .flatMap(_ -> materializeFreshStream(config, commitMode));
+                                      .flatMap(_ -> checkLifeImmutables(config, life));
+    }
+
+    /// Ruling know e8888553b4 (2): within a life `max_event_size` is immutable, and so are the other keys [#adopts] holds
+    /// immutable. A commit of the life's own config with one of them changed is refused, naming the key: the life's rings and
+    /// WALs were built under the old value. A new life (a destroy, then a create) is a fresh entry and may change any of them.
+    private static Result<Unit> checkLifeImmutables(StreamConfig config, StreamConfig life) {
+        return immutableChange(config, life).fold(() -> success(unit()), StreamError.ImmutableKeyChanged::result);
     }
 
     /// #1278 (ruling B): through a cluster a fresh create is only a PROPOSAL, so it adopts nothing — the footprint
@@ -1825,7 +1850,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1564 engine backstop (R5): whichever path minted the config, its factors satisfy `1 <= CF <= RF`
     /// ([ReplicationFactors#replicationFactors]). "RF below 3 only when declared, with a loud warning" is a
     /// DECLARATION rule ([org.pragmatica.aether.slice.ReplicationDeclaration]) — the engine cannot know what was
-    /// declared. Applied on the create path only; a config already committed is adopted as-is.
+    /// declared. A write-side rule ([#validateCommit]); a config already committed is adopted as-is ([#hydrateEntry]).
     private static Result<Unit> checkReplicationMinimum(StreamConfig config) {
         return ReplicationFactors.replicationFactors(config.replicationFactor(),
                                                      config.confirmationFactor())
@@ -1834,9 +1859,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                        cause));
     }
 
-    /// #1549: every retention bound is at least 1, and the count is one the ring can index — refused before
-    /// anything is reserved, instead of throwing out of the ring build (division by zero, a negative
-    /// allocation, or an overflowed allocation size).
+    /// #1549: every retention bound is at least 1, and the ring window ([#ringWindow]) is at least 1 in each dimension with a
+    /// count the ring can index — refused before anything is reserved, instead of throwing out of the ring build (division
+    /// by zero, a negative allocation, or an overflowed allocation size). Retention no longer sizes the ring, so its count
+    /// is not bounded by the index.
     private static Result<Unit> checkRetentionCapacity(StreamConfig config) {
         var retention = config.retention();
 
@@ -1848,8 +1874,67 @@ public final class StreamPartitionManager implements AutoCloseable {
                                   .flatMap(_ -> checkRetentionBound(config.name(),
                                                                     "max_age",
                                                                     retention.maxAgeMs()))
+                                  .flatMap(_ -> checkRingWindow(config));
+    }
+
+    private static Result<Unit> checkRingWindow(StreamConfig config) {
+        var window = ringWindow(config);
+
+        return checkRetentionBound(config.name(),
+                                   "hot.max_count",
+                                   window.count()).flatMap(_ -> checkRetentionBound(config.name(),
+                                                                                    "hot.max_bytes",
+                                                                                    window.bytes()))
+                                  .flatMap(_ -> checkRingHoldsMaxEvent(config))
                                   .flatMap(_ -> checkIndexable(config.name(),
-                                                               retention.maxCount()));
+                                                               window,
+                                                               config.maxEventSizeBytes()));
+    }
+
+    /// THE enforcer of the ring invariant (S2b-2a, ruling know e8888553b4) in the commit validator: every stream ring holds at
+    /// least one `max_event_size` event of its current life, so a setting that sizes a ring below `max_event_size` is
+    /// refused, naming the key and both values ([StreamError.HotWindowBelowMaxEvent]). The one refusal site for every create
+    /// path (declared, management, publish) and for hydration, every stream class alike. Two settings are held to it: the
+    /// declared `[hot] max_bytes`, read even for an `entity:` stream whose ring ignores `[hot]` (a declaration that could
+    /// never hold an event is still a wrong one), and the window a non-user ring is actually sized from ([#ringSizingBytes]).
+    /// The `system:cluster-events` bounds are refused earlier, at boot, by `ClusterEventsLimits` (#3390 F3).
+    private static Result<Unit> checkRingHoldsMaxEvent(StreamConfig config) {
+        var declaredHot = config.declaration().flatMap(StreamDeclaration::hot).flatMap(HotWindowDeclaration::maxBytes);
+
+        return checkHoldsMaxEvent(config, "[hot] max_bytes", declaredHot).flatMap(_ -> checkHoldsMaxEvent(config,
+                                                                                                          ringSizingKey(config),
+                                                                                                          ringSizingBytes(config)));
+    }
+
+    private static Result<Unit> checkHoldsMaxEvent(StreamConfig config, String key, Option<Long> windowBytes) {
+        return windowBytes.filter(bytes -> bytes < config.maxEventSizeBytes())
+                          .fold(() -> success(unit()),
+                                bytes -> new StreamError.HotWindowBelowMaxEvent(config.name(),
+                                                                                key,
+                                                                                bytes,
+                                                                                config.maxEventSizeBytes()).result());
+    }
+
+    /// The bytes [#ringWindow] sizes a ring from when they are not the user's `[hot]`: a `system:` ring's retention
+    /// `max_bytes`, an `entity:` ring's [EntityRingWindow#MAX_BYTES]. None for a user stream: its declared `[hot] max_bytes`
+    /// is checked as a declaration, and its default window is at least one maximal event ([RingGeometry#hotWindowBytes]).
+    private static Option<Long> ringSizingBytes(StreamConfig config) {
+        return isSystemStream(config.name())
+               ? some(config.retention().maxBytes())
+               : entityRingBytes(config);
+    }
+
+    private static Option<Long> entityRingBytes(StreamConfig config) {
+        return config.name()
+                     .startsWith(ENTITY_STREAM_PREFIX)
+               ? some(EntityRingWindow.MAX_BYTES)
+               : none();
+    }
+
+    private static String ringSizingKey(StreamConfig config) {
+        return isSystemStream(config.name())
+               ? "retention max_bytes"
+               : "the entity ring window";
     }
 
     private static Result<Unit> checkRetentionBound(String streamName, String bound, long value) {
@@ -1858,10 +1943,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                : new StreamError.RetentionBoundInvalid(streamName, bound, value).result();
     }
 
-    private static Result<Unit> checkIndexable(String streamName, long maxCount) {
-        return maxCount <= OffHeapRingBuffer.MAX_CAPACITY
+    /// The window's count against the index bound of the ring's own first region ([RingGeometry#maxCapacity]).
+    private static Result<Unit> checkIndexable(String streamName, RingWindow window, long maxEventSize) {
+        var first = RingGeometry.firstSegmentBytes(window.bytes(), maxEventSize);
+
+        return RingGeometry.indexable(window.count(), first)
                ? success(unit())
-               : new StreamError.RetentionCountUnindexable(streamName, maxCount, OffHeapRingBuffer.MAX_CAPACITY).result();
+               : new StreamError.RetentionCountUnindexable(streamName, window.count(), RingGeometry.maxCapacity(first)).result();
     }
 
     /// Create-time admission gate (#265 increment 4, spec §7): reject a fresh stream that breaches the
@@ -1908,8 +1996,12 @@ public final class StreamPartitionManager implements AutoCloseable {
             return StreamError.General.AHSE_REQUIRED_FOR_STRONG.result();
         }
 
-        var floorBytes = materializedFloorBytes(config);
+        return materializedFloorBytes(config).flatMap(floorBytes -> materializeWithinFloor(config,
+                                                                                           commitMode,
+                                                                                           floorBytes));
+    }
 
+    private Result<Unit> materializeWithinFloor(StreamConfig config, CommitMode commitMode, long floorBytes) {
         if (floorBytes > 0 && !tryReserve(floorBytes)) {
             if (!isSystemStream(config.name())) {
                 return reportFloorExhaustion(config, floorBytes);
@@ -2066,24 +2158,19 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `Put` without blocking and returns `Result.unitResult()` immediately; the entry is latched by the
     /// async `onSuccess` callback, a transient failure is logged and retried by the next publish.
     ///
-    /// #1547: the replication minimum is re-checked HERE, on every commit path. The fresh-create check alone
-    /// was bypassable: a re-create of a materialized-but-uncommitted stream republishes the INCOMING config
-    /// (`ensureConfigCommitted` → `republishExistingConfig`), so an RF=1 re-create after a failed RF=3 commit
-    /// committed `replicas = 1`.
-    ///
-    /// #3458 M-1: the storage mode is refused BEFORE materialisation on the fresh-create path ([#createFreshStream]), so a
-    /// refused `UNKNOWN` leaves no entry in `streams` and no floor reservation; it is re-checked HERE too as the backstop for
-    /// the re-publish path, which skips the fresh-create chain. A config re-published from a decoded value (the committed
-    /// config of a stream, adopted or re-materialized) may carry `UNKNOWN`, the decode-only sentinel for a mode a newer build
-    /// wrote; writing it back would turn it into a mode a newer build reads as one of its own. Every production
-    /// `StreamConfigValue` is built in [#putCommand], which only this method's commit modes reach.
+    /// The one commit choke point: every production `StreamConfigValue` is built in [#putCommand], which only this method's
+    /// commit modes reach, and this method runs the whole commit validator ([#validateCommit]) first. The re-publish of a
+    /// materialized-but-uncommitted stream (`ensureConfigCommitted` → `republishExistingConfig`) skips the fresh-create chain
+    /// and commits the INCOMING config, so each check that ran only on the fresh create was bypassable there: the replication
+    /// minimum (#1547, an RF=1 re-create after a failed RF=3 commit committed `replicas = 1`), the storage mode (#3458 M-1, a
+    /// decoded `UNKNOWN` written back), the ring window (#3390 F1, a `[hot]` below `max_event_size` or a zero hot count) and the
+    /// life's immutable keys (#3390 F1, ruling know e8888553b4 (2)). One validator here closes the class, not the instance.
     private Result<Unit> publishStreamConfig(StreamConfig config, StreamEntry entry, CommitMode commitMode) {
-        return checkReplicationMinimum(config).flatMap(_ -> checkStorageKnown(config))
-                                      .flatMap(_ -> clusterNode.fold(() -> latchCommitted(entry),
-                                                                     node -> commitMode.publish(this,
-                                                                                                node,
-                                                                                                config,
-                                                                                                entry)));
+        return validateCommit(config, entry.config()).flatMap(_ -> clusterNode.fold(() -> latchCommitted(entry),
+                                                                                    node -> commitMode.publish(this,
+                                                                                                               node,
+                                                                                                               config,
+                                                                                                               entry)));
     }
 
     private static Result<Unit> checkStorageKnown(StreamConfig config) {
@@ -2364,7 +2451,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     private StreamEntry adoptIfMoreDurable(StreamConfig config, StreamEntry existing, Consumer<StreamConfig> adopted) {
         return adopts(config, existing.config())
                ? adoptConfig(config, existing, adopted)
-               : existing;
+               : keepEnforced(config, existing);
+    }
+
+    /// Not adopted. A committed config the ring invariant refuses is named here (#3390 F1); every other reason is the
+    /// operator-visible `STREAM_CONFIG_CHANGE_NOT_APPLIED` event's ([#notAppliedReason]).
+    private static StreamEntry keepEnforced(StreamConfig config, StreamEntry existing) {
+        checkRetentionCapacity(config).onFailure(cause -> log.warn("Committed config of stream '{}' not adopted, the enforced one is kept: {}",
+                                                                   config.name(),
+                                                                   cause.message()));
+
+        return existing;
     }
 
     /// The one rule that decides whether a committed config of the SAME life replaces the local one (ST 2.5 L251, #3334):
@@ -2374,11 +2471,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// so an immutable change would ride along with a storage change; it is not adopted (the deploy validation refuses
     /// it before commit). [#confirmationFactorAfter] reads it too, so what is announced about a factor change cannot
     /// differ from what [#confirmationFactorFor] then enforces.
+    ///
+    /// #3390 F1: a config the ring invariant refuses ([#checkRetentionCapacity]) is never adopted either; the entry keeps the
+    /// config it enforces, and [#adoptIfMoreDurable] names the refusal.
     private static boolean adopts(StreamConfig incoming, StreamConfig existing) {
         return incoming.partitions() == existing.partitions()
                && notWeaker(incoming, existing)
                && immutableUnchanged(incoming, existing)
-               && (strongerDurability(incoming, existing) || storageChanged(incoming, existing));
+               && (strongerDurability(incoming, existing) || storageChanged(incoming, existing))
+               && checkRetentionCapacity(incoming).isSuccess();
     }
 
     private static boolean notWeaker(StreamConfig incoming, StreamConfig existing) {
@@ -2386,10 +2487,36 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static boolean immutableUnchanged(StreamConfig incoming, StreamConfig existing) {
-        return incoming.maxEventSizeBytes() == existing.maxEventSizeBytes()
-               && incoming.encryptionKeyId()
-                          .equals(existing.encryptionKeyId())
-               && truncationOf(incoming).equals(truncationOf(existing));
+        return immutableChange(incoming, existing).isEmpty();
+    }
+
+    /// The first immutable key `incoming` changes against `existing`, if any: the one rule [#adopts] (do not adopt) and
+    /// [#checkLifeImmutables] (do not commit) both read.
+    private static Option<StreamError.ImmutableKeyChanged> immutableChange(StreamConfig incoming,
+                                                                           StreamConfig existing) {
+        return keyChange(incoming.name(),
+                         "max_event_size",
+                         existing.maxEventSizeBytes(),
+                         incoming.maxEventSizeBytes()).orElse(() -> keyChange(incoming.name(),
+                                                                              "encryption_key_id",
+                                                                              existing.encryptionKeyId(),
+                                                                              incoming.encryptionKeyId()))
+                        .orElse(() -> keyChange(incoming.name(),
+                                                "[truncation]",
+                                                truncationOf(existing),
+                                                truncationOf(incoming)));
+    }
+
+    private static <T> Option<StreamError.ImmutableKeyChanged> keyChange(String streamName,
+                                                                         String key,
+                                                                         T enforced,
+                                                                         T requested) {
+        return enforced.equals(requested)
+               ? none()
+               : some(new StreamError.ImmutableKeyChanged(streamName,
+                                                          key,
+                                                          String.valueOf(enforced),
+                                                          String.valueOf(requested)));
     }
 
     private static Option<TruncationDeclaration> truncationOf(StreamConfig config) {
@@ -2538,14 +2665,39 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// NOT diverge (the committed config is present metadata-only, zero bytes past the cap), and the held
     /// partitions materialize later through the single deferred-retry entry point once budget frees (see
     /// {@link #deferHydration}). The growth seam still gates every later segment against the pool normally.
+    ///
+    /// #3390 F1: a committed config is held to the ring invariant FIRST ([#checkRetentionCapacity], the rule the commit
+    /// validator [#validateCommit] runs): one that fails it is refused BY NAME, with no entry, no reservation and no ring,
+    /// instead of failing inside the ring build and being reported as a memory refusal. A config committed through this
+    /// build never fails it; a backup restore or an older build's commit can. The write-side rules are not re-run here: a
+    /// decoded `UNKNOWN` storage is the legitimate read of a newer build's value (#3458 M-1) and committed factors are
+    /// adopted as-is (#1564).
+    @NullReturn
     private StreamEntry hydrateEntry(StreamConfig config) {
+        return checkRetentionCapacity(config).fold(cause -> refuseHydration(config, cause), _ -> hydrateHoldable(config));
+    }
+
+    @NullReturn
+    private static StreamEntry refuseHydration(StreamConfig config, Cause cause) {
+        log.warn("Committed stream '{}' refused on this node, no entry created: {}", config.name(), cause.message());
+
+        return null;
+    }
+
+    @NullReturn
+    private StreamEntry hydrateHoldable(StreamConfig config) {
         adoptIncarnation(config).onFailure(cause -> log.warn("Stream '{}' hydrates; reclaiming other lives of its name did"
                                                             + " not complete: {}",
                                                              config.name(),
                                                              cause.message()));
         reportOverCeilingIfViolating(config);
-        var floorBytes = materializedFloorBytes(config);
 
+        return materializedFloorBytes(config).fold(cause -> refuseHydration(config, cause),
+                                                   floorBytes -> hydrateWithinFloor(config, floorBytes));
+    }
+
+    @NullReturn
+    private StreamEntry hydrateWithinFloor(StreamConfig config, long floorBytes) {
         if (floorBytes > 0 && !tryReserve(floorBytes)) {
             if (!isSystemStream(config.name())) {
                 return deferHydration(config, floorBytes);
@@ -6555,7 +6707,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// (OWNER/REPLICA) but has NOT yet materialized — clamped at zero so the create-time-materialized /
     /// supplier-flipped-to-NONE gate/release asymmetry never reports negative. It unifies the two defer
     /// causes: budget-deferred (spec §6) and pre-membership (spec §5.4). Floor bytes are the per-partition
-    /// floor times the materialized ring count (the REAL off-heap cost of this stream on this node).
+    /// floor times the materialized ring count (the REAL off-heap cost of this stream on this node), through the one checked
+    /// product [#floorBytes] (#3390 F2). Its refusal IS reachable here: a same-life `[hot]` change is adopted onto the live
+    /// rings, and the adopted config's floor product can pass a long; the report then shows `Long.MAX_VALUE` (a bound, never
+    /// a wrapped value) so a report cannot fail (pinned by `FloorOverflow#snapshot_floorPastALong_reportsTheLongBound_notZero`).
     private StreamHydration streamHydration(String name, StreamEntry entry) {
         var declared = entry.config().partitions();
         var materialized = entry.ringsMaterialized();
@@ -6565,7 +6720,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                    declared,
                                    materialized,
                                    deferred,
-                                   perPartitionFloorBytes(entry.config()) * materialized,
+                                   floorBytes(entry.config(), materialized).or(Long.MAX_VALUE),
                                    declared > MAX_PARTITIONS_PER_STREAM_CEILING,
                                    roleCounts(name, declared));
     }
@@ -7355,8 +7510,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ONLY the partitions THIS node materializes (OWNER/REPLICA under the current placement). A
     /// non-replica node reserves ZERO here and holds the stream metadata-only — the O(streams × partitions
     /// × nodes) blow-up becomes O(streams × partitions × RF). See spec §4/§6.
-    private long materializedFloorBytes(StreamConfig config) {
-        return perPartitionFloorBytes(config) * materializedCount(config);
+    private Result<Long> materializedFloorBytes(StreamConfig config) {
+        return floorBytes(config, materializedCount(config));
+    }
+
+    /// The floor of `rings` partition rings of a stream (#3390 F2): THE one product of [#perPartitionFloorBytes] and a ring
+    /// count, so the budget arithmetic never overflows. A floor a long cannot represent is refused as
+    /// [StreamError.General#STREAM_MEMORY_EXCEEDED], the answer a too-large floor gets, before anything is reserved: the
+    /// wrapped product read as a negative floor, so nothing was reserved, and the failed ring build then released it into
+    /// the budget.
+    private static Result<Long> floorBytes(StreamConfig config, long rings) {
+        var perPartition = perPartitionFloorBytes(config);
+
+        return rings == 0 || perPartition <= Long.MAX_VALUE / rings
+               ? success(perPartition * rings)
+               : StreamError.General.STREAM_MEMORY_EXCEEDED.result();
     }
 
     /// Count of partitions THIS node materializes under the current placement supplier — the declared
@@ -8015,13 +8183,52 @@ public final class StreamPartitionManager implements AutoCloseable {
         return winner.ring();
     }
 
-    /// Per-partition floor = `OffHeapRingBuffer.floorBytes(maxCount, maxBytes)` = `(header + index +
-    /// first-data-segment)` — the bytes one partition ring allocates at construction. Shared by the
-    /// per-stream held-floor admission and the #265 hydration snapshot's per-materialized-ring byte tally.
+    /// Per-partition floor = `OffHeapRingBuffer.floorBytes(count, bytes, maxEventSize)` over the stream's ring window
+    /// ([#ringWindow]) = `(header + index + first data region)`, the first region holding one maximal event: the bytes one
+    /// partition ring allocates at construction. Shared by the per-stream held-floor admission and the #265 hydration
+    /// snapshot's per-materialized-ring byte tally. At the default window (16 384 entries, 4 MiB) and a 1 MiB event size it
+    /// is 1 441 856 B; an `entity:` ring's is 1 288 640 B.
     private static long perPartitionFloorBytes(StreamConfig config) {
-        var retention = config.retention();
+        var window = ringWindow(config);
 
-        return OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes());
+        return OffHeapRingBuffer.floorBytes(window.count(), window.bytes(), config.maxEventSizeBytes());
+    }
+
+    /// The entries and bytes one partition ring of a stream holds: the one function that decides the ring window. Computed
+    /// from the config on every call and held in no per-partition state.
+    /// - `system:` keeps its committed retention (its ring stays sized as it was);
+    /// - `entity:` gets [EntityRingWindow], never the user defaults;
+    /// - any other stream gets its declared `[hot]` values, each absent one taking the default:
+    ///   [RingGeometry#HOT_WINDOW_ENTRIES] entries and [RingGeometry#hotWindowBytes] of the stream's event size.
+    ///
+    /// Retention no longer sizes a user ring: it bounds what is kept, not what is held in memory.
+    static RingWindow ringWindow(StreamConfig config) {
+        return isSystemStream(config.name())
+               ? RingWindow.ringWindow(config.retention().maxCount(),
+                                       config.retention().maxBytes())
+               : userOrEntityWindow(config);
+    }
+
+    private static RingWindow userOrEntityWindow(StreamConfig config) {
+        return config.name()
+                     .startsWith(ENTITY_STREAM_PREFIX)
+               ? RingWindow.ringWindow(EntityRingWindow.CAPACITY, EntityRingWindow.MAX_BYTES)
+               : declaredOrDefaultWindow(config);
+    }
+
+    private static RingWindow declaredOrDefaultWindow(StreamConfig config) {
+        var hot = config.declaration().flatMap(StreamDeclaration::hot);
+
+        return RingWindow.ringWindow(hot.flatMap(HotWindowDeclaration::maxCount).or(RingGeometry.HOT_WINDOW_ENTRIES),
+                                     hot.flatMap(HotWindowDeclaration::maxBytes)
+                                        .or(() -> RingGeometry.hotWindowBytes(config.maxEventSizeBytes())));
+    }
+
+    /// A ring window: `count` entries (the index) and `bytes` of data region, per partition copy.
+    record RingWindow(long count, long bytes) {
+        static RingWindow ringWindow(long count, long bytes) {
+            return new RingWindow(count, bytes);
+        }
     }
 
     /// The partition's COMMITTED span as a consumer or operator may see it (#2087): the head is the visible position and the
@@ -8391,12 +8598,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                            LongPredicate reserve,
                                                            LongConsumer release,
                                                            LongSupplier budgetFreed) {
-            var retention = config.retention();
+            var window = ringWindow(config);
 
             return OffHeapRingBuffer.offHeapRingBuffer(config.name(),
                                                        partition,
-                                                       retention.maxCount(),
-                                                       retention.maxBytes(),
+                                                       window.count(),
+                                                       window.bytes(),
+                                                       config.maxEventSizeBytes(),
                                                        listener,
                                                        deriveEvictionPolicy(config),
                                                        reserve,
