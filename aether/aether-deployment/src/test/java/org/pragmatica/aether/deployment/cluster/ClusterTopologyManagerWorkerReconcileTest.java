@@ -142,6 +142,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
     private ClusterTopologyManager ctm;
     private final AtomicReference<Option<AetherValue.AutoHealStateValue>> autoHealRef = new AtomicReference<>(Option.none());
     private final java.util.List<String> warnings = new java.util.concurrent.CopyOnWriteArrayList<>();
+    /// The codes of the `core` subject's warnings only: an activation also reconciles the worker entries, whose own holds are not under test.
+    private final java.util.List<String> coreWarnings = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.List<String> warningTexts = new java.util.concurrent.CopyOnWriteArrayList<>();
     private TopologyObserver observer;
     private StubSnapshotSource snapshotSource;
@@ -231,6 +233,9 @@ class ClusterTopologyManagerWorkerReconcileTest {
     /// The text is stored before the code, so a test that awaited the code reads the text.
     private void addWarning(org.pragmatica.utility.warning.OperatorWarning warning) {
         warningTexts.add(warning.message());
+        if (warning.subject().equals(ClusterTopologyManager.coreSubject())) {
+            coreWarnings.add(warning.code().code());
+        }
         warnings.add(warning.code().code());
     }
 
@@ -579,6 +584,10 @@ class ClusterTopologyManagerWorkerReconcileTest {
         await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == count);
     }
 
+    private void awaitCoreWarnings(int count) {
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> coreWarnings.size() == count);
+    }
+
     private void assertWarningsStay(String... expected) {
         await().during(java.time.Duration.ofMillis(300)).atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.equals(List.of(expected)));
     }
@@ -662,18 +671,18 @@ class ClusterTopologyManagerWorkerReconcileTest {
         var core = ClusterTopologyManager.coreSubject();
         ctm.activate();
         manager.scalingHeld(core, RETIREMENT, true);
-        awaitWarnings(1);
+        awaitCoreWarnings(1);
 
         ctm.deactivate();
         ctm.activate();
         manager.scalingHeld(core, RECONCILER, true);
-        awaitWarnings(2);
-        assertThat(warnings).as("the new activation holds and warns afresh").containsExactly("auto-heal-scaling-held", "auto-heal-scaling-held");
+        awaitCoreWarnings(2);
+        assertThat(coreWarnings).as("the new activation holds and warns afresh").containsExactly("auto-heal-scaling-held", "auto-heal-scaling-held");
 
         manager.scalingHeld(core, RECONCILER, false);
 
-        awaitWarnings(3);
-        assertThat(warnings).as("the old leader's retirement answer is gone: the new reconciler's false closes").last().isEqualTo("auto-heal-scaling-resumed");
+        awaitCoreWarnings(3);
+        assertThat(coreWarnings).as("the old leader's retirement answer is gone: the new reconciler's false closes").last().isEqualTo("auto-heal-scaling-resumed");
     }
 
     /// #3358: two threads answer for one subject, released by one latch. Whatever the interleaving, the events of the subject alternate
