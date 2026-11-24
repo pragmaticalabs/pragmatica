@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AlertConfig.EventConfig;
 import org.pragmatica.aether.config.AlertConfig.WebhookConfig;
+import org.pragmatica.lang.Cause;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -70,6 +71,9 @@ class AlertForwarderTransportRetryTest {
         var result = forwarder.forward(AlertEvent.AlertResolved.resolved("a-2", "test")).await(timeSpan(20).seconds());
 
         assertThat(result.isFailure()).as("an unreachable receiver is reported, not swallowed").isTrue();
+        assertThat(result.fold(Cause::message, _ -> "")).as("the report names the receiver and the transport cause")
+                                                         .startsWith("Webhook http://127.0.0.1:" + server.getLocalPort() + "/hook failed: ")
+                                                         .doesNotEndWith("failed: ");
         assertThat(accepted.get()).as("one attempt plus retry_count retries").isEqualTo(3);
     }
 
