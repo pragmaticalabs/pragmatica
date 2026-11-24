@@ -1221,6 +1221,119 @@ class SliceProcessorTest {
         assertThat(factory).doesNotContain("record orderValidator(MethodHandle<");
     }
 
+    /// #2798: a shared step interface that declares no static factory is not a plain-interface step,
+    /// so the slice-dependency classification took it for a slice and emitted a coordinate naming no
+    /// artifact (`<base>-<kebab(name)>:UNRESOLVED`). Terra then failed at assemble time, Aether at
+    /// deploy time. The only slice evidence a dependency can carry is the `@Slice` annotation or an
+    /// entry in `slice-deps.properties`; with neither it is refused at compile time, naming the parameter.
+    @Test
+    void nonSliceInterfaceWithoutFactory_isRefusedNamingTheParameter() {
+        var compilation = compileSharedStepConsumer("-Aslice.groupId=com.example", "-Aslice.artifactId=app");
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("Dependency parameter 'notifier'");
+        assertCompilation(compilation).hadErrorContaining("com.example.app.steps.Notifier");
+        assertCompilation(compilation).hadErrorContaining("is not a slice");
+    }
+
+    @Test
+    void nonSliceInterfaceWithoutFactory_isRefusedOnTheTerraTargetToo() {
+        var compilation = compileSharedStepConsumer("-Aslice.target=terra",
+                                                    "-Aslice.groupId=com.example",
+                                                    "-Aslice.artifactId=app",
+                                                    "-Aslice.version=1.0.0");
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("Dependency parameter 'notifier'");
+    }
+
+    /// The refusal must not catch a real external slice: `jbct:collect-slice-deps` lists it in
+    /// `slice-deps.properties` even where its interface carries no `@Slice` the consumer can see.
+    @Test
+    void nonSliceInterfaceListedInSliceDeps_isAccepted(@TempDir Path classes) throws IOException {
+        Files.writeString(classes.resolve("slice-deps.properties"),
+                          "com.example.app.steps.Notifier=org.example:notifier:2.0.0\n");
+        var errors = errorsFor(compileWithOutputDir(classes, sharedStepSources()));
+
+        assertThat(errors).isEmpty();
+    }
+
+    private Compilation compileSharedStepConsumer(String... options) {
+        return javac().withProcessors(new SliceProcessor())
+                      .withOptions(options)
+                      .compile(sharedStepSources());
+    }
+
+    private List<JavaFileObject> sharedStepSources() {
+        var sharedStep = JavaFileObjects.forSourceString("com.example.app.steps.Notifier",
+                                                         """
+            package com.example.app.steps;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface Notifier {
+                Promise<Boolean> notifyUser(String userId);
+            }
+            """);
+        var consumer = JavaFileObjects.forSourceString("com.example.app.orders.OrderService",
+                                                       """
+            package com.example.app.orders;
+
+            import com.example.app.steps.Notifier;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(Notifier notifier) {
+                    return null;
+                }
+            }
+            """);
+        var sources = commonSources();
+
+        sources.add(sharedStep);
+        sources.add(consumer);
+
+        return sources;
+    }
+
+    private static List<javax.tools.Diagnostic<? extends JavaFileObject>> compileWithOutputDir(Path classes,
+                                                                                               List<JavaFileObject> sources)
+    throws IOException {
+        var compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
+        var collector = new javax.tools.DiagnosticCollector<JavaFileObject>();
+
+        try (var fileManager = compiler.getStandardFileManager(collector, null, null)) {
+            fileManager.setLocationFromPaths(StandardLocation.CLASS_OUTPUT, List.of(classes));
+            fileManager.setLocationFromPaths(StandardLocation.SOURCE_OUTPUT, List.of(classes));
+            var task = compiler.getTask(null,
+                                        fileManager,
+                                        collector,
+                                        List.of("-proc:only",
+                                                "-classpath",
+                                                System.getProperty("java.class.path"),
+                                                "-Aslice.groupId=com.example",
+                                                "-Aslice.artifactId=app"),
+                                        null,
+                                        sources);
+
+            task.setProcessors(List.of(new SliceProcessor()));
+            task.call();
+        }
+
+        return List.copyOf(collector.getDiagnostics());
+    }
+
+    private static List<String> errorsFor(List<javax.tools.Diagnostic<? extends JavaFileObject>> diagnostics) {
+        return diagnostics.stream()
+                          .filter(diagnostic -> diagnostic.getKind() == javax.tools.Diagnostic.Kind.ERROR)
+                          .map(diagnostic -> diagnostic.getMessage(null))
+                          .toList();
+    }
+
     /// The narrow case the superseded immediate-parent-package test did handle — provider and
     /// consumer as direct package siblings. Keying on the module must not regress it.
     @Test
