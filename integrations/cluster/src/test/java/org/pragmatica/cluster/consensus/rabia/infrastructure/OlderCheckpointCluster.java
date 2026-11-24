@@ -63,6 +63,8 @@ import static org.pragmatica.serialization.FrameworkCodecs.frameworkCodecs;
 /// start a second generation seeded with the checkpoints and commit different values. Every node's store records what it applied as
 /// `(slot, batchId, commands)`, so the histories of the two generations can be compared slot by slot.
 public final class OlderCheckpointCluster {
+    private static final String LINEAGE = "one-lineage";
+
     public static final int SIZE = 3;
     private static final long BOUND_MILLIS = 15_000;
 
@@ -78,7 +80,7 @@ public final class OlderCheckpointCluster {
         private static final org.pragmatica.cluster.state.kvstore.IncarnationSource ONE_IDENTITY = new org.pragmatica.cluster.state.kvstore.IncarnationSource() {
             @Override
             public org.pragmatica.cluster.state.kvstore.IncarnationTag read(java.util.function.Function<StructuredKey, Object> lookup) {
-                return org.pragmatica.cluster.state.kvstore.IncarnationTag.incarnationTag(1, "one-identity");
+                return org.pragmatica.cluster.state.kvstore.IncarnationTag.incarnationTag(1, "one-identity", LINEAGE);
             }
 
             @Override

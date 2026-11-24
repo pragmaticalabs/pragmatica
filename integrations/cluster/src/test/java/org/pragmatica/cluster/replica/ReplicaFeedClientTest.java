@@ -23,6 +23,7 @@ import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cluster.replica.ClientFixtures.incarnation;
 import static org.pragmatica.cluster.replica.FeedFixtures.Key;
+import static org.pragmatica.cluster.replica.FeedFixtures.LINEAGE;
 import static org.pragmatica.cluster.replica.FeedFixtures.TAG;
 import static org.pragmatica.cluster.replica.FeedFixtures.put;
 
@@ -183,7 +184,7 @@ class ReplicaFeedClientTest {
 
             assertThat(net.subscribes()).hasSize(2);
             assertThat(net.subscribes().getLast().mode()).isEqualTo(SubscribeMode.LIVE_ONLY);
-            assertThat(net.applier.position().tag()).isEqualTo(IncarnationTag.incarnationTag(2, "B"));
+            assertThat(net.applier.position().tag()).isEqualTo(IncarnationTag.incarnationTag(2, "B", LINEAGE));
             assertThat(net.valueOf("z")).isEqualTo("9");
             assertThat(net.installs.get()).isEqualTo(2);
         }

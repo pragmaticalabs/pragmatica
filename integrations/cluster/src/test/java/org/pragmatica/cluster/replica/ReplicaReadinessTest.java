@@ -15,6 +15,7 @@ import org.pragmatica.cluster.state.kvstore.AnchorPair;
 import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.cluster.replica.FeedFixtures.LINEAGE;
 import static org.pragmatica.cluster.replica.FeedFixtures.TAG;
 
 /// Spec 2.8: `ready()` is one computation of (a)..(f). Each test names the mutation of `ReplicaReadiness` that turns it red.
@@ -50,7 +51,7 @@ class ReplicaReadinessTest {
     void ready_isFalse_whenTheHeartbeatTagIsAnotherLife() {
         readiness.sourceChanged();
         readiness.caughtUp(true);
-        readiness.onHeartbeat(IncarnationTag.incarnationTag(2, "B"), 10, true);
+        readiness.onHeartbeat(IncarnationTag.incarnationTag(2, "B", LINEAGE), 10, true);
 
         assertThat(readiness.ready()).isFalse();
     }

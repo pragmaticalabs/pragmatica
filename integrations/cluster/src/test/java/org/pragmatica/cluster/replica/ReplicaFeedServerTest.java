@@ -33,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cluster.replica.FeedFixtures.CORE;
 import static org.pragmatica.cluster.replica.FeedFixtures.OTHER;
 import static org.pragmatica.cluster.replica.FeedFixtures.PEER;
+import static org.pragmatica.cluster.replica.FeedFixtures.LINEAGE;
 import static org.pragmatica.cluster.replica.FeedFixtures.TAG;
 import static org.pragmatica.cluster.replica.FeedFixtures.THIRD;
 import static org.pragmatica.cluster.replica.FeedFixtures.put;
@@ -199,7 +200,7 @@ class ReplicaFeedServerTest {
         @Test
         void liveOnly_fromAnotherLife_isRefusedIncarnationMismatch_andNothingIsRegistered() {
             var harness = new Harness();
-            var otherLife = IncarnationTag.incarnationTag(TAG.incarnation(), TAG.incarnationId() + "-other");
+            var otherLife = IncarnationTag.incarnationTag(TAG.incarnation(), TAG.incarnationId() + "-other", LINEAGE);
 
             harness.server.onSubscribe(new ReplicaSubscribe(PEER, 3, otherLife, 0, List.of(), SubscribeMode.LIVE_ONLY));
 
@@ -291,7 +292,7 @@ class ReplicaFeedServerTest {
             var harness = new Harness();
 
             harness.commit(1, put("a", "1"));
-            harness.server.onSubscribe(new ReplicaSubscribe(PEER, 1, IncarnationTag.incarnationTag(2, "B"), 2, List.of(anchorAt(harness, 1)), SubscribeMode.FROM_ANCHOR));
+            harness.server.onSubscribe(new ReplicaSubscribe(PEER, 1, IncarnationTag.incarnationTag(2, "B", LINEAGE), 2, List.of(anchorAt(harness, 1)), SubscribeMode.FROM_ANCHOR));
             harness.server.onSubscribe(fromAnchor(OTHER, 2, 99, List.of(anchorAt(harness, 1))));
             harness.server.onSubscribe(fromAnchor(THIRD, 3, 0, List.of(new AnchorPair(0, "old"))));
 

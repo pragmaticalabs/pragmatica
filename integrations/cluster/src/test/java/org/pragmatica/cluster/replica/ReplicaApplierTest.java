@@ -34,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cluster.replica.ClientFixtures.CLIENT;
 import static org.pragmatica.cluster.replica.FeedFixtures.CORE;
 import static org.pragmatica.cluster.replica.FeedFixtures.Key;
+import static org.pragmatica.cluster.replica.FeedFixtures.LINEAGE;
 import static org.pragmatica.cluster.replica.FeedFixtures.TAG;
 
 /// I-W4 at the replica: tag, `from` chain, `subSeq`, the skip, the buffer and the install. Each test names the mutation of `ReplicaApplier` that
@@ -82,7 +83,7 @@ class ReplicaApplierTest {
     /// Mutation: compare the tag by incarnation number only (`entry.tag().incarnation() == held.tag().incarnation()`).
     @Test
     void accept_anotherIncarnationId_discardsThePosition_andWritesNothing() {
-        var other = IncarnationTag.incarnationTag(1, "B");
+        var other = IncarnationTag.incarnationTag(1, "B", LINEAGE);
 
         assertThat(applier.accept(live(1, entry(other, 2, 2, "b", "2")))).isEqualTo(Step.DISCARD_POSITION);
 
@@ -401,7 +402,7 @@ class ReplicaApplierTest {
 
         assertThat(replica.install(reborn.bytes(), reborn.tag(), reborn.revision(), reborn.anchor()).isSuccess())
                 .as("a new incarnation moves down").isTrue();
-        assertThat(replica.position().tag()).isEqualTo(IncarnationTag.incarnationTag(2, "B"));
+        assertThat(replica.position().tag()).isEqualTo(IncarnationTag.incarnationTag(2, "B", LINEAGE));
     }
 
     private static KVStore<StructuredKey, Object> laggingSource(int committedSlots) {

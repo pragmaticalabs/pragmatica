@@ -47,13 +47,14 @@ final class FeedFixtures {
     static final NodeId PEER = NodeId.nodeId("peer-1").unwrap();
     static final NodeId OTHER = NodeId.nodeId("peer-2").unwrap();
     static final NodeId THIRD = NodeId.nodeId("peer-3").unwrap();
-    static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "A");
+    static final String LINEAGE = "L";
+    static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "A", LINEAGE);
 
     static final IncarnationSource SOURCE = new IncarnationSource() {
         @Override
         public IncarnationTag read(Function<StructuredKey, Object> lookup) {
             return lookup.apply(IncKey.INSTANCE) instanceof IncValue value
-                   ? IncarnationTag.incarnationTag(value.incarnation(), value.id())
+                   ? IncarnationTag.incarnationTag(value.incarnation(), value.id(), LINEAGE)
                    : IncarnationTag.NONE;
         }
 
