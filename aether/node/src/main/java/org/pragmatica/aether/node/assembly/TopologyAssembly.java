@@ -333,6 +333,7 @@ public sealed interface TopologyAssembly {
                                                                                                                           nodeReplacements,
                                                                                                                           deploymentMap,
                                                                                                                           clusterTopologyManager,
+                                                                                                                          pastDrainGrace(leaderReconcilerRef::get),
                                                                                                                           readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
                                                                                                                                               membershipFsmRef::get)))
                                                                                         .onFailure(cause -> LOG.warn("Core voter reconciliation: {}",
@@ -846,17 +847,38 @@ public sealed interface TopologyAssembly {
                                                      NodeReplacementIndex replacements,
                                                      DeploymentMap deployments,
                                                      ClusterTopologyManager topology,
+                                                     Predicate<NodeId> pastDrainGrace,
                                                      Set<NodeId> ready) {
         if (!cluster.leaderManager().isLeader()) {
             return Promise.unitPromise();
         }
 
-        var victims = excludedCoreNodes(cluster, membership, store, replacements, ready).stream()
-                                       .filter(node -> deployments.byNode(node)
-                                                                  .isEmpty())
-                                       .toList();
+        var victims = retirementVictims(excludedCoreNodes(cluster, membership, store, replacements, ready),
+                                        node -> deployments.byNode(node)
+                                                           .isEmpty(),
+                                        pastDrainGrace);
 
         return retireSurplusCores(victims, topology);
+    }
+
+    /// #1055: the voter-excluded core retirement drains as `OVERPROVISION_SCALE_DOWN`, a surplus trim, so it obeys the same rule as
+    /// the reconciler's surplus drain: a member younger than the drain-safety grace is never a victim. A young core is simply not
+    /// returned here; the 1 s retirement cadence offers it again on every pass until it matures.
+    static List<NodeId> retirementVictims(Set<NodeId> excluded,
+                                          Predicate<NodeId> hostsNothing,
+                                          Predicate<NodeId> pastDrainGrace) {
+        return excluded.stream()
+                       .filter(hostsNothing)
+                       .toList();
+    }
+
+    /// #1055: the ONE age rule, [LeaderReconciler#pastDrainSafetyGrace] (same grace window, same `MembershipFsm.memberAgeMs`
+    /// source), reached through the reconciler holder. The holder is empty until the reconciler is published, and an
+    /// unpublished reconciler cannot vouch for any age, so the gate is fail-closed like every other reap gate on this holder.
+    static Predicate<NodeId> pastDrainGrace(Supplier<LeaderReconciler> reconciler) {
+        return node -> Option.option(reconciler.get())
+                             .map(r -> r.pastDrainSafetyGrace(node))
+                             .or(false);
     }
 
     /// #3324: the production wiring of the voter-excluded core retirement: the hold asked is `topology`'s own, for the subject `core`,

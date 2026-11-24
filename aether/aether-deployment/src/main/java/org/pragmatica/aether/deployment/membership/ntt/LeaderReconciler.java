@@ -1739,7 +1739,7 @@ public final class LeaderReconciler {
 
     /// Whether `id`'s membership age has reached the drain-safety grace window. Unknown age
     /// (untracked id) counts as mature — see [`#selectDrainVictims`].
-    private boolean pastDrainSafetyGrace(NodeId id) {
+    public boolean pastDrainSafetyGrace(NodeId id) {
         return membershipFsm.memberAgeMs(id)
                             .map(ageMs -> ageMs >= drainSafetyGraceWindow.millis())
                             .or(true);
