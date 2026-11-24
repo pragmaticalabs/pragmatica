@@ -183,6 +183,26 @@ class PlanMatrix(unittest.TestCase):
         self.assertIn('SharedPools/live', real['full'], 'the seeded budgets.tsv must put SharedPools/live over the hosted limit')
         self.assertTrue({'Fsm2Leader/code_nolate_close', 'Fsm2Leader/code_nolate_show', 'Fsm2Leader/code_nolate_persist'} <= real['full'])
 
+    def test_the_over_limit_rule_run_sh_asks_is_the_one_plan_uses_at_and_over_each_edge(self):
+        # run.sh has no rule of its own: it calls `plan-matrix.py --over-limit` (rc 0 over, 1 within, 2 unusable input).
+        def asked(t, h, lt='18000', lh='12g'):
+            return subprocess.run([sys.executable, SCRIPT, '--over-limit', t, h, lt, lh], capture_output=True, text=True).returncode
+        self.assertEqual(
+            [asked('18000', '12g'), asked('18001', '12g'), asked('18000', '13g'), asked('600', '-'), asked('18001', '-'), asked('1', '1g', '1', '1g')],
+            [1, 0, 0, 1, 0, 1])
+        self.assertEqual(asked('x', '8g'), 2)
+        # and plan() reaches the same answers through the same function
+        for t, h, over in ((18000, 12, False), (18001, 12, True), (18000, 13, True), (5, 0, False)):
+            self.assertEqual(plan_skips(t, h), over, (t, h))
+
+
+def plan_skips(t, h):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('plan_matrix', SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.over_hosted((t, h), (18000, 12))
+
 
 if __name__ == '__main__':
     unittest.main()

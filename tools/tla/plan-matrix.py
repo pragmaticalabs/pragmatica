@@ -94,7 +94,14 @@ def read_budgets(path, rows):
 
 
 def over_hosted(budget, hosted):
+    """THE over-limit rule (#3636), the only implementation: run.sh asks it through `--over-limit` (its list, host and default
+    modes), plan() asks it directly. Inputs are the budget table's numbers alone; TLC_TIMEOUT never reaches it."""
     return budget[0] > hosted[0] or budget[1] > hosted[1]
+
+
+def parse_heap(text):
+    """'8g' -> 8, '-' (the JVM default) -> 0, as read_budgets stores it."""
+    return 0 if text == '-' else int(text.rstrip('g'))
 
 
 def skipped_host_rows(rows, budgets, module, profile):
@@ -134,6 +141,13 @@ def plan(models, event, profile, regex, rows=(), budgets=None):
 
 
 def main():
+    if len(sys.argv) == 6 and sys.argv[1] == '--over-limit':   # --over-limit <timeout_s> <heap> <hosted_timeout_s> <hosted_heap>
+        _, _, t, h, lt, lh = sys.argv
+        try:
+            sys.exit(0 if over_hosted((int(t), parse_heap(h)), (int(lt), parse_heap(lh))) else 1)
+        except ValueError as e:
+            print(f'plan-matrix: ERROR --over-limit: {e}', file=sys.stderr)
+            sys.exit(2)
     ap = argparse.ArgumentParser()
     ap.add_argument('--event', required=True)
     ap.add_argument('--profile', default='small')

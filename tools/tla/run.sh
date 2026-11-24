@@ -94,17 +94,22 @@ budget_of() {
     $1 == "*" { d = $3 " " $4 " default row" }
     END { if (!found) print d }' "$budgets"
 }
-# over_hosted <timeout_s> <heap>: 0 when a hosted runner takes the row, 1 when it does not. THE one place the question is
-# answered, and it is asked of the BUDGET TABLE's numbers alone (list mode, host mode and the default mode all pass budget_of's
-# output): TLC_TIMEOUT changes only the cap a row runs under, never which rows are over the limit.
-over_hosted() { awk -v t="$1" -v h="$2" -v lt="$hosted_t" -v lh="$hosted_h" 'BEGIN { exit !(t + 0 > lt + 0 || (h != "-" && h + 0 > lh + 0)) }' && echo 1 || echo 0; }
+# over_hosted <timeout_s> <heap>: prints 1 when a hosted runner does not take the row, else 0. The rule itself lives ONLY in
+# plan-matrix.py (over_hosted, asked here through --over-limit; CI's matrix planner asks the same function). It is asked of the
+# BUDGET TABLE's numbers alone (list, host and default mode all pass budget_of's output): TLC_TIMEOUT changes only the cap a row
+# runs under, never which rows are over the limit. rc 0 = over, 1 = within, anything else = the helper failed: exit 2.
+over_hosted() {
+  python3 "$here/plan-matrix.py" --over-limit "$1" "$2" "$hosted_t" "${hosted_h}g"; local rc=$?
+  case $rc in 0) echo 1 ;; 1) echo 0 ;; *) echo "run: ERROR over-limit helper failed (rc=$rc)" >&2; return 2 ;; esac
+}
 selected=$(awk -F'\t' -v f="$vfilter" -v p="$profile" '$3 ~ "^(" f ")$" && (p != "heavy" || $6 == "heavy")' <<<"$rows")
 if [[ $host == list ]]; then
   [[ $use_budgets == 1 ]] || { echo "run: ERROR TLA_HOST=list needs profile full or heavy" >&2; exit 2; }
   while IFS=$'\t' read -r module _ variant _; do
     [[ -n $module ]] || continue
     read -r bt bh _ < <(budget_of "$module" "$variant")
-    [[ $(over_hosted "$bt" "$bh") == 1 ]] && printf '%s/%s\t%s\t%s\n' "$module" "$variant" "$bt" "$bh"
+    ov=$(over_hosted "$bt" "$bh") || exit 2
+    [[ $ov == 1 ]] && printf '%s/%s\t%s\t%s\n' "$module" "$variant" "$bt" "$bh"
   done <<<"$selected"
   exit 0
 fi
@@ -144,7 +149,7 @@ while IFS=$'\t' read -r module root variant expect property small _; do
   btimeout=""; bheap="-"; bsrc=""; bover=0
   if [[ $use_budgets == 1 ]]; then
     read -r btimeout bheap bsrc < <(budget_of "$module" "$variant"); bsrc="$bsrc ${btimeout}s/${bheap}"
-    bover=$(over_hosted "$btimeout" "$bheap")
+    bover=$(over_hosted "$btimeout" "$bheap") || exit 2
     if [[ $host == 1 && $bover == 0 ]]; then continue; fi   # host mode: only the rows a runner does not take
     if [[ $host != 1 && $bover == 1 ]]; then
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$commit" "$dirty" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$profile" "$module" "$variant" \
