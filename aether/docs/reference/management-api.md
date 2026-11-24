@@ -1345,7 +1345,7 @@ Rules:
 - The check runs before any KV command is applied, so a refused publish writes nothing. It reports the first datasource that fails;
   an artifact that declares migrations for several datasources may need the operator's fix repeated.
 - `force: true` (CLI `--force`) skips the check for the whole request. The publish then writes the declared version, the record is
-  a forward migration from then on, and the removed versions are applied again. Unlike `baseline` with `force` (`SCHEMA_BASELINE_FORCED`), the override leaves no audit entry of its own beyond the ordinary blueprint-deployed one.
+  a forward migration from then on, and the removed versions are applied again. Unlike `baseline` with `force` (`SCHEMA_BASELINE_FORCED`), the override leaves no audit entry of its own. `POST /api/v1/blueprints/deploy` writes only the ordinary blueprint-deployed entry; `POST /api/v1/blueprints/publish` (register-only) writes none.
 - A record written by a build older than #834 has no recorded reach and reads as a forward migration, so an undo or baseline made
   before the upgrade is not guarded.
 - `POST /api/v1/blueprints` (raw blueprint content) carries no migrations and is not subject to the check.

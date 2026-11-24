@@ -219,7 +219,7 @@ class BlueprintPublishOwnershipTest {
             seedUndoneAt(1);
 
             publish(OWNER_COORDS, withMigrationsUpTo(OWNER_COORDS, 2)).onSuccess(_ -> Assertions.fail("Republish declaring V2 over an undo to V1 must be refused"))
-                                                                      .onFailure(cause -> assertReapplyRefused(cause, "undo"));
+                                                                      .onFailure(cause -> assertReapplyRefused(cause, SchemaReach.UNDONE, "undo"));
         }
 
         /// The baseline arm: a baseline also leaves the record below what the blueprint declares, and the versions it skipped
@@ -229,7 +229,7 @@ class BlueprintPublishOwnershipTest {
             seedReachedAt(1, SchemaReach.BASELINED);
 
             publish(OWNER_COORDS, withMigrationsUpTo(OWNER_COORDS, 2)).onSuccess(_ -> Assertions.fail("Republish declaring V2 over a baseline at V1 must be refused"))
-                                                                      .onFailure(cause -> assertReapplyRefused(cause, "baseline"));
+                                                                      .onFailure(cause -> assertReapplyRefused(cause, SchemaReach.BASELINED, "baseline"));
             assertThat(cluster.batches).as("refused before any command is applied")
                                        .isEmpty();
         }
@@ -257,6 +257,18 @@ class BlueprintPublishOwnershipTest {
             publish(OWNER_COORDS, withMigrationsUpTo(OWNER_COORDS, 2)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
 
             assertThat(recordedVersion()).isEqualTo(2);
+        }
+
+        /// A record whose reach is `UNKNOWN` (written by a build that does not know the reach constant) never guards:
+        /// the guard refuses only on a reach it positively knows to be an operator intervention.
+        @Test
+        void publishFromArtifact_isAccepted_whenRecordReachIsUnknown() {
+            seedReachedAt(1, SchemaReach.UNKNOWN);
+
+            publish(OWNER_COORDS, withMigrationsUpTo(OWNER_COORDS, 2)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(recordedVersion()).as("an unknown reach is not an intervention, so the publish lands")
+                                         .isEqualTo(2);
         }
 
         /// Nothing would be re-applied when the blueprint declares no version above the one the operator left.
@@ -607,9 +619,15 @@ class BlueprintPublishOwnershipTest {
                     .or(-1);
     }
 
-    private static void assertReapplyRefused(Cause cause, String operation) {
-        assertThat(cause).isInstanceOf(HttpStatusAware.class);
-        assertThat(((HttpStatusAware) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+    private static void assertReapplyRefused(Cause cause, SchemaReach reach, String operation) {
+        assertThat(cause).isInstanceOf(SchemaError.RepublishWouldReapply.class);
+        var refusal = (SchemaError.RepublishWouldReapply) cause;
+        assertThat(refusal.httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(refusal.reachedBy()).as("the typed cause names the intervention that guarded")
+                                       .isEqualTo(reach);
+        assertThat(refusal.currentVersion()).isEqualTo(1);
+        assertThat(refusal.reapplied()).isEqualTo(List.of(2));
+        assertThat(refusal.datasource()).isEqualTo(DATASOURCE);
         assertThat(cause.message()).contains(DATASOURCE)
                                    .contains("by an operator " + operation)
                                    .contains("[2]");
