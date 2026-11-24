@@ -35,6 +35,8 @@ class DeferredRuntimeInputsTest {
     @BeforeEach
     void environmentCarriesNoTerraSecret() {
         assumeTrue(System.getenv("TERRA_JWT__SECRET") == null, "the test supplies jwt.secret itself");
+        assumeTrue(System.getenv().keySet().stream().noneMatch(name -> name.startsWith("TERRA_API_KEYS__")),
+                   "the test supplies the api_keys itself");
     }
 
     private static Result<LaunchHttp> deferred(Map<String, String> extra) {
@@ -43,6 +45,14 @@ class DeferredRuntimeInputsTest {
         values.putAll(extra);
 
         return LaunchHttp.launchHttp(Path.of("."), ConfigurationProvider.builder().withDefaults(values).build(), RuntimeInputs.DEFERRED);
+    }
+
+    private static Result<LaunchHttp> apiKeys(RuntimeInputs inputs, Map<String, String> entries) {
+        var values = new HashMap<>(Map.of("http.security_mode", "api-key"));
+
+        values.putAll(entries);
+
+        return LaunchHttp.launchHttp(Path.of("."), ConfigurationProvider.builder().withDefaults(values).build(), inputs);
     }
 
     private static void assertRefused(Result<LaunchHttp> launch, String reason) {
@@ -157,6 +167,85 @@ class DeferredRuntimeInputsTest {
                        .await(timeSpan(5).seconds())
                        .onSuccess(_ -> fail("a check plan with a missing secret must not start"))
                        .onFailure(cause -> assertThat(cause.message()).contains("Runtime inputs not supplied: jwt.secret"));
+    }
+
+    @Test
+    void deferred_apiKeyEntryWithoutKey_passesAndNamesIt() {
+        assertThat(apiKeys(RuntimeInputs.DEFERRED, Map.of("api_keys.ci.authorization_role", "ADMIN")).unwrap().unsupplied())
+            .containsExactly("api_keys.ci.key");
+    }
+
+    @Test
+    void deferred_twoEntriesWithoutKey_areNotDuplicatesAndBothNamed() {
+        var entries = Map.of("api_keys.b.roles", "[svc]", "api_keys.a.authorization_role", "OPERATOR");
+
+        assertThat(apiKeys(RuntimeInputs.DEFERRED, entries).unwrap().unsupplied()).containsExactlyInAnyOrder("api_keys.a.key", "api_keys.b.key");
+    }
+
+    @Test
+    void deferred_oneEntrySuppliedOneAbsent_namesOnlyTheAbsentOne() {
+        var entries = Map.of("api_keys.a.key", SECRET, "api_keys.b.roles", "[svc]");
+
+        assertThat(apiKeys(RuntimeInputs.DEFERRED, entries).unwrap().unsupplied()).containsExactly("api_keys.b.key");
+    }
+
+    @Test
+    void deferred_apiKeyEntryWithKey_reportsNothing() {
+        assertThat(apiKeys(RuntimeInputs.DEFERRED, Map.of("api_keys.ci.key", SECRET)).unwrap().unsupplied()).isEmpty();
+    }
+
+    @Test
+    void deferred_apiKeyEntryWithBlankKey_stillRefuses() {
+        assertRefused(apiKeys(RuntimeInputs.DEFERRED, Map.of("api_keys.ci.key", "  ")), "Invalid API-key configuration for entry ci");
+    }
+
+    @Test
+    void deferred_apiKeyEntryWithInvalidRole_stillRefusesAlthoughKeyIsAbsent() {
+        assertRefused(apiKeys(RuntimeInputs.DEFERRED, Map.of("api_keys.ci.authorization_role", "ROOT")), "Invalid API-key configuration for entry ci");
+    }
+
+    @Test
+    void deferred_duplicateSuppliedApiKeys_stillRefuse() {
+        assertRefused(apiKeys(RuntimeInputs.DEFERRED, Map.of("api_keys.a.key", SECRET, "api_keys.b.key", SECRET)), "Duplicate API-key credential");
+    }
+
+    @Test
+    void required_apiKeyEntryWithoutKey_stillRefusesTheLaunch() {
+        assertRefused(apiKeys(RuntimeInputs.REQUIRED, Map.of("api_keys.ci.authorization_role", "ADMIN")), "Invalid API-key configuration for entry ci");
+    }
+
+    @Test
+    void check_apiKeyEntryWithoutKeyInTerraToml_succeedsAndTheReportNamesIt() throws Exception {
+        writeHost("[http]\nsecurity_mode = \"api-key\"\n[api_keys.ci]\nauthorization_role = \"ADMIN\"\n");
+
+        var plan = TerraLaunchPlan.check(directory).await(timeSpan(5).seconds()).unwrap();
+
+        assertThat(plan.unsuppliedInputs()).containsExactly("api_keys.ci.key");
+        assertThat(TerraMain.checkReport(plan)).isEqualTo("Terra check passed: 1 selected slices\n"
+                                                         + "Runtime input not supplied (required at launch): api_keys.ci.key");
+    }
+
+    @Test
+    void launch_apiKeyEntryWithoutKey_stillRefuses() throws Exception {
+        writeHost("[http]\nsecurity_mode = \"api-key\"\n[api_keys.ci]\nauthorization_role = \"ADMIN\"\n");
+
+        TerraLaunchPlan.load(directory)
+                       .await(timeSpan(5).seconds())
+                       .onSuccess(_ -> fail("the launch must refuse an api-key entry without a key"))
+                       .onFailure(cause -> assertThat(cause.message()).contains("Invalid API-key configuration for entry ci"));
+    }
+
+    @Test
+    void start_planCheckedWithAnAbsentApiKey_refusesBeforeConstructingAnything() throws Exception {
+        writeHost("[http]\nsecurity_mode = \"api-key\"\n[api_keys.ci]\nauthorization_role = \"ADMIN\"\n");
+
+        TerraLaunchPlan.check(directory)
+                       .await(timeSpan(5).seconds())
+                       .unwrap()
+                       .start()
+                       .await(timeSpan(5).seconds())
+                       .onSuccess(_ -> fail("a check plan with an absent api key must not start"))
+                       .onFailure(cause -> assertThat(cause.message()).contains("Runtime inputs not supplied: api_keys.ci.key"));
     }
 
     @Test

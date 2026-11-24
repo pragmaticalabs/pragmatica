@@ -4,6 +4,7 @@
 package org.pragmatica.terra.launcher;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -171,8 +172,7 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator, 
             case "custom" -> custom(settings, discovery);
             case "none" -> Result.success(new Security(SecurityPolicy.publicRoute(),
                                                        HttpAuthenticator::denyUnlessPublicValidator));
-            case "api-key" -> apiKeys(settings).map(keys -> new Security(SecurityPolicy.apiKeyRequired(),
-                                                                         () -> HttpAuthenticator.apiKeyValidator(keys)));
+            case "api-key" -> apiKeys(settings, inputs).map(LaunchHttp::apiKeySecurity);
             case "jwt" -> jwt(settings, inputs).map(LaunchHttp::jwtSecurity);
             default -> new TerraLaunchError("http.security_mode must be none, api-key, jwt, or custom").result();
         };
@@ -271,7 +271,13 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator, 
                         .collect(Collectors.joining(" and "));
     }
 
-    private static Result<Map<String, ApiKeyEntry>> apiKeys(ConfigurationProvider settings) {
+    /// The credentials the settings declare, and the `api_keys.<name>.key` inputs they declare without a value.
+    private record ApiKeys(Map<String, ApiKeyEntry> entries, List<String> unsupplied) {}
+
+    /// An entry whose `key` is absent is a deployment secret not supplied under [RuntimeInputs#DEFERRED] (#3026): reported,
+    /// its role still checked, and never a duplicate of another absent one. A present blank `key` and an invalid role
+    /// refuse in both modes. An entry the settings do not declare at all cannot be seen, so a `--check` never names it.
+    private static Result<ApiKeys> apiKeys(ConfigurationProvider settings, RuntimeInputs inputs) {
         var names = settings.keys()
                             .stream()
                             .filter(key -> key.startsWith("api_keys."))
@@ -280,14 +286,23 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator, 
                             .distinct()
                             .toList();
         var entries = new LinkedHashMap<String, ApiKeyEntry>();
+        var unsupplied = new ArrayList<String>();
 
         for (var name : names) {
             var section = "api_keys." + name;
             var value = settings.getString(section + ".key");
             var role = settings.getString(section + ".authorization_role").or("VIEWER").toUpperCase(Locale.ROOT);
+            var absent = value.isEmpty() && inputs == RuntimeInputs.DEFERRED;
 
-            if (value.isEmpty() || value.unwrap().isBlank() || !Set.of("ADMIN", "OPERATOR", "VIEWER").contains(role)) {
+            if ((value.isEmpty() && !absent) || value.filter(String::isBlank).isPresent() || !Set.of("ADMIN",
+                                                                                                     "OPERATOR",
+                                                                                                     "VIEWER").contains(role)) {
                 return new TerraLaunchError("Invalid API-key configuration for entry " + name).result();
+            }
+
+            if (absent) {
+                unsupplied.add(section + ".key");
+                continue;
             }
 
             var roles = Arrays.stream(settings.getString(section + ".roles")
@@ -304,7 +319,15 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator, 
             }
         }
 
-        return Result.success(Map.copyOf(entries));
+        return Result.success(new ApiKeys(Map.copyOf(entries), List.copyOf(unsupplied)));
+    }
+
+    private static Security apiKeySecurity(ApiKeys keys) {
+        var entries = keys.entries();
+
+        return new Security(SecurityPolicy.apiKeyRequired(),
+                            () -> HttpAuthenticator.apiKeyValidator(entries),
+                            keys.unsupplied());
     }
 
     private static Result<JwtConfig> jwt(ConfigurationProvider settings, RuntimeInputs inputs) {
