@@ -35,6 +35,29 @@ class ColumnNullabilityTest {
     }
 
     @Test
+    void partitionedTable_primaryKey_makesItsColumnsNotNull() {
+        var script = "CREATE TABLE t (a bigint, b bigint, note text, PRIMARY KEY (a, b)) PARTITION BY RANGE (a)";
+
+        assertThat(nullable(script, "a")).isFalse();
+        assertThat(nullable(script, "b")).isFalse();
+        assertThat(nullable(script, "note")).isTrue();
+    }
+
+    /// Tables not built by a column list are not modelled: PARTITION OF and LIKE must be refused by the parser, never
+    /// produce a table whose copied key columns read nullable. If this fails, the grammar accepts the form: model it.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {
+        "CREATE TABLE p PARTITION OF t FOR VALUES FROM (1) TO (10)",
+        "CREATE TABLE c (LIKE t INCLUDING ALL)"})
+    void tablesBuiltFromAnotherTable_areRefusedByTheParser(String ddl) {
+        var result = MigrationProcessor.create()
+                                       .processAll(List.of("CREATE TABLE t (a bigint, PRIMARY KEY (a)) PARTITION BY RANGE (a)",
+                                                           ddl));
+
+        assertThat(result.isFailure()).isTrue();
+    }
+
+    @Test
     void inlinePrimaryKey_onAnAddedColumn_isNotNull() {
         var script = "CREATE TABLE t (note text); ALTER TABLE t ADD COLUMN a bigint PRIMARY KEY";
 
