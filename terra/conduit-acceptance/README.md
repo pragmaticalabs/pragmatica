@@ -51,11 +51,7 @@ Terra answers RFC 9457 problem details (owner ruling 2026-11-08), where the spec
 edited; the runner changes a scratch copy before the run:
 
 - **Error bodies are asserted through `detail`.** Each `jsonpath "$.errors.<field>[0]" == "<msg>"` under an `HTTP 4xx`/`5xx` line becomes
-  `jsonpath "$.detail" contains "<field>: <msg>"` (32 cases). Status lines, success assertions and captures are untouched.
-- **12 cases are exempt by name** (`local/exempt-by-name.txt`): every `token: is missing`. Until #3248 the framework auth gate
-  answered `detail: "Authorization Bearer token required"`, which named Bearer where Conduit's scheme is Token; it now answers `token: is missing`,
-  so the list is obsolete and its entries can be dropped (not yet done: the runner has not been run against an empty list). The status code of each is still asserted.
-  The runner fails closed if a listed line is not such an assertion or the applied count differs from the list.
+  `jsonpath "$.detail" contains "<field>: <msg>"` (44 cases, the 12 `token: is missing` included since #3248). Status lines, success assertions and captures are untouched.
 - **Hurl, not Newman.** The upstream project removed its Postman collection; the Hurl files are its current source of truth.
 - **`terra.toml` carries a placeholder `jwt.secret`.** `terra:assemble` runs `--check` at build time and the default reactor builds this
   module without a secret exported. The runner overrides it through `TERRA_JWT__SECRET`; the placeholder is a test value, not a secret.
