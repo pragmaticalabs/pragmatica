@@ -583,6 +583,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// #3635 test seam — see [#builtObserverForTests]. No-op unless a test installs one.
     private volatile BiConsumer<QuicClusterServer, QuicClusterClient> builtObserver = (_, _) -> {};
 
+    /// #3635 test seam — see [#beforeRebuildForTests]. No-op unless a test installs one.
+    private volatile Runnable beforeRebuild = () -> {};
+
     enum ViewChangeOperation {
         ADD,
         REMOVE,
@@ -1452,7 +1455,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return stopPromise.flatMap(_ -> rebuildAndStart(port, newServerSsl, newClientSsl));
     }
 
+    /// #3635: a rotation racing stop() builds nothing after the stop, in the #1461 shape of [#startOnPort]. A stop that
+    /// landed while the old server was stopping is seen by the first check, and nothing is built. A stop that overtakes
+    /// the first check may have read `server`/`client` before they were assigned and released nothing, so the check
+    /// is repeated after the assignment and this rotation releases what it just built. Either way the rotation fails
+    /// with `NETWORK_STOPPED`.
     private Promise<Unit> rebuildAndStart(int port, QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
+        if (closed.get()) {
+            return NETWORK_STOPPED.promise();
+        }
+
+        beforeRebuild.run();
         server = QuicClusterServer.quicClusterServer(self.id(),
                                                      self.address(),
                                                      self.labels(),
@@ -1467,7 +1480,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      this::onLaneStreamEvent);
         // #3635: the client is NOT rebuilt. It owns an event-loop group and the per-peer datagram-channel map, and a
         // replacement orphaned both with the old client's dialed connections (documented to outlive a rotation). Only
-        // its TLS context for later dials changes (stopAndRestartServer). Built here only if none exists.
+        // its TLS context for later dials changes (stopAndRestartServer). None exists only when a stop() overtook the first
+        // check and cleared it; the one built here is then released by the re-check below.
         if (client == null) {
             client = QuicClusterClient.quicClusterClient(self.id(),
                                                          self.address(),
@@ -1480,6 +1494,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                          this::onMessageReceived,
                                                          bootTokens,
                                                          this::onLaneStreamEvent);
+        }
+
+        builtObserver.accept(server, client);
+        if (closed.get()) {
+            return stopServerAndClient(unit()).flatMap(_ -> NETWORK_STOPPED.<Unit> promise());
         }
 
         var serverRef = server;
@@ -4267,11 +4286,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return client;
     }
 
-    /// Package-private test seam (#3635) — told, on every `startOnPort` that gets past its guards, which server and client
-    /// that start built. A failed start releases and clears both fields, so a test cannot read them afterwards; this is how
-    /// it still reaches the event-loop groups the failed start owned.
+    /// Package-private test seam (#3635) — told, on every `startOnPort` or rotation rebuild that gets past its first guard,
+    /// which server and client it holds (a rotation builds a server and keeps the client it found). A failed start releases
+    /// and clears both fields, so a test cannot read them afterwards; this is how it still reaches the event-loop groups
+    /// the failed start owned.
     void builtObserverForTests(BiConsumer<QuicClusterServer, QuicClusterClient> observer) {
         builtObserver = observer;
+    }
+
+    /// Package-private test seam (#3635) — run by a rotation rebuild after its first `closed` check and before it assigns
+    /// `server`/`client`: the window a racing stop() can land in. A test runs stop() here to reach the re-check.
+    @Contract
+    void beforeRebuildForTests(Runnable hook) {
+        beforeRebuild = hook;
     }
 
     /// Package-private test seam (#1578) — the connection a peer is currently bound to, or empty when

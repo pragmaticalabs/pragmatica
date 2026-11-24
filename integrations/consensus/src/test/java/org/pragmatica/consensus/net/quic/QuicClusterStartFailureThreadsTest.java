@@ -17,6 +17,7 @@ package org.pragmatica.consensus.net.quic;
 
 import java.net.DatagramSocket;
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -41,6 +42,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #3635 seen from outside: only the constructor and `startOnPort` are used, and the event-loop threads that exist
 /// afterwards are read from the JVM. A start that fails on a held UDP port must leave no event-loop thread it created.
@@ -82,16 +84,8 @@ class QuicClusterStartFailureThreadsTest {
         }
     }
 
-    private static Set<Thread> awaitNoNewEventLoopThreads(Set<Thread> before) throws InterruptedException {
-        var deadline = System.nanoTime() + LEAK_WINDOW_MS * 1_000_000L;
-        var alive = newThreads(before);
-
-        while (!alive.isEmpty() && System.nanoTime() < deadline) {
-            Thread.sleep(50);
-            alive = newThreads(before);
-        }
-
-        return alive;
+    private static Set<Thread> awaitNoNewEventLoopThreads(Set<Thread> before) {
+        return pollUntil(() -> newThreads(before), Set::isEmpty, Duration.ofMillis(LEAK_WINDOW_MS)).finalValue();
     }
 
     private static Set<Thread> newThreads(Set<Thread> before) {

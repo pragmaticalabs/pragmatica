@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
@@ -48,23 +49,38 @@ import static org.junit.jupiter.api.Assertions.fail;
 class QuicClusterServerBindFailureTest {
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(30).seconds();
 
-    /// Mutation that reddens it: drop `releaseOwnedGroupAfterFailedBind` from `handleBind`'s failure branch.
+    /// The group's state is read AT the report, not after it: a dependent step (`withFailure`) runs synchronously inside the
+    /// resolution of the start promise, so it sees the group as it was when the failure was reported, whatever the
+    /// release's quiet period. Mutations that redden it: drop `releaseOwnedGroupAfterFailedBind` from `handleBind`'s failure
+    /// branch; fail the promise first and release after (the release then has not even begun at the report).
     @Test
     void failedBindOnOccupiedPort_releasesTheOwnedGroup_beforeReportingTheFailure() throws Exception {
         try (var holder = new DatagramSocket(0)) {
             var port = holder.getLocalPort();
             var server = serverOn(port, Option.empty());
+            var terminatedAtReport = new AtomicReference<Boolean>();
+            var reportedOn = new AtomicReference<Thread>();
 
-            var started = server.start(port).await(AWAIT);
+            var started = server.start(port)
+                                .withFailure(_ -> recordReport(server, terminatedAtReport, reportedOn))
+                                .await(AWAIT);
 
             assertThat(started.isFailure()).as("control: the start on an occupied UDP port must fail").isTrue();
             started.onFailure(cause -> assertThat(cause).isInstanceOf(QuicTransportError.BindFailed.class));
+            assertThat(reportedOn.get()).as("control: the report was observed as it resolved, not on the thread that attached the observer later")
+                                        .isNotNull()
+                                        .isNotSameAs(Thread.currentThread());
 
             var group = ((QuicClusterServerInstance) server).eventLoopGroupForTest().or((EventLoopGroup) null);
 
             assertThat(group).as("control: the failed start did create an owned group").isNotNull();
-            assertThat(group.isTerminated()).as("the owned group is terminated by the time the failure is reported").isTrue();
+            assertThat(terminatedAtReport.get()).as("the owned group is terminated at the moment the failure is reported").isTrue();
         }
+    }
+
+    private static void recordReport(QuicClusterServer server, AtomicReference<Boolean> terminatedAtReport, AtomicReference<Thread> reportedOn) {
+        terminatedAtReport.set(((QuicClusterServerInstance) server).eventLoopGroupForTest().map(EventLoopGroup::isTerminated).or(false));
+        reportedOn.set(Thread.currentThread());
     }
 
     /// Control for the arm above: with a supplied group the same failure leaves the group running.
