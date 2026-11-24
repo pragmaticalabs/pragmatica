@@ -59,6 +59,15 @@ class LintEngineTest {
             assertThat(hasRule(diags, "PG001")).isFalse();
         }
 
+        /// A serial column is NOT NULL in the model (#2795) and has a default, its sequence.
+        @Test void pg001_addSerialColumn_noWarning() {
+            var diags = lint(
+                "CREATE TABLE users (note text)",
+                "ALTER TABLE users ADD COLUMN id bigserial"
+            );
+            assertThat(hasRule(diags, "PG001")).isFalse();
+        }
+
         @Test void pg002_createIndexWithoutConcurrently() {
             var diags = lint(
                 "CREATE TABLE users (id bigint, email text)",
