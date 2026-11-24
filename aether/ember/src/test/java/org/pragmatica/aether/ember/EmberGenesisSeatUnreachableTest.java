@@ -9,6 +9,7 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -58,6 +59,7 @@ class EmberGenesisSeatUnreachableTest {
     private static final long HEAL_BOUND_MS = 240_000L;
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
+    private static final long REPORT_DWELL_MS = 5_000L;
     private static final Duration POLL_INTERVAL = Duration.ofMillis(250);
     private static final long CONDITION_BOUND_MS = 90_000L;
 
@@ -198,13 +200,26 @@ class EmberGenesisSeatUnreachableTest {
         }
 
         assertThat(cluster).as("every cluster start lost a port between probe and bind; last: " + collision).isNotNull();
-        awaitCondition("both started cores are genesis-pending and connected to each other, so each can hold the other's reports",
-                       this::startedCoresPendingAndConnected);
+        var heldSince = new AtomicLong(0);
+
+        awaitCondition("both started cores stay genesis-pending and connected to each other for " + REPORT_DWELL_MS + " ms, so each holds the other's two reports",
+                       () -> heldFor(heldSince, startedCoresPendingAndConnected()) >= REPORT_DWELL_MS);
+    }
+
+    /// How long the condition has held without a break; 0 while it does not hold.
+    private static long heldFor(AtomicLong heldSince, boolean holds) {
+        var now = System.currentTimeMillis();
+
+        return holds
+               ? now - heldSince.updateAndGet(since -> since == 0 ? now : since)
+               : heldSince.updateAndGet(_ -> 0);
     }
 
     /// [unverified: the two stable reports] Connected and pending is all the node surface shows; that `-2` already holds two reports of `-1`
-    /// is not observable here. If the kill lands before the second round, `-2` does not carry `-1` into the roster and the formation wait below
-    /// fails with its report, never passes by accident.
+    /// is not observable here (GenesisViewAgreement is executor-confined and has no accessor). A kill that lands before the second round leaves
+    /// the genesis roster unformed and the late core's start never settles (seen at d25d18c298: connected-only, kill at +2 s, red). The dwell
+    /// [#REPORT_DWELL_MS] is a deliberate guess standing in for that observation: it equals the fixed settle that passed before PollUntil, and
+    /// genesis rounds start at 250 ms. What would settle it: a read-only snapshot of the per-sender report count on the engine.
     private boolean startedCoresPendingAndConnected() {
         var first = cluster.getNode(PREFIX + "-1");
         var second = cluster.getNode(PREFIX + "-2");
