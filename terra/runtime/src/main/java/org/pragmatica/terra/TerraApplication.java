@@ -202,9 +202,7 @@ public final class TerraApplication {
     public synchronized Promise<Unit> close() {
         if (!closing) {
             closing = true;
-            topics.close().flatMap(_ -> releaseScopes())
-                  .fold(this::closeMetrics)
-                  .withResult(closed::resolve);
+            topics.close().flatMap(_ -> releaseScopes()).fold(this::closeMetrics).withResult(closed::resolve);
         }
 
         return closed;
@@ -212,7 +210,8 @@ public final class TerraApplication {
 
     // Sinks close after every scope released, whatever the release outcome; both failures are preserved.
     private Promise<Unit> closeMetrics(Result<Unit> released) {
-        return Result.allOf(List.of(released, metrics.close()))
+        return Result.allOf(List.of(released,
+                                    metrics.close()))
                      .async()
                      .mapToUnit();
     }

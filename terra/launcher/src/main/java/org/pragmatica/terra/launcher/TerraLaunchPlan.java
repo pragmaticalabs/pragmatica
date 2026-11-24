@@ -74,16 +74,15 @@ public final class TerraLaunchPlan {
                                                      TerraBlueprint blueprint,
                                                      List<TerraFactory<?>> factories) {
         return TerraConfiguration.deployment(directory).flatMap(deployment -> TerraConfiguration.host(directory,
-                                                                                                      deployment)
-                                                                                                .flatMap(settings -> Result.all(LaunchHttp.launchHttp(directory,
-                                                                                                                                                      settings),
-                                                                                                                                TerraMetrics.Settings.settings(settings))
-                                                                                                                           .flatMap((http, metrics) -> configureSlices(directory,
-                                                                                                                                                                       blueprint,
-                                                                                                                                                                       factories,
-                                                                                                                                                                       deployment,
-                                                                                                                                                                       http,
-                                                                                                                                                                       metrics))));
+                                                                                                      deployment).flatMap(settings -> Result.all(LaunchHttp.launchHttp(directory,
+                                                                                                                                                                       settings),
+                                                                                                                                                 TerraMetrics.Settings.settings(settings))
+                                                                                                                                            .flatMap((http, metrics) -> configureSlices(directory,
+                                                                                                                                                                                        blueprint,
+                                                                                                                                                                                        factories,
+                                                                                                                                                                                        deployment,
+                                                                                                                                                                                        http,
+                                                                                                                                                                                        metrics))));
     }
 
     private static Result<TerraLaunchPlan> configureSlices(Path directory,

@@ -36,7 +36,6 @@ import io.micrometer.registry.otlp.OtlpMeterRegistry;
 public final class TerraMetrics {
     /// Prometheus text exposition format 0.0.4, the format [#prometheusScrape()] renders.
     public static final String PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
-
     private static final String PROMETHEUS = "management.prometheus.metrics.export.";
     private static final String OTLP = "management.otlp.metrics.export.";
     private static final String RESOURCE_ATTRIBUTES = "management.opentelemetry.resource-attributes.";
@@ -63,13 +62,11 @@ public final class TerraMetrics {
         var registry = new CompositeMeterRegistry();
         var prometheus = settings.prometheus()
                          ? Option.some(new PrometheusMeterRegistry(PrometheusConfig.DEFAULT))
-                         : Option.<PrometheusMeterRegistry>none();
+                         : Option.<PrometheusMeterRegistry> none();
 
         registry.add(new SimpleMeterRegistry());
         prometheus.onPresent(registry::add);
-        settings.otlp()
-                .map(TerraMetrics::otlpRegistry)
-                .onPresent(registry::add);
+        settings.otlp().map(TerraMetrics::otlpRegistry).onPresent(registry::add);
 
         return new TerraMetrics(registry, prometheus);
     }
@@ -112,9 +109,7 @@ public final class TerraMetrics {
         /// OTLP step without an OTLP url. Resource attributes without an OTLP url are kept unused: the trace exporter
         /// (#3650 part 2) reads the same keys.
         public static Result<Settings> settings(ConfigurationProvider config) {
-            return refuseUnknownKeys(config).flatMap(_ -> Result.all(prometheusEnabled(config),
-                                                                     otlpSettings(config))
-                                                                .map(Settings::settings));
+            return refuseUnknownKeys(config).flatMap(_ -> Result.all(prometheusEnabled(config), otlpSettings(config)).map(Settings::settings));
         }
     }
 
@@ -165,11 +160,7 @@ public final class TerraMetrics {
     }
 
     private static Result<Unit> refuseUnknownKeys(ConfigurationProvider config) {
-        return Option.from(config.keys()
-                                 .stream()
-                                 .filter(TerraMetrics::isUnknownSinkKey)
-                                 .sorted()
-                                 .findFirst())
+        return Option.from(config.keys().stream().filter(TerraMetrics::isUnknownSinkKey).sorted().findFirst())
                      .map(TerraMetrics::unsupportedKey)
                      .or(Result.unitResult());
     }
@@ -207,15 +198,16 @@ public final class TerraMetrics {
 
     private static Result<Option<Otlp>> refuseOrphanedStep(ConfigurationProvider config) {
         return config.getString(OTLP + "step")
-                     .map(_ -> new TerraError.InvalidConfiguration(OTLP + "step is set but " + OTLP
-                                                                   + "url is not").<Option<Otlp>>result())
+                     .map(_ -> new TerraError.InvalidConfiguration(OTLP + "step is set but " + OTLP + "url is not").<Option<Otlp>> result())
                      .or(Result.success(Option.none()));
     }
 
     private static Result<Otlp> otlp(String url, ConfigurationProvider config) {
         return Result.all(Url.url(url),
                           step(config))
-                     .map((endpoint, step) -> Otlp.otlp(endpoint, step, resourceAttributes(config)));
+                     .map((endpoint, step) -> Otlp.otlp(endpoint,
+                                                        step,
+                                                        resourceAttributes(config)));
     }
 
     private static Result<Duration> step(ConfigurationProvider config) {
