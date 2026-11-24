@@ -37,8 +37,8 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
 
     @Override
     public Promise<PgNotificationSubscriber> provision(PgNotificationConfig config) {
-        return resolveDatasourceConfig(config.datasource()).flatMap(dbConfig -> createDedicatedConnection(dbConfig).flatMap(connection -> subscribeToChannels(connection,
-                                                                                                                                                              config.channels())));
+        return resolveDatasourceConfig(config.datasource()).flatMap(dbConfig -> provisionWith(dbConfig,
+                                                                                              config.channels()));
     }
 
     @Override
@@ -57,8 +57,15 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
                             .async();
     }
 
-    private static Promise<Connection> createDedicatedConnection(DatabaseConnectorConfig config) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> buildPlainConnectible(config)).flatMap(Connectible::getConnection);
+    /// The Connectible owns the event-loop group of its builder (#3635): it is closed on a failed connect or subscribe,
+    /// and with the handle otherwise.
+    private static Promise<PgNotificationSubscriber> provisionWith(DatabaseConnectorConfig dbConfig,
+                                                                   List<String> channels) {
+        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> buildPlainConnectible(dbConfig)).flatMap(connectible -> connectible.getConnection()
+                                                                                                                                              .flatMap(connection -> subscribeToChannels(connection,
+                                                                                                                                                                                         connectible,
+                                                                                                                                                                                         channels))
+                                                                                                                                              .onFailure(_ -> connectible.close()));
     }
 
     private static Connectible buildPlainConnectible(DatabaseConnectorConfig config) {
@@ -74,8 +81,10 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
         return builder.plain();
     }
 
-    private static Promise<PgNotificationSubscriber> subscribeToChannels(Connection connection, List<String> channels) {
-        var handle = new NotificationListenerHandle(connection);
+    private static Promise<PgNotificationSubscriber> subscribeToChannels(Connection connection,
+                                                                         Connectible connectible,
+                                                                         List<String> channels) {
+        var handle = new NotificationListenerHandle(connection, connectible);
         var subscriptions = channels.stream()
                                     .map(channel -> connection.subscribe(channel, handle::onNotification)
                                                               .map(handle::addListening))
@@ -88,11 +97,13 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
 @SuppressWarnings("JBCT-RET-01")
 final class NotificationListenerHandle implements PgNotificationSubscriber {
     private final Connection connection;
+    private final Connectible connectible;
     private final List<Listening> listenings = new CopyOnWriteArrayList<>();
     private volatile java.util.function.Consumer<org.pragmatica.aether.slice.PgNotification> callback;
 
-    NotificationListenerHandle(Connection connection) {
+    NotificationListenerHandle(Connection connection, Connectible connectible) {
         this.connection = connection;
+        this.connectible = connectible;
     }
 
     void setCallback(java.util.function.Consumer<org.pragmatica.aether.slice.PgNotification> callback) {
@@ -116,6 +127,8 @@ final class NotificationListenerHandle implements PgNotificationSubscriber {
     Promise<Unit> close() {
         var unlistens = listenings.stream().map(Listening::unlisten).toList();
 
-        return Promise.allOf(unlistens).flatMap(_ -> connection.close());
+        return Promise.allOf(unlistens)
+                      .flatMap(_ -> connection.close())
+                      .flatMap(_ -> connectible.close());
     }
 }

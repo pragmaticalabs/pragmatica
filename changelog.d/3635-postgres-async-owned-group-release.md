@@ -1,0 +1,4 @@
+### Fixed (2026-11-24 — #3635: postgres-async event-loop group outlived its Connectible)
+- **A `NettyConnectibleBuilder` without a supplied group created a `MultiThreadIoEventLoopGroup` that nothing ever stopped**, on success and on a failed connect alike: every provisioned datasource and notification listener leaked `ioThreads` threads.
+- Every `pool()`/`plain()` result now holds a lease on the builder-owned group; the group is shut down when the last lease is closed and `close()` resolves on its termination. A supplied group is never released. `PgAsyncSqlConnector.stop()` closes both its pool and its dedicated Connectible; `NotificationListenerFactory` closes its Connectible with the handle and on a failed connect. `[verified: integrations/db/postgres-async/src/test/java/org/pragmatica/postgres/net/netty/NettyConnectibleBuilderGroupReleaseTest.java]`
+- `NettyConnectibleBuilder.eventLoopGroup()` (getter) and `ownsEventLoopGroup()` had no callers and are removed.

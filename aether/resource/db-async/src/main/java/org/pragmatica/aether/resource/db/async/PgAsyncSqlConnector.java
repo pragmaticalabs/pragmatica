@@ -140,8 +140,10 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     @Override
     public Promise<Unit> stop() {
         stopped.set(true);
-
-        return connectible.close();
+        // Both hold a lease on the builder-owned event-loop group (#3635): the group goes down with the last close.
+        return Promise.allOf(connectible.close(),
+                             dedicated.close())
+                      .map(_ -> Unit.unit());
     }
 
     private static <T> Promise<T> extractSingleRow(PgResultSet rs, RowMapper<T> mapper, String sql) {

@@ -16,6 +16,8 @@ package org.pragmatica.postgres.net.netty;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.Charset;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.pragmatica.postgres.PgConnectionPool;
 import org.pragmatica.postgres.PgDatabase;
@@ -28,8 +30,6 @@ import org.pragmatica.postgres.net.PoolMode;
 import org.pragmatica.lang.Promise;
 
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.nio.NioIoHandler;
 
 
 /**
@@ -39,30 +39,51 @@ import io.netty.channel.nio.NioIoHandler;
  * @author Marat Gainullin
  */
 public class NettyConnectibleBuilder extends ConnectibleBuilder {
-    private EventLoopGroup eventLoopGroup;
-    private boolean ownsEventLoopGroup;
+    private final OwnedEventLoopGroup owned = new OwnedEventLoopGroup(() -> properties.ioThreads());
+    private EventLoopGroup suppliedGroup;
 
+    /// Use a shared group: it is never released by this builder or by anything it builds.
     public NettyConnectibleBuilder eventLoopGroup(EventLoopGroup eventLoopGroup) {
-        this.eventLoopGroup = eventLoopGroup;
-        this.ownsEventLoopGroup = false;
+        this.suppliedGroup = eventLoopGroup;
 
         return this;
     }
 
-    public EventLoopGroup eventLoopGroup() {
-        return resolveEventLoopGroup();
+    /// Without a supplied group, every `pool()`/`plain()` result holds a lease on one builder-owned group, created on
+    /// first use; the group is shut down when the last of them is closed, and `close()` resolves on its termination.
+    /// Close every Connectible built from this builder (#3635).
+    public Connectible pool() {
+        return build(obtainStream -> properties.poolMode() == PoolMode.TRANSACTION
+                                     ? new PgTransactionPool(properties, obtainStream)
+                                     : new PgConnectionPool(properties, obtainStream));
     }
 
-    private EventLoopGroup resolveEventLoopGroup() {
-        if (eventLoopGroup == null) {
-            eventLoopGroup = new MultiThreadIoEventLoopGroup(properties.ioThreads(), NioIoHandler.newFactory());
-            ownsEventLoopGroup = true;
+    public Connectible plain() {
+        return build(obtainStream -> new PgDatabase(properties, obtainStream));
+    }
+
+    /// The group currently owned by this builder, or null: nothing created yet, or the last lease was released.
+    EventLoopGroup ownedGroup() {
+        return owned.current();
+    }
+
+    private Connectible build(Function<Supplier<Promise<ProtocolStream>>, Connectible> factory) {
+        if (suppliedGroup != null) {
+            return factory.apply(() -> obtainStream(Promise.success(suppliedGroup)));
         }
 
-        return eventLoopGroup;
+        var lease = new OwnedConnectible(owned);
+
+        lease.delegate(factory.apply(() -> obtainStream(lease.group())));
+
+        return lease;
     }
 
-    private Promise<ProtocolStream> obtainStream() {
+    private Promise<ProtocolStream> obtainStream(Promise<EventLoopGroup> group) {
+        return group.flatMap(this::openStream);
+    }
+
+    private Promise<ProtocolStream> openStream(EventLoopGroup group) {
         try {
             var address = InetAddress.getByName(properties.hostname());
             var sockAddr = new InetSocketAddress(address, properties.port());
@@ -71,23 +92,9 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
                                                              properties.hostname(),
                                                              properties.sslConfig(),
                                                              Charset.forName(properties.encoding()),
-                                                             resolveEventLoopGroup()));
+                                                             group));
         } catch (Exception e) {
             return Promise.failure(SqlError.fromThrowable(e));
         }
-    }
-
-    public Connectible pool() {
-        return properties.poolMode() == PoolMode.TRANSACTION
-               ? new PgTransactionPool(properties, this::obtainStream)
-               : new PgConnectionPool(properties, this::obtainStream);
-    }
-
-    public Connectible plain() {
-        return new PgDatabase(properties, this::obtainStream);
-    }
-
-    public boolean ownsEventLoopGroup() {
-        return ownsEventLoopGroup;
     }
 }
