@@ -96,14 +96,26 @@ public class AlertForwarder implements AsyncCloseable {
     }
 
     private Promise<Unit> sendWithRetry(HttpOperations ops, String url, String payload, int attempt) {
-        return doSend(ops, url, payload).fold(result -> result.fold(cause -> handleTransportFailure(ops, url, payload, attempt, cause),
-                                                                    statusCode -> handleStatusCode(ops, url, payload, attempt, statusCode)));
+        return doSend(ops, url, payload).fold(result -> result.fold(cause -> handleTransportFailure(ops,
+                                                                                                    url,
+                                                                                                    payload,
+                                                                                                    attempt,
+                                                                                                    cause),
+                                                                    statusCode -> handleStatusCode(ops,
+                                                                                                   url,
+                                                                                                   payload,
+                                                                                                   attempt,
+                                                                                                   statusCode)));
     }
 
     /// A send that failed before any status was read (connection refused or reset, DNS failure, timeout) is retried
     /// under the same `retry_count` and backoff as a retryable status (#3536): a receiver that is restarting is
     /// the case retry exists for.
-    private Promise<Unit> handleTransportFailure(HttpOperations ops, String url, String payload, int attempt, Cause cause) {
+    private Promise<Unit> handleTransportFailure(HttpOperations ops,
+                                                 String url,
+                                                 String payload,
+                                                 int attempt,
+                                                 Cause cause) {
         log.warn("Webhook {} unreachable: {}", url, cause.message());
 
         return retryOrFail(ops, url, payload, attempt, cause.message());
