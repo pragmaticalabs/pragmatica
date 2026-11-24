@@ -1888,8 +1888,11 @@ class ManagementServerImpl implements ManagementServer {
                                     String requestId,
                                     Cause cause,
                                     Option<Cause> unlisted) {
-        notMemberAnswer(cause, unlisted).onPresent(notMember -> ProblemResponses.writeProblem(response, notMember, path, requestId))
-                .onEmpty(() -> sendForwardError(response, path, requestId, cause));
+        notMemberAnswer(cause, unlisted).onPresent(notMember -> ProblemResponses.writeProblem(response,
+                                                                                              notMember,
+                                                                                              path,
+                                                                                              requestId))
+                       .onEmpty(() -> sendForwardError(response, path, requestId, cause));
     }
 
     /// Package-visible pure decision behind [#sendForwardFailure]: the 404 replaces ONLY `targetDisconnected`; a failure of a forward that
