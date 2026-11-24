@@ -379,6 +379,41 @@ class OwnerAdvanceLeaseTest {
         assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the -1 under the newer epoch replaced the mark").isFalse();
     }
 
+    /// #3325: owner A announces mark 0 and the replica holding that record serves from it. Ownership then moves (the committed
+    /// epoch advances) to a node whose activation is blocked: it announces nothing, and the replica -- not restarted, still
+    /// holding A's mark -- reads itself behind, so its GOVERNOR reads forward to the owner. Control: once the new owner
+    /// activates it announces under its own epoch and the replica serves from that mark.
+    @Test
+    void markOfAnEndedOwnerLife_isVoid_whileTheNewOwnersActivationIsBlocked() {
+        var committedEpoch = new AtomicReference<>(Epoch.ZERO);
+
+        ownerVisibleAtZero(true);
+        manager.ownerEpochSource((_, _) -> committedEpoch.get());
+        replicaHoldingOneRecord();
+        replica.ownerEpochSource((_, _) -> committedEpoch.get());
+        manager.repeatVisible();
+        deliverAnnouncementsToTheReplica();
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("control: the replica serves from the announcing owner's mark").isFalse();
+
+        committedEpoch.set(RECORD.ownerEpoch());
+        activated.set(false);
+        announced.clear();
+        manager.repeatVisible();
+        manager.repeatVisible();
+        deliverAnnouncementsToTheReplica();
+        assertThat(announced).as("the new owner, not activated, announces nothing").isEmpty();
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("the ended life's mark is void: the replica forwards").isTrue();
+
+        activated.set(true);
+        manager.repeatVisible();
+        deliverAnnouncementsToTheReplica();
+        assertThat(announced).as("control: the activated owner announces under its own epoch")
+                             .extracting(CommitAdvance::ownerEpoch)
+                             .containsOnly(RECORD.ownerEpoch())
+                             .isNotEmpty();
+        assertThat(replica.behindCommittedOwner(STREAM, PARTITION)).as("control: the new owner's mark is served from").isFalse();
+    }
+
     // ---- structural rule ----------------------------------------------------------------------------------------------------
 
     /// Design §8 (R3-S1): in `StreamPartitionManager`, `advanceVisible(` is called only inside `ownerAdvance` and the REPLICA

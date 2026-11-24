@@ -3304,8 +3304,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// PR-2f S2 (owner ruling `ab33af11c6`, mechanism `e10cf838c9`): whether a GOVERNOR read of `(streamName, partition)` on
     /// this node must go to the owner instead of this node's ring. Never on the owner. Elsewhere, true while the owner of the
     /// recorded epoch has announced nothing in this node's life (after a restart the owner raises visible from its acked
-    /// marker when its ownership activates, #3307), or while this ring's visible position is below
-    /// the announced one (a lagging copy, or a recovered tail still held until verified).
+    /// marker when its ownership activates, #3307), while the announced mark belongs to an owner life that has ended
+    /// ([#markVoidedByOwnerChange], #3325), or while this ring's visible position is below the announced one (a lagging copy,
+    /// or a recovered tail still held until verified).
     public boolean behindCommittedOwner(String streamName, int partition) {
         if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
             return false;
@@ -3313,8 +3314,18 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         return existingStanding(streamName).flatMap(standing -> option(standing.replicaCommitted().get(partition)))
                                .filter(CommittedMark::announced)
+                               .filter(mark -> !markVoidedByOwnerChange(streamName, partition, mark))
                                .map(mark -> localVisible(streamName, partition) < mark.through())
                                .or(true);
+    }
+
+    /// #3325 (ruling, issue comment): the mark an owner announced is that owner life's. Once the committed ownership epoch is
+    /// strictly after the epoch the mark was announced under, the arc changed owner, and the new owner announces nothing until
+    /// it holds the role, a valid lease and an activated ownership ([#announceMark]); the old mark then bounds nothing this
+    /// copy may serve. A mark under an epoch this node has not yet applied (the owner's view runs ahead of this node's) is the
+    /// newer life's and stands. The same read serves persistent and in-memory streams: the mark is not tied to a WAL.
+    private boolean markVoidedByOwnerChange(String streamName, int partition, CommittedMark mark) {
+        return ownerEpochSource.currentOwnerEpoch(streamName, partition).isStrictlyAfter(mark.epoch());
     }
 
     private long localVisible(String streamName, int partition) {
