@@ -145,6 +145,22 @@ class GenesisViewAgreementSimulationTest {
         assertThat(agreement.stableReporters()).containsExactly(b);
     }
 
+    /// A view that grows at a tick invalidates the stability a member earned under the smaller view: the snapshot follows the tick.
+    @Test
+    void stableReporters_dropsAMemberWhenATickGrowsTheView() {
+        var a = new NodeId("a");
+        var b = new NodeId("b");
+        var c = new NodeId("c");
+        var agreement = GenesisViewAgreement.genesisViewAgreement(a, 3, Option.none());
+
+        agreement.tick(Set.of(a, b));
+        agreement.receive(b, 1, Set.of(a, b));
+        agreement.receive(b, 2, Set.of(a, b));
+        assertThat(agreement.stableReporters()).containsExactly(b);
+        agreement.tick(Set.of(a, b, c));
+        assertThat(agreement.stableReporters()).isEmpty();
+    }
+
     @Test
     void genesisVoters_fixTheView_andAMismatchedPeerNeverAgrees() {
         var a = new NodeId("a");
