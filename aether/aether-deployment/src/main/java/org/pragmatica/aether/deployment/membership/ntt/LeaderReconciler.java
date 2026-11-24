@@ -1948,6 +1948,9 @@ public final class LeaderReconciler {
                                          Set<NodeId> currentMembers,
                                          int generation,
                                          Option<NodeId> departed) {
+        // #2811: this ceiling only bounds the create call while it is in flight; once the provision is Dispatched the entry takes the
+        // ceiling the disposition carries (markDispatched), so a placement or config commit between this read and the dispatch cannot
+        // leave the entry with another source's ceiling.
         inFlightProvisioning.put(placeholder,
                                  InFlightEntry.inFlightEntry(nowNanos,
                                                              ctm.replacementCeiling(NodeRole.CORE, departed),
@@ -2028,7 +2031,7 @@ public final class LeaderReconciler {
     private void reconcileInFlightForDisposition(NodeId placeholder, ProvisionDisposition disposition) {
         switch (disposition) {
             case ProvisionDisposition.Deferred _ -> inFlightProvisioning.remove(placeholder);
-            case ProvisionDisposition.Dispatched _ -> markDispatched(placeholder);
+            case ProvisionDisposition.Dispatched dispatched -> markDispatched(placeholder, dispatched.ceiling());
         }
     }
 
@@ -2036,14 +2039,15 @@ public final class LeaderReconciler {
     /// the instance: DISPATCHING → UNCONFIRMED, pollable from now. Its first-listing floor starts here, never
     /// at dispatch: a slow create-and-readiness wait says nothing about how far the provider's listing lags.
     /// Guarded by `replace(key, expected, next)` so an entry the ceiling already evicted, or membership
-    /// already fulfilled, is never resurrected.
+    /// already fulfilled, is never resurrected. #2811: the entry takes the ceiling the dispatch carried (the dispatched source's,
+    /// read in the call that dispatched it); the one it was stamped with only bounded the create call, and is replaced here.
     @Contract
-    private void markDispatched(NodeId placeholder) {
+    private void markDispatched(NodeId placeholder, TimeSpan ceiling) {
         Option.option(inFlightProvisioning.get(placeholder))
               .filter(InFlightEntry::isDispatching)
               .onPresent(entry -> inFlightProvisioning.replace(placeholder,
                                                                entry,
-                                                               entry.pollableFrom(timeSource.nanoTime())));
+                                                               entry.dispatchedWith(ceiling, timeSource.nanoTime())));
     }
 
     @Contract
@@ -2526,8 +2530,14 @@ public final class LeaderReconciler {
             return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings, generation, departed);
         }
 
-        InFlightEntry pollableFrom(long nowNanos) {
-            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0, generation, departed);
+        InFlightEntry dispatchedWith(TimeSpan dispatchedCeiling, long nowNanos) {
+            return new InFlightEntry(sinceNanos,
+                                     dispatchedCeiling,
+                                     InFlightState.UNCONFIRMED,
+                                     nowNanos,
+                                     0,
+                                     generation,
+                                     departed);
         }
 
         InFlightEntry withAbsentListing() {

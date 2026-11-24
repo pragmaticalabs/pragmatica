@@ -1211,6 +1211,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
         // #1111: the source this create goes to, kept so a drop of the replacement can look the instance up where it was (to be) made.
         replacementSources.put(newNodeId, sourceName);
+        // #2811: read for the source this create goes to, so the entry the reconciler keeps carries this source's ceiling and no other's.
+        var ceiling = ceilingOf(sourceName);
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                    roleInstanceType(intendedRole, sourceName),
                                                    intendedRole.value(),
@@ -1227,17 +1229,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                         intendedRole,
                                                                                         sourceName))
                                     .withSuccess(_ -> provisionedRoleIntents.put(newNodeId, intendedRole))
-                                    .map(ClusterTopologyManagerRecord::asDispatched)
+                                    .map(instance -> asDispatched(instance, ceiling))
                                     .fold(result -> completeProvision(result, sourceName))
                                     .withFailure(cause -> recordProvisioningFailure(sourceName.value(),
                                                                                     cause));
     }
 
     /// A refusal before any provider effect (source admission, incomplete inventory) is a deferral for the reconciler: nothing was
-    /// provisioned and the placeholder is removed. It is NOT counted as a provisioning failure: [#recordAdmissionDeferral] keeps it as the
-    /// last failure for diagnostics and paces it with its own refusal window ([#recordRefusal]), and tells the operator once per run, so a
-    /// permanent refusal (fleet limit reached) neither retries invisibly on every reconcile tick nor trips the circuit. Any other failure
-    /// stays in the failure channel and is counted by [#recordProvisioningFailure] (WARN, last failure, circuit after 3).
+    /// provisioned and the placeholder is removed. It is NOT counted as a provisioning failure: [#recordAdmissionDeferral] keeps a source
+    /// admission refusal as the last failure for diagnostics and paces it with its own refusal window ([#recordRefusal]), and tells the
+    /// operator once per run, so a permanent refusal (fleet limit reached) neither retries invisibly on every reconcile tick nor trips the
+    /// circuit. The exception is the wait for a complete inventory (`AdmissionFailure.INVENTORY_UNAVAILABLE`): [#recordInventoryWait] counts
+    /// it and holds it as the current wait; it is not the last failure, sets no refusal window, and the operator is told by a bounded log line,
+    /// not a warning. Any other failure stays in the failure channel and is counted by [#recordProvisioningFailure] (WARN, last failure,
+    /// circuit after 3).
     private Promise<ProvisionDisposition> completeProvision(Result<ProvisionDisposition> result,
                                                             SourceName sourceName) {
         return result.fold(cause -> provisionRefused(cause, sourceName), this::provisionAccepted);
@@ -1363,8 +1368,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// [InstanceInfo] is deliberately discarded HERE and recorded in [#recordProvisionedReplacement]
     /// instead — a disposition carries no provider identity, and inventing one would put a cloud id into
     /// a type the reconciler compares by kind.
-    private static ProvisionDisposition asDispatched(InstanceInfo instanceInfo) {
-        return ProvisionDisposition.dispatched();
+    private static ProvisionDisposition asDispatched(InstanceInfo instanceInfo, TimeSpan ceiling) {
+        return ProvisionDisposition.dispatched(ceiling);
     }
 
     /// #1049 — classify the provider's listing for the replacement minted as `nodeId`. One listing per
@@ -1423,21 +1428,26 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return ReplacementInstanceState.UNKNOWN;
     }
 
-    /// #1049, #2811 — the in-flight ceiling for a replacement of `departed`, read from the SAME source [#healSource] resolves for it
-    /// and `provisionReplacement` dispatches it to, so the ceiling, zones, instance type and provider ride one source profile. The
-    /// ten-minute default applies when there is no committed TOML (the bootstrap seed), it is unparseable, or that source declares
-    /// none (Docker / forge). When [#healSource] refuses (several sources declare the role and the node carries none) the answer is
-    /// the LONGEST ceiling over the sources declaring the role ([#longestCeilingDeclaring]): the source the replacement goes to is
-    /// not known, and the longest bound never abandons a replacement before its own source's ceiling.
+    /// #1049, #2811 — the in-flight ceiling for a replacement of `departed`, read for the source [#healSource] resolves for it. It is the
+    /// bound of an entry while its create call is in flight and of an entry a new leader inherits; the ceiling an entry keeps once its
+    /// provision is dispatched is the one `provisionReplacement` read for the source it dispatched to ([ProvisionDisposition.Dispatched]),
+    /// never this second resolution. `replacement_ceiling` is source-level, so it is read from that source whether or not it still
+    /// declares the role ([#ceilingOf]); the ten-minute default applies when there is no committed TOML (the bootstrap seed), it is
+    /// unparseable, that source is not in it, or that source declares none (Docker / forge). When [#healSource] refuses (several sources
+    /// declare the role and the node carries none) the answer is the LONGEST ceiling over the sources declaring the role
+    /// ([#longestCeilingDeclaring]): the source the replacement goes to is not known, and the longest bound never abandons a replacement
+    /// of a declaring source before that source's ceiling.
     @Override
     public TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed) {
         return healSource(departed, intendedRole).fold(_ -> longestCeilingDeclaring(intendedRole),
-                                                       source -> ceilingOf(source, intendedRole));
+                                                       this::ceilingOf);
     }
 
-    private TimeSpan ceilingOf(SourceName sourceName, NodeRole intendedRole) {
+    /// The `replacement_ceiling` of the named source: source-level, so no role filter (a source that stopped declaring `core` is still the
+    /// one its in-flight replacement was dispatched to).
+    private TimeSpan ceilingOf(SourceName sourceName) {
         return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
-                            .flatMap(config -> sourceFor(config, sourceName, intendedRole))
+                            .flatMap(config -> Option.option(config.sources().get(sourceName.value())))
                             .map(SourceProfile::effectiveReplacementCeiling)
                             .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
     }
@@ -2215,9 +2225,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      .or(List.of());
     }
 
-    /// The cloud [SourceProfile] backing the given role: the first `CLOUD`-type source whose role
-    /// table declares the role. Only cloud replacements consume user-data, so non-cloud sources are
-    /// skipped (the empty result degrades the render to a no-op above).
+    /// The [SourceProfile] named `sourceName`, when its role table declares `role`: looked up by name, whatever its type, and
+    /// empty for a name the configuration does not hold or a source that does not declare the role.
     private static Option<SourceProfile> sourceFor(ClusterBootstrapConfig config,
                                                    SourceName sourceName,
                                                    NodeRole role) {
@@ -2225,6 +2234,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                               .containsKey(role));
     }
 
+    /// Whether SOME cloud source declares the role (the first by name, only its presence is read: [#nodeIsCloudBacked]).
     private static Option<SourceProfile> cloudSourceFor(ClusterBootstrapConfig config, NodeRole role) {
         return Option.from(config.sources()
                                  .values()

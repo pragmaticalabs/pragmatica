@@ -87,6 +87,19 @@ class ClusterTopologyManagerReplacementCeilingTest {
             count = 1
             """;
 
+    private static final String WORKER_ONLY_CLOUD_SOURCE = """
+
+            [source.%1$s]
+            type = "cloud"
+            provider = "hetzner"
+            credentials = "hcloud-token"
+            region = "eu-central"
+            %2$s
+
+            [source.%1$s.worker]
+            count = 1
+            """;
+
     private final AtomicReference<Function<NodeId, Result<SourceName>>> committedSource =
         new AtomicReference<>(node -> Causes.cause("no placement for " + node.id()).result());
     private final AtomicReference<Option<ClusterConfigValue>> configRef = new AtomicReference<>(Option.none());
@@ -182,6 +195,17 @@ class ClusterTopologyManagerReplacementCeilingTest {
         placeNode(FROM_AWS, "retired");
 
         assertThat(ceilingOf(Option.some(FROM_AWS))).isEqualTo(DEFAULT_TEN_MINUTES);
+    }
+
+    /// #2811 F4: `replacement_ceiling` is source-level. The departed node's committed source no longer declares `core` (it is still the
+    /// source its replacement is dispatched to) and keeps its own ceiling; a role filter would answer the ten-minute default.
+    @Test
+    void committedSourceNoLongerDeclaresTheRole_isStillThatSourcesCeiling_notTheDefault() {
+        seedConfig(cloud("hetzner", "replacement_ceiling = \"15m\"")
+                   + WORKER_ONLY_CLOUD_SOURCE.formatted("aws", "replacement_ceiling = \"7m\""));
+        placeNode(FROM_AWS, "aws");
+
+        assertThat(ceilingOf(Option.some(FROM_AWS))).isEqualTo(timeSpan(7).minutes());
     }
 
     @Test

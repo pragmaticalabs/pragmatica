@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.lang.io.TimeSpan;
+
 /// Membership v2 / E2 — the outcome of a [`ClusterTopologyManager#provisionReplacement`] call,
 /// distinguishing a real boot from a no-boot deferral so the `LeaderReconciler` can decide whether
 /// its in-flight placeholder still represents an arriving VM.
@@ -14,7 +16,9 @@ package org.pragmatica.aether.deployment.cluster;
 ///
 /// - [`#dispatched`] — a real boot was initiated; a VM is coming, so the reconciler KEEPS the
 ///   in-flight placeholder until membership presence clears it — or the provider reports the instance
-///   failed or deleted, or its per-source ceiling passes (#1049).
+///   failed or deleted, or its per-source ceiling passes (#1049). It carries that ceiling (#2811): the one of the source the
+///   replacement was dispatched to, read from the same source resolution that dispatched it, so the reconciler never asks for it
+///   a second time.
 /// - [`Deferred`] — NO boot happened (the provisioning circuit is open, or no healthy peers were
 ///   visible to seed PEERS). Nothing is coming, so the reconciler must REMOVE the placeholder to
 ///   keep the raw deficit visible — otherwise a phantom placeholder masks the deficit and wedges
@@ -22,15 +26,18 @@ package org.pragmatica.aether.deployment.cluster;
 ///   the breaker is already open (or will re-arm on its own), so no new provisioning failure is
 ///   recorded. A refused source admission ([DeferralReason#CAPACITY_ADMISSION]) is also a deferral
 ///   to the reconciler, refused by the capacity authority; it is kept as the last failure for diagnostics and paced by its
-///   own refusal window, but never counted toward the provisioning circuit. So is an unresolved source of the departed node
-///   ([DeferralReason#SOURCE_UNRESOLVED]).
+///   own refusal window, but never counted toward the provisioning circuit. The exception is the wait for a complete inventory
+///   (`AdmissionFailure.INVENTORY_UNAVAILABLE`), which shares the disposition but is no refusal: it is counted and held as the
+///   current wait, is not the last failure, sets no refusal window and raises no operator warning. An unresolved source of the
+///   departed node ([DeferralReason#SOURCE_UNRESOLVED]) is also a deferral.
 ///
 /// A genuine boot FAILURE is NOT modeled here — it stays in the `Promise` failure channel so the
 /// existing `onFailure(recordProvisioningFailure)` (breaker trip after 3) and the reconciler's
 /// `onFailure` placeholder-removal both keep working unchanged.
 public sealed interface ProvisionDisposition {
-    /// A real provision boot was initiated — a VM is genuinely on its way.
-    record Dispatched() implements ProvisionDisposition {}
+    /// A real provision boot was initiated — a VM is genuinely on its way. `ceiling` is the `replacement_ceiling` of the source it
+    /// was dispatched to (#2811), the bound the reconciler keeps the in-flight entry under.
+    record Dispatched(TimeSpan ceiling) implements ProvisionDisposition {}
 
     /// A no-boot deferral: nothing was provisioned and nothing is coming on this pass.
     record Deferred(DeferralReason reason) implements ProvisionDisposition {}
@@ -52,8 +59,8 @@ public sealed interface ProvisionDisposition {
         SOURCE_UNRESOLVED
     }
 
-    static ProvisionDisposition dispatched() {
-        return new Dispatched();
+    static ProvisionDisposition dispatched(TimeSpan ceiling) {
+        return new Dispatched(ceiling);
     }
 
     static ProvisionDisposition deferred(DeferralReason reason) {

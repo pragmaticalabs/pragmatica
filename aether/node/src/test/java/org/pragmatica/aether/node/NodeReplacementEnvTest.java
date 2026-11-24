@@ -74,7 +74,7 @@ class NodeReplacementEnvTest {
     NodeReplacementEnvTest() {
         states.put(OLD, "Member");
         commitSourceConfig();
-        when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
+        when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched(org.pragmatica.aether.config.cluster.SourceProfile.DEFAULT_REPLACEMENT_CEILING)));
         when(ctm.sourceOfSourcelessNode(any())).thenReturn(org.pragmatica.lang.Result.success(DOCK));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> Promise.unitPromise());
@@ -290,7 +290,7 @@ class NodeReplacementEnvTest {
     void provisioningDuringInventoryInitialization_isDeferred_thenDispatched() {
         when(ctm.provisionReplacement(any(), any(), any(), any(), any()))
             .thenReturn(new org.pragmatica.aether.deployment.cluster.FleetInventoryInitializing().<ProvisionDisposition> promise())
-            .thenReturn(Promise.success(ProvisionDisposition.dispatched()));
+            .thenReturn(Promise.success(ProvisionDisposition.dispatched(org.pragmatica.aether.config.cluster.SourceProfile.DEFAULT_REPLACEMENT_CEILING)));
         record(NodeReplacementPhase.PROVISIONING, 999_999L);
         wiring.reconciler().reconcile().await();
 
@@ -324,7 +324,7 @@ class NodeReplacementEnvTest {
     void theRememberedInventoryWait_isForgottenOnceTheProvisionIsDispatched() {
         when(ctm.provisionReplacement(any(), any(), any(), any(), any()))
             .thenReturn(new org.pragmatica.aether.deployment.cluster.FleetInventoryInitializing().<ProvisionDisposition> promise())
-            .thenReturn(Promise.success(ProvisionDisposition.dispatched()));
+            .thenReturn(Promise.success(ProvisionDisposition.dispatched(org.pragmatica.aether.config.cluster.SourceProfile.DEFAULT_REPLACEMENT_CEILING)));
         record(NodeReplacementPhase.PROVISIONING, 999_999L);
         wiring.reconciler().reconcile().await();
         wiring.reconciler().reconcile().await();

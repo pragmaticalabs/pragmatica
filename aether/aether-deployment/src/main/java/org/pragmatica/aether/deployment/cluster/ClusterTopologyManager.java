@@ -460,10 +460,12 @@ public interface ClusterTopologyManager extends TopologyManager {
     Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId);
     /// #1049 — the hard ceiling on how long an auto-heal replacement of `intendedRole` may stay in-flight
     /// while its provider still reports it existing or booting (or cannot report at all). #2811: it is the
-    /// `replacement_ceiling` of the source the replacement of `departed` is dispatched to (resolved exactly as
-    /// `provisionReplacement` resolves it), the ten-minute `SourceProfile.DEFAULT_REPLACEMENT_CEILING` where that
-    /// source declares none. When that source cannot be resolved the answer is the LONGEST ceiling over every source
-    /// declaring the role, so no replacement is abandoned before its own source's ceiling.
+    /// `replacement_ceiling` of the source the replacement of `departed` resolves to (the resolution `provisionReplacement`
+    /// uses), read whether or not that source still declares the role, the ten-minute
+    /// `SourceProfile.DEFAULT_REPLACEMENT_CEILING` where it declares none or is not in the configuration. When that source cannot be
+    /// resolved the answer is the LONGEST ceiling over every source declaring the role, so no replacement of a declaring source is
+    /// abandoned before that source's ceiling. The leader asks it for the bound while a create is in flight and for an inherited entry;
+    /// a dispatched entry keeps the ceiling its [ProvisionDisposition.Dispatched] carries, read in the same call that dispatched it.
     TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed);
     /// Membership v2 / E2 — reconcile current cluster membership against configured size
     /// (spec §7.4). Derives action from the SWIM-converged member count plus the KV

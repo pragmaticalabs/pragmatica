@@ -335,7 +335,7 @@ class ClusterConfigApplierTest {
                                                                   Option<NodeId> failedPeer,
                                                                   Set<NodeId> clusterMembers,
                                                                   NodeRole intendedRole) {
-            return Promise.success(ProvisionDisposition.dispatched());
+            return Promise.success(ProvisionDisposition.dispatched(SourceProfile.DEFAULT_REPLACEMENT_CEILING));
         }
 
         @Override

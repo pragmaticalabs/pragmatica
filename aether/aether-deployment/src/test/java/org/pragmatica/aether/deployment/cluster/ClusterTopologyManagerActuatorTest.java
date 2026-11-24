@@ -882,7 +882,7 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(disposition.isSuccess()).isTrue();
         disposition.onSuccess(value -> assertThat(value)
                 .as("a real boot resolves to Dispatched, so the reconciler keeps its placeholder")
-                .isEqualTo(ProvisionDisposition.dispatched()));
+                .isEqualTo(ProvisionDisposition.dispatched(org.pragmatica.aether.config.cluster.SourceProfile.DEFAULT_REPLACEMENT_CEILING)));
     }
 
     /// #166 — a confirmed `NodeRemoved` membership decision on the active (leader) CTM reaps the
