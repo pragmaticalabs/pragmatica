@@ -53,6 +53,11 @@ class Http3StreamWireTest {
     /// chunk granularity (the in-process client shares the allocator, and its sending is bounded by the same window). A
     /// server that kept reading would hold most of the 64 MiB.
     private static final long HELD_BOUND = 24L * MIB;
+    /// The `/idle` and `/timed` classifier bounds below, in milliseconds.
+    private static final long IDLE_BOUND_MS = 300;
+    private static final long TIMED_BOUND_MS = 300;
+    /// A bound's 408 may be late by scheduling and a starved host, never by the 10 s to 25 s the client now waits (#3052, as #2873).
+    private static final long MARGIN_MS = 3_000;
 
     private final List<RecordingSink> sinks = new CopyOnWriteArrayList<>();
     private volatile Supplier<RecordingSink> nextSink = RecordingSink::new;
@@ -168,6 +173,8 @@ class Http3StreamWireTest {
         });
 
         assertThat(answer.statusText()).isEqualTo("408");
+        assertThat(answer.statusAfterMs()).as("the 300 ms idle bound, not the connection's 5 s idle timeout")
+                                          .isLessThan(IDLE_BOUND_MS + MARGIN_MS);
         assertThat(answer.body()).contains("idle");
         assertThat(sinks.getFirst().awaitTerminal(5)).isEqualTo("abort:TIMED_OUT");
         assertThat(sinks.getFirst().terminals()).containsExactly("abort:TIMED_OUT");
@@ -180,6 +187,8 @@ class Http3StreamWireTest {
         var answer = Http3TestClient.exchange(port, stream -> pace(stream, "/timed", 1, 100, 60));
 
         assertThat(answer.statusText()).isEqualTo("408");
+        assertThat(answer.statusAfterMs()).as("the 300 ms grace and one 300 ms window, not the 6 s the body takes")
+                                          .isLessThan(2 * TIMED_BOUND_MS + MARGIN_MS);
         assertThat(answer.body()).contains("minimum rate");
         assertThat(sinks.getFirst().awaitTerminal(5)).isEqualTo("abort:TIMED_OUT");
         assertThat(sinks.getFirst().terminals()).containsExactly("abort:TIMED_OUT");
