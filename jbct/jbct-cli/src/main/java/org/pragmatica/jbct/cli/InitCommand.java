@@ -156,6 +156,10 @@ public class InitCommand implements Callable<Integer> {
             System.out.println("  - Use jbct-reviewer agent for code review");
         }
 
+        return exitCode(aiToolsRefused);
+    }
+
+    static int exitCode(boolean aiToolsRefused) {
         return aiToolsRefused
                ? 1
                : 0;

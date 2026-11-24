@@ -28,4 +28,10 @@ class InitCommandAiToolsRefusalTest {
                                                                                               .contains("ai-tools-v9.9.9");
         assertThat(InitCommand.aiToolsFailureText(Causes.cause("network down"))).startsWith("Warning: ");
     }
+
+    @Test
+    void exitCode_isNonZeroOnlyWhenTheAiToolsRefIsRefused() {
+        assertThat(InitCommand.exitCode(true)).isEqualTo(1);
+        assertThat(InitCommand.exitCode(false)).isZero();
+    }
 }
