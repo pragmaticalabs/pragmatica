@@ -8,6 +8,9 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.Level;
@@ -19,6 +22,7 @@ import org.pragmatica.db.migration.MigrationScript;
 import org.pragmatica.db.migration.SchemaMigrations;
 import org.pragmatica.db.migration.SchemaMigrations.SchemaResult;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -37,6 +41,7 @@ class TerraMigrationsHeldRetryTest {
     private static final String DATASOURCE = "database";
     private static final Cause HELD = MigrationError.MigrationFencedInDatabase.migrationFencedInDatabase(DATASOURCE, "aether-mig:terra (pid 42)");
     private static final SchemaResult APPLIED = SchemaResult.schemaResult(1, 1, 3);
+    private static final long BACKOFF_MS = 300;
     private static final TimeSpan AWAIT = timeSpan(10).seconds();
 
     @Test
@@ -90,6 +95,26 @@ class TerraMigrationsHeldRetryTest {
     }
 
     @Test
+    void apply_fenceHeld_waitsAtLeastTheBackoffBeforeTheNextRun() {
+        var engine = new ScriptedEngine(HELD.result(), Result.success(APPLIED));
+
+        run(engine, _ -> timeSpan(BACKOFF_MS).millis()).apply().await(AWAIT).unwrap();
+
+        assertThat(engine.nanosBetweenCalls()).as("a timer never fires early, so the gap is a lower bound, not a guess")
+                                              .isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(BACKOFF_MS));
+    }
+
+    @Test
+    void terraMigrations_productionRun_firstRetryWaitsFifteenSeconds() {
+        var scripts = Map.of(DATASOURCE, List.of(MigrationScript.migrationScript("V001__one.sql", "SELECT 1", 1)));
+
+        var run = (MigrationRun) TerraMigrations.terraMigrations("g:app", scripts, new StubProvider()).unwrap();
+
+        assertThat(run.heldBackoff().apply(1)).as("the wiring carries the A6 schedule, not a stub").isEqualTo(timeSpan(15).seconds());
+        assertThat(run.heldBackoff().apply(2)).isEqualTo(timeSpan(45).seconds());
+    }
+
+    @Test
     void heldBackoff_followsTheA6Schedule() {
         assertThat(TerraMigrations.heldBackoff(1)).isEqualTo(timeSpan(15).seconds());
         assertThat(TerraMigrations.heldBackoff(2)).isEqualTo(timeSpan(45).seconds());
@@ -99,13 +124,17 @@ class TerraMigrationsHeldRetryTest {
     }
 
     private static MigrationRun run(SchemaMigrations engine, List<Integer> asked) {
+        return run(engine, held -> recordAsk(asked, held));
+    }
+
+    private static MigrationRun run(SchemaMigrations engine, Fn1<TimeSpan, Integer> heldBackoff) {
         var scripts = List.of(MigrationScript.migrationScript("V001__one.sql", "SELECT 1", 1));
 
         return MigrationRun.migrationRun("g:app",
                                          List.of(MigrationTask.migrationTask(DATASOURCE, scripts)),
                                          new StubProvider(),
                                          engine,
-                                         held -> recordAsk(asked, held));
+                                         heldBackoff);
     }
 
     private static TimeSpan recordAsk(List<Integer> asked, int held) {
@@ -117,6 +146,7 @@ class TerraMigrationsHeldRetryTest {
     private static final class ScriptedEngine implements SchemaMigrations {
         private final Deque<Result<SchemaResult>> outcomes;
         private final AtomicInteger calls = new AtomicInteger();
+        private final List<Long> callNanos = new CopyOnWriteArrayList<>();
 
         @SafeVarargs
         ScriptedEngine(Result<SchemaResult>... outcomes) {
@@ -127,9 +157,14 @@ class TerraMigrationsHeldRetryTest {
             return calls.get();
         }
 
+        long nanosBetweenCalls() {
+            return callNanos.get(1) - callNanos.get(0);
+        }
+
         @Override
         public Promise<SchemaResult> migrate(String datasource, List<MigrationScript> scripts, SqlConnector connector, String nodeId, String owner) {
             calls.incrementAndGet();
+            callNanos.add(System.nanoTime());
             return outcomes.removeFirst().async();
         }
 
