@@ -6,7 +6,7 @@ This module contains the execution/history engine extracted from Aether deployme
 
 `AetherSchemaManager` remains the Aether adapter. It translates blueprint migration entries, strips the blueprint version, maps shared failures (including composite failures) back to the existing `SchemaError` variants, and preserves the policy and result API consumed by Aether orchestration. Consensus leases, retry/status policy, management HTTP mapping, and deployment gating remain in Aether.
 
-Terra’s `TerraMigrations` loads exploded blueprint scripts and serializes attempts in the JVM. It awaits SQL and connector cleanup before allowing the next attempt or constructing slices. Its supported deployment envelope is one process per database.
+Terra’s `TerraMigrations` loads exploded blueprint scripts and serializes attempts in the JVM. It awaits SQL and connector cleanup before allowing the next attempt or constructing slices. Across processes it relies on the engine's database fence ([Terra's specification](../../terra/SPEC.md#database-startup) states the guarantee); starting two processes against one database is not covered by a Terra test.
 
 The extraction retains the execution algorithms and persisted `aether_schema_history`, `aether_schema_history_meta`, and `aether_schema_owner` structures. PostgreSQL transactional DDL and its history insert share a transaction; nontransactional execution keeps statement checkpoints and the existing statement-commit/checkpoint crash window. Recovery and dialect behavior are unchanged by the module move.
 
