@@ -20,11 +20,13 @@ import org.pragmatica.statemachine.FsmTestHarness;
 /// observation with a sequence-less event); the order lives here, once.
 ///
 /// Production drops a commit for a leader the context deems ineligible (`LeaderElectionContext#isEligible`, the installed
-/// voter set or the expected cluster) before observing or dispatching anything; every entry here makes the same
-/// decision, with the same predicate, so a test cannot observe a sequence for a leader production would drop.
+/// voter set or the expected cluster) before observing or dispatching anything. Every entry here evaluates the same
+/// predicate and FAILS LOUDLY (`AssertionError` naming the leader and the electorate) instead of dropping silently, so a
+/// test cannot build a state production never reaches and no call site can pass on a commit that was never made. A test
+/// that means to show the drop calls production's own path (`FsmBackedLeaderManager#onLeaderCommitted`), not this helper.
 ///
 /// The sequence-less overloads are production's `onLeaderCommitted(leader)` and local-election path: no observation
-/// precedes them, so none is made, but the same eligibility check applies (`LeaderManager.commitLeader(leader)`).
+/// precedes them, so none is made, but the same eligibility rule applies (`LeaderManager.commitLeader(leader)`).
 /// The observation is a max-merge, so a straggling commit below the observed sequence observes nothing new and dispatches as production does.
 ///
 /// Entry kinds: `commitLeader` enters from the test thread through the harness; `commitLeaderOnDrainer` enters the way
@@ -33,23 +35,27 @@ public final class LeaderCommits {
     private LeaderCommits() {}
 
     public static void commitLeader(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness, NodeId leader, long viewSequence) {
-        observeThenCommit(contextOf(harness), harness::dispatch, leader, viewSequence);
+        commitLeader(contextOf(harness), harness::dispatch, leader, viewSequence);
     }
 
     public static void commitLeader(LeaderElectionContext ctx, Consumer<ClusterFsmEvent> entry, NodeId leader, long viewSequence) {
-        observeThenCommit(ctx, entry, leader, viewSequence);
+        requireEligible(ctx, leader);
+        ctx.observeViewSequence(viewSequence);
+        entry.accept(LeaderCommitted.leaderCommitted(leader, viewSequence));
     }
 
     public static void commitLeader(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness, NodeId leader) {
-        commitUnobserved(contextOf(harness), harness::dispatch, leader);
+        commitLeader(contextOf(harness), harness::dispatch, leader);
     }
 
     public static void commitLeader(LeaderElectionContext ctx, Consumer<ClusterFsmEvent> entry, NodeId leader) {
-        commitUnobserved(ctx, entry, leader);
+        requireEligible(ctx, leader);
+        entry.accept(LeaderCommitted.leaderCommitted(leader, LeaderCommitted.NO_SEQUENCE));
     }
 
     public static void commitLeaderOnDrainer(LeaderElectionContext ctx, NodeId leader, long viewSequence) {
-        OnDrainer.run(ctx, () -> observeThenCommit(ctx, ctx::submit, leader, viewSequence));
+        requireEligible(ctx, leader);
+        OnDrainer.run(ctx, () -> observeThenSubmit(ctx, leader, viewSequence));
     }
 
     public static void commitLeaderOnDrainer(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness, NodeId leader, long viewSequence) {
@@ -57,26 +63,25 @@ public final class LeaderCommits {
     }
 
     public static void commitLeaderOnDrainer(LeaderElectionContext ctx, NodeId leader) {
-        OnDrainer.run(ctx, () -> commitUnobserved(ctx, ctx::submit, leader));
+        requireEligible(ctx, leader);
+        OnDrainer.dispatch(ctx, LeaderCommitted.leaderCommitted(leader, LeaderCommitted.NO_SEQUENCE));
     }
 
     public static void commitLeaderOnDrainer(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness, NodeId leader) {
         commitLeaderOnDrainer(contextOf(harness), leader);
     }
 
-    private static void observeThenCommit(LeaderElectionContext ctx,
-                                          Consumer<ClusterFsmEvent> entry,
-                                          NodeId leader,
-                                          long viewSequence) {
-        if (ctx.isEligible(leader)) {
-            ctx.observeViewSequence(viewSequence);
-            entry.accept(LeaderCommitted.leaderCommitted(leader, viewSequence));
-        }
+    private static void observeThenSubmit(LeaderElectionContext ctx, NodeId leader, long viewSequence) {
+        ctx.observeViewSequence(viewSequence);
+        ctx.submit(LeaderCommitted.leaderCommitted(leader, viewSequence));
     }
 
-    private static void commitUnobserved(LeaderElectionContext ctx, Consumer<ClusterFsmEvent> entry, NodeId leader) {
-        if (ctx.isEligible(leader)) {
-            entry.accept(LeaderCommitted.leaderCommitted(leader, LeaderCommitted.NO_SEQUENCE));
+    /// Checked on the calling thread, before any drainer task: an exception inside a drainer task is swallowed by the
+    /// executor, so the test would pass with the commit never made.
+    private static void requireEligible(LeaderElectionContext ctx, NodeId leader) {
+        if (!ctx.isEligible(leader)) {
+            throw new AssertionError("leader " + leader + " is not eligible (electorate " + ctx.expectedCluster()
+                                     + "): production drops this commit, the helper does not model a drop");
         }
     }
 
