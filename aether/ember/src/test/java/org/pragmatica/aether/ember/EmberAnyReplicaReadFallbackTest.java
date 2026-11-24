@@ -38,7 +38,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// have selected is dead.
 ///
 /// Three real nodes, one partition at the default replication (RF 3): the committed in-sync set is all three. Records are
-/// acknowledged first, and the replica that will survive serves them through the router (the control: the instrument can see
+/// acknowledged first, and the owner -- the node whose replica registry lists the other two as caught-up peers -- serves them through the router (the control: the instrument can see
 /// the records and the router reaches them). Then both other nodes are killed -- the survivor's registry still lists them as
 /// caught-up peers, which is the state a degraded cluster is in until membership catches up -- and the survivor is read again
 /// through the same router. The read must return the acknowledged records from the survivor's own caught-up copy; before #946 it
@@ -96,14 +96,16 @@ class EmberAnyReplicaReadFallbackTest {
         var record = awaitFullIsr();
         var owner = cluster.getNode(record.owner().id()).unwrap();
         var peers = record.isr().stream().filter(member -> !member.equals(record.owner())).toList();
-        var survivor = cluster.getNode(peers.getFirst().id()).unwrap();
-        var killed = List.of(record.owner().id(), peers.getLast().id());
+        var survivor = owner;
+        var killed = peers.stream().map(member -> member.id()).toList();
 
         for (var i = 0; i < ACKED; i++) {
             assertThat(publishAcked(owner, "acked-" + i).acked()).isTrue();
         }
 
-        awaitUntil(() -> payloads(survivor).size() == ACKED, REPLICA_VISIBLE_BUDGET_MS, "the surviving replica serves the acknowledged records");
+        awaitUntil(() -> peers.stream().allMatch(member -> payloads(cluster.getNode(member.id()).unwrap()).size() == ACKED),
+                   REPLICA_VISIBLE_BUDGET_MS,
+                   "every replica serves the acknowledged records");
         assertThat(outcome(routed(survivor))).as("control: the router reads the records while every peer is alive")
                                                                          .isEqualTo(List.of("acked-0", "acked-1", "acked-2"));
 
@@ -111,7 +113,7 @@ class EmberAnyReplicaReadFallbackTest {
                                     .await(STOP_BOUND)
                                     .onFailure(cause -> Assertions.fail("kill of " + id + " failed: " + cause.message())));
 
-        assertThat(outcome(routed(survivor))).as("the survivor answers from its own caught-up copy")
+        assertThat(outcome(routed(survivor))).as("the survivor answers from its own copy")
                                                                          .isEqualTo(List.of("acked-0", "acked-1", "acked-2"));
     }
 
