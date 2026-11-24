@@ -24,8 +24,11 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
+import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -36,11 +39,13 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -64,6 +69,7 @@ class QuicClusterNetworkLifecycleTest {
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(20).seconds();
     private static final NodeId SELF = new NodeId("lifecycle-self");
     private static final NodeId PEER = new NodeId("lifecycle-peer");
+    private static final Cause RELEASE_FAILED = Causes.cause("release failed (test)");
 
     private final List<QuicClusterNetwork> networks = new ArrayList<>();
     private final List<QuicClusterServer> peerServers = new ArrayList<>();
@@ -315,10 +321,14 @@ class QuicClusterNetworkLifecycleTest {
         network.startOnPort(0).await(AWAIT).onFailure(cause -> fail("start failed: " + cause.message()));
         var port = network.boundPort().or(-1);
 
+        var passedFirstCheck = new AtomicBoolean();
+
+        network.beforeRebuildForTests(() -> passedFirstCheck.set(true));
         var rotation = network.rotateCertificate(serverSsl("stop-during-rotated"), clientSsl("stop-during-rotated"));
         network.stop().await(AWAIT).onFailure(cause -> fail("stop failed: " + cause.message()));
         var outcome = rotation.await(AWAIT);
 
+        assertThat(passedFirstCheck.get()).as("control: stop() landed before the first check, so the rebuild never got past it (the seam is run only after it)").isFalse();
         assertRotationReportsTheStop(outcome);
         assertThat(built).as("nothing is built after the stop: only the start's pair").hasSize(1);
         assertThat(network.boundPort().isEmpty()).as("no bound server after stop").isTrue();
@@ -348,6 +358,58 @@ class QuicClusterNetworkLifecycleTest {
         assertThat(network.boundPort().isEmpty()).as("no bound server after stop").isTrue();
         assertThat(network.clientForTests()).as("no client after stop").isNull();
         assertTerminatesSoon(built.getFirst().client(), "the client the rotation built after the stop");
+    }
+
+    /// #3635, LOW-2, rotation site. Close-chain rule: every release runs, the FIRST failure wins. The first failure is the
+    /// stop the re-check observed, so a release that then fails does not displace it: the rotation still fails with
+    /// `NETWORK_STOPPED`, and the release still ran (the client the rotation built terminates). Mutation that reddens it:
+    /// propagate the release's failure instead of the stop (`flatMap` in `releaseAndReportStopped`).
+    @Test
+    void failedReleaseInTheRotationRecheck_stillReportsTheStop() throws Exception {
+        var network = started();
+        var built = observeBuilt(network);
+        var racingStop = new AtomicReference<Promise<Unit>>();
+        var failedReleases = new AtomicInteger();
+
+        network.releaseTapForTests(failingRelease(failedReleases));
+        network.beforeRebuildForTests(() -> racingStop.set(network.stop()));
+        var outcome = network.rotateCertificate(serverSsl("failed-release-rotated"), clientSsl("failed-release-rotated")).await(AWAIT);
+
+        assertThat(racingStop.get()).as("control: the stop ran inside the rebuild window").isNotNull();
+        assertThat(failedReleases.get()).as("control: the re-check's release ran and failed").isEqualTo(1);
+        assertRotationReportsTheStop(outcome);
+        racingStop.get().await(AWAIT).onFailure(cause -> fail("stop failed: " + cause.message()));
+        assertTerminatesSoon(built.getFirst().client(), "the client the rotation built after the stop, released despite the failing tap");
+    }
+
+    /// #3635, LOW-2, `startOnPort` site (#1461): the same rule, the same helper. The stop runs from the built-observer, which
+    /// runs after the assignment and before the re-check. Mutation that reddens it: as above.
+    @Test
+    void failedReleaseInTheStartRecheck_stillReportsTheStop() throws Exception {
+        var network = network();
+        var racingStop = new AtomicReference<Promise<Unit>>();
+        var failedReleases = new AtomicInteger();
+
+        network.releaseTapForTests(failingRelease(failedReleases));
+        network.builtObserverForTests((_, _) -> racingStop.set(network.stop()));
+        var outcome = network.startOnPort(0).await(AWAIT);
+
+        assertThat(racingStop.get()).as("control: the stop ran between the assignment and the re-check").isNotNull();
+        assertThat(failedReleases.get()).as("control: the re-check's release ran and failed").isEqualTo(1);
+        assertThat(outcome.isFailure()).as("the start fails: %s", outcome).isTrue();
+        outcome.onFailure(cause -> assertThat(cause).as("the start reports the stop").isEqualTo(QuicTransportError.General.NETWORK_STOPPED));
+        assertThat(network.boundPort().isEmpty()).as("no bound server after stop").isTrue();
+    }
+
+    /// Wraps the re-check's real release (it still runs) so that it reports a failure, counting each such report.
+    private static UnaryOperator<Promise<Unit>> failingRelease(AtomicInteger failedReleases) {
+        return release -> release.flatMap(_ -> countedReleaseFailure(failedReleases));
+    }
+
+    private static Promise<Unit> countedReleaseFailure(AtomicInteger failedReleases) {
+        failedReleases.incrementAndGet();
+
+        return RELEASE_FAILED.promise();
     }
 
     /// Netty's default shutdown has a 2 s quiet period, so a client group terminates shortly AFTER its close was initiated.

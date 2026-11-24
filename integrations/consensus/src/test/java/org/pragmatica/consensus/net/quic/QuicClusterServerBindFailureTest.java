@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.channel.EventLoopGroup;
@@ -41,6 +42,7 @@ import org.pragmatica.serialization.SliceCodec;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.awaitTrue;
 
 /// #3635 — a server that created its own event-loop group releases it when its bind fails, and never touches a
 /// group it was handed. Invariant: a client-owned group is released on every exit path of its owner (close, failed
@@ -51,8 +53,10 @@ class QuicClusterServerBindFailureTest {
 
     /// The group's state is read AT the report, not after it: a dependent step (`withFailure`) runs synchronously inside the
     /// resolution of the start promise, so it sees the group as it was when the failure was reported, whatever the
-    /// release's quiet period. Mutations that redden it: drop `releaseOwnedGroupAfterFailedBind` from `handleBind`'s failure
-    /// branch; fail the promise first and release after (the release then has not even begun at the report).
+    /// release's quiet period. The observer is attached while the report is held at the `beforeBindFailureReportForTest`
+    /// seam (after the release, before the failure), so the attach cannot lose a race with the bind. Mutations that redden
+    /// it: drop `releaseOwnedGroupAfterFailedBind` from `handleBind`'s failure branch; fail the promise first and release
+    /// after (the release then has not even begun at the report); drop the seam call (the control below goes red).
     @Test
     void failedBindOnOccupiedPort_releasesTheOwnedGroup_beforeReportingTheFailure() throws Exception {
         try (var holder = new DatagramSocket(0)) {
@@ -60,14 +64,19 @@ class QuicClusterServerBindFailureTest {
             var server = serverOn(port, Option.empty());
             var terminatedAtReport = new AtomicReference<Boolean>();
             var reportedOn = new AtomicReference<Thread>();
+            var observerAttached = new AtomicBoolean();
+            var reportHeld = new AtomicBoolean();
 
-            var started = server.start(port)
-                                .withFailure(_ -> recordReport(server, terminatedAtReport, reportedOn))
-                                .await(AWAIT);
+            ((QuicClusterServerInstance) server).beforeBindFailureReportForTest(() -> holdReportUntil(observerAttached, reportHeld));
+            var pending = server.start(port).withFailure(_ -> recordReport(server, terminatedAtReport, reportedOn));
+
+            observerAttached.set(true);
+            var started = pending.await(AWAIT);
 
             assertThat(started.isFailure()).as("control: the start on an occupied UDP port must fail").isTrue();
             started.onFailure(cause -> assertThat(cause).isInstanceOf(QuicTransportError.BindFailed.class));
-            assertThat(reportedOn.get()).as("control: the report was observed as it resolved, not on the thread that attached the observer later")
+            assertThat(reportHeld.get()).as("control: the report was held at the seam until the observer was attached").isTrue();
+            assertThat(reportedOn.get()).as("control: the observer ran as the start resolved, not on the thread that attached it")
                                         .isNotNull()
                                         .isNotSameAs(Thread.currentThread());
 
@@ -76,6 +85,11 @@ class QuicClusterServerBindFailureTest {
             assertThat(group).as("control: the failed start did create an owned group").isNotNull();
             assertThat(terminatedAtReport.get()).as("the owned group is terminated at the moment the failure is reported").isTrue();
         }
+    }
+
+    private static void holdReportUntil(AtomicBoolean observerAttached, AtomicBoolean reportHeld) {
+        reportHeld.set(true);
+        awaitTrue(observerAttached::get, AWAIT, () -> "the observer is attached to the start promise");
     }
 
     private static void recordReport(QuicClusterServer server, AtomicReference<Boolean> terminatedAtReport, AtomicReference<Thread> reportedOn) {

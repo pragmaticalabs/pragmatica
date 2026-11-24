@@ -25,6 +25,7 @@ import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.IdentityFacts;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.OutboundMessageLimit;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -253,6 +254,10 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     /// a test installs a hook.
     private volatile Runnable beforePublish = () -> {};
 
+    /// #3635 test seam: runs after a failed bind's owned group is released and before the failure is reported, so a test can
+    /// attach its observer to the start promise before it can resolve. No-op unless a test installs a hook.
+    private volatile Runnable beforeBindFailureReport = () -> {};
+
     /// The bound on a stream's preamble/Hello. A field only so a test can shorten it; production leaves the default.
     private volatile long helloTimeoutMs = DEFAULT_HELLO_TIMEOUT_MS;
 
@@ -305,6 +310,12 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         beforePublish = hook;
     }
 
+    /// #3635 test seam — see [#beforeBindFailureReport].
+    @Contract
+    void beforeBindFailureReportForTest(Runnable hook) {
+        beforeBindFailureReport = hook;
+    }
+
     @Override
     public Option<Integer> boundPort() {
         return serverChannel.current()
@@ -348,8 +359,14 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             var bindFailed = QuicTransportError.BindFailed.FACTORY.apply(port,
                                                                          Causes.fromThrowable(future.cause()));
 
-            releaseOwnedGroupAfterFailedBind().onResultRun(() -> promise.fail(bindFailed));
+            releaseOwnedGroupAfterFailedBind().onResultRun(() -> reportBindFailure(promise, bindFailed));
         }
+    }
+
+    @Contract
+    private void reportBindFailure(Promise<Unit> promise, Cause bindFailed) {
+        beforeBindFailureReport.run();
+        promise.fail(bindFailed);
     }
 
     private Promise<Unit> releaseOwnedGroupAfterFailedBind() {

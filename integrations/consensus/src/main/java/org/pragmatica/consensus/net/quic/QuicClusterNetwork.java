@@ -37,6 +37,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -586,6 +587,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// #3635 test seam — see [#beforeRebuildForTests]. No-op unless a test installs one.
     private volatile Runnable beforeRebuild = () -> {};
 
+    /// #3635 test seam — see [#releaseTapForTests]. Identity unless a test installs one.
+    private volatile UnaryOperator<Promise<Unit>> releaseTap = release -> release;
+
     enum ViewChangeOperation {
         ADD,
         REMOVE,
@@ -862,7 +866,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // before they were assigned and released nothing. Re-checked after the assignment, this start then
         // releases what it just created itself.
         if (closed.get()) {
-            return stopServerAndClient(unit()).flatMap(_ -> NETWORK_STOPPED.<Unit> promise());
+            return releaseAndReportStopped();
         }
 
         var serverRef = server;
@@ -1455,6 +1459,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return stopPromise.flatMap(_ -> rebuildAndStart(port, newServerSsl, newClientSsl));
     }
 
+    /// The release a re-check performs when it finds the network stopped, at both sites ([#startOnPort] #1461, [#rebuildAndStart]
+    /// #3635). Close-chain rule: every release runs, the FIRST failure wins. The first failure is the stop the re-check
+    /// observed: it is what triggers the release, so the outcome is `NETWORK_STOPPED` whatever the release does after it.
+    ///
+    /// FER (degrade forward): a failed release is absorbed with a WARN rather than displacing the stop. Guarantee earned: the
+    /// caller learns that the network is stopped, which is the fact it must act on; the release itself was attempted for both the server and the
+    /// client (`stopServerAndClient` initiates both before it joins them), and the WARN is the only record of a release that failed.
+    private Promise<Unit> releaseAndReportStopped() {
+        return releaseTap.apply(stopServerAndClient(unit()))
+                         .onFailure(cause -> log.warn("Releasing the transport built after stop() failed: {}",
+                                                      cause.message()))
+                         .fold(_ -> NETWORK_STOPPED.<Unit> promise());
+    }
+
     /// #3635: a rotation racing stop() builds nothing after the stop, in the #1461 shape of [#startOnPort]. A stop that
     /// landed while the old server was stopping is seen by the first check, and nothing is built. A stop that overtakes
     /// the first check may have read `server`/`client` before they were assigned and released nothing, so the check
@@ -1498,7 +1516,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         builtObserver.accept(server, client);
         if (closed.get()) {
-            return stopServerAndClient(unit()).flatMap(_ -> NETWORK_STOPPED.<Unit> promise());
+            return releaseAndReportStopped();
         }
 
         var serverRef = server;
@@ -4299,6 +4317,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Contract
     void beforeRebuildForTests(Runnable hook) {
         beforeRebuild = hook;
+    }
+
+    /// Package-private test seam (#3635) — wraps the release a re-check performs after finding the network stopped (see
+    /// [#releaseAndReportStopped]): the release still runs, and a test makes the wrapped promise fail to reach the path of
+    /// a failed release.
+    @Contract
+    void releaseTapForTests(UnaryOperator<Promise<Unit>> tap) {
+        releaseTap = tap;
     }
 
     /// Package-private test seam (#1578) — the connection a peer is currently bound to, or empty when
