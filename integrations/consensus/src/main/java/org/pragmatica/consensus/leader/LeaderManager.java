@@ -514,21 +514,8 @@ public interface LeaderManager {
         }
 
         /// The push of a committed leader with its view sequence enters the node's serial executor (#3587, #3605), the one
-        /// every view write also enters: the push's admission check and its write are one task, atomic against every view
-        /// write. Without it ("serial" dropped from `Fixed`) the model splits the admission into `P_Check` and `P_Write`
-        /// (`LeaderElectionState`), and the configs `interleave`, `interleavelearns`, `interleavemono` fail; the Fixed twin
-        /// `interleavefixed` passes with the same constants.
-        ///
-        /// ```tla LeaderAdmission:P_Push
-        /// \* Passive's one admission for a pushed commit (#3581), one atomic step with the fix "serial" (#3587, #3605).
-        /// P_Push(r) == /\ Fix("serial")
-        ///              /\ st = "passive"
-        ///              /\ PushStep(r)
-        ///              /\ IF Admits(r, "push", view)
-        ///                 THEN AdoptP(r) /\ suspect' = IF r[2] > adSeq THEN None ELSE suspect
-        ///                 ELSE UNCHANGED <<leader, adSeq, lastAd, suspect, taken>>
-        ///              /\ UNCHANGED <<st, view, vseq, kv, base, adm, env, hi, removed, cluster>>
-        /// ```
+        /// every view write also enters; the model step this makes atomic (`P_Push`) is carried by
+        /// `LeaderElectionContext#submit`, where the dispatch is confined to that executor.
         @Contract
         @Override
         public void onLeaderCommitted(NodeId leader, long viewSequence) {

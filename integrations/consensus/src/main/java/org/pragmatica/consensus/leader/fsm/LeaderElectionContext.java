@@ -1169,6 +1169,22 @@ public final class LeaderElectionContext {
 
     /// #3587: deliver `event` to the FSM in the node's one total order. Inside a task (a handler following up, a
     /// callback already serialized) it is dispatched at once, as part of that task; from any other thread it is queued.
+    ///
+    /// Every leader event, a pushed commit and every view write alike, is delivered through here, so Passive's admission
+    /// check and its write are one task, atomic against every view write. Without it ("serial" dropped from `Fixed`) the
+    /// model splits the admission into `P_Check` and `P_Write` (`LeaderElectionState`), and the configs `interleave`,
+    /// `interleavelearns` and `interleavemono` fail; the Fixed twin `interleavefixed` passes with the same constants.
+    ///
+    /// ```tla LeaderAdmission:P_Push
+    /// \* Passive's one admission for a pushed commit (#3581), one atomic step with the fix "serial" (#3587, #3605).
+    /// P_Push(r) == /\ Fix("serial")
+    ///              /\ st = "passive"
+    ///              /\ PushStep(r)
+    ///              /\ IF Admits(r, "push", view)
+    ///                 THEN AdoptP(r) /\ suspect' = IF r[2] > adSeq THEN None ELSE suspect
+    ///                 ELSE UNCHANGED <<leader, adSeq, lastAd, suspect, taken>>
+    ///              /\ UNCHANGED <<st, view, vseq, kv, base, adm, env, hi, removed, cluster>>
+    /// ```
     @Contract
     public void submit(ClusterFsmEvent event) {
         if (serial.isConfined()) {
