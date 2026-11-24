@@ -768,12 +768,15 @@ public enum OperatorWarningCode {
     /// committed value still equals it, the subject is held, and so is the autonomous correction of a loss. A configuration commit that leaves the
     /// value unchanged (another subject's, or an unrelated setting) releases nothing. A value an operator commits WHILE auto-heal is disabled differs:
     /// that is explicit intent, the subject is released and acted on from then on, its loss correction included. An operator-directed retirement is
-    /// not held. A hold describes a change being held back: it closes too when nothing is left to change (a surplus removed by an explicit
-    /// drain, a deficit filled), at the next reconcile pass, with auto-heal still disabled (#3358). Subject is the source/role or the community.
-    /// Raised once per subject for the run of holds. Closed by [#AUTO_HEAL_SCALING_RESUMED].
+    /// not held. A hold describes a change being held back: a worker source/role closes too when its deficit is filled or its surplus removed
+    /// by an explicit drain, and the core surplus closes when no core member is left to drain, at the next reconcile pass, with auto-heal still
+    /// disabled (#3358). The core surplus has two askers (the leader's surplus drain and the voter-excluded core retirement); it closes only
+    /// when both have nothing pending. Subject is the source/role, the community or `core`. Raised once per subject for the run of holds.
+    /// Closed by [#AUTO_HEAL_SCALING_RESUMED].
     AUTO_HEAL_SCALING_HELD("auto-heal-scaling-held", "deployment", WarningLevel.WARNING),
     /// The recovery of [#AUTO_HEAL_SCALING_HELD], same subject: auto-heal is enabled again, the subject was released by a new committed value, or
-    /// nothing is waiting to change any more (#3358); the worker, community or core path acts on it again when there is something to do. INFO, published only after a published held event for the subject (#752 mechanism). Raised by
+    /// nothing is waiting to change any more (#3358: every asker of the subject has nothing pending); the worker, community or core path acts on
+    /// it again when there is something to do. INFO, published only after a published held event for the subject (#752 mechanism). Raised by
     /// the leader that held it.
     AUTO_HEAL_SCALING_RESUMED("auto-heal-scaling-resumed", "deployment", WarningLevel.INFO, AUTO_HEAL_SCALING_HELD),
     /// An upload was refused 429 because this node's `[app-http.upload] max_concurrent` was reached (#2410): the node is holding

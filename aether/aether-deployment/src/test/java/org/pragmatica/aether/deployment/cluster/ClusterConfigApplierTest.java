@@ -433,7 +433,7 @@ class ClusterConfigApplierTest {
         }
 
         @Override
-        public boolean scalingHeld(String subject, boolean pending) {
+        public boolean scalingHeld(String subject, ScalingAsker asker, boolean pending) {
             return false;
         }
 

@@ -7,13 +7,16 @@ package org.pragmatica.aether.deployment.cluster;
 import java.net.SocketAddress;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -152,7 +155,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicReference<TerminationRetirement> reapRetirement,
                                     AtomicReference<TerminationRetirement> forcedClearRetirement,
                                     AtomicBoolean sourceUnresolved,
-                                    Set<String> heldScaling) implements ClusterTopologyManager {
+                                    ConcurrentMap<String, Set<ClusterTopologyManager.ScalingAsker>> heldScaling) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -313,7 +316,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(TerminationRetirement.NONE),
                                                 new AtomicReference<>(TerminationRetirement.NONE),
                                                 new AtomicBoolean(false),
-                                                ConcurrentHashMap.newKeySet());
+                                                new ConcurrentHashMap<>());
     }
 
     @Override
@@ -1026,16 +1029,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return "worker " + sourceName + "/" + role;
     }
 
-    /// Spec §8.4 — whether the worker, community and core surplus (#3324) paths may NOT act on their own now. Auto-heal enabled: they may, and every hold raised
-    /// earlier is announced as resumed. Disabled: `subject` is held while a change to it is `pending` and its own committed scaling value (count or community `target_size`)
+    /// Spec §8.4 — whether `asker` may NOT act on `subject` on its own now: the worker, community and core surplus (#3324) paths. Auto-heal
+    /// enabled: they may, and every hold raised earlier is announced as resumed. Disabled: `subject` is held while the union of its
+    /// askers' latest answers is non-empty ([#answerScaling]) and its own committed scaling value (count or community `target_size`)
     /// equals the one recorded at disable time ([AutoHealStateValue#disabledAtScaling]); a commit that leaves it unchanged releases
-    /// nothing. A value an operator committed after the disable differs: that is explicit intent, the subject is released (its hold, if
-    /// raised, is announced as resumed) and acted on. Nothing `pending` (the surplus went away by itself or by an explicit drain, #3358)
-    /// ends the hold the same way: the warning describes a change being held back, so it closes when there is none. An operator-directed
-    /// retirement never asks here. The hold is raised once per `subject` for the run of holds (the set is the flood guard; a release or
-    /// resume removes the subject).
+    /// nothing. A value an operator committed after the disable differs: that is explicit intent, every answer for the subject is dropped
+    /// (its hold, if raised, is announced as resumed) and acted on. A subject whose askers all answer "nothing pending" (the surplus went
+    /// away by itself or by an explicit drain, #3358) ends the hold the same way: the warning describes a change being held back, so it
+    /// closes when there is none, and only then, however many askers a subject has. An operator-directed retirement never asks here.
+    /// The returned answer is the asker's own: held only when it has something pending.
     @Override
-    public boolean scalingHeld(String subject, boolean pending) {
+    public boolean scalingHeld(String subject, ScalingAsker asker, boolean pending) {
         var state = autoHealStateReader.get();
 
         if (state.map(AutoHealStateValue::enabled).or(true)) {
@@ -1044,10 +1048,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return false;
         }
 
-        if (pending && state.filter(value -> unchangedSinceDisable(value, subject)).isPresent()) {
-            holdScaling(subject);
+        if (state.filter(value -> unchangedSinceDisable(value, subject)).isPresent()) {
+            answerScaling(subject, asker, pending);
 
-            return true;
+            return pending;
         }
 
         releaseScaling(subject);
@@ -1059,41 +1063,68 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return Option.option(state.disabledAtScaling().get(subject)).equals(Option.option(scalingOf(clusterConfigReader.get()).get(subject)));
     }
 
+    /// The ONE mutation point of a subject's hold: its askers' latest "pending" answers, changed and judged for an edge inside one atomic
+    /// `compute` on the subject's key. The HELD event is published on the closed-to-open edge of the union and the RESUMED event on the
+    /// open-to-closed one, from inside that same compute, so two threads touching one subject cannot publish them out of order (the sink
+    /// only enqueues, it never re-enters this map). A closed subject keeps its empty entry until the leader changes ([#deactivate]).
     @Contract
-    private void holdScaling(String subject) {
-        if (heldScaling.add(subject)) {
-            OperatorWarnings.raise(log,
-                                   warningSink.get(),
-                                   OperatorWarningCode.AUTO_HEAL_SCALING_HELD,
-                                   subject,
-                                   "Auto-heal is disabled: {} is not provisioned, drained or terminated on the cluster's own initiative; commit a new count, drain a node explicitly (aether nodes drain <nodeId>), or enable auto-heal (aether cluster topology auto-heal enable)",
-                                   subject);
-        }
+    private void answerScaling(String subject, ScalingAsker asker, boolean pending) {
+        heldScaling.compute(subject,
+                            (_, before) -> settle(subject, before, askers -> withAnswer(askers, asker, pending)));
+    }
+
+    /// Drops every answer for `subject`: the operator committed a value after the disable, or auto-heal was enabled.
+    @Contract
+    private void releaseScaling(String subject) {
+        heldScaling.compute(subject, (_, before) -> settle(subject, before, _ -> Set.of()));
     }
 
     @Contract
     private void resumeScaling() {
-        drainHeld(heldScaling, this::raiseResumed);
+        heldScaling.keySet().forEach(this::releaseScaling);
     }
 
-    @Contract
-    private void releaseScaling(String subject) {
-        releaseHeld(heldScaling, subject, this::raiseResumed);
+    private Set<ScalingAsker> settle(String subject,
+                                     Set<ScalingAsker> before,
+                                     Function<Set<ScalingAsker>, Set<ScalingAsker>> change) {
+        var was = Option.option(before).or(Set.of());
+        var now = change.apply(was);
+
+        announceEdge(subject, was.isEmpty(), now.isEmpty());
+
+        return now;
     }
 
-    /// Announces every held subject as resumed, one element at a time: a subject is resumed only by the call that removed it, so a hold
-    /// added concurrently (the community reconcile and the worker poll run on different threads) is either drained here with its resume
-    /// or stays held for the next one, and never cleared without its resume.
-    @Contract
-    static void drainHeld(Set<String> held, Consumer<String> resumed) {
-        held.forEach(subject -> releaseHeld(held, subject, resumed));
-    }
+    private static Set<ScalingAsker> withAnswer(Set<ScalingAsker> askers, ScalingAsker asker, boolean pending) {
+        var next = EnumSet.noneOf(ScalingAsker.class);
 
-    @Contract
-    static void releaseHeld(Set<String> held, String subject, Consumer<String> resumed) {
-        if (held.remove(subject)) {
-            resumed.accept(subject);
+        next.addAll(askers);
+        if (pending) {
+            next.add(asker);
+        } else {
+            next.remove(asker);
         }
+
+        return Collections.unmodifiableSet(next);
+    }
+
+    @Contract
+    private void announceEdge(String subject, boolean wasClosed, boolean nowClosed) {
+        if (wasClosed && !nowClosed) {
+            raiseHeld(subject);
+        } else if (!wasClosed && nowClosed) {
+            raiseResumed(subject);
+        }
+    }
+
+    @Contract
+    private void raiseHeld(String subject) {
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.AUTO_HEAL_SCALING_HELD,
+                               subject,
+                               "Auto-heal is disabled: {} is not provisioned, drained or terminated on the cluster's own initiative; commit a new count, drain a node explicitly (aether nodes drain <nodeId>), or enable auto-heal (aether cluster topology auto-heal enable)",
+                               subject);
     }
 
     @Contract
@@ -1746,7 +1777,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     public synchronized void installCommunityPlacement(CommunityPlacementReconciler reconciler) {
         communityPlacement.set(Option.some(reconciler));
-        reconciler.holdAutonomy(this::scalingHeld);
+        reconciler.holdAutonomy(subject -> scalingHeld(subject, ScalingAsker.COMMUNITY, true));
         startWorkerTopologyPolling(TimeSpan.timeSpan(10).seconds());
     }
 
@@ -1965,17 +1996,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private Promise<Unit> applyWorkerDelta(AetherValue.TopologyEntry entry, List<InstanceInfo> actual, long epoch) {
-        if (entry.role().equals(NodeRole.WORKER.value()) && usesExplicitCommunities()) {
+        // A stale or inactive pass never asks: it must not write into a newer activation's answers (the leader change cleared them, and the
+        // evaluated pass of the new activation answers for itself).
+        if (!active.get() || activationEpoch.get() != epoch) {
             return Promise.unitPromise();
         }
 
-        if (!active.get() || activationEpoch.get() != epoch) {
-            return Promise.unitPromise();
+        if (entry.role().equals(NodeRole.WORKER.value()) && usesExplicitCommunities()) {
+            return surrenderWorkerSubject(entry);
         }
 
         var delta = entry.count() - actual.size();
         // Asked on every pass, delta zero included (#3358): a hold raised for a deficit or surplus that is gone closes here.
         var held = scalingHeld(workerSubject(entry.sourceName(), entry.role()),
+                               ScalingAsker.WORKER_DELTA,
                                delta != 0);
 
         if (delta == 0 || held) {
@@ -1995,6 +2029,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return delta > 0
                ? provisionWorkers(entry, delta, epoch)
                : terminateSurplusWorkers(entry, actual, -delta, epoch);
+    }
+
+    /// With explicit communities the `worker` role is placed by the community path, so this pass owns no change to its subject: it answers
+    /// "nothing pending" (#3358), closing a hold raised before the communities were declared.
+    @Contract
+    private Promise<Unit> surrenderWorkerSubject(AetherValue.TopologyEntry entry) {
+        scalingHeld(workerSubject(entry.sourceName(), entry.role()),
+                    ScalingAsker.WORKER_DELTA,
+                    false);
+
+        return Promise.unitPromise();
     }
 
     private Promise<Unit> provisionWorkers(AetherValue.TopologyEntry entry, int deficit, long epoch) {

@@ -1470,6 +1470,7 @@ class LeaderReconcilerTest {
 
             assertThat(ctm.drainNodeCalls()).as("a held surplus core member must not be drained").isEmpty();
             assertThat(ctm.scalingHeldAsked()).as("the hold is asked through the worker/community accessor").contains(ClusterTopologyManager.coreSubject());
+            assertThat(ctm.scalingHeldAskers()).as("the reconciler asks as itself").containsOnly(ClusterTopologyManager.ScalingAsker.RECONCILER);
         }
 
         @Test
@@ -5156,6 +5157,7 @@ class LeaderReconcilerTest {
 
         private final List<String> scalingHeldAsked = new CopyOnWriteArrayList<>();
         private final List<Boolean> scalingHeldPending = new CopyOnWriteArrayList<>();
+        private final List<ScalingAsker> scalingHeldAskers = new CopyOnWriteArrayList<>();
 
         /// The subjects whose hold is open: raised by an ask that is held, closed by an ask that is not (the real hold's warning set).
         private final Set<String> heldNow = ConcurrentHashMap.newKeySet();
@@ -5167,8 +5169,9 @@ class LeaderReconcilerTest {
         /// the disable released it (#3358: nothing pending closes it too). Records each subject asked, with the pending flag it was asked
         /// with, and which holds are open, so a test can see the reconciler asked through this accessor and what it left open.
         @Override
-        public boolean scalingHeld(String subject, boolean pending) {
+        public boolean scalingHeld(String subject, ScalingAsker asker, boolean pending) {
             scalingHeldAsked.add(subject);
+            scalingHeldAskers.add(asker);
             scalingHeldPending.add(pending);
 
             var held = !autoHealEnabled.get() && !scalingReleased.get() && pending;
@@ -5192,6 +5195,10 @@ class LeaderReconcilerTest {
 
         void releaseScaling() {
             scalingReleased.set(true);
+        }
+
+        List<ScalingAsker> scalingHeldAskers() {
+            return List.copyOf(scalingHeldAskers);
         }
 
         List<String> scalingHeldAsked() {

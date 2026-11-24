@@ -47,6 +47,10 @@ import org.pragmatica.net.tcp.NodeAddress;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.ScalingAsker.COMMUNITY;
+import static org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.ScalingAsker.RECONCILER;
+import static org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.ScalingAsker.RETIREMENT;
+import static org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.ScalingAsker.WORKER_DELTA;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -339,6 +343,25 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(lifecycleManager.terminatedNodeIds()).as("only the operator's drain terminated anything").containsExactly("primary-worker-1");
     }
 
+    /// #3358 early return of the worker ask: once explicit communities place the `worker` role the worker pass owns no change to its
+    /// subject, so it answers "nothing pending" instead of skipping the ask, and a hold raised before the communities closes.
+    @Test
+    void reconcile_heldWorkerDeficit_explicitCommunitiesDeclared_raisesResumed() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 2));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+        ctm.reconcileWorkerTopology();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
+        assertThat(warnings).as("control: the deficit is held").containsExactly("auto-heal-scaling-held");
+
+        seedConfig(communityToml(1), entry("primary", "core", 3), entry("primary", "worker", 2));
+        ctm.reconcileWorkerTopology();
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+        assertThat(lifecycleManager.provisionedNodeIds()).as("the community path owns the role: nothing provisioned here").isEmpty();
+    }
+
     /// #3358: the same for a deficit that fills by itself (the missing instance came back), and the close is not a latch: a deficit that
     /// returns is held and warned again.
     @Test
@@ -409,13 +432,13 @@ class ClusterTopologyManagerWorkerReconcileTest {
         seedTopology(entry("pool", "core", 3), entry("pool", "worker", 1));
         autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, ClusterTopologyManagerRecord.scalingOf(configRef.get()))));
 
-        assertThat(manager.scalingHeld(core, true)).as("a surplus is pending").isTrue();
-        assertThat(manager.scalingHeld(core, false)).as("nothing pending any more").isFalse();
+        assertThat(manager.scalingHeld(core, RECONCILER, true)).as("a surplus is pending").isTrue();
+        assertThat(manager.scalingHeld(core, RECONCILER, false)).as("nothing pending any more").isFalse();
 
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
         assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
-        assertThat(manager.scalingHeld(core, false)).as("asked again with nothing pending: no second resume").isFalse();
-        assertThat(manager.scalingHeld(core, true)).as("a surplus returns: held again").isTrue();
+        assertThat(manager.scalingHeld(core, RECONCILER, false)).as("asked again with nothing pending: no second resume").isFalse();
+        assertThat(manager.scalingHeld(core, RECONCILER, true)).as("a surplus returns: held again").isTrue();
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 3);
         assertThat(warnings).last().isEqualTo("auto-heal-scaling-held");
     }
@@ -427,11 +450,11 @@ class ClusterTopologyManagerWorkerReconcileTest {
         seedConfig(communityToml(1), entry("pool", "core", 3));
         autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, Map.of("community stable", 1))));
 
-        assertThat(manager.scalingHeld("community stable")).as("target_size unchanged").isTrue();
+        assertThat(manager.scalingHeld("community stable", COMMUNITY, true)).as("target_size unchanged").isTrue();
 
         seedConfig(communityToml(2), entry("pool", "core", 3));
 
-        assertThat(manager.scalingHeld("community stable")).as("target_size changed while disabled").isFalse();
+        assertThat(manager.scalingHeld("community stable", COMMUNITY, true)).as("target_size changed while disabled").isFalse();
     }
 
     /// #3324: the core surplus subject is recorded by the disable from the committed core count, as every other subject is. Unchanged it
@@ -445,7 +468,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
         autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, recorded)));
 
         assertThat(recorded).as("the disable records the committed core count").containsEntry(core, 3);
-        assertThat(manager.scalingHeld(core)).as("core count unchanged").isTrue();
+        assertThat(manager.scalingHeld(core, RECONCILER, true)).as("core count unchanged").isTrue();
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
         assertThat(warnings).containsExactly("auto-heal-scaling-held");
         assertThat(warningTexts.getFirst()).as("the held warning names both exits: an explicit drain and re-enabling auto-heal")
@@ -454,7 +477,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
 
         commitConfigVersion(2L, entry("pool", "core", 2), entry("pool", "worker", 1));
 
-        assertThat(manager.scalingHeld(core)).as("core count committed after the disable").isFalse();
+        assertThat(manager.scalingHeld(core, RECONCILER, true)).as("core count committed after the disable").isFalse();
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
         assertThat(warnings).as("the release of the core subject is announced").containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
     }
@@ -467,11 +490,11 @@ class ClusterTopologyManagerWorkerReconcileTest {
         seedTopology(entry("pool", "core", 3), entry("pool", "worker", 1));
         autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, ClusterTopologyManagerRecord.scalingOf(configRef.get()))));
 
-        assertThat(manager.scalingHeld(core)).as("held while disabled").isTrue();
+        assertThat(manager.scalingHeld(core, RECONCILER, true)).as("held while disabled").isTrue();
 
         autoHealRef.set(Option.none());
 
-        assertThat(manager.scalingHeld(core)).as("auto-heal enabled again").isFalse();
+        assertThat(manager.scalingHeld(core, RECONCILER, true)).as("auto-heal enabled again").isFalse();
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
         assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
     }
@@ -484,12 +507,12 @@ class ClusterTopologyManagerWorkerReconcileTest {
         var worker = ClusterTopologyManagerRecord.workerSubject("pool", "worker");
         seedConfig(communityToml(1), entry("pool", "core", 3), entry("pool", "worker", 1));
         autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, Map.of("community stable", 1, worker, 1))));
-        assertThat(manager.scalingHeld("community stable")).isTrue();
-        assertThat(manager.scalingHeld(worker)).isTrue();
+        assertThat(manager.scalingHeld("community stable", COMMUNITY, true)).isTrue();
+        assertThat(manager.scalingHeld(worker, WORKER_DELTA, true)).isTrue();
 
         autoHealRef.set(Option.none());
 
-        assertThat(manager.scalingHeld("community stable")).as("no record: enabled").isFalse();
+        assertThat(manager.scalingHeld("community stable", COMMUNITY, true)).as("no record: enabled").isFalse();
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 4);
         assertThat(warnings).containsExactly("auto-heal-scaling-held",
                                              "auto-heal-scaling-held",
@@ -504,12 +527,12 @@ class ClusterTopologyManagerWorkerReconcileTest {
         seedConfig(communityToml(1), entry("pool", "core", 3));
         autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, Map.of("community stable", 1))));
         ctm.activate();
-        assertThat(manager.scalingHeld("community stable")).isTrue();
+        assertThat(manager.scalingHeld("community stable", COMMUNITY, true)).isTrue();
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
 
         ctm.deactivate();
         ctm.activate();
-        assertThat(manager.scalingHeld("community stable")).isTrue();
+        assertThat(manager.scalingHeld("community stable", COMMUNITY, true)).isTrue();
 
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
         assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-held");
@@ -544,79 +567,178 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(installed.get().test(CommunityPlacementReconciler.holdSubject("stable"))).as("target_size changed while disabled").isFalse();
     }
 
-    /// v2711 finding 7 (ii): a hold that lands while the resume drains the set is either resumed by that drain or stays held for the next
-    /// one; it is never cleared without its resume (a `forEach` then `clear` loses it).
-    @Test
-    void drainHeld_aHoldAddedDuringTheDrain_isResumedOrStaysHeld() {
-        var held = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
-        var resumed = new CopyOnWriteArrayList<String>();
-        held.add("worker primary/worker");
+    /// The `core` subject, disabled with the committed core count recorded, so it is held while an asker has a change pending (#3358).
+    private ClusterTopologyManagerRecord coreDisabled() {
+        seedTopology(entry("pool", "core", 3), entry("pool", "worker", 1));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, ClusterTopologyManagerRecord.scalingOf(configRef.get()))));
 
-        ClusterTopologyManagerRecord.drainHeld(held, subject -> resumeAndRaceAHold(subject, held, resumed));
-
-        assertThat(resumed.contains("community stable") || held.contains("community stable"))
-                .as("the concurrent hold keeps its pairing")
-                .isTrue();
-        assertThat(resumed).contains("worker primary/worker");
+        return (ClusterTopologyManagerRecord) ctm;
     }
 
-    /// v2711c (c24): the pairing, pinned for any iteration order. Every subject removed raises exactly one resume; a hold added during
-    /// the drain is drained with its resume or stays held; nothing is removed silently, twice, or both resumed and held.
-    @Test
-    void drainHeld_pairsEveryRemovalWithOneResume_whateverTheIterationOrder() {
-        var snapshotOrder = new java.util.concurrent.CopyOnWriteArraySet<String>();
-        var hashOrder = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
-
-        assertPaired(snapshotOrder);
-        assertPaired(hashOrder);
+    private void awaitWarnings(int count) {
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == count);
     }
 
-    private static void assertPaired(Set<String> held) {
-        var everHeld = new java.util.concurrent.CopyOnWriteArraySet<String>();
-        var resumed = new CopyOnWriteArrayList<String>();
-        var added = new java.util.concurrent.atomic.AtomicInteger();
+    private void assertWarningsStay(String... expected) {
+        await().during(java.time.Duration.ofMillis(300)).atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.equals(List.of(expected)));
+    }
 
-        for (var i = 0; i < 8; i++) {
-            held.add("original-" + i);
-            everHeld.add("original-" + i);
+    /// #3358 kept-both pairing: with a surge replacement counted the reconciler's drain room is zero while the retirement still names a
+    /// victim, so the two askers of `core` answer differently on alternating passes. The subject stays held: exactly one held event over
+    /// ten alternations, and no resume until BOTH answer "nothing pending".
+    @Test
+    void scalingHeld_keptBothPairing_alternatingAskers_oneHeld_noResumeUntilBothAnswerFalse() {
+        var manager = coreDisabled();
+        var core = ClusterTopologyManager.coreSubject();
+
+        for (var pass = 0; pass < 10; pass++) {
+            assertThat(manager.scalingHeld(core, RECONCILER, false)).as("the reconciler has no drain room").isFalse();
+            assertThat(manager.scalingHeld(core, RETIREMENT, true)).as("the retirement names a victim").isTrue();
         }
-        ClusterTopologyManagerRecord.drainHeld(held, subject -> {
-            resumed.add(subject);
-            if (subject.startsWith("original-")) {
-                var late = "late-" + added.getAndIncrement();
-                everHeld.add(late);
-                held.add(late);
-            }
-        });
 
-        var accounted = new java.util.HashSet<>(resumed);
+        awaitWarnings(1);
+        assertWarningsStay("auto-heal-scaling-held");
 
-        accounted.addAll(held);
-        assertThat(accounted).as("resumed + still held is every subject ever held").isEqualTo(everHeld);
-        assertThat(resumed).as("no duplicate resume").doesNotHaveDuplicates();
-        assertThat(held).as("a resumed subject is not held").doesNotContainAnyElementsOf(resumed);
-        assertThat(resumed).as("every original is resumed").containsAll(everHeld.stream().filter(s -> s.startsWith("original-")).toList());
+        assertThat(manager.scalingHeld(core, RETIREMENT, false)).isFalse();
+
+        awaitWarnings(2);
+        assertThat(warnings).as("both asked false: closed, once").containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
     }
 
-    /// v2711c (c25): releasing a subject that is not held (never held, or removed by a competing release) raises no resume.
+    /// #3358: a retirement victim alone holds `core`, and its "no victim" alone closes it (the reconciler never asked).
     @Test
-    void releaseHeld_aSubjectNotHeld_raisesNoResume() {
-        var held = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
-        var resumed = new CopyOnWriteArrayList<String>();
+    void scalingHeld_retirementVictimOnly_holdsAndCloses() {
+        var manager = coreDisabled();
+        var core = ClusterTopologyManager.coreSubject();
 
-        held.add("held one");
-        ClusterTopologyManagerRecord.releaseHeld(held, "never held", resumed::add);
-        assertThat(resumed).as("not held: no resume").isEmpty();
-        assertThat(held).containsExactly("held one");
+        assertThat(manager.scalingHeld(core, RETIREMENT, true)).isTrue();
+        awaitWarnings(1);
+        assertThat(manager.scalingHeld(core, RETIREMENT, false)).isFalse();
 
-        ClusterTopologyManagerRecord.releaseHeld(held, "held one", resumed::add);
-        ClusterTopologyManagerRecord.releaseHeld(held, "held one", resumed::add);
-        assertThat(resumed).as("released once, resumed once").containsExactly("held one");
+        awaitWarnings(2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
     }
 
-    private static void resumeAndRaceAHold(String subject, Set<String> held, List<String> resumed) {
-        resumed.add(subject);
-        held.add("community stable");
+    /// #3358: the reconciler's surplus alone holds `core`, and its "no surplus" alone closes it (the retirement never asked).
+    @Test
+    void scalingHeld_reconcilerOnly_holdsAndCloses() {
+        var manager = coreDisabled();
+        var core = ClusterTopologyManager.coreSubject();
+
+        assertThat(manager.scalingHeld(core, RECONCILER, true)).isTrue();
+        awaitWarnings(1);
+        assertThat(manager.scalingHeld(core, RECONCILER, false)).isFalse();
+
+        awaitWarnings(2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+    }
+
+    /// #3358: one asker answers false while the other's answer is still true: the subject stays open, whichever asker answers first.
+    @Test
+    void scalingHeld_oneAskerFalse_otherStillTrue_staysOpen() {
+        var manager = coreDisabled();
+        var core = ClusterTopologyManager.coreSubject();
+        manager.scalingHeld(core, RECONCILER, true);
+        manager.scalingHeld(core, RETIREMENT, true);
+        awaitWarnings(1);
+
+        manager.scalingHeld(core, RECONCILER, false);
+        assertWarningsStay("auto-heal-scaling-held");
+
+        manager.scalingHeld(core, RECONCILER, true);
+        manager.scalingHeld(core, RETIREMENT, false);
+        assertWarningsStay("auto-heal-scaling-held");
+
+        manager.scalingHeld(core, RECONCILER, false);
+        awaitWarnings(2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+    }
+
+    /// #3358: a leader change drops every answer (the CTM's deactivation, silent as before). The next activation answers for itself: an
+    /// answer the old leader's retirement left true must not keep the new leader's subject open once the new reconciler answers false.
+    @Test
+    void scalingHeld_leaderChange_dropsEveryAnswer() {
+        var manager = coreDisabled();
+        var core = ClusterTopologyManager.coreSubject();
+        ctm.activate();
+        manager.scalingHeld(core, RETIREMENT, true);
+        awaitWarnings(1);
+
+        ctm.deactivate();
+        ctm.activate();
+        manager.scalingHeld(core, RECONCILER, true);
+        awaitWarnings(2);
+        assertThat(warnings).as("the new activation holds and warns afresh").containsExactly("auto-heal-scaling-held", "auto-heal-scaling-held");
+
+        manager.scalingHeld(core, RECONCILER, false);
+
+        awaitWarnings(3);
+        assertThat(warnings).as("the old leader's retirement answer is gone: the new reconciler's false closes").last().isEqualTo("auto-heal-scaling-resumed");
+    }
+
+    /// #3358: two threads answer for one subject, released by one latch. Whatever the interleaving, the events of the subject alternate
+    /// held, resumed, held... (a close can never be published before the open it closes) and the final state equals the union of the
+    /// last answers: the retirement ends true, the reconciler false, so the subject ends open (an odd count, the last event held).
+    @Test
+    void scalingHeld_twoThreadsOneSubject_eventsAlternate_finalStateIsTheUnion() throws InterruptedException {
+        var manager = coreDisabled();
+        var core = ClusterTopologyManager.coreSubject();
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var passes = 40;
+        var retirement = Thread.ofPlatform().start(() -> answerAlternating(manager, core, RETIREMENT, start, passes, true));
+        var reconciler = Thread.ofPlatform().start(() -> answerAlternating(manager, core, RECONCILER, start, passes, false));
+
+        start.countDown();
+        retirement.join();
+        reconciler.join();
+
+        await().atMost(java.time.Duration.ofSeconds(5)).during(java.time.Duration.ofMillis(300)).until(() -> warnings.size() % 2 == 1);
+        var events = List.copyOf(warnings);
+        for (var i = 0; i < events.size(); i++) {
+            assertThat(events.get(i)).as("event %d of %s", i, events)
+                                     .isEqualTo(i % 2 == 0 ? "auto-heal-scaling-held" : "auto-heal-scaling-resumed");
+        }
+        assertThat(events).as("the last answers' union is non-empty: open").hasSizeGreaterThanOrEqualTo(1);
+    }
+
+    private static void answerAlternating(ClusterTopologyManagerRecord manager,
+                                          String subject,
+                                          ClusterTopologyManager.ScalingAsker asker,
+                                          java.util.concurrent.CountDownLatch start,
+                                          int passes,
+                                          boolean endsTrue) {
+        awaitStart(start);
+        for (var pass = 0; pass < passes; pass++) {
+            manager.scalingHeld(subject, asker, pass % 2 == 0);
+            Thread.yield();
+        }
+        manager.scalingHeld(subject, asker, endsTrue);
+    }
+
+    private static void awaitStart(java.util.concurrent.CountDownLatch start) {
+        try {
+            start.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /// v2711c (c25), as the real hold: releasing a subject that is not held (never asked, or already released) raises no resume.
+    @Test
+    void scalingHeld_aSubjectNotHeld_raisesNoResume() {
+        var manager = coreDisabled();
+        var core = ClusterTopologyManager.coreSubject();
+
+        manager.scalingHeld(core, RECONCILER, false);
+        manager.scalingHeld(core, RETIREMENT, false);
+        assertWarningsStay();
+
+        manager.scalingHeld(core, RECONCILER, true);
+        manager.scalingHeld(core, RECONCILER, false);
+        manager.scalingHeld(core, RECONCILER, false);
+
+        awaitWarnings(2);
+        assertWarningsStay("auto-heal-scaling-held", "auto-heal-scaling-resumed");
     }
 
     /// v2711 finding 6: a source is declared by the committed configuration's desired topology or by its `[source.*]` tables; any other

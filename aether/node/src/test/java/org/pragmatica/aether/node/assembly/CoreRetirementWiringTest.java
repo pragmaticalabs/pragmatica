@@ -37,6 +37,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -113,7 +114,7 @@ class CoreRetirementWiringTest {
     private static ClusterTopologyManager topology() {
         var topology = mock(ClusterTopologyManager.class);
 
-        when(topology.scalingHeld(anyString())).thenReturn(false);
+        when(topology.scalingHeld(anyString(), any(ClusterTopologyManager.ScalingAsker.class), anyBoolean())).thenReturn(false);
         when(topology.drainNode(any(), any())).thenReturn(Promise.unitPromise());
         return topology;
     }
@@ -153,17 +154,19 @@ class CoreRetirementWiringTest {
         var topology = mock(ClusterTopologyManager.class);
         var reconciler = reconcilerWhereEveryCoreIsPastTheGrace();
 
-        when(topology.scalingHeld(anyString())).thenReturn(true);
+        when(topology.scalingHeld(anyString(), any(ClusterTopologyManager.ScalingAsker.class), anyBoolean())).thenReturn(true);
         when(topology.drainNode(any(), any())).thenReturn(Promise.unitPromise());
 
         retire(topology, () -> reconciler).await();
 
-        verify(topology).scalingHeld(ClusterTopologyManager.coreSubject());
+        verify(topology).scalingHeld(ClusterTopologyManager.coreSubject(), ClusterTopologyManager.ScalingAsker.RETIREMENT, true);
         verify(topology, never()).drainNode(any(), any());
     }
 
+    /// #3358: every excluded core still hosting a slice leaves no victim, and that is a pass the retirement evaluated: it asks with
+    /// nothing pending (its answer goes false) instead of staying silent, and drains nothing.
     @Test
-    void retireExcludedCores_everyCoreStillHosting_neverAsksTheCoreHold() {
+    void retireExcludedCores_everyCoreStillHosting_asksTheCoreHoldWithNothingPending() {
         var topology = topology();
         var reconciler = reconcilerWhereEveryCoreIsPastTheGrace();
         var deployments = DeploymentMap.deploymentMap();
@@ -174,7 +177,19 @@ class CoreRetirementWiringTest {
 
         retire(topology, () -> reconciler, true, deployments).await();
 
-        verify(topology, never()).scalingHeld(anyString());
+        verify(topology).scalingHeld(ClusterTopologyManager.coreSubject(), ClusterTopologyManager.ScalingAsker.RETIREMENT, false);
+        verify(topology, never()).drainNode(any(), any());
+    }
+
+    /// #3358: a non-leader pass is not an evaluated pass: it asks nothing (its CTM is deactivated and holds no answers).
+    @Test
+    void retireExcludedCores_nonLeaderPass_neverAsksTheCoreHold() {
+        var topology = topology();
+        var reconciler = reconcilerWhereEveryCoreIsPastTheGrace();
+
+        retire(topology, () -> reconciler, false, DeploymentMap.deploymentMap()).await();
+
+        verify(topology, never()).scalingHeld(anyString(), any(ClusterTopologyManager.ScalingAsker.class), anyBoolean());
     }
 
     @Test
@@ -240,7 +255,7 @@ class CoreRetirementWiringTest {
         var reconciler = reconcilerWhereYoungIsInsideTheGrace();
         var empty = DeploymentMap.deploymentMap();
 
-        when(topology.scalingHeld(anyString())).thenReturn(false);
+        when(topology.scalingHeld(anyString(), any(ClusterTopologyManager.ScalingAsker.class), anyBoolean())).thenReturn(false);
         when(topology.drainNode(any(), any())).thenReturn(Causes.cause("refused")
                                                                 .<Unit>promise());
 
