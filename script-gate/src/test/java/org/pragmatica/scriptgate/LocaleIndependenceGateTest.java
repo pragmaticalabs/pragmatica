@@ -5,8 +5,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
 
@@ -78,10 +80,8 @@ class LocaleIndependenceGateTest {
                                                          "jbct/jbct-parser/src/main/java/org/pragmatica/jbct/parser/Java25Parser.java",
                                                          "jbct/slice-processor/src/main/java/org/pragmatica/jbct/slice/generator/FactoryClassGenerator.java",
 
-    // console reports of the jbct CLI (human text; its JSON forms are Locale.ROOT)
-    "jbct/jbct-cli/src/main/java/org/pragmatica/jbct/cli/ObligationsCommand.java",
-                                                         "jbct/jbct-cli/src/main/java/org/pragmatica/jbct/cli/ShapeCensusCommand.java",
-                                                         "jbct/jbct-lint/src/main/java/org/pragmatica/jbct/lint/cst/shape/ShapeCensus.java",
+    // console report of the jbct CLI (human text); the CLI's JSON writers are gated, see HUMAN_ONLY_METHODS
+    "jbct/jbct-lint/src/main/java/org/pragmatica/jbct/lint/cst/shape/ShapeCensus.java",
 
     // NOT human (#3643): a JSON result file the harness parses. Left unfixed only because pre-push-check cannot gate a loose
     // single-file source (no Maven module owns it: "rc 0 but no count line"); delete this entry together with the fix.
@@ -90,6 +90,13 @@ class LocaleIndependenceGateTest {
     // benchmark console table; example slice's tax description shown to a person
     "integrations/serialization/benchmark/src/main/java/org/pragmatica/serialization/benchmark/SliceCodecBenchmark.java",
                                                          "examples/ecommerce/pricing/src/main/java/org/pragmatica/aether/example/pricing/PricingService.java");
+
+    /// File -> console-only methods (#3640 review): the rest of such a file is gated. These commands also write JSON, where a
+    /// `%d` under an `ar`/`hi` locale prints non-ASCII digits; an exemption per file would hide that, so it is per method.
+    private static final Map<String, Set<String>> HUMAN_ONLY_METHODS = Map.of("jbct/jbct-cli/src/main/java/org/pragmatica/jbct/cli/ObligationsCommand.java",
+                                                                              Set.of("printText"),
+                                                                              "jbct/jbct-cli/src/main/java/org/pragmatica/jbct/cli/ShapeCensusCommand.java",
+                                                                              Set.of("printText"));
 
     @Test
     void repository_hasNoLocaleDependentWireFileOrLogOutput() {
@@ -107,6 +114,21 @@ class LocaleIndependenceGateTest {
         var stale = HUMAN_ONLY.stream().filter(file -> flagged(root.resolve(file)).isEmpty()).toList();
 
         assertThat(stale).as("HUMAN_ONLY entries with no flagged call left (delete them)").isEmpty();
+    }
+
+    @Test
+    void humanOnlyMethods_namesOnlyMethodsThatStillNeedIt() {
+        var root = ScriptRunner.repoRoot();
+        var stale = HUMAN_ONLY_METHODS.entrySet()
+                                      .stream()
+                                      .flatMap(entry -> entry.getValue()
+                                                             .stream()
+                                                             .filter(method -> inMethod(root.resolve(entry.getKey()),
+                                                                                        method).isEmpty())
+                                                             .map(method -> entry.getKey() + "#" + method))
+                                      .toList();
+
+        assertThat(stale).as("HUMAN_ONLY_METHODS entries with no flagged call left (delete them)").isEmpty();
     }
 
     @Test
@@ -198,7 +220,40 @@ class LocaleIndependenceGateTest {
             return;
         }
 
-        flagged(path).forEach(line -> violations.add(relative + ":" + line));
+        var exemptLines = HUMAN_ONLY_METHODS.getOrDefault(relative, Set.of())
+                                            .stream()
+                                            .flatMap(method -> inMethod(path, method).stream())
+                                            .toList();
+
+        flagged(path).stream()
+                     .filter(line -> !exemptLines.contains(line))
+                     .forEach(line -> violations.add(relative + ":" + line));
+    }
+
+    /// Flagged lines inside the body of the 4-space-indented member `method` (declaration line to the closing `    }`).
+    private static List<Integer> inMethod(Path path, String method) {
+        try {
+            var lines = Files.readAllLines(path);
+            var declaration = Pattern.compile("^    \\S.* " + method + "\\(.*\\{\\s*$");
+            var start = IntStream.range(0, lines.size())
+                                 .filter(i -> declaration.matcher(lines.get(i)).matches())
+                                 .findFirst()
+                                 .orElse(-1);
+            var end = start < 0
+                      ? -1
+                      : IntStream.range(start, lines.size())
+                                 .filter(i -> lines.get(i).equals("    }"))
+                                 .findFirst()
+                                 .orElse(-1);
+
+            return start < 0 || end < 0
+                   ? List.of()
+                   : flagged(path).stream()
+                                  .filter(line -> line > start && line <= end + 1)
+                                  .toList();
+        } catch (IOException | RuntimeException e) {
+            return List.of();
+        }
     }
 
     private static List<Integer> flagged(Path path) {
