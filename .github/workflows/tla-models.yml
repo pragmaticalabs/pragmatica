@@ -11,6 +11,9 @@
 # model's, not the sum. A row marked `heavy` in models.tsv (it does not finish inside the small budget) is not run by the
 # small profile and is never counted as a pass: it is recorded as SKIPPED-HEAVY by name, and runs in the heavy profile, which
 # the schedule and a manual dispatch (profile heavy) run, for the models that have such rows.
+# The full and heavy profiles run every row under its own time cap and heap (tools/tla/budgets.tsv; the matrix carries no
+# TLC_TIMEOUT for them). A row whose budget does not fit a hosted runner is not run here: the plan step names it (SKIPPED-HOST),
+# run.sh records it as SKIPPED-HOST, and tools/tla/run-host.sh runs it on a build host (tools/tla/README.md, "Per-row budgets").
 # Every config in tools/tla/models.tsv runs with its expected verdict: the known-bad configs must FAIL, so a model
 # that stopped reaching its code turns the run red, and a known-bad row is satisfied only by a violation of the property
 # it names. Results are bounds, never proofs; the sim profile is random sampling, the weakest of the three.
