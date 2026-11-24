@@ -350,13 +350,16 @@ public interface ClusterTopologyManager extends TopologyManager {
 
     /// #3626: why [#drainNode] queued nothing for `node`: it is the node the topology manager runs on, which carries the DRAIN
     /// commands while it leads. The owner ruling of 2026-11-18 stands: a typed refusal now, a leadership hand-off before the
-    /// drain later. The operator route's `LeaderCannotBeDrained` states the same rule for its own channel.
+    /// drain later. The operator route's `LeaderCannotBeDrained` states the same rule for its own channel. A leader that is
+    /// still a voter is refused by the voter-handoff refusal first, so this cause names the case where leadership moves by
+    /// itself (the leader applies the voter configuration that excludes it) and the remedy only for when it does not.
     record LeaderCannotDrainItself(NodeId node) implements org.pragmatica.lang.Cause {
         @Override
         public String message() {
             return "Node " + node.id()
                  + " is the node carrying the drain commands (the leader) and never queues a drain of itself;"
-                 + " move leadership first: stop its process from outside the cluster so another leader is elected, then drain it";
+                 + " it gives up leadership when it applies the voter configuration that excludes it, and the next leader drains it;"
+                 + " if leadership does not move, stop its process from outside the cluster so another leader is elected";
         }
     }
 

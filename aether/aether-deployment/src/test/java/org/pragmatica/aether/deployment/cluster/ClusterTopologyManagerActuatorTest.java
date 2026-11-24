@@ -35,6 +35,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -453,6 +454,87 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(lifecycleManager.terminateCount.get()).as("no grace-terminate backstop reaps the leader").isZero();
         assertThat(drainCommandClearCalls).isEmpty();
         shortGrace.deactivate();
+    }
+
+    /// #3626: the refusals are one table ordered by specificity, the self-drain cause last. A leader that is still a voter (the
+    /// fixture's retirement refusal refuses SELF) is told its retirement awaits the voter handoff, which moves leadership by
+    /// itself, never told to stop its process.
+    @Test
+    void drainNode_ownIdStillVoter_toldTheVoterHandoffNotTheSelfDrain() {
+        ctm.activate();
+
+        var refused = ctm.drainNode(SELF, DrainReason.REPLACED).await();
+
+        assertThat(refused.<Object> fold(org.pragmatica.lang.Cause::message, _ -> "success"))
+            .isEqualTo("Node retirement awaits certified voter handoff");
+        assertThat(drainCommandSinkCalls).isEmpty();
+    }
+
+    /// #3626: same table, second row: a leader no longer a voter but paired in an in-flight replacement is told about the
+    /// pairing on a surplus trim, before the self-drain cause.
+    @Test
+    void drainNode_ownIdPaired_surplusTrim_toldThePairingNotTheSelfDrain() {
+        var pairings = NodeReplacementIndex.nodeReplacementIndex();
+        pairings.put(new AetherKey.NodeReplacementKey(PEER_C),
+                     new AetherValue.NodeReplacementValue(SELF, "core", AetherValue.NodeReplacementPhase.JOINING, 0L));
+        ctm.setNodeReplacements(pairings);
+        ctm.setRetirementRefusal(_ -> Option.none());
+        ctm.activate();
+
+        var refused = ctm.drainNode(SELF, DrainReason.OVERPROVISION_SCALE_DOWN).await();
+
+        assertThat(refused.<Object> fold(org.pragmatica.lang.Cause::message, _ -> "success"))
+            .isEqualTo("Node is paired in an in-flight node replacement");
+        assertThat(drainCommandSinkCalls).isEmpty();
+    }
+
+    /// #3626: the refusal belongs to the manager's own node, not to the target. While the retired core leads, every retry of
+    /// its retirement is refused (the replacement planner retries RETIRE_OLD each tick until its phase deadline); once leadership
+    /// has moved, the next leader's manager, for which that core is a peer, queues its drain.
+    @Test
+    void drainNode_ownIdRefused_theNextLeaderDrainsIt() {
+        ctm.setRetirementRefusal(_ -> Option.none());
+        ctm.activate();
+        var whileLeading = ctm.drainNode(SELF, DrainReason.REPLACED).await();
+        ctm.deactivate();
+
+        observer = TopologyObserver.topologyObserver(new TopologyConfig(PEER_A,
+                                                                        5,
+                                                                        timeSpan(60).seconds(),
+                                                                        timeSpan(1).seconds(),
+                                                                        List.of(INFO_SELF, INFO_A, INFO_B, INFO_C, INFO_D)),
+                                                     quietRouter(),
+                                                     snapshotSource).unwrap();
+        var nextLeader = ctmWithDrainGrace(AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT);
+        nextLeader.setRetirementRefusal(_ -> Option.none());
+        nextLeader.activate();
+        var afterHandoff = nextLeader.drainNode(SELF, DrainReason.REPLACED).await();
+
+        assertThat(whileLeading.<Object> fold(cause -> cause, _ -> "success"))
+            .isEqualTo(new ClusterTopologyManager.LeaderCannotDrainItself(SELF));
+        assertThat(afterHandoff.isSuccess()).as("the next leader drains the retired core").isTrue();
+        assertThat(drainCommandSinkCalls).containsExactly(SELF);
+        nextLeader.deactivate();
+    }
+
+    /// #3626: the rejoin evictions write the DRAIN command through the same sink as `drainNode`, so the leader never queues its
+    /// own id there either. A superseded identity joining is evicted (control: the peer); when it is the leader's own id, nothing
+    /// is queued. The operator warning is raised after the eviction for both, so its arrival is the signal both ran.
+    @Test
+    void rejoinEviction_ownId_isNotQueued_peerIs() {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        ctm.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> raised.add(warning.code().code())));
+        lifecycleManager.failReadmission(new NodeLifecycleManager.RetiredIdentityRejoined("rejoined", "its-replacement"));
+        ctm.activate();
+
+        ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(SELF, "worker", HLC));
+        ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(PEER_D, "worker", HLC));
+
+        await().atMost(Duration.ofSeconds(5))
+               .until(() -> raised.stream()
+                                  .filter(org.pragmatica.utility.warning.OperatorWarningCode.NODE_RETIRED_IDENTITY_REJOINED.code()::equals)
+                                  .count() == 2);
+        assertThat(drainCommandSinkCalls).as("the peer is evicted, the leader's own id is not").containsExactly(PEER_D);
     }
 
     @Test
@@ -2768,6 +2850,18 @@ class ClusterTopologyManagerActuatorTest {
         @Override public Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
             warningSink = sink;
             return Unit.unit();
+        }
+        /// #3626: the cause every re-admission fails with; none admits it (the interface default).
+        private final AtomicReference<Option<org.pragmatica.lang.Cause>> readmissionFailure = new AtomicReference<>(Option.none());
+
+        void failReadmission(org.pragmatica.lang.Cause cause) {
+            readmissionFailure.set(Option.some(cause));
+        }
+
+        @Override public Promise<Unit> readmitExternal(NodeId nodeId) {
+            return readmissionFailure.get()
+                                     .map(cause -> cause.<Unit>promise())
+                                     .or(Promise::unitPromise);
         }
         /// #1050 R4 — the labelled provider inventory the activation replay lists. `terminateNode` removes from it.
         private final ConcurrentHashMap<NodeId, InstanceInfo> inventory = new ConcurrentHashMap<>();

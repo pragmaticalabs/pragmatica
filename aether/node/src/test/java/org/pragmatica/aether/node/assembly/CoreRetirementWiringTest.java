@@ -94,7 +94,8 @@ class CoreRetirementWiringTest {
                                                     deployments,
                                                     topology,
                                                     reconciler,
-                                                    Set.of(VOTER_A, VOTER_B));
+                                                    Set.of(VOTER_A, VOTER_B),
+                                                    SurplusRefusals.surplusRefusals((_, _) -> {}));
     }
 
     private static ClusterTopologyManager topology() {
