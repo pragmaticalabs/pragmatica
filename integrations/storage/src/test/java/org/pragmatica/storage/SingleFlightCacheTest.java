@@ -202,9 +202,18 @@ class SingleFlightCacheTest {
         /// as absent, so supersession is legitimate). A key-only `remove(id)` would delete
         /// whatever currently occupies the slot regardless of identity.
         ///
+        /// NO wall-clock assumption (#2436): the cache uses the default in-flight bound, so B can
+        /// never be evicted by its own bound between its creation and the third call, however long
+        /// the steps in between stall under CI load; A is settled by hand rather than by the bound,
+        /// so nothing here races a timer. (A short bound on B made "B is still live" a claim about
+        /// elapsed time: a stall past the bound let B legitimately time out and the third caller
+        /// legitimately start a fresh load.)
+        ///
         /// Sequence, using the same carrier-saturation technique as the test above for
-        /// deterministic ordering: (1) A is driven to its Timeout while every carrier is held, so
-        /// A's cleanup is enqueued but cannot run; (2) B is created for the same id — legal,
+        /// deterministic ordering: (1) A is failed by hand while every carrier is held: the derived
+        /// promise the cache keeps resolves inline on the failing thread (`isResolved` is true at
+        /// once) whereas A's cleanup, an `onResultRun` handler, is dispatched on the carrier pool
+        /// and so is enqueued but cannot run; (2) B is created for the same id — legal,
         /// since A now reads as resolved — and kept deliberately UNRESOLVED (a manually-controlled
         /// promise), so it is still live when A's cleanup finally executes; (3) an observer chained
         /// onto A's own promise BEFORE it resolves lets us wait for "A's cleanup has actually run"
@@ -217,9 +226,9 @@ class SingleFlightCacheTest {
         /// B), green against `remove(id, promise)`.
         @Test
         void deduplicate_liveSuccessorSurvives_predecessorsDelayedCleanup() throws InterruptedException {
-            var bounded = SingleFlightCache.singleFlightCache(SHORT_BOUND);
             var id = blockIdOf("cleanup-clobber".getBytes(StandardCharsets.UTF_8));
-            var hungCallsA = new AtomicInteger(0);
+            var aCalls = new AtomicInteger(0);
+            Promise<Option<byte[]>> controlledA = Promise.promise();
 
             int carrierCount = Integer.getInteger("jdk.virtualThreadScheduler.parallelism",
                                                    Runtime.getRuntime().availableProcessors());
@@ -241,16 +250,21 @@ class SingleFlightCacheTest {
                     .as("every virtual-thread carrier must be occupied before A's bound fires")
                     .isTrue();
 
-                // A: hung loader, resolved via the bound to a Timeout. Registered while still
-                // unresolved, so this observer shares the same async dispatch batch as the cache's
-                // own cleanup and is guaranteed to run strictly after it (registration order).
-                var aPromise = bounded.deduplicate(id, () -> hangingLoaderWithCounter(hungCallsA));
+                // A: a loader failed by hand. Registered while still unresolved, so this observer
+                // shares the same async dispatch batch as the cache's own cleanup and is guaranteed
+                // to run strictly after it (registration order).
+                var aPromise = cache.deduplicate(id, () -> delayedLoaderWithCounter(controlledA, new byte[0], aCalls));
                 var cleanupAObserved = new CountDownLatch(1);
                 aPromise.onResultRun(cleanupAObserved::countDown);
 
-                aPromise.await(timeSpan(5).seconds())
-                        .onSuccessRun(() -> fail("Expected timeout failure for hung loader"))
-                        .onFailure(c -> assertThat(c).isInstanceOf(CoreError.Timeout.class));
+                controlledA.fail(new CoreError.Timeout("A failed by hand"));
+
+                assertThat(aPromise.isResolved())
+                    .as("A must read as resolved while its cleanup is still queued behind the occupiers")
+                    .isTrue();
+                assertThat(cleanupAObserved.getCount())
+                    .as("A's cleanup must still be queued behind the occupiers")
+                    .isEqualTo(1);
 
                 // B: a fresh, deliberately unresolved load for the same id, created while A's
                 // cleanup is still queued behind the occupiers (A reads as resolved, so this is a
@@ -259,7 +273,7 @@ class SingleFlightCacheTest {
                 var bData = "b-data".getBytes(StandardCharsets.UTF_8);
                 var bCalls = new AtomicInteger(0);
 
-                var bPromise = bounded.deduplicate(id, () -> delayedLoaderWithCounter(controlledB, bData, bCalls));
+                var bPromise = cache.deduplicate(id, () -> delayedLoaderWithCounter(controlledB, bData, bCalls));
 
                 assertThat(bPromise).isNotSameAs(aPromise);
                 assertThat(bCalls.get()).isEqualTo(1);
@@ -277,7 +291,7 @@ class SingleFlightCacheTest {
                 // A's cleanup ran. With a key-only remove(id) it would have deleted B's still-live
                 // entry; a further caller must instead JOIN B, and B's loader must not run twice.
                 var cCalls = new AtomicInteger(0);
-                var thirdCallPromise = bounded.deduplicate(id, () -> loaderWithCounter("c-data".getBytes(StandardCharsets.UTF_8), cCalls));
+                var thirdCallPromise = cache.deduplicate(id, () -> loaderWithCounter("c-data".getBytes(StandardCharsets.UTF_8), cCalls));
 
                 assertThat(thirdCallPromise)
                     .as("a caller arriving after A's delayed cleanup must join the still-live B, not start a third load")
@@ -305,17 +319,19 @@ class SingleFlightCacheTest {
         /// Dedup semantics for healthy concurrent callers are unchanged by the bound: a slow
         /// (but resolving) load is shared by joiners, and once it completes the entry is
         /// released so the next call reloads — with NO bound-induced extra loader invocations.
+        /// Uses the default bound, not SHORT_BOUND (#2436): the joiner arrives between two
+        /// statements, and a short bound turned "the load is still in flight" into a claim about
+        /// elapsed time that a CI stall could falsify.
         @Test
         void deduplicate_healthyConcurrentLoad_sharesPromiseUnderBound() {
-            var bounded = SingleFlightCache.singleFlightCache(SHORT_BOUND);
             var id = blockIdOf("shared-bounded".getBytes(StandardCharsets.UTF_8));
             var data = "shared-data".getBytes(StandardCharsets.UTF_8);
             var callCount = new AtomicInteger(0);
 
             Promise<Option<byte[]>> slowPromise = Promise.promise();
 
-            var first = bounded.deduplicate(id, () -> delayedLoaderWithCounter(slowPromise, data, callCount));
-            var second = bounded.deduplicate(id, () -> loaderWithCounter(data, callCount));
+            var first = cache.deduplicate(id, () -> delayedLoaderWithCounter(slowPromise, data, callCount));
+            var second = cache.deduplicate(id, () -> loaderWithCounter(data, callCount));
 
             assertThat(first).isSameAs(second);
             assertThat(callCount.get()).isEqualTo(1);
