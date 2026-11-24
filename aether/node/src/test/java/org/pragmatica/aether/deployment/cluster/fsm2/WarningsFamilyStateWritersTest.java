@@ -10,8 +10,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #3274: `Warnings.raise` (with rule O's hold and release) is the one writer of the family state; the family sites call it and never
@@ -40,14 +40,14 @@ class WarningsFamilyStateWritersTest {
     private static List<String> offenders(Path root) throws IOException {
         var hits = new ArrayList<String>();
 
-        try (Stream<Path> files = Files.walk(root)) {
-            for (var source : files.filter(path -> path.toString()
-                                                       .endsWith(".java"))
-                                   .toList()) {
-                for (var line : Files.readAllLines(source)) {
-                    if (offending(source, line)) {
-                        hits.add(source.getFileName() + ": " + line.trim());
-                    }
+        for (var source : SourceWalk.files(root)
+                                    .stream()
+                                    .filter(path -> path.toString()
+                                                        .endsWith(".java"))
+                                    .toList()) {
+            for (var line : Files.readAllLines(source)) {
+                if (offending(source, line)) {
+                    hits.add(source.getFileName() + ": " + line.trim());
                 }
             }
         }

@@ -16,11 +16,11 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -276,11 +276,12 @@ class EventLoopGroupOwnershipCensusTest {
     }
 
     private static List<Path> javaFiles(Path dir) {
-        try (Stream<Path> files = Files.walk(dir)) {
-            return files.filter(file -> file.toString()
-                                            .endsWith(".java"))
-                        .sorted()
-                        .toList();
+        try {
+            return SourceWalk.files(dir)
+                             .stream()
+                             .filter(file -> file.toString()
+                                                 .endsWith(".java"))
+                             .toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
