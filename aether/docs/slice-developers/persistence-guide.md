@@ -283,8 +283,14 @@ A CRUD-generated method (no `@Query`) is checked per column (#2795): a record co
 column and is not an `Option<T>` fails the build, naming the method, the column, the component and the fix (declare
 `Option<T>`, or declare the column `NOT NULL`). The check is on the column, not on the generated statement, because one
 record serves every CRUD method of its table (`findByDeletedAtIsNotNull` does not make `deleted_at` non-null for
-`findById`); an `Option<T>` component on a NOT NULL column is accepted on CRUD methods. A generated, stored column is
-treated as NOT NULL by the schema model.
+`findById`); an `Option<T>` component on a NOT NULL column is accepted on CRUD methods.
+
+Both checks read column nullability from your migrations as PostgreSQL defines it (#2795). A column is NOT NULL when it
+says `NOT NULL`, is an identity column, has a serial type (`SERIAL`, `BIGSERIAL`, `SMALLSERIAL`), or belongs to a primary
+key, declared on the column, at table level, or by `ALTER TABLE ... ADD [CONSTRAINT ...] PRIMARY KEY (...)`. Dropping the
+primary key leaves its columns NOT NULL; `ALTER COLUMN ... DROP NOT NULL` makes a column nullable again. A
+`GENERATED ALWAYS AS (...) STORED` column is nullable unless it also says `NOT NULL`. A NOT NULL that comes from a domain
+is not seen: declare it on the column. `PRIMARY KEY USING INDEX` is not parsed, so a migration that uses it fails the build.
 
 ## JSON Documents (`json` / `jsonb`)
 
