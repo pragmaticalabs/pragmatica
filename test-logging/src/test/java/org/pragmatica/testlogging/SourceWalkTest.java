@@ -90,12 +90,15 @@ class SourceWalkTest {
         assertThat(relative(SourceWalk.files(root))).containsExactly("elsewhere/Inside.java", "link.java", "real/Target.java");
     }
 
-    /// A root that is itself named like build output is walked: scanning `target/classes` is a legitimate use.
+    /// A root inside build output, or itself named like build output, is walked: scanning `target/classes` or a `target`
+    /// directory is a legitimate use. The pruning applies below the root only.
     @Test
     void files_walksARootThatLivesInsideBuildOutput() throws IOException {
         var classes = tree();
 
-        assertThat(SourceWalk.files(classes)).hasSize(CLASS_FILES);
+        assertThat(SourceWalk.files(classes)).as("root target/classes").hasSize(CLASS_FILES);
+        assertThat(SourceWalk.files(classes.getParent())).as("root named target: classes and surefire, both walked")
+                                                          .hasSize(CLASS_FILES + 1);
     }
 
     /// Build output churns while the walk runs, as it does under a parallel build: whenever the walk reaches an entry of a
