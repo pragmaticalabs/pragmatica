@@ -6,4 +6,6 @@
   names that save's block). The delete runs after the same grace as a displaced block and checks the pointers when it runs, so a block a
   pointer names is kept; a delete the store refuses past the retry bound stays recorded for the next confirmed save.
 - Limits: at most 16 blocks are recorded per pointer, the oldest forgotten past that (WARN); the list is in memory, so a restart before a
-  confirmed save leaks the recorded blocks (the L-12 class, already accepted).
+  confirmed save leaks the recorded blocks (the L-12 class, already accepted). A node that loses the partition before a later save of its
+  own is confirmed keeps its recorded ids and never deletes the blocks, since the new owner does not know them: the same leak, the same
+  class.

@@ -132,7 +132,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// Blocks whose put failed with its outcome unknown (#2536: a write quorum missed with some replicas holding the block), per pointer:
     /// no pointer names them and none ever will, since the publish follows only a put that succeeded. Each is deleted once a later save of
     /// the same pointer is confirmed ([#releaseUnconfirmed]). At most [#MAX_UNCONFIRMED_PER_POINTER] per pointer, the oldest dropped past
-    /// it; in memory only, so a restart leaks them (L-12).
+    /// it; in memory only, so a restart leaks them (L-12). A node that loses the partition before a later save of its own is confirmed keeps
+    /// its recorded ids and never deletes the blocks (the new owner does not know them): the same leak, the same class.
     private final Map<EntityCheckpointKey, List<BlockId>> unconfirmed = new ConcurrentHashMap<>();
 
     private StreamEntityLogSubstrate(StreamPartitionManager partitionManager,
