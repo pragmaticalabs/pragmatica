@@ -89,11 +89,31 @@ class CheckTest(unittest.TestCase):
         errors = self.run_check(planted, GOOD_LIST)
         self.assertTrue(any(e.startswith("UNLISTED image redis:7") for e in errors), errors)
 
+    def test_method_return_image_is_seen(self):
+        """#3646: the redis contracts name their image as `String image() { return "redis:7"; }` in a file with no Testcontainers import."""
+        planted = dict(SOURCES)
+        planted["mod/a/src/test/java/R7.java"] = 'class R7 extends Base {\n    @Override\n    String image() {\n        return "redis:7";\n    }\n}\n'
+        errors = self.run_check(planted, GOOD_LIST)
+        self.assertTrue(any(e.startswith("UNLISTED image redis:7 (started in mod/a)") for e in errors), errors)
+
+    def test_method_return_shape_needs_a_container_module_and_an_image_name(self):
+        """The shape is scoped: a module that starts no container, or a method not named *image*, names no image."""
+        other = 'class R7 {\n    String image() {\n        return "redis:7";\n    }\n    String name() {\n        return "x:1";\n    }\n}\n'
+        self.assertEqual([], self.run_check({"mod/a/src/test/java/T.java": TEST_SRC, "mod/c/src/test/java/R7.java": other.replace("image()", "x()")}, GOOD_LIST))
+        self.assertEqual([], self.run_check({"mod/a/src/test/java/T.java": TEST_SRC, "mod/c/src/main/java/R7.java": other}, GOOD_LIST))
+
     def test_quarantined_container_test_is_red(self):
         planted = dict(SOURCES)
         planted["mod/a/src/test/java/Q.java"] = '@Tag("quarantine")\n' + TEST_SRC
         errors = self.run_check(planted, GOOD_LIST)
         self.assertTrue(any(e.startswith("QUARANTINED container test mod/a/src/test/java/Q.java") for e in errors), errors)
+
+    def test_the_redis_contract_images_are_in_the_table(self):
+        """#3646: the table names the images the redis contract tests return, for the module that starts them."""
+        entries = check.listed(check.DEFAULT_ROOT)
+        self.assertEqual({"integrations/net/redis"}, entries.get("redis:7"))
+        self.assertEqual({"integrations/net/redis"}, entries.get("valkey/valkey:8"))
+        self.assertEqual({"integrations/net/redis"}, check.referenced(check.DEFAULT_ROOT).get("redis:7"))
 
     def test_the_real_tree_is_consistent(self):
         errors = check.problems(check.DEFAULT_ROOT)[0]

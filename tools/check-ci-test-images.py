@@ -34,6 +34,9 @@ SHAPES = (
     re.compile(r'\b\w*(?:IMAGE|DIGEST)\w*\s*=\s*"([^"]+)"'),
     re.compile(r'\.withImage\(\s*"([^"]+)"'),
 )
+# A test base class asks its subclasses for the image (`String image() { return "redis:7"; }`, #3646): the subclass file need not
+# import Testcontainers, so this shape is read from test sources of any module that starts a container elsewhere.
+METHOD_RETURN = re.compile(r'\bString\s+\w*[iI]mage\w*\s*\(\s*\)\s*\{\s*return\s+"([^"]+)"\s*;')
 QUARANTINE = re.compile(r'@Tag\(\s*"quarantine"')
 RYUK = "testcontainers/ryuk:"
 TC_VERSION = re.compile(r"<testcontainers\.version>\s*([^<\s]+)\s*</testcontainers\.version>")
@@ -54,16 +57,29 @@ def module_of(rel):
     return "/".join(parts[:-1])
 
 
+def is_test_source(rel):
+    parts = rel.parts
+    return "src" in parts and parts[parts.index("src") + 1:parts.index("src") + 2] == ("test",)
+
+
 def referenced(root):
     """{image: {module}} for every image literal in a source that imports Testcontainers."""
     found = {}
+    container_modules = set()
     for path in java_sources(root):
         text = path.read_text(encoding="utf-8", errors="replace")
         if "org.testcontainers" not in text:
             continue
         module = module_of(path.relative_to(root))
+        container_modules.add(module)
         for shape in SHAPES:
             for image in shape.findall(text):
+                found.setdefault(image, set()).add(module)
+    for path in java_sources(root):
+        rel = path.relative_to(root)
+        module = module_of(rel)
+        if module in container_modules and is_test_source(rel):
+            for image in METHOD_RETURN.findall(path.read_text(encoding="utf-8", errors="replace")):
                 found.setdefault(image, set()).add(module)
     return found
 
