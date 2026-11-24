@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.http.forward.HttpForwarder;
@@ -81,16 +82,20 @@ import static org.pragmatica.lang.Unit.unit;
 class ManagementServerForwardDispatchTest {
     private static final NodeId SELF = NodeId.nodeId("node-self").unwrap();
     private static final NodeId OWNER = NodeId.nodeId("node-owner").unwrap();
+    private static final NodeId DOWN = NodeId.nodeId("node-down").unwrap();
     private static final String REPLICAS_PATH = "/api/v1/streams/myns/orders/1.0.0/replicas/7";
 
     private final RecordingClusterNetwork network = new RecordingClusterNetwork();
     private final RecordingResponseWriter writer = new RecordingResponseWriter();
     private final StubSerializer serializer = new StubSerializer();
+    private final MembershipFsm fsm = MembershipFsm.membershipFsm();
+    private boolean completeView = true;
     private final StreamPartitionManager partitionManager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
 
     @AfterEach
     void tearDown() {
         partitionManager.close();
+        fsm.close();
     }
 
     @Test
@@ -145,10 +150,47 @@ class ManagementServerForwardDispatchTest {
         assertThat(writer.writes()).containsExactly(HttpStatus.BAD_REQUEST);
     }
 
-    /// Control, and the boundary of (e): a WELL-FORMED node id that names no node this one is connected to is not a malformed
-    /// request, and keeps the forwarder's 503. If this went 400 the validation would be refusing on reachability, not on form.
+    /// #1964, CTO ruling (guess, s55): roster = `membershipFsm().memberStates()`. A WELL-FORMED node id the membership roster does not list
+    /// is not a cluster member: 404, nothing sent. It is a statement about the id, not about reachability.
     @Test
-    void dispatchManagementRequest_stillAnswers503_whenTheNodeIdIsWellFormedButNamesNoConnectedNode() {
+    void dispatchManagementRequest_answers404AndSendsNothing_whenTheNodeIdIsWellFormedButNotAClusterMember() {
+        dispatch(server(Option.some(OWNER)), "/api/v1/nodes/status/node-nobody");
+
+        assertThat(network.targets()).isEmpty();
+        assertThat(writer.writes()).containsExactly(HttpStatus.NOT_FOUND);
+    }
+
+    /// Boundary of the 404: a member the roster lists but this node is not connected to (here faulty) keeps the forwarder's 503. If this
+    /// went 404 the check would be refusing on reachability, not on membership.
+    @Test
+    void dispatchManagementRequest_stillAnswers503_whenTheNodeIsAListedMemberButNotConnected() {
+        fsm.onSwimHealthy(DOWN, 1L);
+        fsm.onSwimFaulty(DOWN, 1L);
+        assertThat(fsm.memberStates()).containsKey(DOWN);
+
+        dispatch(server(Option.some(OWNER)), "/api/v1/nodes/status/node-down");
+
+        assertThat(network.targets()).isEmpty();
+        assertThat(writer.writes()).containsExactly(HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    /// Control for both: a listed AND connected member is forwarded to, so the 404 above cannot be a refusal of every node-scoped route.
+    @Test
+    void dispatchManagementRequest_forwardsToAListedConnectedMember() {
+        fsm.onSwimHealthy(OWNER, 1L);
+
+        dispatch(server(Option.some(OWNER)), "/api/v1/nodes/status/node-owner");
+
+        assertThat(network.targets()).containsExactly(OWNER);
+        assertThat(writer.writes()).isEmpty();
+    }
+
+    /// Scope limit of #1964: a node whose roster is scoped (a worker, `hasCompleteClusterView() == false`) cannot call an absent id unknown,
+    /// so it keeps today's answer, the forwarder's 503. Follow-up, not decided here.
+    @Test
+    void dispatchManagementRequest_keeps503_whenThisNodeHasOnlyAScopedClusterView() {
+        completeView = false;
+
         dispatch(server(Option.some(OWNER)), "/api/v1/nodes/status/node-nobody");
 
         assertThat(network.targets()).isEmpty();
@@ -195,6 +237,8 @@ class ManagementServerForwardDispatchTest {
 
         when(appHttpServer.httpRoutePublisher()).thenReturn(Option.none());
         when(node.self()).thenReturn(SELF);
+        when(node.membershipFsm()).thenReturn(fsm);
+        when(node.hasCompleteClusterView()).thenReturn(completeView);
         when(node.leader()).thenReturn(Option.none());
         when(node.appHttpServer()).thenReturn(appHttpServer);
         when(node.httpRouteRegistry()).thenReturn(HttpRouteRegistry.httpRouteRegistry());
