@@ -93,7 +93,7 @@ class StreamErrorStatusTest {
         all.put(new StreamError.PartitionCeilingExceeded("s", 9, 4), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.RetentionCountUnindexable("s", 1, 2), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.RetentionBoundInvalid("s", "b", -1), HttpStatus.BAD_REQUEST);
-        all.put(new StreamError.HotWindowBelowMaxEvent("s", 1, 2), HttpStatus.BAD_REQUEST);
+        all.put(new StreamError.HotWindowBelowMaxEvent("s", "[hot] max_bytes", 1, 2), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.ReplicationRefused("s", Causes.cause("c")), HttpStatus.CONFLICT);
         all.put(new StreamError.ImmutableKeyChanged("s", "max_event_size", "2", "1"), HttpStatus.CONFLICT);
         all.put(new StreamError.StreamStorageUnknown("s"), HttpStatus.CONFLICT);

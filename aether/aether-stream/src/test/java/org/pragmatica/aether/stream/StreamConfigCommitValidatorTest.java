@@ -60,6 +60,7 @@ class StreamConfigCommitValidatorTest {
             manager.createStream(withHot(userStream("orders", 600_000L), some(100_000L), none()))
                    .onSuccess(_ -> fail("must be refused"))
                    .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.HotWindowBelowMaxEvent("orders",
+                                                                                                          "[hot] max_bytes",
                                                                                                           100_000L,
                                                                                                           600_000L)));
             assertThat(manager.streamExists("orders")).as("the refused stream never entered `streams`").isFalse();
@@ -87,6 +88,7 @@ class StreamConfigCommitValidatorTest {
                                               .isEmpty();
             second.onSuccess(_ -> fail("must be refused"))
                   .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.HotWindowBelowMaxEvent("orders",
+                                                                                                         "[hot] max_bytes",
                                                                                                          100_000L,
                                                                                                          600_000L)));
         } finally {
@@ -211,6 +213,7 @@ class StreamConfigCommitValidatorTest {
             follower.createStream(userStream("follower", 600_000L))
                     .onSuccess(_ -> fail("must be refused"))
                     .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.HotWindowBelowMaxEvent("follower",
+                                                                                                           "[hot] max_bytes",
                                                                                                            100_000L,
                                                                                                            600_000L)));
         } finally {

@@ -339,8 +339,9 @@ class StreamRingWindowTest {
             try {
                 manager.createStream(withHot(userStream(name, RetentionPolicy.retentionPolicy(), maxEvent), some(hot), some(1_000L)))
                        .onSuccess(_ -> fail("a [hot] max_bytes " + hot + " below max_event_size " + maxEvent + " must be refused"))
-                       .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.HotWindowBelowMaxEvent(name, hot, maxEvent)))
-                       .onFailure(cause -> assertThat(cause.message()).contains(Long.toString(hot)).contains(Long.toString(maxEvent)));
+                       .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.HotWindowBelowMaxEvent(name, "[hot] max_bytes", hot, maxEvent)))
+                       .onFailure(cause -> assertThat(cause.message()).contains(Long.toString(hot)).contains(Long.toString(maxEvent)))
+                       .onFailure(cause -> assertThat(cause.message()).as("the message names the declared key").contains("[hot] max_bytes"));
                 assertThat(manager.partitionBuffer(name, 0).isPresent()).as("no ring is built for a refused create").isFalse();
             } finally {
                 manager.close();
@@ -351,6 +352,40 @@ class StreamRingWindowTest {
             var manager = streamPartitionManager(GIB);
             try {
                 create(manager, withHot(userStream(name, RetentionPolicy.retentionPolicy(), maxEvent), some(hot), some(1_000L)));
+            } finally {
+                manager.close();
+            }
+        }
+    }
+
+    /// The per-partition floor the held-budget admission uses (`heldBudgetExhausted`) equals the floor the ring really holds:
+    /// it is computed from the same window and event size. With the ring built, `available` is `budget - floor`, so a
+    /// budget of `2 x floor` leaves exactly one floor free (not exhausted) and `2 x floor - 1` one byte short (exhausted).
+    @Nested
+    class AdmissionFloorMatchesTheRing {
+        @Test
+        void floorUsesTheDeclaredHotBytes_notTheRetentionBytes() {
+            var config = withHot(userStream("floor-hot", RetentionPolicy.retentionPolicy(100_000L, GIB, HOUR_MS), 64 * KIB), some(100 * KIB), some(10L));
+            var floor = RingGeometry.floorBytes(10, 100 * KIB, 64 * KIB);
+            var manager = streamPartitionManager(2 * floor);
+            try {
+                create(manager, config);
+
+                assertThat(ring(manager, "floor-hot").allocatedBytes()).as("control: the ring holds the window's floor").isEqualTo(floor);
+                assertThat(manager.heldBudgetExhausted("floor-hot")).as("one floor is still free: not exhausted").isFalse();
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void floorUsesTheStreamsMaxEventSize() {
+            var manager = streamPartitionManager(2 * DEFAULT_FLOOR - 1);
+            try {
+                create(manager, userStream("floor-event", RetentionPolicy.retentionPolicy(), MIB));
+
+                assertThat(ring(manager, "floor-event").allocatedBytes()).as("control: the ring holds the default floor").isEqualTo(DEFAULT_FLOOR);
+                assertThat(manager.heldBudgetExhausted("floor-event")).as("one byte short of a second 1 MiB-event floor: exhausted").isTrue();
             } finally {
                 manager.close();
             }

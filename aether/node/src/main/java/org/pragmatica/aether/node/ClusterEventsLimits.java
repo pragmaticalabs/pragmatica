@@ -65,7 +65,7 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
         var count = limit(environment, MAX_COUNT_VARIABLE, DEFAULT_MAX_COUNT, indexableCount(maxBytes, eventSize));
 
         return Result.all(count.flatMap(ClusterEventsLimits::withinReadWindow),
-                          maxBytes,
+                          maxBytes.flatMap(bytes -> holdsOneEvent(bytes, eventSize)),
                           limit(environment, MAX_AGE_MS_VARIABLE, DEFAULT_MAX_AGE_MS, Long.MAX_VALUE),
                           eventSize)
                      .map(ClusterEventsLimits::new);
@@ -77,6 +77,19 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
     private static long indexableCount(Result<Long> maxBytes, Result<Long> eventSize) {
         return RingGeometry.maxCapacity(RingGeometry.firstSegmentBytes(maxBytes.or(DEFAULT_MAX_BYTES),
                                                                        eventSize.or(DEFAULT_MAX_EVENT_SIZE_BYTES)));
+    }
+
+    /// #3390 F3 (ruling know e8888553b4): every stream ring holds at least one `max_event_size` event, and this stream's ring is
+    /// sized from its retention bytes, so a byte bound below the event size refuses the boot, naming both variables. The
+    /// stream engine refuses the same config at its commit validator; refusing here keeps the node from booting without the
+    /// stream it registers. An event size that is itself refused is replaced by its default here, as in [#indexableCount].
+    private static Result<Long> holdsOneEvent(long maxBytes, Result<Long> eventSize) {
+        var event = eventSize.or(DEFAULT_MAX_EVENT_SIZE_BYTES);
+
+        return maxBytes >= event
+               ? success(maxBytes)
+               : InvalidLimit.BELOW_EVENT_SIZE_FACTORY.apply(MAX_BYTES_VARIABLE, String.valueOf(maxBytes), event)
+                                                      .result();
     }
 
     /// Bounded on count, bytes (off-heap hard cap) and age, mode ANY.
@@ -133,12 +146,18 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
                : InvalidLimit.FACTORY.apply(variable, raw, maximum).result();
     }
 
-    /// A `CLUSTER_EVENTS_MAX_*` value that is not a whole number from 1 to `maximum`.
+    /// A `CLUSTER_EVENTS_MAX_*` value that is not a whole number from 1 to `maximum`, or (for `CLUSTER_EVENTS_MAX_BYTES`)
+    /// below the event size, which `maximum` then carries.
     public record InvalidLimit(String variable, String value, Long maximum, String message) implements Cause {
         static final Fn3<InvalidLimit, String, String, Long> FACTORY = Causes.forThreeValues("%s='%s' is not a whole number from 1 to %d; the node refuses to boot rather than declare"
                                                                                             + " system:cluster-events:1.0.0 with a bound its stream engine refuses. Unset it for the"
                                                                                             + " default, or set a value in range.",
                                                                                              InvalidLimit::new);
+
+        static final Fn3<InvalidLimit, String, String, Long> BELOW_EVENT_SIZE_FACTORY = Causes.forThreeValues("%s='%s' is below CLUSTER_EVENTS_MAX_EVENT_SIZE_BYTES=%d; the system:cluster-events:1.0.0"
+                                                                                                             + " ring is sized from it and must hold at least one maximal event, so the node"
+                                                                                                             + " refuses to boot. Unset it for the default, or set a value at least the event size.",
+                                                                                                              InvalidLimit::new);
 
         static final Fn3<InvalidLimit, String, String, Long> READ_WINDOW_FACTORY = Causes.forThreeValues("%s='%s' exceeds the cluster-events read window CLUSTER_EVENTS_MAX_RETAINED=%d; a read of"
                                                                                                         + " system:cluster-events:1.0.0 would silently miss the oldest retained events, so the"

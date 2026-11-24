@@ -1885,26 +1885,58 @@ public final class StreamPartitionManager implements AutoCloseable {
                                    window.count()).flatMap(_ -> checkRetentionBound(config.name(),
                                                                                     "hot.max_bytes",
                                                                                     window.bytes()))
-                                  .flatMap(_ -> checkHotHoldsMaxEvent(config))
+                                  .flatMap(_ -> checkRingHoldsMaxEvent(config))
                                   .flatMap(_ -> checkIndexable(config.name(),
                                                                window,
                                                                config.maxEventSizeBytes()));
     }
 
-    /// Enforcer 1 of the ring invariant (S2b-2a, ruling 2026-11-23): a ring holds at least one `max_event_size` event of its
-    /// current life, so a DECLARED `[hot] max_bytes` below `max_event_size` is refused, naming both values. The one refusal
-    /// site for every create path (declared, management, publish), plain and `entity:` streams alike: it reads the
-    /// declaration, never the ring window, because an `entity:` ring ignores `[hot]` yet a declaration that could never hold
-    /// an event is still a wrong one. An absent `[hot] max_bytes` is not refused: its default window is at least one event.
-    private static Result<Unit> checkHotHoldsMaxEvent(StreamConfig config) {
-        return config.declaration()
-                     .flatMap(StreamDeclaration::hot)
-                     .flatMap(HotWindowDeclaration::maxBytes)
-                     .filter(hotBytes -> hotBytes < config.maxEventSizeBytes())
-                     .fold(() -> success(unit()),
-                           hotBytes -> new StreamError.HotWindowBelowMaxEvent(config.name(),
-                                                                              hotBytes,
-                                                                              config.maxEventSizeBytes()).result());
+    /// THE enforcer of the ring invariant (S2b-2a, ruling know e8888553b4) in the commit validator: every stream ring holds at
+    /// least one `max_event_size` event of its current life, so a setting that sizes a ring below `max_event_size` is
+    /// refused, naming the key and both values ([StreamError.HotWindowBelowMaxEvent]). The one refusal site for every create
+    /// path (declared, management, publish) and for hydration, every stream class alike. Two settings are held to it: the
+    /// declared `[hot] max_bytes`, read even for an `entity:` stream whose ring ignores `[hot]` (a declaration that could
+    /// never hold an event is still a wrong one), and the window a non-user ring is actually sized from ([#ringSizingBytes]).
+    /// The `system:cluster-events` bounds are refused earlier, at boot, by `ClusterEventsLimits` (#3390 F3).
+    private static Result<Unit> checkRingHoldsMaxEvent(StreamConfig config) {
+        var declaredHot = config.declaration()
+                                .flatMap(StreamDeclaration::hot)
+                                .flatMap(HotWindowDeclaration::maxBytes);
+
+        return checkHoldsMaxEvent(config, "[hot] max_bytes", declaredHot).flatMap(_ -> checkHoldsMaxEvent(config,
+                                                                                                          ringSizingKey(config),
+                                                                                                          ringSizingBytes(config)));
+    }
+
+    private static Result<Unit> checkHoldsMaxEvent(StreamConfig config, String key, Option<Long> windowBytes) {
+        return windowBytes.filter(bytes -> bytes < config.maxEventSizeBytes())
+                          .fold(() -> success(unit()),
+                                bytes -> new StreamError.HotWindowBelowMaxEvent(config.name(),
+                                                                                key,
+                                                                                bytes,
+                                                                                config.maxEventSizeBytes()).result());
+    }
+
+    /// The bytes [#ringWindow] sizes a ring from when they are not the user's `[hot]`: a `system:` ring's retention
+    /// `max_bytes`, an `entity:` ring's [EntityRingWindow#MAX_BYTES]. None for a user stream: its declared `[hot] max_bytes`
+    /// is checked as a declaration, and its default window is at least one maximal event ([RingGeometry#hotWindowBytes]).
+    private static Option<Long> ringSizingBytes(StreamConfig config) {
+        return isSystemStream(config.name())
+               ? some(config.retention().maxBytes())
+               : entityRingBytes(config);
+    }
+
+    private static Option<Long> entityRingBytes(StreamConfig config) {
+        return config.name()
+                     .startsWith(ENTITY_STREAM_PREFIX)
+               ? some(EntityRingWindow.MAX_BYTES)
+               : none();
+    }
+
+    private static String ringSizingKey(StreamConfig config) {
+        return isSystemStream(config.name())
+               ? "retention max_bytes"
+               : "the entity ring window";
     }
 
     private static Result<Unit> checkRetentionBound(String streamName, String bound, long value) {
@@ -1966,8 +1998,10 @@ public final class StreamPartitionManager implements AutoCloseable {
             return StreamError.General.AHSE_REQUIRED_FOR_STRONG.result();
         }
 
-        var floorBytes = materializedFloorBytes(config);
+        return materializedFloorBytes(config).flatMap(floorBytes -> materializeWithinFloor(config, commitMode, floorBytes));
+    }
 
+    private Result<Unit> materializeWithinFloor(StreamConfig config, CommitMode commitMode, long floorBytes) {
         if (floorBytes > 0 && !tryReserve(floorBytes)) {
             if (!isSystemStream(config.name())) {
                 return reportFloorExhaustion(config, floorBytes);
@@ -2657,8 +2691,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                              config.name(),
                                                              cause.message()));
         reportOverCeilingIfViolating(config);
-        var floorBytes = materializedFloorBytes(config);
 
+        return materializedFloorBytes(config).fold(cause -> refuseHydration(config, cause),
+                                                   floorBytes -> hydrateWithinFloor(config, floorBytes));
+    }
+
+    @NullReturn
+    private StreamEntry hydrateWithinFloor(StreamConfig config, long floorBytes) {
         if (floorBytes > 0 && !tryReserve(floorBytes)) {
             if (!isSystemStream(config.name())) {
                 return deferHydration(config, floorBytes);
@@ -6668,7 +6707,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// (OWNER/REPLICA) but has NOT yet materialized — clamped at zero so the create-time-materialized /
     /// supplier-flipped-to-NONE gate/release asymmetry never reports negative. It unifies the two defer
     /// causes: budget-deferred (spec §6) and pre-membership (spec §5.4). Floor bytes are the per-partition
-    /// floor times the materialized ring count (the REAL off-heap cost of this stream on this node).
+    /// floor times the materialized ring count (the REAL off-heap cost of this stream on this node), through the one checked
+    /// product [#floorBytes] (#3390 F2). Its refusal is absorbed here by design-out, never reached: every materialized ring
+    /// holds its floor in allocated memory, so the product is at most the node's off-heap bytes; `Long.MAX_VALUE` (a bound,
+    /// never a wrapped value) stands in only so a report cannot fail.
     private StreamHydration streamHydration(String name, StreamEntry entry) {
         var declared = entry.config().partitions();
         var materialized = entry.ringsMaterialized();
@@ -6678,7 +6720,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                    declared,
                                    materialized,
                                    deferred,
-                                   perPartitionFloorBytes(entry.config()) * materialized,
+                                   floorBytes(entry.config(), materialized).or(Long.MAX_VALUE),
                                    declared > MAX_PARTITIONS_PER_STREAM_CEILING,
                                    roleCounts(name, declared));
     }
@@ -7468,8 +7510,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ONLY the partitions THIS node materializes (OWNER/REPLICA under the current placement). A
     /// non-replica node reserves ZERO here and holds the stream metadata-only — the O(streams × partitions
     /// × nodes) blow-up becomes O(streams × partitions × RF). See spec §4/§6.
-    private long materializedFloorBytes(StreamConfig config) {
-        return perPartitionFloorBytes(config) * materializedCount(config);
+    private Result<Long> materializedFloorBytes(StreamConfig config) {
+        return floorBytes(config, materializedCount(config));
+    }
+
+    /// The floor of `rings` partition rings of a stream (#3390 F2): THE one product of [#perPartitionFloorBytes] and a ring
+    /// count, so the budget arithmetic never overflows. A floor a long cannot represent is refused as
+    /// [StreamError.General#STREAM_MEMORY_EXCEEDED], the answer a too-large floor gets, before anything is reserved: the
+    /// wrapped product read as a negative floor, so nothing was reserved, and the failed ring build then released it into
+    /// the budget.
+    private static Result<Long> floorBytes(StreamConfig config, long rings) {
+        var perPartition = perPartitionFloorBytes(config);
+
+        return rings == 0 || perPartition <= Long.MAX_VALUE / rings
+               ? success(perPartition * rings)
+               : StreamError.General.STREAM_MEMORY_EXCEEDED.result();
     }
 
     /// Count of partitions THIS node materializes under the current placement supplier — the declared
