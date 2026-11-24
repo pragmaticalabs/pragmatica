@@ -5,6 +5,7 @@ package org.pragmatica.aether.resource;
 
 import org.pragmatica.aether.slice.ProvisioningContext;
 
+
 /// The runtime a resource is provisioned on, as far as backend availability is concerned (#3658).
 ///
 /// A backend declares the runtimes it is available on; a backend-selection seam refuses, by name, a backend that
@@ -19,7 +20,6 @@ import org.pragmatica.aether.slice.ProvisioningContext;
 public enum BackendRuntime {
     AETHER,
     TERRA;
-
     /// The runtime `context` provisions for: its [BackendRuntime] extension, [#AETHER] when there is none.
     public static BackendRuntime backendRuntime(ProvisioningContext context) {
         return context.extension(BackendRuntime.class)

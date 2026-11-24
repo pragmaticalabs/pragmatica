@@ -23,10 +23,10 @@ public record IdempotencyConfig(String storeName,
     // the same idempotency store ("default") when storeName is omitted (#278). Callers MUST supply
     // an explicit storeName; a missing [idempotency.*] section fails loud via ConfigError.sectionNotFound.
     private static final IdempotencyConfig DEFAULTS = new IdempotencyConfig("default",
-                                                                                3600,
-                                                                                10_000,
-                                                                                CacheMode.LOCAL,
-                                                                                none());
+                                                                            3600,
+                                                                            10_000,
+                                                                            CacheMode.LOCAL,
+                                                                            none());
 
     public static IdempotencyConfig idempotencyConfig() {
         return DEFAULTS;

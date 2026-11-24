@@ -134,7 +134,7 @@ class CacheBackendsTest {
                 for (var backend : List.of(Option.<String>none(), some("dht"))) {
                     assertThat(failureOf(CacheBackends.cacheBackend(cache(mode, backend), terra)))
                         .as("cache %s backend %s", mode, backend)
-                        .isEqualTo(CacheBackendError.backendUnavailable("dht", "calls", BackendRuntime.TERRA));
+                        .isEqualTo(CacheBackendError.BackendUnavailable.backendUnavailable("dht", "calls", BackendRuntime.TERRA));
                 }
             }
         }
@@ -145,7 +145,7 @@ class CacheBackendsTest {
                 for (var backend : List.of(Option.<String>none(), some("dht"))) {
                     assertThat(failureOf(CacheBackends.cacheBackend(idempotency(mode, backend), terra)))
                         .as("idempotency %s backend %s", mode, backend)
-                        .isEqualTo(CacheBackendError.backendUnavailable("dht", "dedup", BackendRuntime.TERRA));
+                        .isEqualTo(CacheBackendError.BackendUnavailable.backendUnavailable("dht", "dedup", BackendRuntime.TERRA));
                 }
             }
         }
@@ -162,30 +162,30 @@ class CacheBackendsTest {
                                                .withExtension(BackendRuntime.class, BackendRuntime.TERRA);
 
             assertThat(failureOf(CacheBackends.cacheBackend(cache(CacheMode.DISTRIBUTED, none()), bareTerra)))
-                .isEqualTo(CacheBackendError.backendUnavailable("dht", "calls", BackendRuntime.TERRA));
+                .isEqualTo(CacheBackendError.BackendUnavailable.backendUnavailable("dht", "calls", BackendRuntime.TERRA));
         }
 
         @Test
         void unknownBackend_refusedNamingIt() {
             assertThat(failureOf(CacheBackends.cacheBackend(cache(CacheMode.DISTRIBUTED, some("redis")), aether)))
-                .isEqualTo(CacheBackendError.unknownBackend("redis", "calls"));
+                .isEqualTo(CacheBackendError.UnknownBackend.unknownBackend("redis", "calls"));
         }
 
         @Test
         void backendNotFittingTheMode_refusedAsAConflict() {
             assertThat(failureOf(CacheBackends.cacheBackend(cache(CacheMode.LOCAL, some("dht")), aether)))
-                .isEqualTo(CacheBackendError.modeConflict("calls", CacheMode.LOCAL, "dht"));
+                .isEqualTo(CacheBackendError.ModeConflict.modeConflict("calls", CacheMode.LOCAL, "dht"));
             assertThat(failureOf(CacheBackends.cacheBackend(cache(CacheMode.DISTRIBUTED, some("memory")), aether)))
-                .isEqualTo(CacheBackendError.modeConflict("calls", CacheMode.DISTRIBUTED, "memory"));
+                .isEqualTo(CacheBackendError.ModeConflict.modeConflict("calls", CacheMode.DISTRIBUTED, "memory"));
             assertThat(failureOf(CacheBackends.cacheBackend(cache(CacheMode.TIERED, some("memory")), aether)))
-                .isEqualTo(CacheBackendError.modeConflict("calls", CacheMode.TIERED, "memory"));
+                .isEqualTo(CacheBackendError.ModeConflict.modeConflict("calls", CacheMode.TIERED, "memory"));
         }
 
         @Test
         void refusals_areTerminal() {
-            assertThat(CacheBackendError.backendUnavailable("dht", "calls", BackendRuntime.TERRA).isTerminal()).isTrue();
-            assertThat(CacheBackendError.unknownBackend("redis", "calls").isTerminal()).isTrue();
-            assertThat(CacheBackendError.modeConflict("calls", CacheMode.LOCAL, "dht").isTerminal()).isTrue();
+            assertThat(CacheBackendError.BackendUnavailable.backendUnavailable("dht", "calls", BackendRuntime.TERRA).isTerminal()).isTrue();
+            assertThat(CacheBackendError.UnknownBackend.unknownBackend("redis", "calls").isTerminal()).isTrue();
+            assertThat(CacheBackendError.ModeConflict.modeConflict("calls", CacheMode.LOCAL, "dht").isTerminal()).isTrue();
         }
 
         /// Both factories obtain their backend through the seam: each refuses `dht` on Terra with the seam's error.
@@ -195,9 +195,9 @@ class CacheBackendsTest {
             var idempotencyConfig = IdempotencyConfig.idempotencyConfig("dedup", CacheMode.TIERED).unwrap();
 
             assertThat(failureOf(new CacheInterceptorFactory().provision(cacheConfig, terra).await()))
-                .isEqualTo(CacheBackendError.backendUnavailable("dht", "calls", BackendRuntime.TERRA));
+                .isEqualTo(CacheBackendError.BackendUnavailable.backendUnavailable("dht", "calls", BackendRuntime.TERRA));
             assertThat(failureOf(new IdempotencyInterceptorFactory().provision(idempotencyConfig, terra).await()))
-                .isEqualTo(CacheBackendError.backendUnavailable("dht", "dedup", BackendRuntime.TERRA));
+                .isEqualTo(CacheBackendError.BackendUnavailable.backendUnavailable("dht", "dedup", BackendRuntime.TERRA));
         }
 
         @Test

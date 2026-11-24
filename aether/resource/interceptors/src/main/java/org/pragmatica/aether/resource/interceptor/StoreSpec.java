@@ -5,6 +5,7 @@ package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.lang.Option;
 
+
 /// What a cache or an idempotency store asks of the backend-selection seam ([CacheBackends], #3658): its name
 /// (the backend's namespace), entry lifetime and capacity, topology and the backend its section names.
 /// `kind` exists for the one place the two differ: which DHT client a `dht` backend writes through.

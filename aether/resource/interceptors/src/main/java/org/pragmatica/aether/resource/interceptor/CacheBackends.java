@@ -18,6 +18,7 @@ import org.pragmatica.serialization.Serializer;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
+
 /// The one seam through which a cache or an idempotency store obtains its [CacheBackend] (#3658); neither
 /// factory builds a backend itself.
 ///
@@ -51,13 +52,17 @@ final class CacheBackends {
     }
 
     private static Result<Backend> selected(StoreSpec spec, BackendRuntime runtime) {
-        var name = spec.backend()
-                       .or(() -> impliedBy(spec.mode()));
+        var name = spec.backend().or(() -> impliedBy(spec.mode()));
 
-        return option(BACKENDS.get(name)).toResult(CacheBackendError.unknownBackend(name, spec.name()))
-                     .filter(backend -> CacheBackendError.modeConflict(spec.name(), spec.mode(), backend.name()),
+        return option(BACKENDS.get(name)).toResult(CacheBackendError.UnknownBackend.unknownBackend(name,
+                                                                                                   spec.name()))
+                     .filter(backend -> CacheBackendError.ModeConflict.modeConflict(spec.name(),
+                                                                                    spec.mode(),
+                                                                                    backend.name()),
                              backend -> backend.fits(spec.mode()))
-                     .filter(backend -> CacheBackendError.backendUnavailable(backend.name(), spec.name(), runtime),
+                     .filter(backend -> CacheBackendError.BackendUnavailable.backendUnavailable(backend.name(),
+                                                                                                spec.name(),
+                                                                                                runtime),
                              backend -> backend.runtimes()
                                                .contains(runtime));
     }
@@ -70,11 +75,8 @@ final class CacheBackends {
 
     private static Result<CacheBackend> built(Backend backend, StoreSpec spec, ProvisioningContext context) {
         return switch (spec.mode()) {
-            case LOCAL, DISTRIBUTED -> backend.build()
-                                              .apply(spec, context);
-            case TIERED -> backend.build()
-                                  .apply(spec, context)
-                                  .map(shared -> tiered(spec, shared));
+            case LOCAL, DISTRIBUTED -> backend.build().apply(spec, context);
+            case TIERED -> backend.build().apply(spec, context).map(shared -> tiered(spec, shared));
         };
     }
 
@@ -105,8 +107,7 @@ final class CacheBackends {
     /// record lost with its only copy re-executes the call it guarded.
     private static Result<DHTClient> dhtClient(StoreSpec spec, ProvisioningContext context) {
         return switch (spec.kind()) {
-            case CACHE -> context.extension(CacheDhtClient.class)
-                                 .map(CacheDhtClient::client);
+            case CACHE -> context.extension(CacheDhtClient.class).map(CacheDhtClient::client);
             case IDEMPOTENCY -> context.extension(DHTClient.class);
         };
     }
