@@ -220,14 +220,15 @@ class LocaleIndependenceGateTest {
             return;
         }
 
-        var exemptLines = HUMAN_ONLY_METHODS.getOrDefault(relative, Set.of())
+        var exemptLines = HUMAN_ONLY_METHODS.getOrDefault(relative,
+                                                          Set.of())
                                             .stream()
                                             .flatMap(method -> inMethod(path, method).stream())
                                             .toList();
 
         flagged(path).stream()
-                     .filter(line -> !exemptLines.contains(line))
-                     .forEach(line -> violations.add(relative + ":" + line));
+               .filter(line -> !exemptLines.contains(line))
+               .forEach(line -> violations.add(relative + ":" + line));
     }
 
     /// Flagged lines inside the body of the 4-space-indented member `method` (declaration line to the closing `    }`).
@@ -235,22 +236,26 @@ class LocaleIndependenceGateTest {
         try {
             var lines = Files.readAllLines(path);
             var declaration = Pattern.compile("^    \\S.* " + method + "\\(.*\\{\\s*$");
-            var start = IntStream.range(0, lines.size())
-                                 .filter(i -> declaration.matcher(lines.get(i)).matches())
+            var start = IntStream.range(0,
+                                        lines.size())
+                                 .filter(i -> declaration.matcher(lines.get(i))
+                                                         .matches())
                                  .findFirst()
                                  .orElse(-1);
             var end = start < 0
                       ? -1
-                      : IntStream.range(start, lines.size())
-                                 .filter(i -> lines.get(i).equals("    }"))
+                      : IntStream.range(start,
+                                        lines.size())
+                                 .filter(i -> lines.get(i)
+                                                   .equals("    }"))
                                  .findFirst()
                                  .orElse(-1);
 
             return start < 0 || end < 0
                    ? List.of()
                    : flagged(path).stream()
-                                  .filter(line -> line > start && line <= end + 1)
-                                  .toList();
+                            .filter(line -> line > start && line <= end + 1)
+                            .toList();
         } catch (IOException | RuntimeException e) {
             return List.of();
         }
