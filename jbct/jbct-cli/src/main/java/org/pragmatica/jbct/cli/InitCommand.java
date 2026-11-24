@@ -124,7 +124,7 @@ public class InitCommand implements Callable<Integer> {
                                              .onSuccess(this::printAiToolsResult);
 
                 aiToolsInstalled = installResult.map(outcome -> !outcome.isEmpty()).or(false);
-                aiToolsRefused = installResult.fold(cause -> cause instanceof AiToolsRef.AiToolsRefError, _ -> false);
+                aiToolsRefused = installResult.fold(InitCommand::isRefusal, _ -> false);
             }
         }
         // Print summary
@@ -163,10 +163,14 @@ public class InitCommand implements Callable<Integer> {
 
     // A refused ref (#2363: snapshot build, or the release tag is not published) is an error with a non-zero exit;
     // any other failure (offline, no cache) stays the warning it always was.
-    private static String aiToolsFailureText(Cause cause) {
-        return cause instanceof AiToolsRef.AiToolsRefError
+    static String aiToolsFailureText(Cause cause) {
+        return isRefusal(cause)
                ? "Error: AI tools not installed: " + cause.message()
                : "Warning: Failed to install AI tools: " + cause.message();
+    }
+
+    static boolean isRefusal(Cause cause) {
+        return cause instanceof AiToolsRef.AiToolsRefError;
     }
 
     private boolean initRegularProject() {
