@@ -83,7 +83,7 @@ class LocaleIndependenceGateTest {
                                                          "jbct/jbct-cli/src/main/java/org/pragmatica/jbct/cli/ShapeCensusCommand.java",
                                                          "jbct/jbct-lint/src/main/java/org/pragmatica/jbct/lint/cst/shape/ShapeCensus.java",
 
-    // NOT human: a JSON result file the harness parses. Left unfixed only because pre-push-check cannot gate a loose
+    // NOT human (#3643): a JSON result file the harness parses. Left unfixed only because pre-push-check cannot gate a loose
     // single-file source (no Maven module owns it: "rc 0 but no count line"); delete this entry together with the fix.
     "aether/tests/cloud/armxk/driver/ArmKDriver.java",
 
