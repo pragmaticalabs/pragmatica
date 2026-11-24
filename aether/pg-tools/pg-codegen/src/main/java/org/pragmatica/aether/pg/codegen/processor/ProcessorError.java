@@ -133,10 +133,15 @@ public final class ProcessorError {
     }
 
     /// A CRUD method reads a nullable table column into a field that cannot hold NULL (#2795).
-    public static String nullableColumnToNonOption(String method, String table, String column, String field, String fieldType) {
+    public static String nullableColumnToNonOption(String method,
+                                                   String table,
+                                                   String column,
+                                                   String field,
+                                                   String fieldType) {
         return PREFIX
              + "Method '" + method
-             + "': column '" + table + "." + column
+             + "': column '" + table
+             + "." + column
              + "' is nullable but is read into field '" + field
              + "' of type " + fieldType
              + ", which cannot hold NULL. Fix: declare the field as Option<T>, or declare the column NOT NULL.";
