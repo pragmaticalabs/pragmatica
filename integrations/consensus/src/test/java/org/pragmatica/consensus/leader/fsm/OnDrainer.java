@@ -39,6 +39,16 @@ final class OnDrainer {
         awaitHandled(handled);
     }
 
+    /// Returns only after every task submitted to the node's serial executor before this call ran (the executor is FIFO
+    /// across submitters): the await for a production entry (`FsmBackedLeaderManager#onLeaderCommitted`) that only
+    /// queued its task because a timer task held the drainer. The next assertion then reads the state that task produced.
+    static void drained(LeaderElectionContext ctx) {
+        var handled = new CountDownLatch(1);
+
+        ctx.serially(handled::countDown);
+        awaitHandled(handled);
+    }
+
     private static void submitThenComplete(LeaderElectionContext ctx, ClusterFsmEvent event, CountDownLatch handled) {
         try {
             ctx.submit(event);
