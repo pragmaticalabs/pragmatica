@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
 import org.pragmatica.aether.slice.blueprint.StreamDeclarationError;
+import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.TomlConfigSource;
@@ -279,8 +280,10 @@ class StreamSectionBindingTest {
             }
         }
 
+        /// The ring is sized from the hot window, not retention: a retention count past the index bound is accepted, and the
+        /// ring is the default window. The index refusal now reads the hot-window count (`StreamRingWindowTest$CountBound`).
         @Test
-        void unindexableCount_isRefusedTyped_notThrown() {
+        void unboundedRetentionCount_isAccepted_andTheRingIsTheDefaultWindow() {
             var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
             try {
                 var config = bindWith(new StreamPublisherFactory(), """
@@ -290,8 +293,8 @@ class StreamSectionBindingTest {
                         """);
 
                 manager.createStream(config)
-                       .onSuccess(_ -> fail("an unindexable count must be refused"))
-                       .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.RetentionCountUnindexable.class));
+                       .onFailure(cause -> fail("a retention count no longer sizes the ring: " + cause.message()));
+                assertDefaultWindow(manager, config.name());
             } finally {
                 manager.close();
             }
@@ -377,17 +380,16 @@ class StreamSectionBindingTest {
                                                                                                                                                               1))));
         }
 
+        /// A retention count one past the old one-segment index bound is accepted: retention no longer sizes the ring.
         @Test
-        void countOnePastTheIndexableCapacity_isRefusedTyped() {
-            assertRefused("max_count = \"" + (OffHeapRingBuffer.MAX_CAPACITY + 1) + "\"",
-                          new StreamError.RetentionCountUnindexable(ALIAS, OffHeapRingBuffer.MAX_CAPACITY + 1, OffHeapRingBuffer.MAX_CAPACITY));
+        void retentionCountOnePastTheIndexableCapacity_isAccepted_andTheRingIsTheDefaultWindow() {
+            assertAcceptedAtTheDefaultWindow("max_count = \"" + (OffHeapRingBuffer.MAX_CAPACITY + 1) + "\"");
         }
 
-        /// At the capacity itself the ring is indexable in principle but not affordable: the refusal is the
-        /// budget's typed one, not a throw.
+        /// A retention count at the old index bound is accepted: the ring is the default window, which the budget affords.
         @Test
-        void countAtTheIndexableCapacity_isRefusedByTheBudget_typed() {
-            assertRefused("max_count = \"" + OffHeapRingBuffer.MAX_CAPACITY + "\"", StreamError.General.STREAM_MEMORY_EXCEEDED);
+        void retentionCountAtTheIndexableCapacity_isAccepted_andTheRingIsTheDefaultWindow() {
+            assertAcceptedAtTheDefaultWindow("max_count = \"" + OffHeapRingBuffer.MAX_CAPACITY + "\"");
         }
 
         @Test
@@ -432,16 +434,25 @@ class StreamSectionBindingTest {
             }
         }
 
-        private static void assertRefused(String boundLine, Cause expected) {
+        private static void assertAcceptedAtTheDefaultWindow(String boundLine) {
             var manager = StreamPartitionManager.streamPartitionManager(128L * 1024 * 1024);
             try {
                 manager.createStream(bindWith(new StreamPublisherFactory(), compound(boundLine)))
-                       .onSuccess(_ -> fail("expected " + expected))
-                       .onFailure(cause -> assertThat(cause).isEqualTo(expected));
+                       .onFailure(cause -> fail("a retention count no longer sizes the ring: " + cause.message()));
+                assertDefaultWindow(manager, ALIAS);
             } finally {
                 manager.close();
             }
         }
+    }
+
+    private static void assertDefaultWindow(StreamPartitionManager manager, String stream) {
+        var ring = manager.partitionBuffer(stream, 0)
+                          .onEmpty(() -> fail("no ring for " + stream))
+                          .unwrap();
+
+        assertThat(ring.controlBytes()).as("the index is the default window's")
+                                       .isEqualTo(RingGeometry.HEADER_SIZE + RingGeometry.INDEX_ENTRY_SIZE * RingGeometry.HOT_WINDOW_ENTRIES);
     }
 
     /// v1557 probed two cases where deploy (TOML text) and activation (flattened provider) disagreed; both views

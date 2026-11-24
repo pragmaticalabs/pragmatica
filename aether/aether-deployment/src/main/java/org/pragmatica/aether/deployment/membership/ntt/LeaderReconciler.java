@@ -519,7 +519,8 @@ public final class LeaderReconciler {
     /// skipped — the provision already fulfilled.
     ///
     /// #1049 — an inherited entry is UNCONFIRMED (the prior leader's create call has returned or never
-    /// will; this leader has not yet seen the instance), carries the per-source ceiling, and the status
+    /// will; this leader has not yet seen the instance), carries the ceiling (#2811: the retained set holds ids only, so the departed
+    /// node is unknown here and the ceiling is the one source's, or the longest over the sources declaring the role), and the status
     /// poll is armed so this leader keeps it by what the provider reports rather than by age. Its ceiling
     /// runs from the replacement's mint time where the node id carries one, so a leader change does not
     /// restart it; its absence count and first-listing floor start at inheritance — see [`#inheritedEntry`].
@@ -532,7 +533,7 @@ public final class LeaderReconciler {
         }
 
         var nowNanos = timeSource.nanoTime();
-        var ceiling = ctm.replacementCeiling(NodeRole.CORE);
+        var ceiling = ctm.replacementCeiling(NodeRole.CORE, none());
         // Core-scoped (Wave 2 / W2): a retained dispatch is fulfilled only by a CORE member —
         // matches the fulfillment-clear in runReconcileBody, which also reads coreCountedMembers().
         var currentMembers = membershipFsm.coreCountedMembers();
@@ -1502,13 +1503,11 @@ public final class LeaderReconciler {
     /// and the drain set shrinks — down to nothing if confirmed members are already at or
     /// below the configured floor.
     ///
-    /// Drain-safety grace (Wave 2 defense in depth): a CONFIGURED-seed victim whose membership
-    /// age is below [`#drainSafetyGraceWindow`] is never drained — a just-joined seed whose role
-    /// labels may still be propagating is shielded. The grace does NOT block an EPHEMERAL
-    /// (CTM-provisioned) candidate that owns no slices: such a node was added for scale-up and is
-    /// always safe to drain (it owns nothing, so there is no role-propagation-into-ownership race),
-    /// which resolves the maturity-grace tension — the recently-added CTM nodes a scale-down wants
-    /// to remove are no longer forced past the grace and the reconciler stops draining stable seeds.
+    /// Drain-safety grace (Wave 2 defense in depth, #1055): NO victim whose membership age is below
+    /// [`#drainSafetyGraceWindow`] is ever drained, whatever its shape (configured seed or EPHEMERAL
+    /// CTM-provisioned) and slice ownership — one shield, applied in [`#selectDrainVictims`]. A
+    /// just-joined node is in-flight churn (its role labels may still be propagating; a replacement
+    /// may be the second of a duplicate mint, #1049), and a DRAIN cannot be undone once delivered.
     /// When the eligible pool cannot cover the surplus, the shortfall is DEFERRED (WARN with the
     /// young ages + one scheduled follow-up reconcile via [`#armDrainGraceReEval`]) rather than
     /// silently dropped. Internal — observers see only the count via
@@ -1577,19 +1576,20 @@ public final class LeaderReconciler {
     ///    `DrainProcedure` and would oscillate DEPARTING→MEMBER. When the other members cannot cover
     ///    the surplus the scale-down stops short and the deferral WARN says the leader is excluded.
     ///
-    /// Maturity-grace resolution: ephemeral NON-owners are drainable regardless of age — they own
-    /// nothing, so there is no role-propagation-into-ownership race to guard against. Every other
-    /// partition (configured non-owners, and both owner partitions) passes the drain-safety grace
-    /// ([`#pastDrainSafetyGrace`]) first: a just-joined seed's role labels may still be in flight,
-    /// and an ephemeral owner no longer has the "owns nothing" argument that exempts its non-owner
-    /// sibling. Candidates the grace or the availability guard hold back are deferred, never dropped
-    /// ([`#deferYoungSurplusDrain`]). Within each partition the legacy stable reversed-id iteration
-    /// order is preserved for determinism. A member with no readable age is treated as mature
-    /// (legacy behaviour).
+    /// Maturity shield (#1055) — the ONE age rule, applied to the candidate pool before any tier:
+    /// a member younger than the drain-safety grace ([`#pastDrainSafetyGrace`]) is never a victim, in
+    /// every partition (an ephemeral non-owner included: a replacement drained the moment it joined
+    /// was the #1055 defect). The orderings above only rank the mature candidates. When every
+    /// candidate is young the drain set is empty and the whole surplus is deferred and counted, never
+    /// dropped ([`#deferYoungSurplusDrain`]: WARN with the deferred count and the young ages, one
+    /// follow-up reconcile when the oldest young candidate matures). Within each partition the legacy
+    /// stable reversed-id iteration order is preserved for determinism. A member with no readable age
+    /// is treated as mature (legacy behaviour).
     private Set<NodeId> selectDrainVictims(Set<NodeId> currentMembers, int drainCount, List<DrainRefusal> refusals) {
         var self = presenceSampler.self();
         var others = currentMembers.stream()
                                    .filter(id -> !id.equals(self))
+                                   .filter(this::pastDrainSafetyGrace)
                                    .sorted(Comparator.comparing(NodeId::id).reversed())
                                    .toList();
         var victims = new LinkedHashSet<NodeId>();
@@ -1599,9 +1599,9 @@ public final class LeaderReconciler {
         return Set.copyOf(victims);
     }
 
-    /// Append victims from `candidates` in tier order — ephemeral non-owners, mature configured
-    /// non-owners, then the guarded owner tier (mature ephemeral, mature configured) — up to the
-    /// `drainCount` cap. Owners the guard refuses are recorded in `refusals`.
+    /// Append victims from the mature `candidates` in tier order — ephemeral non-owners, configured
+    /// non-owners, then the guarded owner tier (ephemeral, configured) — up to the `drainCount` cap.
+    /// Owners the guard refuses are recorded in `refusals`.
     @Contract
     private void appendTieredVictims(Set<NodeId> victims,
                                      List<NodeId> candidates,
@@ -1611,9 +1611,9 @@ public final class LeaderReconciler {
         var owners = sliceOwners(candidates);
 
         appendVictims(victims, ephemeralCandidates(nonOwners), drainCount);
-        appendVictims(victims, matureConfiguredCandidates(nonOwners), drainCount);
-        appendGuardedVictims(victims, matureEphemeralCandidates(owners), drainCount, refusals);
-        appendGuardedVictims(victims, matureConfiguredCandidates(owners), drainCount, refusals);
+        appendVictims(victims, configuredCandidates(nonOwners), drainCount);
+        appendGuardedVictims(victims, ephemeralCandidates(owners), drainCount, refusals);
+        appendGuardedVictims(victims, configuredCandidates(owners), drainCount, refusals);
     }
 
     /// The members that own no active slices — the preferred victim tier.
@@ -1683,29 +1683,19 @@ public final class LeaderReconciler {
                         .collect(Collectors.toUnmodifiableSet());
     }
 
-    /// The EPHEMERAL (CTM-provisioned) partition of the NON-OWNER tier — drainable regardless of
-    /// age (they own no slices, so the maturity grace does not apply).
+    /// The EPHEMERAL (CTM-provisioned) partition of a tier — the preferred victims within it. Age is
+    /// already shielded upstream ([`#selectDrainVictims`]).
     private List<NodeId> ephemeralCandidates(List<NodeId> candidates) {
         return candidates.stream()
                          .filter(this::isEphemeral)
                          .toList();
     }
 
-    /// The EPHEMERAL partition of the SLICE-OWNER tier that has also passed the drain-safety grace —
-    /// an owner lacks the "owns nothing" argument that exempts [`#ephemeralCandidates`] from it.
-    private List<NodeId> matureEphemeralCandidates(List<NodeId> candidates) {
-        return candidates.stream()
-                         .filter(this::isEphemeral)
-                         .filter(this::pastDrainSafetyGrace)
-                         .toList();
-    }
-
-    /// The CONFIGURED-seed partition of the candidate pool that has also passed the drain-safety
-    /// grace — the fallback victims when ephemeral candidates cannot cover the surplus.
-    private List<NodeId> matureConfiguredCandidates(List<NodeId> candidates) {
+    /// The CONFIGURED-seed partition of a tier — the fallback victims when ephemeral candidates cannot
+    /// cover the surplus. Age is already shielded upstream ([`#selectDrainVictims`]).
+    private List<NodeId> configuredCandidates(List<NodeId> candidates) {
         return candidates.stream()
                          .filter(id -> !isEphemeral(id))
-                         .filter(this::pastDrainSafetyGrace)
                          .toList();
     }
 
@@ -1750,7 +1740,7 @@ public final class LeaderReconciler {
 
     /// Whether `id`'s membership age has reached the drain-safety grace window. Unknown age
     /// (untracked id) counts as mature — see [`#selectDrainVictims`].
-    private boolean pastDrainSafetyGrace(NodeId id) {
+    public boolean pastDrainSafetyGrace(NodeId id) {
         return membershipFsm.memberAgeMs(id)
                             .map(ageMs -> ageMs >= drainSafetyGraceWindow.millis())
                             .or(true);
@@ -1759,8 +1749,8 @@ public final class LeaderReconciler {
     /// Deferral of the un-covered surplus shortfall: WARN with the young candidates' ages (the
     /// operator-facing trace of WHY the surplus was not fully drained) and arm a single
     /// follow-up reconcile for when the oldest young candidate matures. The shortfall can arise
-    /// from two eligibility filters — a remaining candidate (a configured seed, or a slice owner of
-    /// either kind) still inside the drain-safety grace, OR a slice owner refused by the
+    /// from two eligibility filters — a remaining candidate (of any shape or ownership, #1055) still
+    /// inside the drain-safety grace, OR a slice owner refused by the
     /// availability guard because draining it would drop a hosted slice below `minAvailable`
     /// (#1488) — and the surplus is stable-state (no SWIM edge re-fires the reconciler), so this
     /// never silently drops it: the follow-up re-evaluates after the oldest young candidate matures,
@@ -1947,9 +1937,12 @@ public final class LeaderReconciler {
                                          Set<NodeId> currentMembers,
                                          int generation,
                                          Option<NodeId> departed) {
+        // #2811: this ceiling only bounds the create call while it is in flight; once the provision is Dispatched the entry takes the
+        // ceiling the disposition carries (markDispatched), so a placement or config commit between this read and the dispatch cannot
+        // leave the entry with another source's ceiling.
         inFlightProvisioning.put(placeholder,
                                  InFlightEntry.inFlightEntry(nowNanos,
-                                                             ctm.replacementCeiling(NodeRole.CORE),
+                                                             ctm.replacementCeiling(NodeRole.CORE, departed),
                                                              InFlightState.DISPATCHING,
                                                              nowNanos,
                                                              generation,
@@ -2027,7 +2020,7 @@ public final class LeaderReconciler {
     private void reconcileInFlightForDisposition(NodeId placeholder, ProvisionDisposition disposition) {
         switch (disposition) {
             case ProvisionDisposition.Deferred _ -> inFlightProvisioning.remove(placeholder);
-            case ProvisionDisposition.Dispatched _ -> markDispatched(placeholder);
+            case ProvisionDisposition.Dispatched dispatched -> markDispatched(placeholder, dispatched.ceiling());
         }
     }
 
@@ -2035,14 +2028,16 @@ public final class LeaderReconciler {
     /// the instance: DISPATCHING → UNCONFIRMED, pollable from now. Its first-listing floor starts here, never
     /// at dispatch: a slow create-and-readiness wait says nothing about how far the provider's listing lags.
     /// Guarded by `replace(key, expected, next)` so an entry the ceiling already evicted, or membership
-    /// already fulfilled, is never resurrected.
+    /// already fulfilled, is never resurrected. #2811: the entry takes the ceiling the dispatch carried (the dispatched source's,
+    /// read in the call that dispatched it); the one it was stamped with only bounded the create call, and is replaced here.
     @Contract
-    private void markDispatched(NodeId placeholder) {
+    private void markDispatched(NodeId placeholder, TimeSpan ceiling) {
         Option.option(inFlightProvisioning.get(placeholder))
               .filter(InFlightEntry::isDispatching)
               .onPresent(entry -> inFlightProvisioning.replace(placeholder,
                                                                entry,
-                                                               entry.pollableFrom(timeSource.nanoTime())));
+                                                               entry.dispatchedWith(ceiling,
+                                                                                    timeSource.nanoTime())));
     }
 
     @Contract
@@ -2525,8 +2520,14 @@ public final class LeaderReconciler {
             return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings, generation, departed);
         }
 
-        InFlightEntry pollableFrom(long nowNanos) {
-            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0, generation, departed);
+        InFlightEntry dispatchedWith(TimeSpan dispatchedCeiling, long nowNanos) {
+            return new InFlightEntry(sinceNanos,
+                                     dispatchedCeiling,
+                                     InFlightState.UNCONFIRMED,
+                                     nowNanos,
+                                     0,
+                                     generation,
+                                     departed);
         }
 
         InFlightEntry withAbsentListing() {

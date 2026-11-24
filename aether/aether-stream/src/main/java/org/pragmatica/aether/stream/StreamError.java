@@ -611,15 +611,17 @@ public sealed interface StreamError extends Cause {
         }
     }
 
-    /// A retention count the ring cannot index (#1549): the ring's index is sized from `maxCount`, and a count
-    /// past [OffHeapRingBuffer#MAX_CAPACITY] overflows the allocation size. Rejected PRE-COMMIT on create
-    /// rather than built over a truncated index; a fatal config error, never retried.
+    /// A hot-window count the ring cannot index (#1549): the ring's index is sized from the stream's hot-window count
+    /// (`hot.max_count`, or the window a `system:` or `entity:` ring keeps), and a count past
+    /// [org.pragmatica.aether.slice.stream.RingGeometry#maxCapacity] of the ring's first data region overflows the
+    /// allocation size. Rejected PRE-COMMIT on create rather than built over a truncated index; a fatal config error, never
+    /// retried. `maxCount` is the window's count; retention's count no longer sizes the ring.
     record RetentionCountUnindexable(String streamName, long maxCount, long maxCapacity) implements StreamError {
         @Override
         public String message() {
-            return "Stream '%s' retention max_count %d exceeds the indexable ring capacity %d".formatted(streamName,
-                                                                                                         maxCount,
-                                                                                                         maxCapacity);
+            return "Stream '%s' hot window max_count %d exceeds the indexable ring capacity %d".formatted(streamName,
+                                                                                                          maxCount,
+                                                                                                          maxCapacity);
         }
     }
 
@@ -631,6 +633,37 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Stream '%s' retention %s = %d is invalid: it must be at least 1".formatted(streamName, bound, value);
+        }
+    }
+
+    /// A ring sized below the stream's `max_event_size` (S2b-2a, ruling know e8888553b4): a ring holds at least one maximal
+    /// event of its current life, and a window smaller than one event would make the ring's effective maximum the window
+    /// instead of `max_event_size` (an event between the two was refused at the ring as too large). `key` names the setting
+    /// that sizes the ring: a declared `[hot] max_bytes`, or the `retention max_bytes` a `system:` ring is sized from (#3390
+    /// F3). Refused at the commit validator, naming the key and both values; a fatal config error, never retried. An absent
+    /// `[hot]` never reaches here: its default window is at least one maximal event
+    /// ([org.pragmatica.aether.slice.stream.RingGeometry#hotWindowBytes]).
+    record HotWindowBelowMaxEvent(String streamName, String key, long windowBytes, long maxEventSizeBytes) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' declares %s = %d, below its max_event_size %d: its ring must hold at least one maximal event".formatted(streamName,
+                                                                                                                                        key,
+                                                                                                                                        windowBytes,
+                                                                                                                                        maxEventSizeBytes);
+        }
+    }
+
+    /// A commit of a life's own config that changes one of its immutable keys (`max_event_size`, `encryption_key_id`,
+    /// `[truncation]`; #3390 F1, ruling know e8888553b4 (2): within a life `max_event_size` is immutable). The life's rings and
+    /// WALs were built under the enforced value. Refused at the commit, naming the key and both values; a fatal config error,
+    /// never retried. A new life (destroy, then create) may change the key.
+    record ImmutableKeyChanged(String streamName, String key, String enforced, String requested) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' changes %s from %s to %s within one life: the key is immutable for the life of a stream".formatted(streamName,
+                                                                                                                                   key,
+                                                                                                                                   enforced,
+                                                                                                                                   requested);
         }
     }
 

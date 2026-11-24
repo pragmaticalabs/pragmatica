@@ -30,3 +30,5 @@ DHTDepartureDrain	allnamed	small	321620	pass row of the merge-round model (Repla
 DHTDepartureDrain	strand	small	5208872	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
 DHTDepartureDrain	report	small	5208872	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
 DHTDepartureDrain	flapcode	small	18396824	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
+LeaderAdmission	interleavefixed	small	2537	new row (#3587): the code at 4159383e02 (rc6 with #3605), the serial executor on, same constants as interleave; one count at 1, 4 and 8 TLC workers, small and full as written (TLC 2026-11-24, cloudbb-6)
+LeaderAdmission	interleavefixed	full	2537	new row (#3587): the code at 4159383e02 (rc6 with #3605), the serial executor on, same constants as interleave; one count at 1, 4 and 8 TLC workers, small and full as written (TLC 2026-11-24, cloudbb-6)

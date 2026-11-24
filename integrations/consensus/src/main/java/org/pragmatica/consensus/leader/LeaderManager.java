@@ -513,6 +513,9 @@ public interface LeaderManager {
             context.submit(new LeaderElectionEvents.LeaderCommitted(leader));
         }
 
+        /// The push of a committed leader with its view sequence enters the node's serial executor (#3587, #3605), the one
+        /// every view write also enters; the model step this makes atomic (`P_Push`) is carried by
+        /// `LeaderElectionContext#submit`, where the dispatch is confined to that executor.
         @Contract
         @Override
         public void onLeaderCommitted(NodeId leader, long viewSequence) {
