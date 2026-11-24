@@ -24,7 +24,7 @@ A slice author today has exactly two ways to test a slice, and neither fits the 
    doubles, e.g. `UrlShortener.urlShortener(InMemoryUrlPersistence.inMemoryUrlPersistence())`
    (`examples/url-shortener/src/test/java/.../shortener/UrlShortenerTest.java:19`). This is fast but
    **bypasses all generated machinery**: the generated `{Interface}Factory`, resource resolution
-   through `ResourceProviderFacade`, and the interceptor/`Aspect` stack. It proves the business logic
+   through `ResourceProviderFacade`, and the declared interceptor stack. It proves the business logic
    but not that the slice is *wired correctly* — the exact class of defect #392 describes ("forge
    can't even load `@Http` slices").
 
@@ -44,7 +44,7 @@ interface** — no consensus, no cluster, no deploy archive.
 
 Ship a reusable **Slice Test Kit** that lets a plain JUnit test:
 
-- **G1 — Spin one slice** through its real generated `{Interface}Factory` and `Aspect` stack, with
+- **G1 — Spin one slice** through its real generated `{Interface}Factory`, with
   no forge, no cluster, no archive.
 - **G2 — Swap each resource** (`@PgSql`/`@Sql`, `@Http`, `@Notify`, pub-sub `Publisher`, cache,
   scheduled, …) for either an **in-memory fake** or a **testcontainer-backed real** resource, chosen
@@ -88,17 +88,16 @@ naming at `:73-91`). The concrete shape, from a real generated file
 
 ```java
 // Typed entry point — returns the slice's own interface (the "typed client"):
-public static Promise<UrlShortener> urlShortener(Aspect<UrlShortener> aspect,        // :32
-                                                 SliceCreationContext ctx) {
+public static Promise<UrlShortener> urlShortener(SliceCreationContext ctx) {        // :32
     return Promise.all(
         ctx.resources().provide(PgSqlConnector.class, "database").map(UrlPersistenceFactory::urlPersistence),
         ctx.resources().provide(Publisher.class, "click-events", ProvisioningContext.provisioningContext())
     ).map((persistence, clickPublisher) ->
-        aspect.apply(UrlShortener.urlShortener(persistence, clickPublisher)));   // :38-40
+        UrlShortener.urlShortener(persistence, clickPublisher));   // :38-40
 }
 
 // Runtime entry point — wraps the impl in a Slice (methods(), codec(), stop()):
-public static Promise<Slice> urlShortenerSlice(Aspect<UrlShortener> aspect, SliceCreationContext ctx) { … } // :43
+public static Promise<Slice> urlShortenerSlice(SliceCreationContext ctx) { … } // :43
 ```
 
 Key facts:
@@ -107,7 +106,7 @@ Key facts:
   interface, **stable and referenceable as a method handle** (e.g. `UrlShortenerFactory::urlShortener`).
 - Every resource dependency is resolved by `ctx.resources().provide(ResourceType.class, "section"[, ctx])`
   (`UrlShortenerFactory.java:35-36`). **This call is the entire injection seam.**
-- Interceptors declared on the slice compose into `aspect` (`FactoryClassGenerator.java:51-53`).
+- Interceptors declared on the slice are composed by the generated wrapper; the factory takes no decoration parameter.
 - The typed entry point returns the impl **directly** — no serialization, no method-name dispatch.
   Serialization/`SliceCodec` only exists on the `…Slice` path for the remote/cluster transport
   (`UrlShortenerFactory.java:70-120`), which the kit does not exercise.
@@ -142,16 +141,17 @@ The production implementation, `SpiResourceProvider`, discovers `ResourceFactory
 supplies its own `ResourceProviderFacade` instead** — a map of `(resourceType, section) → instance`
 — so it never touches ServiceLoader or `ConfigService`.
 
-### 2.3 `Aspect`
+### 2.3 No decoration parameter
 
-`Aspect<T>` is a functional wrapper with a ready-made identity
-(`aether/slice-api/src/main/java/.../Aspect.java:8-13`): `Aspect.identity()` returns `t -> t`. The
-MVP defaults the interceptor stack to identity; a test may compose real interceptors later (§6).
+The factory takes only `SliceCreationContext`. (An earlier revision of this draft assumed an `Aspect<T>`
+factory parameter defaulted to identity; that parameter was removed from the runtime and the generator.)
+Observability is attached at the runtime dispatch seams, not around the slice, so the kit has nothing to
+supply for it. Interceptors declared on the slice run as generated (§6).
 
 ### 2.4 Consequence
 
 To spin a slice the kit only needs:
-`factoryMethod.apply(Aspect.identity(), sliceCreationContext(fakeInvoker, fakeResources)).await(...)`.
+`factoryMethod.apply(sliceCreationContext(fakeInvoker, fakeResources)).await(...)`.
 Everything else — fakes, capture, containers — hangs off the `fakeResources` map. **No code in
 `aether/node`, `aether/ember`, or the consensus stack is touched.**
 
@@ -168,7 +168,7 @@ All types live in a new module `aether/slice-testkit` (§7), package
 public final class SliceTestKit {
     /// Start a kit for the slice built by the given generated typed factory method.
     /// `factory` is a method reference, e.g. `OrderIntakeFactory::orderIntake`.
-    static <T> SliceTestKit<T> forSlice(Fn2<Aspect<T>, SliceCreationContext, Promise<T>> factory);
+    static <T> SliceTestKit<T> forSlice(Fn1<Promise<T>, SliceCreationContext> factory);
 
     /// Register a fake or container-backed resource for one (type, section) coordinate.
     <R> SliceTestKit<T> withResource(Class<R> resourceType, String configSection, R instance);
@@ -187,9 +187,6 @@ public final class SliceTestKit {
     /// `requireStringList` match production. A repeated call replaces the earlier source (last wins).
     SliceTestKit<T> withConfig(Map<String, String> values);
     SliceTestKit<T> withConfig(ConfigurationProvider provider);
-
-    /// Override the interceptor stack (default = Aspect.identity()).
-    SliceTestKit<T> withAspect(Aspect<T> aspect);
 
     /// Scripted responses for a slice→slice dependency (deferred; see §6).
     <S> SliceTestKit<T> withSliceDependency(String artifact, S stubImpl);
@@ -381,10 +378,10 @@ Aggressively reuse; the kit is thin glue over existing seams.
 
 | Concern | Reuse (existing) | New (in `slice-testkit`) |
 |---------|------------------|--------------------------|
-| Slice instantiation | Generated `{Interface}Factory` typed method (`UrlShortenerFactory.java:32`) | method-ref adapter (`Fn2<Aspect,ctx,Promise<T>>`) |
+| Slice instantiation | Generated `{Interface}Factory` typed method (`UrlShortenerFactory.java:32`) | method-ref adapter (`Fn1<Promise<T>, SliceCreationContext>`) |
 | Creation context | `SliceCreationContext.sliceCreationContext(...)` (`SliceCreationContext.java:24`) | build it from kit fakes |
 | Resource seam | `ResourceProviderFacade` interface (`ResourceProviderFacade.java:11`) | `MapResourceProvider` (map-backed impl) |
-| Interceptors | `Aspect.identity()` (`Aspect.java:11`) | default wiring + optional real-aspect composition |
+| Interceptors | Generated wrapper (declared interceptors run as in production) | none |
 | DB container | `PostgreSQLContainer` pattern (`DatabaseExtension.java:27-94`) | `ContainerResource` lifecycle wrapper |
 | Real DB connector | `AsyncSqlConnectorFactory.provision(config)` (`AsyncSqlConnectorFactory.java:37`) | config builder from container coordinates |
 | DB migrations | deployment schema manager (`aether/aether-deployment` schema) | migration-runner shim for a single section |
@@ -409,7 +406,7 @@ incremental.
 New Maven module **`aether/slice-testkit`** (`org.pragmatica.aether:aether-slice-testkit`).
 
 **Dependencies (compile scope):**
-- `aether/slice-api` — `SliceCreationContext`, `ResourceProviderFacade`, `Aspect`, `Publisher`,
+- `aether/slice-api` — `SliceCreationContext`, `ResourceProviderFacade`, `Publisher`,
   `Slice`, `SliceInvokerFacade`, `ProvisioningContext`.
 - `aether/resource/api` — `ResourceFactory`, `PgSqlConnector`, `SqlConnector`, `HttpClient`,
   `DatabaseConnectorConfig`.
@@ -458,7 +455,7 @@ keeps an Apache module from depending on a BSL one, so the kit adds no encumbran
 Ordered risk-first (the seam is the load-bearing, highest-leverage piece):
 
 1. **Injection seam** — `MapResourceProvider` (map-backed `ResourceProviderFacade`) + kit-built
-   `SliceCreationContext` + `Aspect.identity()` default + `forSlice(factoryMethodRef).build()`
+   `SliceCreationContext` + `forSlice(factoryMethodRef).build()`
    awaiting the typed `Promise<T>`. *(unlocks everything; ~small)*
 2. **Typed client** — `SliceUnderTest.client()` returns the slice interface; call methods directly.
 3. **Fake catalog v1** — `CapturingPublisher`, `CapturingNotificationSender`, `FakeHttpClient`,
@@ -486,7 +483,7 @@ and all-fakes) with no forge archive and no cluster.
 
 ### 7.2 Deferred (post-MVP / rc3)
 
-- **Real interceptor composition** — build the `Aspect` from real cache/retry/circuit-breaker/metrics
+- **Real interceptor composition** — build the interceptor stack from real cache/retry/circuit-breaker/metrics
   factories (`aether/resource/interceptors`) so tests can assert caching/retry behaviour.
 - **Slice→slice dependencies** — `ScriptedInvoker` returning scripted `MethodHandle`s for multi-slice
   wiring; true multi-slice-in-one-JVM composition.
@@ -530,7 +527,6 @@ and all-fakes) with no forge archive and no cluster.
 ### Internal — the injection seam
 - `aether/slice-api/src/main/java/org/pragmatica/aether/slice/SliceCreationContext.java:15-52` — creation context + public constructors.
 - `aether/slice-api/src/main/java/org/pragmatica/aether/slice/ResourceProviderFacade.java:11-18` — the 2-method resource seam.
-- `aether/slice-api/src/main/java/org/pragmatica/aether/slice/Aspect.java:8-13` — interceptor wrapper + `identity()`.
 - `aether/slice-api/src/main/java/org/pragmatica/aether/slice/Publisher.java:12` — pub-sub publish interface (capture target).
 - `aether/slice-api/src/main/java/org/pragmatica/aether/slice/ProvisioningContext.java:24-57` — provisioning context record.
 - `aether/slice-api/src/main/java/org/pragmatica/aether/slice/SliceInvokerFacade.java:11-16` — slice→slice dependency seam.
@@ -565,7 +561,7 @@ and all-fakes) with no forge archive and no cluster.
   come from the container path only (§4.3).
 - **[A3]** `slice-testkit` is consumed at `test` scope only and never enters any runtime/deploy
   classpath (§6.2).
-- **[A4]** The MVP interceptor stack is `Aspect.identity()`; real interceptor composition is deferred.
+- **[A4]** The MVP supplies no interceptor stack of its own; real interceptor composition is deferred.
 - **[A5]** "Facts" = emitted domain events captured at their sink (pub-sub in MVP), pending
   confirmation (§8.5).
 - **[A6]** One slice-under-test per kit instance; slice-dependency scripting and multi-slice

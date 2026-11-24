@@ -8,6 +8,8 @@ Updated: 2026-01-28
 Affects: [jbct-cli, aether]
 ---
 
+> **Superseded (aspect removal, #3649).** The `Aspect<T>` factory parameter and `aspect.apply(...)` in the factory examples below are **superseded**: they were removed. The generated factory is `xxx(SliceCreationContext ctx)`. The examples are kept as history of the dependency protocol.
+
 ## Summary
 
 Defines how slice dependencies are resolved and invoked at runtime. Covers artifact coordinate format, proxy generation, and the `SliceInvokerFacade` contract. All slice dependencies use the same proxy mechanism regardless of deployment location.

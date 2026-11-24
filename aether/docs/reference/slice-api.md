@@ -212,21 +212,16 @@ public final class OrderServiceFactory {
     /**
      * Create typed slice instance.
      */
-    public static Promise<OrderService> orderService(
-            Aspect<OrderService> aspect,
-            SliceCreationContext ctx) { ... }
+    public static Promise<OrderService> orderService(SliceCreationContext ctx) { ... }
 
     /**
      * Create Slice wrapper for Aether runtime.
      */
-    public static Promise<Slice> orderServiceSlice(
-            Aspect<OrderService> aspect,
-            SliceCreationContext ctx) { ... }
+    public static Promise<Slice> orderServiceSlice(SliceCreationContext ctx) { ... }
 }
 ```
 
-**Parameters:**
-- `Aspect<T>`: Decorator for cross-cutting concerns (logging, metrics)
+**Parameter:**
 - `SliceCreationContext`: Runtime-provided context containing invoker for cross-slice calls and resource provider for infrastructure resources
 
 ### Slice Manifest
@@ -593,35 +588,6 @@ public interface ResourceProviderFacade {
 ```
 
 Resources are discovered via SPI (`ResourceFactory` implementations), configured via `aether.toml`, and cached by (type, config) key.
-
-## Aspect Interface
-
-Decorator for slice instances:
-
-```java
-public interface Aspect<T> {
-    T apply(T instance);
-
-    static <T> Aspect<T> identity() {
-        return t -> t;
-    }
-}
-```
-
-**Usage:**
-
-```java
-public class LoggingAspect<T> implements Aspect<T> {
-    @Override
-    public T apply(T instance) {
-        return createLoggingProxy(instance);
-    }
-}
-
-// When creating slice
-var logging = new LoggingAspect<OrderService>();
-OrderServiceFactory.orderService(logging, ctx);
-```
 
 ## Slice Interface
 
