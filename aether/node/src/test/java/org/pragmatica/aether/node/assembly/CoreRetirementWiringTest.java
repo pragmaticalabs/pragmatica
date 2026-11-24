@@ -10,17 +10,21 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.rabia.ClusterConfig;
@@ -46,13 +50,22 @@ class CoreRetirementWiringTest {
     private static final NodeId VOTER_B = new NodeId("voter-b");
     private static final NodeId YOUNG = new NodeId("young-excluded-core");
     private static final NodeId MATURE = new NodeId("mature-excluded-core");
+    private static final NodeId HOSTING = new NodeId("mature-core-still-hosting-a-slice");
+    private static final Artifact SLICE = Artifact.artifact("org.example:slice:1.0.0").unwrap();
+
+    private static Promise<Unit> retire(ClusterTopologyManager topology, Supplier<LeaderReconciler> reconciler) {
+        return retire(topology, reconciler, true, DeploymentMap.deploymentMap());
+    }
 
     @SuppressWarnings("unchecked")
-    private static Promise<Unit> retire(ClusterTopologyManager topology, Supplier<LeaderReconciler> reconciler) {
+    private static Promise<Unit> retire(ClusterTopologyManager topology,
+                                        Supplier<LeaderReconciler> reconciler,
+                                        boolean leaderNode,
+                                        DeploymentMap deployments) {
         var cluster = (RabiaNode<KVCommand<AetherKey>>) mock(RabiaNode.class);
         var leader = mock(LeaderManager.class);
 
-        when(leader.isLeader()).thenReturn(true);
+        when(leader.isLeader()).thenReturn(leaderNode);
         when(cluster.leaderManager()).thenReturn(leader);
         when(cluster.retirementSafeVoters())
             .thenReturn(Option.some(new VoterConfiguration(1L, new ClusterConfig(List.of(VOTER_A, VOTER_B)))));
@@ -68,7 +81,7 @@ class CoreRetirementWiringTest {
 
         var fsm = mock(MembershipFsm.class);
 
-        when(fsm.coreCountedMembers()).thenReturn(Set.of(VOTER_A, VOTER_B, YOUNG, MATURE));
+        when(fsm.coreCountedMembers()).thenReturn(Set.of(VOTER_A, VOTER_B, YOUNG, MATURE, HOSTING));
 
         var replacements = mock(NodeReplacementIndex.class);
 
@@ -78,7 +91,7 @@ class CoreRetirementWiringTest {
                                                     () -> fsm,
                                                     store,
                                                     replacements,
-                                                    DeploymentMap.deploymentMap(),
+                                                    deployments,
                                                     topology,
                                                     reconciler,
                                                     Set.of(VOTER_A, VOTER_B));
@@ -125,6 +138,45 @@ class CoreRetirementWiringTest {
         var topology = topology();
 
         retire(topology, () -> null).await();
+
+        verify(topology, never()).drainNode(any(), any());
+    }
+
+    private static LeaderReconciler reconcilerWhereEveryCoreIsPastTheGrace() {
+        var reconciler = mock(LeaderReconciler.class);
+
+        when(reconciler.pastDrainSafetyGrace(any())).thenReturn(true);
+        return reconciler;
+    }
+
+    private static DeploymentMap deploymentsHostedOn(NodeId node) {
+        var map = DeploymentMap.deploymentMap();
+
+        map.onNodeArtifactPut(new ValuePut<>(new KVCommand.Put<>(new AetherKey.NodeArtifactKey(node, SLICE),
+                                                                 NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE)),
+                                             Option.none()));
+        return map;
+    }
+
+    @Test
+    void retireExcludedCores_matureCoreStillHostingASlice_isNeverRetiredAndItsEmptyPeerIs() {
+        var topology = topology();
+
+        var reconciler = reconcilerWhereEveryCoreIsPastTheGrace();
+
+        retire(topology, () -> reconciler, true, deploymentsHostedOn(HOSTING)).await();
+
+        verify(topology).drainNode(MATURE, DrainReason.OVERPROVISION_SCALE_DOWN);
+        verify(topology, never()).drainNode(HOSTING, DrainReason.OVERPROVISION_SCALE_DOWN);
+    }
+
+    @Test
+    void retireExcludedCores_nonLeader_retiresNothingEvenWhenEveryCoreIsMatureAndEmpty() {
+        var topology = topology();
+
+        var reconciler = reconcilerWhereEveryCoreIsPastTheGrace();
+
+        retire(topology, () -> reconciler, false, DeploymentMap.deploymentMap()).await();
 
         verify(topology, never()).drainNode(any(), any());
     }
