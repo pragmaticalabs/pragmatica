@@ -869,6 +869,7 @@ public sealed interface TopologyAssembly {
                                           Predicate<NodeId> pastDrainGrace) {
         return excluded.stream()
                        .filter(hostsNothing)
+                       .filter(pastDrainGrace)
                        .toList();
     }
 

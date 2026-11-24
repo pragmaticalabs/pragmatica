@@ -1512,6 +1512,27 @@ class LeaderReconcilerTest {
             sampler.sample();
         }
 
+        /// #1055: the ONE age rule, public so the voter-excluded core retirement (`TopologyAssembly`, a second surplus-trim
+        /// drain site) asks the same question with the same grace and the same `MembershipFsm.memberAgeMs` source. A member
+        /// is past the grace at exactly the grace and not one millisecond earlier.
+        @Test
+        void pastDrainSafetyGrace_isFalseBelowTheGrace_trueAtExactlyTheGrace() {
+            seedYoungPeers(youngSeed1);
+
+            assertThat(reconciler.pastDrainSafetyGrace(youngSeed1)).as("age 0: young").isFalse();
+
+            fsmWallClockMs.addAndGet(EXPECTED_DRAIN_GRACE.millis() - 1);
+            assertThat(reconciler.pastDrainSafetyGrace(youngSeed1)).as("one ms short of the grace: still young").isFalse();
+
+            fsmWallClockMs.addAndGet(1);
+            assertThat(reconciler.pastDrainSafetyGrace(youngSeed1)).as("exactly the grace: mature").isTrue();
+        }
+
+        @Test
+        void pastDrainSafetyGrace_untrackedMember_countsAsMature() {
+            assertThat(reconciler.pastDrainSafetyGrace(youngSeed2)).as("no readable age: legacy behaviour, mature").isTrue();
+        }
+
         @Test
         void surplusDrain_youngConfiguredVictimSkipped_matureVictimSelected() {
             configuredCoreCount.set(3);
