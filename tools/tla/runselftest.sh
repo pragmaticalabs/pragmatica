@@ -194,6 +194,14 @@ BUDGETS_TSV="$work/b_heap.tsv" run budget-heap-alone-is-over-the-limit 0 '^SKIPP
 BUDGETS_TSV="$work/b_at.tsv" run budget-exactly-at-the-limit-runs-on-the-runner 0 'skipped-host=0 .*GREEN' full < <(fixrows)
 { base_budgets; printf 'Fix\tnosuch\t10\t-\tx\n'; } > "$work/b_bad.tsv"
 BUDGETS_TSV="$work/b_bad.tsv" run budget-table-naming-a-missing-row-is-refused nonzero 'Fix/nosuch: no such row in models.tsv' full < <(fixrows)
+# TLC_TIMEOUT changes the cap a row runs under, never WHICH rows are over the hosted limit (#3653 F1): list, host mode, the default
+# mode and run-host all read the over-limit question from the budget table alone, so they cannot disagree.
+BUDGETS_TSV="$work/b_over.tsv" TLC_TIMEOUT=100 TLA_HOST=list run tlc-timeout-env-does-not-change-the-over-limit-listing 0 '^Fix/ok'$'\t''21600'$'\t''8g$' full < <(fixrows)
+BUDGETS_TSV="$work/b_over.tsv" TLC_TIMEOUT=100 run tlc-timeout-env-does-not-unskip-an-over-limit-row 0 '^SKIPPED-HOST Fix/ok expect=pass budget 21600s/8g' full < <(fixrows)
+BUDGETS_TSV="$work/b_over.tsv" TLC_TIMEOUT=100 TLA_HOST=1 run tlc-timeout-env-host-mode-still-runs-the-over-limit-row 0 'configs=1 .*skipped-host=0 .*GREEN' full < <(fixrows)
+want tlc-timeout-env-host-mode-wrote-the-evidence-row OK "$(cell Fix ok verdict)"
+# host mode that ran no row is never GREEN (nothing checked): no row over the limit in the table
+TLA_HOST=1 run host-mode-with-no-row-run-is-red nonzero 'host mode ran no row.*not GREEN' full < <(fixrows)
 # the cap: a stub java that ignores TERM outlives a 1 s budget; the row reads ERROR naming the cap and its source, never a verdict.
 # The stub gives up after 20 s (stub3), so a run.sh that ignores the cap fails these cases instead of hanging the self-test.
 mkdir -p "$work/stub3"; sed 's/^while :; do sleep 1; done$/for _ in $(seq 20); do sleep 1; done/' "$work/stub/java" > "$work/stub3/java"; chmod +x "$work/stub3/java"
@@ -204,7 +212,7 @@ want budget-timeout-verdict-ERROR ERROR "$(cell Fix ok verdict)"
 want budget-timeout-took-its-tlc-down dead "$(alive)"
 printf '*\t*\t1\t-\ttiny default\n@hosted\tlimit\t18000\t12g\tlimit\n' > "$work/b_tinydef.tsv"
 VARIANTS=ok PATH="$work/stub3:$PATH" STUB_PID="$work/stub.pid" BUDGETS_TSV="$work/b_tinydef.tsv" run budget-default-row-applies-to-a-row-without-its-own nonzero 'exceeded the 1s budget, default row 1s/-' full < <(fixrows)
-VARIANTS=ok PATH="$work/stub3:$PATH" STUB_PID="$work/stub.pid" TLC_TIMEOUT=2 BUDGETS_TSV="$work/b_over.tsv" run budget-env-timeout-overrides-the-row nonzero 'exceeded the 2s budget, TLC_TIMEOUT env' full < <(fixrows)
+VARIANTS=ok PATH="$work/stub3:$PATH" STUB_PID="$work/stub.pid" TLC_TIMEOUT=2 BUDGETS_TSV="$work/b_tiny.tsv" run budget-env-timeout-overrides-the-row nonzero 'exceeded the 2s budget, TLC_TIMEOUT env' full < <(fixrows)
 # the heap: a stub java that records its arguments shows the row's -Xmx in front of the env's java options
 mkdir -p "$work/stub2"; printf '#!/usr/bin/env bash\necho "$@" > "$STUB_ARGS"\nexit 0\n' > "$work/stub2/java"; chmod +x "$work/stub2/java"
 { base_budgets; printf 'Fix\tok\t100\t6g\tsix\n'; } > "$work/b_six.tsv"
@@ -214,6 +222,9 @@ VARIANTS=ok PATH="$work/stub2:$PATH" STUB_ARGS="$work/args.txt" TLC_JAVA_OPTS=-X
 want budget-env-xmx-comes-after-the-row-xmx 1 "$(grep -cE -- '-Xmx6g.* -Xmx1g' "$work/args.txt")"
 VARIANTS=ok PATH="$work/stub2:$PATH" STUB_ARGS="$work/args.txt" BUDGETS_TSV="$work/b_six.tsv" run budget-small-profile-ignores-the-table 0 - small < <(fixrows)
 want budget-small-has-no-row-heap 0 "$(grep -c -- '-Xmx' "$work/args.txt")"
+# an out-of-memory exit names the java options (the row's heap in front of the env's): a stub java prints the error and exits 1
+mkdir -p "$work/stub4"; printf '#!/usr/bin/env bash\necho "java.lang.OutOfMemoryError: Java heap space"\nexit 1\n' > "$work/stub4/java"; chmod +x "$work/stub4/java"
+VARIANTS=ok PATH="$work/stub4:$PATH" BUDGETS_TSV="$work/b_six.tsv" run budget-out-of-memory-exit-names-the-java-options nonzero '^ERROR Fix/ok expect=pass got=error\(exit 1: out of memory, java options .-Xmx6g' full < <(fixrows)
 # run-host.sh: the SKIPPED-HOST rows run one by one under their own budget, behind a memory precheck that never starts a row without room
 hostrun() { # hostrun <name> <want-exit: 0|nonzero> <pattern> <profile> [env assignments...]: Fix/ok is over the limit in b_over.tsv
   local name=$1 want=$2 pattern=$3 profile=$4 out rc; shift 4
@@ -227,6 +238,20 @@ want host-script-row-recorded-OK-at-profile-full 'OK/full' "$(cell Fix ok verdic
 want host-script-did-not-run-the-fitting-row 0 "$(ls "$work"/out/Fix/Fix_bad.log 2>/dev/null | wc -l | tr -d ' ')"
 hostrun host-script-never-starts-a-row-without-memory nonzero '^NOT-STARTED Fix/ok budget 21600s/8g: MemAvailable 1 MB < 10240 MB' full TLA_MEMINFO="$work/mem_small" TLA_HOST_WAIT_SECS=2 TLA_HOST_POLL_SECS=1
 want host-script-not-started-row-has-no-result 0 "$(ls "$work"/out/Fix/Fix_ok.log 2>/dev/null | wc -l | tr -d ' ')"
+hostrun host-script-tlc-timeout-env-still-runs-the-listed-row 0 'rows=1 green=1 red=0 not-started=0 .*GREEN' full TLA_MEMINFO="$work/mem_big" TLC_TIMEOUT=100
+want host-script-tlc-timeout-env-row-recorded-OK OK "$(cell Fix ok verdict)"
+# run-host with a stub run.sh beside a copy of it: a row for which run.sh wrote no evidence row is red, and a red row is not green
+stubhost() { # stubhost <name> <want> <pattern> <stub run.sh body>
+  local name=$1 want=$2 pattern=$3 out rc
+  rm -rf "$work/rh" "$work/out"; mkdir -p "$work/rh" "$work/out"; printf 'commit\tdirty\tdate\tprofile\tmodule\tvariant\texpect\tactual\tviolated\tdistinct\ttlc\tverdict\tconstants\n' > "$work/out/results.tsv"; cp "$here/run-host.sh" "$work/rh/"
+  printf '#!/usr/bin/env bash\n[[ ${TLA_HOST:-} == list ]] && { printf "Fix/ok\\t21600\\t8g\\n"; exit 0; }\n%s\n' "$4" > "$work/rh/run.sh"
+  out=$(cd "$work" && TLA_MEMINFO="$work/mem_big" TLA_OUT="$work/out" bash "$work/rh/run-host.sh" full 2>&1); rc=$?
+  if { [[ $want == 0 && $rc == 0 ]] || [[ $want == nonzero && $rc != 0 ]]; } && grep -qE "$pattern" <<<"$out"; then echo "PASS $name (exit $rc)"
+  else echo "FAIL $name: want exit $want, got $rc, pattern '$pattern'"; sed 's/^/    /' <<<"$out" | tail -25; fail=1; fi; }
+stubhost host-script-row-with-no-evidence-row-is-red nonzero 'RED Fix/ok: run.sh wrote no evidence row' 'exit 0'
+stubhost host-script-row-with-no-evidence-row-is-counted-red nonzero 'green=0 red=1 not-started=0 .*RED' 'exit 0'
+stubhost host-script-red-row-is-not-counted-green nonzero 'green=0 red=1 not-started=0 .*RED' 'printf "c\tclean\td\tfull\tFix\tok\tpass\tfail\tP\t4\tv\tRED\t\n" >> "$TLA_OUT/results.tsv"; exit 1'
+stubhost host-script-row-with-an-evidence-row-and-green-run-is-green 0 'green=1 red=0 not-started=0 .*GREEN' 'printf "c\tclean\td\tfull\tFix\tok\tpass\tpass\t\t4\tv\tOK\t\n" >> "$TLA_OUT/results.tsv"; exit 0'
 hostrun host-script-heavy-without-heavy-rows-names-nothing-to-run nonzero 'no row marked heavy' heavy TLA_MEMINFO="$work/mem_big"
 # a results file with another header is refused, never appended to
 printf 'commit\tother\n' > "$work/foreign.tsv"

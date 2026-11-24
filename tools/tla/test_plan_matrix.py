@@ -116,6 +116,8 @@ class PlanMatrix(unittest.TestCase):
                          (BUDGETS + 'Alpha\tcode\t600\t-\tx\nAlpha\tcode\t700\t-\ty\n', 'second row Alpha/code'),
                          (BUDGETS + 'Alpha\tcode\t0\t-\tx\n', 'positive whole number'),
                          (BUDGETS + 'Alpha\tcode\t600\t6\tx\n', 'heap must be'),
+                         (BUDGETS + 'Alpha\tcode\t600\t-\n', 'row with 4 columns'),
+                         (BUDGETS + 'Alpha\tcode\t600\t-\tx\textra\n', 'row with 6 columns'),
                          ('@hosted\tlimit\t18000\t12g\tlimit\n', 'needs a `*` default row'),
                          ('*\t*\t18000\t-\tdefault\n', 'needs a `*` default row and an @hosted row')):
             rc, out, err = plan(ROWS, '--event', 'push', budgets=bad)

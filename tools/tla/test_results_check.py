@@ -219,6 +219,13 @@ class ResultsCheck(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertEqual(out.count('SKIPPED-HOST needs actual=skipped'), 3, out)
 
+    def test_skipped_host_row_with_a_violated_property_is_red(self):
+        c0 = self.commit()
+        self.commit(self.table(self.skipped_row(c0, verdict='SKIPPED-HOST', profile='full', violated='Agreement')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('SKIPPED-HOST needs actual=skipped', out)
+
     def test_skipped_host_row_under_the_heavy_profile_is_accepted(self):
         c0 = self.commit()
         self.commit(self.table(self.skipped_row(c0, verdict='SKIPPED-HOST', profile='heavy')))

@@ -29,7 +29,7 @@
 # `SKIPPED-HOST <module>/<variant>` and records a SKIPPED-HOST evidence row (actual=skipped), never a pass; tools/tla/run-host.sh
 # runs those rows on a build host (TLA_HOST=1: run only them; TLA_HOST=list: print them and exit). small and sim ignore budgets.tsv.
 # Env: TLA_JAR, TLC_WORKERS, TLC_OPTS (passed to check.sh), TLA_OUT (default target/tla), TLC_TIMEOUT (seconds per
-# config, needs coreutils timeout; overrides the budget of every row), BUDGETS_TSV (default: budgets.tsv beside this script), TLA_HOST (see above), MODELS_TSV (default: models.tsv beside this script; used by runselftest.sh),
+# config, needs coreutils timeout; overrides the cap of every row, never which rows are over the hosted limit), BUDGETS_TSV (default: budgets.tsv beside this script), TLA_HOST (see above), MODELS_TSV (default: models.tsv beside this script; used by runselftest.sh),
 # SIM_SECONDS (time budget per config, default 60), SIM_TRACES (trace cap, default 1000000), SIM_DEPTH (default 40; at 200 the Stalled "settled" row was not found in 60 s, at 40 it is found in seconds),
 # PINS_TSV (default: pinned-counts.tsv beside this script).
 # Evidence rows: every config that ran appends one row to TLA_RESULTS (default: $TLA_OUT/results.tsv; a PR that touches a
@@ -94,7 +94,9 @@ budget_of() {
     $1 == "*" { d = $3 " " $4 " default row" }
     END { if (!found) print d }' "$budgets"
 }
-# over_hosted <timeout_s> <heap>: 0 when a hosted runner takes the row, 1 when it does not
+# over_hosted <timeout_s> <heap>: 0 when a hosted runner takes the row, 1 when it does not. THE one place the question is
+# answered, and it is asked of the BUDGET TABLE's numbers alone (list mode, host mode and the default mode all pass budget_of's
+# output): TLC_TIMEOUT changes only the cap a row runs under, never which rows are over the limit.
 over_hosted() { awk -v t="$1" -v h="$2" -v lt="$hosted_t" -v lh="$hosted_h" 'BEGIN { exit !(t + 0 > lt + 0 || (h != "-" && h + 0 > lh + 0)) }' && echo 1 || echo 0; }
 selected=$(awk -F'\t' -v f="$vfilter" -v p="$profile" '$3 ~ "^(" f ")$" && (p != "heavy" || $6 == "heavy")' <<<"$rows")
 if [[ $host == list ]]; then
@@ -142,7 +144,7 @@ while IFS=$'\t' read -r module root variant expect property small _; do
   btimeout=""; bheap="-"; bsrc=""; bover=0
   if [[ $use_budgets == 1 ]]; then
     read -r btimeout bheap bsrc < <(budget_of "$module" "$variant"); bsrc="$bsrc ${btimeout}s/${bheap}"
-    bover=$(over_hosted "${TLC_TIMEOUT:-$btimeout}" "$bheap")
+    bover=$(over_hosted "$btimeout" "$bheap")
     if [[ $host == 1 && $bover == 0 ]]; then continue; fi   # host mode: only the rows a runner does not take
     if [[ $host != 1 && $bover == 1 ]]; then
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$commit" "$dirty" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$profile" "$module" "$variant" \
@@ -212,6 +214,9 @@ while IFS=$'\t' read -r module root variant expect property small _; do
   [[ $verdict != OK ]] && tail -20 "$outroot/$module/run_${variant}.txt" | sed 's/^/    /'
 done <<<"$selected"
 
+if [[ $host == 1 && ${#summary[@]} == 0 ]]; then
+  echo "run: RED host mode ran no row (TLA_HOST=1 selected rows over the hosted limit, none was run): nothing was checked, so not GREEN"; red=1
+fi
 echo "run: evidence rows in $results (commit $commit, $dirty)"
 echo "run: profile=$profile models=$filter variants=$vfilter configs=${#summary[@]} skipped-heavy=$skipped skipped-host=$skipped_host wall=$(( $(date +%s) - runstart ))s $([[ $red == 0 ]] && echo GREEN || echo RED)$([[ $profile == sim ]] && echo ' (simulation: sampled, not a proof)')"
 exit $red

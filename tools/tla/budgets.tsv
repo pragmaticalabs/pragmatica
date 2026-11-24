@@ -1,7 +1,8 @@
 # Per-row budget of the full and heavy profiles (#3636): a time cap and a JVM heap for each model row that needs more than the default.
 # Columns: module variant timeout_s heap why.   module and variant name a models.tsv row; heap is `<N>g` or `-` (the JVM default).
 # Lookup (run.sh, plan-matrix.py): the row with the exact module and variant, else the `*	*` default row. A table that names a row
-# models.tsv does not have, repeats a row, lacks the default row or the @hosted row is refused (run.sh exit 2; test_budgets.py).
+# models.tsv does not have, repeats a row, lacks the default row or the @hosted row is refused (run.sh exit 2: runselftest.sh cases budget-table-naming-a-missing-row-is-refused and the budget-* cases; plan-matrix.py: test_plan_matrix.py
+# test_a_budget_table_that_names_a_missing_row_or_lacks_a_required_row_is_an_error).
 # The small and sim profiles do not read this file: small keeps its own per-config budget (plan-matrix.py BUDGET, TLC_TIMEOUT).
 # Env overrides for hand runs: TLC_TIMEOUT (seconds, every row) and TLC_JAVA_OPTS (JVM options; a later -Xmx there wins over the row).
 # @hosted is not a row: it is the largest budget that fits a GitHub-hosted runner (a job is capped at 6 h, the runner has about 16 GB):
@@ -9,6 +10,7 @@
 # [guess: both limits are judgement, not measured on a hosted runner; change them here, nowhere else.]
 # A row over either limit is never run on a runner and never silently skipped: run.sh prints and records SKIPPED-HOST <row>, and
 # tools/tla/run-host.sh runs it on a build host under its budget.
+# The measured times are build-host times (16 cores, 3-4 workers); a hosted runner is slower [unverified: one sample, ~1.7x: SharedPools small 257 s on a hosted runner vs 150 s on cloudbb-6 at TLC_WORKERS=4].
 # Budgets are about twice the time measured by hand at rc6 b039c74482 (#3636); heap is what the run used (SharedPools/live ran out of
 # memory at 6g, which was not a violation).
 # module	variant	timeout_s	heap	why
@@ -20,4 +22,4 @@ RabiaSlot	live	18000	6g	measured 8,043 s, 16,453,616 distinct, 6 GB
 Fsm2Leader	code_nolate_close	21600	8g	measured 10,249 s, 13,734,978 distinct, 8 GB
 Fsm2Leader	code_nolate_show	21600	8g	measured 9,706 s, 13,734,978 distinct, 8 GB
 Fsm2Leader	code_nolate_persist	36000	8g	measured 16,765 s, 13,734,978 distinct, 8 GB
-SharedPools	live	28800	20g	measured 13,348 s, 101,374,939 distinct, 20 GB (out of memory at 6 GB)
+SharedPools	live	28800	20g	measured 13,348 s, 101,374,939 distinct, 20 GB (out of memory at 6 GB); the time cap assumes TLC_WORKERS=6 (run-host.sh and check.sh default to 4: ~1.5x slower, ~20000 s, margin ~1.4x)

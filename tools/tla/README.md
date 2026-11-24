@@ -136,7 +136,7 @@ it is: `RabiaAdopt/ballotlossD5` is RED (Agreement violated, #3592) and stays RE
 Every row of the `full` and `heavy` profiles runs under its own time cap and heap. `budgets.tsv` (module, variant, `timeout_s`,
 heap, why) holds them: the row with the exact module and variant, else the `* *` default row (18000 s, the JVM's default heap:
 what the profiles had before). `run.sh` puts the cap on the row with coreutils `timeout` and the heap as `-Xmx<N>g` in front of
-`TLC_JAVA_OPTS`, which `check.sh` hands to `java` (`TLC_TIMEOUT` in the env overrides the cap of every row, and a later `-Xmx` in
+`TLC_JAVA_OPTS`, which `check.sh` hands to `java` (`TLC_TIMEOUT` in the env overrides the cap of every row; it never changes which rows are over the hosted limit, that is the table's alone; and a later `-Xmx` in
 `TLC_JAVA_OPTS` overrides the heap: hand runs keep both). A row that outlives its cap reads `ERROR ... got=error(exit 124: exceeded
 the <N>s budget, <source>)`, naming the cap and where it came from; an out-of-memory exit names the java options. The `small` and
 `sim` profiles do not read the table (small keeps its own 1200 s per config).
@@ -144,6 +144,13 @@ the <N>s budget, <source>)`, naming the cap and where it came from; an out-of-me
 The seeded rows are about twice the time measured by hand at rc6 `b039c74482` (#3636): `Fsm2Leader/code_goals` 10800 s / 6g,
 `RabiaAdopt/rjT_resync_savefail` 10800 s / 6g, `RabiaSlot/live` 18000 s / 6g, `Fsm2Leader/code_nolate_close` and `_show`
 21600 s / 8g, `code_nolate_persist` 36000 s / 8g, `SharedPools/live` 28800 s / 20g.
+
+Those times are **build-host times** (cloudbb, 16 cores, TLC with 3-4 workers). A hosted runner is slower: one sample, SharedPools
+small 257 s on a hosted runner against 150 s on cloudbb-6 at `TLC_WORKERS=4`, about 1.7x [unverified: one sample]. At that factor
+the margins of the three rows a runner takes shrink from about 2.2-2.4x to about 1.3-1.4x (`code_goals`, `rjT_resync_savefail`,
+`RabiaSlot/live`); the cap of `RabiaSlot/live` is the old default, 18000 s. The `SharedPools/live` cap assumes `TLC_WORKERS=6`;
+`run-host.sh` and `check.sh` default to 4 workers, which is about 1.5x slower (about 20000 s, margin about 1.4x), so set
+`TLC_WORKERS=6` for that row.
 
 **Rows a hosted runner cannot take.** The `@hosted` row of the table is the largest budget a GitHub-hosted runner takes (a job is
 capped at 6 h; the runner has about 16 GB): 18000 s and 12g, a judgement, not a measurement. A row over either number is never run
@@ -158,7 +165,7 @@ tools/tla/run-host.sh full            # every SKIPPED-HOST row of the profile, o
 tools/tla/run-host.sh heavy Fsm2Leader 'code_nolate_.*'
 ```
 
-`run-host.sh` runs one `TLA_HOST=1 run.sh` per row (so the evidence row is the one `run.sh` writes, appended to the same
+`run-host.sh` fails a row for which `run.sh` wrote no evidence row, and `run.sh` in host mode is RED when it ran no row: a run in which nothing ran is never GREEN. It runs one `TLA_HOST=1 run.sh` per row (so the evidence row is the one `run.sh` writes, appended to the same
 `results.tsv`) behind a memory precheck: `MemAvailable` must be at least the row's heap plus 2 GB, else it waits
 (`TLA_HOST_WAIT_SECS`, default 3600) and then prints `NOT-STARTED <row>` and exits 1; it never starts a row without room. Run it
 on a host nothing else is using, never on the Mac, and one at a time per host. Not covered: the plan gives a shard 350 minutes in

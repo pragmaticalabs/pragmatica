@@ -11,7 +11,7 @@
 # room is NOT started: it is printed as `NOT-STARTED <module>/<variant>` with the numbers, counted, and the exit code is 1. Never
 # a start "to see what happens": TLC out of memory is not a violation, and the OOM killer takes the other jobs of the host.
 # One TLC run per lane per host (workspace rule): this script is sequential by construction; do not start it twice on a host.
-# Exit 0: every listed row ran and run.sh was green for it (or no row is over the hosted limit). Exit 1: a row was red, an ERROR, a
+# Exit 0: every listed row ran, wrote an evidence row, and run.sh was green for it (or no row is over the hosted limit). Exit 1: a row was red, an ERROR, a
 # RESOURCE kill or not started. Exit 2: an unusable invocation.
 set -uo pipefail
 profile=${1:-}; module=${2:-.*}; variant=${3:-.*}
@@ -24,6 +24,9 @@ for v in "$poll" "$waitmax"; do [[ $v =~ ^[0-9]+$ ]] || { echo "run-host: ERROR 
 avail_mb() { awk '/^MemAvailable:/ { print int($2 / 1024) }' "$meminfo"; }
 listed=$(TLA_HOST=list bash "$here/run.sh" "$profile" "$module" "$variant") || { echo "run-host: ERROR listing the rows failed" >&2; exit 2; }
 if [[ -z $listed ]]; then echo "run-host: profile=$profile: no row over the hosted limit matches '$module' / '$variant'; nothing to run"; exit 0; fi
+results=${TLA_RESULTS:-${TLA_OUT:-target/tla}/results.tsv}
+# evrows <module> <variant>: how many evidence rows the results file holds for the row (run-host fails a row that adds none)
+evrows() { [[ -f $results ]] && awk -F'\t' -v m="$1" -v v="$2" 'NR > 1 && $5 == m && $6 == v { n++ } END { print n + 0 }' "$results" || echo 0; }
 total=$(wc -l <<<"$listed" | tr -d ' '); green=0; red=0; notstarted=0; started=$(date +%s)
 echo "run-host: profile=$profile rows=$total (budgets from ${BUDGETS_TSV:-$here/budgets.tsv})"
 while IFS=$'\t' read -r row timeout heap; do
@@ -40,7 +43,12 @@ while IFS=$'\t' read -r row timeout heap; do
     notstarted=$((notstarted + 1)); continue
   fi
   echo "run-host: starting $row under ${timeout}s/${heap} (MemAvailable ${have} MB >= ${need} MB)"
-  if TLA_HOST=1 bash "$here/run.sh" "$profile" "$m" "$v" </dev/null; then green=$((green + 1)); else red=$((red + 1)); fi
+  before=$(evrows "$m" "$v")
+  if TLA_HOST=1 bash "$here/run.sh" "$profile" "$m" "$v" </dev/null; then ok=1; else ok=0; fi
+  if [[ $(evrows "$m" "$v") == "$before" ]]; then
+    echo "run-host: RED $row: run.sh wrote no evidence row to $results, so nothing ran for it; not green"; ok=0
+  fi
+  if [[ $ok == 1 ]]; then green=$((green + 1)); else red=$((red + 1)); fi
 done <<<"$listed"
 echo "run-host: profile=$profile rows=$total green=$green red=$red not-started=$notstarted wall=$(( $(date +%s) - started ))s $([[ $red == 0 && $notstarted == 0 ]] && echo GREEN || echo RED)"
 [[ $red == 0 && $notstarted == 0 ]]
