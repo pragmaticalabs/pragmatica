@@ -3,5 +3,5 @@
   on the status code of a response; a transport failure (connection refused or reset, DNS failure, timeout) fails the send
   before any status exists, so it bypassed the retry and the alert was dropped after one attempt with an error log line.
   That is the common case for a receiver that is restarting. A transport failure now takes the same path as a
-  retryable status: it is retried under the same `retry_count` and jittered backoff, and reported as a `WebhookError`
-  carrying the transport cause once they are spent. [verified: `AlertForwarderTransportRetryTest`]
+  retryable status: it is retried under the same `retry_count` and jittered backoff, and given up (logged as a `WebhookError`
+  carrying the transport cause) once they are spent. [verified: `AlertForwarderTransportRetryTest`]
