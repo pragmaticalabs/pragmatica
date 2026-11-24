@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.jbct.format.FormatterConfig;
+import org.pragmatica.testlogging.SourceWalk;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -29,7 +30,8 @@ class FlowCodebaseCheckTest {
         }
         assertThat(projectRoot).isNotNull();
 
-        var files = Files.walk(projectRoot)
+        var files = SourceWalk.files(projectRoot)
+                         .stream()
                          .filter(p -> p.toString().endsWith(".java"))
                          .filter(p -> !p.toString().contains("/target/"))
                          .filter(p -> !p.toString().contains("Java25Parser.java"))
@@ -147,7 +149,8 @@ class FlowCodebaseCheckTest {
         }
         assertThat(projectRoot).isNotNull();
 
-        var files = Files.walk(projectRoot)
+        var files = SourceWalk.files(projectRoot)
+                         .stream()
                          .filter(p -> p.toString().endsWith(".java"))
                          .filter(p -> !p.toString().contains("/target/"))
                          .filter(p -> !p.toString().contains("Java25Parser.java"))
