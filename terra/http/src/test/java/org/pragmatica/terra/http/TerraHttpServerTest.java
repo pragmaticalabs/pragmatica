@@ -630,14 +630,16 @@ class TerraHttpServerTest {
         close(host);
     }
 
-    @Test void mount_sliceRouteUnderSharedBasePath_failsAndReleasesApplication() {
-        var released = new AtomicInteger();
-        var route = Route.<String>get("/m/x").withoutParameters().to(_ -> Promise.success("one")).withSecurity(SecurityPolicy.publicRoute()).asText();
-        var result = TerraHttpServer.start(application(released), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
-            List.of(new Routes<>(Sample.class, List.of(route), SliceVersionRegistry.UNVERSIONED)), JsonMapper.defaultJsonMapper(),
-            List.of(mount("/m", Option.none(), SecurityPolicy.publicRoute()))).await(timeSpan(10).seconds());
-        assertThat(result.isFailure()).isTrue();
-        assertThat(released).hasValue(1);
+    @Test void mount_sliceRouteUnderOrAtSharedBasePath_failsAndReleasesApplication() {
+        for (var path : List.of("/m/x", "/m")) {
+            var released = new AtomicInteger();
+            var route = Route.<String>get(path).withoutParameters().to(_ -> Promise.success("one")).withSecurity(SecurityPolicy.publicRoute()).asText();
+            var result = TerraHttpServer.start(application(released), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
+                List.of(new Routes<>(Sample.class, List.of(route), SliceVersionRegistry.UNVERSIONED)), JsonMapper.defaultJsonMapper(),
+                List.of(mount("/m", Option.none(), SecurityPolicy.publicRoute()))).await(timeSpan(10).seconds());
+            assertThat(result.isFailure()).as(path).isTrue();
+            assertThat(released).as(path).hasValue(1);
+        }
     }
 
     @Test void mount_ownListener_servesOnItsOwnPortOnly_andStopsWithTheHost() throws Exception {
