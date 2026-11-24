@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.entity;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -17,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.IntStream;
 
 import io.netty.buffer.ByteBuf;
@@ -829,6 +831,48 @@ class EntityCheckpointReclaimTest {
         assertThat(deletesOf(stale.getFirst())).isZero();
     }
 
+    /// #2536 deviation, question 1 (a put that failed at the caller landing LATER than the later confirmed save): the block lands after the
+    /// delete ran, so it stays (a leak, the L-12 class, stated as a limit). Nothing names it: only a put that succeeded is published
+    /// (`writeThenPublish`), so the pointer, the confirmed block and the reads are untouched. Red if a late landing could move the pointer.
+    @Test
+    void aFailedPutThatLandsAfterTheLaterConfirmedSave_isALeak_neverANamedBlock() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+
+        shared.failThenLandLater.set(1);
+        assertThat(substrate.saveCheckpoint(KEYSPACE, 0, 5L, snapshot("lost"), Option.none()).await().isFailure()).as("control: the put failed").isTrue();
+        var stale = shared.puts.getLast();
+        var current = save(substrate, 0, 5L, snapshot("v5"), Option.none());
+
+        eventually("the delete of the stale block ran while it was absent", 5_000L, () -> deletesOf(stale) >= 1L);
+        shared.landPending();
+        assertThat(readable(stale)).as("control: the block landed after the delete").isTrue();
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(pointed(0)).as("the late landing names nothing").isEqualTo(current);
+        assertThat(readable(current)).isTrue();
+        assertThat(namedBlocks()).as("no pointer names the late block").doesNotContain(stale);
+    }
+
+    /// #2536 deviation, question 2 (a recorded id named by a pointer another node wrote): another node at the SAME claim writes a block of its
+    /// own (fresh 128-bit nonce per frame), so its pointer cannot name the recorded id. The first node's confirmed save at the equal claim
+    /// deletes the stale block and nothing else: the other node's block is displaced at an equal claim and deferred, not deleted.
+    @Test
+    void aStaleBlockIsNeverNamedByTheOtherNodesPointer_andItsReleaseDeletesNothingElse() {
+        var first = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var second = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY),
+                               storageOver(MemoryTier.memoryTier(ONE_GB), MemoryTier.memoryTier(ONE_GB)));
+        var stale = failedPutThatLanded(first, 0, 5L);
+        var takeover = save(second, 0, 5L, snapshot("v5-other"), Option.none());
+
+        assertThat(takeover).as("the other node's pointer names a block of its own").isNotEqualTo(stale);
+        var current = save(first, 0, 5L, snapshot("v5"), Option.none());
+
+        eventually("the stale block is deleted", 5_000L, () -> !readable(stale));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(shared.deletes).as("the other node's block is deferred at the equal claim, not deleted").containsOnly(stale);
+        assertThat(readable(current)).isTrue();
+        assertThat(readable(takeover)).isTrue();
+    }
+
     /// Fails one save at `through` after its block landed, and answers that block.
     private BlockId failedPutThatLanded(EntityLogSubstrate substrate, int partition, long through) {
         shared.landThenFailPuts.set(1);
@@ -939,6 +983,14 @@ class EntityCheckpointReclaimTest {
         return BlockId.fromHex(pointer.blockIdHex()).unwrap();
     }
 
+    private List<BlockId> namedBlocks() {
+        var named = new ArrayList<BlockId>();
+
+        kv.forEach(EntityCheckpointKey.class, EntityFoldCheckpointValue.class, (_, pointer) -> named.add(BlockId.fromHex(pointer.blockIdHex()).unwrap()));
+
+        return named;
+    }
+
     private boolean readable(BlockId id) {
         return storage.get(id).await().unwrap().isPresent();
     }
@@ -1009,6 +1061,10 @@ class EntityCheckpointReclaimTest {
         final AtomicInteger refuseDeletes = new AtomicInteger();
         /// Puts that store the block and then fail, as a DHT write that missed its quorum with some replicas already holding the block.
         final AtomicInteger landThenFailPuts = new AtomicInteger();
+        /// Puts that fail at the caller at once (a timeout while the replica writes are still in flight) and store the block only when
+        /// [#landPending] runs: a block that lands after the caller was told it failed.
+        final AtomicInteger failThenLandLater = new AtomicInteger();
+        final Map<BlockId, byte[]> pendingLandings = new ConcurrentHashMap<>();
         /// Answers as the production remote tier does: shared and durable.
         volatile boolean durable;
         /// Reads find nothing, whatever the tier holds.
@@ -1030,9 +1086,20 @@ class EntityCheckpointReclaimTest {
         public Promise<Unit> put(BlockId id, byte[] content) {
             puts.add(id);
 
+            if (failThenLandLater.getAndDecrement() > 0) {
+                pendingLandings.put(id, content);
+
+                return Causes.cause("write timed out, replica writes in flight").<Unit> promise();
+            }
+
             return landThenFailPuts.getAndDecrement() > 0
                    ? delegate.put(id, content).flatMap(_ -> Causes.cause("write quorum missed, replicas may hold the block").<Unit> promise())
                    : delegate.put(id, content);
+        }
+
+        void landPending() {
+            pendingLandings.forEach((id, content) -> delegate.put(id, content).await());
+            pendingLandings.clear();
         }
 
         @Override
