@@ -3,12 +3,14 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
+import java.io.ByteArrayInputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import picocli.CommandLine;
 
@@ -20,10 +22,29 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// parameter was reported. Scripts and docs gates use `--help` to check that a command exists, so every
 /// command in the tree must answer it with usage on stdout and exit 0. Each command is executed through
 /// the real parser, not inspected as a spec, because the failure is a parse-time one.
+///
+/// Executing a command whose `--help` is NOT honoured runs the command. `cluster init` then starts its
+/// wizard, whose `Prompt` wraps `System.in` when the command object is constructed, and a surefire fork's
+/// stdin never reaches EOF: the build hung on "Cluster name:" until the host killed it (m1 of #2261, a
+/// mutant with `usageHelp` off). So `System.in` is an immediate EOF while the tree is built and run, which
+/// turns that regression into a red with a message; the class-level timeout is the backstop, generous
+/// because a loaded host must not turn a slow tree walk into a failure.
+@Timeout(value = 180, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class HelpExitsZeroTest {
     private record Outcome(int exitCode, String stdout, String stderr) {}
 
     private static Outcome runHelp(List<String> path, String helpFlag) {
+        var originalIn = System.in;
+
+        System.setIn(new ByteArrayInputStream(new byte[0]));
+        try {
+            return runWithEmptyStdin(path, helpFlag);
+        } finally {
+            System.setIn(originalIn);
+        }
+    }
+
+    private static Outcome runWithEmptyStdin(List<String> path, String helpFlag) {
         var out = new StringWriter();
         var err = new StringWriter();
         var cmd = new CommandLine(new AetherCli());
@@ -60,7 +81,14 @@ class HelpExitsZeroTest {
     private static List<List<String>> commandTree() {
         var visited = new ArrayList<List<String>>();
 
-        walk(new CommandLine(new AetherCli()), List.of(), visited);
+        var originalIn = System.in;
+
+        System.setIn(new ByteArrayInputStream(new byte[0]));
+        try {
+            walk(new CommandLine(new AetherCli()), List.of(), visited);
+        } finally {
+            System.setIn(originalIn);
+        }
         return visited;
     }
 
