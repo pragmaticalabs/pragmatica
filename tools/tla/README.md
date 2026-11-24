@@ -131,6 +131,40 @@ the verdicts, so a skipped row is never folded into a pass count. The `heavy` pr
 `full` pinned counts apply to it); the schedule and a manual dispatch (`profile=heavy`) run it. A known-red row is recorded as
 it is: `RabiaAdopt/ballotlossD5` is RED (Agreement violated, #3592) and stays RED in the rows until the defect is fixed.
 
+### Per-row budgets (`budgets.tsv`; full and heavy profiles)
+
+Every row of the `full` and `heavy` profiles runs under its own time cap and heap. `budgets.tsv` (module, variant, `timeout_s`,
+heap, why) holds them: the row with the exact module and variant, else the `* *` default row (18000 s, the JVM's default heap:
+what the profiles had before). `run.sh` puts the cap on the row with coreutils `timeout` and the heap as `-Xmx<N>g` in front of
+`TLC_JAVA_OPTS`, which `check.sh` hands to `java` (`TLC_TIMEOUT` in the env overrides the cap of every row, and a later `-Xmx` in
+`TLC_JAVA_OPTS` overrides the heap: hand runs keep both). A row that outlives its cap reads `ERROR ... got=error(exit 124: exceeded
+the <N>s budget, <source>)`, naming the cap and where it came from; an out-of-memory exit names the java options. The `small` and
+`sim` profiles do not read the table (small keeps its own 1200 s per config).
+
+The seeded rows are about twice the time measured by hand at rc6 `b039c74482` (#3636): `Fsm2Leader/code_goals` 10800 s / 6g,
+`RabiaAdopt/rjT_resync_savefail` 10800 s / 6g, `RabiaSlot/live` 18000 s / 6g, `Fsm2Leader/code_nolate_close` and `_show`
+21600 s / 8g, `code_nolate_persist` 36000 s / 8g, `SharedPools/live` 28800 s / 20g.
+
+**Rows a hosted runner cannot take.** The `@hosted` row of the table is the largest budget a GitHub-hosted runner takes (a job is
+capped at 6 h; the runner has about 16 GB): 18000 s and 12g, a judgement, not a measurement. A row over either number is never run
+on a runner and never skipped silently: `run.sh` prints `SKIPPED-HOST <module>/<variant> expect=... budget <s>/<heap>` and
+appends an evidence row with `actual=skipped`, `verdict=SKIPPED-HOST` (never a pass; `results-check.py` names and tallies it), the
+summary line counts `skipped-host=N`, and `plan-matrix.py` names the same rows in the plan (the `skipped_host` field of the shard
+and one `plan-matrix: SKIPPED-HOST ...` line each on stderr). `TLA_HOST=list run.sh <profile>` prints them; a test pins that the
+two listings agree on the real tables. The rows run on a build host:
+
+```
+tools/tla/run-host.sh full            # every SKIPPED-HOST row of the profile, one after another, each under its own budget
+tools/tla/run-host.sh heavy Fsm2Leader 'code_nolate_.*'
+```
+
+`run-host.sh` runs one `TLA_HOST=1 run.sh` per row (so the evidence row is the one `run.sh` writes, appended to the same
+`results.tsv`) behind a memory precheck: `MemAvailable` must be at least the row's heap plus 2 GB, else it waits
+(`TLA_HOST_WAIT_SECS`, default 3600) and then prints `NOT-STARTED <row>` and exits 1; it never starts a row without room. Run it
+on a host nothing else is using, never on the Mac, and one at a time per host. Not covered: the plan gives a shard 350 minutes in
+total, so a module whose runner rows add up to more than that would still be cut by the job limit; the table bounds each row,
+not the sum.
+
 ### Fragment-touched check (pull requests)
 
 Code inside a region documented by a `tla` fragment can change while the fragment stays as it was; in three weeks on
@@ -251,7 +285,7 @@ while any of the three disagrees or a job downloads from anywhere else. Re-run t
 
 Environment: `TLA_JAR` (default `~/tools/tla/tla2tools.jar`), `TLC_WORKERS`, `TLC_OPTS`, `TLA_OUT` (default
 `target/tla/<Module>` for `check.sh`, `target/tla` for `run.sh`), `TLC_CONST` (`check.sh`: space-separated
-`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options; TLC always runs with `-XX:+UseCompactObjectHeaders`, JDK 25+, measured on DHTDepartureDrain `strand`: heap after GC -21% at peak, RSS -8%, state counts unchanged), `TLA_DISK_MAX`, `TLA_MEM_MIN_MB`, `TLA_GUARD_SECS` (`check.sh`: the resource guard, below), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it), `PINS_TSV` (`run.sh`: a different pinned-counts table). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
+`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config; overrides `budgets.tsv`), `BUDGETS_TSV`, `TLA_HOST` (`run.sh`: another budget table; host mode, see Per-row budgets), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options; TLC always runs with `-XX:+UseCompactObjectHeaders`, JDK 25+, measured on DHTDepartureDrain `strand`: heap after GC -21% at peak, RSS -8%, state counts unchanged), `TLA_DISK_MAX`, `TLA_MEM_MIN_MB`, `TLA_GUARD_SECS` (`check.sh`: the resource guard, below), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it), `PINS_TSV` (`run.sh`: a different pinned-counts table). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
 is `<out>/<Module>_<Variant>.log`; the console gets the verdict, the counterexample as actions with their Java
 positions, and the state counts.
 

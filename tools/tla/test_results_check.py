@@ -201,6 +201,30 @@ class ResultsCheck(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertEqual(out.count('SKIPPED-HEAVY needs actual=skipped'), 2, out)
 
+    def test_skipped_host_row_is_green_named_and_tallied_apart_from_passes(self):
+        c0 = self.commit()
+        self.commit(self.table(row(c0), self.skipped_row(c0, module='SharedPools', profile='full', verdict='SKIPPED-HOST')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0, out)
+        self.assertIn('tools/tla/results.tsv:3: NOTE SKIPPED-HOST SharedPools/live', out)
+        self.assertIn('not a pass', out)
+        self.assertIn('OK 1, RED 0, ERROR 0, RESOURCE 0, SKIPPED-HEAVY 0, SKIPPED-HOST 1', out)
+
+    def test_skipped_host_row_claiming_a_pass_or_outside_full_and_heavy_or_with_a_count_is_red(self):
+        c0 = self.commit()
+        self.commit(self.table(self.skipped_row(c0, verdict='SKIPPED-HOST', profile='full', actual='pass'),
+                               self.skipped_row(c0, verdict='SKIPPED-HOST', profile='small', variant='b'),
+                               self.skipped_row(c0, verdict='SKIPPED-HOST', profile='heavy', variant='c', distinct='5')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count('SKIPPED-HOST needs actual=skipped'), 3, out)
+
+    def test_skipped_host_row_under_the_heavy_profile_is_accepted(self):
+        c0 = self.commit()
+        self.commit(self.table(self.skipped_row(c0, verdict='SKIPPED-HOST', profile='heavy')))
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0, out)
+
     def test_ok_row_whose_actual_differs_from_expect_is_red(self):
         c0 = self.commit()
         self.commit(self.table(row(c0, expect='pass', actual='fail', violated='Agreement', verdict='OK')))

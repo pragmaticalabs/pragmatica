@@ -174,6 +174,57 @@ rm -rf "$work/sc"; mkdir -p "$work/sc"
 sleep 5; kill -TERM "$cpid"; wait "$cpid"; want term-to-check-exits-143 143 "$?"
 want term-to-check-kills-its-tlc dead "$(alive)"
 want term-to-check-removes-the-states-dir 0 "$(find "$work/sc" -path '*states*' | wc -l | tr -d ' ')"
+# Per-row budgets (#3636): the full and heavy profiles read budgets.tsv per row. BUDGETS_TSV points run.sh at a fixture table.
+base_budgets() { printf '*\t*\t18000\t-\tdefault\n@hosted\tlimit\t18000\t12g\tlimit\n'; }
+fixrows() { rows pass - fail Small pass - | grep -v broken; }
+{ base_budgets; printf 'Fix\tok\t21600\t8g\tover the hosted time\n'; } > "$work/b_over.tsv"
+BUDGETS_TSV="$work/b_over.tsv" run budget-over-hosted-limit-is-named-and-not-run 0 '^SKIPPED-HOST Fix/ok expect=pass budget 21600s/8g .*not a pass' full < <(fixrows)
+want budget-skipped-host-recorded 'skipped/SKIPPED-HOST' "$(cell Fix ok actual)/$(cell Fix ok verdict)"
+want budget-skipped-host-never-reached-tlc 0 "$(ls "$work"/out/Fix/Fix_ok.log 2>/dev/null | wc -l | tr -d ' ')"
+want budget-skip-leaves-the-other-row-run OK "$(cell Fix bad verdict)"
+BUDGETS_TSV="$work/b_over.tsv" run budget-skipped-host-counts-in-summary 0 'configs=1 skipped-heavy=0 skipped-host=1 ' full < <(fixrows)
+BUDGETS_TSV="$work/b_over.tsv" TLA_HOST=1 run budget-host-mode-runs-only-the-over-limit-rows 0 'configs=1 skipped-heavy=0 skipped-host=0 .*GREEN' full < <(fixrows)
+want budget-host-mode-ran-it OK "$(cell Fix ok verdict)"
+want budget-host-mode-did-not-run-the-fitting-row 0 "$(ls "$work"/out/Fix/Fix_bad.log 2>/dev/null | wc -l | tr -d ' ')"
+BUDGETS_TSV="$work/b_over.tsv" TLA_HOST=list run budget-list-prints-the-over-limit-rows 0 '^Fix/ok'$'\t''21600'$'\t''8g$' full < <(fixrows)
+{ base_budgets; printf 'Fix\tbad\t600\t20g\tover the hosted heap\n'; } > "$work/b_heap.tsv"
+BUDGETS_TSV="$work/b_heap.tsv" run budget-heap-alone-is-over-the-limit 0 '^SKIPPED-HOST Fix/bad expect=fail budget 600s/20g' full < <(fixrows)
+{ base_budgets; printf 'Fix\tok\t18000\t12g\tat the limit\n'; } > "$work/b_at.tsv"
+BUDGETS_TSV="$work/b_at.tsv" run budget-exactly-at-the-limit-runs-on-the-runner 0 'skipped-host=0 .*GREEN' full < <(fixrows)
+{ base_budgets; printf 'Fix\tnosuch\t10\t-\tx\n'; } > "$work/b_bad.tsv"
+BUDGETS_TSV="$work/b_bad.tsv" run budget-table-naming-a-missing-row-is-refused nonzero 'Fix/nosuch: no such row in models.tsv' full < <(fixrows)
+# the cap: a stub java that ignores TERM outlives a 1 s budget; the row reads ERROR naming the cap and its source, never a verdict
+{ base_budgets; printf 'Fix\tok\t1\t-\ttiny\n'; } > "$work/b_tiny.tsv"
+VARIANTS=ok PATH="$work/stub:$PATH" STUB_PID="$work/stub.pid" BUDGETS_TSV="$work/b_tiny.tsv" run budget-timeout-reads-ERROR-naming-the-budget nonzero '^ERROR Fix/ok expect=pass got=error\(exit 124: exceeded the 1s budget, budgets.tsv row 1s/-\)' full < <(fixrows)
+want budget-timeout-actual-error error "$(cell Fix ok actual)"
+want budget-timeout-verdict-ERROR ERROR "$(cell Fix ok verdict)"
+want budget-timeout-took-its-tlc-down dead "$(alive)"
+printf '*\t*\t1\t-\ttiny default\n@hosted\tlimit\t18000\t12g\tlimit\n' > "$work/b_tinydef.tsv"
+VARIANTS=ok PATH="$work/stub:$PATH" STUB_PID="$work/stub.pid" BUDGETS_TSV="$work/b_tinydef.tsv" run budget-default-row-applies-to-a-row-without-its-own nonzero 'exceeded the 1s budget, default row 1s/-' full < <(fixrows)
+VARIANTS=ok PATH="$work/stub:$PATH" STUB_PID="$work/stub.pid" TLC_TIMEOUT=2 BUDGETS_TSV="$work/b_over.tsv" run budget-env-timeout-overrides-the-row nonzero 'exceeded the 2s budget, TLC_TIMEOUT env' full < <(fixrows)
+# the heap: a stub java that records its arguments shows the row's -Xmx in front of the env's java options
+mkdir -p "$work/stub2"; printf '#!/usr/bin/env bash\necho "$@" > "$STUB_ARGS"\nexit 0\n' > "$work/stub2/java"; chmod +x "$work/stub2/java"
+{ base_budgets; printf 'Fix\tok\t100\t6g\tsix\n'; } > "$work/b_six.tsv"
+VARIANTS=ok PATH="$work/stub2:$PATH" STUB_ARGS="$work/args.txt" BUDGETS_TSV="$work/b_six.tsv" run budget-heap-reaches-java 0 - full < <(fixrows)
+want budget-heap-is-xmx-6g 1 "$(grep -c -- '-Xmx6g' "$work/args.txt")"
+VARIANTS=ok PATH="$work/stub2:$PATH" STUB_ARGS="$work/args.txt" TLC_JAVA_OPTS=-Xmx1g BUDGETS_TSV="$work/b_six.tsv" run budget-env-java-options-follow-the-row-heap 0 - full < <(fixrows)
+want budget-env-xmx-comes-after-the-row-xmx 1 "$(grep -cE -- '-Xmx6g.* -Xmx1g' "$work/args.txt")"
+VARIANTS=ok PATH="$work/stub2:$PATH" STUB_ARGS="$work/args.txt" BUDGETS_TSV="$work/b_six.tsv" run budget-small-profile-ignores-the-table 0 - small < <(fixrows)
+want budget-small-has-no-row-heap 0 "$(grep -c -- '-Xmx' "$work/args.txt")"
+# run-host.sh: the SKIPPED-HOST rows run one by one under their own budget, behind a memory precheck that never starts a row without room
+hostrun() { # hostrun <name> <want-exit: 0|nonzero> <pattern> <profile> [env assignments...]: Fix/ok is over the limit in b_over.tsv
+  local name=$1 want=$2 pattern=$3 profile=$4 out rc; shift 4
+  fixrows > "$work/models.tsv"; rm -rf "$work/out"; : > "$work/pins.tsv"
+  out=$(cd "$work" && env "$@" MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out" TLC_WORKERS=1 BUDGETS_TSV="$work/b_over.tsv" bash "$here/run-host.sh" "$profile" 2>&1); rc=$?
+  if { [[ $want == 0 && $rc == 0 ]] || [[ $want == nonzero && $rc != 0 ]]; } && grep -qE "$pattern" <<<"$out"; then echo "PASS $name (exit $rc)"
+  else echo "FAIL $name: want exit $want, got $rc, pattern '$pattern'"; sed 's/^/    /' <<<"$out" | tail -25; fail=1; fi; }
+printf 'MemAvailable:   %s kB\n' 99999999 > "$work/mem_big"; printf 'MemAvailable:   %s kB\n' 1024 > "$work/mem_small"
+hostrun host-script-runs-the-over-limit-row-only 0 'rows=1 green=1 red=0 not-started=0 .*GREEN' full TLA_MEMINFO="$work/mem_big"
+want host-script-row-recorded-OK-at-profile-full 'OK/full' "$(cell Fix ok verdict)/$(cell Fix ok profile)"
+want host-script-did-not-run-the-fitting-row 0 "$(ls "$work"/out/Fix/Fix_bad.log 2>/dev/null | wc -l | tr -d ' ')"
+hostrun host-script-never-starts-a-row-without-memory nonzero '^NOT-STARTED Fix/ok budget 21600s/8g: MemAvailable 1 MB < 10240 MB' full TLA_MEMINFO="$work/mem_small" TLA_HOST_WAIT_SECS=2 TLA_HOST_POLL_SECS=1
+want host-script-not-started-row-has-no-result 0 "$(ls "$work"/out/Fix/Fix_ok.log 2>/dev/null | wc -l | tr -d ' ')"
+hostrun host-script-heavy-without-heavy-rows-names-nothing-to-run nonzero 'no row marked heavy' heavy TLA_MEMINFO="$work/mem_big"
 # a results file with another header is refused, never appended to
 printf 'commit\tother\n' > "$work/foreign.tsv"
 out=$(cd "$work" && MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out2" TLA_RESULTS="$work/foreign.tsv" bash "$here/run.sh" small Fix 2>&1); rc=$?
