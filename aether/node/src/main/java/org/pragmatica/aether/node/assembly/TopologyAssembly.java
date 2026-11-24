@@ -333,7 +333,7 @@ public sealed interface TopologyAssembly {
                                                                                                                           nodeReplacements,
                                                                                                                           deploymentMap,
                                                                                                                           clusterTopologyManager,
-                                                                                                                          pastDrainGrace(leaderReconcilerRef::get),
+                                                                                                                          leaderReconcilerRef::get,
                                                                                                                           readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
                                                                                                                                               membershipFsmRef::get)))
                                                                                         .onFailure(cause -> LOG.warn("Core voter reconciliation: {}",
@@ -841,14 +841,16 @@ public sealed interface TopologyAssembly {
                          .option();
     }
 
-    private static Promise<Unit> retireExcludedCores(RabiaNode<KVCommand<AetherKey>> cluster,
-                                                     Supplier<MembershipFsm> membership,
-                                                     KVStore<AetherKey, AetherValue> store,
-                                                     NodeReplacementIndex replacements,
-                                                     DeploymentMap deployments,
-                                                     ClusterTopologyManager topology,
-                                                     Predicate<NodeId> pastDrainGrace,
-                                                     Set<NodeId> ready) {
+    /// #1055: the grace gate is built HERE from the reconciler holder, not handed in as a predicate, so the one line that applies
+    /// the drain-safety grace to the retirement path is reachable by a test that drives this method (`CoreRetirementWiringTest`).
+    static Promise<Unit> retireExcludedCores(RabiaNode<KVCommand<AetherKey>> cluster,
+                                             Supplier<MembershipFsm> membership,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             NodeReplacementIndex replacements,
+                                             DeploymentMap deployments,
+                                             ClusterTopologyManager topology,
+                                             Supplier<LeaderReconciler> reconciler,
+                                             Set<NodeId> ready) {
         if (!cluster.leaderManager().isLeader()) {
             return Promise.unitPromise();
         }
@@ -856,7 +858,7 @@ public sealed interface TopologyAssembly {
         var victims = retirementVictims(excludedCoreNodes(cluster, membership, store, replacements, ready),
                                         node -> deployments.byNode(node)
                                                            .isEmpty(),
-                                        pastDrainGrace);
+                                        pastDrainGrace(reconciler));
 
         return retireSurplusCores(victims, topology);
     }
