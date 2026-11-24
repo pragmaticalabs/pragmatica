@@ -337,3 +337,11 @@ d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:59:06Z	full	LeaderA
 d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:59:08Z	full	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4784	2026.11.06.222357	OK	
 d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:59:10Z	full	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2796	2026.11.06.222357	OK	
 d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:59:13Z	full	LeaderAdmission	interleavefixed	pass	pass		2537	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:48Z	small	LeaderAdmission	interleave	fail	fail	PassiveInView	2437	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:50Z	small	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4784	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:52Z	small	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2939	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:54Z	small	LeaderAdmission	interleavefixed	pass	pass		2537	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:56Z	full	LeaderAdmission	interleave	fail	fail	PassiveInView	2226	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:58Z	full	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4784	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:19:01Z	full	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2800	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:19:03Z	full	LeaderAdmission	interleavefixed	pass	pass		2537	2026.11.06.222357	OK	
