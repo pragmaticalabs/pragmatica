@@ -8,6 +8,8 @@ Updated: 2026-02-19
 Affects: [jbct-cli, aether]
 ---
 
+> **Superseded (aspect removal, #3649).** The `Aspect<T>` factory parameter and `aspect.apply(...)` in the generated-factory examples below are **superseded**: they were removed. The generated factory is `xxx(SliceCreationContext ctx)`.
+
 ## Summary
 
 Type-safe resource injection into Aether slices via annotation-based qualifiers and configuration-driven provisioning. Defines the architecture for managing configured resources (database connections, HTTP clients, connection pools) as first-class slice dependencies alongside slice-to-slice invocation.

@@ -52,15 +52,15 @@ final class Distribution {
                                                           true,
                                                           ZipFile.OPEN_READ,
                                                           Runtime.version())) {
-                               var names = jar.versionedStream()
-                                              .map(ZipEntry::getName)
-                                              .filter(name -> name.endsWith(".class")
-                                                              && !name.equals("module-info.class")
-                                                              && !name.startsWith("META-INF/"))
-                                              .toList();
+                                   var names = jar.versionedStream()
+                                                  .map(ZipEntry::getName)
+                                                  .filter(name -> name.endsWith(".class")
+                                                                  && !name.equals("module-info.class")
+                                                                  && !name.startsWith("META-INF/"))
+                                                  .toList();
 
-                               return new Classes(library, names);
-                           }
+                                   return new Classes(library, names);
+                               }
                            });
     }
 
