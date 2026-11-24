@@ -15,7 +15,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.ByteBuf;
 import org.apache.logging.log4j.Level;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.api.routes.GrantedBodyRoute;
 import org.pragmatica.aether.api.routes.GrantedRouteProbe;
@@ -644,32 +643,9 @@ class ManagementServerSecurityCouplingTest {
     }
 
 
-    /// TRIPWIRE for ms18 (Refs #3550). The secured forward path guards an unsupported method with a `return` before validation, but
-    /// `dispatchManagementForwardWithinBudget` builds the `ForwardedRequestContext` first, and that constructor throws
-    /// `IllegalArgumentException` for an unknown method, so the guard is unreachable and removing its `return` cannot be
-    /// observed. This test pins the current behaviour (the receiver throws; neither validator nor route is reached). When
-    /// the construction is made total, delete it and enable `forwardedPath_unsupportedMethod_returnsBeforeValidationAndDispatch`.
+    /// ms18 (#3550): an unsupported forwarded method is refused with an error reply to the forwarding node, without
+    /// throwing, before validation and dispatch.
     @Test
-    void forwardedPath_unsupportedMethod_currentlyThrowsBeforeValidationAndDispatch() {
-        var validator = RecordingValidator.recording(SecurityValidator.apiKeyValidator(ISOLATION_KEYS));
-        var received = new AtomicReference<Authenticated>();
-        var route = GrantedBodyRoute.grantedBodyRoute(PATH_A, (_, auth) -> {
-            received.set(auth);
-            return Promise.success("\"x\"");
-        });
-        var forwarded = HttpRequestContext.httpRequestContext(PATH_A, "BOGUS", Map.of(), Map.of("X-API-Key", List.of(KEY_A)), new byte[0], "req-fwd-bogus");
-        var node = server(validator, true, forwarded, sources -> GrantedBodyRoute.routerWith(sources, route));
-
-        assertThatThrownBy(() -> node.onHttpForwardRequest(forwardRequest())).as("Refs #3550: the receiver no longer throws on an unsupported method; delete this tripwire and enable the @Disabled ms18 test")
-                                                                                      .isInstanceOf(IllegalArgumentException.class);
-        assertThat(validator.returned().toOptional()).as("the validator was never consulted").isEmpty();
-        assertThat(received.get()).as("the route never ran").isNull();
-    }
-
-    /// ms18 target assertion: an unsupported forwarded method is refused (error reply) without throwing, before validation
-    /// and dispatch. Disabled until the receiver's context construction is total; see the tripwire above.
-    @Test
-    @Disabled("ms18: ForwardedRequestContext construction throws first; enable with the tripwire's removal")
     void forwardedPath_unsupportedMethod_returnsBeforeValidationAndDispatch() {
         var validator = RecordingValidator.recording(SecurityValidator.apiKeyValidator(ISOLATION_KEYS));
         var received = new AtomicReference<Authenticated>();
@@ -681,6 +657,11 @@ class ManagementServerSecurityCouplingTest {
         var node = server(validator, true, forwarded, sources -> GrantedBodyRoute.routerWith(sources, route));
 
         assertThatCode(() -> node.onHttpForwardRequest(forwardRequest())).doesNotThrowAnyException();
+        assertThat(network.sent()).as("exactly one reply, to the forwarding node").singleElement().isInstanceOfSatisfying(HttpForwardResponse.class, reply -> {
+            assertThat(reply.success()).as("a refusal, not a success").isFalse();
+            assertThat(reply.correlationId()).isEqualTo("corr-962");
+            assertThat(new String(reply.payload(), java.nio.charset.StandardCharsets.UTF_8)).isEqualTo("Unsupported HTTP method: BOGUS");
+        });
         assertThat(validator.returned().toOptional()).as("the validator was never consulted").isEmpty();
         assertThat(received.get()).as("the route never ran").isNull();
     }
@@ -930,13 +911,21 @@ class ManagementServerSecurityCouplingTest {
     }
 
     private static final class RecordingClusterNetwork implements ClusterNetwork {
+        private final List<ProtocolMessage> sent = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        List<ProtocolMessage> sent() {return List.copyOf(sent);}
+
         @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return unit();}
         @Override public void connect(NetworkServiceMessage.ConnectNode connectNode) {}
         @Override public void disconnect(NetworkServiceMessage.DisconnectNode disconnectNode) {}
         @Override public void listNodes(NetworkServiceMessage.ListConnectedNodes listConnectedNodes) {}
         @Override public void handleSend(NetworkServiceMessage.Send send) {}
         @Override public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
-        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {return Promise.success(new WriteOutcome.Sent(nodeId));}
+        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
+            sent.add(message);
+
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
 
         @Override
         public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {

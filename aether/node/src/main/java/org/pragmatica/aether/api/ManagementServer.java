@@ -1960,7 +1960,22 @@ class ManagementServerImpl implements ManagementServer {
                                                        HttpForwardRequest request,
                                                        ClusterNetwork network,
                                                        Serializer ser) {
-        var serverCtx = ForwardedRequestContext.forwardedRequestContext(context);
+        ForwardedRequestContext.forwardedRequestContext(context)
+                               .onEmpty(() -> sendManagementForwardError(network,
+                                                                         request,
+                                                                         "Unsupported HTTP method: " + context.method()))
+                               .onPresent(serverCtx -> dispatchScopedManagementForward(context,
+                                                                                       request,
+                                                                                       network,
+                                                                                       ser,
+                                                                                       serverCtx));
+    }
+
+    private void dispatchScopedManagementForward(HttpRequestContext context,
+                                                 HttpForwardRequest request,
+                                                 ClusterNetwork network,
+                                                 Serializer ser,
+                                                 ForwardedRequestContext serverCtx) {
         var responseCapture = ForwardedResponseWriter.forwardedResponseWriter();
         // The forwarded request's own scope, opened on this node as on the node that took the client call, in every mode:
         // the receiving node validates again, and a grant it mints is live for this dispatch only.
@@ -1981,17 +1996,7 @@ class ManagementServerImpl implements ManagementServer {
                                                   Serializer ser,
                                                   ForwardedRequestContext serverCtx,
                                                   ForwardedResponseWriter responseCapture) {
-        var method = Result.lift(Causes::fromThrowable,
-                                 () -> HttpMethod.valueOf(context.method().toUpperCase(Locale.ROOT)))
-                           .option();
-
-        if (method.isEmpty()) {
-            sendManagementForwardError(network, request, "Unsupported HTTP method: " + context.method());
-
-            return;
-        }
-
-        var validated = validateRequestSecurity(serverCtx, responseCapture, context.path(), method.unwrap());
+        var validated = validateRequestSecurity(serverCtx, responseCapture, context.path(), serverCtx.method());
 
         if (validated.isFailure()) {
             responseCapture.completion()
