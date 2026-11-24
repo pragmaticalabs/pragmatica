@@ -183,8 +183,8 @@ class Http3RequestHandlerTest {
             Locale.setDefault(Locale.forLanguageTag("tr-TR"));
 
             var channel = channel();
-            var headers = new DefaultHttp3Headers();
-            var trailers = new DefaultHttp3Headers();
+            var headers = new DefaultHttp3Headers(false);
+            var trailers = new DefaultHttp3Headers(false);
 
             headers.method("POST");
             headers.path("/upload");
