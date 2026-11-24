@@ -38,7 +38,7 @@ Terra shares annotation analysis, resource injection, factory return handling, i
 
 Every selected dependency must appear in the blueprint with its exact generated coordinate. Dependencies are constructed first; injected instances retain their interceptor wrappers. This increment accepts blueprint identity and slice selection, including deployment-only scaling fields, and refuses unsupported sections. One instance is created per selected slice. The assembler obtains Terra-built candidate JARs from Maven runtime dependencies and checks this selection.
 
-Configuration is explicit and scoped per slice. Supply resource sections through the configuration provider. The executable launcher reads each owning JAR’s defaults separately; embedding callers supply their own providers. Existing LOCAL cache factories are reused. Other SPI resources require their dependencies and configuration; database startup uses the explicit migration path below, while distributed collaborators remain outside Terra’s supported runtime.
+Configuration is explicit and scoped per slice. Supply resource sections through the configuration provider. The executable launcher reads each owning JAR’s defaults separately; embedding callers supply their own providers. Existing LOCAL cache factories are reused; a cache or idempotency section that selects the `dht` backend (named, or implied by `DISTRIBUTED`/`TIERED`) is refused at slice start with a typed `BackendUnavailable` naming the section, backend and runtime (#3658). Other SPI resources require their dependencies and configuration; database startup uses the explicit migration path below, while distributed collaborators remain outside Terra’s supported runtime.
 
 ## Pub-sub contract
 
