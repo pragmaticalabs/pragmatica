@@ -897,6 +897,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         SharedScheduler.schedule(() -> deleteWithRetry(block, cause -> logUndeleted(block, cause)), after);
     }
 
+    @Contract
     private void deleteWithRetry(BlockId block, Consumer<Cause> undeleted) {
         reclaim.deleteRetry().execute(() -> deleteUnlessNamed(block)).onFailure(undeleted);
     }
