@@ -4,7 +4,7 @@ This guide shows how to gradually extract functionality from a monolithic applic
 
 ## The Strangler Fig Pattern
 
-Incremental adoption starts with [Pragmatica Terra](../../../terra/README.md): the same slice sources run on Terra as one JVM beside or inside your existing deployment story, with no cluster to operate. Aether is the scale-out step, when a slice needs independent scaling or cluster-wide state. Ember and Forge are development and test tools; they are not an embeddable production runtime and not a migration path.
+Incremental adoption starts with [Pragmatica Terra](../../../terra/README.md): the same slice sources run on Terra as one JVM with no cluster to operate. Aether is the scale-out step, when a slice needs independent scaling or cluster-wide state. Ember and Forge are development and test tools; they are not an embeddable production runtime and not a migration path.
 
 The strangler fig pattern, applied to slices:
 
