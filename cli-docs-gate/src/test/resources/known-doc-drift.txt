@@ -16,7 +16,7 @@
 #
 # Keyed by path and drift, never by line number: line numbers are tree-scoped and shift under any
 # edit above them. NOTE the consequence, since it bounds what this count means: one line here covers
-# EVERY instance of that drift in that file, so 85 entries describe more than 85 broken
+# EVERY instance of that drift in that file, so 84 entries describe more than 84 broken
 # invocations.
 #
 # Regenerate candidate lines with:
@@ -50,7 +50,7 @@
 #     stream, just without the replication argument.
 #     The dual-tree cause (#951) is unchanged: the CLI still ships BOTH `aether stream` and
 #     `aether streams` with divergent subcommands. Removing the old tree is separate work.
-#   * The remaining absent commands (`aether aspects`, `topic(s)`, `forge`, `logs`, `workflows`,
+#   * The remaining absent commands (`topic(s)`, `forge`, `logs`, `workflows`,
 #     `landscape`, `cluster audit/heal/api-key/unregister`, `workers health/endpoints`,
 #     `nodes decommission`, `jbct add`, ...) are surfaces the documentation describes and the CLI
 #     never grew.
@@ -59,7 +59,7 @@
 #     exist. The gate reads the inline span as an invocation and cannot tell a proposal from an
 #     instruction.
 #
-# Current composition: 86 entries - 32 absent commands, 54 absent options - across
+# Current composition: 85 entries - 31 absent commands, 54 absent options - across
 # 37 files, of which 16 are under aether/docs/specs/**.
 #
 # #676 added waivers for the backup commands it removed (MAILBOX.md and
@@ -120,7 +120,6 @@ aether/docs/operators/scaling.md	option: --verbose on aether status
 aether/docs/operators/scaling.md	option: --watch on aether status
 
 # --- aether/docs/reference/cli.md ---
-aether/docs/reference/cli.md	command: aether aspects
 aether/docs/reference/cli.md	command: aether cluster audit
 aether/docs/reference/cli.md	command: aether nodes decommission
 aether/docs/reference/cli.md	command: aether topic
