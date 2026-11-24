@@ -1,8 +1,8 @@
 package org.pragmatica.jbct.format;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
+import java.util.TreeMap;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -70,8 +70,9 @@ public interface ContentGuard {
     /// The lexed items of one text, split by what the comparison does with them.
     ///
     /// Import declarations are the one place the formatter's rules reorder tokens (it sorts and groups them), so each
-    /// declaration is folded into one `IMPORT` item and the declarations are compared as a sorted list: a lost,
-    /// added or changed declaration is still refused, a reorder of declarations is not.
+    /// declaration is folded into one `IMPORT` item and the declarations are compared as a sorted list without duplicates (the
+    /// formatter drops a repeated declaration): a lost, added or changed declaration is still refused, a reorder or a
+    /// repeat is not.
     record Split(List<Item> comments, List<Item> code, List<Item> imports) {
         static Split split(List<Item> comments, List<Item> code, List<Item> imports) {
             return new Split(comments, code, imports);
@@ -86,7 +87,12 @@ public interface ContentGuard {
                            folded.stream().filter(item -> item.category() == Category.CODE).toList(),
                            folded.stream()
                                  .filter(item -> item.category() == Category.IMPORT)
-                                 .sorted(Comparator.comparing(Item::text))
+                                 .collect(Collectors.toMap(Item::text,
+                                                           item -> item,
+                                                           (first, _) -> first,
+                                                           TreeMap::new))
+                                 .values()
+                                 .stream()
                                  .toList());
     }
 

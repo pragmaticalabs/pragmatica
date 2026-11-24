@@ -130,6 +130,12 @@ class ContentGuardTest {
     }
 
     @Test
+    void duplicateImportDropped_isAcceptedAsTheFormatterDeduplicatesImports() {
+        assertThat(verdict("import java.util.List;\nimport java.util.List;\n\nclass C {}\n",
+                           "import java.util.List;\n\nclass C {}\n")).isEqualTo(OK);
+    }
+
+    @Test
     void lostImport_isRefused() {
         assertThat(verdict("import java.util.List;\nimport java.util.Map;\n\nclass C {}\n",
                            "import java.util.Map;\n\nclass C {}\n")).contains("import lost: `import java . util . List ;` (input line 1)");
