@@ -5,6 +5,7 @@ package org.pragmatica.cluster.replica;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -210,6 +211,88 @@ class ReplicaFeedClientTest {
             net.step();
 
             assertThat(net.subscribes()).hasSize(3);
+        }
+    }
+
+    @Nested
+    class LaggingSource {
+        /// #3359 (twin #2776). The worker applied slot 3 from core-0, which then goes silent; core-1 lags (its frontier is behind the worker's:
+        /// `AHEAD`), so the worker discards its position and is offered a snapshot of the SAME incarnation below what it applied. It refuses it, keeps its
+        /// state and revision, and leaves that source. Mutation: drop the floor check in `ReplicaApplier.install`, or the avoid in `ReplicaFeedClient.install`.
+        @Test
+        void aLaggingCoresSnapshot_ofTheSameIncarnation_isRefused_andTheWorkerKeepsItsState() {
+            var net = joined();
+
+            net.commitOnlyOn(0, 3, put("c", "3"));
+            net.step();
+            net.core(0).up.set(false);
+            net.advance(3_500);
+            net.step();
+            net.advance(300);
+            net.step();
+            net.advance(300);
+            net.step();
+
+            assertThat(net.subscribeTargets()).as("the lagging core was asked").contains(net.core(1).id);
+            assertThat(net.valueOf("c")).as("the newer state stays").isEqualTo("3");
+            assertThat(net.clientStore.committedRevision()).as("the revision never moves down").isEqualTo(4);
+            assertThat(net.installs.get()).as("no regressing snapshot installed").isEqualTo(1);
+        }
+
+        /// The control and the way out: once the lagging core catches up, the worker's next snapshot (at or above what it applied) installs.
+        /// Mutation: refuse every snapshot after a refusal, or never forget the avoided source.
+        @Test
+        void afterTheLaggingCoreCatchesUp_theWorkerInstalls() {
+            var net = joined();
+
+            net.commitOnlyOn(0, 3, put("c", "3"));
+            net.step();
+            net.core(0).up.set(false);
+            net.advance(3_500);
+            net.step();
+            net.advance(300);
+            net.step();
+            net.commitOnlyOn(1, 3, put("c", "3"));
+            net.advance(30_000);
+            net.step();
+            net.advance(30_000);
+            net.step();
+            net.advance(30_000);
+            net.step();
+
+            assertThat(net.valueOf("c")).isEqualTo("3");
+            assertThat(net.clientStore.committedRevision()).isEqualTo(4);
+            assertThat(net.installs.get()).as("the snapshot at the caught-up revision installed").isGreaterThanOrEqualTo(2);
+        }
+    }
+
+    /// The way out through another source: the refused source is avoided, so a core that is caught up is asked next although the lagging one was
+    /// the current source (the selector keeps the current source while it is not avoided). Mutation: drop `avoided.add` in `ReplicaFeedClient.refusedInstall`.
+    @Nested
+    class LeavingTheLaggingSource {
+        @Test
+        void afterTheRefusal_aCaughtUpCoreIsAsked_andItsSnapshotInstalls() {
+            var net = joined();
+
+            net.commitOnlyOn(0, 3, put("c", "3"));
+            net.step();
+            net.core(0).up.set(false);
+            net.advance(3_500);
+            net.step();
+            net.advance(300);
+            net.step();
+            net.advance(300);
+            net.step();
+            net.core(0).up.set(true);
+            IntStream.range(0, 6).forEach(round -> {
+                net.advance(1_000);
+                net.step();
+            });
+
+            assertThat(net.subscribeTargets().getLast()).as("the caught-up core was asked last").isEqualTo(net.core(0).id);
+            assertThat(net.valueOf("c")).isEqualTo("3");
+            assertThat(net.clientStore.committedRevision()).isEqualTo(4);
+            assertThat(net.installs.get()).as("its snapshot, at the applied revision, installed").isEqualTo(2);
         }
     }
 

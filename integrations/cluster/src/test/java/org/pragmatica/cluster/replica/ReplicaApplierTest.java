@@ -344,4 +344,72 @@ class ReplicaApplierTest {
         assertThat(valueOf("a")).isEqualTo("1");
         assertThat(applier.accept(live(1, entry(TAG, 2, 2, "b", "2")))).as("without a position nothing applies").isEqualTo(Step.DISCARD_POSITION);
     }
+
+    /// #3359 (twin #2776): a snapshot of the SAME incarnation below the revision the store has applied is refused, also after the position was
+    /// discarded (the `AHEAD` path): the store keeps its content and revision and no notification is emitted. Mutation: drop the floor check in
+    /// `ReplicaApplier.install` (or forget the followed tag in `discardPosition`).
+    @Test
+    void install_ofALaggingSnapshotOfTheSameIncarnation_isRefused_andChangesNothing() {
+        var seen = new java.util.ArrayList<Object>();
+        var router = MessageRouter.mutable();
+
+        router.addRoute(KVStoreNotification.ValuePut.class,
+                        (java.util.function.Consumer<KVStoreNotification.ValuePut<?, ?>>) put -> seen.add(put.cause().key()));
+        router.addRoute(KVStoreNotification.ValueRemove.class,
+                        (java.util.function.Consumer<KVStoreNotification.ValueRemove<?, ?>>) remove -> seen.add(remove.cause().key()));
+
+        var lagging = laggingSource(2);
+        var current = laggingSource(4);
+        var kept = ClientFixtures.store(router);
+        var replica = ReplicaApplier.replicaApplier(kept, 1 << 20);
+        var ahead = current.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
+        var behind = lagging.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
+
+        replica.beginBuffering();
+        replica.install(ahead.bytes(), ahead.tag(), ahead.revision(), ahead.anchor()).unwrap();
+        replica.discardPosition();
+        seen.clear();
+
+        var refused = replica.install(behind.bytes(), behind.tag(), behind.revision(), behind.anchor());
+
+        assertThat(refused.isFailure()).isTrue();
+        assertThat(seen).as("a refused install notifies nobody").isEmpty();
+        assertThat(kept.committedRevision()).as("the revision stays where it was applied").isEqualTo(ahead.revision());
+        assertThat(kept.get(new Key("k3")).isPresent()).as("the newer content stays").isTrue();
+        assertThat(replica.position().isHeld()).as("a refused install adopts nothing").isFalse();
+    }
+
+    /// The control of the floor: the same lagging snapshot installs when it is a NEW incarnation (a re-genesis legitimately moves the revision down),
+    /// and an equal-or-newer snapshot of the same incarnation installs. Mutation: compare by revision alone, ignoring the tag.
+    @Test
+    void install_belowTheAppliedRevision_isAllowedForANewIncarnation_andAtOrAboveForTheSame() {
+        var replica = ReplicaApplier.replicaApplier(ClientFixtures.store(), 1 << 20);
+        var current = laggingSource(4).captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
+        var regenesis = ClientFixtures.store();
+
+        FeedFixtures.commit(regenesis, 0, ClientFixtures.incarnation(2, "B"));
+
+        var reborn = regenesis.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
+
+        replica.beginBuffering();
+        replica.install(current.bytes(), current.tag(), current.revision(), current.anchor()).unwrap();
+
+        assertThat(replica.install(current.bytes(), current.tag(), current.revision(), current.anchor()).isSuccess())
+                .as("the same revision is not below it").isTrue();
+
+        replica.discardPosition();
+
+        assertThat(replica.install(reborn.bytes(), reborn.tag(), reborn.revision(), reborn.anchor()).isSuccess())
+                .as("a new incarnation moves down").isTrue();
+        assertThat(replica.position().tag()).isEqualTo(IncarnationTag.incarnationTag(2, "B"));
+    }
+
+    private static KVStore<StructuredKey, Object> laggingSource(int committedSlots) {
+        var source = ClientFixtures.store();
+
+        FeedFixtures.commit(source, 0, ClientFixtures.incarnation(1, "A"));
+        IntStream.range(1, committedSlots).forEach(slot -> FeedFixtures.commit(source, slot, FeedFixtures.put("k" + slot, "v")));
+
+        return source;
+    }
 }

@@ -248,6 +248,12 @@ final class ClientFixtures {
             cores.forEach(core -> commitOn(core, batch, slot));
         }
 
+        /// Commits one batch on ONE core only: the others lag behind it until they commit the same batch (`commitAll` at the same slot would repeat it).
+        @SafeVarargs
+        final void commitOnlyOn(int index, long slot, KVCommand<StructuredKey>... commands) {
+            commitOn(cores.get(index), cores.get(index).store.createBatch(List.of(commands)), slot);
+        }
+
         private static void commitOn(Core core, org.pragmatica.consensus.StateMachine.Batch<KVCommand<StructuredKey>> batch, long slot) {
             core.store.processCommitted(batch, slot + 1);
             core.store.onPhaseCompleted(slot + 1);
