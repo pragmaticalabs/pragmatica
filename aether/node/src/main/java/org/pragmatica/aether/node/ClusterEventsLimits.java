@@ -88,7 +88,9 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
 
         return maxBytes >= event
                ? success(maxBytes)
-               : InvalidLimit.BELOW_EVENT_SIZE_FACTORY.apply(MAX_BYTES_VARIABLE, String.valueOf(maxBytes), event)
+               : InvalidLimit.BELOW_EVENT_SIZE_FACTORY.apply(MAX_BYTES_VARIABLE,
+                                                             String.valueOf(maxBytes),
+                                                             event)
                                                       .result();
     }
 

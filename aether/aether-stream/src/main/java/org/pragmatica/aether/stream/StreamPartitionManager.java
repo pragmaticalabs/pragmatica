@@ -1899,9 +1899,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// never hold an event is still a wrong one), and the window a non-user ring is actually sized from ([#ringSizingBytes]).
     /// The `system:cluster-events` bounds are refused earlier, at boot, by `ClusterEventsLimits` (#3390 F3).
     private static Result<Unit> checkRingHoldsMaxEvent(StreamConfig config) {
-        var declaredHot = config.declaration()
-                                .flatMap(StreamDeclaration::hot)
-                                .flatMap(HotWindowDeclaration::maxBytes);
+        var declaredHot = config.declaration().flatMap(StreamDeclaration::hot).flatMap(HotWindowDeclaration::maxBytes);
 
         return checkHoldsMaxEvent(config, "[hot] max_bytes", declaredHot).flatMap(_ -> checkHoldsMaxEvent(config,
                                                                                                           ringSizingKey(config),
@@ -1998,7 +1996,9 @@ public final class StreamPartitionManager implements AutoCloseable {
             return StreamError.General.AHSE_REQUIRED_FOR_STRONG.result();
         }
 
-        return materializedFloorBytes(config).flatMap(floorBytes -> materializeWithinFloor(config, commitMode, floorBytes));
+        return materializedFloorBytes(config).flatMap(floorBytes -> materializeWithinFloor(config,
+                                                                                           commitMode,
+                                                                                           floorBytes));
     }
 
     private Result<Unit> materializeWithinFloor(StreamConfig config, CommitMode commitMode, long floorBytes) {
