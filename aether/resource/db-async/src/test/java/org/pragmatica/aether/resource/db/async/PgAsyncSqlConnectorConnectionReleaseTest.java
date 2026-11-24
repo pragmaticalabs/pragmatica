@@ -65,6 +65,16 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
     /// A pool per test: a leak in one test must starve only that test's own pool, not its successors'.
     @BeforeEach
     void freshPoolAndTables() {
+        connector = newConnector();
+        connector.update("DROP TABLE IF EXISTS release_probe").await(timeSpan(10).seconds()).unwrap();
+        connector.update("CREATE TABLE release_probe(id INT PRIMARY KEY)").await(timeSpan(10).seconds()).unwrap();
+        connector.update("DROP TABLE IF EXISTS release_deferred").await(timeSpan(10).seconds()).unwrap();
+        connector.update("CREATE TABLE release_deferred(id INT, CONSTRAINT release_deferred_uq UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)")
+                 .await(timeSpan(10).seconds())
+                 .unwrap();
+    }
+
+    private static AsyncSqlConnector newConnector() {
         var pool = PoolConfig.poolConfigBuilder().withMinConnections(0).withMaxConnections(POOL_SIZE).build().unwrap();
         var config = databaseConnectorConfigBuilder().withName("release")
                                                      .withAsyncUrl("postgresql://" + postgres.getHost() + ":" + postgres.getMappedPort(5432) + "/" + postgres.getDatabaseName())
@@ -74,13 +84,7 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
                                                      .build()
                                                      .unwrap();
 
-        connector = (AsyncSqlConnector) new AsyncSqlConnectorFactory().provision(config).await().unwrap();
-        connector.update("DROP TABLE IF EXISTS release_probe").await(timeSpan(10).seconds()).unwrap();
-        connector.update("CREATE TABLE release_probe(id INT PRIMARY KEY)").await(timeSpan(10).seconds()).unwrap();
-        connector.update("DROP TABLE IF EXISTS release_deferred").await(timeSpan(10).seconds()).unwrap();
-        connector.update("CREATE TABLE release_deferred(id INT, CONSTRAINT release_deferred_uq UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)")
-                 .await(timeSpan(10).seconds())
-                 .unwrap();
+        return (AsyncSqlConnector) new AsyncSqlConnectorFactory().provision(config).await().unwrap();
     }
 
     /// The stop is bounded and its outcome is not the test's verdict: `PgConnectionPool.close` only shuts down idle connections.
@@ -292,9 +296,11 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
         assertThat(listening.unlisten().await(timeSpan(5).seconds()).isSuccess()).isTrue();
         Thread.sleep(1000);
 
-        var others = connector.pinned(Duration.ZERO, session -> session.queryOne(OTHER_BACKENDS, COUNT), _ -> Promise.unitPromise())
-                              .await(timeSpan(10).seconds());
+        var observer = newConnector();
+        var others = observer.pinned(Duration.ZERO, session -> session.queryOne(OTHER_BACKENDS, COUNT), _ -> Promise.unitPromise())
+                             .await(timeSpan(10).seconds());
 
+        observer.stop().await(timeSpan(5).seconds());
         assertThat(others.unwrap()).as("backends left open after stop and unlisten").isZero();
     }
 }
