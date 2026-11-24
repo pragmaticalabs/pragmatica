@@ -13,6 +13,7 @@ import org.pragmatica.aether.stream.ForwardingReadRouter.LocalReader;
 import org.pragmatica.aether.stream.ForwardingReadRouter.OwnerResolver;
 import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.forward.StreamForwardClient.ReadForwardResult;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
@@ -38,6 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ForwardingReadRouterTest {
     private static final NodeId SELF = new NodeId("self-node");
     private static final NodeId OWNER = new NodeId("owner-node");
+    private static final NodeId PEER_A = new NodeId("peer-a");
+    private static final NodeId PEER_B = new NodeId("peer-b");
     private static final String STREAM = "read-stream";
     private static final int PARTITION = 0;
 
@@ -266,6 +269,96 @@ class ForwardingReadRouterTest {
                                                          (_, _) -> behind);
     }
 
+    // ---- ANY_REPLICA: a read whose every remote pick failed (#946) ------------------------------
+
+    @Test
+    void route_readsLocal_whenAnyReplicaSoleRemotePeerTimesOutAndSelfCovers() {
+        var router = router(ReadPreference.ANY_REPLICA,
+                            Option.some(registryWith(true, PEER_A)),
+                            successReader("local"),
+                            Option.some(forwardClientFailing(StreamForwardError.General.READ_FORWARD_TIMEOUT)),
+                            owner(OWNER));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("local"));
+    }
+
+    @Test
+    void route_readsLocal_whenAnyReplicaPrimaryAndRetryBothTimeOutAndSelfCovers() {
+        var router = router(ReadPreference.ANY_REPLICA,
+                            Option.some(registryWith(true, PEER_A, PEER_B)),
+                            successReader("local"),
+                            Option.some(forwardClientFailing(StreamForwardError.General.READ_FORWARD_TIMEOUT)),
+                            owner(OWNER));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("local"));
+    }
+
+    @Test
+    void route_readsLocal_whenAnyReplicaSoleRemotePeerAnswersPartitionNotLocalAndSelfCovers() {
+        var router = router(ReadPreference.ANY_REPLICA,
+                            Option.some(registryWith(true, PEER_A)),
+                            successReader("local"),
+                            Option.some(forwardClientFailing(StreamError.General.PARTITION_NOT_LOCAL)),
+                            owner(OWNER));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("local"));
+    }
+
+    /// A node that is not itself a caught-up replica holds no authoritative copy: a local read there would answer an
+    /// empty page, the "nothing happened" the caller cannot tell from health. The remote cause is the answer.
+    @Test
+    void route_propagatesTheRemoteCause_whenAnyReplicaRemoteFailsAndSelfDoesNotCover() {
+        var router = router(ReadPreference.ANY_REPLICA,
+                            Option.some(registryWith(false, PEER_A)),
+                            successReader("local"),
+                            Option.some(forwardClientFailing(StreamForwardError.General.READ_FORWARD_TIMEOUT)),
+                            owner(OWNER));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onSuccess(events -> Assertions.fail("expected the remote timeout, got " + events.size() + " events"))
+              .onFailure(cause -> assertThat(cause).isEqualTo(StreamForwardError.General.READ_FORWARD_TIMEOUT));
+    }
+
+    /// A typed answer of the replica (an unknown stream, an expired cursor) is not a failure to ask: a local read could
+    /// only hide it.
+    @Test
+    void route_propagatesTheReplicaAnswer_whenAnyReplicaRemoteAnswersTypedEvenIfSelfCovers() {
+        var router = router(ReadPreference.ANY_REPLICA,
+                            Option.some(registryWith(true, PEER_A)),
+                            successReader("local"),
+                            Option.some(forwardClientFailing(new StreamError.StreamNotFound(STREAM))),
+                            owner(OWNER));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onSuccess(events -> Assertions.fail("expected StreamNotFound to propagate, got " + events.size() + " events"))
+              .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.StreamNotFound.class));
+    }
+
+    @Test
+    void route_readsTheRemote_whenAnyReplicaRemoteAnswers() {
+        var router = router(ReadPreference.ANY_REPLICA,
+                            Option.some(registryWith(true, PEER_A)),
+                            successReader("local"),
+                            Option.some(forwardClientServing("remote-served")),
+                            owner(OWNER));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("remote-served"));
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     private static ForwardingReadRouter<String> router(ReadPreference preference,
@@ -351,6 +444,41 @@ class ForwardingReadRouterTest {
                 return replicaId.equals(target)
                        ? Promise.success(new ReadForwardResult(dtos, false))
                        : StreamError.General.PARTITION_NOT_LOCAL.promise();
+            }
+
+            @Override
+            public void onPublishForwardResponse(PublishForwardResponse response) {}
+
+            @Override
+            public void onReadForwardResponse(ReadForwardResponse response) {}
+        };
+    }
+
+    private static ReplicaRegistry registryWith(boolean selfCovers, NodeId... peers) {
+        var registry = ReplicaRegistry.replicaRegistry();
+
+        if (selfCovers) {
+            caughtUp(registry, SELF);
+        }
+        Arrays.stream(peers).forEach(peer -> caughtUp(registry, peer));
+        return registry;
+    }
+
+    private static void caughtUp(ReplicaRegistry registry, NodeId node) {
+        registry.registerReplica(STREAM, PARTITION, node);
+        registry.updateWatermark(STREAM, PARTITION, node, 5L, ReplicationState.CAUGHT_UP);
+    }
+
+    private static StreamForwardClient forwardClientFailing(Cause cause) {
+        return new StreamForwardClient() {
+            @Override
+            public Promise<Long> publishRemote(NodeId governorId, String streamName, int partition, byte[] payload, long timestamp) {
+                return Promise.success(-1L);
+            }
+
+            @Override
+            public Promise<ReadForwardResult> readRemote(NodeId replicaId, String streamName, int partition, long fromOffset, int maxEvents) {
+                return cause.promise();
             }
 
             @Override
