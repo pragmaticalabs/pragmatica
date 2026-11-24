@@ -66,13 +66,10 @@ public final class TerraManagement {
 
     /// Endpoint ids are Spring's form (`[a-z][a-zA-Z0-9]*`) and unique.
     public static Result<TerraManagement> terraManagement(ManagementConfig config, List<ManagementEndpoint> endpoints) {
-        var ids = endpoints.stream()
-                           .map(ManagementEndpoint::id)
-                           .toList();
+        var ids = endpoints.stream().map(ManagementEndpoint::id).toList();
 
         if (ids.stream().anyMatch(id -> !id.matches("[a-z][a-zA-Z0-9]*")) || ids.stream().distinct().count() != ids.size()) {
-            return new ManagementConfig.InvalidManagementConfig("Management endpoint ids must be unique and match [a-z][a-zA-Z0-9]*: "
-                                                                + ids).result();
+            return new ManagementConfig.InvalidManagementConfig("Management endpoint ids must be unique and match [a-z][a-zA-Z0-9]*: " + ids).result();
         }
 
         return Result.success(new TerraManagement(config, endpoints));
@@ -95,7 +92,10 @@ public final class TerraManagement {
     }
 
     private Result<Option<TerraHttpMount>> mount(Option<HttpServerConfig> listener) {
-        return TerraHttpMount.terraHttpMount(config.basePath(), listener, this::policy, this::handle)
+        return TerraHttpMount.terraHttpMount(config.basePath(),
+                                             listener,
+                                             this::policy,
+                                             this::handle)
                              .map(Option::some);
     }
 
@@ -115,8 +115,7 @@ public final class TerraManagement {
     }
 
     private boolean whenAuthorized() {
-        return config.showDetails() == ManagementConfig.Show.WHEN_AUTHORIZED
-               || config.showComponents() == ManagementConfig.Show.WHEN_AUTHORIZED;
+        return config.showDetails() == ManagementConfig.Show.WHEN_AUTHORIZED || config.showComponents() == ManagementConfig.Show.WHEN_AUTHORIZED;
     }
 
     Promise<HttpResponseData> handle(HttpRequestContext request, TerraHttpServer.Status status) {
@@ -131,13 +130,11 @@ public final class TerraManagement {
 
         return switch (target) {
             case Target.Discovery() -> Promise.success(render(Reply.json(200, discovery(request)), request));
-            case Target.Endpoint(var endpoint, var selectors) -> endpoint.handler()
-                                                                         .apply(Call.call(selectors,
-                                                                                          request.queryParams(),
-                                                                                          request.security()
-                                                                                                 .isAuthenticated(),
-                                                                                          status.ready()))
-                                                                         .map(reply -> render(reply, request));
+            case Target.Endpoint(var endpoint, var selectors) -> endpoint.handler().apply(Call.call(selectors,
+                                                                                                    request.queryParams(),
+                                                                                                    request.security().isAuthenticated(),
+                                                                                                    status.ready())).map(reply -> render(reply,
+                                                                                                                                         request));
         };
     }
 
@@ -150,7 +147,8 @@ public final class TerraManagement {
     private Option<Target> target(String path) {
         var relative = config.basePath().equals(ROOT_BASE)
                        ? path
-                       : path.substring(Math.min(path.length(), config.basePath().length()));
+                       : path.substring(Math.min(path.length(),
+                                                 config.basePath().length()));
 
         if (relative.isEmpty() || relative.equals("/")) {
             return discoveryEnabled()
@@ -165,29 +163,32 @@ public final class TerraManagement {
         }
 
         return Option.from(endpoints.stream()
-                                    .filter(endpoint -> endpoint.id().equals(segments.getFirst()))
+                                    .filter(endpoint -> endpoint.id()
+                                                                .equals(segments.getFirst()))
                                     .filter(endpoint -> config.enabled(endpoint.id()) && config.exposed(endpoint.id()))
-                                    .findFirst())
-                     .map(endpoint -> new Target.Endpoint(endpoint, segments.subList(1, segments.size())));
+                                    .findFirst()).map(endpoint -> new Target.Endpoint(endpoint,
+                                                                                      segments.subList(1,
+                                                                                                       segments.size())));
     }
 
     // Spring disables discovery when the base path is the root.
     private boolean discoveryEnabled() {
-        return config.discovery() && !config.basePath().equals(ROOT_BASE);
+        return config.discovery() && !config.basePath()
+                                            .equals(ROOT_BASE);
     }
 
     private Map<String, Object> discovery(HttpRequestContext request) {
         var base = header(request, "Host").map(host -> header(request, "X-Forwarded-Proto").or("http") + "://" + host)
-                                         .or("") + config.basePath();
+                         .or("") + config.basePath();
         var links = new LinkedHashMap<String, Object>();
 
         links.put("self", link(base, false));
-
         for (var endpoint : endpoints) {
             if (config.enabled(endpoint.id()) && config.exposed(endpoint.id())) {
                 endpoint.selector()
                         .onPresent(template -> links.put(endpoint.id() + "-" + endpoint.selectorName().or(""),
-                                                         link(base + "/" + endpoint.id() + "/" + template, true)));
+                                                         link(base + "/" + endpoint.id() + "/" + template,
+                                                              true)));
                 links.put(endpoint.id(), link(base + "/" + endpoint.id(), false));
             }
         }
@@ -208,17 +209,21 @@ public final class TerraManagement {
         return switch (reply) {
             case Reply.Empty(var status) -> HttpResponseData.httpResponseData(status);
             case Reply.Text(var status, var body, var type) -> HttpResponseData.httpResponseData(status,
-                                                                                                Map.of("Content-Type", type),
-                                                                                                body.getBytes(StandardCharsets.UTF_8));
-            case Reply.Json(var status, var body) -> negotiate(header(request, "Accept")).map(type -> json(status, body, type))
-                                                                                        .or(() -> HttpResponseData.httpResponseData(406));
+                                                                                                 Map.of("Content-Type",
+                                                                                                        type),
+                                                                                                 body.getBytes(StandardCharsets.UTF_8));
+            case Reply.Json(var status, var body) -> negotiate(header(request, "Accept")).map(type -> json(status,
+                                                                                                           body,
+                                                                                                           type)).or(() -> HttpResponseData.httpResponseData(406));
         };
     }
 
     private HttpResponseData json(int status, Object body, String type) {
         return mapper.writeAsBytes(body)
                      .fold(_ -> HttpResponseData.httpResponseData(500, "Internal server error"),
-                           bytes -> HttpResponseData.httpResponseData(status, Map.of("Content-Type", type), bytes));
+                           bytes -> HttpResponseData.httpResponseData(status,
+                                                                      Map.of("Content-Type", type),
+                                                                      bytes));
     }
 
     /// The first media range by descending quality that admits v3 or plain JSON; v3 when there is no `Accept`.
@@ -233,7 +238,8 @@ public final class TerraManagement {
                                  .map(MediaRange::mediaRange)
                                  .filter(range -> range.quality() > 0)
                                  .sorted(Comparator.comparingDouble(MediaRange::quality).reversed())
-                                 .flatMap(range -> range.produces().stream())
+                                 .flatMap(range -> range.produces()
+                                                        .stream())
                                  .findFirst());
     }
 
@@ -250,7 +256,8 @@ public final class TerraManagement {
                                 .findFirst()
                                 .orElse(1.0);
 
-            return new MediaRange(parts[0].trim().toLowerCase(Locale.ROOT), quality);
+            return new MediaRange(parts[0].trim().toLowerCase(Locale.ROOT),
+                                  quality);
         }
 
         Option<String> produces() {
@@ -266,8 +273,10 @@ public final class TerraManagement {
         return Option.from(request.headers()
                                   .entrySet()
                                   .stream()
-                                  .filter(entry -> entry.getKey().equalsIgnoreCase(name))
-                                  .flatMap(entry -> entry.getValue().stream())
+                                  .filter(entry -> entry.getKey()
+                                                        .equalsIgnoreCase(name))
+                                  .flatMap(entry -> entry.getValue()
+                                                         .stream())
                                   .findFirst());
     }
 }

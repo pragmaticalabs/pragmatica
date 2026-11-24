@@ -40,7 +40,6 @@ public record ManagementConfig(Set<String> include,
         NEVER,
         WHEN_AUTHORIZED,
         ALWAYS;
-
         boolean shown(boolean authorized) {
             return this == ALWAYS || (this == WHEN_AUTHORIZED && authorized);
         }
@@ -57,6 +56,7 @@ public record ManagementConfig(Set<String> include,
     public record InvalidManagementConfig(String message) implements Cause {}
 
     private static final String ENDPOINT = "management.endpoint.";
+
     private static final Set<String> FIXED = Set.of("management.endpoints.web.exposure.include",
                                                     "management.endpoints.web.exposure.exclude",
                                                     "management.endpoints.web.base-path",
@@ -111,20 +111,20 @@ public record ManagementConfig(Set<String> include,
     }
 
     public boolean enabled(String id) {
-        return Option.option(enabled.get(id))
-                     .or(enabledByDefault);
+        return Option.option(enabled.get(id)).or(enabledByDefault);
     }
 
     private static boolean isEndpointEnabled(String key) {
-        return key.startsWith(ENDPOINT) && key.endsWith(".enabled") && key.length() > ENDPOINT.length() + ".enabled".length() && key.substring(ENDPOINT.length(),
-                                                                                                                                                 key.length() - ".enabled".length())
-                                                                                                                                      .matches("[a-z][a-zA-Z0-9]*");
+        return key.startsWith(ENDPOINT)
+               && key.endsWith(".enabled")
+               && key.length() > ENDPOINT.length() + ".enabled".length()
+               && key.substring(ENDPOINT.length(),
+                                key.length() - ".enabled".length())
+                     .matches("[a-z][a-zA-Z0-9]*");
     }
 
     private static Set<String> list(Map<String, String> keys, String key, String fallback) {
-        return Arrays.stream(Option.option(keys.get(key))
-                                   .or(fallback)
-                                   .split(","))
+        return Arrays.stream(Option.option(keys.get(key)).or(fallback).split(","))
                      .map(String::trim)
                      .filter(item -> !item.isEmpty())
                      .collect(Collectors.toUnmodifiableSet());
@@ -132,9 +132,7 @@ public record ManagementConfig(Set<String> include,
 
     // Spring strips a trailing slash and reads an empty base path as the root.
     private static String basePath(Map<String, String> keys) {
-        var path = Option.option(keys.get("management.endpoints.web.base-path"))
-                         .map(String::trim)
-                         .or("/actuator");
+        var path = Option.option(keys.get("management.endpoints.web.base-path")).map(String::trim).or("/actuator");
         var trimmed = path.endsWith("/")
                       ? path.substring(0, path.length() - 1)
                       : path;
@@ -153,9 +151,7 @@ public record ManagementConfig(Set<String> include,
     private static Result<Show> parseShow(String key, String value) {
         return Arrays.stream(Show.values())
                      .filter(show -> show.name()
-                                         .equals(value.trim()
-                                                      .toUpperCase(Locale.ROOT)
-                                                      .replace('-', '_')))
+                                         .equals(value.trim().toUpperCase(Locale.ROOT).replace('-', '_')))
                      .findFirst()
                      .map(Result::success)
                      .orElseGet(() -> invalid(key + " must be never, when-authorized or always: " + value));
@@ -183,9 +179,9 @@ public record ManagementConfig(Set<String> include,
                                 .map(key -> parseFlag(key,
                                                       keys.get(key)).map(flag -> Map.entry(key.substring(ENDPOINT.length(),
                                                                                                          key.length() - ".enabled".length()),
-                                                                                           flag))))
-                     .map(entries -> Map.copyOf(entries.stream()
-                                                       .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue))));
+                                                                                           flag)))).map(entries -> Map.copyOf(entries.stream()
+                                                                                                                                     .collect(Collectors.toMap(Map.Entry::getKey,
+                                                                                                                                                               Map.Entry::getValue))));
     }
 
     private static Result<Port> port(Map<String, String> keys) {
@@ -223,7 +219,9 @@ public record ManagementConfig(Set<String> include,
         var root = new TreeMap<String, Object>();
 
         for (var entry : new TreeMap<>(keys).entrySet()) {
-            if (entry.getKey().startsWith("info.") && !place(root, entry.getKey().substring(5).split("\\."), entry.getValue())) {
+            if (entry.getKey().startsWith("info.") && !place(root,
+                                                             entry.getKey().substring(5).split("\\."),
+                                                             entry.getValue())) {
                 return invalid("info key is both a value and a parent: " + entry.getKey());
             }
         }

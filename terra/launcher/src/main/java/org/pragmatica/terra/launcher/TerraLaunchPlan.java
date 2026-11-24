@@ -77,12 +77,11 @@ public final class TerraLaunchPlan {
                                                      TerraBlueprint blueprint,
                                                      List<TerraFactory<?>> factories) {
         return TerraConfiguration.deployment(directory).flatMap(deployment -> TerraConfiguration.host(directory,
-                                                                                                      deployment)
-                                                                                                .flatMap(settings -> configureHost(directory,
-                                                                                                                                   blueprint,
-                                                                                                                                   factories,
-                                                                                                                                   deployment,
-                                                                                                                                   settings)));
+                                                                                                      deployment).flatMap(settings -> configureHost(directory,
+                                                                                                                                                    blueprint,
+                                                                                                                                                    factories,
+                                                                                                                                                    deployment,
+                                                                                                                                                    settings)));
     }
 
     private static Result<TerraLaunchPlan> configureHost(Path directory,
@@ -93,11 +92,11 @@ public final class TerraLaunchPlan {
         return Result.all(LaunchHttp.launchHttp(directory, settings),
                           managementSettings(settings))
                      .flatMap((http, management) -> management(http, management).flatMap(mounts -> configureSlices(directory,
-                                                                                                                    blueprint,
-                                                                                                                    factories,
-                                                                                                                    deployment,
-                                                                                                                    http,
-                                                                                                                    mounts)));
+                                                                                                                   blueprint,
+                                                                                                                   factories,
+                                                                                                                   deployment,
+                                                                                                                   http,
+                                                                                                                   mounts)));
     }
 
     private static Result<TerraLaunchPlan> configureSlices(Path directory,
@@ -144,10 +143,11 @@ public final class TerraLaunchPlan {
     // /actuator/health on the application listener. Build info comes from the launcher's class path.
     private static Result<List<TerraHttpMount>> management(LaunchHttp http, ManagementConfig config) {
         return TerraManagement.buildInfo(TerraLaunchPlan.class.getClassLoader())
-                              .flatMap(build -> TerraManagement.terraManagement(config, Map.of(), build, Option.empty()))
-                              .flatMap(management -> management.mount(http.config()
-                                                                          .transport()
-                                                                          .port()))
+                              .flatMap(build -> TerraManagement.terraManagement(config,
+                                                                                Map.of(),
+                                                                                build,
+                                                                                Option.empty()))
+                              .flatMap(management -> management.mount(http.config().transport().port()))
                               .map(mount -> mount.stream()
                                                  .toList());
     }

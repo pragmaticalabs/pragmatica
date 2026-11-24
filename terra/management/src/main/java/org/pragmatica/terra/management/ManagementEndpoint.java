@@ -14,7 +14,10 @@ import org.pragmatica.lang.Promise;
 /// One management endpoint at `<base-path>/<id>` (#3651). `sensitive` endpoints require an authenticated caller;
 /// `selector` is the path template after the id that discovery advertises (`{*path}`, `{requiredMetricName}`), when
 /// the endpoint takes one. Part 1 endpoints are read-only: a method other than GET answers 405.
-public record ManagementEndpoint(String id, boolean sensitive, Option<String> selector, Fn1<Promise<Reply>, Call> handler) {
+public record ManagementEndpoint(String id,
+                                 boolean sensitive,
+                                 Option<String> selector,
+                                 Fn1<Promise<Reply>, Call> handler) {
     public static ManagementEndpoint managementEndpoint(String id,
                                                         boolean sensitive,
                                                         Option<String> selector,
@@ -30,7 +33,10 @@ public record ManagementEndpoint(String id, boolean sensitive, Option<String> se
     /// A request to one endpoint: the path segments after the id, the query, whether the caller is authenticated,
     /// and whether the host admits slice requests (readiness).
     public record Call(List<String> selectors, Map<String, List<String>> query, boolean authorized, boolean ready) {
-        public static Call call(List<String> selectors, Map<String, List<String>> query, boolean authorized, boolean ready) {
+        public static Call call(List<String> selectors,
+                                Map<String, List<String>> query,
+                                boolean authorized,
+                                boolean ready) {
             return new Call(List.copyOf(selectors), Map.copyOf(query), authorized, ready);
         }
     }

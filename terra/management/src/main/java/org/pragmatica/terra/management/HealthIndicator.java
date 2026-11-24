@@ -21,13 +21,10 @@ public interface HealthIndicator {
         OUT_OF_SERVICE(503),
         UP(200),
         UNKNOWN(200);
-
         private final int httpStatus;
-
         Status(int httpStatus) {
             this.httpStatus = httpStatus;
         }
-
         public int httpStatus() {
             return httpStatus;
         }

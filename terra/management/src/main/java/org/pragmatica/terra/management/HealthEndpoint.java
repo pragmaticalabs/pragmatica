@@ -30,19 +30,22 @@ import org.pragmatica.terra.management.ManagementEndpoint.Reply;
 /// appear as `show-components` / `show-details` allow for the caller.
 final class HealthEndpoint {
     private static final long DISK_THRESHOLD = 10L * 1024 * 1024;
+
     private static final Map<String, List<String>> GROUPS = Map.of("liveness",
-                                                                    List.of("livenessState"),
-                                                                    "readiness",
-                                                                    List.of("readinessState"));
+                                                                   List.of("livenessState"),
+                                                                   "readiness",
+                                                                   List.of("readinessState"));
 
     private HealthEndpoint() {}
 
-    static ManagementEndpoint healthEndpoint(Show showDetails, Show showComponents, Map<String, HealthIndicator> indicators) {
+    static ManagementEndpoint healthEndpoint(Show showDetails,
+                                             Show showComponents,
+                                             Map<String, HealthIndicator> indicators) {
         var all = new TreeMap<>(indicators);
 
-        all.put("ping", () -> Promise.success(Health.up()));
+        all.put("ping",
+                () -> Promise.success(Health.up()));
         all.put("diskSpace", HealthEndpoint::diskSpace);
-
         var checked = Map.copyOf(all);
 
         return ManagementEndpoint.managementEndpoint("health",
@@ -51,16 +54,26 @@ final class HealthEndpoint {
                                                      call -> answer(call, showDetails, showComponents, checked));
     }
 
-    private static Promise<Reply> answer(Call call, Show showDetails, Show showComponents, Map<String, HealthIndicator> indicators) {
+    private static Promise<Reply> answer(Call call,
+                                         Show showDetails,
+                                         Show showComponents,
+                                         Map<String, HealthIndicator> indicators) {
         var components = showComponents.shown(call.authorized());
         var details = showDetails.shown(call.authorized());
 
-        return switch (call.selectors().size()) {
-            case 0 -> check(call, indicators, indicators.keySet().stream().toList()).map(checked -> composite(checked,
-                                                                                                                 components,
-                                                                                                                 details,
-                                                                                                                 true));
-            case 1 -> one(call, indicators, call.selectors().getFirst(), components, details);
+        return switch (call.selectors()
+                           .size()) {
+            case 0 -> check(call,
+                            indicators,
+                            indicators.keySet().stream().toList()).map(checked -> composite(checked,
+                                                                                            components,
+                                                                                            details,
+                                                                                            true));
+            case 1 -> one(call,
+                          indicators,
+                          call.selectors().getFirst(),
+                          components,
+                          details);
             default -> Promise.success(Reply.empty(404));
         };
     }
@@ -71,7 +84,10 @@ final class HealthEndpoint {
                                       boolean components,
                                       boolean details) {
         if (GROUPS.containsKey(name)) {
-            return check(call, indicators, GROUPS.get(name)).map(checked -> composite(checked, components, details, false));
+            return check(call, indicators, GROUPS.get(name)).map(checked -> composite(checked,
+                                                                                      components,
+                                                                                      details,
+                                                                                      false));
         }
 
         return components && (indicators.containsKey(name) || stateHealth(call, name).isPresent())
@@ -79,31 +95,26 @@ final class HealthEndpoint {
                : Promise.success(Reply.empty(404));
     }
 
-    private static Promise<Map<String, Health>> check(Call call, Map<String, HealthIndicator> indicators, List<String> names) {
+    private static Promise<Map<String, Health>> check(Call call,
+                                                      Map<String, HealthIndicator> indicators,
+                                                      List<String> names) {
         var ordered = new ArrayList<>(names);
 
         ordered.addAll(call.selectors().isEmpty()
                        ? List.of("livenessState", "readinessState")
                        : List.of());
+        var sorted = ordered.stream().sorted().distinct().toList();
 
-        var sorted = ordered.stream()
-                            .sorted()
-                            .distinct()
-                            .toList();
-
-        return Promise.allOf(sorted.stream()
-                                   .map(name -> component(call, indicators, name))
-                                   .toList())
-                      .map(results -> zip(sorted, results));
+        return Promise.allOf(sorted.stream().map(name -> component(call, indicators, name)).toList()).map(results -> zip(sorted,
+                                                                                                                         results));
     }
 
     private static Map<String, Health> zip(List<String> names, List<Result<Health>> results) {
         var checked = new TreeMap<String, Health>();
-
         // Never taken: component() answers a state from the call and recovers every indicator failure to DOWN.
-
         for (int i = 0; i < names.size(); i++) {
-            checked.put(names.get(i), results.get(i).or(Health.health(Status.DOWN, Map.of())));
+            checked.put(names.get(i),
+                        results.get(i).or(Health.health(Status.DOWN, Map.of())));
         }
 
         return checked;
@@ -111,7 +122,7 @@ final class HealthEndpoint {
 
     private static Promise<Health> component(Call call, Map<String, HealthIndicator> indicators, String name) {
         return stateHealth(call, name).map(health -> Promise.success(health))
-                                      .or(() -> invoke(indicators.get(name)));
+                          .or(() -> invoke(indicators.get(name)));
     }
 
     private static Option<Health> stateHealth(Call call, String name) {
@@ -131,7 +142,8 @@ final class HealthEndpoint {
         return Promise.lift(Causes::fromThrowable, indicator::health)
                       .flatMap(promise -> promise)
                       .recover(cause -> Health.health(Status.DOWN,
-                                                      Map.of("error", cause.message())));
+                                                      Map.of("error",
+                                                             cause.message())));
     }
 
     private static Reply composite(Map<String, Health> checked, boolean components, boolean details, boolean root) {
@@ -139,7 +151,6 @@ final class HealthEndpoint {
         var body = new LinkedHashMap<String, Object>();
 
         body.put("status", status.name());
-
         if (components) {
             var rendered = new LinkedHashMap<String, Object>();
 
@@ -155,14 +166,15 @@ final class HealthEndpoint {
     }
 
     private static Reply single(Health health, boolean details) {
-        return Reply.json(health.status().httpStatus(), render(health, details));
+        return Reply.json(health.status().httpStatus(),
+                          render(health, details));
     }
 
     private static Map<String, Object> render(Health health, boolean details) {
         var body = new LinkedHashMap<String, Object>();
 
-        body.put("status", health.status().name());
-
+        body.put("status",
+                 health.status().name());
         if (details && !health.details().isEmpty()) {
             body.put("details", new TreeMap<>(health.details()));
         }

@@ -3,10 +3,10 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.terra.management;
 
-import io.micrometer.core.instrument.MeterRegistry;
-
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
+
+import io.micrometer.core.instrument.MeterRegistry;
 
 
 /// The metrics the `metrics` and `prometheus` endpoints read (#3651): the shape of Terra's metrics provider (#3650),

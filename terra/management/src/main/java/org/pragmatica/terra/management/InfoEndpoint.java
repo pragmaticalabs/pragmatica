@@ -37,7 +37,8 @@ final class InfoEndpoint {
         return ManagementEndpoint.managementEndpoint("info",
                                                      false,
                                                      Option.empty(),
-                                                     call -> Promise.success(call.selectors().isEmpty()
+                                                     call -> Promise.success(call.selectors()
+                                                                                 .isEmpty()
                                                                              ? Reply.json(200, answer)
                                                                              : Reply.empty(404)));
     }
@@ -62,7 +63,8 @@ final class InfoEndpoint {
             properties.stringPropertyNames()
                       .stream()
                       .filter(key -> key.startsWith("build."))
-                      .forEach(key -> build.put(key.substring(6), properties.getProperty(key)));
+                      .forEach(key -> build.put(key.substring(6),
+                                                properties.getProperty(key)));
         }
 
         return build;

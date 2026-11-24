@@ -85,8 +85,8 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
         }
 
         return checkRoutes(routes, sliceNames, reservedPrefixes).map(_ -> routingIndex(routes,
-                                                                     owners,
-                                                                     config.mountMode().isHeaderMode()));
+                                                                                       owners,
+                                                                                       config.mountMode().isHeaderMode()));
     }
 
     // Header-mode ownership must not apply a shape from another version before the slice's
@@ -149,12 +149,13 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
             }
 
             var reserved = reservedPrefixes.stream()
-                                           .filter(prefix -> route.path().startsWith(prefix) || prefix.startsWith(route.path()))
+                                           .filter(prefix -> route.path()
+                                                                  .startsWith(prefix) || prefix.startsWith(route.path()))
                                            .findFirst();
 
             if (reserved.isPresent()) {
-                return new TerraHttpError.InvalidRoutes("Route overlaps reserved " + reserved.get() + " namespace: "
-                                                       + route.path()).result();
+                return new TerraHttpError.InvalidRoutes("Route overlaps reserved " + reserved.get()
+                                                       + " namespace: " + route.path()).result();
             }
 
             if (! (route.security() instanceof SecurityPolicy) || route.security() instanceof SecurityPolicy.unused) {
@@ -216,6 +217,7 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
         var policy = route.security() instanceof SecurityPolicy.Unspecified
                      ? defaultPolicy
                      : (SecurityPolicy) route.security();
+
         return authorize(((SliceRequestContext) context).original(), policy, authenticator);
     }
 

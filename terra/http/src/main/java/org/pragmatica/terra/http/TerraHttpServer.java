@@ -114,11 +114,11 @@ public final class TerraHttpServer {
                                                                                    authenticator,
                                                                                    mapper,
                                                                                    reserved))
-                              .async()
-                              .flatMap(routes -> new TerraHttpServer(application, authenticator, routes, mounts).bind(config))
-                              .fold(result -> result.isSuccess()
-                                              ? result.async()
-                                              : failedStart(result, application, authenticator));
+                     .async()
+                     .flatMap(routes -> new TerraHttpServer(application, authenticator, routes, mounts).bind(config))
+                     .fold(result -> result.isSuccess()
+                                     ? result.async()
+                                     : failedStart(result, application, authenticator));
     }
 
     private static Promise<TerraHttpServer> failedStart(Result<TerraHttpServer> result,
@@ -133,9 +133,7 @@ public final class TerraHttpServer {
     private static Result<List<String>> checkMounts(List<TerraHttpMount> mounts) {
         var reserved = new ArrayList<>(List.of("/__terra/"));
 
-        for (var mount : mounts.stream()
-                               .filter(TerraHttpMount::shared)
-                               .toList()) {
+        for (var mount : mounts.stream().filter(TerraHttpMount::shared).toList()) {
             if (reserved.stream()
                         .anyMatch(prefix -> prefix.startsWith(mount.reservedPrefix()) || mount.reservedPrefix()
                                                                                               .startsWith(prefix))) {
@@ -158,8 +156,7 @@ public final class TerraHttpServer {
                               .toList();
 
         return Promise.allOf(listeners)
-                      .flatMap(bound -> Result.allOf(bound)
-                                              .async())
+                      .flatMap(bound -> Result.allOf(bound).async())
                       .flatMap(_ -> HttpServer.httpServer(config.transport(),
                                                           this::handle))
                       .map(this::admitOn)
@@ -169,9 +166,8 @@ public final class TerraHttpServer {
     }
 
     private Promise<Unit> bindMount(TerraHttpMount mount, HttpServerConfig listener) {
-        return HttpServer.httpServer(listener,
-                                     (request, writer) -> serveMount(mount, request, writer))
-                         .map(server -> registerMount(mount, server));
+        return HttpServer.httpServer(listener, (request, writer) -> serveMount(mount, request, writer)).map(server -> registerMount(mount,
+                                                                                                                                    server));
     }
 
     private Unit registerMount(TerraHttpMount mount, HttpServer server) {
@@ -189,15 +185,11 @@ public final class TerraHttpServer {
 
     private Promise<Unit> stopTransports() {
         var stops = Stream.concat(transport.stream(),
-                                  mountTransports.values()
-                                                 .stream())
-                          .map(HttpServer::stop)
-                          .toList();
+                                  mountTransports.values().stream()).map(HttpServer::stop).toList();
 
-        return Promise.allOf(stops)
-                      .flatMap(stopped -> Result.allOf(stopped)
-                                                .map(_ -> Unit.unit())
-                                                .async());
+        return Promise.allOf(stops).flatMap(stopped -> Result.allOf(stopped)
+                                                             .map(_ -> Unit.unit())
+                                                             .async());
     }
 
     public int port() {
@@ -207,8 +199,7 @@ public final class TerraHttpServer {
 
     /// The bound port of the mount with this base path when it owns a listener; empty for a shared or unknown mount.
     public Option<Integer> mountPort(String basePath) {
-        return Option.option(mountTransports.get(basePath))
-                     .map(HttpServer::port);
+        return Option.option(mountTransports.get(basePath)).map(HttpServer::port);
     }
 
     /// Snapshot includes response flushes in the in-flight count. No route or principal details leak.
@@ -280,13 +271,15 @@ public final class TerraHttpServer {
                                       .apply(context))
                      .async()
                      .flatMap(policy -> TerraHttpRoutes.authorize(context, policy, authenticator))
-                     .flatMap(security -> callMount(mount, context.withSecurity(security)));
+                     .flatMap(security -> callMount(mount,
+                                                    context.withSecurity(security)));
     }
 
     private Promise<HttpResponseData> callMount(TerraHttpMount mount, HttpRequestContext context) {
         return Promise.lift(Causes::fromThrowable,
                             () -> mount.handler()
-                                       .apply(context, status()))
+                                       .apply(context,
+                                              status()))
                       .flatMap(promise -> promise);
     }
 
@@ -298,11 +291,9 @@ public final class TerraHttpServer {
 
     private static HttpResponseData refusalResponse(Cause cause) {
         return cause instanceof HttpError error
-               ? HttpResponseData.httpResponseData(error.status()
-                                                        .code(),
+               ? HttpResponseData.httpResponseData(error.status().code(),
                                                    error.responseHeaders(),
-                                                   error.clientMessage()
-                                                        .getBytes(StandardCharsets.UTF_8))
+                                                   error.clientMessage().getBytes(StandardCharsets.UTF_8))
                : HttpResponseData.httpResponseData(500, "Internal server error");
     }
 

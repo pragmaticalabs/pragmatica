@@ -3,8 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.terra.management;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import java.net.URI;
@@ -74,8 +74,8 @@ class TerraManagementHttpTest {
             }
 
             assertThat(host.get("/actuator", "X-API-Key", KEY).statusCode()).isEqualTo(200);
-            assertThat(json(host.get("/actuator", "X-API-Key", KEY)).get("_links").fieldNames())
-                .toIterable().containsExactly("self", "health-path", "health");
+            assertThat(json(host.get("/actuator", "X-API-Key", KEY)).get("_links").propertyNames())
+                .containsExactly("self", "health-path", "health");
         }
     }
 
@@ -90,18 +90,18 @@ class TerraManagementHttpTest {
             var body = json(health);
 
             assertThat(health.statusCode()).isEqualTo(503);
-            assertThat(body.get("status").asText()).isEqualTo("DOWN");
-            assertThat(body.get("components").fieldNames()).toIterable()
+            assertThat(body.get("status").asString()).isEqualTo("DOWN");
+            assertThat(body.get("components").propertyNames())
                 .containsExactly("broken", "db", "diskSpace", "livenessState", "ping", "readinessState");
             assertThat(body.at("/components/broken")).isEqualTo(JSON.readTree("{\"status\":\"DOWN\",\"details\":{\"error\":\"pool gone\"}}"));
-            assertThat(body.at("/components/db/details/database").asText()).isEqualTo("x");
-            assertThat(body.at("/components/diskSpace/details").fieldNames()).toIterable()
+            assertThat(body.at("/components/db/details/database").asString()).isEqualTo("x");
+            assertThat(body.at("/components/diskSpace/details").propertyNames())
                 .containsExactlyInAnyOrder("total", "free", "threshold", "path", "exists");
             assertThat(body.at("/components/ping")).isEqualTo(JSON.readTree("{\"status\":\"UP\"}"));
 
             var db = host.get("/actuator/health/db");
             assertThat(db.statusCode()).isEqualTo(503);
-            assertThat(json(db).get("status").asText()).isEqualTo("OUT_OF_SERVICE");
+            assertThat(json(db).get("status").asString()).isEqualTo("OUT_OF_SERVICE");
             assertThat(host.get("/actuator/health/nope").statusCode()).isEqualTo(404);
         }
     }
@@ -123,8 +123,8 @@ class TerraManagementHttpTest {
             assertThat(json(names).get("names").toString()).contains("requests");
 
             var metric = json(host.get("/actuator/metrics/requests?tag=route:a", "X-API-Key", KEY));
-            assertThat(metric.get("name").asText()).isEqualTo("requests");
-            assertThat(metric.at("/measurements/0/statistic").asText()).isEqualTo("COUNT");
+            assertThat(metric.get("name").asString()).isEqualTo("requests");
+            assertThat(metric.at("/measurements/0/statistic").asString()).isEqualTo("COUNT");
             assertThat(metric.at("/measurements/0/value").asDouble()).isEqualTo(3.0);
             assertThat(metric.get("availableTags").toString()).isEqualTo("[{\"tag\":\"outcome\",\"values\":[\"ok\"]}]");
             assertThat(host.get("/actuator/metrics/missing", "X-API-Key", KEY).statusCode()).isEqualTo(404);
@@ -135,7 +135,7 @@ class TerraManagementHttpTest {
             assertThat(scrape.headers().firstValue("Content-Type")).hasValue(ManagementMetrics.PROMETHEUS_CONTENT_TYPE);
             assertThat(scrape.body()).isEqualTo("requests_total 3.0\n");
 
-            assertThat(json(host.get("/actuator", "X-API-Key", KEY)).get("_links").fieldNames()).toIterable()
+            assertThat(json(host.get("/actuator", "X-API-Key", KEY)).get("_links").propertyNames())
                 .containsExactly("self", "health-path", "health", "info", "metrics-requiredMetricName", "metrics", "prometheus");
         }
     }
