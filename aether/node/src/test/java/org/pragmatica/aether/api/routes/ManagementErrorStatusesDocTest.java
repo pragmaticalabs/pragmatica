@@ -19,9 +19,10 @@ import org.pragmatica.aether.stream.StreamError;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #3390 F4: `aether/docs/reference/management-error-statuses.md` is checked against the code. Each section header's count is
-/// its rows, the summary total is the sum of the rows, every `StreamError` record variant has a row in the stream section
-/// (each answered 500 before classification, or is new), and every row names a variant that exists. Mutants: a header or
-/// summary count off by one, a variant added without a row, a row left for a removed variant.
+/// its rows, the summary total is the sum of the rows, the summary's new count is the rows marked `n/a (new)`, and every
+/// stream row names a `StreamError` variant that exists. The doc lists only the variants whose status changed, so the test
+/// pins the variants #3390 added (`ImmutableKeyChanged`, `HotWindowBelowMaxEvent`), not every variant. Mutants: a header or
+/// summary count off by one, a #3390 variant without its row, a row left for a removed variant.
 class ManagementErrorStatusesDocTest {
     private static final Path DOC = Path.of("..", "docs", "reference", "management-error-statuses.md");
     private static final Pattern HEADER = Pattern.compile("^### .*\\((\\d+)\\).*$");
@@ -61,8 +62,9 @@ class ManagementErrorStatusesDocTest {
         assertThat(Integer.parseInt(summary.get().group(1))).as("summary total").isEqualTo(total);
         assertThat(Integer.parseInt(summary.get().group(3))).as("summary new").isEqualTo(newRows);
         assertThat(Integer.parseInt(summary.get().group(2))).as("summary changed").isEqualTo(total - newRows);
-        assertThat(streamVariants).as("StreamError record variants with a row")
-                                  .containsAll(recordVariants())
+        assertThat(streamVariants).as("the doc lists only variants whose status changed, so a row must name a real StreamError"
+                                      + " variant, and the variants added by #3390 must have theirs")
+                                  .contains("ImmutableKeyChanged", "HotWindowBelowMaxEvent")
                                   .allMatch(name -> name.equals("General") || recordVariants().contains(name));
     }
 
