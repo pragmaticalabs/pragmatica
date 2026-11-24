@@ -14,7 +14,6 @@
  *  limitations under the License.
  */
 package org.pragmatica.consensus.net.quic;
-package org.pragmatica.consensus.net.quic;
 
 import java.net.DatagramSocket;
 import java.net.SocketAddress;
