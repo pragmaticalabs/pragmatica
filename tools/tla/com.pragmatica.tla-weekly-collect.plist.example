@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- #3659: every 10 minutes: a no-op unless a weekly run is pending; when its weekly.done marker exists, writes the verdict row. install-weekly.sh fills @TOOLS@ and @HOME@. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.pragmatica.tla-weekly-collect</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>@TOOLS@/weekly-host.sh</string><string>collect</string></array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>StartInterval</key><integer>600</integer>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/tla-weekly.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/tla-weekly.log</string>
+</dict>
+</plist>

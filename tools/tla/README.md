@@ -172,6 +172,19 @@ on a host nothing else is using, never on the Mac, and one at a time per host. N
 total, so a module whose runner rows add up to more than that would still be cut by the job limit; the table bounds each row,
 not the sum.
 
+**Weekly, with no human (#3659).** A launchd agent on the Mac (`com.pragmatica.tla-weekly-start`, Sunday 02:00; installed by
+`tools/tla/install-weekly.sh` from the two `.plist.example` files) runs `tools/tla/weekly-host.sh start`: it probes cloudbb-5..8 (the
+hosts cannot ssh each other, so only the Mac can compare them), skips a host that is unreachable or already runs TLC
+(`pgrep -u aether -f tla2tools`), takes the lowest load per core, checks out the rc6 head there with `bb-checkout` and starts
+`run-host.sh full` detached. A second agent (`...-collect`, every 10 min) turns a finished run into one row of `verdict.tsv` through
+`weekly-verdict.py`: GREEN only with at least one row, a GREEN summary and every evidence row OK (run-host.sh's own exit 0 on "nothing to
+run" is not trusted: zero rows is NOT-GREEN); RED names each failing `<module>/<variant>`; a run with no result in 48 h, a week with no
+usable host or no resolvable head is NOT-GREEN with a reason. Nothing here writes the tracker. A run that did not happen leaves no
+row, and that is noticed by the router, not by launchd: no verdict row in 8 days is the event `TLC-MISSING`. Selftests:
+`test_weekly_verdict.py` (verdict rule) and `weekly-host.selftest.sh` (a fake ssh: least-loaded pick, busy host skipped, forced red
+row, zero rows, stall, no host). Not covered: the Mac off at Sunday 02:00 (the fire is lost; the next one is a week later, MISSING
+fires after 8 days), and the load reading cannot see a build-queue job that has not started yet.
+
 ### Fragment-touched check (pull requests)
 
 Code inside a region documented by a `tla` fragment can change while the fragment stays as it was; in three weeks on
