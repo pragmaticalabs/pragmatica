@@ -78,7 +78,7 @@ class NettyConnectibleBuilderGroupReleaseTest {
     }
 
     @Test
-    void close_terminatesOwnedGroup_whileConnectNeverAnswers() throws Exception {
+    void close_keepsGroupAlive_whileAConnectIsInFlight_thenTerminatesWhenItsChannelCloses() throws Exception {
         var builder = builderTo(silentServerPort());
         var plain = builder.plain();
         var connecting = plain.getConnection();
@@ -88,8 +88,11 @@ class NettyConnectibleBuilderGroupReleaseTest {
 
         assertThat(group).isNotNull();
         assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
-        assertTerminated(group);
+        assertThat(group.isShuttingDown()).as("the in-flight stream still holds a lease").isFalse();
+        accepted.getFirst().close();
         assertThat(connecting.await(GUARD).isFailure()).isTrue();
+        assertTerminated(group);
+        assertThat(builder.ownedGroup()).isNull();
     }
 
     @Test
