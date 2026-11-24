@@ -25,6 +25,7 @@ import org.pragmatica.aether.http.adapter.ErrorMapper;
 import org.pragmatica.aether.http.adapter.RequestSecurity;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.adapter.SliceRouterFactory;
+import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.RequestHeaders;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
@@ -584,6 +585,92 @@ class TerraHttpServerTest {
     private static String describe(RequestContext request, String detail) {
         var headers = RequestHeaders.requestHeaders(request.headers());
         return detail + "|" + headers.first("X-PROBE").or("none") + "|" + String.join(",", headers.all("x-probe"));
+    }
+
+    /// #3651: a shared-listener mount owns its base path and the paths beneath it, never a sibling that merely shares the prefix.
+    @Test void mount_sharedListener_ownsBasePathAndChildrenButNotPrefixSiblings() throws Exception {
+        var sibling = Route.<String>get("/mx").withoutParameters().to(_ -> Promise.success("slice")).withSecurity(SecurityPolicy.publicRoute()).asText();
+        var host = TerraHttpServer.start(application(new AtomicInteger()), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
+            List.of(new Routes<>(Sample.class, List.of(sibling), SliceVersionRegistry.UNVERSIONED)), JsonMapper.defaultJsonMapper(),
+            List.of(mount("/m", Option.none(), SecurityPolicy.publicRoute()))).await(timeSpan(10).seconds()).unwrap();
+        try (var client = HttpClient.newHttpClient()) {
+            assertThat(get(client, host, "/m").body()).isEqualTo("mounted");
+            assertThat(get(client, host, "/m/deeper/path").body()).isEqualTo("mounted");
+            assertThat(get(client, host, "/mx").body()).isEqualTo("slice");
+            assertThat(get(client, host, "/other").statusCode()).isEqualTo(404);
+        } finally { close(host); }
+    }
+
+    @Test void mount_policyIsPickedPerRequest_andAuthenticatedByTheHostAuthenticator() throws Exception {
+        var host = TerraHttpServer.start(application(new AtomicInteger()), config(RouteMountMode.pathMode()), HttpAuthenticator.apiKeyValidator(Set.of("mount-key")),
+            List.of(), JsonMapper.defaultJsonMapper(),
+            List.of(mount("/m", Option.none(), SecurityPolicy.authenticated()))).await(timeSpan(10).seconds()).unwrap();
+        try (var client = HttpClient.newHttpClient()) {
+            assertThat(get(client, host, "/m").statusCode()).isEqualTo(401);
+            assertThat(get(client, host, "/m", "X-API-Key", "wrong").statusCode()).isEqualTo(401);
+            assertThat(get(client, host, "/m", "X-API-Key", "mount-key").body()).isEqualTo("mounted");
+        } finally { close(host); }
+    }
+
+    @Test void mount_overlappingSharedBasePaths_failsInEitherOrderAndReleasesApplication() {
+        for (var paths : List.of(List.of("/a", "/a/b"), List.of("/a/b", "/a"), List.of("/a", "/a"))) {
+            var released = new AtomicInteger();
+            var result = TerraHttpServer.start(application(released), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
+                List.of(), JsonMapper.defaultJsonMapper(),
+                paths.stream().map(path -> mount(path, Option.none(), SecurityPolicy.publicRoute())).toList()).await(timeSpan(10).seconds());
+            assertThat(result.isFailure()).as(paths.toString()).isTrue();
+            assertThat(released).as(paths.toString()).hasValue(1);
+        }
+    }
+
+    @Test void mount_siblingBasePathsSharingAPrefix_areNotOverlapping() throws Exception {
+        var host = TerraHttpServer.start(application(new AtomicInteger()), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
+            List.of(), JsonMapper.defaultJsonMapper(),
+            List.of(mount("/a", Option.none(), SecurityPolicy.publicRoute()), mount("/ab", Option.none(), SecurityPolicy.publicRoute()))).await(timeSpan(10).seconds()).unwrap();
+        close(host);
+    }
+
+    @Test void mount_sliceRouteUnderSharedBasePath_failsAndReleasesApplication() {
+        var released = new AtomicInteger();
+        var route = Route.<String>get("/m/x").withoutParameters().to(_ -> Promise.success("one")).withSecurity(SecurityPolicy.publicRoute()).asText();
+        var result = TerraHttpServer.start(application(released), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
+            List.of(new Routes<>(Sample.class, List.of(route), SliceVersionRegistry.UNVERSIONED)), JsonMapper.defaultJsonMapper(),
+            List.of(mount("/m", Option.none(), SecurityPolicy.publicRoute()))).await(timeSpan(10).seconds());
+        assertThat(result.isFailure()).isTrue();
+        assertThat(released).hasValue(1);
+    }
+
+    @Test void mount_ownListener_servesOnItsOwnPortOnly_andStopsWithTheHost() throws Exception {
+        var own = Option.some(HttpServerConfig.httpServerConfig("terra-mount", 0));
+        var host = TerraHttpServer.start(application(new AtomicInteger()), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
+            List.of(), JsonMapper.defaultJsonMapper(), List.of(mount("/m", own, SecurityPolicy.publicRoute()))).await(timeSpan(10).seconds()).unwrap();
+        var port = host.mountPort("/m").unwrap();
+        try (var client = HttpClient.newHttpClient()) {
+            assertThat(port).isNotEqualTo(host.port());
+            assertThat(client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/m")).timeout(Duration.ofSeconds(5)).build(),
+                                   HttpResponse.BodyHandlers.ofString()).body()).isEqualTo("mounted");
+            assertThat(get(client, host, "/m").statusCode()).isEqualTo(404);
+            assertThat(host.mountPort("/absent").isEmpty()).isTrue();
+        } finally { close(host); }
+        try (var client = HttpClient.newHttpClient()) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/m")).timeout(Duration.ofSeconds(5)).build(),
+                                                                                 HttpResponse.BodyHandlers.ofString())).isInstanceOf(java.io.IOException.class);
+        }
+    }
+
+    @Test void mount_invalidBasePaths_refused() {
+        for (var path : List.of("m", "/m/", "/m//n", "/m n", "/__terra", "/__terra/x", "")) {
+            assertThat(TerraHttpMount.terraHttpMount(path, Option.none(), _ -> SecurityPolicy.publicRoute(), (_, _) -> Promise.success(HttpResponseData.httpResponseData(200))).isFailure())
+                .as("[" + path + "]").isTrue();
+        }
+        assertThat(TerraHttpMount.terraHttpMount("/", Option.none(), _ -> SecurityPolicy.publicRoute(), (_, _) -> Promise.success(HttpResponseData.httpResponseData(200))).isFailure()).isTrue();
+        assertThat(TerraHttpMount.terraHttpMount("/", Option.some(HttpServerConfig.httpServerConfig("terra-root", 0)), _ -> SecurityPolicy.publicRoute(),
+                                                 (_, _) -> Promise.success(HttpResponseData.httpResponseData(200))).isSuccess()).isTrue();
+        assertThat(TerraHttpMount.terraHttpMount("/m/n-1.x_y~z", Option.none(), _ -> SecurityPolicy.publicRoute(), (_, _) -> Promise.success(HttpResponseData.httpResponseData(200))).isSuccess()).isTrue();
+    }
+
+    private static TerraHttpMount mount(String basePath, Option<HttpServerConfig> listener, SecurityPolicy policy) {
+        return TerraHttpMount.terraHttpMount(basePath, listener, _ -> policy, (_, _) -> Promise.success(HttpResponseData.httpResponseData(200, "mounted"))).unwrap();
     }
 
     private static TerraHttpServer start(List<Route<?>> routes, HttpAuthenticator auth, AtomicInteger released) {

@@ -176,6 +176,81 @@ class TerraManagementHttpTest {
         assertThat(ManagementConfig.managementConfig(Map.of("management.endpoint.health.show-details", "sometimes")).isFailure()).isTrue();
     }
 
+    @Test
+    void exposure_includeExcludeAndEnabledFlags_decideWhatIsServed() {
+        var all = ManagementConfig.managementConfig(Map.of("management.endpoints.web.exposure.include", "*")).unwrap();
+        var some = ManagementConfig.managementConfig(Map.of("management.endpoints.web.exposure.include", "health,info",
+                                                            "management.endpoints.web.exposure.exclude", "info")).unwrap();
+        var excludeAll = ManagementConfig.managementConfig(Map.of("management.endpoints.web.exposure.include", "*",
+                                                                  "management.endpoints.web.exposure.exclude", "*")).unwrap();
+        var off = ManagementConfig.managementConfig(Map.of("management.endpoints.enabled-by-default", "false",
+                                                           "management.endpoint.info.enabled", "true")).unwrap();
+
+        assertThat(ManagementConfig.managementConfig(Map.of()).unwrap().exposed("health")).isTrue();
+        assertThat(ManagementConfig.managementConfig(Map.of()).unwrap().exposed("info")).isFalse();
+        assertThat(all.exposed("metrics")).isTrue();
+        assertThat(some.exposed("health")).isTrue();
+        assertThat(some.exposed("info")).isFalse();
+        assertThat(some.exposed("metrics")).isFalse();
+        assertThat(excludeAll.exposed("health")).isFalse();
+        assertThat(off.enabled("health")).isFalse();
+        assertThat(off.enabled("info")).isTrue();
+        assertThat(all.enabled("health")).isTrue();
+    }
+
+    @Test
+    void exposure_excludedAndDisabledEndpoints_answer404() throws Exception {
+        var settings = Map.of("management.endpoints.web.exposure.include", "*",
+                              "management.endpoints.web.exposure.exclude", "info",
+                              "management.endpoint.metrics.enabled", "false");
+
+        try (var host = Host.start(settings, Map.of())) {
+            assertThat(host.get("/actuator/health").statusCode()).isEqualTo(200);
+            assertThat(host.get("/actuator/info").statusCode()).isEqualTo(404);
+            assertThat(host.get("/actuator/metrics", "X-API-Key", KEY).statusCode()).isEqualTo(404);
+            assertThat(host.get("/actuator/prometheus", "X-API-Key", KEY).statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void healthDetails_whenAuthorized_onlyAnAuthenticatedCallerSeesComponents() throws Exception {
+        var settings = Map.of("management.endpoint.health.show-details", "when-authorized");
+
+        try (var host = Host.start(settings, Map.of())) {
+            var anonymous = json(host.get("/actuator/health"));
+            var authorized = json(host.get("/actuator/health", "X-API-Key", KEY));
+
+            assertThat(anonymous.has("components")).isFalse();
+            assertThat(authorized.has("components")).isTrue();
+            assertThat(host.get("/actuator/health", "X-API-Key", "wrong").statusCode()).isEqualTo(401);
+        }
+    }
+
+    @Test
+    void aggregate_picksTheWorstStatusInSpringOrder() {
+        assertThat(HealthEndpoint.aggregate(List.of(Status.UP, Status.OUT_OF_SERVICE))).isEqualTo(Status.OUT_OF_SERVICE);
+        assertThat(HealthEndpoint.aggregate(List.of(Status.UP, Status.OUT_OF_SERVICE, Status.DOWN))).isEqualTo(Status.DOWN);
+        assertThat(HealthEndpoint.aggregate(List.of(Status.UNKNOWN, Status.UP))).isEqualTo(Status.UP);
+        assertThat(HealthEndpoint.aggregate(List.of(Status.UNKNOWN))).isEqualTo(Status.UNKNOWN);
+        assertThat(HealthEndpoint.aggregate(List.of())).isEqualTo(Status.UNKNOWN);
+    }
+
+    @Test
+    void negotiate_choosesByQualityAndDefaultsToV3() {
+        var json = "application/json";
+
+        assertThat(TerraManagement.negotiate(Option.none())).isEqualTo(Option.some(TerraManagement.ACTUATOR_V3));
+        assertThat(TerraManagement.negotiate(Option.some("  "))).isEqualTo(Option.some(TerraManagement.ACTUATOR_V3));
+        assertThat(TerraManagement.negotiate(Option.some(json))).isEqualTo(Option.some(json));
+        assertThat(TerraManagement.negotiate(Option.some("*/*"))).isEqualTo(Option.some(TerraManagement.ACTUATOR_V3));
+        assertThat(TerraManagement.negotiate(Option.some("application/json;q=0.5, " + TerraManagement.ACTUATOR_V3 + ";q=0.9")))
+            .isEqualTo(Option.some(TerraManagement.ACTUATOR_V3));
+        assertThat(TerraManagement.negotiate(Option.some("application/json;q=0.9, " + TerraManagement.ACTUATOR_V3 + ";q=0.5")))
+            .isEqualTo(Option.some(json));
+        assertThat(TerraManagement.negotiate(Option.some("application/json;q=0, text/html"))).isEqualTo(Option.none());
+        assertThat(TerraManagement.negotiate(Option.some("text/html"))).isEqualTo(Option.none());
+    }
+
     private static JsonNode json(HttpResponse<String> response) throws Exception {
         return JSON.readTree(response.body());
     }
