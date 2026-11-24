@@ -1,0 +1,2 @@
+### Fixed (2026-11-24 — #3052: three Http3 tests asserted the 408 status only)
+- **`Http3StreamWireTest` (idle, minimum rate) and `Http3BodyBufferReleaseTest` (idle) now assert when the 408 arrives**, through `Answer.statusAfterMs`, as #3036 did for the five other 408 tests. `Http3BodyBufferReleaseTest` also pins, on a frozen `EmbeddedChannel` clock, that the idle timeout answers at the read timeout and releases the body buffer at the 408 rather than at stream teardown. Test-only.

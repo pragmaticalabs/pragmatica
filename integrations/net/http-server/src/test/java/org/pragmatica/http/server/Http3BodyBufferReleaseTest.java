@@ -59,6 +59,11 @@ class Http3BodyBufferReleaseTest {
     private static final int LIMIT = 768 * 1024;
     private static final long SLACK = 128 * 1024;
     private static final long BUDGET_MS = 5_000;
+    private static final long READ_TIMEOUT_MS = 3_000;
+    /// The idle bound's 408 may be late by scheduling and a starved host, never by the wait the client now allows. It
+    /// must stay under the connection's own 5 s idle timeout, or the pin is vacuous: 3 s + 1.5 s (#3052, as #2873; the
+    /// 1.5 s is a marked guess, about four times the overshoot measured on the other 408 tests).
+    private static final long MARGIN_MS = 1_500;
 
     private final AtomicInteger dispatchedBodyBytes = new AtomicInteger(-1);
     private final CompletableFuture<ResponseWriter> unanswered = new CompletableFuture<>();
@@ -70,7 +75,7 @@ class Http3BodyBufferReleaseTest {
     void start() {
         var config = HttpServerConfig.httpServerConfig("h3-release", 0)
                                      .withMaxContentLength(LIMIT)
-                                     .withReadTimeout(timeSpan(3).seconds())
+                                     .withReadTimeout(timeSpan(READ_TIMEOUT_MS).millis())
                                      .withBodyRateLimit(BodyRateLimit.bodyRateLimit(0,
                                                                                     BodyRateLimit.DEFAULT_GRACE,
                                                                                     BodyRateLimit.DEFAULT_WINDOW));
@@ -188,7 +193,49 @@ class Http3BodyBufferReleaseTest {
         });
 
         assertThat(answer.status()).isEqualTo("408");
+        assertThat(answer.statusAfterMs()).as("the 3 s read timeout, not the connection's 5 s idle timeout")
+                                          .isLessThan(READ_TIMEOUT_MS + MARGIN_MS);
         assertReleased();
+    }
+
+    /// The idle timeout releases the buffer when it answers 408, not when the stream later closes, and answers at the
+    /// read timeout. Over a real connection the stream closes moments after the answer, too soon to tell the two apart, so
+    /// this drives the handler in an `EmbeddedChannel` on a frozen clock: nothing is answered a millisecond before the
+    /// timeout, and at the timeout the 408 and the release come together while the stream is still open.
+    @Test
+    void idleTimeout_releasesTheBodyBuffer_atTheReadTimeout_whileTheStreamIsStillOpen() {
+        var channel = new EmbeddedChannel(new Http3Server.Http3RequestHandler((_, writer) -> writer.ok("{}"),
+                                                                              LIMIT,
+                                                                              timeSpan(READ_TIMEOUT_MS).millis(),
+                                                                              BodyRateLimit.bodyRateLimit(0,
+                                                                                                          BodyRateLimit.DEFAULT_GRACE,
+                                                                                                          BodyRateLimit.DEFAULT_WINDOW)));
+        var headers = new DefaultHttp3Headers();
+
+        channel.freezeTime();
+        headers.method("POST");
+        headers.path("/");
+        channel.writeInbound(new DefaultHttp3HeadersFrame(headers));
+
+        var before = usedHeap();
+
+        channel.writeInbound(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[BODY])));
+        channel.advanceTimeBy(READ_TIMEOUT_MS - 1, TimeUnit.MILLISECONDS);
+        channel.runPendingTasks();
+
+        assertThat(usedHeap() - before).as("control: the counter sees the held body").isGreaterThanOrEqualTo(BODY);
+        assertThat((Object) channel.readOutbound()).as("control: nothing is answered before the read timeout").isNull();
+
+        channel.advanceTimeBy(1, TimeUnit.MILLISECONDS);
+        channel.runPendingTasks();
+
+        Object first = channel.readOutbound();
+
+        assertThat(first).isInstanceOf(Http3HeadersFrame.class);
+        assertThat(((Http3HeadersFrame) first).headers().status().toString()).isEqualTo("408");
+        assertThat(channel.isOpen()).as("control: the stream has not closed").isTrue();
+        assertThat(usedHeap() - before).as("released at the 408").isLessThan(SLACK);
+        channel.finishAndReleaseAll();
     }
 
     @Test
