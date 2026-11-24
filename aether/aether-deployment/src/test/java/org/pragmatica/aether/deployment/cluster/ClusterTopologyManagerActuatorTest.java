@@ -537,6 +537,25 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(drainCommandSinkCalls).as("the peer is evicted, the leader's own id is not").containsExactly(PEER_D);
     }
 
+    /// #3626: the other rejoin eviction (a re-admission the capacity ledger refuses) writes through the same sink, so it also queues no drain
+    /// of this manager's own node. The operator warning is raised after the eviction for both, so its arrival is the signal both ran.
+    @Test
+    void readmissionRefusedEviction_ownId_isNotQueued_peerIs() {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        ctm.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> raised.add(warning.code().code())));
+        lifecycleManager.failReadmission(new NodeLifecycleManager.ReadmissionRefused("the ledger cannot count the slot"));
+        ctm.activate();
+
+        ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(SELF, "worker", HLC));
+        ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(PEER_D, "worker", HLC));
+
+        await().atMost(Duration.ofSeconds(5))
+               .until(() -> raised.stream()
+                                  .filter(org.pragmatica.utility.warning.OperatorWarningCode.EXTERNAL_REJOIN_UNRECONCILED.code()::equals)
+                                  .count() == 2);
+        assertThat(drainCommandSinkCalls).as("the peer is evicted, the leader's own id is not").containsExactly(PEER_D);
+    }
+
     @Test
     void drainNode_enqueuesDrainCommand_forTarget_withoutSynchronousTerminate() {
         ctm.activate();

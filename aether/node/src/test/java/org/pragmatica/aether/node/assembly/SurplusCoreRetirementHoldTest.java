@@ -75,6 +75,34 @@ class SurplusCoreRetirementHoldTest {
         assertThat(warned).as("not tried by a pass: forgotten, told again").hasSize(4);
     }
 
+    /// #3626: a failed voter reconcile skips the retirement for that pass, so it tries nothing and forgets every told refusal; the
+    /// same refusal after it is a new transition. A successful reconcile runs the retirement, and the refusal stays told.
+    @Test
+    void retirementPass_failedReconcile_forgetsTheToldRefusal() {
+        refusalOfA.set(Option.some("first cause"));
+        retirementPass(Promise.unitPromise());
+        retirementPass(Promise.unitPromise());
+        assertThat(warned).as("two passes, one cause: told once").hasSize(1);
+
+        var skipped = TopologyAssembly.retirementPass(Causes.cause("reconcile failed").<Unit>promise(),
+                                                      refusals,
+                                                      this::drainSurplusA)
+                                      .await();
+
+        assertThat(skipped.isFailure()).as("the failed reconcile is the pass's failure").isTrue();
+        retirementPass(Promise.unitPromise());
+        assertThat(warned).as("a pass that tried nothing forgot it: told again").hasSize(2);
+    }
+
+    private void retirementPass(Promise<Unit> reconciled) {
+        TopologyAssembly.retirementPass(reconciled, refusals, this::drainSurplusA)
+                        .await();
+    }
+
+    private Promise<Unit> drainSurplusA() {
+        return TopologyAssembly.drainSurplusCores(List.of(SURPLUS_A), () -> false, this::refuseA, refusals);
+    }
+
     private void passes(int count) {
         for (var i = 0; i < count; i++) {
             TopologyAssembly.drainSurplusCores(List.of(SURPLUS_A), () -> false, this::refuseA, refusals)
