@@ -233,7 +233,7 @@ printf '*\t*\t1\t-\ttiny default\n@hosted\tlimit\t18000\t12g\tlimit\n' > "$work/
 VARIANTS=ok PATH="$work/stub3:$PATH" STUB_PID="$work/stub.pid" BUDGETS_TSV="$work/b_tinydef.tsv" run budget-default-row-applies-to-a-row-without-its-own nonzero 'exceeded the 1s budget, default row 1s/-' full < <(fixrows)
 VARIANTS=ok PATH="$work/stub3:$PATH" STUB_PID="$work/stub.pid" TLC_TIMEOUT=2 BUDGETS_TSV="$work/b_tiny.tsv" run budget-env-timeout-overrides-the-row nonzero 'exceeded the 2s budget, TLC_TIMEOUT env' full < <(fixrows)
 # the heap: a stub java that records its arguments shows the row's -Xmx in front of the env's java options
-mkdir -p "$work/stub2"; printf '#!/usr/bin/env bash\necho "$@" > "$STUB_ARGS"\nexit 0\n' > "$work/stub2/java"; chmod +x "$work/stub2/java"
+mkdir -p "$work/stub2"; printf '#!/usr/bin/env bash\necho "$@" > "$STUB_ARGS"\necho "Model checking completed. No error has been found."\necho "5 states generated, 4 distinct states found, 0 states left on queue."\nexit 0\n' > "$work/stub2/java"; chmod +x "$work/stub2/java"
 { base_budgets; printf 'Fix\tok\t100\t6g\tsix\n'; } > "$work/b_six.tsv"
 VARIANTS=ok PATH="$work/stub2:$PATH" STUB_ARGS="$work/args.txt" BUDGETS_TSV="$work/b_six.tsv" run budget-heap-reaches-java 0 - full < <(fixrows)
 want budget-heap-is-xmx-6g 1 "$(grep -c -- '-Xmx6g' "$work/args.txt")"
