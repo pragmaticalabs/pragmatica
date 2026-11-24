@@ -184,7 +184,7 @@ class TerraHttpServerTest {
             var missing = get(client, host, "/jwt");
             assertThat(missing.statusCode()).isEqualTo(401);
             assertThat(missing.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\"");
-            assertThat(missing.body()).contains("token: is missing").doesNotContain("Bearer");
+            assertThat(missing.body()).contains("JWT token is missing").doesNotContain("Bearer");
             var malformed = get(client, host, "/jwt", "Authorization", "Token not-a-jwt");
             assertThat(malformed.statusCode()).isEqualTo(401);
             assertThat(malformed.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\", error=\"invalid_token\"");

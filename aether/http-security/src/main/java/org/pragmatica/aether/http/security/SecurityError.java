@@ -47,10 +47,10 @@ public sealed interface SecurityError extends Cause, HttpStatusAware {
 
     SecurityError MISSING_API_KEY = new MissingCredentials("X-API-Key header required");
     SecurityError INVALID_API_KEY = new InvalidCredentials("Invalid API key");
-    /// #3248: a missing JWT is reported as `<field>: <message>` like the other validation failures, and names no scheme --
-    /// the `Authorization` scheme is configurable (`auth_schemes`), so the text must not contradict it; the 401
-    /// `WWW-Authenticate` challenge carries the configured scheme.
-    SecurityError MISSING_BEARER_TOKEN = new MissingCredentials("token: is missing");
+    /// #3248 (owner ruling): a missing JWT is `JWT token is missing`. It names no `Authorization` scheme -- the scheme is
+    /// configurable (`auth_schemes`), so the text must not contradict it; the 401 `WWW-Authenticate` challenge carries
+    /// the configured scheme.
+    SecurityError MISSING_BEARER_TOKEN = new MissingCredentials("JWT token is missing");
     SecurityError MALFORMED_TOKEN = new InvalidCredentials("Malformed JWT token");
 
     record MissingCredentials(String message) implements SecurityError {

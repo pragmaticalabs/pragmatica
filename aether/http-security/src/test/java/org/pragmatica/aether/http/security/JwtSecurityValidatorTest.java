@@ -189,7 +189,7 @@ class JwtSecurityValidatorTest {
                      .onSuccess(ctx -> fail("Expected failure"))
                      .onFailure(cause -> {
                          assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class);
-                         assertThat(cause.message()).isEqualTo("token: is missing");
+                         assertThat(cause.message()).isEqualTo("JWT token is missing");
                      });
         }
     }
