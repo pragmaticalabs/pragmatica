@@ -33,9 +33,15 @@ final class OnDrainer {
     }
 
     static void dispatch(LeaderElectionContext ctx, ClusterFsmEvent event) {
+        run(ctx, () -> ctx.submit(event));
+    }
+
+    /// Runs `task` as ONE task on the node's serial executor and returns after it ran: several steps that production
+    /// performs in a single serial task (`LeaderManager`'s observe-then-dispatch of a push) enter the same way.
+    static void run(LeaderElectionContext ctx, Runnable task) {
         var handled = new CountDownLatch(1);
 
-        ctx.serially(() -> submitThenComplete(ctx, event, handled));
+        ctx.serially(() -> runThenComplete(task, handled));
         awaitHandled(handled);
     }
 
@@ -49,9 +55,9 @@ final class OnDrainer {
         awaitHandled(handled);
     }
 
-    private static void submitThenComplete(LeaderElectionContext ctx, ClusterFsmEvent event, CountDownLatch handled) {
+    private static void runThenComplete(Runnable task, CountDownLatch handled) {
         try {
-            ctx.submit(event);
+            task.run();
         } finally {
             handled.countDown();
         }

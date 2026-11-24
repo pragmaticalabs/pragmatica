@@ -23,6 +23,7 @@ import org.pragmatica.statemachine.FsmTestHarness;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeader;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
@@ -151,14 +152,13 @@ class LeaderAdoptionSequenceGateTest {
         assertThat(((LeaderElectionState.Electing) h.state()).entryBaseline()).isEqualTo(5L);
 
         // Stale pull/push: the corpse (LEADER) is still LeaderKey at seq 5 (== baseline). IGNORED.
-        h.dispatch(new LeaderCommitted(LEADER));
+        commitLeader(h, LEADER, 5L);
         assertThat(h.state())
                 .as("stale pre-death commit (seq == baseline) must NOT be adopted")
                 .isInstanceOf(LeaderElectionState.Electing.class);
 
         // A fresh successor commits at seq 6 (> baseline) — observed, then the LeaderCommitted lands.
-        ctxOf(h).observeViewSequence(6L);
-        h.dispatch(new LeaderCommitted(SUCCESSOR));
+        commitLeader(h, SUCCESSOR, 6L);
         assertThat(h.state())
                 .as("a post-election commit (seq > baseline) is adopted by the elector")
                 .isInstanceOf(LeaderElectionState.Led.class);
@@ -201,8 +201,7 @@ class LeaderAdoptionSequenceGateTest {
 
         // The other elector's proposal commits first at seq 3. This (losing) node observes it and
         // adopts — it does NOT re-propose, because 3 > its baseline 2.
-        ctxOf(h).observeViewSequence(3L);
-        h.dispatch(new LeaderCommitted(SUCCESSOR));
+        commitLeader(h, SUCCESSOR, 3L);
         assertThat(h.state())
                 .as("the losing elector adopts the winner's commit (seq > baseline) — no ping-pong")
                 .isInstanceOf(LeaderElectionState.Led.class);
@@ -221,8 +220,7 @@ class LeaderAdoptionSequenceGateTest {
         assertThat(((LeaderElectionState.Electing) h.state()).entryBaseline()).isEqualTo(0L);
 
         // A peer's proposal commits at seq 1 (> baseline 0) and arrives via the push path.
-        ctxOf(h).observeViewSequence(1L);
-        h.dispatch(new LeaderCommitted(SUCCESSOR));
+        commitLeader(h, SUCCESSOR, 1L);
 
         assertThat(h.state())
                 .as("a peer push commit above baseline is adopted mid-election")

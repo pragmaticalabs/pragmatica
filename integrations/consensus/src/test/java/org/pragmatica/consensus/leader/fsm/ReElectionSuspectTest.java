@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeader;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -121,8 +122,7 @@ class ReElectionSuspectTest {
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, topology, seq()));
         h.dispatch(new ConsensusReady());
-        context.observeViewSequence(1L);
-        h.dispatch(new LeaderCommitted(leader, 1L));
+        commitLeader(h, leader, 1L);
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
     }
 
@@ -224,10 +224,9 @@ class ReElectionSuspectTest {
 
         // Production order: the LeaderKey ValuePut advances the committed viewSequence before the FSM sees
         // LeaderCommitted, so the commit postdates the ReElecting entry baseline and is adopted.
-        context.observeViewSequence(first.viewSequence());
         // The ReElecting instance retries only after 60 s, so a second proposal within the await window can only
         // come from a fresh ReElecting entered after Led(B) tripped its own lease.
-        h.dispatch(new LeaderCommitted(B, first.viewSequence()));
+        commitLeader(h, B, first.viewSequence());
 
         var second = awaitProposal(1);
         assertThat(second.candidate())

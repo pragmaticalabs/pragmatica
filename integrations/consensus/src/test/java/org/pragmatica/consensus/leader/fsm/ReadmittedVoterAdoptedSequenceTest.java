@@ -34,6 +34,7 @@ import org.pragmatica.statemachine.FsmTestHarness;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeaderOnDrainer;
 import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -132,7 +133,7 @@ class ReadmittedVoterAdoptedSequenceTest {
         passiveCoreThatPulledTheNewerLeader();
         consensusReady.set(true);
         readmitAsVoter();
-        OnDrainer.dispatch(ctx(), new LeaderCommitted(OLD_LEADER));
+        commitLeaderOnDrainer(ctx(), OLD_LEADER);
         assertThat(heldLeader()).as("instrument: the sequence-less commit swapped Led")
                   .isEqualTo(Option.some(OLD_LEADER));
         assertThat(ctx().adoptedViewSequence()).as("adoptedViewSequence after a sequence-less Led swap")

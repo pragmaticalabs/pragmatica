@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeaderOnDrainer;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
@@ -142,8 +143,7 @@ class RankStaircaseTest {
         // ValuePut fires observeViewSequence before the FSM sees LeaderCommitted). The
         // sequence-gated Electing arm then adopts and cancels the pending tick in Electing.onExit.
         Thread.sleep(100);
-        ((LeaderElectionState) h.state()).ctx().observeViewSequence(1L);
-        OnDrainer.dispatch(h, new LeaderCommitted(NODE_1));
+        commitLeaderOnDrainer(h, NODE_1, 1L);
 
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(NODE_1);
@@ -179,7 +179,7 @@ class RankStaircaseTest {
         // on the ReElecting path, not Electing).
         OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
         OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(NODE_5, CLUSTER, seq()));
-        OnDrainer.dispatch(h, new LeaderCommitted(NODE_1));
+        commitLeaderOnDrainer(h, NODE_1);
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
 
         // Drop the leader: a NodeGone for the current leader transitions Led → ReElecting.
@@ -194,8 +194,7 @@ class RankStaircaseTest {
         // The re-election commit POSTDATES the ReElecting decision (entryBaseline=0), so model the
         // observed post-death sequence (1) > baseline — the sequence-gated ReElecting arm adopts.
         Thread.sleep(100);
-        ((LeaderElectionState) h.state()).ctx().observeViewSequence(1L);
-        OnDrainer.dispatch(h, new LeaderCommitted(NODE_2));
+        commitLeaderOnDrainer(h, NODE_2, 1L);
 
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(NODE_2);

@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeaderOnDrainer;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -118,7 +119,7 @@ class LeaderElectionStaleTimerTest {
         // LeaderCommitted handled directly by AwaitingKvSync.handle — no need for the grace
         // timeout. This mirrors the cold-boot fix path: AwaitingKvSync absorbs the leader-commit
         // notification and transitions straight to Led without ever entering Electing.
-        OnDrainer.dispatch(h, new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted(SELF));
+        commitLeaderOnDrainer(h, SELF);
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
         OnDrainer.dispatch(h, new ClusterFsmEvent.NodeGone(SELF, List.of(PEER_A, PEER_B), seq()));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);

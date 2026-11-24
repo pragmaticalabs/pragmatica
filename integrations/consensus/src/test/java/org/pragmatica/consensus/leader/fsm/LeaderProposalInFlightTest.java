@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeaderOnDrainer;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
@@ -98,7 +99,7 @@ class LeaderProposalInFlightTest {
         OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
         OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
         OnDrainer.dispatch(h, new ConsensusReady());
-        OnDrainer.dispatch(h, new LeaderCommitted(SELF));
+        commitLeaderOnDrainer(h, SELF);
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
         OnDrainer.dispatch(h, new ClusterFsmEvent.NodeGone(SELF, List.of(PEER_A, PEER_B), seq()));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
@@ -175,8 +176,7 @@ class LeaderProposalInFlightTest {
         OnDrainer.dispatch(h, new ElectionTick());
         assertThat(ctx.proposalInFlight()).isTrue();
 
-        ctx.observeViewSequence(1L);
-        OnDrainer.dispatch(h, new LeaderCommitted(SELF, 1L));
+        commitLeaderOnDrainer(h, SELF, 1L);
 
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
         assertThat(ctx.proposalInFlight()).as("leaving ReElecting on the commit releases the guard").isFalse();

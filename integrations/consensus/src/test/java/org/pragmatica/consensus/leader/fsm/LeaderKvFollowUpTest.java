@@ -34,6 +34,7 @@ import org.pragmatica.statemachine.FsmTags;
 
 import org.junit.jupiter.api.Test;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeader;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #3605: the KV pull's decision ([LeaderElectionState] `kvLeaderToAdopt`) and the entry pulls of `Electing` and
@@ -228,7 +229,7 @@ class LeaderKvFollowUpTest {
         assertThat(ctx.adoptedViewSequence()).as("adoptedViewSequence after the older record was passed over")
                                              .isEqualTo(4L);
 
-        ctx.submit(new LeaderCommitted(OTHER));
+        commitLeader(ctx::submit, OTHER);
 
         assertThat(heldLeader(fsm)).as("instrument: the sequence-less local commit was adopted")
                                    .isEqualTo(Option.some(OTHER));
