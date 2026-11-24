@@ -75,7 +75,7 @@ class NodeReplacementServiceTest {
         member(OLD_CORE, "core");
         member(OLD_WORKER, "worker");
         member(OLD_DHT, "dht");
-        when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
+        when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched(org.pragmatica.aether.config.cluster.SourceProfile.DEFAULT_REPLACEMENT_CEILING)));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.instanceListed(any(), any())).thenAnswer(call -> Promise.success(true));

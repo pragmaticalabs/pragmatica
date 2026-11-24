@@ -577,6 +577,58 @@ class LeaderReconcilerTest {
         assertThat(ctm.provisionReplacementFailedPeers()).containsExactlyInAnyOrder(Option.some(PEER_C), Option.some(PEER_D));
     }
 
+    /// #2811: the in-flight ceiling of a placeholder is read for the source of the node it replaces, so the reconciler must ask for the ceiling
+    /// of the SAME departed node it dispatches the replacement for: a ceiling asked without it would be one source's guess for another's.
+    @Test
+    void dispatchAsksTheCeilingOfTheSameDepartedVoterItDispatchesFor() {
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactlyInAnyOrder(Option.some(PEER_C), Option.some(PEER_D));
+        assertThat(ctm.replacementCeilingDeparted()).containsExactlyInAnyOrderElementsOf(ctm.provisionReplacementFailedPeers());
+    }
+
+    /// #2811 F3/F5: the entry of each placeholder carries the ceiling its OWN dispatch returned (the dispatched source's), not the one asked
+    /// for while the create was in flight (the shared 10 minutes here). Two departed voters, two ceilings: after 135s only the placeholder
+    /// paired with the 2-minute one is past its ceiling, and the 4-minute one goes at 255s.
+    @Test
+    void eachPlaceholderEntryTakesTheCeilingItsOwnDispatchCarried() {
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+        ctm.dispatchWithCeilingFor(PEER_C, timeSpan(2).minutes());
+        ctm.dispatchWithCeilingFor(PEER_D, timeSpan(4).minutes());
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+
+        var placeholders = ctm.provisionReplacementCalls();
+        var departed = ctm.provisionReplacementFailedPeers();
+        var forC = placeholders.get(departed.indexOf(Option.some(PEER_C)));
+        var forD = placeholders.get(departed.indexOf(Option.some(PEER_D)));
+
+        for (var i = 0; i < 9; i++) {
+            advanceAndRunSweepOnly(EXPECTED_POLL_INTERVAL.millis());
+        }
+
+        assertThat(reconciler.inFlightProvisioningKeys()).as("at 135s the 2-minute entry is gone, the 4-minute one is kept")
+                                                         .doesNotContain(forC)
+                                                         .contains(forD);
+
+        for (var i = 0; i < 8; i++) {
+            advanceAndRunSweepOnly(EXPECTED_POLL_INTERVAL.millis());
+        }
+
+        assertThat(reconciler.inFlightProvisioningKeys()).as("at 255s the 4-minute entry is past its ceiling").doesNotContain(forD);
+    }
+
     /// #2115: fewer placeholders than departed voters pairs the placeholder with the same departed node on every pass (smallest id first), so
     /// the choice of source never depends on set iteration order.
     @Test
@@ -2515,7 +2567,7 @@ class LeaderReconcilerTest {
             ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
             advancePollIntervals(3);
             timeSource.advanceTimeMillis(10_000);
-            pendingProvision.succeed(ProvisionDisposition.dispatched());
+            pendingProvision.succeed(ProvisionDisposition.dispatched(DEFAULT_REPLACEMENT_CEILING));
             await().atMost(2, TimeUnit.SECONDS).until(() -> tickAndCountQueries() >= 1);
             ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
             advancePollIntervals(1);
@@ -2619,7 +2671,7 @@ class LeaderReconcilerTest {
 
             ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
             timeSource.advanceTimeMillis(55_000);
-            pendingProvision.succeed(ProvisionDisposition.dispatched());
+            pendingProvision.succeed(ProvisionDisposition.dispatched(DEFAULT_REPLACEMENT_CEILING));
             await().atMost(2, TimeUnit.SECONDS).until(() -> tickInPlaceAndCountQueries() >= 1);
             for (var i = 1; i < EXPECTED_ABSENT_LISTINGS; i++) {
                 advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
@@ -3116,7 +3168,7 @@ class LeaderReconcilerTest {
 
             assertThat(ctm.instanceStateQueries()).isEmpty();
 
-            pendingProvision.succeed(ProvisionDisposition.dispatched());
+            pendingProvision.succeed(ProvisionDisposition.dispatched(DEFAULT_REPLACEMENT_CEILING));
 
             await().atMost(2, TimeUnit.SECONDS).until(() -> tickAndCountQueries() >= 1);
         }
@@ -4723,8 +4775,10 @@ class LeaderReconcilerTest {
         // to a success-valued Dispatched (a real boot is coming → the reconciler KEEPS its in-flight
         // placeholder). Tests flip this to a Deferred (no-boot deferral → placeholder REMOVED) or to
         // a failure (genuine boot failure → placeholder REMOVED) to exercise the three outcomes.
-        private final AtomicReference<Promise<ProvisionDisposition>> nextProvisionResult =
-            new AtomicReference<>(Promise.success(ProvisionDisposition.dispatched()));
+        private final AtomicReference<Promise<ProvisionDisposition>> nextProvisionResult = new AtomicReference<>();
+        // #2811 — the ceiling a default (Dispatched) provision carries, per departed node; the shared `replacementCeiling` otherwise. It
+        // differs from what `replacementCeiling(role, departed)` answers while the create is in flight, as it does when the source moves.
+        private final Map<NodeId, TimeSpan> dispatchedCeilingByDeparted = new ConcurrentHashMap<>();
         // #1049 — what the fake provider reports about each replacement's instance: UNKNOWN unless a test
         // says otherwise (a fake that cannot answer must read neither as "exists" nor as "gone"); every
         // status query the reconciler issued; an optional held answer (a slow provider); and the
@@ -4734,6 +4788,7 @@ class LeaderReconcilerTest {
         private final AtomicReference<Option<Promise<ReplacementInstanceState>>> heldInstanceStateAnswer =
             new AtomicReference<>(Option.none());
         private final AtomicReference<TimeSpan> replacementCeiling = new AtomicReference<>(DEFAULT_REPLACEMENT_CEILING);
+        private final List<Option<NodeId>> replacementCeilingDeparted = new CopyOnWriteArrayList<>();
 
         @Contract
         void reportInstanceState(NodeId nodeId, ReplacementInstanceState state) {
@@ -4756,8 +4811,17 @@ class LeaderReconcilerTest {
         }
 
         @Contract
+        void dispatchWithCeilingFor(NodeId departed, TimeSpan ceiling) {
+            dispatchedCeilingByDeparted.put(departed, ceiling);
+        }
+
+        @Contract
         void setReplacementCeiling(TimeSpan ceiling) {
             replacementCeiling.set(ceiling);
+        }
+
+        List<Option<NodeId>> replacementCeilingDeparted() {
+            return List.copyOf(replacementCeilingDeparted);
         }
 
         List<NodeId> instanceStateQueries() {
@@ -4836,7 +4900,9 @@ class LeaderReconcilerTest {
             if (real != null) {
                 return real.provisionReplacement(newNodeId, failedPeer, clusterMembers, intendedRole);
             }
-            return nextProvisionResult.get();
+            return Option.option(nextProvisionResult.get())
+                         .or(() -> Promise.success(ProvisionDisposition.dispatched(failedPeer.flatMap(departed -> Option.option(dispatchedCeilingByDeparted.get(departed)))
+                                                                                             .or(replacementCeiling.get()))));
         }
 
         @Override
@@ -4858,7 +4924,9 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public TimeSpan replacementCeiling(NodeRole intendedRole) {
+        public TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed) {
+            replacementCeilingDeparted.add(departed);
+
             return replacementCeiling.get();
         }
 
