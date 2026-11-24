@@ -126,6 +126,42 @@ class TerraMetricsTest {
         }
     }
 
+    @Test void otlp_shortStep_pushesWithoutCloseAtTheConfiguredInterval() throws Exception {
+        var received = new CompletableFuture<byte[]>();
+        var collector = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+
+        collector.createContext("/v1/metrics", exchange -> receiveContaining(exchange, "terra.otlp.step", received));
+        collector.start();
+        var metrics = TerraMetrics.terraMetrics(TerraMetrics.Settings.settings(config(Map.of("management.otlp.metrics.export.url",
+                                                                                              "http://127.0.0.1:" + collector.getAddress().getPort() + "/v1/metrics",
+                                                                                              "management.otlp.metrics.export.step", "1s"))).unwrap()).unwrap();
+        try {
+            // The default step is one minute: a push within 20 s, with no close(), proves the configured step is the one in force.
+            var increments = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+
+            increments.scheduleAtFixedRate(() -> metrics.registry().counter("terra.otlp.step").increment(), 0, 200, TimeUnit.MILLISECONDS);
+            try {
+                assertThat(new String(received.get(20, TimeUnit.SECONDS), StandardCharsets.ISO_8859_1)).contains("terra.otlp.step");
+            } finally {
+                increments.shutdownNow();
+            }
+        } finally {
+            metrics.close();
+            collector.stop(0);
+        }
+    }
+
+    private static void receiveContaining(HttpExchange exchange, String marker, CompletableFuture<byte[]> received) throws java.io.IOException {
+        try (exchange) {
+            var body = exchange.getRequestBody().readAllBytes();
+
+            if (new String(body, StandardCharsets.ISO_8859_1).contains(marker)) {
+                received.complete(body);
+            }
+            exchange.sendResponseHeaders(200, -1);
+        }
+    }
+
     private static void receive(HttpExchange exchange, CompletableFuture<byte[]> received) throws java.io.IOException {
         try (exchange) {
             received.complete(exchange.getRequestBody().readAllBytes());
