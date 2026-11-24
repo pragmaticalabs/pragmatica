@@ -349,7 +349,7 @@ class ClusterConfigApplierTest {
         }
 
         @Override
-        public TimeSpan replacementCeiling(NodeRole intendedRole) {
+        public TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed) {
             return SourceProfile.DEFAULT_REPLACEMENT_CEILING;
         }
 

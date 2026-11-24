@@ -577,6 +577,22 @@ class LeaderReconcilerTest {
         assertThat(ctm.provisionReplacementFailedPeers()).containsExactlyInAnyOrder(Option.some(PEER_C), Option.some(PEER_D));
     }
 
+    /// #2811: the in-flight ceiling of a placeholder is read for the source of the node it replaces, so the reconciler must ask for the ceiling
+    /// of the SAME departed node it dispatches the replacement for: a ceiling asked without it would be one source's guess for another's.
+    @Test
+    void dispatchAsksTheCeilingOfTheSameDepartedVoterItDispatchesFor() {
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactlyInAnyOrder(Option.some(PEER_C), Option.some(PEER_D));
+        assertThat(ctm.replacementCeilingDeparted()).containsExactlyInAnyOrderElementsOf(ctm.provisionReplacementFailedPeers());
+    }
+
     /// #2115: fewer placeholders than departed voters pairs the placeholder with the same departed node on every pass (smallest id first), so
     /// the choice of source never depends on set iteration order.
     @Test
@@ -4734,6 +4750,7 @@ class LeaderReconcilerTest {
         private final AtomicReference<Option<Promise<ReplacementInstanceState>>> heldInstanceStateAnswer =
             new AtomicReference<>(Option.none());
         private final AtomicReference<TimeSpan> replacementCeiling = new AtomicReference<>(DEFAULT_REPLACEMENT_CEILING);
+        private final List<Option<NodeId>> replacementCeilingDeparted = new CopyOnWriteArrayList<>();
 
         @Contract
         void reportInstanceState(NodeId nodeId, ReplacementInstanceState state) {
@@ -4758,6 +4775,10 @@ class LeaderReconcilerTest {
         @Contract
         void setReplacementCeiling(TimeSpan ceiling) {
             replacementCeiling.set(ceiling);
+        }
+
+        List<Option<NodeId>> replacementCeilingDeparted() {
+            return List.copyOf(replacementCeilingDeparted);
         }
 
         List<NodeId> instanceStateQueries() {
@@ -4858,7 +4879,9 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public TimeSpan replacementCeiling(NodeRole intendedRole) {
+        public TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed) {
+            replacementCeilingDeparted.add(departed);
+
             return replacementCeiling.get();
         }
 

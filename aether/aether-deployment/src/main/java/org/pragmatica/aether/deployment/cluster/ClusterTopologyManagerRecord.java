@@ -1427,7 +1427,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// ride one source profile. The ten-minute default applies when there is no committed TOML (the
     /// bootstrap seed) or it is unparseable, or no cloud source backs the role (Docker / forge).
     @Override
-    public TimeSpan replacementCeiling(NodeRole intendedRole) {
+    public TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed) {
         return persistedCloudSource(intendedRole).map(SourceProfile::effectiveReplacementCeiling)
                                    .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
     }

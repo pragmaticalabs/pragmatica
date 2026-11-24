@@ -459,10 +459,12 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// meant. One provider listing per call — the caller owns the cadence.
     Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId);
     /// #1049 — the hard ceiling on how long an auto-heal replacement of `intendedRole` may stay in-flight
-    /// while its provider still reports it existing or booting (or cannot report at all). Resolved from
-    /// the `replacement_ceiling` of the cloud source backing the role in the persisted cluster config,
-    /// else the ten-minute `SourceProfile.DEFAULT_REPLACEMENT_CEILING`.
-    TimeSpan replacementCeiling(NodeRole intendedRole);
+    /// while its provider still reports it existing or booting (or cannot report at all). #2811: it is the
+    /// `replacement_ceiling` of the source the replacement of `departed` is dispatched to (resolved exactly as
+    /// `provisionReplacement` resolves it), the ten-minute `SourceProfile.DEFAULT_REPLACEMENT_CEILING` where that
+    /// source declares none. When that source cannot be resolved the answer is the LONGEST ceiling over every source
+    /// declaring the role, so no replacement is abandoned before its own source's ceiling.
+    TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed);
     /// Membership v2 / E2 — reconcile current cluster membership against configured size
     /// (spec §7.4). Derives action from the SWIM-converged member count plus the KV
     /// configured count: shortfall → `provisionReplacement` per missing slot; surplus →

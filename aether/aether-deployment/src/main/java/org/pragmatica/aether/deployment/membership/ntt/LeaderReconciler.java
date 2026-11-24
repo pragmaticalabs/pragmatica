@@ -532,7 +532,7 @@ public final class LeaderReconciler {
         }
 
         var nowNanos = timeSource.nanoTime();
-        var ceiling = ctm.replacementCeiling(NodeRole.CORE);
+        var ceiling = ctm.replacementCeiling(NodeRole.CORE, none());
         // Core-scoped (Wave 2 / W2): a retained dispatch is fulfilled only by a CORE member —
         // matches the fulfillment-clear in runReconcileBody, which also reads coreCountedMembers().
         var currentMembers = membershipFsm.coreCountedMembers();
@@ -1949,7 +1949,7 @@ public final class LeaderReconciler {
                                          Option<NodeId> departed) {
         inFlightProvisioning.put(placeholder,
                                  InFlightEntry.inFlightEntry(nowNanos,
-                                                             ctm.replacementCeiling(NodeRole.CORE),
+                                                             ctm.replacementCeiling(NodeRole.CORE, none()),
                                                              InFlightState.DISPATCHING,
                                                              nowNanos,
                                                              generation,
