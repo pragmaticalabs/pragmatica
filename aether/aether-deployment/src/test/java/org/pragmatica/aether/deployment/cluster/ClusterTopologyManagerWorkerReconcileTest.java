@@ -320,6 +320,106 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
     }
 
+    /// #3358: the hold of a worker surplus closes when the surplus is gone by the exit the warning names, an explicit drain of the node,
+    /// with auto-heal still disabled: the subject is asked on the pass that finds nothing to scale, and says so.
+    @Test
+    void reconcile_heldWorkerSurplus_drainedByHand_raisesResumed() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"), workerInstance("primary", "primary-worker-1"));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
+        assertThat(warnings).as("control: the surplus is held").containsExactly("auto-heal-scaling-held");
+
+        lifecycleManager.terminateNode(nodeId("primary-worker-1").unwrap()).await();
+        ctm.reconcileWorkerTopology();
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).as("no surplus left, auto-heal still disabled: the hold closes").containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+        assertThat(lifecycleManager.terminatedNodeIds()).as("only the operator's drain terminated anything").containsExactly("primary-worker-1");
+    }
+
+    /// #3358: the same for a deficit that fills by itself (the missing instance came back), and the close is not a latch: a deficit that
+    /// returns is held and warned again.
+    @Test
+    void reconcile_heldWorkerDeficit_filledByItself_raisesResumed_andAReturningDeficitIsHeldAgain() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
+
+        lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"));
+        ctm.reconcileWorkerTopology();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+
+        lifecycleManager.terminateNode(nodeId("primary-worker-0").unwrap()).await();
+        ctm.reconcileWorkerTopology();
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 3);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed", "auto-heal-scaling-held");
+        assertThat(lifecycleManager.provisionedNodeIds()).as("held throughout: nothing was provisioned").isEmpty();
+    }
+
+    /// #3358: a hold that closed because nothing was left to change is closed: re-enabling auto-heal afterwards announces nothing more.
+    /// Control: the held and resumed events of the same subject are awaited first, so the instrument sees a warning when one is raised.
+    @Test
+    void reconcile_closedHold_thenAutoHealReEnabled_raisesNothing() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+        lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"));
+        ctm.reconcileWorkerTopology();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+
+        autoHealRef.set(Option.none());
+        ctm.reconcileWorkerTopology();
+
+        org.awaitility.Awaitility.await()
+                                 .during(java.time.Duration.ofMillis(500))
+                                 .atMost(java.time.Duration.ofSeconds(5))
+                                 .until(() -> warnings.size() == 2);
+        assertThat(warnings).as("the resume was raised when the hold closed, not again at the re-enable")
+                            .containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+    }
+
+    /// #3358: auto-heal disabled with nothing to scale raises no hold at all: the subject is asked on every pass, and asking with nothing
+    /// pending is not a hold.
+    @Test
+    void reconcile_workerAtDesiredCount_autoHealDisabled_raisesNoHold() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        org.awaitility.Awaitility.await()
+                                 .during(java.time.Duration.ofMillis(500))
+                                 .atMost(java.time.Duration.ofSeconds(5))
+                                 .until(warnings::isEmpty);
+    }
+
+    /// #3358: the one rule at the accessor: a disabled subject whose value is unchanged is held only while a change is pending; asked with
+    /// nothing pending it is not held, and a hold open for it closes with its resume. Pinned for the core subject, the one the reconciler asks.
+    @Test
+    void scalingHeld_core_nothingPending_closesTheOpenHold() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        var core = ClusterTopologyManager.coreSubject();
+        seedTopology(entry("pool", "core", 3), entry("pool", "worker", 1));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, ClusterTopologyManagerRecord.scalingOf(configRef.get()))));
+
+        assertThat(manager.scalingHeld(core, true)).as("a surplus is pending").isTrue();
+        assertThat(manager.scalingHeld(core, false)).as("nothing pending any more").isFalse();
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+        assertThat(manager.scalingHeld(core, false)).as("asked again with nothing pending: no second resume").isFalse();
+        assertThat(manager.scalingHeld(core, true)).as("a surplus returns: held again").isTrue();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 3);
+        assertThat(warnings).last().isEqualTo("auto-heal-scaling-held");
+    }
+
     /// The community subject is held on its own `target_size`: unchanged it stays held, changed it is released.
     @Test
     void scalingHeld_community_followsItsOwnTargetSize() {

@@ -1517,19 +1517,13 @@ public final class LeaderReconciler {
                                             int effectiveWithSurge) {
         var surge = surgeReplacements.get().get().size();
         var effective = effectiveWithSurge - surge;
-
-        if (effective <= configuredCoreCount) {
-            surplusHoldNoted.set(false);
-
-            return Set.of();
-        }
-
         var nominalExcess = effective - configuredCoreCount;
         var floorHeadroom = Math.max(0, currentMembers.size() - configuredCoreCount);
-        var drainCount = Math.min(nominalExcess, floorHeadroom);
-        // #3324: with auto-heal disabled a surplus core member is not drained on the cluster's own initiative. Asked only when there is a
-        // surplus to drain, through the accessor the worker and community gates use, so the hold is raised as the same operator warning.
-        var held = drainCount > 0 && ctm.scalingHeld(ClusterTopologyManager.coreSubject());
+        var drainCount = Math.max(0, Math.min(nominalExcess, floorHeadroom));
+        // #3324: with auto-heal disabled a surplus core member is not drained on the cluster's own initiative. Asked through the accessor
+        // the worker and community gates use, so the hold is raised as the same operator warning. #3358: asked on every pass, with or
+        // without a surplus, because the hold closes when the surplus is gone (it went away by itself, or by an explicit drain).
+        var held = ctm.scalingHeld(ClusterTopologyManager.coreSubject(), drainCount > 0);
 
         surplusHoldNoted.set(held);
         if (drainCount == 0 || held) {

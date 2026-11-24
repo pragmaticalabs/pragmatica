@@ -146,6 +146,37 @@ class CoreRetirementWiringTest {
         verify(topology).drainNode(MATURE, DrainReason.OVERPROVISION_SCALE_DOWN);
     }
 
+    /// #3358: the production path hands the excluded cores it derived to the hold. With auto-heal disabled (the hold answers held) the
+    /// hold is asked for the subject `core` because there are victims, and nothing is drained. An empty victim list never asks.
+    @Test
+    void retireExcludedCores_autoHealDisabled_asksTheCoreHoldForItsVictims_andDrainsNothing() {
+        var topology = mock(ClusterTopologyManager.class);
+        var reconciler = reconcilerWhereEveryCoreIsPastTheGrace();
+
+        when(topology.scalingHeld(anyString())).thenReturn(true);
+        when(topology.drainNode(any(), any())).thenReturn(Promise.unitPromise());
+
+        retire(topology, () -> reconciler).await();
+
+        verify(topology).scalingHeld(ClusterTopologyManager.coreSubject());
+        verify(topology, never()).drainNode(any(), any());
+    }
+
+    @Test
+    void retireExcludedCores_everyCoreStillHosting_neverAsksTheCoreHold() {
+        var topology = topology();
+        var reconciler = reconcilerWhereEveryCoreIsPastTheGrace();
+        var deployments = DeploymentMap.deploymentMap();
+
+        for (var node : List.of(YOUNG, MATURE, HOSTING)) {
+            hostASlice(deployments, node);
+        }
+
+        retire(topology, () -> reconciler, true, deployments).await();
+
+        verify(topology, never()).scalingHeld(anyString());
+    }
+
     @Test
     void retireExcludedCores_reconcilerNotPublished_drainsNothing() {
         var topology = topology();
@@ -165,10 +196,14 @@ class CoreRetirementWiringTest {
     private static DeploymentMap deploymentsHostedOn(NodeId node) {
         var map = DeploymentMap.deploymentMap();
 
+        hostASlice(map, node);
+        return map;
+    }
+
+    private static void hostASlice(DeploymentMap map, NodeId node) {
         map.onNodeArtifactPut(new ValuePut<>(new KVCommand.Put<>(new AetherKey.NodeArtifactKey(node, SLICE),
                                                                  NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE)),
                                              Option.none()));
-        return map;
     }
 
     @Test

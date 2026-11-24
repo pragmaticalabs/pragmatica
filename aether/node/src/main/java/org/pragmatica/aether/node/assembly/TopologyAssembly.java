@@ -914,7 +914,9 @@ public sealed interface TopologyAssembly {
 
     /// #3324: a core excluded from the voter set is core surplus; with auto-heal disabled it is not drained on the cluster's own
     /// initiative. `coreHeld` is asked only when there is a victim, so it is the worker and community gates' accessor
-    /// ([ClusterTopologyManager#scalingHeld]) and raises the same operator warning only for a surplus that is really held back.
+    /// ([ClusterTopologyManager#scalingHeld]) and raises the same operator warning only for a surplus that is really held back. It
+    /// only ever raises (#3358): the hold of the `core` subject is closed by [LeaderReconciler]'s every-pass ask, because a victim-less
+    /// 1 s retirement pass saying "nothing pending" would close a hold the reconciler's surplus still has open, on every tick.
     /// #3626: a refused victim (the leader's own id among them) skips only itself; every victim after it is still tried, and the
     /// refusal is warned once per transition through `refusals`.
     static Promise<Unit> drainSurplusCores(List<NodeId> victims,

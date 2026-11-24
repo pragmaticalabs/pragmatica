@@ -1027,13 +1027,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// Spec §8.4 — whether the worker, community and core surplus (#3324) paths may NOT act on their own now. Auto-heal enabled: they may, and every hold raised
-    /// earlier is announced as resumed. Disabled: `subject` is held while its own committed scaling value (count or community `target_size`)
+    /// earlier is announced as resumed. Disabled: `subject` is held while a change to it is `pending` and its own committed scaling value (count or community `target_size`)
     /// equals the one recorded at disable time ([AutoHealStateValue#disabledAtScaling]); a commit that leaves it unchanged releases
     /// nothing. A value an operator committed after the disable differs: that is explicit intent, the subject is released (its hold, if
-    /// raised, is announced as resumed) and acted on. An operator-directed retirement never asks here. The hold is raised once per
-    /// `subject` for the run of holds (the set is the flood guard; a release or resume removes the subject).
+    /// raised, is announced as resumed) and acted on. Nothing `pending` (the surplus went away by itself or by an explicit drain, #3358)
+    /// ends the hold the same way: the warning describes a change being held back, so it closes when there is none. An operator-directed
+    /// retirement never asks here. The hold is raised once per `subject` for the run of holds (the set is the flood guard; a release or
+    /// resume removes the subject).
     @Override
-    public boolean scalingHeld(String subject) {
+    public boolean scalingHeld(String subject, boolean pending) {
         var state = autoHealStateReader.get();
 
         if (state.map(AutoHealStateValue::enabled).or(true)) {
@@ -1042,7 +1044,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return false;
         }
 
-        if (state.filter(value -> unchangedSinceDisable(value, subject)).isPresent()) {
+        if (pending && state.filter(value -> unchangedSinceDisable(value, subject)).isPresent()) {
             holdScaling(subject);
 
             return true;
@@ -1100,7 +1102,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                warningSink.get(),
                                OperatorWarningCode.AUTO_HEAL_SCALING_RESUMED,
                                subject,
-                               "Auto-heal is enabled again, or a new value was committed: {} is no longer held",
+                               "Auto-heal is enabled again, a new value was committed, or nothing is waiting to change any more: {} is no longer held",
                                subject);
     }
 
@@ -1972,8 +1974,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         var delta = entry.count() - actual.size();
+        // Asked on every pass, delta zero included (#3358): a hold raised for a deficit or surplus that is gone closes here.
+        var held = scalingHeld(workerSubject(entry.sourceName(), entry.role()),
+                               delta != 0);
 
-        if (delta == 0 || scalingHeld(workerSubject(entry.sourceName(), entry.role()))) {
+        if (delta == 0 || held) {
             return Promise.unitPromise();
         }
 

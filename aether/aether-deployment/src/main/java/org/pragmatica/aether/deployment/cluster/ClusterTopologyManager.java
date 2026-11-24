@@ -135,10 +135,18 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// value until then. Absent key means enabled (the pre-#685 default).
     boolean isAutoHealEnabled();
     /// Spec §8.4 — whether `subject` may NOT act on its own now because the operator disabled auto-heal: a worker source/role, a
-    /// community, or the core surplus ([#coreSubject], #3324). Held while the subject's committed scaling value equals the one recorded
-    /// at disable time; a hold is raised once as an operator warning and announced as resumed when it ends. Abstract, not defaulted: an
-    /// implementation that answered "never held" by default would silently lift the gate.
-    boolean scalingHeld(String subject);
+    /// community, or the core surplus ([#coreSubject], #3324). Held while a change to the subject is `pending` (a deficit, a surplus, a
+    /// victim: something the cluster would do on its own) and the subject's committed scaling value equals the one recorded at disable
+    /// time; a hold is raised once as an operator warning and announced as resumed when it ends. The hold ends when auto-heal is
+    /// enabled, when a value is committed after the disable, and when nothing is `pending` any more (#3358): one rule, so the caller
+    /// asks on every pass, not only when it has something to do. Abstract, not defaulted: an implementation that answered "never held"
+    /// by default would silently lift the gate.
+    boolean scalingHeld(String subject, boolean pending);
+
+    /// [#scalingHeld(String, boolean)] for a caller that asks only when it has a change to make: a change is pending.
+    default boolean scalingHeld(String subject) {
+        return scalingHeld(subject, true);
+    }
 
     /// #3324 — the subject the auto-heal hold of the core surplus drain is asked and raised for; its scaling value is the committed core count.
     static String coreSubject() {
