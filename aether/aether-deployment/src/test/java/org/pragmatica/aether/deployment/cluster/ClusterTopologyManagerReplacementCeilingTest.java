@@ -174,6 +174,16 @@ class ClusterTopologyManagerReplacementCeilingTest {
         assertThat(ceilingOf(Option.none())).isEqualTo(timeSpan(7).minutes());
     }
 
+    /// The departed node's committed source is not in the configuration: the replacement is dispatched there with that source's (absent)
+    /// profile, so its ceiling is the default, not another source's.
+    @Test
+    void committedSourceAbsentFromTheConfiguration_isTheTenMinuteDefault() {
+        seedConfig(cloud("aws", "replacement_ceiling = \"6m\"") + cloud("hetzner", "replacement_ceiling = \"15m\""));
+        placeNode(FROM_AWS, "retired");
+
+        assertThat(ceilingOf(Option.some(FROM_AWS))).isEqualTo(DEFAULT_TEN_MINUTES);
+    }
+
     @Test
     void noPersistedConfig_isTheTenMinuteDefault() {
         assertThat(ceilingOf(Option.none())).isEqualTo(DEFAULT_TEN_MINUTES);
