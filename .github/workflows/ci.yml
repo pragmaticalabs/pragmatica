@@ -276,6 +276,14 @@ jobs:
         run: tools/ci-prepull-images.sh "test-group-${{ matrix.group }}.txt"
         timeout-minutes: 10
 
+      # What the tests START is the inventory's claim (#3646), not the source shapes the static-gates job greps: the Docker daemon
+      # records every container create from here to the comparison step below. Testcontainers applies the mirror prefix from
+      # the environment, so the daemon is the one place that sees every image without a test dependency in each pom.
+      - name: Record the images the tests start
+        id: record
+        run: tools/ci-record-started-images.sh start started-images.txt
+        timeout-minutes: 2
+
       # Ember's and Consensus's tests run in their shard jobs; postgres-async's integration tests are off by default and on here.
       # aether.requireDocker: a live-database test that finds no Docker daemon FAILS here instead of self-skipping (#2591, #3089).
       # Every Docker guard goes through org.pragmatica.testing.DockerRequirement; ubuntu-latest runners carry a Docker daemon.
@@ -284,6 +292,16 @@ jobs:
           mvn verify -B -pl "${{ steps.plan.outputs.modules }}"
           -Dember.skipTests=true -Dconsensus.skipTests=true -Dpostgres-async.skipTests=false -Daether.requireDocker=true
         timeout-minutes: 35
+
+      # Fails by name when this group started an image tools/ci-test-images.txt does not list for its modules, and when the record
+      # is empty although the group's modules start containers (a dead recorder reads as "nothing started").
+      - name: Compare the started images with the inventory
+        if: ${{ always() && steps.record.outcome == 'success' }}
+        run: |
+          tools/ci-record-started-images.sh stop started-images.txt
+          python3 -B tools/check-ci-test-images.py --started started-images.txt --plan "test-group-${{ matrix.group }}.txt" \
+            --prefix "$TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX"
+        timeout-minutes: 2
 
       # The control for the guard above (#2591): with Docker "hidden" and the require property set, a live-database
       # test must FAIL with the guard's own message. Fails this job if it passes, skips, or fails for any other reason.

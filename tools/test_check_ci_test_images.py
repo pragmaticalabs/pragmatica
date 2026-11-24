@@ -145,6 +145,113 @@ class MainExitCodeTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
 
 
+class StartedImagesTest(unittest.TestCase):
+    """#3646: the claim is what a test group STARTED, recorded by the daemon, compared with the list; the source shapes are a pre-check."""
+    LISTING = "testcontainers/ryuk:0.12.0 *\npostgres:16 mod/a,mod/b\nredis:7 mod/r\nmysql:8.0 mod/x!\n"
+    PLAN = {"mod/a", "mod/r"}
+
+    def problems(self, recorded, plan=None, prefix="mirror.gcr.io/"):
+        with tempfile.TemporaryDirectory() as tmp:
+            tree(Path(tmp), SOURCES, self.LISTING)
+            return check.started_problems(Path(tmp), check.started_images(recorded, prefix), self.PLAN if plan is None else plan)
+
+    def test_listed_images_started_through_the_mirror_are_green(self):
+        self.assertEqual([], self.problems("mirror.gcr.io/testcontainers/ryuk:0.12.0\nmirror.gcr.io/postgres:16\nmirror.gcr.io/redis:7\n"))
+
+    def test_a_started_image_missing_from_the_list_fails_by_name(self):
+        errors = self.problems("mirror.gcr.io/testcontainers/ryuk:0.12.0\nmirror.gcr.io/valkey/valkey:8\n")
+        self.assertEqual(["STARTED image valkey/valkey:8 is not in tools/ci-test-images.txt: add it with the module that starts it"], errors)
+
+    def test_an_image_listed_only_for_other_modules_fails(self):
+        errors = self.problems("mirror.gcr.io/testcontainers/ryuk:0.12.0\nmirror.gcr.io/redis:7\n", plan={"mod/a"})
+        self.assertTrue(any(e.startswith("STARTED image redis:7 is listed for ['mod/r']") for e in errors), errors)
+
+    def test_an_excluded_module_row_still_names_the_image(self):
+        self.assertEqual([], self.problems("mirror.gcr.io/testcontainers/ryuk:0.12.0\nmirror.gcr.io/mysql:8.0\n", plan={"mod/x"}))
+
+    def test_a_non_hub_image_is_compared_as_named(self):
+        self.assertEqual(["STARTED image cgr.dev/x/y:1 is not in tools/ci-test-images.txt: add it with the module that starts it"],
+                         self.problems("mirror.gcr.io/testcontainers/ryuk:0.12.0\ncgr.dev/x/y:1\n"))
+
+    def test_an_empty_record_for_a_group_that_starts_containers_is_red(self):
+        errors = self.problems("")
+        self.assertTrue(any(e.startswith("NOTHING RECORDED") for e in errors), errors)
+
+    def test_an_empty_record_for_a_group_with_no_listed_module_is_green(self):
+        self.assertEqual([], self.problems("", plan={"mod/none"}))
+
+    def exit_code(self, recorded, plan="mod/a\n"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree(root, SOURCES, self.LISTING)
+            (root / "events").write_text(recorded)
+            (root / "plan").write_text(plan)
+            return subprocess.run(["python3", "-I", "-B", str(TOOLS / "check-ci-test-images.py"), "--root", tmp, "--started", str(root / "events"),
+                                   "--plan", str(root / "plan"), "--prefix", "mirror.gcr.io/"], capture_output=True, text=True).returncode
+
+    def test_the_script_exits_one_on_an_unlisted_started_image_and_zero_otherwise(self):
+        self.assertEqual(0, self.exit_code("mirror.gcr.io/testcontainers/ryuk:0.12.0\nmirror.gcr.io/postgres:16\n"))
+        self.assertEqual(1, self.exit_code("mirror.gcr.io/testcontainers/ryuk:0.12.0\nmirror.gcr.io/valkey/valkey:8\n"))
+
+    def test_the_script_exits_two_when_the_record_is_unreadable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(["python3", "-I", "-B", str(TOOLS / "check-ci-test-images.py"), "--started", f"{tmp}/none", "--plan", f"{tmp}/none"],
+                                    capture_output=True, text=True)
+        self.assertEqual(2, result.returncode)
+
+
+class WorkflowWiringTest(unittest.TestCase):
+    """#3646: the recorder brackets the test step and the comparison runs even when the tests fail; a missing step makes the claim vacuous."""
+    def test_the_test_group_job_records_then_tests_then_compares_always(self):
+        text = (TOOLS.parent / ".github/workflows/ci.yml").read_text()
+        record = text.index("- name: Record the images the tests start")
+        tests = text.index("- name: Test this group's modules")
+        compare = text.index("- name: Compare the started images with the inventory")
+        self.assertLess(record, tests)
+        self.assertLess(tests, compare)
+        step = text[compare:text.index("      - name:", compare + 1)]
+        self.assertIn("always() && steps.record.outcome == 'success'", step)
+        self.assertIn("ci-record-started-images.sh stop started-images.txt", step)
+        self.assertIn('check-ci-test-images.py --started started-images.txt --plan "test-group-${{ matrix.group }}.txt"', step)
+
+
+class RecorderTest(unittest.TestCase):
+    """tools/ci-record-started-images.sh against a fake `docker events` that prints the given images and then stays alive."""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        fake = self.tmp / "docker"
+        fake.write_text('#!/usr/bin/env bash\n[ "$1" = events ] || exit 9\n[ -n "${FAKE_DIE:-}" ] && exit 3\n'
+                        'printf "%s\\n" ${FAKE_IMAGES:-}\nexec sleep 30\n')
+        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+        self.out = self.tmp / "started.txt"
+
+    def run_script(self, mode, **env):
+        full = dict(os.environ, CI_RECORD_DOCKER=str(self.tmp / "docker"), CI_RECORD_SETTLE="1")
+        full.update(env)
+        return subprocess.run([str(TOOLS / "ci-record-started-images.sh"), mode, str(self.out)], env=full, capture_output=True, text=True)
+
+    def test_records_the_images_and_stops_cleanly(self):
+        self.assertEqual(0, self.run_script("start", FAKE_IMAGES="mirror.gcr.io/redis:7 mirror.gcr.io/postgres:16").returncode)
+        stopped = self.run_script("stop")
+        self.assertEqual(0, stopped.returncode, stopped.stdout)
+        self.assertEqual(["mirror.gcr.io/redis:7", "mirror.gcr.io/postgres:16"], self.out.read_text().splitlines())
+        self.assertIn("2 distinct image(s)", stopped.stdout)
+
+    def test_a_recorder_that_died_at_start_fails_the_step(self):
+        result = self.run_script("start", FAKE_DIE="1")
+        self.assertEqual(1, result.returncode)
+        self.assertIn("exited at start", result.stdout)
+
+    def test_a_recorder_that_died_during_the_run_fails_the_stop(self):
+        self.assertEqual(0, self.run_script("start").returncode)
+        os.kill(int((self.tmp / "started.txt.pid").read_text()), 9)
+        self.assertEqual(1, self.run_script("stop").returncode)
+
+    def test_stop_without_start_fails(self):
+        self.assertEqual(1, self.run_script("stop").returncode)
+
+
 class PrepullTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

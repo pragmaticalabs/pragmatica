@@ -17,7 +17,16 @@ List format, one entry per line: `<image> <module>[,<module>...]  # why`. A modu
 tests are excluded from the required jobs (a heavy-db or S3 group), so it is inventoried and never pre-pulled for. The
 Ryuk entry's module is `*` (every test group).
 
-  check-ci-test-images.py [--root DIR]     exit 0 consistent, 1 drift, 2 cannot read
+Source shapes are a pre-check only (#3646): a new way of naming an image is a silent miss. The claim rests on the second mode,
+which compares what a test-group job STARTED with the list (tools/ci-record-started-images.sh records every container create
+the Docker daemon sees; the image-name substitutor is configured by environment, so a daemon-side record needs no test dependency):
+
+  - an image started in the group that the list does not name for the group's modules fails by name;
+  - a group whose list names images but whose record is empty fails: a dead recorder reads as "nothing started".
+
+  check-ci-test-images.py [--root DIR]                          exit 0 consistent, 1 drift, 2 cannot read
+  check-ci-test-images.py --started FILE --plan MODULES_FILE    the started-image comparison for one test group
+                          [--prefix HUB_PREFIX]
 """
 import argparse
 import re
@@ -155,10 +164,62 @@ def problems(root):
     return errors, len(found), len(entries), versions
 
 
+def started_images(text, prefix):
+    """The set of image names in a recorded `docker events` file, one per line, with the registry-mirror prefix removed."""
+    images = set()
+    for raw in text.splitlines():
+        image = raw.strip()
+        if prefix and image.startswith(prefix):
+            image = image[len(prefix):]
+        if image:
+            images.add(image)
+    return images
+
+
+def started_problems(root, started, plan):
+    """Errors for images a test group started that the list does not name for the group's modules (`plan` = the group's modules)."""
+    entries = listed(root)
+    errors = []
+    for image in sorted(started):
+        modules = {m.rstrip("!") for m in entries.get(image, set())}
+        if image not in entries:
+            errors.append(f"STARTED image {image} is not in {LIST}: add it with the module that starts it")
+        elif "*" not in modules and not modules & plan:
+            errors.append(f"STARTED image {image} is listed for {sorted(modules)}, none in this group's modules: "
+                          f"add the starting module to its {LIST} entry")
+    pulled = [i for i, m in entries.items() if {x.rstrip("!") for x in m} & plan]
+    if pulled and not started:
+        errors.append(f"NOTHING RECORDED although this group's modules start containers (e.g. {sorted(pulled)[0]}): "
+                      f"the recorder was not running, so this run proves nothing")
+    return errors
+
+
+def main_started(args):
+    try:
+        plan = {line.strip() for line in args.plan.read_text(encoding="utf-8").splitlines() if line.strip()}
+        started = started_images(args.started.read_text(encoding="utf-8"), args.prefix)
+        errors = started_problems(args.root, started, plan)
+    except (OSError, ValueError) as error:
+        print(f"::error::cannot compare the started images: {error}")
+        return 2
+    for error in errors:
+        print(f"::error::{error}")
+    print(f"ci-test-images: {len(started)} image(s) started in this group: {', '.join(sorted(started)) or 'none'}; "
+          f"{len(errors)} problem(s)")
+    return 1 if errors else 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    parser.add_argument("--started", type=Path, help="recorded started images, one per line (compares them with the list)")
+    parser.add_argument("--plan", type=Path, help="the test group's modules, one per line (with --started)")
+    parser.add_argument("--prefix", default="", help="registry-mirror prefix to strip from recorded images (with --started)")
     args = parser.parse_args()
+    if args.started or args.plan:
+        if not (args.started and args.plan):
+            parser.error("--started and --plan go together")
+        return main_started(args)
     try:
         errors, referenced_count, listed_count, versions = problems(args.root)
     except (OSError, ValueError) as error:
