@@ -1231,8 +1231,9 @@ class SliceProcessorTest {
         var compilation = compileSharedStepConsumer("-Aslice.groupId=com.example", "-Aslice.artifactId=app");
 
         assertCompilation(compilation).failed();
-        assertCompilation(compilation).hadErrorContaining("Dependency parameter 'notifier'");
+        assertCompilation(compilation).hadErrorContaining("Dependency parameter 'alerts'");
         assertCompilation(compilation).hadErrorContaining("com.example.app.steps.Notifier");
+        assertCompilation(compilation).hadErrorContaining("no static factory method 'notifier'");
         assertCompilation(compilation).hadErrorContaining("is not a slice");
         assertThat(compilation.generatedSourceFiles()
                               .stream()
@@ -1247,7 +1248,7 @@ class SliceProcessorTest {
                                                     "-Aslice.version=1.0.0");
 
         assertCompilation(compilation).failed();
-        assertCompilation(compilation).hadErrorContaining("Dependency parameter 'notifier'");
+        assertCompilation(compilation).hadErrorContaining("Dependency parameter 'alerts'");
     }
 
     /// The refusal must not catch a real external slice: `jbct:collect-slice-deps` lists it in
@@ -1315,7 +1316,7 @@ class SliceProcessorTest {
             public interface OrderService {
                 Promise<String> placeOrder(String orderId);
 
-                static OrderService orderService(Notifier notifier) {
+                static OrderService orderService(Notifier alerts) {
                     return null;
                 }
             }
