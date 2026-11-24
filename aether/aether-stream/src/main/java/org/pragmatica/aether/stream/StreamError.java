@@ -722,6 +722,20 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// Ownership-not-applied refusal (#2755): the append was stamped with the unfenced floor ([Epoch#ZERO]) because this node's
+    /// store holds no ownership record for `(streamName, partition)` yet, while the partition high-water has already observed
+    /// the committed epoch `current`. The writer is NOT deposed: it has simply not applied the record it owns the arc by, so
+    /// presenting a stale epoch would misname a transient apply lag as a fencing event. Nothing is appended. Transient: the
+    /// record's apply lands within a replication round, and the caller retries against the same owner.
+    record OwnershipNotApplied(String streamName, int partition, Epoch current) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Stream append refused for %s[%d]: this node has not yet applied the committed ownership record (partition high-water %s)".formatted(streamName,
+                                                                                                                                                       partition,
+                                                                                                                                                       current);
+        }
+    }
+
     /// Provenance refusal (#1596): the append carries owner epoch `presented`, but this partition's log already
     /// records records of the strictly later epoch `recorded` -- the writer is deposed as far as this log is
     /// concerned, whatever this node's fence high-water has observed yet. Nothing is appended.
