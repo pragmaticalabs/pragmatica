@@ -47,14 +47,15 @@ class StreamReshuffleLifecycleTest {
 
     /// A user stream declares its hot window equal to its retention (the data region is below one segment, so the event size
     /// does not move the floor), which keeps [#FLOOR] whether the ring is sized from retention or from the declared window. A
-    /// `system:` ring keeps its retention sizing (R-13) and declares nothing.
+    /// `system:` ring keeps its retention sizing (R-13) and declares nothing. Every ring holds one `max_event_size` event (#3390
+    /// F3), so `max_event_size` is the retention bytes, as `declaredHot` caps it for the user streams.
     private static StreamConfig cfg(String name, int partitions, int replicas) {
         var retention = RetentionPolicy.retentionPolicy(SMALL_COUNT, SMALL_BYTES, 3_600_000L);
         var config = StreamConfig.streamConfig(name,
                                                partitions,
                                                retention,
                                                "latest",
-                                               1_048_576L,
+                                               SMALL_BYTES,
                                                ConsistencyMode.EVENTUAL,
                                                replicas,
                                                1,

@@ -14,7 +14,7 @@ distinct, or the reverse); a commit that is not in the repository or is not an a
 (its commit does not name the code that ran); a commit recorded as `none` (the run was outside a git repository).
 
 Named, not red (one `file:line: NOTE ...` per row): a SKIPPED-HEAVY row (a heavy config the small profile did not run: it is
-never a pass) and a RED, ERROR or RESOURCE row (a RESOURCE row is a TLC run the resource guard killed: no verdict; the evidence records a failing config; the check verifies provenance, not health).
+never a pass), a SKIPPED-HOST row (a row over the hosted-runner budget, run.sh did not run it there: never a pass) and a RED, ERROR or RESOURCE row (a RESOURCE row is a TLC run the resource guard killed: no verdict; the evidence records a failing config; the check verifies provenance, not health).
 The last line tallies the verdicts of the rows checked, so a skipped row is never folded into a pass count.
 Exit 2: an unusable invocation (unknown revision, missing file).
 
@@ -39,7 +39,7 @@ VALID = {
     'violated': re.compile(r'^(?:[A-Za-z][A-Za-z0-9_]*)?$'),
     'distinct': re.compile(r'^\d*$'),
     'tlc': re.compile(r'^[^\t]*$'),
-    'verdict': re.compile(r'^(?:OK|RED|ERROR|RESOURCE|SKIPPED-HEAVY)$'),
+    'verdict': re.compile(r'^(?:OK|RED|ERROR|RESOURCE|SKIPPED-HEAVY|SKIPPED-HOST)$'),
     'constants': re.compile(r'^[^\t]*$'),
 }
 
@@ -103,8 +103,12 @@ def check(repo, path, base, head):
             continue
         who = f'{row["module"]}/{row["variant"]}'
         skipped = row['verdict'] == 'SKIPPED-HEAVY'
+        skipped_host = row['verdict'] == 'SKIPPED-HOST'
         contradiction = None
-        if skipped != (row['actual'] == 'skipped') or (skipped and (row['profile'] != 'small' or row['violated'] or row['distinct'])):
+        if skipped_host:
+            if row['actual'] != 'skipped' or row['profile'] not in ('full', 'heavy') or row['violated'] or row['distinct']:
+                contradiction = 'SKIPPED-HOST needs actual=skipped, profile full or heavy and no violated property or state count'
+        elif skipped != (row['actual'] == 'skipped') or (skipped and (row['profile'] != 'small' or row['violated'] or row['distinct'])):
             contradiction = 'SKIPPED-HEAVY needs actual=skipped, profile small and no violated property or state count (and the reverse)'
         elif (row['verdict'] in ('ERROR', 'RESOURCE')) != (row['actual'] == 'error'):
             contradiction = f'verdict {row["verdict"]} with actual {row["actual"]}: ERROR or RESOURCE and actual=error go together'
@@ -133,6 +137,8 @@ def check(repo, path, base, head):
         tally[row['verdict']] = tally.get(row['verdict'], 0) + 1
         if skipped:
             notes.append(f'{path}:{n}: NOTE SKIPPED-HEAVY {who}: a heavy config the small profile did not run; not a pass')
+        elif skipped_host:
+            notes.append(f'{path}:{n}: NOTE SKIPPED-HOST {who}: a row over the hosted-runner budget; not run on the runner, not a pass (tools/tla/run-host.sh runs it)')
         elif row['verdict'] != 'OK':
             notes.append(f'{path}:{n}: NOTE {row["verdict"]} {who}: expect {row["expect"]}, actual {row["actual"]}{", violated " + row["violated"] if row["violated"] else ""}')
     return red, count, notes, tally
@@ -152,7 +158,7 @@ def main():
         sys.exit(2)
     for l in red + notes:
         print(l)
-    counts = ', '.join(f'{v} {tally.get(v, 0)}' for v in ('OK', 'RED', 'ERROR', 'RESOURCE', 'SKIPPED-HEAVY'))
+    counts = ', '.join(f'{v} {tally.get(v, 0)}' for v in ('OK', 'RED', 'ERROR', 'RESOURCE', 'SKIPPED-HEAVY', 'SKIPPED-HOST'))
     print(f'results-check: {"RED" if red else "GREEN"} {len(red)} bad of {count} rows checked in {a.file}; accepted rows by verdict: {counts}')
     sys.exit(1 if red else 0)
 

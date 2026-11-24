@@ -48,6 +48,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.ByteBuf;
@@ -102,6 +103,7 @@ class ClusterTopologyManagerAutoHealSourceTest {
             credentials = "hcloud-token"
             region = "eu-central"
             zones = ["fsn1"]
+            replacement_ceiling = "6m"
 
             [source.eu-1.core]
             count = 2
@@ -114,6 +116,7 @@ class ClusterTopologyManagerAutoHealSourceTest {
             credentials = "hcloud-token"
             region = "us-east"
             zones = ["ash"]
+            replacement_ceiling = "15m"
 
             [source.eu-2.core]
             count = 1
@@ -197,6 +200,40 @@ class ClusterTopologyManagerAutoHealSourceTest {
         heal(Option.some(FROM_FIRST));
 
         assertThat(requestedSources()).containsExactly("eu-1");
+    }
+
+    /// #2811: the disposition carries the `replacement_ceiling` of the source the replacement went to, so the entry the reconciler keeps
+    /// takes the dispatched source's ceiling and no other's (`eu-0` declares none: the removed first-by-name pick would give the default).
+    @Test
+    void dispatchedCarriesTheCeilingOfTheSourceItWasDispatchedTo() {
+        placeNode(FROM_SECOND, SECOND);
+        var second = heal(Option.some(FROM_SECOND));
+
+        placeNode(FROM_FIRST, FIRST);
+        var first = heal(Option.some(FROM_FIRST));
+
+        assertThat(second.unwrap()).isEqualTo(ProvisionDisposition.dispatched(timeSpan(15).minutes()));
+        assertThat(first.unwrap()).isEqualTo(ProvisionDisposition.dispatched(timeSpan(6).minutes()));
+        assertThat(requestedSources()).containsExactly("eu-2", "eu-1");
+    }
+
+    /// #2811 F3: a placement commit lands after the source was resolved (the node reads as `eu-2`'s first, `eu-1`'s from then on). The
+    /// replacement goes to the source the single resolution named, and the ceiling the disposition carries is that source's, not the one a
+    /// second read of the placement would give.
+    @Test
+    void placementMovesAfterTheSourceWasResolved_theDispatchCarriesTheResolvedSourcesCeiling() {
+        var reads = new AtomicInteger();
+
+        committedSource.set(asked -> asked.equals(FROM_SECOND)
+                                     ? Result.success(reads.getAndIncrement() == 0
+                                                      ? SECOND
+                                                      : FIRST)
+                                     : Causes.cause("no placement for " + asked.id()).<SourceName> result());
+
+        var outcome = heal(Option.some(FROM_SECOND));
+
+        assertThat(requestedSources()).as("dispatched to the source the first read named").containsExactly("eu-2");
+        assertThat(outcome.unwrap()).isEqualTo(ProvisionDisposition.dispatched(timeSpan(15).minutes()));
     }
 
     /// Several sources declare the role and the departed node has no committed source: any pick would be a guess at which provider to bill, so
