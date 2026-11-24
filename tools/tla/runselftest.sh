@@ -193,15 +193,17 @@ BUDGETS_TSV="$work/b_heap.tsv" run budget-heap-alone-is-over-the-limit 0 '^SKIPP
 BUDGETS_TSV="$work/b_at.tsv" run budget-exactly-at-the-limit-runs-on-the-runner 0 'skipped-host=0 .*GREEN' full < <(fixrows)
 { base_budgets; printf 'Fix\tnosuch\t10\t-\tx\n'; } > "$work/b_bad.tsv"
 BUDGETS_TSV="$work/b_bad.tsv" run budget-table-naming-a-missing-row-is-refused nonzero 'Fix/nosuch: no such row in models.tsv' full < <(fixrows)
-# the cap: a stub java that ignores TERM outlives a 1 s budget; the row reads ERROR naming the cap and its source, never a verdict
+# the cap: a stub java that ignores TERM outlives a 1 s budget; the row reads ERROR naming the cap and its source, never a verdict.
+# The stub gives up after 20 s (stub3), so a run.sh that ignores the cap fails these cases instead of hanging the self-test.
+mkdir -p "$work/stub3"; sed 's/^while :; do sleep 1; done$/for _ in $(seq 20); do sleep 1; done/' "$work/stub/java" > "$work/stub3/java"; chmod +x "$work/stub3/java"
 { base_budgets; printf 'Fix\tok\t1\t-\ttiny\n'; } > "$work/b_tiny.tsv"
-VARIANTS=ok PATH="$work/stub:$PATH" STUB_PID="$work/stub.pid" BUDGETS_TSV="$work/b_tiny.tsv" run budget-timeout-reads-ERROR-naming-the-budget nonzero '^ERROR Fix/ok expect=pass got=error\(exit 124: exceeded the 1s budget, budgets.tsv row 1s/-\)' full < <(fixrows)
+VARIANTS=ok PATH="$work/stub3:$PATH" STUB_PID="$work/stub.pid" BUDGETS_TSV="$work/b_tiny.tsv" run budget-timeout-reads-ERROR-naming-the-budget nonzero '^ERROR Fix/ok expect=pass got=error\(exit 124: exceeded the 1s budget, budgets.tsv row 1s/-\)' full < <(fixrows)
 want budget-timeout-actual-error error "$(cell Fix ok actual)"
 want budget-timeout-verdict-ERROR ERROR "$(cell Fix ok verdict)"
 want budget-timeout-took-its-tlc-down dead "$(alive)"
 printf '*\t*\t1\t-\ttiny default\n@hosted\tlimit\t18000\t12g\tlimit\n' > "$work/b_tinydef.tsv"
-VARIANTS=ok PATH="$work/stub:$PATH" STUB_PID="$work/stub.pid" BUDGETS_TSV="$work/b_tinydef.tsv" run budget-default-row-applies-to-a-row-without-its-own nonzero 'exceeded the 1s budget, default row 1s/-' full < <(fixrows)
-VARIANTS=ok PATH="$work/stub:$PATH" STUB_PID="$work/stub.pid" TLC_TIMEOUT=2 BUDGETS_TSV="$work/b_over.tsv" run budget-env-timeout-overrides-the-row nonzero 'exceeded the 2s budget, TLC_TIMEOUT env' full < <(fixrows)
+VARIANTS=ok PATH="$work/stub3:$PATH" STUB_PID="$work/stub.pid" BUDGETS_TSV="$work/b_tinydef.tsv" run budget-default-row-applies-to-a-row-without-its-own nonzero 'exceeded the 1s budget, default row 1s/-' full < <(fixrows)
+VARIANTS=ok PATH="$work/stub3:$PATH" STUB_PID="$work/stub.pid" TLC_TIMEOUT=2 BUDGETS_TSV="$work/b_over.tsv" run budget-env-timeout-overrides-the-row nonzero 'exceeded the 2s budget, TLC_TIMEOUT env' full < <(fixrows)
 # the heap: a stub java that records its arguments shows the row's -Xmx in front of the env's java options
 mkdir -p "$work/stub2"; printf '#!/usr/bin/env bash\necho "$@" > "$STUB_ARGS"\nexit 0\n' > "$work/stub2/java"; chmod +x "$work/stub2/java"
 { base_budgets; printf 'Fix\tok\t100\t6g\tsix\n'; } > "$work/b_six.tsv"
