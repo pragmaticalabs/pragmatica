@@ -80,8 +80,9 @@ class EmberGenesisSeatUnreachableTest {
         assertThat(unreachableSubjects()).as("the warning names the one seat that never connected, and no other").containsExactly(DEAD_SEAT);
         var summary = unreachableEvents().getFirst().summary();
 
-        assertThat(summary).as("the message names the seat, the effect on formation and the remedy")
-                           .contains(DEAD_SEAT, "Formation is not blocked", "auto-heal", "Operator action");
+        assertThat(summary).as("the message names the seat, the effect on formation and the heal-on remedy (the auto-heal state at the raise: the key is absent at genesis, so on)")
+                           .contains(DEAD_SEAT, "Formation is not blocked", "Auto-heal is on", "within 75 s", "Operator action")
+                           .doesNotContain("Auto-heal is off");
         assertThat(cluster.getNode(DEAD_SEAT).isEmpty()).as("the seat never came back").isTrue();
     }
 

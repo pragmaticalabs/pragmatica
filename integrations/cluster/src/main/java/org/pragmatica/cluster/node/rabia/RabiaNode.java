@@ -170,6 +170,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     @Contract
     default void useOperatorWarningSink(OperatorWarningSink sink) {}
 
+    /// Binds the remedy sentence of the genesis dead-seat warning (#1654) to a supplier read once, when the warning is raised.
+    /// Default no-op for implementations without a Rabia engine.
+    @Contract
+    default void useGenesisSeatRemedy(Supplier<String> remedy) {}
+
     default Result<Unit> configurePassiveClient() {
         return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
     }
@@ -812,6 +817,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Contract
             public void useOperatorWarningSink(OperatorWarningSink sink) {
                 consensus().useOperatorWarningSink(sink);
+            }
+
+            @Override
+            @Contract
+            public void useGenesisSeatRemedy(Supplier<String> remedy) {
+                consensus().useGenesisSeatRemedy(remedy);
             }
 
             @Override

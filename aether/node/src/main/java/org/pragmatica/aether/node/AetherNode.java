@@ -3034,6 +3034,9 @@ public interface AetherNode extends ManageableNode {
                                                          deploymentWiring.forceClearRetirement(retirement));
         // #1654: genesis seat warnings raised by the consensus engine reach THIS node's event log.
         clusterNode.useOperatorWarningSink(operatorWarningSink);
+        // #1654: the remedy sentence is chosen at raise time from the live auto-heal state, so the warning is true in both states.
+        clusterNode.useGenesisSeatRemedy(() -> GenesisSeatRemedy.genesisSeatRemedy(clusterTopologyManager.isAutoHealEnabled(),
+                                                                                   config.autoHeal()));
         // FDB-2a: a migration fenced in the database for long, and an unfenced CockroachDB run, reach the event log.
         schemaOrchestrator.setOperatorWarningSink(operatorWarningSink);
         var appHttpServerOut = SliceRuntimeAssembly.appHttpServer(new SliceRuntimeAssembly.AppHttpServerInputs(config,
