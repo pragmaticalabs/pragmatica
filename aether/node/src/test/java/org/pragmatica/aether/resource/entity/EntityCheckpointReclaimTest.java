@@ -697,6 +697,135 @@ class EntityCheckpointReclaimTest {
         assertThat(newOwner.exists(written).await().unwrap()).as("on its own durable tier").isTrue();
     }
 
+    /// #2536: a put that failed indeterminately (the quorum was missed, some replicas hold the block) is never named by a pointer. Once a later
+    /// save of the same partition succeeds and its swap is confirmed, the block is deleted; before that nothing confirms and it is kept.
+    @Test
+    void anIndeterminatePutThatLanded_isDeletedOnceALaterSaveConfirms() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var kept = save(substrate, 0, 1L, snapshot("v1"), Option.none());
+
+        var stale = failedPutThatLanded(substrate, 0, 2L);
+
+        assertThat(pointed(0)).as("control: the failed save moved no pointer").isEqualTo(kept);
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(stale)).as("nothing has confirmed a later save yet").isTrue();
+        var current = save(substrate, 0, 2L, snapshot("v2"), Option.none());
+
+        eventually("the stale block is deleted once the retry's swap is confirmed", 5_000L, () -> !readable(stale));
+        assertThat(deletesOf(stale)).as("through StorageInstance#delete, once").isEqualTo(1L);
+        assertThat(readable(current)).as("the block the pointer names is kept").isTrue();
+        assertThat(pointed(0)).isEqualTo(current);
+    }
+
+    /// The same, when the later save advances the claim: the idle-partition retry above and a fold that moved on both reclaim the block.
+    @Test
+    void anIndeterminatePutThatLanded_isDeletedWhenTheLaterSaveAdvancesTheClaim() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+
+        save(substrate, 0, 1L, snapshot("v1"), Option.none());
+        var stale = failedPutThatLanded(substrate, 0, 2L);
+        var current = save(substrate, 0, 3L, snapshot("v3"), Option.none());
+
+        eventually("the stale block is deleted", 5_000L, () -> !readable(stale));
+        assertThat(readable(current)).isTrue();
+    }
+
+    /// Two attempts that each landed a block of their own (every put carries a fresh nonce): one confirmed save deletes both, each once.
+    @Test
+    void twoIndeterminateAttempts_areBothDeletedByTheNextConfirmedSave() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var firstStale = failedPutThatLanded(substrate, 0, 1L);
+        var secondStale = failedPutThatLanded(substrate, 0, 1L);
+
+        assertThat(secondStale).as("control: the second attempt landed a block of its own").isNotEqualTo(firstStale);
+        var current = save(substrate, 0, 1L, snapshot("v1"), Option.none());
+
+        eventually("both stale blocks are deleted", 5_000L, () -> !readable(firstStale) && !readable(secondStale));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(deletesOf(firstStale)).isEqualTo(1L);
+        assertThat(deletesOf(secondStale)).isEqualTo(1L);
+        assertThat(readable(current)).isTrue();
+    }
+
+    /// A save with no indeterminate attempt before it deletes what the swap displaced and nothing else.
+    @Test
+    void aSuccessWithNoPriorIndeterminateAttempt_deletesNothingExtra() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var displaced = save(substrate, 0, 1L, snapshot("v1"), Option.none());
+
+        save(substrate, 0, 2L, snapshot("v2"), Option.none());
+        eventually("the displaced block is deleted", 5_000L, () -> !readable(displaced));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(shared.deletes).as("only the displaced block").containsOnly(displaced);
+    }
+
+    /// The delete of a stale block that the store refuses is retried within the bound; past it the block stays recorded, and the next
+    /// confirmed save deletes it.
+    @Test
+    void aRefusedDeleteOfAStaleBlock_staysRecorded_andIsRetriedByTheNextConfirmedSave() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var stale = failedPutThatLanded(substrate, 0, 1L);
+
+        shared.refuseDeletes.set(DELETE_ATTEMPTS);
+        var first = save(substrate, 0, 1L, snapshot("v1"), Option.none());
+
+        eventually("the bound is spent", 5_000L, () -> deletesOf(stale) >= DELETE_ATTEMPTS);
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(deletesOf(stale)).as("exactly the bound, then no more").isEqualTo(DELETE_ATTEMPTS);
+        assertThat(readable(stale)).as("the refused block is still there").isTrue();
+        save(substrate, 0, 2L, snapshot("v2"), Option.none());
+        eventually("the next confirmed save deletes it", 5_000L, () -> !readable(stale) && !readable(first));
+        assertThat(deletesOf(stale)).as("the bound, then the accepted attempt").isEqualTo(DELETE_ATTEMPTS + 1L);
+    }
+
+    /// A save the fence refused confirms nothing: the stale block is kept (the writer deletes only its own refused block), and it goes
+    /// with the next save whose swap is confirmed.
+    @Test
+    void aRefusedSave_confirmsNothing_soTheStaleBlockWaitsForTheNextConfirmedSave() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var committed = save(substrate, 0, 5L, snapshot("v5"), Option.none());
+        var stale = failedPutThatLanded(substrate, 0, 2L);
+
+        save(substrate, 0, 2L, snapshot("v2"), Option.none());
+        var refused = shared.puts.getLast();
+
+        assertThat(pointed(0)).as("control: the lower claim was refused").isEqualTo(committed);
+        eventually("the writer's own refused block is deleted", 5_000L, () -> !readable(refused));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(stale)).as("a refused swap confirms nothing").isTrue();
+        var current = save(substrate, 0, 6L, snapshot("v6"), Option.none());
+
+        eventually("a confirmed save deletes the stale block", 5_000L, () -> !readable(stale));
+        assertThat(readable(current)).isTrue();
+    }
+
+    /// The delete checks the pointers when it runs: a stale block a pointer names by then (a restore outside the fence names it) is kept.
+    @Test
+    void aStaleBlockNamedByAPointerWhenTheDeleteRuns_isNeverDeleted() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(1).seconds(), FAST_RETRY));
+        var stale = failedPutThatLanded(substrate, 0, 1L);
+
+        save(substrate, 0, 1L, snapshot("v1"), Option.none());
+        apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0),
+                                                                EntityFoldCheckpointValue.entityFoldCheckpointValue(1L, stale.hexString()))));
+        assertThat(pointed(0)).as("control: a pointer names the stale block").isEqualTo(stale);
+        pause(3_000L);
+        assertThat(readable(stale)).as("the block a pointer names is kept").isTrue();
+        assertThat(deletesOf(stale)).isZero();
+    }
+
+    /// Fails one save at `through` after its block landed, and answers that block.
+    private BlockId failedPutThatLanded(EntityLogSubstrate substrate, int partition, long through) {
+        shared.landThenFailPuts.set(1);
+        assertThat(substrate.saveCheckpoint(KEYSPACE, partition, through, snapshot("lost-" + through), Option.none()).await().isFailure())
+                .as("control: the put failed indeterminately").isTrue();
+        var stale = shared.puts.getLast();
+
+        assertThat(readable(stale)).as("control: the failed put landed").isTrue();
+
+        return stale;
+    }
+
     /// Every block the shared tier was given that is still readable, other than `current`.
     private List<BlockId> leaked(BlockId current) {
         return shared.puts.stream().distinct().filter(id -> !id.equals(current)).filter(this::readable).toList();
@@ -863,6 +992,8 @@ class EntityCheckpointReclaimTest {
         final List<BlockId> puts = new CopyOnWriteArrayList<>();
         final List<BlockId> deletes = new CopyOnWriteArrayList<>();
         final AtomicInteger refuseDeletes = new AtomicInteger();
+        /// Puts that store the block and then fail, as a DHT write that missed its quorum with some replicas already holding the block.
+        final AtomicInteger landThenFailPuts = new AtomicInteger();
         /// Answers as the production remote tier does: shared and durable.
         volatile boolean durable;
         /// Reads find nothing, whatever the tier holds.
@@ -884,7 +1015,9 @@ class EntityCheckpointReclaimTest {
         public Promise<Unit> put(BlockId id, byte[] content) {
             puts.add(id);
 
-            return delegate.put(id, content);
+            return landThenFailPuts.getAndDecrement() > 0
+                   ? delegate.put(id, content).flatMap(_ -> Causes.cause("write quorum missed, replicas may hold the block").<Unit> promise())
+                   : delegate.put(id, content);
         }
 
         @Override
