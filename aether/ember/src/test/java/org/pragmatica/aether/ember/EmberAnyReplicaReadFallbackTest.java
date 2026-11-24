@@ -104,14 +104,14 @@ class EmberAnyReplicaReadFallbackTest {
         }
 
         awaitUntil(() -> payloads(survivor).size() == ACKED, REPLICA_VISIBLE_BUDGET_MS, "the surviving replica serves the acknowledged records");
-        assertThat(routed(survivor).fold(Cause::message, texts -> texts)).as("control: the router reads the records while every peer is alive")
+        assertThat(outcome(routed(survivor))).as("control: the router reads the records while every peer is alive")
                                                                          .isEqualTo(List.of("acked-0", "acked-1", "acked-2"));
 
         killed.forEach(id -> cluster.killNode(id)
                                     .await(STOP_BOUND)
                                     .onFailure(cause -> Assertions.fail("kill of " + id + " failed: " + cause.message())));
 
-        assertThat(routed(survivor).fold(Cause::message, texts -> texts)).as("the survivor answers from its own caught-up copy")
+        assertThat(outcome(routed(survivor))).as("the survivor answers from its own caught-up copy")
                                                                          .isEqualTo(List.of("acked-0", "acked-1", "acked-2"));
     }
 
@@ -151,6 +151,10 @@ class EmberAnyReplicaReadFallbackTest {
                    .read(ENGINE_KEY, PARTITION, 0L, 100, ReadPreference.ANY_REPLICA)
                    .await(READ_BOUND)
                    .map(EmberAnyReplicaReadFallbackTest::texts);
+    }
+
+    private static List<String> outcome(Result<List<String>> read) {
+        return read.fold(cause -> List.of("read failed: " + cause.message()), texts -> texts);
     }
 
     private static List<String> texts(List<RawEvent> events) {

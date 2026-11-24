@@ -539,7 +539,8 @@ public final class ForwardingReadRouter<E> {
                                                    int partition,
                                                    long fromOffset,
                                                    int maxEvents) {
-        return couldNotAsk(cause) && registry.filter(reg -> selfCoversPartition(reg, streamName, partition)).isPresent()
+        return couldNotAsk(cause) && registry.filter(reg -> selfCoversPartition(reg, streamName, partition))
+                                             .isPresent()
                ? readLocalArmed(streamName, partition, fromOffset, maxEvents)
                : cause.promise();
     }
