@@ -99,12 +99,12 @@ public final class AsyncJooqConnectorFactory implements ResourceFactory<JooqConn
         config.poolConfig().validationQuery().onPresent(builder::validationQuery);
         var connectible = builder.pool();
 
-        return releasingOnFailure(Promise.lift(DatabaseConnectorError::databaseFailure,
-                                               () -> over.apply(connectible)),
+        return releasingOnFailure(Promise.lift(DatabaseConnectorError::databaseFailure, () -> over.apply(connectible)),
                                   connectible::close);
     }
 
     private static JooqConnector over(DatabaseConnectorConfig config, Connectible connectible) {
-        return AsyncJooqConnector.asyncJooqConnector(config, PgAsyncConnectionFactory.pgAsyncConnectionFactory(connectible));
+        return AsyncJooqConnector.asyncJooqConnector(config,
+                                                     PgAsyncConnectionFactory.pgAsyncConnectionFactory(connectible));
     }
 }

@@ -51,7 +51,8 @@ public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnect
         // slice's, because the pool may be shared by every slice on the node and outlive the slice that opened it.
         return Promise.lift(DatabaseConnectorError::databaseFailure,
                             () -> SharedPoolSupport.underClassLoaderOf(getClass(),
-                                                                       () -> assemble(config, new NettyConnectibleBuilder())))
+                                                                       () -> assemble(config,
+                                                                                      new NettyConnectibleBuilder())))
                       .flatMap(assembling -> assembling)
                       .flatMap(assembled -> warmed(assembled, config));
     }
