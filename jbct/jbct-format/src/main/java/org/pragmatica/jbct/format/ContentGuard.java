@@ -94,15 +94,17 @@ public interface ContentGuard {
                            label + " changed: " + shown(before.get(index)) + " became " + shown(after.get(index)));
     }
 
-    /// The input item at `index` is lost when the output has no such item from `index` on; an item the output still
-    /// has further on was moved, not lost.
+    /// The input item at `index` is lost when the output's item there is one the input still has further on (the
+    /// output skipped past it) and the input item itself is nowhere further on in the output.
     private static boolean isLost(List<Item> before, List<Item> after, int index) {
-        return ! contains(after, index, before.get(index));
+        return contains(before, index, after.get(index)) && !contains(after, index, before.get(index));
     }
 
-    /// The output item at `index` is added when the input has no such item from `index` on.
+    /// The output item at `index` is added when the input item there is one the output still has further on and the
+    /// output item itself is nowhere further on in the input. When both are found further on, or neither, the
+    /// position holds a different item: a change (a reorder reads as one).
     private static boolean isAdded(List<Item> before, List<Item> after, int index) {
-        return ! contains(before, index, after.get(index));
+        return contains(after, index, before.get(index)) && !contains(before, index, after.get(index));
     }
 
     private static boolean contains(List<Item> items, int from, Item wanted) {
