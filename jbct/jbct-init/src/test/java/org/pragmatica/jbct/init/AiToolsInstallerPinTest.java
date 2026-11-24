@@ -20,12 +20,14 @@ import static org.pragmatica.jbct.init.ResultViews.refOf;
 class AiToolsInstallerPinTest {
     // A file name no real ~/.claude carries, so the global-skip rule never hides it.
     private static final String FILE = "skills/zz-pin-2363/SKILL.md";
+    // A cache counts as valid only with a skill and an agent in it (AiToolsInstaller.isCacheValid).
+    private static final String AGENT = "agents/zz-pin-2363.md";
     private static final String TAG_A = "ai-tools-v7.8.9";
     private static final String TAG_B = "ai-tools-v7.8.10";
 
     @Test
     void install_fetchesAtTheTagDerivedFromTheVersion_andRecordsIt(@TempDir Path dir) throws Exception {
-        var github = FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A"));
+        var github = FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A", AGENT, "agent"));
 
         var outcome = install(dir, github, "7.8.9");
 
@@ -38,7 +40,7 @@ class AiToolsInstallerPinTest {
 
     @Test
     void install_missingTag_failsByName_withTypedCause_andInstallsNothing(@TempDir Path dir) {
-        var github = FakeGitHub.fakeGitHub().withRef("main", "sha-main", Map.of(FILE, "tip of main"));
+        var github = FakeGitHub.fakeGitHub().withRef("main", "sha-main", Map.of(FILE, "tip of main", AGENT, "agent"));
 
         var cause = causeOf(install(dir, github, "7.8.9"));
 
@@ -49,7 +51,7 @@ class AiToolsInstallerPinTest {
 
     @Test
     void install_missingTag_isNotPapereredOverByAnExistingCache(@TempDir Path dir) {
-        install(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A")), "7.8.9");
+        install(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A", AGENT, "agent")), "7.8.9");
 
         var cause = causeOf(install(dir, FakeGitHub.fakeGitHub(), "7.8.9"));
 
@@ -69,7 +71,7 @@ class AiToolsInstallerPinTest {
 
     @Test
     void install_offline_reusesTheCacheOfThisRef_butNeverOneOfAnotherRef(@TempDir Path dir) {
-        install(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A")), "7.8.9");
+        install(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A", AGENT, "agent")), "7.8.9");
 
         var sameRef = install(dir, FakeGitHub.offlineGitHub(), "7.8.9");
         var otherRef = install(dir, FakeGitHub.offlineGitHub(), "7.8.10");
@@ -80,8 +82,8 @@ class AiToolsInstallerPinTest {
 
     @Test
     void install_newVersion_movesTheCacheToItsTag_evenWhenTheCommitIsTheSame(@TempDir Path dir) throws Exception {
-        install(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-same", Map.of(FILE, "tools at A")), "7.8.9");
-        var github = FakeGitHub.fakeGitHub().withRef(TAG_B, "sha-same", Map.of(FILE, "tools at B"));
+        install(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-same", Map.of(FILE, "tools at A", AGENT, "agent")), "7.8.9");
+        var github = FakeGitHub.fakeGitHub().withRef(TAG_B, "sha-same", Map.of(FILE, "tools at B", AGENT, "agent"));
 
         var outcome = install(dir, github, "7.8.10");
 
@@ -92,8 +94,8 @@ class AiToolsInstallerPinTest {
 
     @Test
     void install_cacheOfTheSameRefAndCommit_isNotDownloadedAgain(@TempDir Path dir) {
-        install(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A")), "7.8.9");
-        var github = FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A"));
+        install(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A", AGENT, "agent")), "7.8.9");
+        var github = FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A", AGENT, "agent"));
 
         install(dir, github, "7.8.9");
 
