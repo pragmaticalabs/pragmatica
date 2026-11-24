@@ -66,6 +66,8 @@ Verify progress:
 aether status --format json | jq '.cluster.coreCount, .cluster.nodes | length'
 ```
 
+**A scale-down that has not removed every surplus node yet.** A surplus drain never picks a node younger than the drain-safety grace (`split_timeout` x 2, 30 s at the default), counted from the moment the leader's membership view first saw the node, so a freshly provisioned replacement is not drained at once. When the only candidates left are that young (or are slice owners the availability guard protects), the leader logs `LeaderReconciler deferring surplus drain of N member(s) ... youngAgesMs={...}`, drains nothing in that pass, and re-evaluates when the oldest young candidate matures; the voter-excluded core retirement applies the same grace and retries every second without logging. No operator action is needed: the surplus clears on its own after the grace. A node that rejoins under a fixed configured id keeps its original first-seen time, so it is not young again after a rejoin.
+
 ### Prerequisites for auto-scaling on cloud
 
 The leader must hold valid cloud credentials at runtime. This requires:

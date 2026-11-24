@@ -333,6 +333,7 @@ public sealed interface TopologyAssembly {
                                                                                                                           nodeReplacements,
                                                                                                                           deploymentMap,
                                                                                                                           clusterTopologyManager,
+                                                                                                                          leaderReconcilerRef::get,
                                                                                                                           readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
                                                                                                                                               membershipFsmRef::get)))
                                                                                         .onFailure(cause -> LOG.warn("Core voter reconciliation: {}",
@@ -840,23 +841,47 @@ public sealed interface TopologyAssembly {
                          .option();
     }
 
-    private static Promise<Unit> retireExcludedCores(RabiaNode<KVCommand<AetherKey>> cluster,
-                                                     Supplier<MembershipFsm> membership,
-                                                     KVStore<AetherKey, AetherValue> store,
-                                                     NodeReplacementIndex replacements,
-                                                     DeploymentMap deployments,
-                                                     ClusterTopologyManager topology,
-                                                     Set<NodeId> ready) {
+    /// #1055: the grace gate is built HERE from the reconciler holder, not handed in as a predicate, so the one line that applies
+    /// the drain-safety grace to the retirement path is reachable by a test that drives this method (`CoreRetirementWiringTest`).
+    static Promise<Unit> retireExcludedCores(RabiaNode<KVCommand<AetherKey>> cluster,
+                                             Supplier<MembershipFsm> membership,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             NodeReplacementIndex replacements,
+                                             DeploymentMap deployments,
+                                             ClusterTopologyManager topology,
+                                             Supplier<LeaderReconciler> reconciler,
+                                             Set<NodeId> ready) {
         if (!cluster.leaderManager().isLeader()) {
             return Promise.unitPromise();
         }
 
-        var victims = excludedCoreNodes(cluster, membership, store, replacements, ready).stream()
-                                       .filter(node -> deployments.byNode(node)
-                                                                  .isEmpty())
-                                       .toList();
+        var victims = retirementVictims(excludedCoreNodes(cluster, membership, store, replacements, ready),
+                                        node -> deployments.byNode(node)
+                                                           .isEmpty(),
+                                        pastDrainGrace(reconciler));
 
         return retireSurplusCores(victims, topology);
+    }
+
+    /// #1055: the voter-excluded core retirement drains as `OVERPROVISION_SCALE_DOWN`, a surplus trim, so it obeys the same rule as
+    /// the reconciler's surplus drain: a member younger than the drain-safety grace is never a victim. A young core is simply not
+    /// returned here; the 1 s retirement cadence offers it again on every pass until it matures.
+    static List<NodeId> retirementVictims(Set<NodeId> excluded,
+                                          Predicate<NodeId> hostsNothing,
+                                          Predicate<NodeId> pastDrainGrace) {
+        return excluded.stream()
+                       .filter(hostsNothing)
+                       .filter(pastDrainGrace)
+                       .toList();
+    }
+
+    /// #1055: the ONE age rule, [LeaderReconciler#pastDrainSafetyGrace] (same grace window, same `MembershipFsm.memberAgeMs`
+    /// source), reached through the reconciler holder. The holder is empty until the reconciler is published, and an
+    /// unpublished reconciler cannot vouch for any age, so the gate is fail-closed like every other reap gate on this holder.
+    static Predicate<NodeId> pastDrainGrace(Supplier<LeaderReconciler> reconciler) {
+        return node -> Option.option(reconciler.get())
+                             .map(r -> r.pastDrainSafetyGrace(node))
+                             .or(false);
     }
 
     /// #3324: the production wiring of the voter-excluded core retirement: the hold asked is `topology`'s own, for the subject `core`,
