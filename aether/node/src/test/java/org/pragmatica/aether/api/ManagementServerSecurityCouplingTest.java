@@ -648,15 +648,27 @@ class ManagementServerSecurityCouplingTest {
     @Test
     void forwardedPath_unsupportedMethod_returnsBeforeValidationAndDispatch() {
         var validator = RecordingValidator.recording(SecurityValidator.apiKeyValidator(ISOLATION_KEYS));
+
+        assertUnsupportedMethodRefused(validator, true, Map.of("X-API-Key", List.of(KEY_A)));
+    }
+
+    /// ms18 (#3550), security OFF: the guard sits above the mode branch, so the same refusal and the same reply apply.
+    @Test
+    void forwardedPath_unsupportedMethod_securityOff_returnsBeforeValidationAndDispatch() {
+        assertUnsupportedMethodRefused(RecordingValidator.recording(offValidator()), false, Map.of());
+    }
+
+    private void assertUnsupportedMethodRefused(RecordingValidator validator, boolean securityEnabled, Map<String, List<String>> headers) {
         var received = new AtomicReference<Authenticated>();
         var route = GrantedBodyRoute.grantedBodyRoute(PATH_A, (_, auth) -> {
             received.set(auth);
             return Promise.success("\"x\"");
         });
-        var forwarded = HttpRequestContext.httpRequestContext(PATH_A, "BOGUS", Map.of(), Map.of("X-API-Key", List.of(KEY_A)), new byte[0], "req-fwd-bogus");
-        var node = server(validator, true, forwarded, sources -> GrantedBodyRoute.routerWith(sources, route));
+        var forwarded = HttpRequestContext.httpRequestContext(PATH_A, "BOGUS", Map.of(), headers, new byte[0], "req-fwd-bogus");
+        var node = server(validator, securityEnabled, forwarded, sources -> GrantedBodyRoute.routerWith(sources, route));
 
         assertThatCode(() -> node.onHttpForwardRequest(forwardRequest())).doesNotThrowAnyException();
+        assertThat(network.sentTargets()).as("the single reply goes to the request's sender").containsExactly(SENDER);
         assertThat(network.sent()).as("exactly one reply, to the forwarding node").singleElement().isInstanceOfSatisfying(HttpForwardResponse.class, reply -> {
             assertThat(reply.success()).as("a refusal, not a success").isFalse();
             assertThat(reply.correlationId()).isEqualTo("corr-962");
@@ -913,7 +925,11 @@ class ManagementServerSecurityCouplingTest {
     private static final class RecordingClusterNetwork implements ClusterNetwork {
         private final List<ProtocolMessage> sent = new java.util.concurrent.CopyOnWriteArrayList<>();
 
+        private final List<NodeId> targets = new java.util.concurrent.CopyOnWriteArrayList<>();
+
         List<ProtocolMessage> sent() {return List.copyOf(sent);}
+
+        List<NodeId> sentTargets() {return List.copyOf(targets);}
 
         @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return unit();}
         @Override public void connect(NetworkServiceMessage.ConnectNode connectNode) {}
@@ -923,6 +939,7 @@ class ManagementServerSecurityCouplingTest {
         @Override public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
         @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             sent.add(message);
+            targets.add(nodeId);
 
             return Promise.success(new WriteOutcome.Sent(nodeId));
         }
