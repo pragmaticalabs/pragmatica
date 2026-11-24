@@ -67,14 +67,14 @@ class ClusterTopologyManagerReplacementCeilingTest {
 
     private static final String CLOUD_SOURCE = """
 
-            [source.%s]
+            [source.%1$s]
             type = "cloud"
             provider = "hetzner"
             credentials = "hcloud-token"
             region = "eu-central"
-            %s
+            %2$s
 
-            [source.%<s.core]
+            [source.%1$s.core]
             count = 1
             """;
 
