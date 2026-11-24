@@ -324,12 +324,15 @@ final class Http3Server {
     static class Http3RequestHandler extends Http3RequestStreamInboundHandler {
         private static final Logger log = LoggerFactory.getLogger(Http3RequestHandler.class);
         private static final TimeSpan NO_BOUND = TimeSpan.timeSpan(0).millis();
+        private static final Cause MISSING_METHOD = Causes.cause("Missing :method pseudo-header");
 
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final RequestClassifier classifier;
         private final TimeSpan readTimeout;
         private final BodyRateLimit bodyRateLimit;
         private Http3HeadersFrame headersFrame;
+        /// The request's method, parsed from `headersFrame` before the request is classified; no request is built without it.
+        private HttpMethod method;
         private Option<Http3HeadersFrame> trailersFrame = Option.none();
         private ByteBuf bodyData;
         private boolean rejected;
@@ -376,13 +379,40 @@ final class Http3Server {
         protected void channelRead(ChannelHandlerContext ctx, Http3HeadersFrame frame) {
             if (headersFrame == null) {
                 headersFrame = frame;
-                switch (classifier.classify(headRequest())) {
-                    case Disposition.Reject reject -> rejectWith(ctx, reject.respond());
-                    case Disposition.Aggregate aggregate -> admit(ctx, aggregate);
-                    case Disposition.Stream streamed -> beginStream(ctx, streamed);
-                }
+                methodOf(frame.headers()).onSuccess(parsed -> classify(ctx, parsed))
+                        .onFailure(cause -> rejectMethod(ctx, cause));
             } else {
                 trailersFrame = some(frame);
+            }
+        }
+
+        /// #3679: the method comes from the `:method` pseudo-header, parsed by the one parser every transport uses
+        /// ([HttpMethod#httpMethod]). An absent pseudo-header is a malformed request (RFC 9114 §4.3.1).
+        private static Result<HttpMethod> methodOf(Http3Headers h3Headers) {
+            return Option.option(h3Headers.method())
+                         .map(CharSequence::toString)
+                         .toResult(MISSING_METHOD)
+                         .flatMap(HttpMethod::httpMethod);
+        }
+
+        /// #3679: a method the server does not recognize is answered 501 (RFC 9110 §15.6.2), an absent one 400, on the
+        /// head: before the classifier (routing and authorization by head) and before any handler. The response does not
+        /// echo the method.
+        private void rejectMethod(ChannelHandlerContext ctx, Cause cause) {
+            log.debug("Rejecting HTTP/3 request: {}", cause.message());
+            if (cause instanceof HttpMethod.UnknownMethod) {
+                reject(ctx, HttpStatus.NOT_IMPLEMENTED, "Method not implemented");
+            } else {
+                reject(ctx, HttpStatus.BAD_REQUEST, "Missing request method");
+            }
+        }
+
+        private void classify(ChannelHandlerContext ctx, HttpMethod parsed) {
+            method = parsed;
+            switch (classifier.classify(headRequest())) {
+                case Disposition.Reject reject -> rejectWith(ctx, reject.respond());
+                case Disposition.Aggregate aggregate -> admit(ctx, aggregate);
+                case Disposition.Stream streamed -> beginStream(ctx, streamed);
             }
         }
 
@@ -676,8 +706,6 @@ final class Http3Server {
 
         private HttpRequest requestOf(String requestId, RequestTarget target, byte[] body, Headers trailers) {
             var h3Headers = headersFrame.headers();
-            var methodStr = Option.option(h3Headers.method()).map(CharSequence::toString).or("GET");
-            var method = HttpMethod.httpMethod(methodStr).or(HttpMethod.GET);
             var headerMap = extractHeaders(h3Headers);
 
             return new Http3RequestContext(requestId,
