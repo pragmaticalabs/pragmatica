@@ -1,0 +1,2 @@
+### Fixed (2026-11-24 — #3629: S3 tests errored once when Testcontainers could not fetch the pinned MinIO image)
+- **The S3 job left the MinIO pull to Testcontainers**, so one registry blip on cgr.dev failed the whole run. `s3-tests.yml` now pre-pulls the digest-pinned image from `tools/ci-test-images.txt` with the existing bounded retry (4 tries, 10/20/40 s) before Maven, and fails the step naming the image. `[mechanism: the list is the one place the workflow reads; tools/check-ci-test-images.py keeps it equal to the test constants]`
