@@ -446,7 +446,7 @@ class ClusterTopologyManagerActuatorTest {
         var first = shortGrace.drainNode(SELF, reason).await();
         var second = shortGrace.drainNode(SELF, reason).await();
 
-        assertThat(List.of(first, second)).allSatisfy(result -> assertThat(result.fold(cause -> cause, _ -> "success"))
+        assertThat(List.of(first, second)).allSatisfy(result -> assertThat(result.<Object> fold(cause -> cause, _ -> "success"))
                                                                     .isEqualTo(new ClusterTopologyManager.LeaderCannotDrainItself(SELF)));
         assertThat(drainCommandSinkCalls).as("no DRAIN command, so no DEPARTING, for the leader's own id").isEmpty();
         settleFor(Duration.ofMillis(300));
