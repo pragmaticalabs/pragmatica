@@ -731,8 +731,8 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Stream append refused for %s[%d]: this node has not yet applied the committed ownership record (partition high-water %s)".formatted(streamName,
-                                                                                                                                                       partition,
-                                                                                                                                                       current);
+                                                                                                                                                        partition,
+                                                                                                                                                        current);
         }
     }
 

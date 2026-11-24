@@ -6390,7 +6390,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         var domain = OwnershipDomain.streamPartition(streamName, partition);
 
         return highWater.isStale(domain, ownerEpoch)
-               ? staleRefusal(streamName, partition, ownerEpoch, highWater.highWater(domain).or(ownerEpoch))
+               ? staleRefusal(streamName,
+                              partition,
+                              ownerEpoch,
+                              highWater.highWater(domain).or(ownerEpoch))
                : success(unit());
     }
 
