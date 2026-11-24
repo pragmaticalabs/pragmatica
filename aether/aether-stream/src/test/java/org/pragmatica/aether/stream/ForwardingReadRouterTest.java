@@ -359,6 +359,22 @@ class ForwardingReadRouterTest {
               .onSuccess(events -> assertThat(events).containsExactly("remote-served"));
     }
 
+    /// The degrade is the self-covering arm's local read, so a copy that does not hold the range asked still forwards once to the
+    /// owner (M-9f) instead of answering from a copy that cannot serve it.
+    @Test
+    void route_forwardsBelowCopyTailToTheOwner_whenAnyReplicaRemoteTimesOutAndTheLocalCopyIsBelowItsTail() {
+        var router = router(ReadPreference.ANY_REPLICA,
+                            Option.some(registryWith(true, PEER_A)),
+                            failingReader(new StreamError.BelowCopyTail(5, 9)),
+                            Option.some(forwardClientTimingOutExcept(OWNER, "owner-served")),
+                            owner(OWNER));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("owner-served"));
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     private static ForwardingReadRouter<String> router(ReadPreference preference,
@@ -467,6 +483,30 @@ class ForwardingReadRouterTest {
     private static void caughtUp(ReplicaRegistry registry, NodeId node) {
         registry.registerReplica(STREAM, PARTITION, node);
         registry.updateWatermark(STREAM, PARTITION, node, 5L, ReplicationState.CAUGHT_UP);
+    }
+
+    private static StreamForwardClient forwardClientTimingOutExcept(NodeId target, String... data) {
+        var dtos = Arrays.stream(data).map(ForwardingReadRouterTest::toDto).toList();
+
+        return new StreamForwardClient() {
+            @Override
+            public Promise<Long> publishRemote(NodeId governorId, String streamName, int partition, byte[] payload, long timestamp) {
+                return Promise.success(-1L);
+            }
+
+            @Override
+            public Promise<ReadForwardResult> readRemote(NodeId replicaId, String streamName, int partition, long fromOffset, int maxEvents) {
+                return replicaId.equals(target)
+                       ? Promise.success(new ReadForwardResult(dtos, false))
+                       : StreamForwardError.General.READ_FORWARD_TIMEOUT.promise();
+            }
+
+            @Override
+            public void onPublishForwardResponse(PublishForwardResponse response) {}
+
+            @Override
+            public void onReadForwardResponse(ReadForwardResponse response) {}
+        };
     }
 
     private static StreamForwardClient forwardClientFailing(Cause cause) {
