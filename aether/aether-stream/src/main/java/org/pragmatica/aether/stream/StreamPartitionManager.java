@@ -6708,9 +6708,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// supplier-flipped-to-NONE gate/release asymmetry never reports negative. It unifies the two defer
     /// causes: budget-deferred (spec §6) and pre-membership (spec §5.4). Floor bytes are the per-partition
     /// floor times the materialized ring count (the REAL off-heap cost of this stream on this node), through the one checked
-    /// product [#floorBytes] (#3390 F2). Its refusal is absorbed here by design-out, never reached: every materialized ring
-    /// holds its floor in allocated memory, so the product is at most the node's off-heap bytes; `Long.MAX_VALUE` (a bound,
-    /// never a wrapped value) stands in only so a report cannot fail.
+    /// product [#floorBytes] (#3390 F2). Its refusal IS reachable here: a same-life `[hot]` change is adopted onto the live
+    /// rings, and the adopted config's floor product can pass a long; the report then shows `Long.MAX_VALUE` (a bound, never
+    /// a wrapped value) so a report cannot fail (pinned by `FloorOverflow#snapshot_floorPastALong_reportsTheLongBound_notZero`).
     private StreamHydration streamHydration(String name, StreamEntry entry) {
         var declared = entry.config().partitions();
         var materialized = entry.ringsMaterialized();
