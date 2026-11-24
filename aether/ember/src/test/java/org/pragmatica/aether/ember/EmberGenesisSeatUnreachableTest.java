@@ -5,21 +5,23 @@
 
 package org.pragmatica.aether.ember;
 
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.api.ClusterEvent;
-import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #1654, end to end on REAL transport: genesis forms with an agreed seat whose process is dead, and the operator surface
 /// (the cluster event log, read through a node's aggregator, the path the Management API serves) names that seat with its remedy.
@@ -33,8 +35,9 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// `RabiaEngine#signalUnreachableSeats` at the install. Removing either leaves the event log without the warning and this test red.
 /// `GenesisSeatUnreachableTest` pins the same emission at unit level with a faked network.
 ///
-/// [unverified: auto-heal replacing this seat] The heal half of the #1654 ruling is pinned for a voter that dies after
-/// formation by `EmberVoterHealTest` (#2098); this class does not run a spare and does not assert a swap.
+/// The second test pins ask 2: auto-heal replaces a seat dead from genesis within a bound, and the warning closes. The remedy sentence
+/// asserted is the heal-on arm: at genesis the auto-heal key is absent (on), so the heal-off arm is unreachable on a real cluster and is
+/// pinned by `GenesisSeatRemedyTest`.
 @PortBudget
 class EmberGenesisSeatUnreachableTest {
     private static final int CLUSTER_SIZE = 3;
@@ -55,7 +58,7 @@ class EmberGenesisSeatUnreachableTest {
     private static final long HEAL_BOUND_MS = 240_000L;
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
-    private static final long PENDING_SETTLE_MS = 5_000L;
+    private static final Duration POLL_INTERVAL = Duration.ofMillis(250);
     private static final long CONDITION_BOUND_MS = 90_000L;
 
     private EmberCluster cluster;
@@ -195,10 +198,21 @@ class EmberGenesisSeatUnreachableTest {
         }
 
         assertThat(cluster).as("every cluster start lost a port between probe and bind; last: " + collision).isNotNull();
-        sleep(PENDING_SETTLE_MS);
-        assertThat(List.<AetherNode>of(cluster.getNode(PREFIX + "-1").unwrap(), cluster.getNode(PREFIX + "-2").unwrap()))
-            .as("both started cores are genesis-pending, so each holds the other's reports")
-            .allMatch(core -> EmberAmnesiacRestartTest.runtime(core).voterConfiguration().isEmpty());
+        awaitCondition("both started cores are genesis-pending and connected to each other, so each can hold the other's reports",
+                       this::startedCoresPendingAndConnected);
+    }
+
+    /// [unverified: the two stable reports] Connected and pending is all the node surface shows; that `-2` already holds two reports of `-1`
+    /// is not observable here. If the kill lands before the second round, `-2` does not carry `-1` into the roster and the formation wait below
+    /// fails with its report, never passes by accident.
+    private boolean startedCoresPendingAndConnected() {
+        var first = cluster.getNode(PREFIX + "-1");
+        var second = cluster.getNode(PREFIX + "-2");
+
+        return first.isPresent() && second.isPresent()
+               && Stream.of(first.unwrap(), second.unwrap()).allMatch(core -> EmberAmnesiacRestartTest.runtime(core).voterConfiguration().isEmpty())
+               && EmberAmnesiacRestartTest.runtime(first.unwrap()).network().connectedPeers().stream().anyMatch(peer -> (PREFIX + "-2").equals(peer.id()))
+               && EmberAmnesiacRestartTest.runtime(second.unwrap()).network().connectedPeers().stream().anyMatch(peer -> (PREFIX + "-1").equals(peer.id()));
     }
 
     private static void awaitCondition(String what, BooleanSupplier condition) {
@@ -206,21 +220,6 @@ class EmberGenesisSeatUnreachableTest {
     }
 
     private static void awaitCondition(long boundMs, String what, BooleanSupplier condition) {
-        var deadline = System.currentTimeMillis() + boundMs;
-
-        while (!condition.getAsBoolean()) {
-            if (System.currentTimeMillis() > deadline) {
-                throw new AssertionError("timed out waiting: " + what);
-            }
-            sleep(250);
-        }
-    }
-
-    private static void sleep(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        pollUntil(condition::getAsBoolean, met -> met, Duration.ofMillis(boundMs), POLL_INTERVAL).assertMet(what);
     }
 }
