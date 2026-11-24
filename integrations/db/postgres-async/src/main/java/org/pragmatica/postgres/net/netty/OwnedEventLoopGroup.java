@@ -31,7 +31,7 @@ import static org.pragmatica.lang.Unit.unit;
  * the builder hands out and released with the last of them (#3635).
  * <p>
  * Guarantee: the group exists only between the first {@link #group()} call after a lease was taken and the release
- * of the last lease; that release shuts it down (quiet period 0, bounded by {@link #SHUTDOWN_TIMEOUT_SECONDS}) and
+ * of the last lease (every Connectible holds one, and so does every open stream until its channel closes); that release shuts it down (quiet period 0, bounded by {@link #SHUTDOWN_TIMEOUT_SECONDS}) and
  * resolves once the group has terminated. A later lease starts a fresh group, a terminated one is never handed out.
  */
 final class OwnedEventLoopGroup {
@@ -47,6 +47,10 @@ final class OwnedEventLoopGroup {
 
     synchronized void lease() {
         leases++;
+    }
+
+    synchronized int leases() {
+        return leases;
     }
 
     synchronized EventLoopGroup group() {

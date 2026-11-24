@@ -52,12 +52,17 @@ final class OwnedConnectible implements Connectible {
         this.delegate = delegate;
     }
 
-    /// The group for a new stream; fails once the lease was released.
+    /// The group for a new stream, with one lease taken for that stream (the stream releases it when its channel
+    /// closes); fails once this Connectible's own lease was released.
     Promise<EventLoopGroup> group() {
         synchronized (owned) {
-            return released
-                   ? Promise.failure(new SqlError.ConnectionPoolClosed("Connectible is closed"))
-                   : Promise.success(owned.group());
+            if (released) {
+                return Promise.failure(new SqlError.ConnectionPoolClosed("Connectible is closed"));
+            }
+
+            owned.lease();
+
+            return Promise.success(owned.group());
         }
     }
 

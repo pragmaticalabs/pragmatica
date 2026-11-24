@@ -62,6 +62,11 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
         return build(obtainStream -> new PgDatabase(properties, obtainStream));
     }
 
+    /// Leases currently held on the owned group: the Connectibles' own plus one per open stream.
+    int leaseCount() {
+        return owned.leases();
+    }
+
     /// The group currently owned by this builder, or null: nothing created yet, or the last lease was released.
     EventLoopGroup ownedGroup() {
         return owned.current();
@@ -69,21 +74,24 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
 
     private Connectible build(Function<Supplier<Promise<ProtocolStream>>, Connectible> factory) {
         if (suppliedGroup != null) {
-            return factory.apply(() -> obtainStream(Promise.success(suppliedGroup)));
+            return factory.apply(() -> obtainStream(Promise.success(suppliedGroup),
+                                                    () -> {}));
         }
 
         var lease = new OwnedConnectible(owned);
 
-        lease.delegate(factory.apply(() -> obtainStream(lease.group())));
+        lease.delegate(factory.apply(() -> obtainStream(lease.group(), owned::release)));
 
         return lease;
     }
 
-    private Promise<ProtocolStream> obtainStream(Promise<EventLoopGroup> group) {
-        return group.flatMap(this::openStream);
+    /// `onChannelClosed` is the release of the stream's own lease on the group (already taken by `group` for an owned
+    /// group): the stream runs it once, when its channel closes by any path.
+    private Promise<ProtocolStream> obtainStream(Promise<EventLoopGroup> group, Runnable onChannelClosed) {
+        return group.flatMap(g -> openStream(g, onChannelClosed));
     }
 
-    private Promise<ProtocolStream> openStream(EventLoopGroup group) {
+    private Promise<ProtocolStream> openStream(EventLoopGroup group, Runnable onChannelClosed) {
         try {
             var address = InetAddress.getByName(properties.hostname());
             var sockAddr = new InetSocketAddress(address, properties.port());
@@ -92,8 +100,11 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
                                                              properties.hostname(),
                                                              properties.sslConfig(),
                                                              Charset.forName(properties.encoding()),
-                                                             group));
+                                                             group,
+                                                             onChannelClosed));
         } catch (Exception e) {
+            onChannelClosed.run();
+
             return Promise.failure(SqlError.fromThrowable(e));
         }
     }

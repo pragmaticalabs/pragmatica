@@ -68,6 +68,8 @@ public class NettyPgProtocolStream extends PgProtocolStream {
     private final Bootstrap channelPipeline;
     private StartupMessage startupWith;
     private ChannelHandlerContext ctx;
+    /// Runs exactly once, when this stream's channel is closed by any path (local close, remote close, failed connect).
+    private final Runnable onChannelClosed;
 
     private final GenericFutureListener<Future<? super Object>> outboundErrorListener = written -> {
         if (!written.isSuccess()) {
@@ -79,8 +81,10 @@ public class NettyPgProtocolStream extends PgProtocolStream {
                                  String hostname,
                                  SslConfig sslConfig,
                                  Charset encoding,
-                                 EventLoopGroup eventLoopGroup) {
+                                 EventLoopGroup eventLoopGroup,
+                                 Runnable onChannelClosed) {
         super(encoding);
+        this.onChannelClosed = onChannelClosed;
         this.address = address;
         this.hostname = hostname;
         this.sslConfig = sslConfig;
@@ -104,10 +108,18 @@ public class NettyPgProtocolStream extends PgProtocolStream {
         startupWith = startup;
 
         return offerRoundTrip(new ActiveQuery.SingleMessage(),
-                              () -> channelPipeline.connect(address)
-                                                   .addListener(outboundErrorListener),
+                              this::connectChannel,
                               false).flatMap(this::send)
                              .flatMap(message -> connectSslOrDirect(message, startup));
+    }
+
+    private io.netty.channel.ChannelFuture connectChannel() {
+        var connecting = channelPipeline.connect(address);
+
+        connecting.channel().closeFuture().addListener(_ -> onChannelClosed.run());
+        connecting.addListener(outboundErrorListener);
+
+        return connecting;
     }
 
     private Promise<Message> connectSslOrDirect(Message message, StartupMessage startup) {

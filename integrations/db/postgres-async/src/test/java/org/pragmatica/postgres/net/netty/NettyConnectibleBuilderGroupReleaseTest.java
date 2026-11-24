@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 import java.lang.reflect.Proxy;
 
 import org.pragmatica.lang.Promise;
@@ -72,7 +73,7 @@ class NettyConnectibleBuilderGroupReleaseTest {
         assertThat(group).isNotNull();
         assertThat(group.isShuttingDown()).isFalse();
         assertThat(pool.close().await(GUARD).isSuccess()).isTrue();
-        assertThat(group.isTerminated()).isTrue();
+        assertTerminated(group);
         assertThat(builder.ownedGroup()).isNull();
     }
 
@@ -87,7 +88,7 @@ class NettyConnectibleBuilderGroupReleaseTest {
 
         assertThat(group).isNotNull();
         assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
-        assertThat(group.isTerminated()).isTrue();
+        assertTerminated(group);
         assertThat(connecting.await(GUARD).isFailure()).isTrue();
     }
 
@@ -101,6 +102,7 @@ class NettyConnectibleBuilderGroupReleaseTest {
 
         group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
         assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
+        assertTerminated(group);
         assertThat(builder.ownedGroup()).isNull();
     }
 
@@ -135,7 +137,7 @@ class NettyConnectibleBuilderGroupReleaseTest {
         assertThat(pool.close().await(GUARD).isSuccess()).isTrue();
         assertThat(group.isShuttingDown()).isFalse();
         assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
-        assertThat(group.isTerminated()).isTrue();
+        assertTerminated(group);
     }
 
     @Test
@@ -144,7 +146,10 @@ class NettyConnectibleBuilderGroupReleaseTest {
         var plain = builder.plain();
 
         assertThat(plain.getConnection().await(GUARD).isFailure()).isTrue();
+        var group = builder.ownedGroup();
+
         assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
+        assertTerminated(group);
         var again = plain.getConnection().await(GUARD);
 
         assertThat(again.isFailure()).isTrue();
@@ -161,6 +166,7 @@ class NettyConnectibleBuilderGroupReleaseTest {
         var firstGroup = builder.ownedGroup();
 
         assertThat(first.close().await(GUARD).isSuccess()).isTrue();
+        assertTerminated(firstGroup);
         var second = builder.plain();
 
         assertThat(second.getConnection().await(GUARD).isFailure()).isTrue();
@@ -169,7 +175,7 @@ class NettyConnectibleBuilderGroupReleaseTest {
         assertThat(secondGroup).isNotNull().isNotSameAs(firstGroup);
         assertThat(secondGroup.isShuttingDown()).isFalse();
         assertThat(second.close().await(GUARD).isSuccess()).isTrue();
-        assertThat(secondGroup.isTerminated()).isTrue();
+        assertTerminated(secondGroup);
     }
 
     @Test
@@ -182,7 +188,10 @@ class NettyConnectibleBuilderGroupReleaseTest {
         assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
         assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
         assertThat(builder.ownedGroup()).as("the pool still holds its lease").isNotNull();
+        var group = builder.ownedGroup();
+
         assertThat(pool.close().await(GUARD).isSuccess()).isTrue();
+        assertTerminated(group);
         assertThat(builder.ownedGroup()).isNull();
     }
 
@@ -203,7 +212,67 @@ class NettyConnectibleBuilderGroupReleaseTest {
 
         assertThat(lease.close().await(GUARD).isSuccess()).isTrue();
         assertThat(groupShuttingDownAtDelegateClose).as("group still running while the delegate closes").isFalse();
-        assertThat(group.isTerminated()).isTrue();
+        assertTerminated(group);
+    }
+
+    @Test
+    void streamLease_isReleasedWhenTheGroupIsStillHeldByAnotherLease_thenGroupTerminates() {
+        var owned = new OwnedEventLoopGroup(() -> 1);
+        var lease = new OwnedConnectible(owned);
+        var group = lease.group().await(GUARD).unwrap();
+
+        lease.delegate(noopDelegate());
+
+        assertThat(lease.close().await(GUARD).isSuccess()).isTrue();
+        assertThat(group.isShuttingDown()).as("the stream's lease keeps the group alive after close").isFalse();
+        owned.release();
+        assertTerminated(group);
+    }
+
+    @Test
+    void remoteClose_releasesTheStreamLease() throws Exception {
+        var builder = builderTo(silentServerPort());
+        var plain = builder.plain();
+        var connecting = plain.getConnection();
+
+        awaitAccepted();
+        assertThat(builder.leaseCount()).as("the Connectible's lease and the open stream's").isEqualTo(2);
+        accepted.getFirst().close();
+        awaitLeaseCount(builder, 1);
+        assertThat(connecting.await(GUARD).isFailure()).isTrue();
+        assertThat(builder.ownedGroup().isShuttingDown()).isFalse();
+        assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
+    }
+
+    @Test
+    void failedConnect_releasesTheStreamLease() throws IOException {
+        var builder = builderTo(closedPort());
+        var plain = builder.plain();
+
+        assertThat(plain.getConnection().await(GUARD).isFailure()).isTrue();
+        awaitLeaseCount(builder, 1);
+        assertThat(builder.ownedGroup().isShuttingDown()).isFalse();
+        assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
+    }
+
+    private static void awaitLeaseCount(NettyConnectibleBuilder builder, int expected) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (builder.leaseCount() != expected && System.nanoTime() < deadline) {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+        }
+
+        assertThat(builder.leaseCount()).isEqualTo(expected);
+    }
+
+    private static void assertTerminated(EventLoopGroup group) {
+        assertThat(group.terminationFuture().awaitUninterruptibly(10, TimeUnit.SECONDS)).isTrue();
+    }
+
+    private static Connectible noopDelegate() {
+        return (Connectible) Proxy.newProxyInstance(Connectible.class.getClassLoader(),
+                                                    new Class<?>[]{Connectible.class},
+                                                    (_, _, _) -> Promise.success(Unit.unit()));
     }
 
     private NettyConnectibleBuilder builderTo(int port) {
