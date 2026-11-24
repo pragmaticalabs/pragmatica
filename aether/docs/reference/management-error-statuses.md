@@ -18,7 +18,7 @@ A publish is not idempotent. On the stream publish route a raw stream engine ref
 
 ## Statuses that changed
 
-85 causes answered 500 and now answer the status shown. Everything not listed is unchanged.
+87 causes are listed: 85 answered 500 and now answer the status shown, and 2 are new, with Before = n/a (new). Everything not listed is unchanged.
 
 ### Plain causes (42)
 
@@ -73,7 +73,7 @@ A publish is not idempotent. On the stream publish route a raw stream engine ref
 |---|---|---|
 | `ConsumerGroupCoordinator$CoordinatorError#NOT_LEADER` | Internal Server Error | Conflict |
 
-### Raw stream engine errors (42), every route except publish
+### Raw stream engine errors (44), every route except publish
 
 | Cause | Before | After |
 |---|---|---|
@@ -95,8 +95,8 @@ A publish is not idempotent. On the stream publish route a raw stream engine ref
 | `org.pragmatica.aether.stream.StreamError$General#STREAM_ALREADY_EXISTS` | Internal Server Error | Conflict |
 | `org.pragmatica.aether.stream.StreamError$General#STREAM_CLOSED` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$General#STREAM_MEMORY_EXCEEDED` | Internal Server Error | Service Unavailable |
-| `org.pragmatica.aether.stream.StreamError$HotWindowBelowMaxEvent` | Internal Server Error | Bad Request |
-| `org.pragmatica.aether.stream.StreamError$ImmutableKeyChanged` | Internal Server Error | Conflict |
+| `org.pragmatica.aether.stream.StreamError$HotWindowBelowMaxEvent` | n/a (new) | Bad Request |
+| `org.pragmatica.aether.stream.StreamError$ImmutableKeyChanged` | n/a (new) | Conflict |
 | `org.pragmatica.aether.stream.StreamError$LinearizableRoundTimeout` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$MaterializeBudgetExceeded` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$NotCurrentOwner` | Internal Server Error | Service Unavailable |
