@@ -247,7 +247,7 @@ class SingleFlightCacheTest {
 
             try {
                 assertThat(started.await(5, TimeUnit.SECONDS))
-                    .as("every virtual-thread carrier must be occupied before A's bound fires")
+                    .as("every virtual-thread carrier must be occupied before A is failed")
                     .isTrue();
 
                 // A: a loader failed by hand. Registered while still unresolved, so this observer
