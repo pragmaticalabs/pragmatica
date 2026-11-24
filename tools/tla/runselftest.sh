@@ -61,7 +61,8 @@ run() { # run <name> <want-exit: 0|nonzero> <pattern or -> <profile> <tsv rows v
   if grep -q broken "$work/models.tsv" || [[ ${KEEP_BROKEN:-} == 1 ]]; then cp "$work/Broken.java.txt" "$work/src/Broken.java"; fi
   if grep -qF $'\tlive\t' "$work/models.tsv"; then cp "$work/Live.java.txt" "$work/src/Live.java"; fi
   printf '%b' "${PINS:-}" > "$work/pins.tsv"
-  out=$(cd "$work" && MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out" TLC_WORKERS=1 SIM_SECONDS=3 SIM_TRACES=2000 bash "$here/run.sh" "$profile" 'Fix' "${VARIANTS:-.*}" 2>&1); rc=$?
+  [[ -n ${BUDGETS_TSV:-} ]] || { BUDGETS_TSV="$work/b_default.tsv"; printf '*\t*\t18000\t-\tdefault\n@hosted\tlimit\t18000\t12g\tlimit\n' > "$BUDGETS_TSV"; }   # the fixture models.tsv has none of the real rows
+  out=$(cd "$work" && BUDGETS_TSV="$BUDGETS_TSV" MODELS_TSV="$work/models.tsv" PINS_TSV="$work/pins.tsv" TLA_OUT="$work/out" TLC_WORKERS=1 SIM_SECONDS=3 SIM_TRACES=2000 bash "$here/run.sh" "$profile" 'Fix' "${VARIANTS:-.*}" 2>&1); rc=$?
   if { [[ $want == 0 && $rc == 0 ]] || [[ $want == nonzero && $rc != 0 ]]; } && { [[ $pattern == - ]] || grep -qE "$pattern" <<<"$out"; }; then
     echo "PASS $name (exit $rc)"
   else echo "FAIL $name: want exit $want, got $rc, pattern '$pattern'"; sed 's/^/    /' <<<"$out" | tail -25; fail=1; fi; }

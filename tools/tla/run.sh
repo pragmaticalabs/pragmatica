@@ -142,7 +142,7 @@ while IFS=$'\t' read -r module root variant expect property small _; do
   btimeout=""; bheap="-"; bsrc=""; bover=0
   if [[ $use_budgets == 1 ]]; then
     read -r btimeout bheap bsrc < <(budget_of "$module" "$variant"); bsrc="$bsrc ${btimeout}s/${bheap}"
-    bover=$(over_hosted "$btimeout" "$bheap")
+    bover=$(over_hosted "${TLC_TIMEOUT:-$btimeout}" "$bheap")
     if [[ $host == 1 && $bover == 0 ]]; then continue; fi   # host mode: only the rows a runner does not take
     if [[ $host != 1 && $bover == 1 ]]; then
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$commit" "$dirty" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$profile" "$module" "$variant" \
