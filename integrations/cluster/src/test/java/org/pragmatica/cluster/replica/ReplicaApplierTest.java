@@ -27,11 +27,14 @@ import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import org.pragmatica.cluster.state.kvstore.ReplicaKeyFilter;
 import org.pragmatica.cluster.state.kvstore.ReplicaSnapshot;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cluster.replica.ClientFixtures.CLIENT;
+import static org.pragmatica.cluster.replica.ClientFixtures.incarnation;
 import static org.pragmatica.cluster.replica.FeedFixtures.CORE;
 import static org.pragmatica.cluster.replica.FeedFixtures.Key;
 import static org.pragmatica.cluster.replica.FeedFixtures.LINEAGE;
@@ -346,63 +349,87 @@ class ReplicaApplierTest {
         assertThat(applier.accept(live(1, entry(TAG, 2, 2, "b", "2")))).as("without a position nothing applies").isEqualTo(Step.DISCARD_POSITION);
     }
 
-    /// #3359 (twin #2776): a snapshot of the SAME incarnation below the revision the store has applied is refused, also after the position was
-    /// discarded (the `AHEAD` path): the store keeps its content and revision and no notification is emitted. Mutation: drop the floor check in
-    /// `ReplicaApplier.install` (or forget the followed tag in `discardPosition`).
+    /// #3359 (twin #2776), the order rule: within one lineage the content never moves down in `(incarnation, revision)`. The same incarnation
+    /// below the applied revision is refused, also after the position was discarded (the `AHEAD` path), and the cause names both tags and what
+    /// clears it; the applied revision itself is not below. Mutations: drop the revision check; forget the followed tag in `discardPosition`.
     @Test
-    void install_ofALaggingSnapshotOfTheSameIncarnation_isRefused_andChangesNothing() {
-        var seen = new java.util.ArrayList<Object>();
-        var router = MessageRouter.mutable();
+    void admits_theSameIncarnationBelowTheApplied_isRefused_alsoAfterTheDiscard_andTheAppliedRevisionIsAdmitted() {
+        var current = laggingSource(4).captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
+        var replica = following(current);
 
-        router.addRoute(KVStoreNotification.ValuePut.class,
-                        (java.util.function.Consumer<KVStoreNotification.ValuePut<?, ?>>) put -> seen.add(put.cause().key()));
-        router.addRoute(KVStoreNotification.ValueRemove.class,
-                        (java.util.function.Consumer<KVStoreNotification.ValueRemove<?, ?>>) remove -> seen.add(remove.cause().key()));
-
-        var lagging = laggingSource(2);
-        var current = laggingSource(4);
-        var kept = ClientFixtures.store(router);
-        var replica = ReplicaApplier.replicaApplier(kept, 1 << 20);
-        var ahead = current.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
-        var behind = lagging.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
-
-        replica.beginBuffering();
-        replica.install(ahead.bytes(), ahead.tag(), ahead.revision(), ahead.anchor()).unwrap();
         replica.discardPosition();
-        seen.clear();
 
-        var refused = replica.install(behind.bytes(), behind.tag(), behind.revision(), behind.anchor());
-
-        assertThat(refused.isFailure()).isTrue();
-        assertThat(seen).as("a refused install notifies nobody").isEmpty();
-        assertThat(kept.committedRevision()).as("the revision stays where it was applied").isEqualTo(ahead.revision());
-        assertThat(kept.get(new Key("k3")).isPresent()).as("the newer content stays").isTrue();
-        assertThat(replica.position().isHeld()).as("a refused install adopts nothing").isFalse();
+        assertThat(verdict(replica.admits(TAG, current.revision() - 2)))
+                .isEqualTo("snapshot of " + TAG + " at revision " + (current.revision() - 2) + " is below the held " + TAG + " at applied revision "
+                           + current.revision() + " in the same lineage; refused until a source serves at or above it (the lagging core catches up)"
+                           + " or the worker restarts");
+        assertThat(verdict(replica.admits(TAG, current.revision()))).as("the applied revision is not below it").isEqualTo(ADMITTED);
     }
 
-    /// The control of the floor: the same lagging snapshot installs when it is a NEW incarnation (a re-genesis legitimately moves the revision down),
-    /// and an equal-or-newer snapshot of the same incarnation installs. Mutation: compare by revision alone, ignoring the tag.
+    /// An older incarnation of the same lineage is refused at ANY revision (the incarnation orders first); a newer one is admitted below the applied
+    /// revision. Mutations: order by revision alone; invert the incarnation comparison.
     @Test
-    void install_belowTheAppliedRevision_isAllowedForANewIncarnation_andAtOrAboveForTheSame() {
+    void admits_anOlderIncarnationOfTheSameLineage_isRefused_atAnyRevision_andANewerOneIsAdmitted() {
+        var replica = following(image(incarnation(1, "A"), incarnation(2, "B")));
+
+        assertThat(verdict(replica.admits(tag(1, "A", LINEAGE), 100))).startsWith("snapshot of " + tag(1, "A", LINEAGE) + " at revision 100");
+        assertThat(verdict(replica.admits(tag(3, "C", LINEAGE), 1))).isEqualTo(ADMITTED);
+    }
+
+    /// Between lineages there is no order: a fresh re-genesis counts from 1 again, so a LOWER number of another lineage is admitted, also below the
+    /// applied revision. Mutations: order by number alone; ignore the lineage.
+    @Test
+    void admits_aLowerIncarnationOfAnotherLineage() {
+        var replica = following(image(incarnation(1, "A"), incarnation(2, "B")));
+
+        assertThat(verdict(replica.admits(tag(1, "X", "M"), 1))).isEqualTo(ADMITTED);
+    }
+
+    /// One number with two ids is unordered: admitted, also below the applied revision. Mutation: compare the number instead of the whole tag before
+    /// comparing revisions.
+    @Test
+    void admits_theSameNumberWithAnotherId() {
+        var replica = following(image(incarnation(1, "A"), incarnation(2, "B"), FeedFixtures.put("k", "v")));
+
+        assertThat(verdict(replica.admits(tag(2, "C", LINEAGE), 1))).isEqualTo(ADMITTED);
+    }
+
+    /// Nothing followed yet ([IncarnationTag#NONE]): nothing to order against, so any snapshot is admitted. Dropping the `isNone` guard is an
+    /// equivalent mutant while NONE's lineage is empty (no lineage of a real tag equals it); the guard states the rule, this test pins it.
+    @Test
+    void admits_anySnapshot_whileNothingIsFollowed() {
+        var replica = ReplicaApplier.replicaApplier(laggingSource(4), 1 << 20);
+
+        assertThat(verdict(replica.admits(TAG, 1))).isEqualTo(ADMITTED);
+        assertThat(verdict(replica.admits(tag(0, "", ""), 0))).isEqualTo(ADMITTED);
+    }
+
+    private static final String ADMITTED = "admitted";
+
+    private static String verdict(Result<Unit> admitted) {
+        return admitted.fold(Cause::message, _ -> ADMITTED);
+    }
+
+    private static IncarnationTag tag(long incarnation, String id, String lineage) {
+        return IncarnationTag.incarnationTag(incarnation, id, lineage);
+    }
+
+    private static ReplicaApplier<StructuredKey, Object> following(ReplicaSnapshot snapshot) {
         var replica = ReplicaApplier.replicaApplier(ClientFixtures.store(), 1 << 20);
-        var current = laggingSource(4).captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
-        var regenesis = ClientFixtures.store();
-
-        FeedFixtures.commit(regenesis, 0, ClientFixtures.incarnation(2, "B"));
-
-        var reborn = regenesis.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
 
         replica.beginBuffering();
-        replica.install(current.bytes(), current.tag(), current.revision(), current.anchor()).unwrap();
+        replica.install(snapshot.bytes(), snapshot.tag(), snapshot.revision(), snapshot.anchor()).unwrap();
 
-        assertThat(replica.install(current.bytes(), current.tag(), current.revision(), current.anchor()).isSuccess())
-                .as("the same revision is not below it").isTrue();
+        return replica;
+    }
 
-        replica.discardPosition();
+    @SafeVarargs
+    private static ReplicaSnapshot image(KVCommand<StructuredKey>... commands) {
+        var source = ClientFixtures.store();
 
-        assertThat(replica.install(reborn.bytes(), reborn.tag(), reborn.revision(), reborn.anchor()).isSuccess())
-                .as("a new incarnation moves down").isTrue();
-        assertThat(replica.position().tag()).isEqualTo(IncarnationTag.incarnationTag(2, "B", LINEAGE));
+        IntStream.range(0, commands.length).forEach(slot -> FeedFixtures.commit(source, slot, commands[slot]));
+
+        return source.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
     }
 
     private static KVStore<StructuredKey, Object> laggingSource(int committedSlots) {

@@ -452,19 +452,36 @@ class ReplicaFeedServerTest {
             assertThat(harness.sentTo(PEER, ReplicaSnapshotChunk.class)).as("nothing more was served").hasSize(1);
         }
 
-        /// NT-O16. An offset past the end of the image is a restart too. Mutation: drop the `request.offset() <` filter.
+        /// NT-O16, #3359. An offset past the end of the image of a live transfer asks for no more bytes, exactly as the end offset does: the transfer is
+        /// finished, its slot is free and nothing is sent back. Mutation: `>=` to `==` in the release test of `continueOrRelease`.
         @Test
-        void snapshot_continuationPastTheEnd_isRefusedEvicted() {
-            var harness = new Harness(new ReplicaFeedLimits(8, 2, 5_000, 2, 1 << 20, 8, 30_000, 256, 256));
+        void snapshot_requestPastTheEnd_freesTheSlot_andSendsNothing() {
+            var harness = releasedWithACapOfOne(1);
+
+            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).as("nothing back to the releasing replica").isEmpty();
+            assertThat(harness.sentTo(THIRD, ReplicaSnapshotChunk.class)).as("the only serve slot is free").isNotEmpty();
+        }
+
+        /// #3359. A release names its own transfer: another request id, another sender or another image answers `EVICTED` and frees nothing (the
+        /// cap of one still holds PEER's slot, so a third asker is answered `BUSY`). Mutation: free without `sameImage`; key the lookup by request id only.
+        @Test
+        void snapshot_releaseOfAnotherRequestSenderOrImage_isRefusedEvicted_andFreesNothing() {
+            var harness = new Harness(new ReplicaFeedLimits(8, 1, 5_000, 2, 1 << 20, 8, 30_000, 256, 256));
 
             harness.commit(1, put("a", "1"));
-            harness.server.onSnapshotRequest(firstRequest(PEER, 5));
+            harness.server.onSnapshotRequest(firstRequest(PEER, 1));
 
             var first = harness.sentTo(PEER, ReplicaSnapshotChunk.class).getFirst();
 
-            harness.server.onSnapshotRequest(new ReplicaSnapshotRequest(PEER, 5, TAG, first.revision(), first.hash(), first.total() + 1));
+            harness.server.onSnapshotRequest(new ReplicaSnapshotRequest(PEER, 9, first.tag(), first.revision(), first.hash(), first.total()));
+            harness.server.onSnapshotRequest(new ReplicaSnapshotRequest(OTHER, 1, first.tag(), first.revision(), first.hash(), first.total()));
+            harness.server.onSnapshotRequest(new ReplicaSnapshotRequest(PEER, 1, first.tag(), first.revision(), "not-the-hash", first.total()));
+            harness.server.onSnapshotRequest(new ReplicaSnapshotRequest(PEER, 1, first.tag(), first.revision() + 1, first.hash(), first.total()));
+            harness.server.onSnapshotRequest(firstRequest(THIRD, 3));
 
-            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).extracting(ReplicaRefused::reason).containsExactly(RefusalReason.EVICTED);
+            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).extracting(ReplicaRefused::reason).containsExactly(RefusalReason.EVICTED, RefusalReason.EVICTED, RefusalReason.EVICTED);
+            assertThat(harness.sentTo(OTHER, ReplicaRefused.class)).extracting(ReplicaRefused::reason).containsExactly(RefusalReason.EVICTED);
+            assertThat(harness.sentTo(THIRD, ReplicaRefused.class)).extracting(ReplicaRefused::reason).as("PEER's slot is still held").containsExactly(RefusalReason.BUSY);
         }
 
         /// NT-O17. Mutation: drop the TTL check in `SnapshotCache.dropExpired`, or key the cache by tag only (a new revision hits).
@@ -558,20 +575,30 @@ class ReplicaFeedServerTest {
             assertThat(harness.sentTo(PEER, ReplicaSnapshotChunk.class)).isNotEmpty();
         }
 
-        /// NT-O16. A continuation at exactly the end offset has nothing to send and is refused `EVICTED`. Mutation: `<` to `<=` in `continueTransfer`.
+        /// NT-O16, #3359. A request at exactly the end offset has nothing to send: it asks for no more bytes (the replica refused the snapshot on its
+        /// first chunk), so the transfer is finished, its serve slot is free at once, and nothing is sent back. Mutation: drop `finish` in
+        /// `continueOrRelease`.
         @Test
-        void snapshot_continuationAtExactlyTheEndOffset_isRefusedEvicted() {
-            var harness = new Harness(new ReplicaFeedLimits(8, 2, 5_000, 2, 1 << 20, 8, 30_000, 256, 256));
+        void snapshot_requestAtTheEndOffset_freesTheSlot_andSendsNothing() {
+            var harness = releasedWithACapOfOne(0);
+
+            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).as("nothing back to the releasing replica").isEmpty();
+            assertThat(harness.sentTo(PEER, ReplicaSnapshotChunk.class)).as("no further chunk").hasSize(1);
+            assertThat(harness.sentTo(THIRD, ReplicaSnapshotChunk.class)).as("the only serve slot is free").isNotEmpty();
+        }
+
+        private static Harness releasedWithACapOfOne(long pastTheEnd) {
+            var harness = new Harness(new ReplicaFeedLimits(8, 1, 5_000, 2, 1 << 20, 8, 30_000, 256, 256));
 
             harness.commit(1, put("a", "1"));
             harness.server.onSnapshotRequest(firstRequest(PEER, 1));
 
             var first = harness.sentTo(PEER, ReplicaSnapshotChunk.class).getFirst();
 
-            harness.server.onSnapshotRequest(new ReplicaSnapshotRequest(PEER, 1, first.tag(), first.revision(), first.hash(), first.total()));
-
-            assertThat(harness.sentTo(PEER, ReplicaRefused.class)).singleElement()
-                                                                  .satisfies(refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.EVICTED));
+            assertThat(first.bytes().length).as("setup: the snapshot is longer than one chunk").isLessThan((int) first.total());
+            harness.server.onSnapshotRequest(new ReplicaSnapshotRequest(PEER, 1, first.tag(), first.revision(), first.hash(), first.total() + pastTheEnd));
+            harness.server.onSnapshotRequest(firstRequest(THIRD, 3));
+            return harness;
         }
 
         /// NT-O18. A transfer nobody pulls from is abandoned and frees its slot. Mutation: drop `abandonIdleTransfers` from `tick`.

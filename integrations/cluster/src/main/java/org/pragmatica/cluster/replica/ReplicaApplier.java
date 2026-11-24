@@ -38,17 +38,22 @@ public final class ReplicaApplier<K extends StructuredKey, V> {
         REJECTED
     }
 
-    /// The refusal of [#install]: the snapshot is of the incarnation the store holds and below the revision the store has applied.
-    public record SnapshotBehind(long revision, long applied) implements Cause {
-        public static SnapshotBehind snapshotBehind(long revision, long applied) {
-            return new SnapshotBehind(revision, applied);
+    /// The refusal of [#admits]: the offered snapshot `(tag, revision)` is below the held `(held, applied)` within one lineage.
+    public record SnapshotBehind(IncarnationTag tag, long revision, IncarnationTag held, long applied) implements Cause {
+        public static SnapshotBehind snapshotBehind(IncarnationTag tag,
+                                                    long revision,
+                                                    IncarnationTag held,
+                                                    long applied) {
+            return new SnapshotBehind(tag, revision, held, applied);
         }
 
         @Override
         public String message() {
-            return "snapshot at revision " + revision
-                 + " is below the applied revision " + applied
-                 + " of the same incarnation";
+            return "snapshot of " + tag
+                 + " at revision " + revision
+                 + " is below the held " + held
+                 + " at applied revision " + applied
+                 + " in the same lineage; refused until a source serves at or above it (the lagging core catches up) or the worker restarts";
         }
     }
 
@@ -208,25 +213,37 @@ public final class ReplicaApplier<K extends StructuredKey, V> {
     /// replays the buffered live messages in order, and returns only once every notification the install enqueued is delivered (KVStore
     /// dispatcher design §3.3: the replica path sequences on `awaitDelivered` as the engine's apply path does), so whatever the client does
     /// next (readiness, going live) follows the handlers' view of the install. A failed install changes nothing about the position; a store
-    /// closed during the wait fails the install with the store's outcome-unknown cause.
-    ///
-    /// Forward-only within an incarnation (#3359): a snapshot of the incarnation the store's content belongs to, below the revision the store has
-    /// applied, is refused before anything is touched (it is a lagging source's older state; installing it would regress every key and notify the
-    /// difference as ordinary puts and removes). The incarnation survives [#discardPosition], which is exactly the `AHEAD` path. Another incarnation
-    /// is a different history and may start lower.
+    /// closed during the wait fails the install with the store's outcome-unknown cause. Whether a snapshot may install at all is [#admits],
+    /// which the client asks on the snapshot's first chunk; this method does not ask again.
     public Result<Step> install(byte[] bytes, IncarnationTag tag, long revision, List<AnchorPair> anchor) {
-        return forwardOnly(tag, revision).flatMap(_ -> store.restoreCommittedSnapshot(bytes, revision))
-                          .map(_ -> adopt(tag, revision, anchor))
-                          .map(_ -> drainBuffer())
-                          .flatMap(this::afterDelivery);
+        return store.restoreCommittedSnapshot(bytes, revision)
+                    .map(_ -> adopt(tag, revision, anchor))
+                    .map(_ -> drainBuffer())
+                    .flatMap(this::afterDelivery);
     }
 
-    private Result<Unit> forwardOnly(IncarnationTag tag, long revision) {
-        var applied = store.committedRevision();
-
-        return followed.matches(tag) && revision < applied
-               ? SnapshotBehind.snapshotBehind(revision, applied).result()
+    /// The order rule (#3359), held here and nowhere else: within one lineage a replica's content never moves down in `(incarnation, revision)`.
+    /// A snapshot of an older incarnation of the lineage the store's content belongs to, or of that same incarnation below the applied revision,
+    /// fails with [SnapshotBehind] (a lagging source's older state: installing it would regress every key and notify the difference as ordinary
+    /// puts and removes). Between lineages there is no order, nor between two incarnations of one number with different ids, and while nothing is
+    /// followed ([IncarnationTag#NONE]) there is nothing to order against: all of these are admitted. The followed tag survives
+    /// [#discardPosition], so the rule also holds after every path that makes the position unusable (`AHEAD`, `INCARNATION_MISMATCH`, `EVICTED`,
+    /// a rejected entry, an abandoned transfer, an overflow).
+    public Result<Unit> admits(IncarnationTag tag, long revision) {
+        return isBelowHeld(tag, revision)
+               ? SnapshotBehind.snapshotBehind(tag,
+                                               revision,
+                                               followed,
+                                               store.committedRevision())
+                               .result()
                : Result.unitResult();
+    }
+
+    private boolean isBelowHeld(IncarnationTag tag, long revision) {
+        return ! followed.isNone()
+               && followed.lineageId()
+                          .equals(tag.lineageId())
+               && (tag.incarnation() < followed.incarnation() || followed.matches(tag) && revision < store.committedRevision());
     }
 
     private Result<Step> afterDelivery(Step drained) {

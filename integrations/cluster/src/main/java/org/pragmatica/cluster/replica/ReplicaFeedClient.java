@@ -499,8 +499,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
         }
 
         assemble(open, message).onSuccess(transfer -> advanceTransfer(open, transfer))
-                .onFailure(cause -> abandonTransfer(open,
-                                                    cause.message()));
+                .onFailure(cause -> transferFailed(open, message, cause));
     }
 
     private Result<Transfer> assemble(Session open, ReplicaSnapshotChunk message) {
@@ -520,13 +519,15 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
             return Causes.cause("snapshot refused: no usable tag or length").result();
         }
 
-        open.transfer = new Transfer(message.tag(),
-                                     message.revision(),
-                                     message.hash(),
-                                     message.anchor(),
-                                     (int) message.total());
+        return applier.admits(message.tag(),
+                              message.revision())
+                      .flatMap(_ -> begin(open, message));
+    }
 
-        return append(open.transfer, message);
+    private static Result<Transfer> begin(Session open, ReplicaSnapshotChunk first) {
+        open.transfer = new Transfer(first.tag(), first.revision(), first.hash(), first.anchor(), (int) first.total());
+
+        return append(open.transfer, first);
     }
 
     private static Result<Transfer> append(Transfer transfer, ReplicaSnapshotChunk message) {
@@ -561,18 +562,38 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
                                          hash -> hash.equals(transfer.hash))
                  .flatMap(_ -> applier.install(transfer.bytes, transfer.tag, transfer.revision, transfer.anchor))
                  .onSuccess(step -> installed(open, step))
-                 .onFailure(cause -> installFailed(open, cause));
+                 .onFailure(cause -> abandonTransfer(open,
+                                                     cause.message()));
     }
 
-    /// A snapshot that did not install abandons the transfer. A lagging source's (#3359: below what this replica has applied) is also left: the
-    /// replica keeps its state, and the selector keeps a current source that is not avoided, so without this the same core would be asked again and
-    /// again while a caught-up one is never tried.
-    private void installFailed(Session open, Cause cause) {
+    /// A transfer that cannot go on is abandoned. One refused on its first chunk ([ReplicaApplier#admits], #3359: below what this replica holds)
+    /// is a refusal: see [#refuseSnapshot].
+    private void transferFailed(Session open, ReplicaSnapshotChunk message, Cause cause) {
         if (cause instanceof SnapshotBehind) {
-            avoided.add(open.source);
+            refuseSnapshot(open, message);
         }
 
         abandonTransfer(open, cause.message());
+    }
+
+    /// The replica keeps its state and pulls no further byte. The refusal counts, so the backoff of [#everyUplinkAvoided] grows (and its jitter,
+    /// seeded per attempt, varies) while every uplink is behind; the source is avoided, as the selector keeps a current source that is not, so a
+    /// caught-up core is asked next. A snapshot longer than its first chunk still holds one of the source's serve slots: one request at
+    /// `offset == total` ("no more bytes") releases it. If that one message is lost, the slot stays held until the source's `transferIdleMillis`,
+    /// as for any client that stops pulling. A single-chunk snapshot sends nothing: the source freed its slot with that chunk and would answer
+    /// `EVICTED` to a session that is gone.
+    private void refuseSnapshot(Session open, ReplicaSnapshotChunk first) {
+        consecutiveRefusals++;
+        avoided.add(open.source);
+        if (first.bytes().length < first.total()) {
+            send.accept(open.source,
+                        new ReplicaSnapshotRequest(self,
+                                                   open.id,
+                                                   first.tag(),
+                                                   first.revision(),
+                                                   first.hash(),
+                                                   first.total()));
+        }
     }
 
     private void installed(Session open, Step drained) {

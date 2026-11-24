@@ -10,14 +10,20 @@ import java.util.stream.IntStream;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.cluster.replica.ClientFixtures.Net;
+import org.pragmatica.cluster.replica.ClientFixtures.Out;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaEntries;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaRefused;
+import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotChunk;
+import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotRequest;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.SubscribeMode;
 import org.pragmatica.cluster.state.kvstore.CommitRing.RefusalReason;
 import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.ReplicaKeyFilter;
 import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,6 +58,155 @@ class ReplicaFeedClientTest {
                                                            real.total(),
                                                            real.offset(),
                                                            real.bytes());
+    }
+
+    private static void run(Net net, int rounds, long millis) {
+        IntStream.range(0, rounds).forEach(_ -> advanceAndStep(net, millis));
+    }
+
+    private static void advanceAndStep(Net net, long millis) {
+        net.advance(millis);
+        net.step();
+    }
+
+    /// The worker follows 2/B at revision 5 from core-0 (which also holds `c`); core-1 is still at 1/A, revision 3.
+    private static Net followingTwoB() {
+        var net = joined();
+
+        net.commitOnlyOn(0, 3, incarnation(2, "B"));
+        net.commitOnlyOn(0, 4, put("c", "3"));
+        run(net, 20, 500);
+        assertThat(net.applier.position().tag()).as("setup: the worker follows 2/B").isEqualTo(IncarnationTag.incarnationTag(2, "B", LINEAGE));
+
+        return net;
+    }
+
+    /// The worker applied slot 3 from core-0, which goes silent; core-1 lags, so it is asked and its same-incarnation snapshot is refused.
+    private static Net laggingAfterSilence(Net net) {
+        net.commitOnlyOn(0, 3, put("c", "3"));
+        net.step();
+        net.core(0).up.set(false);
+        net.advance(3_500);
+        net.step();
+        net.advance(300);
+        net.step();
+        net.advance(300);
+        net.step();
+
+        return net;
+    }
+
+    /// Two cores whose snapshots span several 2-byte chunks and which serve `maxServes` snapshots at a time; genesis and slots 1, 2 committed.
+    private static Net chunkedNet(int maxServes) {
+        var defaults = ReplicaFeedLimits.DEFAULT;
+        var net = new Net(2,
+                          ReplicaClientLimits.DEFAULT,
+                          new ReplicaFeedLimits(2,
+                                                maxServes,
+                                                defaults.cacheMillis(),
+                                                defaults.cacheEntries(),
+                                                defaults.queueBytes(),
+                                                defaults.maxSubscribers(),
+                                                defaults.transferIdleMillis(),
+                                                defaults.drainMessagesPerTick(),
+                                                defaults.catchUpWeight()));
+
+        net.genesis();
+        net.commitAll(1, put("a", "1"));
+        net.commitAll(2, put("b", "2"));
+        net.step();
+
+        return net;
+    }
+
+    /// The worker holds revision 3 (`c`) of 1/A; both cores stay at revision 2 of the same incarnation.
+    private static Net bothUplinksBehind() {
+        var net = new Net(2);
+        var ahead = new Net(1);
+
+        ahead.genesis();
+        ahead.commitAll(1, put("a", "1"));
+        ahead.commitAll(2, put("c", "3"));
+        net.genesis();
+        net.commitAll(1, put("a", "1"));
+
+        var image = ahead.core(0).store.captureReplicaSnapshot(ReplicaKeyFilter.includeAll()).unwrap();
+
+        net.applier.install(image.bytes(), image.tag(), image.revision(), image.anchor()).unwrap();
+
+        return net;
+    }
+
+    private static List<ReplicaSnapshotRequest> snapshotRequestsTo(Net net, ClientFixtures.Core core) {
+        return net.outbox.stream()
+                         .filter(out -> out.target().equals(core.id))
+                         .map(Out::message)
+                         .filter(ReplicaSnapshotRequest.class::isInstance)
+                         .map(ReplicaSnapshotRequest.class::cast)
+                         .toList();
+    }
+
+    private static long totalOfFirstChunkFrom(Net net, ClientFixtures.Core core) {
+        return net.fromCores.stream()
+                            .map(Out::message)
+                            .filter(ReplicaSnapshotChunk.class::isInstance)
+                            .map(ReplicaSnapshotChunk.class::cast)
+                            .filter(chunk -> chunk.sender().equals(core.id))
+                            .findFirst()
+                            .map(ReplicaSnapshotChunk::total)
+                            .orElseThrow();
+    }
+
+    /// Asks `core` for a new snapshot as `peer` and returns the first thing it answered.
+    private static ProtocolMessage firstAnswerTo(Net net, ClientFixtures.Core core, NodeId peer, long requestId) {
+        var before = net.fromCores.size();
+
+        core.server.onSnapshotRequest(new ReplicaSnapshotRequest(peer, requestId, IncarnationTag.NONE, 0L, "", 0L));
+
+        return net.fromCores.get(before).message();
+    }
+
+    /// Sends `request` to `core` and returns the refusal reasons it answered (nothing else may come back).
+    private static List<RefusalReason> answersTo(Net net, ClientFixtures.Core core, ReplicaSnapshotRequest request) {
+        var before = net.fromCores.size();
+
+        core.server.onSnapshotRequest(request);
+
+        return net.fromCores.subList(before, net.fromCores.size()).stream().map(out -> ((ReplicaRefused) out.message()).reason()).toList();
+    }
+
+    private static ReplicaSnapshotRequest release(NodeId peer, long requestId, ReplicaSnapshotChunk first) {
+        return releaseWithHash(peer, requestId, first, first.hash());
+    }
+
+    private static ReplicaSnapshotRequest releaseWithHash(NodeId peer, long requestId, ReplicaSnapshotChunk first, String hash) {
+        return new ReplicaSnapshotRequest(peer, requestId, first.tag(), first.revision(), hash, first.total());
+    }
+
+    /// Runs `windows` windows of 10 s in 100 ms steps and returns the snapshot requests the worker sent in each.
+    private static List<Long> requestsPerTenSeconds(Net net, int windows) {
+        return IntStream.range(0, windows).mapToObj(_ -> requestsInTenSeconds(net)).toList();
+    }
+
+    private static long requestsInTenSeconds(Net net) {
+        var before = net.snapshotRequests();
+
+        run(net, 100, 100);
+
+        return net.snapshotRequests() - before;
+    }
+
+    /// The gaps between successive subscribes longer than the 250 ms retry of one round (each is the 250 ms retry plus the backoff wait).
+    private static List<Long> backoffWaitsMillis(Net net) {
+        var times = IntStream.range(0, net.outbox.size())
+                             .filter(index -> net.outbox.get(index).message() instanceof ReplicaFeedMessage.ReplicaSubscribe)
+                             .mapToObj(net.sentAtNanos::get)
+                             .toList();
+
+        return IntStream.range(1, times.size())
+                        .mapToObj(index -> (times.get(index) - times.get(index - 1)) / 1_000_000L)
+                        .filter(gap -> gap > 400L)
+                        .toList();
     }
 
     private static boolean lastPublished(Net net) {
@@ -223,7 +378,8 @@ class ReplicaFeedClientTest {
     class LaggingSource {
         /// #3359 (twin #2776). The worker applied slot 3 from core-0, which then goes silent; core-1 lags (its frontier is behind the worker's:
         /// `AHEAD`), so the worker discards its position and is offered a snapshot of the SAME incarnation below what it applied. It refuses it, keeps its
-        /// state and revision, and leaves that source. Mutation: drop the floor check in `ReplicaApplier.install`, or the avoid in `ReplicaFeedClient.install`.
+        /// state and revision, and leaves that source. Mutation: admit every snapshot in `startTransfer`, or invert the revision comparison of
+        /// `ReplicaApplier.admits`.
         @Test
         void aLaggingCoresSnapshot_ofTheSameIncarnation_isRefused_andTheWorkerKeepsItsState() {
             var net = joined();
@@ -271,7 +427,7 @@ class ReplicaFeedClientTest {
         }
 
         /// Only a lagging source's snapshot makes the worker leave it: a snapshot that fails its hash is abandoned and the same current source is asked
-        /// again (unchanged by #3359). Mutation: avoid the source on every install failure (`cause instanceof SnapshotBehind` -> `true`).
+        /// again (unchanged by #3359). Mutation: avoid the source in `abandonTransfer` (on every failed transfer).
         @Test
         void aSnapshotThatFailsItsHash_doesNotMakeTheWorkerLeaveItsSource() {
             var net = new Net(2);
@@ -292,7 +448,7 @@ class ReplicaFeedClientTest {
     }
 
     /// The way out through another source: the refused source is avoided, so a core that is caught up is asked next although the lagging one was
-    /// the current source (the selector keeps the current source while it is not avoided). Mutation: drop `avoided.add` in `ReplicaFeedClient.installFailed`.
+    /// the current source (the selector keeps the current source while it is not avoided). Mutation: drop `avoided.add` in `ReplicaFeedClient.refuseSnapshot`.
     @Nested
     class LeavingTheLaggingSource {
         @Test
@@ -318,6 +474,187 @@ class ReplicaFeedClientTest {
             assertThat(net.valueOf("c")).isEqualTo("3");
             assertThat(net.clientStore.committedRevision()).isEqualTo(4);
             assertThat(net.installs.get()).as("its snapshot, at the applied revision, installed").isEqualTo(2);
+        }
+    }
+
+    /// #3359, the order rule at the first chunk (`ReplicaApplier.admits`): within one lineage the content never moves down in `(incarnation, revision)`;
+    /// between lineages, and between two ids of one number, there is no order.
+    @Nested
+    class OrderRule {
+        /// Probe P1 of the #3683 review: the worker follows 2/B from core-0; core-0 goes silent and core-1 is still at 1/A of the same lineage, so its
+        /// snapshot is older and is refused: the newer incarnation's key and revision stay, and the worker is not ready on it. Mutations: order by revision
+        /// alone (the 1/A snapshot carries no lower revision rule of its own); invert the incarnation comparison; admit every snapshot.
+        @Test
+        void anOlderIncarnationOfTheSameLineage_isRefused_andTheWorkerKeepsItsState() {
+            var net = followingTwoB();
+
+            net.core(0).up.set(false);
+            run(net, 20, 500);
+
+            assertThat(net.valueOf("c")).as("the newer incarnation's key stays").isEqualTo("3");
+            assertThat(net.clientStore.committedRevision()).as("the revision never moves down").isEqualTo(5);
+            assertThat(net.installs.get()).as("no older snapshot installed").isEqualTo(2);
+            assertThat(net.readiness.ready()).as("not ready while every source is behind").isFalse();
+        }
+
+        /// A fresh re-genesis starts another lineage at 1: the worker at 2/B installs 1/X of lineage M, although its number is LOWER. Mutations: order
+        /// by number alone; ignore the lineage.
+        @Test
+        void aLowerIncarnationOfAnotherLineage_installs() {
+            var net = joined();
+            var reborn = IncarnationTag.incarnationTag(1, "X", "M");
+
+            net.commitAll(3, incarnation(2, "B"));
+            run(net, 10, 500);
+            assertThat(net.applier.position().tag()).as("setup: the worker follows 2/B").isEqualTo(IncarnationTag.incarnationTag(2, "B", LINEAGE));
+
+            net.commitAll(4, incarnation(1, "X", "M"));
+            net.commitAll(5, put("z", "9"));
+            run(net, 10, 500);
+
+            assertThat(net.applier.position().tag()).isEqualTo(reborn);
+            assertThat(net.valueOf("z")).isEqualTo("9");
+        }
+
+        /// One number with two ids is unordered: the worker at 2/B (revision 5) installs core-1's 2/C at revision 4. Mutation: compare the number
+        /// instead of the whole tag before comparing revisions.
+        @Test
+        void theSameNumberWithAnotherId_installs_belowTheAppliedRevision() {
+            var net = joined();
+
+            net.commitOnlyOn(1, 3, incarnation(2, "C"));
+            net.commitOnlyOn(0, 3, incarnation(2, "B"));
+            net.commitOnlyOn(0, 4, put("c", "3"));
+            run(net, 20, 500);
+            assertThat(net.applier.position().tag()).as("setup: the worker follows 2/B").isEqualTo(IncarnationTag.incarnationTag(2, "B", LINEAGE));
+
+            net.core(0).up.set(false);
+            run(net, 20, 500);
+
+            assertThat(net.applier.position().tag()).isEqualTo(IncarnationTag.incarnationTag(2, "C", LINEAGE));
+            assertThat(net.clientStore.committedRevision()).isEqualTo(4);
+            assertThat(net.valueOf("c")).isEqualTo("<absent>");
+        }
+
+        /// Probe control of the #3683 review: the same incarnation from the lagging core does not regress over a long run either.
+        @Test
+        void theSameIncarnationBelowTheApplied_staysRefused_overALongRun() {
+            var net = joined();
+
+            net.commitOnlyOn(0, 3, put("c", "3"));
+            net.step();
+            net.core(0).up.set(false);
+            run(net, 20, 500);
+
+            assertThat(net.valueOf("c")).isEqualTo("3");
+            assertThat(net.clientStore.committedRevision()).isEqualTo(4);
+        }
+    }
+
+    /// #3359: a refusal happens on the snapshot's FIRST chunk, pulls no further byte, and gives the source's serve slot back at once.
+    @Nested
+    class RefusalAtTheFirstChunk {
+        /// The worker asks for no chunk past the first: its only further request to the lagging core is the release at `offset == total`. Mutation:
+        /// check the order after the last chunk (in `install`) instead of at the first.
+        @Test
+        void aMultiChunkSnapshot_isRefusedBeforeTheSecondChunk() {
+            var net = laggingAfterSilence(chunkedNet(1));
+            var requests = snapshotRequestsTo(net, net.core(1));
+            var total = totalOfFirstChunkFrom(net, net.core(1));
+
+            assertThat(total).as("setup: the snapshot spans several chunks").isGreaterThan(2L);
+            assertThat(requests.stream().map(ReplicaSnapshotRequest::offset).toList()).as("the first request, then the release").containsExactly(0L, total);
+            assertThat(net.valueOf("c")).isEqualTo("3");
+        }
+
+        /// With one serve slot, the release frees it at once: another transfer is served right after the refusal, not turned away `BUSY` until the
+        /// idle timeout. Mutations: do not send the release; do not free the slot on it.
+        @Test
+        void afterTheRefusal_theServeSlotIsFreeAtOnce() {
+            var net = laggingAfterSilence(chunkedNet(1));
+            var core = net.core(1);
+
+            assertThat(core.server.counters().get("replica_transfers")).as("no transfer held").isEqualTo(0L);
+            assertThat(firstAnswerTo(net, core, FeedFixtures.OTHER, 7)).as("a second transfer is served").isInstanceOf(ReplicaSnapshotChunk.class);
+        }
+
+        /// A release names its transfer by sender and request id and repeats its image: a release of another request id, of another sender, or with
+        /// another hash answers `EVICTED` and frees nothing; only the transfer's own release frees the slot, and it answers nothing. Mutations: free
+        /// without the same-image check; do not free on a release.
+        @Test
+        void aReleaseFreesOnlyItsOwnTransfer() {
+            var net = chunkedNet(1);
+            var core = net.core(1);
+            var first = (ReplicaSnapshotChunk) firstAnswerTo(net, core, FeedFixtures.OTHER, 1);
+
+            assertThat(answersTo(net, core, release(FeedFixtures.OTHER, 2, first))).as("another request id").containsExactly(RefusalReason.EVICTED);
+            assertThat(answersTo(net, core, release(FeedFixtures.THIRD, 1, first))).as("another sender").containsExactly(RefusalReason.EVICTED);
+            assertThat(answersTo(net, core, releaseWithHash(FeedFixtures.OTHER, 1, first, "0".repeat(64)))).as("another image")
+                    .containsExactly(RefusalReason.EVICTED);
+            assertThat(firstAnswerTo(net, core, FeedFixtures.THIRD, 9)).as("the slot is still held").isInstanceOf(ReplicaRefused.class);
+            assertThat(answersTo(net, core, release(FeedFixtures.OTHER, 1, first))).as("its own release answers nothing").isEmpty();
+            assertThat(firstAnswerTo(net, core, FeedFixtures.THIRD, 10)).as("and frees the slot").isInstanceOf(ReplicaSnapshotChunk.class);
+        }
+
+        /// A single-chunk snapshot sends nothing after the refusal: the source freed its slot with that chunk and would answer `EVICTED`. Mutation:
+        /// send the release also when the first chunk was the last.
+        @Test
+        void aSingleChunkRefusal_sendsNothingExtra() {
+            var net = laggingAfterSilence(joined());
+
+            assertThat(snapshotRequestsTo(net, net.core(1)).stream().map(ReplicaSnapshotRequest::offset).distinct().toList()).containsExactly(0L);
+            assertThat(net.fromCores.stream().map(Out::message).filter(ReplicaRefused.class::isInstance).map(ReplicaRefused.class::cast)
+                          .map(ReplicaRefused::reason)).as("no EVICTED back").doesNotContain(RefusalReason.EVICTED);
+        }
+    }
+
+    /// #3359 (probes P2 and P2b of the #3683 review): while every uplink stays behind, each refusal counts, so the waits grow to the 15 s cap with a
+    /// jitter that varies per attempt; the worker keeps its newer state, is not ready, and becomes ready once a source catches up.
+    @Nested
+    class EveryUplinkBehind {
+        /// Both uplinks answer and both lag (a lost tail of the same incarnation). Mutations: do not count the refusal; ignore the attempt in the
+        /// backoff seed.
+        @Test
+        void bothUplinksBehind_theWaitsGrow_withAJitterPerAttempt_andTheWorkerIsReadyOnceTheyCatchUp() {
+            var net = bothUplinksBehind();
+            var counts = requestsPerTenSeconds(net, 9);
+            var waits = backoffWaitsMillis(net);
+
+            System.out.println("#3359 both behind: snapshot requests per 10 s " + counts + ", waits " + waits);
+            assertThat(waits.getFirst()).as("the first wait draws from [0, 2 s]").isLessThanOrEqualTo(2_300L);
+            assertThat(waits.stream().mapToLong(Long::longValue).max().orElse(0L)).as("later waits grow past it").isGreaterThan(2_300L);
+            assertThat(waits.subList(2, waits.size()).stream().distinct().count()).as("waits at the cap differ").isGreaterThan(1L);
+            assertThat(counts.getLast()).as("far below the constant-rate loop").isLessThan(counts.getFirst());
+            assertThat(net.valueOf("c")).as("the newer state stays").isEqualTo("3");
+            assertThat(net.readiness.ready()).as("not ready while refused").isFalse();
+
+            net.commitAll(2, put("d", "4"));
+            net.commitAll(3, put("e", "5"));
+            run(net, 60, 500);
+
+            assertThat(net.clientStore.committedRevision()).isEqualTo(4);
+            assertThat(net.valueOf("d")).isEqualTo("4");
+            assertThat(net.readiness.ready()).as("ready once a source caught up").isTrue();
+        }
+
+        /// One uplink silent, the other behind: only the lagging one refuses, once per round, and the waits still grow. Mutation: do not count the
+        /// refusal.
+        @Test
+        void oneUplinkSilent_theOtherBehind_theWaitsGrow() {
+            var net = joined();
+
+            net.commitOnlyOn(0, 3, put("c", "3"));
+            net.step();
+            net.core(0).up.set(false);
+
+            var counts = requestsPerTenSeconds(net, 9);
+
+            System.out.println("#3359 one silent: snapshot requests per 10 s " + counts);
+            assertThat(counts.getLast()).isLessThan(counts.getFirst());
+            assertThat(counts.subList(3, counts.size()).stream().mapToLong(Long::longValue).sum()).as("at most one attempt per capped round")
+                    .isLessThanOrEqualTo(counts.size() - 3L);
+            assertThat(net.valueOf("c")).isEqualTo("3");
+            assertThat(net.readiness.ready()).isFalse();
         }
     }
 
