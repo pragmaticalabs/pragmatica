@@ -52,7 +52,7 @@ public class DependencyVersionResolver {
         }
 
         return listedCoordinates(interfaceFqn).map(coords -> parseCoordinates(dependency, coords))
-                                              .or(() -> fallbackResolve(dependency));
+                                .or(() -> fallbackResolve(dependency));
     }
 
     /// The compile-time refusal for a dependency that is classified as a slice dependency but carries
@@ -63,9 +63,7 @@ public class DependencyVersionResolver {
     /// assemble time on Terra and deploy time on Aether. The usual cause is a shared step interface
     /// that declares no static factory, which is therefore not recognised as a plain-interface step.
     public Option<String> notASlice(DependencyModel dependency) {
-        var carriesNoSliceEvidence = dependency.isSliceDependency()
-                            && !dependency.isSlice()
-                            && listedCoordinates(dependency.interfaceQualifiedName()).isEmpty();
+        var carriesNoSliceEvidence = dependency.isSliceDependency() && !dependency.isSlice() && listedCoordinates(dependency.interfaceQualifiedName()).isEmpty();
 
         return carriesNoSliceEvidence
                ? Option.some(notASliceMessage(dependency))
@@ -73,17 +71,17 @@ public class DependencyVersionResolver {
     }
 
     private static String notASliceMessage(DependencyModel dependency) {
-        return "Dependency parameter '" + dependency.parameterName() + "' of type '"
-               + dependency.interfaceQualifiedName() + "' is not a slice: it is not annotated @Slice, it is not"
-               + " listed in slice-deps.properties, it is not a resource and it declares no static factory method '"
-               + FactoryClassGenerator.lowercaseFirst(dependency.interfaceSimpleName())
-               + "' (which would make it a plain-interface step)";
+        return "Dependency parameter '" + dependency.parameterName()
+             + "' of type '" + dependency.interfaceQualifiedName()
+             + "' is not a slice: it is not annotated @Slice, it is not"
+             + " listed in slice-deps.properties, it is not a resource and it declares no static factory method '" + FactoryClassGenerator.lowercaseFirst(dependency.interfaceSimpleName())
+             + "' (which would make it a plain-interface step)";
     }
 
     private Option<String> listedCoordinates(String interfaceFqn) {
         // Lookup by interface FQN, then with the .api segment removed (interface in an api subpackage)
-        return Option.option(sliceDeps.getProperty(interfaceFqn))
-                     .orElse(() -> Option.option(sliceDeps.getProperty(interfaceFqn.replace(".api.", "."))));
+        return Option.option(sliceDeps.getProperty(interfaceFqn)).orElse(() -> Option.option(sliceDeps.getProperty(interfaceFqn.replace(".api.",
+                                                                                                                                        "."))));
     }
 
     private DependencyModel parseCoordinates(DependencyModel dependency, String coords) {

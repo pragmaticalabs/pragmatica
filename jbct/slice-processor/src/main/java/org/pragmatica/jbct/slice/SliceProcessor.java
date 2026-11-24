@@ -192,7 +192,8 @@ public class SliceProcessor extends AbstractProcessor {
                                    Set<? extends Element> roundRoots) {
         var notSlices = sliceModel.dependencies()
                                   .stream()
-                                  .flatMap(dependency -> versionResolver.notASlice(dependency).stream())
+                                  .flatMap(dependency -> versionResolver.notASlice(dependency)
+                                                                        .stream())
                                   .toList();
 
         if (!notSlices.isEmpty()) {
