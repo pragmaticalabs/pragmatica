@@ -197,10 +197,9 @@ class DatabaseApplicationsIT {
         try {
             assertThat(app.migrations()).hasSize(2);
             var orders = app.slice(org.pragmatica.aether.example.comprehensive.OrderSlice.class).unwrap();
-            // Original CustomerRow uses Instant for nullable deleted_at; retain its explicit
-            // mapping failure instead of silently inventing a value or changing slice sources.
-            assertThat(orders.customer(1L).await(timeSpan(10).seconds()).<String>fold(cause -> cause.message(), _ -> "unexpected success"))
-                .contains("deleted_at");
+            // CustomerRow reads the nullable deleted_at as Option<Instant> (#2795): the seeded customer, whose
+            // deleted_at is NULL, decodes with an empty Option instead of failing the row mapper.
+            assertThat(orders.customer(1L).await(timeSpan(10).seconds()).unwrap().isPresent()).isTrue();
             execute("UPDATE products SET tags=ARRAY['terra'] WHERE id=1");
             assertThat(orders.productsWithTag("terra").await(timeSpan(10).seconds()).unwrap()).hasSize(1);
             assertThat(orders.snapshotCount().await(timeSpan(10).seconds()).unwrap()).isZero();

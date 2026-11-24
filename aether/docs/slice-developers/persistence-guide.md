@@ -273,12 +273,18 @@ subquery, not in `HAVING`, not in an outer join's `ON`, and a predicate on an ex
 `Option<T>` record component on a PROVEN non-null output fails the build, naming the method, the output, the proof (the
 rule above that fired) and the fix (declare the plain `T`); declared types match proven nullability in both directions,
 and an output that is not proven may still be read into `Option<T>`. A scalar or `@Jsonb` single-output method reads its value through a non-nullable accessor,
-so `Promise<Option<T>>` (row optional) does not make a NULL value acceptable; use `COALESCE`. CRUD-generated methods
-are not analysed. An unaliased output is matched under the name PostgreSQL gives it (`max(total)` is `max`,
+so `Promise<Option<T>>` (row optional) does not make a NULL value acceptable; use `COALESCE`. An unaliased output is matched under the name PostgreSQL gives it (`max(total)` is `max`,
 `col::text` is `col`), and an output with no certain name is treated as possibly read by any field no named output
 covers. `SELECT *` over a derived table or CTE carries each inner output's nullability; when the columns cannot be
 listed, every field is unproven. A name that appears twice in the select list and is read by a record component is
 a build error (alias the outputs distinctly).
+
+A CRUD-generated method (no `@Query`) is checked per column (#2795): a record component that reads a NULLABLE table
+column and is not an `Option<T>` fails the build, naming the method, the column, the component and the fix (declare
+`Option<T>`, or declare the column `NOT NULL`). The check is on the column, not on the generated statement, because one
+record serves every CRUD method of its table (`findByDeletedAtIsNotNull` does not make `deleted_at` non-null for
+`findById`); an `Option<T>` component on a NOT NULL column is accepted on CRUD methods. A generated, stored column is
+treated as NOT NULL by the schema model.
 
 ## JSON Documents (`json` / `jsonb`)
 
