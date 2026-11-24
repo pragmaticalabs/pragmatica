@@ -37,7 +37,9 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// #946, multi-node: `GET /api/events` read-back (`ANY_REPLICA`) answers from a node that is up while every peer it would
 /// have selected is dead.
 ///
-/// Three real nodes, one partition at the default replication (RF 3): the committed in-sync set is all three. Records are
+/// Five real nodes, one partition at the default replication (RF 3): the committed in-sync set is three of them. Five, not
+/// three, so that killing both peers leaves a consensus majority: the owner's local read needs a valid node lease, and a
+/// 3-node cluster that lost two nodes has no quorum to renew it ("owner admission paused"), which fails the read for a reason that is not #946. Records are
 /// acknowledged first, and the owner -- the node whose replica registry lists the other two as caught-up peers -- serves them through the router (the control: the instrument can see
 /// the records and the router reaches them). Then both other nodes are killed -- the survivor's registry still lists them as
 /// caught-up peers, which is the state a degraded cluster is in until membership catches up -- and the survivor is read again
@@ -45,7 +47,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// forwarded to a dead peer, retried the other, and surfaced the failure.
 @PortBudget
 class EmberAnyReplicaReadFallbackTest {
-    private static final int CLUSTER_SIZE = 3;
+    private static final int CLUSTER_SIZE = 5;
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
@@ -89,7 +91,7 @@ class EmberAnyReplicaReadFallbackTest {
     @Test
     @Timeout(600)
     void anyReplicaRead_isServedFromTheSurvivingCopy_whenEveryCaughtUpPeerIsDead() {
-        cluster = EmberTestPorts.startedCluster(PORTS, this::threeNodes, START_BOUND);
+        cluster = EmberTestPorts.startedCluster(PORTS, this::clusterNodes, START_BOUND);
         awaitLeader();
         assertThat(post(leaderPort(), "/api/v1/streams/" + NAMESPACE + "/anyreplica/" + VERSION, "{\"partitions\":1}").acked()).isTrue();
 
@@ -202,7 +204,7 @@ class EmberAnyReplicaReadFallbackTest {
                : Option.none();
     }
 
-    private EmberCluster threeNodes(int basePort) {
+    private EmberCluster clusterNodes(int basePort) {
         var built = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "anyreplica");
 
         built.withDataBaseDir(dataDir);
