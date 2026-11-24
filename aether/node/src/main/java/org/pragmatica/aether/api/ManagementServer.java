@@ -1478,22 +1478,26 @@ class ManagementServerImpl implements ManagementServer {
     /// #1921: a forwarded route is validated BEFORE it leaves this node. A node id, partition or stream address the caller got
     /// wrong resolves no target, and the forwarder reports that as "owner unresolved" or "invalid node id", which
     /// `sendForwardError` surfaces as 503: the cluster is unavailable, when the request was malformed. FORM only: a well-formed id
-    /// that names no connected node is still the forwarder's 503, because that is a statement about the cluster.
+    /// the roster does not list is #1964's 404 ([#unknownClusterMember]); one it lists but this node is not connected to is still the forwarder's 503,
+    /// because that is a statement about the cluster.
     private boolean refuseMalformedForwardParams(HttpRequest ctx,
                                                  InstrumentedResponseWriter response,
                                                  String methodName,
                                                  long startTime,
                                                  MatchedRoute matched) {
         return malformedForwardParam(matched).fold(() -> false,
-                                                   cause -> {
-                                                       ProblemResponses.writeProblem(response,
-                                                                                     cause,
-                                                                                     ctx.path(),
-                                                                                     ctx.requestId());
-                                                       recordRequestMetrics(methodName, ctx.path(), response, startTime);
+                                                   cause -> refuseForward(ctx, response, methodName, startTime, cause));
+    }
 
-                                                       return true;
-                                                   });
+    private boolean refuseForward(HttpRequest ctx,
+                                  InstrumentedResponseWriter response,
+                                  String methodName,
+                                  long startTime,
+                                  Cause cause) {
+        ProblemResponses.writeProblem(response, cause, ctx.path(), ctx.requestId());
+        recordRequestMetrics(methodName, ctx.path(), response, startTime);
+
+        return true;
     }
 
     /// Package-visible pure decision behind [#refuseMalformedForwardParams], like [#answersPartitionLocally].
@@ -1617,9 +1621,41 @@ class ManagementServerImpl implements ManagementServer {
             return false;
         }
 
+        return unknownClusterMember(targetId, node).fold(() -> forwardAndHandled(ctx, response, methodName, startTime),
+                                                         cause -> refuseForward(ctx,
+                                                                                response,
+                                                                                methodName,
+                                                                                startTime,
+                                                                                cause));
+    }
+
+    private boolean forwardAndHandled(HttpRequest ctx,
+                                      InstrumentedResponseWriter response,
+                                      String methodName,
+                                      long startTime) {
         forwardManagementRequest(ctx, response, methodName, startTime);
 
         return true;
+    }
+
+    /// #1964, CTO ruling (guess, s55): roster = `membershipFsm().memberStates()`, the roster `NodeReplacementWiring` reads for
+    /// `UnknownNode`. A well-formed id the roster does not list is no cluster member: 404, decided before the forwarder, which sees
+    /// only connected peers and so cannot tell it from a listed member that is down. A listed id, DEAD included, still reaches the
+    /// forwarder and its 503 `targetDisconnected`. A node whose roster is scoped (a worker) cannot call an absent id unknown, so it
+    /// keeps the forwarder's answer; what a worker answers for another worker's id is a follow-up. Package-visible like [#malformedForwardParam].
+    static Option<Cause> unknownClusterMember(String targetId, ManageableNode node) {
+        return node.hasCompleteClusterView()
+               ? NodeId.nodeId(targetId).fold(_ -> Option.<Cause> none(),
+                                              id -> notListed(id,
+                                                              node.membershipFsm().memberStates()))
+               : Option.<Cause> none();
+    }
+
+    private static Option<Cause> notListed(NodeId id, Map<NodeId, String> roster) {
+        return roster.containsKey(id)
+               ? Option.<Cause> none()
+               : Option.<Cause> some(new ManagementServerError.NotFound("Unknown node '" + id.id()
+                                                                       + "': not a cluster member"));
     }
 
     /// Forward unless THIS node is the partition's HRW owner (#1039). Short-circuits only the one case
