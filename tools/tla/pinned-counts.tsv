@@ -23,6 +23,8 @@ LeaderAdmission	readmit	small	33529	new row (#3588 finding A and F1): the code a
 LeaderAdmission	readmit	full	6877278	new row (#3588 finding A and F1): the code at f375d8ad8e + #3588 model, full MaxSeq=5 EnvSteps=5 MaxCommits=3 (TLC 2026-11-24, cloudbb-6)
 DHTDepartureDrain	code	small	5208872	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
 DHTDepartureDrain	live	small	4729016	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580); the row is heavy since #3627, so small no longer runs it and this pin is not checked: kept as the count at N=3,RF=2 (re-measured equal at 8adf0f4d83, #3627)
+DHTDepartureDrain	livesmall	small	89590	new row (#3647): TLC 2026-11-24 on cloudbb-7, N=3,RF=2,MaxDrain=1 (the code at 8adf0f4d83 model)
+DHTDepartureDrain	livecodrain	small	129902	new row (#3647): TLC 2026-11-24 on cloudbb-7, N=3,RF=2,MaxStale=0 (equals removed/small: same reachable states, a different property)
 DHTDepartureDrain	flaplive	small	90350	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
 DHTDepartureDrain	removed	small	129902	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)
 DHTDepartureDrain	wideaccept	small	5699456	pass row of the merge-round model (Replan, exit, revoke); two runs agree (ccbd46a7d1 and the known-bad restore, PR #3580)

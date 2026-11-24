@@ -400,6 +400,24 @@
 /// PROPERTY DrainCompletes
 /// ```
 ///
+/// ```tlacfg DHTDepartureDrain:livesmall
+/// CONSTANTS Waves = FALSE
+///           Deadline = FALSE
+///           HaltFair = TRUE
+///           Flap = "peer"
+///           Fixed <- AllFixes
+/// PROPERTY DrainCompletes
+/// ```
+///
+/// ```tlacfg DHTDepartureDrain:livecodrain
+/// CONSTANTS Waves = FALSE
+///           Deadline = FALSE
+///           HaltFair = TRUE
+///           Flap = "peer"
+///           Fixed <- AllFixes
+/// PROPERTY DrainCompletes
+/// ```
+///
 /// ```tlacfg DHTDepartureDrain:flaplive
 /// CONSTANTS Waves = FALSE
 ///           Deadline = FALSE
