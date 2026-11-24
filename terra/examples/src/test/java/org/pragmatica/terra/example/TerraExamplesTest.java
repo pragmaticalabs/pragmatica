@@ -6,6 +6,8 @@ package org.pragmatica.terra.example;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.example.catalog.Catalog;
 import org.pragmatica.aether.example.catalog.CatalogRoutes;
@@ -89,14 +91,23 @@ class TerraExamplesTest {
         assertThat(started.isFailure()).as("start must refuse the dht-backed cache section").isTrue();
         var cause = started.fold(c -> c, _ -> null);
         assertThat(chain(cause)).contains("cache.calls", "'dht'", "'calls'", "TERRA");
-        assertThat(anyInChain(cause, BackendUnavailable.class)).isTrue();
+        assertThat(anyInChain(cause, BackendUnavailable.class)).as("chain types: " + chainTypes(cause)).isTrue();
     }
 
     private static String chain(Cause cause) {
         return cause.message() + cause.source().map(TerraExamplesTest::chain).map(next -> " <- " + next).or("");
     }
 
+    private static Stream<Cause> descendants(Cause cause) {
+        return Stream.concat(cause.source().stream(), cause.stream().filter(member -> member != cause))
+                     .flatMap(next -> Stream.concat(Stream.of(next), descendants(next)));
+    }
+
+    private static String chainTypes(Cause cause) {
+        return Stream.concat(Stream.of(cause), descendants(cause)).map(c -> c.getClass().getName()).collect(Collectors.joining(" > "));
+    }
+
     private static boolean anyInChain(Cause cause, Class<?> type) {
-        return type.isInstance(cause) || cause.source().map(next -> anyInChain(next, type)).or(false);
+        return Stream.concat(Stream.of(cause), descendants(cause)).anyMatch(type::isInstance);
     }
 }

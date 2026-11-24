@@ -57,8 +57,17 @@ class CacheBackendsTest {
 
         @Test
         void dhtCacheOnAether_honoursTheBackendContract_inTheCacheNamespace() {
-            assertHonoursContract(cacheBackend(cache(CacheMode.DISTRIBUTED, none()), aether));
+            var backend = cacheBackend(cache(CacheMode.DISTRIBUTED, none()), aether);
+
+            backend.put("k", "v")
+                   .await()
+                   .unwrap();
+
+            // Checked after a put and before the contract removes the entry: an emptiness check taken after the contract
+            // run holds for either namespace (m5-idem-client survived exactly that vacuous form).
+            assertThat(cacheNamespace.storage).isNotEmpty();
             assertThat(replicated.storage).isEmpty();
+            assertHonoursContract(backend);
         }
 
         @Test
@@ -68,8 +77,15 @@ class CacheBackendsTest {
 
         @Test
         void dhtIdempotencyOnAether_honoursTheBackendContract_inTheReplicatedDht() {
-            assertHonoursContract(cacheBackend(idempotency(CacheMode.DISTRIBUTED, none()), aether));
+            var backend = cacheBackend(idempotency(CacheMode.DISTRIBUTED, none()), aether);
+
+            backend.put("k", "v")
+                   .await()
+                   .unwrap();
+
+            assertThat(replicated.storage).isNotEmpty();
             assertThat(cacheNamespace.storage).isEmpty();
+            assertHonoursContract(backend);
         }
 
         @Test
