@@ -179,6 +179,7 @@ public class RabiaEngine<C extends Command> {
     private final AtomicReference<ScheduledFuture<?>> genesisTimer = new AtomicReference<>();
     /// Seats this node raised [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for and has not closed yet (#1654).
     private final Set<NodeId> unreachableGenesisSeats = ConcurrentHashMap.newKeySet();
+
     /// The remedy sentence of the seat warning (#1654), read once at the raise and never again: the warning is true in the auto-heal
     /// state it was raised in. The node binds it to its live auto-heal state ([#useGenesisSeatRemedy]); until then it names no state.
     private final AtomicReference<Supplier<String>> genesisSeatRemedy = new AtomicReference<>(() -> UNBOUND_SEAT_REMEDY);
