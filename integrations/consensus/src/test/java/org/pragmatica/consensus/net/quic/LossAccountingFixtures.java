@@ -17,6 +17,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
@@ -66,6 +67,16 @@ final class LossAccountingFixtures {
     /// For every test whose subject is not the give-up; a test whose subject is the give-up names its own short budget.
     static QuicClusterNetwork networkWithoutGiveUp(TimeSpan interval) {
         return network((int) (NO_GIVE_UP_BUDGET.nanos() / interval.nanos()), interval);
+    }
+
+    /// The race of #3686 made certain: the calling thread stalls for `stall` (a scheduler stall; pass a multiple of the
+    /// fixture's budget). A test whose assertion a give-up can undo fails here on a fixture that gives up, on any host.
+    static void stallFor(TimeSpan stall) {
+        var until = System.nanoTime() + stall.nanos();
+
+        for (var left = until - System.nanoTime(); left > 0; left = until - System.nanoTime()) {
+            LockSupport.parkNanos(left);
+        }
     }
 
     static QuicClusterNetwork network(Serializer serializer, TimeSpan interval) {
