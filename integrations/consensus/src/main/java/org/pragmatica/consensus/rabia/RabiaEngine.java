@@ -863,7 +863,8 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Test seam (#1654 Ember): the genesis members whose last two reports this pending node holds as consecutive rounds of its own view.
-    /// Empty once genesis agreement is gone and for a node that never ran one. Read-only snapshot, safe from any thread.
+    /// Empty for a node that never ran one. The agreement is never cleared: after genesis is installed the snapshot stays frozen at its last
+    /// value, so it says nothing about a node that is no longer genesis-pending. Read-only snapshot, safe from any thread.
     public Set<NodeId> genesisStableReporters() {
         return genesisAgreement.map(GenesisViewAgreement::stableReporters)
                                .or(Set.of());

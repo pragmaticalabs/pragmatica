@@ -84,7 +84,7 @@ class EmberGenesisSeatUnreachableTest {
         var summary = unreachableEvents().getFirst().summary();
 
         assertThat(summary).as("the message names the seat, the effect on formation and the heal-on remedy (the auto-heal state at the raise: the key is absent at genesis, so on)")
-                           .contains(DEAD_SEAT, "Formation is not blocked", "Auto-heal is on", "within 75 s", "Operator action")
+                           .contains(DEAD_SEAT, "Formation is not blocked", "Auto-heal is on", "within ~75 s", "Operator action")
                            .doesNotContain("Auto-heal is off");
         assertThat(cluster.getNode(DEAD_SEAT).isEmpty()).as("the seat never came back").isTrue();
     }

@@ -260,7 +260,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     /// Test seam (#1654 Ember): genesis members whose last two reports this pending node holds as consecutive rounds of its own view.
     /// Read-only diagnostic for tests: it is not a consensus decision input and nothing in the protocol reads it.
-    /// Empty for a node that is not genesis-pending or whose engine is a test double.
+    /// Empty for a node that never ran a genesis agreement or whose engine is a test double. After genesis is installed the snapshot stays
+    /// frozen at its last value: it does not turn empty.
     default Set<NodeId> genesisStableReporters() {
         return Set.of();
     }

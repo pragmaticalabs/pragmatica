@@ -11,15 +11,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.node.GenesisSeatRemedy.genesisSeatRemedy;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// #1654: the remedy sentence of the dead-seat warning is true in both auto-heal states. Each arm pins its own text; the two must differ,
-/// so a binding that swaps the arms or ignores the state fails here.
+/// #1654: the remedy sentence of the dead-seat warning is true in every state. Each of the three arms (provider with auto-heal on, provider
+/// with auto-heal off, no provider) pins its own text; the arms must differ, so a binding that swaps them or ignores a state fails here.
 class GenesisSeatRemedyTest {
     @Test
-    void autoHealOn_namesTheReplacementBound_andNoManualToggle() {
-        var text = genesisSeatRemedy(true, AutoHealConfig.DEFAULT);
+    void autoHealOn_namesTheReplacementEstimate_andNoManualToggle() {
+        var text = genesisSeatRemedy(true, true, AutoHealConfig.DEFAULT);
 
-        assertThat(text).contains("Auto-heal is on", "replacement core is expected", "within 75 s")
-                        .doesNotContain("no replacement will be provisioned", "auto-heal/enable");
+        assertThat(text).contains("Auto-heal is on", "replacement core is typically expected", "within ~75 s", "an estimate, not a deadline")
+                        .doesNotContain("no replacement will be provisioned", "auto-heal/enable", "No compute provider");
     }
 
     @Test
@@ -27,14 +27,30 @@ class GenesisSeatRemedyTest {
         var config = AutoHealConfig.DEFAULT.withStartupCooldown(timeSpan(5).seconds())
                                            .withProvisioningTimeout(timeSpan(20).seconds());
 
-        assertThat(genesisSeatRemedy(true, config)).contains("within 25 s");
+        assertThat(genesisSeatRemedy(true, true, config)).contains("within ~25 s");
     }
 
     @Test
     void autoHealOff_saysNoReplacementComes_andNamesTheManualRemedy() {
-        var text = genesisSeatRemedy(false, AutoHealConfig.DEFAULT);
+        var text = genesisSeatRemedy(false, true, AutoHealConfig.DEFAULT);
 
         assertThat(text).contains("Auto-heal is off", "no replacement will be provisioned", "restart that node", "POST /api/cluster/topology/auto-heal/enable")
-                        .doesNotContain("replacement core is expected");
+                        .doesNotContain("replacement core is typically expected", "No compute provider");
+    }
+
+    @Test
+    void noProvider_withAutoHealOn_promisesNoReplacement_andNamesTheRemedies() {
+        var text = genesisSeatRemedy(true, false, AutoHealConfig.DEFAULT);
+
+        assertThat(text).contains("No compute provider is available", "no replacement can be provisioned", "restart that node", "configure a compute provider")
+                        .doesNotContain("replacement core is typically expected", "within ~");
+    }
+
+    @Test
+    void noProvider_withAutoHealOff_isTheSameArm_andDoesNotOfferAnEnableThatCannotHelp() {
+        var text = genesisSeatRemedy(false, false, AutoHealConfig.DEFAULT);
+
+        assertThat(text).isEqualTo(genesisSeatRemedy(true, false, AutoHealConfig.DEFAULT))
+                        .doesNotContain("auto-heal/enable", "replacement core is typically expected");
     }
 }

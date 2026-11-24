@@ -9,14 +9,22 @@ import java.util.concurrent.TimeUnit;
 import org.pragmatica.aether.environment.AutoHealConfig;
 
 
-/// The remedy sentence of the `genesis-seat-unreachable` operator warning (#1654), true in BOTH auto-heal states. The consensus engine
-/// reads it once, when it raises the warning, from the node's live auto-heal state (`RabiaNode#useGenesisSeatRemedy`); it is never
-/// raised again when the state changes later.
+/// The remedy sentence of the `genesis-seat-unreachable` operator warning (#1654), true in EVERY auto-heal and provider state. The consensus
+/// engine reads it once, when it raises the warning, from the node's live state (`RabiaNode#useGenesisSeatRemedy`); it is never raised
+/// again when the state changes later.
 ///
-/// - Auto-heal on: a replacement is expected within the bound the config sets, startup cooldown plus provisioning timeout.
-/// - Auto-heal off: no replacement can come; the manual remedies are named.
+/// - No compute provider (the node can provision nothing, whatever the auto-heal state): no replacement can come; the remedies are named.
+/// - Provider present, auto-heal on: a replacement is expected, within an estimate the config sets (startup cooldown plus provisioning
+///   timeout; the reconcile tick, join and voter swap come on top).
+/// - Provider present, auto-heal off: no replacement can come; the manual remedies are named.
 public interface GenesisSeatRemedy {
-    static String genesisSeatRemedy(boolean autoHealEnabled, AutoHealConfig config) {
+    static String genesisSeatRemedy(boolean autoHealEnabled, boolean providerPresent, AutoHealConfig config) {
+        return providerPresent
+               ? autoHealArm(autoHealEnabled, config)
+               : noProvider();
+    }
+
+    private static String autoHealArm(boolean autoHealEnabled, AutoHealConfig config) {
         return autoHealEnabled
                ? autoHealOn(config)
                : autoHealOff();
@@ -26,12 +34,19 @@ public interface GenesisSeatRemedy {
         var boundSeconds = TimeUnit.NANOSECONDS.toSeconds(config.startupCooldown().nanos() + config.provisioningTimeout()
                                                                                                    .nanos());
 
-        return "Auto-heal is on: a replacement core is expected to take the seat within " + boundSeconds
-             + " s (startup cooldown plus provisioning timeout). Operator action: if the seat has not been replaced by then, check that node (#1654).";
+        return "Auto-heal is on: a replacement core is typically expected to take the seat within ~" + boundSeconds
+             + " s (startup cooldown plus provisioning timeout; an estimate, not a deadline: the reconcile tick, join and voter swap come on top). "
+             + "Operator action: if the seat has not been replaced well after that, check that node (#1654).";
     }
 
     private static String autoHealOff() {
         return "Auto-heal is off: no replacement will be provisioned. Operator action: restart that node, or enable auto-heal "
              + "(POST /api/cluster/topology/auto-heal/enable) so a replacement is provisioned (#1654).";
+    }
+
+    private static String noProvider() {
+        return "No compute provider is available (no local compute integration and no committed cluster source), so no replacement can be "
+             + "provisioned whatever the auto-heal state. Operator action: restart that node, or configure a compute provider (a cluster source) "
+             + "and keep auto-heal enabled so a replacement is provisioned (#1654).";
     }
 }

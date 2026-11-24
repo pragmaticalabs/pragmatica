@@ -107,25 +107,29 @@ final class GenesisViewAgreement {
         return new Report(round, view);
     }
 
-    /// Records one announcement from `sender` and merges its view.
+    /// Records one announcement from `sender` and merges its view. A report of a round already held is dropped, but its view is still
+    /// merged, so the stable-reporter snapshot is republished on that path too.
     Unit receive(NodeId sender, long senderRound, Set<NodeId> senderView) {
         merge(senderView);
         merge(Set.of(sender));
         var history = reports.computeIfAbsent(sender, _ -> new ArrayList<>());
 
-        if (history.stream().anyMatch(report -> report.round() >= senderRound)) {
-            return Unit.unit();
+        if (history.stream().noneMatch(report -> report.round() >= senderRound)) {
+            accept(history, senderRound, senderView);
         }
 
+        publishStableReporters();
+
+        return Unit.unit();
+    }
+
+    private void accept(List<Report> history, long senderRound, Set<NodeId> senderView) {
         history.add(new Report(senderRound, Set.copyOf(senderView)));
         if (history.size() > 2) {
             history.removeFirst();
         }
 
         evaluate();
-        publishStableReporters();
-
-        return Unit.unit();
     }
 
     Option<Set<NodeId>> agreed() {
