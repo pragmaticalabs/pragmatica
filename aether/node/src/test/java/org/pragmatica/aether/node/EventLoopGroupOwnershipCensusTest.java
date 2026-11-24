@@ -40,7 +40,7 @@ class EventLoopGroupOwnershipCensusTest {
     static final int FILE_FLOOR = 1500;
     static final String ALLOW_LIST = "event-loop-group-allowlist.txt";
 
-    static final Pattern CREATION = Pattern.compile("\\bnew\\s+(?:\\w*EventLoopGroup|\\w*EventLoop|(?:Nio|Epoll|KQueue|IoUring)\\w*)\\s*(?:<[^>]*>)?\\(");
+    static final Pattern CREATION = Pattern.compile("\\bnew\\s+(?:\\w+\\.)*(?:\\w*EventLoopGroup|\\w*EventLoop|(?:Nio|Epoll|KQueue|IoUring)\\w*)\\s*(?:<[^>]*>)?\\(");
 
     static final Pattern PENDING = Pattern.compile("pending #3635 quic:(\\S+)");
 
@@ -78,6 +78,7 @@ class EventLoopGroupOwnershipCensusTest {
             assertThat(sites("class A { Object f() { return new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory()); } }")).isEqualTo(1);
             assertThat(sites("class A { Object f() { return supply(() -> new MultiThreadIoEventLoopGroup(1, f)); } }")).isEqualTo(1);
             assertThat(sites("class A { Object f() { return new EpollEventLoopGroup(); } }")).isEqualTo(1);
+            assertThat(sites("class A { Object f() { return new io.netty.channel.nio.NioEventLoopGroup(1); } }")).isEqualTo(1);
             assertThat(sites("class A { Object f() { var a = new MultiThreadIoEventLoopGroup(1, f); var b = new MultiThreadIoEventLoopGroup(f); } }")).isEqualTo(2);
         }
 
