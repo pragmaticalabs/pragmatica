@@ -25,6 +25,7 @@ import static org.pragmatica.jbct.lint.cst.RunOutcome.Linted.linted;
 import static org.pragmatica.jbct.lint.cst.RunOutcome.NotAsked.notAsked;
 import static org.pragmatica.jbct.lint.cst.RunOutcome.ParseFailed.parseFailed;
 import static org.pragmatica.jbct.lint.cst.RunOutcome.ReadFailed.readFailed;
+import static org.pragmatica.jbct.lint.cst.RunOutcome.Refused.refused;
 import static org.pragmatica.jbct.lint.cst.RunOutcome.Rewritten.rewritten;
 import static org.pragmatica.jbct.lint.cst.RunOutcome.SkippedByMode.skippedByMode;
 import static org.pragmatica.jbct.lint.cst.RunOutcome.Unchanged.unchanged;
@@ -42,7 +43,8 @@ import static org.pragmatica.lang.Option.some;
 /// activity of the file. Each outcome is built from the value its action returned, after the action: `Rewritten`
 /// means the content derived from the single read was written and the write returned success; it does not assert
 /// that the file was unchanged in between (the write is `Files.writeString`, neither atomic nor compare-before-write).
-/// After a successful parse only the write can fail: lint and format of a parsed tree return no failure value.
+/// After a successful parse the write can fail and the formatter's content guard can refuse the file (`Refused`, #3691: the
+/// file is left untouched); lint of a parsed tree returns no failure value.
 ///
 /// `Withheld` is recorded when the invocation withholds the format on lint errors (`process` with
 /// `failBeforeFormat`) and the file's lint outcome holds a diagnostic of severity ERROR; the decision is taken after
@@ -152,7 +154,9 @@ record FileAction(ResolvedRoot root,
     private FormatOutcome formatted(Cursor tree, SourceFile source, LintOutcome lint) {
         return withholds(lint)
                ? withheld()
-               : compared(source, formatter.formatParsed(tree, source));
+               : formatter.formatParsed(tree, source)
+                          .<FormatOutcome> fold(cause -> refused(cause.message()),
+                                                formatted -> compared(source, formatted));
     }
 
     private boolean withholds(LintOutcome lint) {
