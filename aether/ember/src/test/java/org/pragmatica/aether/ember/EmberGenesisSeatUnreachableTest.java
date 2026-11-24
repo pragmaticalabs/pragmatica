@@ -50,6 +50,9 @@ class EmberGenesisSeatUnreachableTest {
     private static final String PREFIX = "gsu";
     private static final String DEAD_SEAT = PREFIX + "-1";
     private static final String UNREACHABLE_CODE = "genesis-seat-unreachable";
+    private static final String CLOSED_CODE = "genesis-seat-reachable";
+    private static final Set<String> GENESIS_IDS = Set.of(PREFIX + "-1", PREFIX + "-2", PREFIX + "-3");
+    private static final long HEAL_BOUND_MS = 240_000L;
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final long PENDING_SETTLE_MS = 5_000L;
@@ -79,7 +82,53 @@ class EmberGenesisSeatUnreachableTest {
 
         assertThat(summary).as("the message names the seat, the effect on formation and the remedy")
                            .contains(DEAD_SEAT, "Formation is not blocked", "auto-heal", "Operator action");
-        assertThat(cluster.getNode(DEAD_SEAT)).as("the seat never came back").isEmpty();
+        assertThat(cluster.getNode(DEAD_SEAT).isEmpty()).as("the seat never came back").isTrue();
+    }
+
+    /// Ask 2 of #1654: the seat that is dead from genesis is not kept for ever. Auto-heal provisions a replacement core, the voter
+    /// reconciler swaps it into the dead seat's slot (one out, one in, never a shrink), and the warning is closed with
+    /// `genesis-seat-reachable` because the seat left the roster. Bounded like the post-formation heal of [EmberVoterHealTest].
+    @Test
+    @Timeout(900)
+    void anAgreedSeatThatNeverConnects_isReplacedByAutoHeal_withinTheBound() {
+        startTwoPendingCores();
+        assertThat(cluster.killNode(DEAD_SEAT, false).await(STOP_BOUND).isSuccess()).as("the seat's process is killed while pending").isTrue();
+        assertThat(cluster.startHeldBackNodes().await(START_BOUND).isSuccess()).as("the late core starts").isTrue();
+        awaitCondition("the two live cores install a three-seat roster that still names the dead seat", this::liveCoresFormedWithDeadSeat);
+
+        var started = System.currentTimeMillis();
+
+        awaitCondition(HEAL_BOUND_MS,
+                       "a core that was not in the genesis roster replaces the dead seat: three voters, the dead seat gone",
+                       this::deadSeatReplaced);
+        System.out.println("EmberGenesisSeatUnreachableTest: replaced in " + (System.currentTimeMillis() - started) + " ms; voters="
+                           + EmberNodeReplacementTest.installedVoters(cluster.allNodes().getFirst()));
+        awaitCondition("the warning is closed because the seat left the roster", () -> closedSubjects().contains(DEAD_SEAT));
+    }
+
+    private boolean deadSeatReplaced() {
+        var voters = cluster.allNodes()
+                            .stream()
+                            .filter(core -> !DEAD_SEAT.equals(core.self().id()))
+                            .map(EmberNodeReplacementTest::installedVoters)
+                            .toList();
+
+        return !voters.isEmpty()
+               && voters.stream()
+                        .allMatch(set -> set.size() == CLUSTER_SIZE
+                                         && set.stream().noneMatch(member -> DEAD_SEAT.equals(member.id()))
+                                         && set.stream().anyMatch(member -> !GENESIS_IDS.contains(member.id())));
+    }
+
+    private Set<String> closedSubjects() {
+        return cluster.allNodes()
+                      .stream()
+                      .flatMap(core -> core.eventAggregator().events().await().map(List::copyOf).or(List.of()).stream())
+                      .filter(ClusterEvent.OperatorWarning.class::isInstance)
+                      .map(ClusterEvent.OperatorWarning.class::cast)
+                      .filter(event -> CLOSED_CODE.equals(event.details().get("code")))
+                      .map(event -> event.details().get("subject"))
+                      .collect(Collectors.toSet());
     }
 
     private boolean liveCoresFormedWithDeadSeat() {
@@ -152,7 +201,11 @@ class EmberGenesisSeatUnreachableTest {
     }
 
     private static void awaitCondition(String what, BooleanSupplier condition) {
-        var deadline = System.currentTimeMillis() + CONDITION_BOUND_MS;
+        awaitCondition(CONDITION_BOUND_MS, what, condition);
+    }
+
+    private static void awaitCondition(long boundMs, String what, BooleanSupplier condition) {
+        var deadline = System.currentTimeMillis() + boundMs;
 
         while (!condition.getAsBoolean()) {
             if (System.currentTimeMillis() > deadline) {
