@@ -6,6 +6,7 @@
 package org.pragmatica.aether.stream.forward;
 
 import java.util.ArrayDeque;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
@@ -55,6 +56,7 @@ import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlA
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward.publishForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.readForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.validatedReadForward;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #2583 P2: a reply the handler sends to a forwarding requester reports its [WriteOutcome]. A reply the transport did not
 /// accept moves [StreamReadForwardMetrics#replyNotSent] (read through the interface the node assembly shares), opens one
@@ -599,6 +601,27 @@ class StreamForwardReplyNotSentTest {
         expiries.getLast().task().run();
 
         assertThat(handler.departedMarks()).isZero();
+    }
+
+    /// The production wiring: the handler built without the test seam expires the mark on the shared scheduler, so a node
+    /// removed and never heard from again leaves nothing behind. Waits for the condition (the mark is gone), not for a time.
+    @Test
+    void departedMark_underTheProductionScheduler_isExpired() {
+        StreamForwardTransport transport = this::answer;
+        var handler = new DefaultStreamForwardHandler(OWNER,
+                                                      partitionManager,
+                                                      transport,
+                                                      1_048_576L,
+                                                      metrics,
+                                                      Option.none(),
+                                                      Option.none(),
+                                                      Option.none());
+
+        handler.onNodeRemoved(removed(REQUESTER));
+
+        assertThat(handler.departedMarks()).isEqualTo(1);
+
+        pollUntil(handler::departedMarks, marks -> marks == 0, Duration.ofSeconds(30)).assertMet("the mark expired on the shared scheduler");
     }
 
     @Test
