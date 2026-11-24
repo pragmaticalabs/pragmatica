@@ -21,8 +21,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.lang.reflect.Proxy;
 
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.postgres.net.Connectible;
 import org.pragmatica.postgres.SqlError;
 
 import io.netty.channel.EventLoopGroup;
@@ -109,6 +114,7 @@ class NettyConnectibleBuilderGroupReleaseTest {
         var plain = builder.plain();
 
         assertThat(pool.getConnection().await(GUARD).isFailure()).isTrue();
+        assertThat(builder.ownedGroup()).as("streams use the supplied group, not a builder-owned one").isNull();
         assertThat(pool.close().await(GUARD).isSuccess()).isTrue();
         assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
         assertThat(shared.isShuttingDown()).isFalse();
@@ -124,6 +130,8 @@ class NettyConnectibleBuilderGroupReleaseTest {
         assertThat(pool.getConnection().await(GUARD).isFailure()).isTrue();
         var group = builder.ownedGroup();
 
+        assertThat(plain.getConnection().await(GUARD).isFailure()).isTrue();
+        assertThat(builder.ownedGroup()).as("both Connectibles share one owned group").isSameAs(group);
         assertThat(pool.close().await(GUARD).isSuccess()).isTrue();
         assertThat(group.isShuttingDown()).isFalse();
         assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
@@ -176,6 +184,26 @@ class NettyConnectibleBuilderGroupReleaseTest {
         assertThat(builder.ownedGroup()).as("the pool still holds its lease").isNotNull();
         assertThat(pool.close().await(GUARD).isSuccess()).isTrue();
         assertThat(builder.ownedGroup()).isNull();
+    }
+
+    @Test
+    void close_closesTheDelegate_beforeReleasingTheGroup() {
+        var owned = new OwnedEventLoopGroup(() -> 1);
+        var lease = new OwnedConnectible(owned);
+        var group = owned.group();
+        var groupShuttingDownAtDelegateClose = new AtomicBoolean(true);
+        var delegate = (Connectible) Proxy.newProxyInstance(Connectible.class.getClassLoader(),
+                                                            new Class<?>[]{Connectible.class},
+                                                            (_, method, _) -> {
+                                                                groupShuttingDownAtDelegateClose.set(group.isShuttingDown());
+                                                                return Promise.success(Unit.unit());
+                                                            });
+
+        lease.delegate(delegate);
+
+        assertThat(lease.close().await(GUARD).isSuccess()).isTrue();
+        assertThat(groupShuttingDownAtDelegateClose).as("group still running while the delegate closes").isFalse();
+        assertThat(group.isTerminated()).isTrue();
     }
 
     private NettyConnectibleBuilder builderTo(int port) {
