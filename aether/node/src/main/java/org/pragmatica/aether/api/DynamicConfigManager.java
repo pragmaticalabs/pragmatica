@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -22,6 +23,7 @@ import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -42,6 +44,13 @@ public class DynamicConfigManager {
     private final DynamicConfigurationProvider provider;
     private final NodeId self;
     private final List<AppliedListener> appliedListeners = new CopyOnWriteArrayList<>();
+    /// The two scopes of a dotted key are separate layers (#2756): the overlay holds, per key, the node-scoped value
+    /// if present, else the cluster-wide one - never whichever arrived last. A put or remove changes only its own
+    /// layer, then the overlay entry is recomputed from both. Both maps are guarded by `layerLock`; the lock is held
+    /// across the overlay write so the overlay always follows the layers in the order they changed.
+    private final Object layerLock = new Object();
+    private final Map<String, String> clusterLayer = new HashMap<>();
+    private final Map<String, String> nodeLayer = new HashMap<>();
 
     /// A registered applied-listener, under the name its registration gave it.
     private record AppliedListener(String name, Consumer<String> listener) {
@@ -78,18 +87,12 @@ public class DynamicConfigManager {
     }
 
     private void loadConfig(ConfigKey key, ConfigValue value) {
-        if (key.isClusterWide()) {
-            applyLoadedConfig(value);
-        } else {
-            key.nodeScope().filter(self::equals).onPresent(_ -> applyLoadedConfig(value));
+        if (shouldApply(key)) {
+            putLayered(key, value.value());
+            log.debug("Loaded config from KV-Store: {}={}",
+                      key.key(),
+                      redactIfSensitive(key.key(), value.value()));
         }
-    }
-
-    private void applyLoadedConfig(ConfigValue value) {
-        provider.put(value.key(), value.value());
-        log.debug("Loaded config from KV-Store: {}={}",
-                  value.key(),
-                  redactIfSensitive(value.key(), value.value()));
     }
 
     @MessageReceiver
@@ -99,11 +102,11 @@ public class DynamicConfigManager {
         var configValue = valuePut.cause().value();
 
         if (shouldApply(configKey)) {
-            provider.put(configValue.key(), configValue.value());
+            putLayered(configKey, configValue.value());
             log.debug("Config updated from cluster: {}={}",
-                      configValue.key(),
-                      redactIfSensitive(configValue.key(), configValue.value()));
-            notifyApplied(configValue.key());
+                      configKey.key(),
+                      redactIfSensitive(configKey.key(), configValue.value()));
+            notifyApplied(configKey.key());
         }
     }
 
@@ -113,7 +116,7 @@ public class DynamicConfigManager {
         var configKey = valueRemove.cause().key();
 
         if (shouldApply(configKey)) {
-            provider.remove(configKey.key());
+            removeLayered(configKey);
             log.debug("Config removed from cluster: {}", configKey.key());
             notifyApplied(configKey.key());
         }
@@ -243,6 +246,37 @@ public class DynamicConfigManager {
         log.info("Node config removed and persisted: {} for node {}", key, nodeId.id());
 
         return Unit.unit();
+    }
+
+    private void putLayered(ConfigKey configKey, String value) {
+        synchronized (layerLock) {
+            layerOf(configKey).put(configKey.key(), value);
+            reconcileOverlay(configKey.key());
+        }
+    }
+
+    private void removeLayered(ConfigKey configKey) {
+        synchronized (layerLock) {
+            layerOf(configKey).remove(configKey.key());
+            reconcileOverlay(configKey.key());
+        }
+    }
+
+    private Map<String, String> layerOf(ConfigKey configKey) {
+        return configKey.isClusterWide()
+               ? clusterLayer
+               : nodeLayer;
+    }
+
+    /// Caller holds `layerLock`. The overlay entry becomes the effective value of the two layers, or is dropped when neither holds one.
+    private void reconcileOverlay(String dottedKey) {
+        effectiveValue(dottedKey).onPresent(value -> provider.put(dottedKey, value))
+                                 .onEmpty(() -> provider.remove(dottedKey));
+    }
+
+    private Option<String> effectiveValue(String dottedKey) {
+        return Option.option(nodeLayer.get(dottedKey))
+                     .orElse(() -> Option.option(clusterLayer.get(dottedKey)));
     }
 
     private boolean shouldApply(ConfigKey configKey) {
