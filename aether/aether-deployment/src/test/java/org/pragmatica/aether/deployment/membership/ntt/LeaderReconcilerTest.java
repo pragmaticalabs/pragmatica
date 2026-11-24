@@ -1593,6 +1593,26 @@ class LeaderReconcilerTest {
                 .hasSize(1);
         }
 
+        /// #1055, a second deferral inside the same window must not arm a second follow-up: the pending one stays the only
+        /// follow-up ever scheduled (the pending-ref short-circuit; the lost-CAS cancel is only the backstop for a race).
+        @Test
+        void surplusDrain_secondDeferralInTheSameWindow_armsNoSecondFollowUp() {
+            configuredCoreCount.set(2);
+            seedYoungPeers(NodeId.randomNodeId(), NodeId.randomNodeId());
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY)).as("the first deferral armed one").hasSize(1);
+
+            triggerAndFireReconcile();
+
+            assertThat(ctm.drainNodeCalls()).as("the second pass still defers: every candidate is young").isEmpty();
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY))
+                .as("one follow-up scheduled in total — a second deferral reuses the pending one")
+                .hasSize(1);
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY).getFirst().cancelled())
+                .as("and the retained one is live").isFalse();
+        }
+
         /// #1055, deferral is not a drop: once the young ephemeral candidates age past the grace the
         /// armed follow-up drains the surplus.
         @Test
