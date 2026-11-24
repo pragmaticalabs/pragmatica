@@ -36,6 +36,7 @@ on:
       - 'aether/resource/api/src/main/java/org/pragmatica/aether/resource/SharedPools.java'
       - 'aether/resource/api/src/main/java/org/pragmatica/aether/resource/SpiResourceProvider.java'
       - 'aether/resource/api/src/main/java/org/pragmatica/aether/resource/package-info.java'
+      - 'integrations/consensus/src/main/java/org/pragmatica/consensus/leader/fsm/LeaderElectionContext.java'
       - 'integrations/consensus/src/main/java/org/pragmatica/consensus/leader/fsm/LeaderElectionState.java'
       - 'integrations/consensus/src/main/java/org/pragmatica/consensus/leader/fsm/package-info.java'
       - 'integrations/consensus/src/main/java/org/pragmatica/consensus/rabia/PhaseData.java'
