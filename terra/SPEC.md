@@ -238,7 +238,7 @@ A publication invokes every handler in its subscriber snapshot and waits for all
 
 Publication is admitted only after all slices and subscriptions are ready. Closing rejects new publications, drains accepted deliveries, then releases resources in reverse construction order. Callers must stop other entry points before closing; arbitrary direct calls are not automatically drained. Handlers that never complete prevent a graceful drain.
 
-Single-payload subscriptions on injected plain-interface steps bind to the exact instance used by the slice. Streams, schedules, durable entities/topics, context-carrying subscribers, and live configuration callbacks are refused, including unsupported resources nested in steps. [Streams and durable entities](STREAMS-AND-ENTITIES.md) records reusable storage code and a proposed next contract; it does not claim implemented support. The HTTP host below supplies listener lifecycle, authentication, route composition, and draining for the generated typed routers.
+Single-payload subscriptions on injected plain-interface steps bind to the exact instance used by the slice. Streams, schedules, durable entities/topics, context-carrying subscribers, and live configuration callbacks are refused, including unsupported resources nested in steps. [Streams and durable entities](../docs/rfc/RFC-0020-terra-streams-and-entities.md) records reusable storage code and a proposed next contract; it does not claim implemented support. The HTTP host below supplies listener lifecycle, authentication, route composition, and draining for the generated typed routers.
 
 ### Database startup
 

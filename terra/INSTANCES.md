@@ -29,7 +29,7 @@ What to do when the answer must be the same on every instance: do not cache that
 
 ### Ephemeral pub-sub
 
-A publication in Terra calls the handlers in the publishing instance's own subscriber list and nothing else (`TerraTopics.java:20,31,54`). The list is filled during startup and cleared at close. There is no persistence, replay, retry, deduplication or cross-process delivery; the same is stated for the single-process contract in the [README](README.md#pub-sub-contract).
+A publication in Terra calls the handlers in the publishing instance's own subscriber list and nothing else (`TerraTopics.java:20,31,54`). The list is filled during startup and cleared at close. There is no persistence, replay, retry, deduplication or cross-process delivery; the same is stated for the single-process contract in the [README](SPEC.md#pub-sub-contract).
 
 What an operator sees when two instances disagree:
 
@@ -63,7 +63,7 @@ available on the server    =  max_connections - superuser_reserved_connections -
 
 - **One pool per datasource per connector type per instance.** `pool_scope = "node"` is the default, so slices of one instance whose datasource section resolves to the same connection settings share one pool; `SqlConnector`, `PgSqlConnector` and jOOQ over one datasource are separate pools ([resource reference, "Shared pools"](../aether/docs/slice-developers/resource-reference.md#shared-pools-2973)). A slice with `pool_scope = "slice"` adds a pool of its own.
 - **The size of a pool** is `pool_config.max_connections`, default 20, with `min_connections` (default 4) opened at provisioning (`PoolConfig.java:66-67`). The JDBC transport hands it to HikariCP as the maximum pool size (`JdbcSqlConnectorFactory.java:97`), the async transport to the driver pool (`PgSqlConnectorFactory.java:128`).
-- **Not counted in a pool, but real:** a pinned session (an advisory lock held through `pinned`) opens one extra dedicated connection while it runs (`SqlConnector.java:22-33`), and a notification listener holds one (`NotificationListenerFactory.java:92`, `maxConnections(1)`). Startup migrations use their own connections and close them before slices are built (README, "Database startup").
+- **Not counted in a pool, but real:** a pinned session (an advisory lock held through `pinned`) opens one extra dedicated connection while it runs (`SqlConnector.java:22-33`), and a notification listener holds one (`NotificationListenerFactory.java:92`, `maxConnections(1)`). Startup migrations use their own connections and close them before slices are built ([SPEC, "Database startup"](SPEC.md#database-startup)).
 - **What `available` is** is the query the node's guard runs: `max_connections` minus `superuser_reserved_connections` minus `reserved_connections` where the server has it (`SharedPoolSupport.java:27-30`).
 
 ### What the multiplexer does and does not change
@@ -85,14 +85,14 @@ After a pool opens, the instance compares its own pools with what the server all
 
 When the server is full, the symptom is a failed or slow connection acquire (the pool waits up to `connection_timeout`, default 30 s) and `53300` in the log of the instance that was refused, usually the one that started last, so a rolling restart that briefly runs both old and new instances is the usual trigger.
 
-### Sizing example: the two-instance standard
+### Sizing example: two instances and a rolling replacement
 
 One datasource, one connector type, a PostgreSQL server at its default `max_connections = 100` and `superuser_reserved_connections = 3`, so 97 available.
 
 | Item | Connections |
 | --- | --- |
 | 2 instances x pool `max_connections` 20 (the default) | 40 |
-| A third instance alive during a rolling replacement: +20 | 60 |
+| A third instance alive during a rolling replacement (two instances may start against one database; see below): +20 | 60 |
 | Operators, monitoring, a migration run: reserve | 10 |
 | **Peak** | **70 of 97** |
 
@@ -103,6 +103,8 @@ pool max_connections  <=  floor( (available - other clients) / (peak instances x
                        =  floor( (97 - 10) / (3 x 1) )  =  29
 ```
 
-Setting `max_connections = 50` with two instances asks for 100 against 97 available: the second instance's pool cannot fill, and a deploy that overlaps instances is refused outright. Keep `min_connections` at or below what you want held idle, because warm-up is demand too: 2 x 4 = 8 here.
+Setting `max_connections = 50` with two instances asks for 100 against 97 available: the second instance's pool cannot fill, and the instance that starts last gets connection refusals (SQLSTATE `53300`) when its pool tries to fill; no instance refuses to start for it. Keep `min_connections` at or below what you want held idle, because warm-up is demand too: 2 x 4 = 8 here.
+
+Two instances may start against one database. Their startup migrations are serialised by the migration engine's database fence, not by Terra: a second instance that reaches the fence while another holds it does not wait, its migration fails with `MigrationFencedInDatabase` and its startup fails before any slice is built, so a rolling replacement that overlaps two migrations needs the refused instance started again. The fence covers the migration run only. The guarantee per engine is in [SPEC, "Database startup"](SPEC.md#database-startup).
 
 If one instance needs a pool larger than the server can give to all of them, lower the pool and queue in the application, or put a pooler in front and size against its limits.
