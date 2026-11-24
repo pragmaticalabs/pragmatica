@@ -36,8 +36,22 @@ import org.pragmatica.terra.http.HttpAuthenticatorFactory;
 import org.pragmatica.terra.http.TerraHttpConfig;
 
 
-record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) {
-    private record Security(SecurityPolicy policy, Fn0<HttpAuthenticator> authenticator) {}
+/// `unsupplied` names the runtime inputs (deployment secrets) the settings declare but the environment did not supply:
+/// always empty under [RuntimeInputs#REQUIRED], which refuses the load instead.
+record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator, List<String> unsupplied) {
+    /// Whether a runtime input, a deployment secret, that is absent refuses the load (#3026). A launch needs it. `--check`
+    /// runs at build time, where the deployment's secrets are not: it checks everything else, names the absent input,
+    /// and the launch keeps refusing.
+    enum RuntimeInputs {
+        REQUIRED,
+        DEFERRED
+    }
+
+    private record Security(SecurityPolicy policy, Fn0<HttpAuthenticator> authenticator, List<String> unsupplied) {
+        Security(SecurityPolicy policy, Fn0<HttpAuthenticator> authenticator) {
+            this(policy, authenticator, List.of());
+        }
+    }
 
     static Result<LaunchHttp> launchHttp(Path directory, ConfigurationProvider settings) {
         return launchHttp(directory, settings, LaunchHttp::installedAuthenticators);
@@ -48,7 +62,18 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     static Result<LaunchHttp> launchHttp(Path directory,
                                          ConfigurationProvider settings,
                                          Fn0<Result<List<HttpAuthenticatorFactory>>> discovery) {
-        return settingsKeys(settings).flatMap(valid -> parsedHttp(directory, valid, discovery));
+        return launchHttp(directory, settings, discovery, RuntimeInputs.REQUIRED);
+    }
+
+    static Result<LaunchHttp> launchHttp(Path directory, ConfigurationProvider settings, RuntimeInputs inputs) {
+        return launchHttp(directory, settings, LaunchHttp::installedAuthenticators, inputs);
+    }
+
+    static Result<LaunchHttp> launchHttp(Path directory,
+                                         ConfigurationProvider settings,
+                                         Fn0<Result<List<HttpAuthenticatorFactory>>> discovery,
+                                         RuntimeInputs inputs) {
+        return settingsKeys(settings).flatMap(valid -> parsedHttp(directory, valid, discovery, inputs));
     }
 
     private static Result<List<HttpAuthenticatorFactory>> installedAuthenticators() {
@@ -89,11 +114,12 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
 
     private static Result<LaunchHttp> parsedHttp(Path directory,
                                                  ConfigurationProvider settings,
-                                                 Fn0<Result<List<HttpAuthenticatorFactory>>> discovery) {
+                                                 Fn0<Result<List<HttpAuthenticatorFactory>>> discovery,
+                                                 RuntimeInputs inputs) {
         return Result.all(settings.getInt("http.port").map(value -> value.or(8080)),
                           settings.getInt("http.max_content_length").map(value -> value.or(10 * 1024 * 1024)),
                           mountMode(settings),
-                          security(settings, discovery),
+                          security(settings, discovery, inputs),
                           tls(directory, settings))
                      .flatMap((port, maxSize, mode, security, tls) -> config(port, maxSize, mode, security, tls));
     }
@@ -109,7 +135,8 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
                                                mode,
                                                security.policy())
                               .map(config -> new LaunchHttp(config,
-                                                            security.authenticator()));
+                                                            security.authenticator(),
+                                                            security.unsupplied()));
     }
 
     private static Result<RouteMountMode> mountMode(ConfigurationProvider settings) {
@@ -122,8 +149,9 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     }
 
     private static Result<Security> security(ConfigurationProvider settings,
-                                             Fn0<Result<List<HttpAuthenticatorFactory>>> discovery) {
-        return refuseStrayAuthenticator(settings).flatMap(_ -> modeSecurity(settings, discovery));
+                                             Fn0<Result<List<HttpAuthenticatorFactory>>> discovery,
+                                             RuntimeInputs inputs) {
+        return refuseStrayAuthenticator(settings).flatMap(_ -> modeSecurity(settings, discovery, inputs));
     }
 
     /// A name in `http.authenticator` beside any other mode would read as "use this one" while the launcher uses
@@ -136,7 +164,8 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     }
 
     private static Result<Security> modeSecurity(ConfigurationProvider settings,
-                                                 Fn0<Result<List<HttpAuthenticatorFactory>>> discovery) {
+                                                 Fn0<Result<List<HttpAuthenticatorFactory>>> discovery,
+                                                 RuntimeInputs inputs) {
         return switch (settings.getString("http.security_mode")
                                .or("api-key")) {
             case "custom" -> custom(settings, discovery);
@@ -144,8 +173,7 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
                                                        HttpAuthenticator::denyUnlessPublicValidator));
             case "api-key" -> apiKeys(settings).map(keys -> new Security(SecurityPolicy.apiKeyRequired(),
                                                                          () -> HttpAuthenticator.apiKeyValidator(keys)));
-            case "jwt" -> jwt(settings).map(jwt -> new Security(SecurityPolicy.bearerTokenRequired(),
-                                                                () -> HttpAuthenticator.jwtValidator(jwt)));
+            case "jwt" -> jwt(settings, inputs).map(LaunchHttp::jwtSecurity);
             default -> new TerraLaunchError("http.security_mode must be none, api-key, jwt, or custom").result();
         };
     }
@@ -279,17 +307,28 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
         return Result.success(Map.copyOf(entries));
     }
 
-    private static Result<JwtConfig> jwt(ConfigurationProvider settings) {
+    private static Result<JwtConfig> jwt(ConfigurationProvider settings, RuntimeInputs inputs) {
         return Result.all(keyMode(settings),
                           secret(settings),
                           settings.getLong("jwt.cache_ttl_seconds").map(value -> value.or(3600L)),
                           settings.getLong("jwt.clock_skew_seconds").map(value -> value.or(30L)))
-                     .flatMap((mode, secret, ttl, skew) -> jwksUrl(settings, mode, secret).flatMap(url -> jwtConfig(settings,
-                                                                                                                    url,
-                                                                                                                    mode,
-                                                                                                                    secret,
-                                                                                                                    ttl,
-                                                                                                                    skew)));
+                     .flatMap((mode, secret, ttl, skew) -> jwksUrl(settings, mode, secret, inputs).flatMap(url -> jwtConfig(settings,
+                                                                                                                            url,
+                                                                                                                            mode,
+                                                                                                                            secret,
+                                                                                                                            ttl,
+                                                                                                                            skew)));
+    }
+
+    /// An HS256 config with no secret is reachable only under [RuntimeInputs#DEFERRED]: the secret is reported as
+    /// unsupplied, and the launcher refuses to start a plan that carries one.
+    private static Security jwtSecurity(JwtConfig jwt) {
+        return new Security(SecurityPolicy.bearerTokenRequired(),
+                            () -> HttpAuthenticator.jwtValidator(jwt),
+                            jwt.keyMode() == JwtKeyMode.HS256 && jwt.sharedSecret()
+                                                                    .isEmpty()
+                            ? List.of("jwt.secret")
+                            : List.of());
     }
 
     private static Result<JwtConfig> jwtConfig(ConfigurationProvider settings,
@@ -329,10 +368,13 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
                                               .mapError(LaunchHttp::invalidJwt));
     }
 
-    private static Result<String> jwksUrl(ConfigurationProvider settings, JwtKeyMode mode, Option<JwtSecret> secret) {
+    private static Result<String> jwksUrl(ConfigurationProvider settings,
+                                          JwtKeyMode mode,
+                                          Option<JwtSecret> secret,
+                                          RuntimeInputs inputs) {
         return switch (mode) {
             case JWKS -> settings.getString("jwt.jwks_url").filter(value -> !value.isBlank()).toResult(new TerraLaunchError("JWT mode requires jwt.jwks_url"));
-            case HS256 -> secret.isPresent()
+            case HS256 -> secret.isPresent() || inputs == RuntimeInputs.DEFERRED
                           ? Result.success(settings.getString("jwt.jwks_url").or(""))
                           : new TerraLaunchError("JWT HS256 mode requires jwt.secret").result();
         };

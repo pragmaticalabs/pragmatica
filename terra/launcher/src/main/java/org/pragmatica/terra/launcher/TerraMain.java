@@ -24,20 +24,36 @@ public final class TerraMain {
             return;
         }
 
-        TerraLaunchPlan.load(Path.of(args[0]))
-                       .await()
-                       .fold(cause -> {
-                                 System.err.println("Terra configuration failed: " + cause.message());
-                                 System.exit(1);
+        loaded(args).await()
+              .fold(cause -> {
+                        System.err.println("Terra configuration failed: " + cause.message());
+                        System.exit(1);
 
-                                 return Unit.unit();
-                             },
-                             plan -> run(plan, args.length == 2));
+                        return Unit.unit();
+                    },
+                    plan -> run(plan, args.length == 2));
+    }
+
+    private static Promise<TerraLaunchPlan> loaded(String[] args) {
+        return args.length == 2
+               ? TerraLaunchPlan.check(Path.of(args[0]))
+               : TerraLaunchPlan.load(Path.of(args[0]));
+    }
+
+    /// The check log (#3026): the selection, then each runtime input the build environment did not supply, which the
+    /// launch will require.
+    static String checkReport(TerraLaunchPlan plan) {
+        var passed = "Terra check passed: " + plan.artifacts().size() + " selected slices";
+
+        return plan.unsuppliedInputs()
+                   .stream()
+                   .map(input -> "\nRuntime input not supplied (required at launch): " + input)
+                   .reduce(passed, String::concat);
     }
 
     private static Unit run(TerraLaunchPlan plan, boolean checkOnly) {
         if (checkOnly) {
-            System.out.println("Terra check passed: " + plan.artifacts().size() + " selected slices");
+            System.out.println(checkReport(plan));
 
             return Unit.unit();
         }
