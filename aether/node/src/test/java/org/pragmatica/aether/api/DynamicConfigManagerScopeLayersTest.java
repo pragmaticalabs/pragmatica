@@ -21,6 +21,7 @@ import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.DynamicConfigurationProvider;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Unit;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -184,14 +185,14 @@ class DynamicConfigManagerScopeLayersTest {
         return store;
     }
 
-    private static Object deliver(BiConsumer<ConfigKey, ConfigValue> consumer,
+    private static Unit deliver(BiConsumer<ConfigKey, ConfigValue> consumer,
                                 ConfigKey firstKey,
                                 String firstValue,
                                 ConfigKey secondKey,
                                 String secondValue) {
         consumer.accept(firstKey, ConfigValue.configValue(firstKey.key(), firstValue));
         consumer.accept(secondKey, ConfigValue.configValue(secondKey.key(), secondValue));
-        return null;
+        return Unit.unit();
     }
 
     private static ValuePut<ConfigKey, ConfigValue> put(ConfigKey key, String value) {

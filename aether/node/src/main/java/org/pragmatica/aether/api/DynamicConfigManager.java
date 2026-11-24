@@ -271,12 +271,11 @@ public class DynamicConfigManager {
     /// Caller holds `layerLock`. The overlay entry becomes the effective value of the two layers, or is dropped when neither holds one.
     private void reconcileOverlay(String dottedKey) {
         effectiveValue(dottedKey).onPresent(value -> provider.put(dottedKey, value))
-                                 .onEmpty(() -> provider.remove(dottedKey));
+                      .onEmpty(() -> provider.remove(dottedKey));
     }
 
     private Option<String> effectiveValue(String dottedKey) {
-        return Option.option(nodeLayer.get(dottedKey))
-                     .orElse(() -> Option.option(clusterLayer.get(dottedKey)));
+        return Option.option(nodeLayer.get(dottedKey)).orElse(() -> Option.option(clusterLayer.get(dottedKey)));
     }
 
     private boolean shouldApply(ConfigKey configKey) {
