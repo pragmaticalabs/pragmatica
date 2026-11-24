@@ -94,7 +94,7 @@ class NotificationListenerGroupReleaseTest {
         outcome.onFailure(cause -> assertThat(cause).isEqualTo(CHANNEL_CLOSED));
     }
 
-    /// A failed unlisten neither skips the closes after it nor disappears: it is the first failure, so it is the result.
+    /// A failed unlisten neither skips the closes after it nor disappears: it is the first failure, so it is the result (the unlisten step reports its failures as one composite cause).
     @Test
     void handleClose_runsEveryRelease_afterAFailedUnlisten() {
         var events = new CopyOnWriteArrayList<String>();
@@ -107,7 +107,7 @@ class NotificationListenerGroupReleaseTest {
 
         assertThat(events).containsExactly("connection.close", "connectible.close");
         assertThat(outcome.isFailure()).as("the unlisten failure is the result").isTrue();
-        outcome.onFailure(cause -> assertThat(cause).isEqualTo(UNLISTEN_REFUSED));
+        outcome.onFailure(cause -> assertThat(cause.message()).contains(UNLISTEN_REFUSED.message()));
     }
 
     /// v3641 F2: a refused LISTEN fails the provision, and the failed provision closes the connection first (it holds the

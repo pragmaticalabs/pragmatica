@@ -27,6 +27,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.postgres.message.frontend.StartupMessage;
 import org.pragmatica.postgres.net.Connectible;
@@ -85,7 +86,7 @@ class LeaseReleaseOnFailureTest {
         var builder = builderTo(refusingServerPort());
         var connectible = build(builder, kind);
 
-        assertThat(connectible.getConnection().await(GUARD).isFailure()).as("startup refused").isTrue();
+        assertThat(attemptStartup(connectible).await(GUARD).isFailure()).as("startup refused").isTrue();
         assertThat(awaitLeases(builder, 1)).as("leases once the refused connect settled: only the Connectible's").isEqualTo(1);
         var group = builder.ownedGroup();
 
@@ -143,6 +144,13 @@ class LeaseReleaseOnFailureTest {
         stream.channel().closeFuture().addListener(_ -> bothSignalled.countDown());
         assertThat(bothSignalled.await(10, TimeUnit.SECONDS)).as("closeFuture completed").isTrue();
         assertThat(released.get()).as("releases after the failed connect and the channel close").isEqualTo(1);
+    }
+
+    /// The transaction pool hands out a logical connection and connects on the first statement, so the statement is part of
+    /// the attempt; the other kinds connect in `getConnection()`.
+    private static Promise<?> attemptStartup(Connectible connectible) {
+        return connectible.getConnection()
+                          .flatMap(connection -> connection.completeScript("select 1"));
     }
 
     private static int awaitLeases(NettyConnectibleBuilder builder, int expected) {
