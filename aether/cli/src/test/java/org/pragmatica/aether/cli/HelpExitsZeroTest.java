@@ -33,7 +33,9 @@ class HelpExitsZeroTest {
 
         var args = new ArrayList<>(path);
 
-        args.add(helpFlag);
+        if (!helpFlag.isEmpty()) {
+            args.add(helpFlag);
+        }
 
         var exitCode = cmd.execute(args.toArray(String[]::new));
 
@@ -118,5 +120,16 @@ class HelpExitsZeroTest {
 
         assertThat(outcome.exitCode()).isZero();
         assertThat(outcome.stdout()).isNotBlank();
+    }
+
+    /// The picocli command this replaced is what `aether/install.sh` runs to install shell completion,
+    /// so its output must survive the change that dropped its own help mixin.
+    @Test
+    void generateCompletion_stillPrintsTheBashCompletionScript() {
+        var outcome = runHelp(List.of("generate-completion"), "");
+
+        assertThat(outcome.exitCode()).as("stderr: " + outcome.stderr())
+                                      .isZero();
+        assertThat(outcome.stdout()).contains("_complete_aether");
     }
 }
