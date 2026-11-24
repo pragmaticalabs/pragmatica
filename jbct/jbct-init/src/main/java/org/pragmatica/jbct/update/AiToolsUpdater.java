@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.jbct.init.AiToolsOutcome;
+import org.pragmatica.jbct.init.AiToolsRef;
 import org.pragmatica.jbct.shared.GitHubContentFetcher;
 import org.pragmatica.jbct.shared.HttpClients;
 import org.pragmatica.jbct.shared.PathValidation;
@@ -20,45 +21,57 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Updates AI tools from the coding-technology GitHub repository.
+/// Updates AI tools from the coding-technology GitHub repository, at the tag `ai-tools-v<jbct version>` of the
+/// running build (#2363), never `main` ([AiToolsRef]): an update moves to the tag of the new version.
 /// Uses GitHub Tree API to dynamically discover files under ai-tools/.
+/// The installed ref is recorded in `.claude/.ai-tools-version` as `<tag>@<commit sha>`.
 /// Files already present in the user's global ~/.claude/ are skipped (resolved globally).
 public final class AiToolsUpdater {
     private static final Logger log = LoggerFactory.getLogger(AiToolsUpdater.class);
     private static final Path GLOBAL_CLAUDE_DIR = Path.of(System.getProperty("user.home"), ".claude");
-    private static final String REPO = "siy/coding-technology";
-    private static final String BRANCH = "main";
     private static final String AI_TOOLS_PREFIX = "ai-tools/";
     private static final String VERSION_FILE = ".ai-tools-version";
 
     private final HttpOperations http;
     private final Path claudeDir;
+    private final Result<AiToolsRef> ref;
 
-    private AiToolsUpdater(HttpOperations http, Path claudeDir) {
+    private AiToolsUpdater(HttpOperations http, Path claudeDir, Result<AiToolsRef> ref) {
         this.http = http;
         this.claudeDir = claudeDir;
+        this.ref = ref;
     }
 
     /// Create updater for project directory.
     /// AI tools will be updated in projectDir/.claude/
     public static AiToolsUpdater aiToolsUpdater(Path projectDir) {
-        return new AiToolsUpdater(HttpClients.httpOperations(), projectDir.resolve(".claude"));
+        return new AiToolsUpdater(HttpClients.httpOperations(), projectDir.resolve(".claude"), AiToolsRef.aiToolsRef());
+    }
+
+    // Test seam: inject the HTTP seam and the ref (the running build's version is fixed by the jar).
+    static AiToolsUpdater aiToolsUpdater(Path projectDir, HttpOperations http, Result<AiToolsRef> ref) {
+        return new AiToolsUpdater(http, projectDir.resolve(".claude"), ref);
     }
 
     /// Check for updates without installing.
     ///
-    /// @return Latest commit SHA if update available
+    /// @return The ref record (`<tag>@<commit sha>`) the update would install, if an update is available
     public Result<Option<String>> checkForUpdate() {
-        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH).map(this::checkIfUpdateNeeded);
+        return ref.flatMap(this::checkAt);
     }
 
-    private Option<String> checkIfUpdateNeeded(String latestSha) {
-        var currentSha = getCurrentVersion();
-        var isUpToDate = currentSha.filter(sha -> sha.equals(latestSha)).isPresent();
+    private Result<Option<String>> checkAt(AiToolsRef pinned) {
+        return pinned.resolveSha(http)
+                     .map(latestSha -> checkIfUpdateNeeded(pinned, latestSha));
+    }
+
+    private Option<String> checkIfUpdateNeeded(AiToolsRef pinned, String latestSha) {
+        var stamp = pinned.stamp(latestSha);
+        var isUpToDate = getCurrentVersion().filter(stamp::equals).isPresent();
 
         return isUpToDate
                ? Option.none()
-               : Option.some(latestSha);
+               : Option.some(stamp);
     }
 
     /// Update AI tools from GitHub.
@@ -73,39 +86,43 @@ public final class AiToolsUpdater {
     /// @param force Force update even if already up to date
     /// @return Outcome listing updated files and files skipped as already-global
     public Result<AiToolsOutcome> update(boolean force) {
-        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH).flatMap(latestSha -> performUpdate(latestSha,
-                                                                                                              force));
+        return ref.flatMap(pinned -> updateAt(pinned, force));
     }
 
-    private Result<AiToolsOutcome> performUpdate(String latestSha, boolean force) {
-        var currentSha = getCurrentVersion();
-        var isUpToDate = !force && currentSha.filter(sha -> sha.equals(latestSha)).isPresent();
+    private Result<AiToolsOutcome> updateAt(AiToolsRef pinned, boolean force) {
+        return pinned.resolveSha(http)
+                     .flatMap(latestSha -> performUpdate(pinned, latestSha, force));
+    }
+
+    private Result<AiToolsOutcome> performUpdate(AiToolsRef pinned, String latestSha, boolean force) {
+        var isUpToDate = !force && getCurrentVersion().filter(pinned.stamp(latestSha)::equals).isPresent();
 
         if (isUpToDate) {
-            return Result.success(AiToolsOutcome.aiToolsOutcome(List.of(), List.of()));
+            return Result.success(AiToolsOutcome.aiToolsOutcome(List.of(), List.of(), pinned.tag()));
         }
 
-        return downloadFiles(latestSha);
+        return downloadFiles(pinned, latestSha);
     }
 
-    private Result<AiToolsOutcome> downloadFiles(String commitSha) {
-        return GitHubContentFetcher.discoverFiles(http, REPO, BRANCH, AI_TOOLS_PREFIX)
-                                   .flatMap(this::downloadAllFiles)
-                                   .flatMap(outcome -> saveCurrentVersion(commitSha).map(_ -> outcome));
+    // Fetched at the commit the tag resolved to, so the content is exactly what the recorded ref names.
+    private Result<AiToolsOutcome> downloadFiles(AiToolsRef pinned, String commitSha) {
+        return GitHubContentFetcher.discoverFiles(http, AiToolsRef.REPO, commitSha, AI_TOOLS_PREFIX)
+                                   .flatMap(remotePaths -> downloadAllFiles(pinned, commitSha, remotePaths))
+                                   .flatMap(outcome -> saveCurrentVersion(pinned.stamp(commitSha)).map(_ -> outcome));
     }
 
-    private Result<AiToolsOutcome> downloadAllFiles(List<String> remotePaths) {
+    private Result<AiToolsOutcome> downloadAllFiles(AiToolsRef pinned, String commitSha, List<String> remotePaths) {
         var installed = new ArrayList<Path>();
         var skipped = new ArrayList<Path>();
         var results = remotePaths.stream()
                                  .map(remotePath -> remotePath.substring(AI_TOOLS_PREFIX.length()))
-                                 .map(relativePath -> processFile(relativePath, installed, skipped))
+                                 .map(relativePath -> processFile(commitSha, relativePath, installed, skipped))
                                  .toList();
 
-        return Result.allOf(results).map(_ -> AiToolsOutcome.aiToolsOutcome(installed, skipped));
+        return Result.allOf(results).map(_ -> AiToolsOutcome.aiToolsOutcome(installed, skipped, pinned.tag()));
     }
 
-    private Result<Unit> processFile(String relativePath, List<Path> installed, List<Path> skipped) {
+    private Result<Unit> processFile(String commitSha, String relativePath, List<Path> installed, List<Path> skipped) {
         if (existsGlobally(relativePath)) {
             skipped.add(Path.of(relativePath));
 
@@ -113,7 +130,7 @@ public final class AiToolsUpdater {
         }
 
         return PathValidation.validateRelativePath(relativePath, claudeDir)
-                             .flatMap(targetPath -> downloadFile(AI_TOOLS_PREFIX + relativePath, targetPath))
+                             .flatMap(targetPath -> downloadFile(commitSha, AI_TOOLS_PREFIX + relativePath, targetPath))
                              .onSuccess(installed::add)
                              .mapToUnit();
     }
@@ -122,8 +139,8 @@ public final class AiToolsUpdater {
         return Files.exists(GLOBAL_CLAUDE_DIR.resolve(relativePath));
     }
 
-    private Result<Path> downloadFile(String remotePath, Path targetPath) {
-        return GitHubContentFetcher.downloadFile(http, REPO, BRANCH, remotePath, targetPath).map(_ -> targetPath);
+    private Result<Path> downloadFile(String commitSha, String remotePath, Path targetPath) {
+        return GitHubContentFetcher.downloadFile(http, AiToolsRef.REPO, commitSha, remotePath, targetPath).map(_ -> targetPath);
     }
 
     private Option<String> getCurrentVersion() {
@@ -144,12 +161,12 @@ public final class AiToolsUpdater {
         }
     }
 
-    private Result<Path> saveCurrentVersion(String commitSha) {
+    private Result<Path> saveCurrentVersion(String stamp) {
         try {
             Files.createDirectories(claudeDir);
             var versionFile = claudeDir.resolve(VERSION_FILE);
 
-            Files.writeString(versionFile, commitSha);
+            Files.writeString(versionFile, stamp);
 
             return Result.success(versionFile);
         } catch (IOException e) {

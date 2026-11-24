@@ -6,10 +6,12 @@ import java.util.concurrent.Callable;
 
 import org.pragmatica.jbct.init.AiToolsInstaller;
 import org.pragmatica.jbct.init.AiToolsOutcome;
+import org.pragmatica.jbct.init.AiToolsRef;
 import org.pragmatica.jbct.init.GitHubVersionResolver;
 import org.pragmatica.jbct.init.PersistenceAdder;
 import org.pragmatica.jbct.init.ProjectInitializer;
 import org.pragmatica.jbct.init.SliceProjectInitializer;
+import org.pragmatica.lang.Cause;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -73,6 +75,7 @@ public class InitCommand implements Callable<Integer> {
                                                                                       .toString());
         var projectCreated = false;
         var aiToolsInstalled = false;
+        var aiToolsRefused = false;
         var isSliceProject = !noSlice;
         // Create project structure unless --ai-only
         if (!aiOnly) {
@@ -116,11 +119,12 @@ public class InitCommand implements Callable<Integer> {
             } else {
                 System.out.println();
                 System.out.println("Installing AI tools...");
-                aiToolsInstalled = installer.install()
-                                            .onFailure(cause -> System.err.println("Warning: Failed to install AI tools: " + cause.message()))
-                                            .onSuccess(this::printAiToolsResult)
-                                            .map(outcome -> !outcome.isEmpty())
-                                            .or(false);
+                var installResult = installer.install()
+                                             .onFailure(cause -> System.err.println(aiToolsFailureText(cause)))
+                                             .onSuccess(this::printAiToolsResult);
+
+                aiToolsInstalled = installResult.map(outcome -> !outcome.isEmpty()).or(false);
+                aiToolsRefused = installResult.fold(cause -> cause instanceof AiToolsRef.AiToolsRefError, _ -> false);
             }
         }
         // Print summary
@@ -152,7 +156,17 @@ public class InitCommand implements Callable<Integer> {
             System.out.println("  - Use jbct-reviewer agent for code review");
         }
 
-        return 0;
+        return aiToolsRefused
+               ? 1
+               : 0;
+    }
+
+    // A refused ref (#2363: snapshot build, or the release tag is not published) is an error with a non-zero exit;
+    // any other failure (offline, no cache) stays the warning it always was.
+    private static String aiToolsFailureText(Cause cause) {
+        return cause instanceof AiToolsRef.AiToolsRefError
+               ? "Error: AI tools not installed: " + cause.message()
+               : "Warning: Failed to install AI tools: " + cause.message();
     }
 
     private boolean initRegularProject() {
@@ -251,6 +265,7 @@ public class InitCommand implements Callable<Integer> {
     }
 
     private void printAiToolsResult(AiToolsOutcome outcome) {
+        System.out.println("AI tools ref: " + outcome.ref());
         if (!outcome.installed().isEmpty()) {
             System.out.println("Installed AI tools to: .claude/");
         }
