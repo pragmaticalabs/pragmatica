@@ -79,6 +79,14 @@ class CheckTest(unittest.TestCase):
         errors = self.run_check(SOURCES, "postgres:16 mod/a\n")
         self.assertTrue(any("testcontainers/ryuk" in e for e in errors), errors)
 
+    def test_library_default_tiny_image_needs_no_source(self):
+        """#3646: Testcontainers' own alpine probe image is started by the library, so no source names it and it is not STALE."""
+        self.assertEqual([], self.run_check(SOURCES, GOOD_LIST + "alpine:3.17 mod/a\n"))
+
+    def test_two_library_default_tiny_images_are_red(self):
+        errors = self.run_check(SOURCES, GOOD_LIST + "alpine:3.17 mod/a\nalpine:3.18 mod/a\n")
+        self.assertTrue(any(e.startswith("expected at most one library-default alpine:") for e in errors), errors)
+
     def test_two_testcontainers_versions_are_red(self):
         with tempfile.TemporaryDirectory() as tmp:
             tree(Path(tmp), SOURCES, GOOD_LIST)
@@ -337,6 +345,27 @@ class NormalisationTest(unittest.TestCase):
                 else:
                     errors = check.started_problems(REPO, recorded, excluded_for)
                     self.assertTrue(any("listed only as excluded" in e for e in errors), (form, errors))
+
+
+    # What test-group-g3 recorded in CI run 45352487466 (the mirror prefix is stripped by started_images): the group that first
+    # showed Testcontainers' own alpine probe image (#3646); the real list must cover it for g3's modules and no other group's.
+    G3_STARTED = "alpine:3.17\nlocalstack/localstack:3.8\npostgres:16\npostgres:16-alpine\nredis:7\ntestcontainers/ryuk:0.12.0\nvalkey/valkey:8\n"
+
+    def g3_plan(self):
+        return {line.split()[1] for line in (REPO / check.GROUPS).read_text().splitlines()
+                if line.startswith("g3 ") and "#" not in line.split()[1]}
+
+    def test_the_real_list_covers_what_group_g3_started(self):
+        recorded = check.started_images(self.G3_STARTED, "mirror.gcr.io/")
+        self.assertEqual([], check.started_problems(REPO, recorded, self.g3_plan()))
+
+    def test_dropping_the_tiny_image_row_names_alpine_for_group_g3(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copytree(REPO / "tools", Path(tmp) / "tools", ignore=shutil.ignore_patterns("__pycache__"))
+            listing = Path(tmp) / check.LIST
+            listing.write_text("".join(l for l in listing.read_text().splitlines(True) if not l.startswith("alpine:3.17 ")))
+            errors = check.started_problems(Path(tmp), check.started_images(self.G3_STARTED, "mirror.gcr.io/"), self.g3_plan())
+        self.assertEqual(["STARTED image alpine:3.17 is not in tools/ci-test-images.txt: add it with the module that starts it"], errors)
 
 
 WORKFLOW = REPO / ".github/workflows/ci.yml"

@@ -11,7 +11,10 @@ list honest, in both directions:
   - a Testcontainers test tagged quarantine fails: that job does not pre-pull (known limits: an image held in a constant
     not named *IMAGE*/*DIGEST*, DockerImageName.parse(variable), compose files and docker-CLI users are not seen);
   - a pulled module that no test-group owns (tools/ci-test-groups.txt) fails: the pre-pull step would never run for it;
-  - the Testcontainers version must be one value across the poms, and the list pins that version's Ryuk image.
+  - the Testcontainers version must be one value across the poms, and the list pins that version's Ryuk image and, for the modules
+    that trigger it, its TINY_IMAGE (`alpine:<tag>`, started once per JVM when a container carries a bind). Neither tag is read from
+    the library: like Ryuk's, it is retagged by hand when <testcontainers.version> moves, and the started-image comparison below
+    is what goes red when the tag drifts.
 
 List format, one entry per line: `<image> <module>[,<module>...]  # why`. A module suffixed `!` is referenced but its
 tests are excluded from the required jobs (a heavy-db or S3 group), so it is inventoried and never pre-pulled for. The
@@ -52,6 +55,10 @@ SHAPES = (
 METHOD_RETURN = re.compile(r'\bString\s+\w*[iI]mage\w*\s*\(\s*\)\s*\{\s*return\s+"([^"]+)"\s*;')
 QUARANTINE = re.compile(r'@Tag\(\s*"quarantine"')
 RYUK = "testcontainers/ryuk:"
+# DockerClientFactory.TINY_IMAGE (Testcontainers 1.21.4, DockerClientFactory.java:82): the library starts it once per JVM, for the
+# file-mounting probe, when a container carries a bind (a test group whose module uses LocalStackContainer, which binds docker.sock).
+TINY = "alpine:"
+LIBRARY_DEFAULTS = (RYUK, TINY)
 TC_VERSION = re.compile(r"<testcontainers\.version>\s*([^<\s]+)\s*</testcontainers\.version>")
 IGNORED_DIRS = {"target", ".git", "node_modules", ".m2-local"}
 
@@ -147,7 +154,7 @@ def problems(root):
     errors = []
     for image in sorted(found.keys() - entries.keys()):
         errors.append(f"UNLISTED image {image} (started in {', '.join(sorted(found[image]))}): add it to {LIST}")
-    for image in sorted(k for k in entries.keys() - found.keys() if not k.startswith(RYUK)):
+    for image in sorted(k for k in entries.keys() - found.keys() if not k.startswith(LIBRARY_DEFAULTS)):
         errors.append(f"STALE entry {image}: no source starts it; remove it from {LIST}")
     for image in sorted(found.keys() & entries.keys()):
         modules = {m.rstrip("!") for m in entries[image]}
@@ -162,6 +169,9 @@ def problems(root):
         errors.append(f"Testcontainers version is not a single value across the poms: {sorted(versions)}")
     if len(ryuk) != 1:
         errors.append(f"expected exactly one {RYUK}<tag> entry, found {ryuk}")
+    tiny = [i for i in entries if i.startswith(TINY) and i not in found]
+    if len(tiny) > 1:
+        errors.append(f"expected at most one library-default {TINY}<tag> entry (Testcontainers' TINY_IMAGE), found {tiny}")
     for source in quarantined_container_tests(root):
         errors.append(f"QUARANTINED container test {source}: the quarantine job does not pre-pull images; "
                       f"add a pre-pull step there before tagging a Testcontainers test quarantine")

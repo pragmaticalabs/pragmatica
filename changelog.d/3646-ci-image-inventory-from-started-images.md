@@ -17,3 +17,9 @@
   [verified: the real `docker events` invocation on cloudbb-5's daemon, `RealDockerRecorderTest` (a container created under the recorder
   is recorded under its mirror-prefixed name)]
   [unverified: `nohup docker events &` surviving across GitHub steps on ubuntu-latest, and `docker events` permissions there: first CI run of `test-group-g1..g4`]
+- **`alpine:3.17`, Testcontainers' own probe image, is inventoried** (found by the recorder on `test-group-g3`, CI run 45352487466). The
+  library starts it once per JVM (`DockerClientFactory.checkMountableFile` -> `runInsideDocker(TINY_IMAGE)`) when a container carries a
+  bind and checks are enabled; `LocalStackContainer` binds `docker.sock`, so only `aether/environment/aws` triggers it. The row sits
+  beside Ryuk's with the same "retag when `<testcontainers.version>` moves" note; the source check exempts it from STALE and allows
+  at most one such row. The tag is not read from the library (Ryuk's is not either): a drifted tag is caught by the started-image comparison.
+  [verified: `test_the_real_list_covers_what_group_g3_started`, and `test_dropping_the_tiny_image_row_names_alpine_for_group_g3` as the positive control]
