@@ -50,8 +50,10 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
     }
 
     /// Without a supplied group, every `pool()`/`plain()` result holds a lease on one builder-owned group, created on
-    /// first use; the group is shut down when the last of them is closed, and `close()` resolves on its termination.
-    /// Close every Connectible built from this builder (#3635).
+    /// first use, and so does every open stream until its channel closes. The group is shut down when the last lease is
+    /// released: `close()` of the last Connectible resolves on the group's termination only when no stream lease is
+    /// outstanding; with a borrowed connection still open it resolves at once and the group ends when that channel
+    /// closes. Close every Connectible built from this builder, and every connection taken from them (#3635).
     public Connectible pool() {
         return build(obtainStream -> properties.poolMode() == PoolMode.TRANSACTION
                                      ? new PgTransactionPool(properties, obtainStream)

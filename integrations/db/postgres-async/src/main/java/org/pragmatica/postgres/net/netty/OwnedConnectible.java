@@ -28,12 +28,16 @@ import org.pragmatica.postgres.net.Connectible;
 
 import io.netty.channel.EventLoopGroup;
 
+import static org.pragmatica.postgres.net.ReleaseChain.releaseAll;
+
 
 /**
  * A {@link Connectible} holding one lease on its builder's {@link OwnedEventLoopGroup}.
  * <p>
  * The first {@link #close()} closes the delegate and, once the delegate's own close has settled (success or failure),
- * releases the lease; it resolves with the delegate's outcome after the release completed. A repeated close is passed
+ * releases the lease ({@link org.pragmatica.postgres.net.ReleaseChain#releaseAll}); it resolves with the delegate's
+ * outcome after the release completed. The release resolves on the group's termination only when no stream lease is
+ * outstanding: a connection still open keeps the group alive until its channel closes. A repeated close is passed
  * to the delegate untouched and releases nothing. After the release the delegate cannot start a stream, so it can
  * never revive the group.
  */
@@ -93,20 +97,14 @@ final class OwnedConnectible implements Connectible {
             return delegate.close();
         }
 
-        var result = Promise.<Unit> promise();
-
-        delegate.close().onResult(outcome -> {
-            markReleased();
-            owned.release()
-                 .onResult(_ -> result.resolve(outcome));
-        });
-
-        return result;
+        return releaseAll(delegate::close, this::releaseLease);
     }
 
-    private void markReleased() {
+    private Promise<Unit> releaseLease() {
         synchronized (owned) {
             released = true;
         }
+
+        return owned.release();
     }
 }

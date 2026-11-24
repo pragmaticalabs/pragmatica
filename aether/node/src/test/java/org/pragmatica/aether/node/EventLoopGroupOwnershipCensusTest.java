@@ -40,7 +40,9 @@ class EventLoopGroupOwnershipCensusTest {
     static final int FILE_FLOOR = 1500;
     static final String ALLOW_LIST = "event-loop-group-allowlist.txt";
 
-    static final Pattern CREATION = Pattern.compile("\\bnew\\s+(?:\\w+\\.)*(?:\\w*EventLoopGroup|\\w*EventLoop|(?:Nio|Epoll|KQueue|IoUring)\\w*)\\s*(?:<[^>]*>)?\\(");
+    /// A constructor call, or a constructor reference (`DefaultEventLoopGroup::new`) handed to a supplier.
+    static final Pattern CREATION = Pattern.compile("\\bnew\\s+(?:\\w+\\.)*(?:\\w*EventLoopGroup|\\w*EventLoop|(?:Nio|Epoll|KQueue|IoUring)\\w*)\\s*(?:<[^>]*>)?\\("
+                                                    + "|\\b\\w*EventLoop(?:Group)?::new\\b");
 
     static final Pattern PENDING = Pattern.compile("pending #3635 quic:(\\S+)");
 
@@ -80,6 +82,8 @@ class EventLoopGroupOwnershipCensusTest {
             assertThat(sites("class A { Object f() { return new EpollEventLoopGroup(); } }")).isEqualTo(1);
             assertThat(sites("class A { Object f() { return new io.netty.channel.nio.NioEventLoopGroup(1); } }")).isEqualTo(1);
             assertThat(sites("class A { Object f() { var a = new MultiThreadIoEventLoopGroup(1, f); var b = new MultiThreadIoEventLoopGroup(f); } }")).isEqualTo(2);
+            assertThat(sites("class A { Object f() { return supply(DefaultEventLoopGroup::new); } }")).isEqualTo(1);
+            assertThat(sites("class A { Object f() { return supply(io.netty.channel.DefaultEventLoop::new); } }")).isEqualTo(1);
         }
 
         @Test

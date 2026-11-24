@@ -900,7 +900,6 @@ aether/resource/api/src/test/java/org/pragmatica/aether/resource/db/DatabaseConn
 aether/resource/db-async/src/test/java/org/pragmatica/aether/resource/db/async/AsyncSqlConnectorFactoryConfigureConnectionTest.java|FIXED_PORT|aa2bd43a7ed8
 aether/resource/db-async/src/test/java/org/pragmatica/aether/resource/db/async/DatasourceProvisioningLoggingTest.java|FIXED_PORT|aa2bd43a7ed8
 aether/resource/db-async/src/test/java/org/pragmatica/aether/resource/db/async/PgAsyncSqlConnectorConnectionReleaseTest.java|SLEEP|f9bff89947fe
-aether/resource/db-async/src/test/java/org/pragmatica/aether/resource/db/async/PgAsyncSqlConnectorConnectionReleaseTest.java|SLEEP|f9bff89947fe
 aether/resource/db-async/src/test/java/org/pragmatica/aether/resource/db/async/PgAsyncSqlConnectorPinnedTest.java|SLEEP|19607f237565
 aether/resource/db-async/src/test/java/org/pragmatica/aether/resource/db/async/PgAsyncSqlConnectorPinnedTest.java|SLEEP|5e76dedaad83
 aether/resource/db-async/src/test/java/org/pragmatica/aether/resource/db/async/PgAsyncSqlConnectorPinnedTest.java|SLEEP|5e76dedaad83

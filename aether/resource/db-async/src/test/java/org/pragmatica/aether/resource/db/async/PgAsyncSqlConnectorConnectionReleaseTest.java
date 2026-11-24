@@ -6,9 +6,12 @@ package org.pragmatica.aether.resource.db.async;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
+import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.PoolConfig;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
@@ -24,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.testing.DockerRequirement;
+import org.pragmatica.testing.PollUntil;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -76,15 +80,22 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
 
     private static AsyncSqlConnector newConnector() {
         var pool = PoolConfig.poolConfigBuilder().withMinConnections(0).withMaxConnections(POOL_SIZE).build().unwrap();
-        var config = databaseConnectorConfigBuilder().withName("release")
-                                                     .withAsyncUrl("postgresql://" + postgres.getHost() + ":" + postgres.getMappedPort(5432) + "/" + postgres.getDatabaseName())
-                                                     .withUsername(postgres.getUsername())
-                                                     .withPassword(postgres.getPassword())
-                                                     .withPoolConfig(pool)
-                                                     .build()
-                                                     .unwrap();
-
+        var config = databaseConfigBuilder().withPoolConfig(pool)
+                                            .build()
+                                            .unwrap();
         return (AsyncSqlConnector) new AsyncSqlConnectorFactory().provision(config).await().unwrap();
+    }
+
+    private static DatabaseConnectorConfig databaseConfig() {
+        return databaseConfigBuilder().build()
+                                      .unwrap();
+    }
+
+    private static DatabaseConnectorConfig.Builder databaseConfigBuilder() {
+        return databaseConnectorConfigBuilder().withName("release")
+                                               .withAsyncUrl("postgresql://" + postgres.getHost() + ":" + postgres.getMappedPort(5432) + "/" + postgres.getDatabaseName())
+                                               .withUsername(postgres.getUsername())
+                                               .withPassword(postgres.getPassword());
     }
 
     /// The stop is bounded and its outcome is not the test's verdict: `PgConnectionPool.close` only shuts down idle connections.
@@ -254,7 +265,9 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
                  .unwrap();
     }
 
-    private static final String OTHER_BACKENDS = "SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()";
+    private static final String OTHER_BACKENDS = "SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_type = 'client backend'";
+    private static final Duration BACKENDS_GONE = Duration.ofSeconds(10);
+    private static final Duration POLL_INTERVAL = Duration.ofMillis(100);
 
     /// Evaluating the arguments after the connection was borrowed can throw before any promise exists; the connection
     /// must still go back.
@@ -288,19 +301,63 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
 
     /// The pool is closed by `stop()` and would keep a released connection open for good: a later `unlisten` must close it.
     @Test
-    void subscribe_unlistenAfterStop_succeeds_andLeavesNoBackendBehind() throws InterruptedException {
+    void subscribe_unlistenAfterStop_succeeds_andLeavesNoBackendBehind() {
         var listening = connector.subscribe("release_channel", _ -> {}).await(timeSpan(5).seconds()).unwrap();
 
         connector.stop().await(timeSpan(5).seconds());
 
         assertThat(listening.unlisten().await(timeSpan(5).seconds()).isSuccess()).isTrue();
-        Thread.sleep(1000);
 
+        assertThat(awaitNoOtherBackends()).as("backends left open after stop and unlisten").isZero();
+    }
+
+    /// #3635 F2: a refused LISTEN (an invalid channel name) fails the provision, and the failed provision closes its
+    /// connection (no backend left) and its Connectible (no event-loop thread left).
+    @Test
+    void provisionWith_refusedListen_failsAndLeavesNoBackendOrEventLoopBehind() {
+        connector.stop().await(timeSpan(5).seconds());
+        var before = eventLoopThreads();
+
+        var outcome = NotificationListenerFactory.provisionWith(databaseConfig(), List.of("release_channel", "not a channel"))
+                                                 .await(timeSpan(10).seconds());
+
+        assertThat(outcome.isFailure()).as("provision with a refused LISTEN: %s", outcome).isTrue();
+        assertThat(awaitNoOtherBackends()).as("backends left open by the failed provision").isZero();
+        assertThat(PollUntil.pollUntil(() -> newEventLoopThreads(before), List::isEmpty, BACKENDS_GONE).finalValue())
+            .as("event-loop threads started by the failed provision and still alive")
+            .isEmpty();
+    }
+
+    /// Backend exit is asynchronous on the server: the count is polled until it reaches zero within the bound.
+    private static int awaitNoOtherBackends() {
         var observer = newConnector();
-        var others = observer.pinned(Duration.ZERO, session -> session.queryOne(OTHER_BACKENDS, COUNT), _ -> Promise.unitPromise())
-                             .await(timeSpan(10).seconds());
+        var others = PollUntil.pollUntil(() -> otherBackends(observer), count -> count == 0, BACKENDS_GONE, POLL_INTERVAL);
 
         observer.stop().await(timeSpan(5).seconds());
-        assertThat(others.unwrap()).as("backends left open after stop and unlisten").isZero();
+
+        return others.finalValue();
+    }
+
+    private static int otherBackends(AsyncSqlConnector observer) {
+        return observer.pinned(Duration.ZERO, session -> session.queryOne(OTHER_BACKENDS, COUNT), _ -> Promise.unitPromise())
+                       .await(timeSpan(10).seconds())
+                       .unwrap();
+    }
+
+    private static List<String> newEventLoopThreads(Set<Thread> before) {
+        return eventLoopThreads().stream()
+                                 .filter(thread -> !before.contains(thread) && thread.isAlive())
+                                 .map(Thread::getName)
+                                 .toList();
+    }
+
+    private static Set<Thread> eventLoopThreads() {
+        return Thread.getAllStackTraces()
+                     .keySet()
+                     .stream()
+                     .filter(thread -> thread.getName()
+                                             .toLowerCase()
+                                             .contains("eventloopgroup"))
+                     .collect(Collectors.toSet());
     }
 }

@@ -16,9 +16,12 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.postgres.Oid;
 import org.pragmatica.postgres.PgColumn;
 import org.pragmatica.postgres.PgRow;
@@ -64,7 +67,8 @@ class NotificationListenerGroupReleaseTest {
     @Test
     void handleClose_closesTheConnectibleAfterTheConnection() {
         var events = new CopyOnWriteArrayList<String>();
-        var handle = new NotificationListenerHandle(new RecordingConnection(events), new RecordingConnectible(events));
+        var handle = new NotificationListenerHandle(new RecordingConnection(events, Option.none()),
+                                                    new RecordingConnectible(events, Option.none()));
 
         handle.addListening(() -> {
             events.add("unlisten");
@@ -73,6 +77,51 @@ class NotificationListenerGroupReleaseTest {
 
         assertThat(handle.close().await(GUARD).isSuccess()).isTrue();
         assertThat(events).containsExactly("unlisten", "connection.close", "connectible.close");
+    }
+
+    /// v3641 F1: a dead LISTEN connection fails its close (the Terminate write fails); the Connectible, which holds the
+    /// group lease, is closed all the same, and the connection's failure is the result.
+    @Test
+    void handleClose_closesTheConnectible_evenWhenConnectionCloseFails() {
+        var events = new CopyOnWriteArrayList<String>();
+        var handle = new NotificationListenerHandle(new RecordingConnection(events, Option.some(CHANNEL_CLOSED)),
+                                                    new RecordingConnectible(events, Option.none()));
+
+        var outcome = handle.close().await(GUARD);
+
+        assertThat(events).containsExactly("connection.close", "connectible.close");
+        assertThat(outcome.isFailure()).isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isEqualTo(CHANNEL_CLOSED));
+    }
+
+    /// A failed unlisten neither skips the closes after it nor disappears: it is the first failure, so it is the result.
+    @Test
+    void handleClose_runsEveryRelease_afterAFailedUnlisten() {
+        var events = new CopyOnWriteArrayList<String>();
+        var handle = new NotificationListenerHandle(new RecordingConnection(events, Option.none()),
+                                                    new RecordingConnectible(events, Option.none()));
+
+        handle.addListening(() -> UNLISTEN_REFUSED.promise());
+
+        var outcome = handle.close().await(GUARD);
+
+        assertThat(events).containsExactly("connection.close", "connectible.close");
+        assertThat(outcome.isFailure()).as("the unlisten failure is the result").isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isEqualTo(UNLISTEN_REFUSED));
+    }
+
+    /// v3641 F2: a refused LISTEN fails the provision, and the failed provision closes the connection first (it holds the
+    /// channel and its stream lease), then the Connectible (the group lease).
+    @Test
+    void listenOn_refusedListen_failsAndClosesTheConnectionThenTheConnectible() {
+        var events = new CopyOnWriteArrayList<String>();
+        var connection = new RecordingConnection(events, Option.none());
+        var connectible = new RecordingConnectible(events, Option.some(connection));
+
+        var outcome = NotificationListenerFactory.listenOn(connectible, List.of("ok", "refused")).await(GUARD);
+
+        assertThat(outcome.isFailure()).as("provision with a refused LISTEN: %s", outcome).isTrue();
+        assertThat(events).containsExactly("connection.close", "connectible.close");
     }
 
     private static int refusedPort() throws IOException {
@@ -101,10 +150,14 @@ class NotificationListenerGroupReleaseTest {
                         .finalValue();
     }
 
-    private record RecordingConnectible(List<String> events) implements Connectible {
+    private static final Cause CHANNEL_CLOSED = Causes.cause("channel already closed (injected by the test)");
+    private static final Cause UNLISTEN_REFUSED = Causes.cause("UNLISTEN refused (injected by the test)");
+    private static final Cause LISTEN_REFUSED = Causes.cause("LISTEN refused (injected by the test)");
+
+    private record RecordingConnectible(List<String> events, Option<Connection> connection) implements Connectible {
         @Override
         public Promise<Connection> getConnection() {
-            throw new UnsupportedOperationException();
+            return connection.async();
         }
 
         @Override
@@ -130,7 +183,8 @@ class NotificationListenerGroupReleaseTest {
         }
     }
 
-    private record RecordingConnection(List<String> events) implements Connection {
+    /// Refuses a LISTEN on the channel named "refused"; its close fails with `closeFailure` when one is given.
+    private record RecordingConnection(List<String> events, Option<Cause> closeFailure) implements Connection {
         @Override
         public Promise<? extends PreparedStatement> prepareStatement(String sql, Oid... parametersTypes) {
             throw new UnsupportedOperationException();
@@ -138,7 +192,9 @@ class NotificationListenerGroupReleaseTest {
 
         @Override
         public Promise<Listening> subscribe(String channel, Consumer<String> onNotification) {
-            throw new UnsupportedOperationException();
+            return channel.equals("refused")
+                   ? LISTEN_REFUSED.promise()
+                   : Promise.success(() -> Promise.success(Unit.unit()));
         }
 
         @Override
@@ -149,7 +205,7 @@ class NotificationListenerGroupReleaseTest {
         @Override
         public Promise<Unit> close() {
             events.add("connection.close");
-            return Promise.success(Unit.unit());
+            return closeFailure.fold(() -> Promise.success(Unit.unit()), Cause::promise);
         }
 
         @Override
