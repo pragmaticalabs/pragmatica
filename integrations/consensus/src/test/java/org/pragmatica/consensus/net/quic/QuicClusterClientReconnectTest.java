@@ -19,8 +19,12 @@ package org.pragmatica.consensus.net.quic;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import io.netty.channel.Channel;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.handler.codec.quic.QuicChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -197,6 +201,39 @@ class QuicClusterClientReconnectTest {
               .onSuccess(connection -> assertThat(connection.peerId()).isEqualTo(SERVER_NODE));
     }
 
+    /// #3635: a client handed a shared group dials on it and never releases it; close() releases only a group the client
+    /// created. Mutation that reddens it: make `shutdownEventLoop`'s supplied-group guard never fire.
+    @Test
+    void close_neverReleasesASuppliedGroup() throws Exception {
+        var shared = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
+
+        try {
+            startServer();
+            var port = server.boundPort().fold(() -> fail("server not bound"), p -> p);
+            var sharedClient = createClient(Option.some(shared));
+
+            sharedClient.connect(SERVER_NODE, new InetSocketAddress("127.0.0.1", port))
+                        .await(AWAIT_TIMEOUT)
+                        .onFailure(cause -> fail("connect on the supplied group failed: " + cause.message()));
+            sharedClient.close().await(AWAIT_TIMEOUT).onFailure(cause -> fail("close failed: " + cause.message()));
+
+            assertThat(shared.isShuttingDown()).as("a supplied group is never released by the client's close()").isFalse();
+        } finally {
+            shared.shutdownGracefully(0, 5, TimeUnit.SECONDS).await(AWAIT_TIMEOUT.millis(), TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /// Control for the arm above: the same close() on a client that created its own group releases it.
+    @Test
+    void close_releasesAnOwnedGroup() {
+        var ownedClient = (QuicClusterClientInstance) createClient();
+        var group = ownedClient.eventLoopGroupForTest();
+
+        ownedClient.close().await(AWAIT_TIMEOUT).onFailure(cause -> fail("close failed: " + cause.message()));
+
+        assertThat(group.isShuttingDown()).as("control: close() releases the group the client created").isTrue();
+    }
+
     private static void assertIdentityMismatch(Cause cause, NodeId expected) {
         assertThat(cause).isInstanceOf(QuicTransportError.IdentityMismatch.class);
         var mismatch = (QuicTransportError.IdentityMismatch) cause;
@@ -216,10 +253,14 @@ class QuicClusterClientReconnectTest {
     }
 
     private QuicClusterClient createClient() {
+        return createClient(Option.empty());
+    }
+
+    private QuicClusterClient createClient(Option<EventLoopGroup> group) {
         var clientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("test-client"))
                                        .fold(_ -> fail("client SSL failed"), ssl -> ssl);
         return QuicClusterClient.quicClusterClient(
-            CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec, QuicTransportMetrics.quicTransportMetrics(), clientSsl, Option.empty(),
+            CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec, QuicTransportMetrics.quicTransportMetrics(), clientSsl, group,
             (_, _) -> {}
         );
     }

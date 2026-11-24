@@ -170,7 +170,7 @@ class StreamLifeAuthorityTest {
     void storageKeyChanges_areAdoptedAtEqualDurability_weakerIsNot_truncationAloneIsNot() {
         var life = config().withIncarnation(COMMITTED_LIFE).withReplication(new ReplicationFactors(3, 2));
         var biggerRetention = variant(life, RetentionPolicy.retentionPolicy(5000, 8 * 1024 * 1024, 600_000), life.declaration());
-        var hot = variant(life, life.retention(), declaration(Option.some(HotWindowDeclaration.hotWindowDeclaration(Option.some(4096L), Option.none())),
+        var hot = variant(life, life.retention(), declaration(Option.some(HotWindowDeclaration.hotWindowDeclaration(Option.some(1_200_000L), Option.none())),
                                                               Option.none(), Option.none()));
         var ingress = variant(life, life.retention(), declaration(Option.none(), Option.none(), Option.some(1_000_000L)));
         var truncation = variant(life, life.retention(), declaration(Option.none(),

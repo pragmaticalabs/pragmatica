@@ -329,3 +329,58 @@ a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-24T00:02:47Z	full	LeaderA
 a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-24T00:02:48Z	full	LeaderAdmission	readmitnoadseq	fail	fail	AdSeqMono	1613	2026.11.06.222357	OK	
 a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-24T00:02:50Z	full	LeaderAdmission	readmitstale	fail	fail	NoOlderAdoption	1992	2026.11.06.222357	OK	
 a0381b06099b520f9f130d6ca9994dc84894d033	clean	2026-11-24T00:02:51Z	full	LeaderAdmission	nokvseq	fail	fail	NoOlderAdoption	591	2026.11.06.222357	OK	
+d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:58:57Z	small	LeaderAdmission	interleave	fail	fail	PassiveInView	2230	2026.11.06.222357	OK	
+d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:59:00Z	small	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4784	2026.11.06.222357	OK	
+d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:59:02Z	small	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2599	2026.11.06.222357	OK	
+d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:59:04Z	small	LeaderAdmission	interleavefixed	pass	pass		2537	2026.11.06.222357	OK	
+d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:59:06Z	full	LeaderAdmission	interleave	fail	fail	PassiveInView	2402	2026.11.06.222357	OK	
+d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:59:08Z	full	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4784	2026.11.06.222357	OK	
+d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:59:10Z	full	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2796	2026.11.06.222357	OK	
+d1ef5c22864f5e15a825dd490aa8484fe10d32ba	clean	2026-11-24T06:59:13Z	full	LeaderAdmission	interleavefixed	pass	pass		2537	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:48Z	small	LeaderAdmission	interleave	fail	fail	PassiveInView	2437	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:50Z	small	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4784	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:52Z	small	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2939	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:54Z	small	LeaderAdmission	interleavefixed	pass	pass		2537	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:56Z	full	LeaderAdmission	interleave	fail	fail	PassiveInView	2226	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:18:58Z	full	LeaderAdmission	interleavelearns	fail	fail	PassiveLearns	4784	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:19:01Z	full	LeaderAdmission	interleavemono	fail	fail	AdSeqMono	2800	2026.11.06.222357	OK	
+b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:19:03Z	full	LeaderAdmission	interleavefixed	pass	pass		2537	2026.11.06.222357	OK	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:14:38Z	small	RabiaSlot	code	pass	pass		2745484	2026.11.06.222357	OK	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:19:27Z	small	RabiaSlot	nopastguard	pass	pass		5133867	2026.11.06.222357	OK	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:21:48Z	small	RabiaSlot	paper_d9	pass	pass		2423003	2026.11.06.222357	OK	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:21:52Z	small	RabiaSlot	nopastcur	fail	fail	NoRedecide	23782	2026.11.06.222357	OK	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:21:55Z	small	RabiaSlot	nocurslot	fail	fail	NoRedecide	23648	2026.11.06.222357	OK	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:21:56Z	small	RabiaSlot	nomarkerfirst	fail	fail	VotedImpliesMarker	22	2026.11.06.222357	OK	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:22:00Z	small	RabiaSlot	noemptyprop	fail	fail	Live	15886	2026.11.06.222357	OK	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:22:00Z	small	RabiaSlot	live	pass	skipped				SKIPPED-HEAVY	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:22:02Z	small	RabiaSlot	ctl_byz_agree	fail	fail	Agreement	7925	2026.11.06.222357	OK	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:22:03Z	small	RabiaSlot	ctl_byz_valid	fail	fail	Validity	615	2026.11.06.222357	OK	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:22:56Z	small	RabiaSlot	ctl_logprefix	fail	fail	LogPrefix	1071327	2026.11.06.222357	OK	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:44:08Z	small	DHTDepartureDrain	code	pass	pass		5208872	2026.11.06.222357	OK	N=4 RF=2 MaxDrain=1
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:44:08Z	small	DHTDepartureDrain	live	pass	skipped				SKIPPED-HEAVY	
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:44:21Z	small	DHTDepartureDrain	livesmall	pass	pass		89590	2026.11.06.222357	OK	N=3 RF=2 MaxDrain=1
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:44:54Z	small	DHTDepartureDrain	livecodrain	pass	pass		129902	2026.11.06.222357	OK	N=3 RF=2 MaxStale=0
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:46:21Z	small	DHTDepartureDrain	flaplive	pass	pass		90350	2026.11.06.222357	OK	N=3 RF=2 MaxDrain=1
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:46:27Z	small	DHTDepartureDrain	removed	pass	pass		129902	2026.11.06.222357	OK	N=3 RF=2 MaxDrain=2 MaxStale=0
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:46:50Z	small	DHTDepartureDrain	emptyset	fail	fail	NoLastCopyLoss	2228123	2026.11.06.222357	OK	N=4 RF=3
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:46:51Z	small	DHTDepartureDrain	noexhaust	fail	fail	NoLastCopyLoss	424	2026.11.06.222357	OK	N=3 RF=3 MaxDrain=1 MaxStale=0
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:46:53Z	small	DHTDepartureDrain	noselfcheck	fail	fail	NoLastCopyLoss	50547	2026.11.06.222357	OK	N=4 RF=3
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:46:55Z	small	DHTDepartureDrain	nofallback	fail	fail	NoLastCopyLoss	50692	2026.11.06.222357	OK	N=4 RF=3
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:46:57Z	small	DHTDepartureDrain	abandon	fail	fail	NoLastCopyLoss	26395	2026.11.06.222357	OK	N=4 RF=3
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:47:03Z	small	DHTDepartureDrain	wavesset	fail	fail	ReportTruthful	370369	2026.11.06.222357	OK	N=4 RF=3
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:48:59Z	small	DHTDepartureDrain	nocodrain	fail	fail	NoLastCopyLoss	10922492	2026.11.06.222357	OK	N=4 RF=2
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:49:01Z	small	DHTDepartureDrain	noview	fail	fail	ReceiverAgrees	10643	2026.11.06.222357	OK	N=4 RF=2 MaxDrain=1 MaxStale=1
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:55:43Z	small	DHTDepartureDrain	waves	fail	fail	NoLastCopyLoss	38441690	2026.11.06.222357	OK	N=4 RF=2
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:56:11Z	small	DHTDepartureDrain	nopruned	fail	fail	ReplicaDegree	1797930	2026.11.06.222357	OK	N=4 RF=2 MaxStale=0
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:58:11Z	small	DHTDepartureDrain	wideaccept	pass	pass		5699456	2026.11.06.222357	OK	N=4 RF=2 MaxDrain=1
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:58:20Z	small	DHTDepartureDrain	allnamed	pass	pass		321620	2026.11.06.222357	OK	N=3 RF=2
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T10:58:24Z	small	DHTDepartureDrain	allnamedflap	fail	fail	NoLastCopyLoss	67636	2026.11.06.222357	OK	N=3 RF=2
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:00:19Z	small	DHTDepartureDrain	strand	pass	pass		5208872	2026.11.06.222357	OK	N=4 RF=2 MaxDrain=1
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:01:24Z	small	DHTDepartureDrain	nohaltfair	fail	fail	DrainCompletes	720389	2026.11.06.222357	OK	N=3 RF=2
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:01:26Z	small	DHTDepartureDrain	allnamedpre	fail	fail	NoLastCopyLoss	3785	2026.11.06.222357	OK	N=3 RF=2
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:01:29Z	small	DHTDepartureDrain	strandpre	fail	fail	ReplicaPlacement	40143	2026.11.06.222357	OK	N=4 RF=2 MaxDrain=1
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:01:31Z	small	DHTDepartureDrain	nonamedself	fail	fail	ReceiverAgrees	3394	2026.11.06.222357	OK	N=3 RF=2
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:03:46Z	small	DHTDepartureDrain	report	pass	pass		5208872	2026.11.06.222357	OK	N=4 RF=2 MaxDrain=1
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:03:48Z	small	DHTDepartureDrain	nodeliverer	fail	fail	ReportTruthful	5361	2026.11.06.222357	OK	N=3 RF=2
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:10:40Z	small	DHTDepartureDrain	flapcode	pass	pass		18396824	2026.11.06.222357	OK	N=4 RF=2 MaxDrain=1
+461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:10:43Z	small	DHTDepartureDrain	flap	fail	fail	ReceiverAgrees	46258	2026.11.06.222357	OK	N=4 RF=2 MaxDrain=1

@@ -98,6 +98,10 @@ public sealed interface QuicClusterClient {
     /// [#connect] would reject on every reconciler tick. The caller constructs the dial target from
     /// the resolved address (`new InetSocketAddress(inetAddress, port)`, which never re-resolves).
     Promise<InetAddress> resolve(String host);
+    /// #3635: certificate rotation swaps the TLS context for dials that START after the call; connections
+    /// already dialed keep the context they were built with until they end. One client (and so one owned event-loop
+    /// group and one per-peer datagram-channel map) therefore serves the network across every rotation.
+    Unit renewSslContext(QuicSslContext newContext);
     /// Shut down the client and release resources.
     Promise<Unit> close();
     /// Close the per-peer datagram (UDP) channel allocated by [#connect].
@@ -221,6 +225,11 @@ public sealed interface QuicClusterClient {
         }
 
         @Override
+        public Unit renewSslContext(QuicSslContext newContext) {
+            return unit();
+        }
+
+        @Override
         public Promise<Unit> close() {
             return Promise.unitPromise();
         }
@@ -277,13 +286,25 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         helloTimeoutMs = millis;
     }
 
+    /// #3635 test seam: the group dials run on (owned unless one was supplied).
+    @Contract
+    EventLoopGroup eventLoopGroupForTest() {
+        return eventLoopGroup;
+    }
+
+    /// #3635 test seam: the TLS context the NEXT dial will use.
+    @Contract
+    QuicSslContext sslContextForTest() {
+        return sslContext;
+    }
+
     private final NodeId selfId;
     private final NodeAddress selfAddress;
     private final Map<String, String> selfLabels;
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final QuicTransportMetrics quicMetrics;
-    private final QuicSslContext sslContext;
+    private volatile QuicSslContext sslContext;
     private final EventLoopGroup eventLoopGroup;
     private final boolean ownsEventLoop;
     private final QuicClusterServer.MessageReceiver messageReceiver;
@@ -404,6 +425,13 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         }
 
         return nameResolver;
+    }
+
+    @Override
+    public Unit renewSslContext(QuicSslContext newContext) {
+        sslContext = newContext;
+
+        return unit();
     }
 
     @Override

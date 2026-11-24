@@ -1,0 +1,2 @@
+### Fixed (2026-11-24 — #3643, #3051: arm K driver formats JSON numbers locale-independently)
+- **`ArmKDriver` wrote `opsPerSec`, the latency percentiles and the `%012d` value keys through `String.format` with the default locale**, so a host running a comma-decimal or non-ASCII-digit locale produced invalid JSON numbers and keys. All three calls now pass `Locale.ROOT`. [verified: `javac` of the single-file program; the three `String.format` calls are the only formatting calls in the file]

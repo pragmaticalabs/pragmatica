@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import jdk.jfr.Recording;
 import jdk.jfr.consumer.RecordedEvent;
@@ -312,6 +313,8 @@ class FileOpsTest {
 
     @Nested
     class Walk {
+        private static final List<String> SIBLINGS = List.of("0.acked", "0.acked.tmp", "1.acked", "1.acked.tmp");
+
         @Test
         void walk_collectsAllPaths() {
             createDirectories(tempDir.resolve("sub"));
@@ -346,6 +349,102 @@ class FileOpsTest {
         void walk_fails_forMissingDir() {
             var result = walk(tempDir.resolve("nonexistent"));
             assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void walk_skipsEntriesThatVanishAfterTheDirectoryRead_andListsEveryOtherEntry() {
+            // Deterministic race (#3661): the predicate runs inside the visit, after the directory has been read and
+            // before the next entry's attributes are. The first root-level file it sees deletes every other
+            // root-level file, so whichever entry the filesystem lists first, the rest vanish between the two reads.
+            createDirectories(tempDir.resolve("sub"));
+            writeString(tempDir.resolve("sub/kept.txt"), "k");
+            SIBLINGS.forEach(name -> writeString(tempDir.resolve(name), name));
+            var survivor = new AtomicReference<Path>();
+
+            var result = walk(tempDir, path -> survivesAfterDeletingSiblings(path, survivor));
+
+            assertThat(result.isSuccess()).as("a vanished entry must not fail the walk: %s", result).isTrue();
+            assertThat(survivor.get()).isNotNull();
+            assertThat(result.unwrap()).containsExactlyInAnyOrder(tempDir,
+                                                                   tempDir.resolve("sub"),
+                                                                   tempDir.resolve("sub/kept.txt"),
+                                                                   survivor.get());
+        }
+
+        private boolean survivesAfterDeletingSiblings(Path path, AtomicReference<Path> survivor) {
+            if (path.getParent() != null && path.getParent().equals(tempDir) && !path.getFileName().toString().equals("sub")
+                && survivor.compareAndSet(null, path)) {
+                deleteSiblingsOf(path);
+            }
+
+            return true;
+        }
+
+        private void deleteSiblingsOf(Path path) {
+            SIBLINGS.stream()
+                    .map(tempDir::resolve)
+                    .filter(sibling -> !sibling.equals(path))
+                    .forEach(sibling -> delete(sibling).unwrap());
+        }
+
+        @Test
+        void walk_detailIsTheBareMessage_forUnreadableRootAndUnreadableSubdirectory() throws IOException {
+            var root = tempDir.resolve("detail-root");
+            var locked = root.resolve("locked");
+            createDirectories(locked);
+            setPosixPermissions(locked, "---------");
+            try {
+                assumeTrue(!Files.isReadable(locked), "running as a user that ignores directory permissions");
+
+                var subdirDetail = walk(root).fold(cause -> ((FileError.WalkFailed) cause).detail(), _ -> "SUCCESS");
+
+                setPosixPermissions(locked, "rwx------");
+                setPosixPermissions(root, "---------");
+
+                var rootDetail = walk(root).fold(cause -> ((FileError.WalkFailed) cause).detail(), _ -> "SUCCESS");
+
+                assertThat(subdirDetail).isEqualTo(locked.toString());
+                assertThat(rootDetail).isEqualTo(root.toString());
+            } finally {
+                setPosixPermissions(root, "rwx------");
+                setPosixPermissions(locked, "rwx------");
+            }
+        }
+
+        @Test
+        void walk_rootRemovedDuringWalk_yieldsTheEntriesListedBeforeItWent() {
+            var root = tempDir.resolve("vanishing-root");
+            createDirectories(root);
+
+            var result = walk(root, path -> deletingRoot(root, path));
+
+            assertThat(result.isSuccess()).as("same as Files.walk: %s", result).isTrue();
+            assertThat(result.unwrap()).containsExactly(root);
+        }
+
+        private boolean deletingRoot(Path root, Path path) {
+            if (path.equals(root)) {
+                delete(root).unwrap();
+            }
+
+            return true;
+        }
+
+        @Test
+        void walk_fails_forUnreadableDirectory() throws IOException {
+            var locked = tempDir.resolve("locked");
+            createDirectories(locked);
+            writeString(locked.resolve("inside.txt"), "x");
+            setPosixPermissions(locked, "---------");
+            try {
+                assumeTrue(!Files.isReadable(locked), "running as a user that ignores directory permissions");
+
+                var result = walk(tempDir);
+
+                assertThat(result.isFailure()).as("an unreadable directory is a real I/O failure, not a vanished entry").isTrue();
+            } finally {
+                setPosixPermissions(locked, "rwx------");
+            }
         }
     }
 

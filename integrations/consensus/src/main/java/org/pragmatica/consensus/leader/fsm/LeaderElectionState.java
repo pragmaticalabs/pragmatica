@@ -1155,17 +1155,6 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// only for the leader adopted at it, [#isOlderThanAdopted]), and the leader is in the stored view ([#admittedToView],
     /// I2's admission).
     ///
-    /// ```tla LeaderAdmission:P_Push
-    /// \* Passive's one admission for a pushed commit (#3581), one atomic step with the fix "serial" (#3587, #3605).
-    /// P_Push(r) == /\ Fix("serial")
-    ///              /\ st = "passive"
-    ///              /\ PushStep(r)
-    ///              /\ IF Admits(r, "push", view)
-    ///                 THEN AdoptP(r) /\ suspect' = IF r[2] > adSeq THEN None ELSE suspect
-    ///                 ELSE UNCHANGED <<leader, adSeq, lastAd, suspect, taken>>
-    ///              /\ UNCHANGED <<st, view, vseq, kv, base, adm, env, hi, removed, cluster>>
-    /// ```
-    ///
     /// ```tla LeaderAdmission:P_Check
     /// \* Without "serial" (the code before #3605, #3587): the gate and admittedToView read the stored view, then the
     /// \* writes follow; a view write on another thread (Fsm.dispatch ran on the caller thread) may run in between.

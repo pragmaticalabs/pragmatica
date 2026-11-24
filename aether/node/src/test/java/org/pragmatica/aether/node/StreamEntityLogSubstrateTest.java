@@ -7,7 +7,6 @@ package org.pragmatica.aether.node;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.resource.entity.EntityLogError;
@@ -242,45 +241,13 @@ class StreamEntityLogSubstrateTest {
         assertThat(substrate.read("orders", 0, 0L, 10).await().map(List::size).or(-1)).isEqualTo(1);
     }
 
-    /// #1233: an entity keyspace log is durable state even at replicationFactor = 1 with no WAL (Forge,
-    /// embedded, or the non-durable opt-in). A record the frozen partition ring cannot store must FAIL the
-    /// append, never be acked as a committed write. Driven through the real `ensureLog`/`append` path so
-    /// the `entity:` naming the drop rule keys on (`EntityPartitionArc.arcName` here,
-    /// `StreamPartitionManager`'s entity prefix there) cannot drift apart unnoticed.
-    @Test
-    @Disabled("#1233 pin unreachable once the ring is sized from the hot window: the entity ring reserves its whole 1 MiB max_event_size up front, so no legal entity record can exceed its region; handed to S2b-2a phase 2, enable when a ring-level drop of a legal record exists again; the enabled tripwire below pins the behaviour that replaced it")
-    void append_failsWithEventDropped_whenFrozenRingCannotFitRecord_evenAtReplicationFactorOneWithoutWal() {
-        // The budget is the entity partition floor: 10k index slots + the first data region the entity ring reserves
-        // (the 1 MiB entity max_event_size, within the 64 MiB cap, per StreamEntityLogSubstrate's ring sizing). Creation
-        // fits, no growth beyond it is admitted, and the record below is exactly one max-size record, which cannot fit
-        // beside the first one in that region whichever way the ring is sized (retention or hot window).
-        var floor = RingGeometry.floorBytes(10_000L, 64L * 1024 * 1024, 1_048_576L);
-        var partitionManager = StreamPartitionManager.streamPartitionManager(floor);
-        var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
-                                                                                                                                          false),
-                                                 null,
-                                                 null,
-                                                 EvictionListener.NOOP,
-                                                 null,
-                                                 null,
-                                                 null);
-
-        substrate.ensureLog("ledger", 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
-        substrate.append("ledger", 0, new byte[16]).await().unwrap();
-
-        substrate.append("ledger", 0, new byte[1_048_576])
-                 .await()
-                 .onSuccess(offset -> fail("an entity record the frozen ring dropped was acked at offset " + offset))
-                 .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
-    }
-
-    /// Tripwire beside the disabled #1233 pin above: an entity record of exactly the ring's `max_event_size` is ACKED, never
-    /// dropped, even at replicationFactor = 1 with no WAL (Forge, embedded, or the non-durable opt-in) and a budget that
-    /// admits no growth, because the ring reserves a whole `max_event_size` region at creation. The ring-level drop that the
-    /// disabled test drives is unreachable for a legal entity record; this goes red the day it becomes reachable again, and
-    /// then the disabled test is the one to enable. Driven through the real `ensureLog`/`append` path (over a pre-created `entity:` ring with a 256 KiB `max_event_size`, see the test body) so
-    /// the `entity:` naming the drop rule keys on (`EntityPartitionArc.arcName` here,
-    /// `StreamPartitionManager`'s entity prefix there) cannot drift apart unnoticed.
+    /// #1233, ring invariant (S2b-2a, ruling 2026-11-23): a ring holds at least one `max_event_size` event of its current life, so an
+    /// entity record of exactly the ring's `max_event_size` is ACKED, never dropped, even at replicationFactor = 1 with no WAL
+    /// (Forge, embedded, or the non-durable opt-in) and a budget that admits no growth, because the ring reserves a whole
+    /// `max_event_size` region at creation. The SPM-level pin of the ring's `EVENT_DROPPED` was deleted as unreachable for a legal
+    /// record (the ring-level drop is pinned in `OffHeapRingBufferTest.FrozenRingDrop`); this stays enabled because it asserts the invariant
+    /// itself. Driven through the real `ensureLog`/`append` path (over a pre-created `entity:` ring with a 256 KiB `max_event_size`, see the test body) so
+    /// the `entity:` naming `EntityPartitionArc.arcName` here and `StreamPartitionManager`'s entity prefix there cannot drift apart unnoticed.
     @Test
     void append_acksAnEntityRecordOfFullMaxEventSize_atReplicationFactorOneWithoutWalAndNoGrowthBudget() {
         // The `entity:` ring is created here BEFORE `ensureLog` (which tolerates an existing stream of the same shape) so that its
@@ -321,9 +288,8 @@ class StreamEntityLogSubstrateTest {
         substrate.append("ledger", 0, new byte[(int) RingGeometry.SEGMENT_BYTES])
                  .await()
                  .onSuccess(offset -> assertThat(offset).isEqualTo(1L))
-                 .onFailure(cause -> fail("TRIPWIRE: an entity record of exactly max_event_size was refused, so the #1233 ring-level drop is reachable again: "
-                                     + "enable append_failsWithEventDropped_whenFrozenRingCannotFitRecord_evenAtReplicationFactorOneWithoutWal "
-                                     + "and retire this tripwire; cause: " + cause.message()));
+                 .onFailure(cause -> fail("a ring must hold one max_event_size event: an entity record of exactly max_event_size was refused: "
+                                     + cause.message()));
     }
 
     /// T-278 refusal arm (O19 ruled (c)): the entity `max_event_size` is 1 MiB. A record one byte over is refused with the

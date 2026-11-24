@@ -230,8 +230,9 @@ class OrderedSectionRollbackTest {
         }
     }
 
-    /// NT-33: T-017 through the rollback, batch variant. A frozen ring that cannot fit a run's event writes no WAL record and leaves the
-    /// offsets intact; the next run lands at the next contiguous offset. Enabled regression guard, GREEN before and after PR-2c.
+    /// NT-33: T-017 through the rollback, batch variant. A frozen ring that cannot fit a run writes no WAL record and leaves the
+    /// offsets intact; the next run lands at the next contiguous offset. Enabled regression guard, GREEN before and after PR-2c. The run
+    /// is events that each fit the declared window (a window below `max_event_size` is not creatable, S2b-2a) and jointly exceed it.
     @Nested
     class FrozenRingBatch {
         @TempDir
@@ -248,8 +249,8 @@ class OrderedSectionRollbackTest {
             manager.publishLocalBatchAtFloor("feed-2c", PARTITION, List.of(bytes("evt-0"), bytes("evt-1")), 1L, 0)
                    .onFailure(cause -> fail(cause.message()));
 
-            manager.publishLocalBatchAtFloor("feed-2c", PARTITION, List.of(bytes("evt-2"), new byte[300_000]), 2L, 0)
-                   .onSuccess(offset -> fail("a run holding an event the frozen ring cannot fit was appended through " + offset))
+            manager.publishLocalBatchAtFloor("feed-2c", PARTITION, List.of(bytes("evt-2"), new byte[150_000], new byte[150_000]), 2L, 0)
+                   .onSuccess(offset -> fail("a run the frozen ring cannot fit was appended through " + offset))
                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.RUN_DOES_NOT_FIT));
 
             assertThat(walOffsetsOf(manager, "feed-2c")).as("the refused run wrote no WAL record").containsExactly(0L, 1L);

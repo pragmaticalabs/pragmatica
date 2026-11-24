@@ -335,7 +335,10 @@ public sealed interface ClusterEventsAssembly {
         // events). A node that is NOT a cluster-events replica read-forwards to a CAUGHT_UP replica via
         // the StreamForwardClient instead of reading its own empty partition (returning 200 []); a node
         // that IS a caught-up replica reads locally; during the bootstrap window (no caught-up replica
-        // visible yet) it fails soft to the local partition. NODE_FAILED/NODE_LEFT are still emitted
+        // visible yet) it fails soft to the local partition; when every selected peer cannot be asked (dead, #946)
+        // a caught-up replica answers from its own copy rather than surfacing the forward failure [mechanism: the router
+        // is exercised by ForwardingReadRouterTest and EmberAnyReplicaReadFallbackTest on a user stream; no test reads
+        // /api/events with its peers dead]. NODE_FAILED/NODE_LEFT are still emitted
         // leader-gated, then write-forwarded to the partition-0 owner (#1230), which replicates them.
         //
         // HISTORY (#94/B5): forward-capable reads were previously reverted to LOCAL because a fresh

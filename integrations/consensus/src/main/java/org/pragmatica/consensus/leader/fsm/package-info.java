@@ -52,7 +52,8 @@
 /// \*                   45a9e2fdd9; fixed by #3605: LeaderManager runs observeViewSequence and the push's dispatch in
 /// \*                   one task of the node's serial executor, which every view write also enters; before it,
 /// \*                   Fsm.dispatch ran on the caller thread and a view write on another thread could run between;
-/// \*                   configs `interleave`, `interleavelearns`, `interleavemono` drop it: the known-bad of #3587)
+/// \*                   configs `interleave`, `interleavelearns`, `interleavemono` drop it: the known-bad of #3587;
+/// \*                   `interleavefixed` is their Fixed twin, the same constants with the fix on, and must pass)
 /// \*   entryhold     - Passive's entry holds an inherited leader to the stored view, whatever the predecessor (#3581,
 /// \*                   dropLeaderOutOfViewOnEntry: without it a Led holding a FIX 1 leader absent from the view
 /// \*                   enters Passive still holding it)
@@ -527,6 +528,19 @@
 /// CONSTANT Fixed = {"entryhold", "entrypull", "pushinview", "pullinview", "repull", "removalnopull", "adseq",
 ///                   "kvseq"}
 /// PROPERTY AdSeqMono
+/// ```
+///
+/// ```tlacfg LeaderAdmission:interleavefixed
+/// CONSTANTS Role = "passive"
+///           Local = FALSE
+///           MaxSeq = 3
+///           MaxCommits = 2
+///           EnvSteps = 3
+///           Env = {"view", "commit"}
+///           Mutant = {}
+/// CONSTANT Fixed <- AllFixes
+/// INVARIANT PassiveInView
+/// PROPERTY PassiveLearns AdSeqMono
 /// ```
 ///
 /// ```tlacfg LeaderAdmission:noentryhold
