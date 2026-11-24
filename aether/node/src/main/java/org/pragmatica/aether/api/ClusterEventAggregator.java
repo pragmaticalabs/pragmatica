@@ -9,6 +9,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 import java.util.List;
 import java.util.Map;
@@ -2996,6 +2997,6 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
             return durationMs + "ms";
         }
 
-        return String.format("%.1fs", durationMs / 1000.0);
+        return String.format(Locale.ROOT, "%.1fs", durationMs / 1000.0);
     }
 }

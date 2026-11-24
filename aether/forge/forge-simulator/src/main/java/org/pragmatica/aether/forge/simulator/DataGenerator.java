@@ -4,6 +4,7 @@
 package org.pragmatica.aether.forge.simulator;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Queue;
 import java.util.Random;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -80,7 +81,7 @@ public sealed interface DataGenerator {
 
         @Override
         public String generate(Random random) {
-            return String.format("%s%08d", prefix, random.nextInt(maxId));
+            return String.format(Locale.ROOT, "%s%08d", prefix, random.nextInt(maxId));
         }
 
         public static Result<CustomerIdGenerator> customerIdGenerator(String prefix, int maxId) {
@@ -135,7 +136,8 @@ public sealed interface DataGenerator {
             }
 
             public String toJson() {
-                return String.format("{\"customerId\":\"%s\",\"items\":[{\"productId\":\"%s\",\"quantity\":%d}]}",
+                return String.format(Locale.ROOT,
+                                     "{\"customerId\":\"%s\",\"items\":[{\"productId\":\"%s\",\"quantity\":%d}]}",
                                      customerId,
                                      productId,
                                      quantity);
@@ -156,7 +158,7 @@ public sealed interface DataGenerator {
         }
 
         private static String syntheticOrderId(Random random) {
-            return "ORD-" + String.format("%08d", random.nextInt(100_000_000));
+            return "ORD-" + String.format(Locale.ROOT, "%08d", random.nextInt(100_000_000));
         }
 
         public Result<Unit> addOrderId(String orderId) {

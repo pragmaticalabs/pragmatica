@@ -81,7 +81,8 @@ public final class KubernetesGenerator implements Generator {
     }
 
     private String formatInstructions(Path outputDir, String namespace, int nodes, String serviceType) {
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             Kubernetes manifests generated in: %s
 
             To deploy the cluster:
@@ -110,7 +111,8 @@ public final class KubernetesGenerator implements Generator {
     }
 
     private String generateNamespace(AetherConfig config) {
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             apiVersion: v1
             kind: Namespace
             metadata:
@@ -145,7 +147,11 @@ public final class KubernetesGenerator implements Generator {
     }
 
     private String peerAddress(int index, String namespace, int clusterPort) {
-        return "aether-node-%d.aether-headless.%s.svc.cluster.local:%d".formatted(index, namespace, clusterPort);
+        return String.format(Locale.ROOT,
+                             "aether-node-%d.aether-headless.%s.svc.cluster.local:%d",
+                             index,
+                             namespace,
+                             clusterPort);
     }
 
     private String formatConfigMap(String namespace,
@@ -154,7 +160,8 @@ public final class KubernetesGenerator implements Generator {
                                    int clusterPort,
                                    String heap,
                                    String gc) {
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             apiVersion: v1
             kind: ConfigMap
             metadata:
@@ -205,7 +212,8 @@ public final class KubernetesGenerator implements Generator {
                      ? "\n            scheme: HTTPS"
                      : "";
 
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             apiVersion: apps/v1
             kind: StatefulSet
             metadata:
@@ -278,7 +286,8 @@ public final class KubernetesGenerator implements Generator {
         var mgmtPort = config.cluster().ports().management();
         var clusterPort = config.cluster().ports().cluster();
 
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             apiVersion: v1
             kind: Service
             metadata:
@@ -307,7 +316,8 @@ public final class KubernetesGenerator implements Generator {
         var k8s = k8sConfig(config);
         var mgmtPort = config.cluster().ports().management();
 
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             apiVersion: v1
             kind: Service
             metadata:
@@ -331,7 +341,8 @@ public final class KubernetesGenerator implements Generator {
         var k8s = k8sConfig(config);
         var maxUnavailable = 1;
 
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             apiVersion: policy/v1
             kind: PodDisruptionBudget
             metadata:
@@ -350,7 +361,8 @@ public final class KubernetesGenerator implements Generator {
     private String generateApplyScript(AetherConfig config) {
         var namespace = k8sConfig(config).namespace();
 
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             #!/bin/bash
             set -e
 

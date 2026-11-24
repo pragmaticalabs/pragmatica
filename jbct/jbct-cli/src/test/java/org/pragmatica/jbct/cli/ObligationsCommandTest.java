@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,11 +31,13 @@ class ObligationsCommandTest {
     private final ByteArrayOutputStream err = new ByteArrayOutputStream();
     private PrintStream originalOut;
     private PrintStream originalErr;
+    private Locale originalLocale;
 
     @BeforeEach
     void captureStreams() throws Exception {
         originalOut = System.out;
         originalErr = System.err;
+        originalLocale = Locale.getDefault();
         System.setOut(new PrintStream(out, true, UTF_8));
         System.setErr(new PrintStream(err, true, UTF_8));
         Files.writeString(work.resolve("Saga.java"),
@@ -53,6 +56,7 @@ class ObligationsCommandTest {
     void restoreStreams() {
         System.setOut(originalOut);
         System.setErr(originalErr);
+        Locale.setDefault(originalLocale);
     }
 
     private Path coverage(String coveredInstructions) throws Exception {
@@ -115,5 +119,15 @@ class ObligationsCommandTest {
     void output_declaresWhatItDoesNotAnalyse() throws Exception {
         run("--coverage=" + coverage("12"), work.toString());
         assertThat(out.toString(UTF_8)).contains("not analysed by this command");
+    }
+
+    /// #3051: `%d` in the JSON writer follows the default locale unless pinned; `ar-EG` prints Arabic-Indic digits, which no
+    /// JSON parser reads. No CI runner has such a locale, so it is forced here.
+    @Test
+    void json_underArabicDefaultLocale_hasAsciiDigits() throws Exception {
+        Locale.setDefault(Locale.forLanguageTag("ar-EG"));
+
+        assertThat(run("--format=json", "--coverage=" + coverage("0"), work.toString())).isZero();
+        assertThat(out.toString(UTF_8)).contains("\"line\": 4,");
     }
 }

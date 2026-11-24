@@ -256,11 +256,13 @@ public class ObligationsCommand implements Callable<Integer> {
         for (int i = 0; i < obligations.size(); i++) {
             var o = obligations.get(i);
 
-            builder.append("    {\"file\": \"%s\", \"line\": %d, \"method\": \"%s\", \"kind\": \"%s\", \"covered\": %s}".formatted(o.file(),
-                                                                                                                                   o.line(),
-                                                                                                                                   o.method(),
-                                                                                                                                   o.kind(),
-                                                                                                                                   o.covered()));
+            builder.append(String.format(Locale.ROOT,
+                                         "    {\"file\": \"%s\", \"line\": %d, \"method\": \"%s\", \"kind\": \"%s\", \"covered\": %s}",
+                                         o.file(),
+                                         o.line(),
+                                         o.method(),
+                                         o.kind(),
+                                         o.covered()));
             builder.append(i < obligations.size() - 1
                            ? ",\n"
                            : "\n");

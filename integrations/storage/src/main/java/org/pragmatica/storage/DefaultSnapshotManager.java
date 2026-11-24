@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -987,6 +988,6 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
     // --- File naming ---
     private static String snapshotFileName(long epoch) {
-        return SNAPSHOT_PREFIX + String.format("%06d", epoch) + SNAPSHOT_SUFFIX;
+        return SNAPSHOT_PREFIX + String.format(Locale.ROOT, "%06d", epoch) + SNAPSHOT_SUFFIX;
     }
 }

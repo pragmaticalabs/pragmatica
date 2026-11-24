@@ -6,6 +6,7 @@ package org.pragmatica.aether.forge.simulator;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -287,7 +288,8 @@ public final class EntryPointMetrics {
         }
 
         public String toJson() {
-            return String.format("{\"name\":\"%s\",\"rate\":%d,\"totalCalls\":%d,\"successCalls\":%d,"
+            return String.format(Locale.ROOT,
+                                 "{\"name\":\"%s\",\"rate\":%d,\"totalCalls\":%d,\"successCalls\":%d,"
                                 + "\"failureCalls\":%d,\"successRate\":%.2f,\"avgLatencyMs\":%.2f,"
                                 + "\"requestsPerSecond\":%.1f,\"p50LatencyMs\":%.1f,\"p99LatencyMs\":%.1f}",
                                  name,

@@ -98,27 +98,31 @@ public class LintCommand implements Callable<Integer> {
         var sb = new StringBuilder();
 
         sb.append("{\n");
-        sb.append("  \"collected\": %d,\n".formatted(result.collected()));
-        sb.append("  \"examined\": %d,\n".formatted(result.examined()));
-        sb.append("  \"skippedByMode\": %d,\n".formatted(result.skippedByMode()));
+        sb.append(String.format(Locale.ROOT, "  \"collected\": %d,\n", result.collected()));
+        sb.append(String.format(Locale.ROOT, "  \"examined\": %d,\n", result.examined()));
+        sb.append(String.format(Locale.ROOT, "  \"skippedByMode\": %d,\n", result.skippedByMode()));
         sb.append("  \"skipped\": [");
         sb.append(unanalysed.isEmpty()
                   ? "],\n"
                   : "\n" + unanalysed.stream().map(this::skippedJson).collect(Collectors.joining(",\n")) + "\n  ],\n");
-        sb.append("  \"outcome\": [%s],\n".formatted(outcome.stream()
-                                                            .map(line -> "\"" + escapeJson(line) + "\"")
-                                                            .collect(Collectors.joining(", "))));
+        sb.append(String.format(Locale.ROOT,
+                                "  \"outcome\": [%s],\n",
+                                outcome.stream()
+                                       .map(line -> "\"" + escapeJson(line) + "\"")
+                                       .collect(Collectors.joining(", "))));
         sb.append("  \"diagnostics\": [\n");
         for (int i = 0; i < diagnostics.size(); i++) {
             var d = diagnostics.get(i);
 
             sb.append("    {\n");
-            sb.append("      \"ruleId\": \"%s\",\n".formatted(d.ruleId()));
-            sb.append("      \"severity\": \"%s\",\n".formatted(d.severity().name().toLowerCase(Locale.ROOT)));
-            sb.append("      \"file\": \"%s\",\n".formatted(escapeJson(d.file())));
-            sb.append("      \"line\": %d,\n".formatted(d.line()));
-            sb.append("      \"column\": %d,\n".formatted(d.column()));
-            sb.append("      \"message\": \"%s\"\n".formatted(escapeJson(d.message())));
+            sb.append(String.format(Locale.ROOT, "      \"ruleId\": \"%s\",\n", d.ruleId()));
+            sb.append(String.format(Locale.ROOT,
+                                    "      \"severity\": \"%s\",\n",
+                                    d.severity().name().toLowerCase(Locale.ROOT)));
+            sb.append(String.format(Locale.ROOT, "      \"file\": \"%s\",\n", escapeJson(d.file())));
+            sb.append(String.format(Locale.ROOT, "      \"line\": %d,\n", d.line()));
+            sb.append(String.format(Locale.ROOT, "      \"column\": %d,\n", d.column()));
+            sb.append(String.format(Locale.ROOT, "      \"message\": \"%s\"\n", escapeJson(d.message())));
             sb.append("    }");
             if (i < diagnostics.size() - 1) {
                 sb.append(",");
@@ -133,8 +137,10 @@ public class LintCommand implements Callable<Integer> {
     }
 
     private String skippedJson(Unanalysed skipped) {
-        return "    { \"file\": \"%s\", \"reason\": \"%s\" }".formatted(escapeJson(skipped.file().toString()),
-                                                                        escapeJson(skipped.reason()));
+        return String.format(Locale.ROOT,
+                             "    { \"file\": \"%s\", \"reason\": \"%s\" }",
+                             escapeJson(skipped.file().toString()),
+                             escapeJson(skipped.reason()));
     }
 
     private void printSarifResults(RunResult result) {
@@ -157,14 +163,18 @@ public class LintCommand implements Callable<Integer> {
             var d = diagnostics.get(i);
 
             sb.append("      {\n");
-            sb.append("        \"ruleId\": \"%s\",\n".formatted(d.ruleId()));
-            sb.append("        \"level\": \"%s\",\n".formatted(sarifLevel(d.severity())));
-            sb.append("        \"message\": { \"text\": \"%s\" },\n".formatted(escapeJson(d.message())));
+            sb.append(String.format(Locale.ROOT, "        \"ruleId\": \"%s\",\n", d.ruleId()));
+            sb.append(String.format(Locale.ROOT, "        \"level\": \"%s\",\n", sarifLevel(d.severity())));
+            sb.append(String.format(Locale.ROOT, "        \"message\": { \"text\": \"%s\" },\n", escapeJson(d.message())));
             sb.append("        \"locations\": [{\n");
             sb.append("          \"physicalLocation\": {\n");
-            sb.append("            \"artifactLocation\": { \"uri\": \"%s\" },\n".formatted(escapeJson(d.file())));
-            sb.append("            \"region\": { \"startLine\": %d, \"startColumn\": %d }\n".formatted(d.line(),
-                                                                                                       d.column()));
+            sb.append(String.format(Locale.ROOT,
+                                    "            \"artifactLocation\": { \"uri\": \"%s\" },\n",
+                                    escapeJson(d.file())));
+            sb.append(String.format(Locale.ROOT,
+                                    "            \"region\": { \"startLine\": %d, \"startColumn\": %d }\n",
+                                    d.line(),
+                                    d.column()));
             sb.append("          }\n");
             sb.append("        }]\n");
             sb.append("      }");
@@ -186,7 +196,7 @@ public class LintCommand implements Callable<Integer> {
     /// level and, for a run that analysed no file, the run's own sentences; each file not read or not parsed is one notification.
     private void appendSarifInvocation(StringBuilder sb, RunResult result) {
         sb.append("    \"invocations\": [{\n");
-        sb.append("      \"executionSuccessful\": %s,\n".formatted(result.executionSuccessful()));
+        sb.append(String.format(Locale.ROOT, "      \"executionSuccessful\": %s,\n", result.executionSuccessful()));
         sb.append("      \"toolExecutionNotifications\": [");
         var notifications = result.notifications().stream().map(this::notificationJson).toList();
 
@@ -198,11 +208,15 @@ public class LintCommand implements Callable<Integer> {
 
     private String notificationJson(Notification notification) {
         return notification.file()
-                           .map(file -> "        { \"level\": \"%s\", \"message\": { \"text\": \"%s\" }, \"locations\": [{ \"physicalLocation\": { \"artifactLocation\": { \"uri\": \"%s\" } } }] }".formatted(notification.level(),
-                                                                                                                                                                                                               escapeJson(notification.text()),
-                                                                                                                                                                                                               escapeJson(file.toString())))
-                           .or(() -> "        { \"level\": \"%s\", \"message\": { \"text\": \"%s\" } }".formatted(notification.level(),
-                                                                                                                  escapeJson(notification.text())));
+                           .map(file -> String.format(Locale.ROOT,
+                                                      "        { \"level\": \"%s\", \"message\": { \"text\": \"%s\" }, \"locations\": [{ \"physicalLocation\": { \"artifactLocation\": { \"uri\": \"%s\" } } }] }",
+                                                      notification.level(),
+                                                      escapeJson(notification.text()),
+                                                      escapeJson(file.toString())))
+                           .or(() -> String.format(Locale.ROOT,
+                                                   "        { \"level\": \"%s\", \"message\": { \"text\": \"%s\" } }",
+                                                   notification.level(),
+                                                   escapeJson(notification.text())));
     }
 
     private String sarifLevel(DiagnosticSeverity severity) {

@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -301,7 +302,7 @@ public final class MetricsRoutes implements RouteSource {
         return new ArtifactMetricsResponse(storeMetrics.artifactCount(),
                                            storeMetrics.chunkCount(),
                                            storeMetrics.memoryBytes(),
-                                           String.format("%.2f", memoryMB),
+                                           String.format(Locale.ROOT, "%.2f", memoryMB),
                                            deployedArtifacts.size(),
                                            deployedArtifacts.stream().map(a -> a.asString()).toList());
     }

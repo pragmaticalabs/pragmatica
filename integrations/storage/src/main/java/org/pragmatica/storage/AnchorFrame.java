@@ -1,6 +1,7 @@
 package org.pragmatica.storage;
 
 import java.nio.ByteBuffer;
+import java.util.Locale;
 import java.util.zip.CRC32C;
 
 import org.pragmatica.lang.Option;
@@ -34,7 +35,7 @@ final class AnchorFrame {
 
     /// The key of `version`; `version` must be at least 0.
     static String key(long version) {
-        return KEY_MARKER + String.format("%0" + KEY_DIGITS + "d", Long.MAX_VALUE - version);
+        return KEY_MARKER + String.format(Locale.ROOT, "%0" + KEY_DIGITS + "d", Long.MAX_VALUE - version);
     }
 
     /// The version a key names; none for anything that is not a key: a partial file, a stray name, or 19 digits above

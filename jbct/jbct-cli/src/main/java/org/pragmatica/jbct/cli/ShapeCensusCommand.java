@@ -122,17 +122,17 @@ public class ShapeCensusCommand implements Callable<Integer> {
     private void printJson(ShapeCensus.CensusReport report, int parsed, int parseErrors) {
         var builder = new StringBuilder("{\n");
 
-        builder.append("  \"totalMethods\": %d,\n".formatted(report.totalMethods()));
-        builder.append("  \"filesParsed\": %d,\n".formatted(parsed));
-        builder.append("  \"parseErrors\": %d,\n".formatted(parseErrors));
-        builder.append("  \"residualRate\": %.4f,\n".formatted(report.residualRate()));
-        builder.append("  \"mixedRate\": %.4f,\n".formatted(report.mixedRate()));
-        builder.append("  \"unclassifiedRate\": %.4f,\n".formatted(report.unclassifiedRate()));
+        builder.append(String.format(Locale.ROOT, "  \"totalMethods\": %d,\n", report.totalMethods()));
+        builder.append(String.format(Locale.ROOT, "  \"filesParsed\": %d,\n", parsed));
+        builder.append(String.format(Locale.ROOT, "  \"parseErrors\": %d,\n", parseErrors));
+        builder.append(String.format(Locale.ROOT, "  \"residualRate\": %.4f,\n", report.residualRate()));
+        builder.append(String.format(Locale.ROOT, "  \"mixedRate\": %.4f,\n", report.mixedRate()));
+        builder.append(String.format(Locale.ROOT, "  \"unclassifiedRate\": %.4f,\n", report.unclassifiedRate()));
         builder.append("  \"histogram\": {\n");
         var shapes = MethodShape.values();
 
         for (int i = 0; i < shapes.length; i++) {
-            builder.append("    \"%s\": %d".formatted(shapes[i], report.count(shapes[i])));
+            builder.append(String.format(Locale.ROOT, "    \"%s\": %d", shapes[i], report.count(shapes[i])));
             builder.append(i < shapes.length - 1
                            ? ",\n"
                            : "\n");
