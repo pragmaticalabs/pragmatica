@@ -23,6 +23,11 @@
     <properties>
         <maven.build.timestamp.format>yyyy-MM-dd'T'HH:mm:ss'Z'</maven.build.timestamp.format>
         <build.timestamp>${maven.build.timestamp}</build.timestamp>
+        <!-- #3664: surefire forks (separate JVMs, each running whole test classes) for this module's unit suite. The tests are bound by
+             wall-clock waits, not CPU. Default 2 fits a 4-core hosted runner (the root build is -T 1C, so other modules run beside it);
+             a build host overrides it: -Daether.test.forks=8 (or 0.5C); -Daether.test.forks=1 is the serial control.
+             Fork isolation, not JUnit class-parallelism: System properties, Locale and static state stay per-JVM. Audit: #3664. -->
+        <aether.test.forks>2</aether.test.forks>
     </properties>
 
     <dependencies>
@@ -487,6 +492,14 @@
                         </configuration>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <forkCount>${aether.test.forks}</forkCount>
+                    <reuseForks>true</reuseForks>
+                </configuration>
             </plugin>
         </plugins>
     </build>
