@@ -1915,8 +1915,11 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     /// replay still does not re-publish history.
     ///
     /// The WARN log is the surface that survives everything this contract is about: it needs no leader,
-    /// quorum, replica or network. `/api/events` read-back is NOT claimed here — that read prefers a
-    /// remote replica and can fail while the event sits in the local ring.
+    /// quorum, replica or network. `/api/events` read-back (#946) is served from a node that is up even when every
+    /// peer it would select is dead, provided that node is itself a caught-up replica of the partition (`ANY_REPLICA`
+    /// degrades to the local copy, `ForwardingReadRouter#degradeToCoveringCopy`); the guarantee is the replica read
+    /// row of `guarantees.md` (eventual, behind the owner by at most what the owner last reported). A node that holds
+    /// no caught-up copy answers the remote failure instead of an empty page.
     @Contract
     public void onConfirmedDeparture(NodeId departed) {
         LOG.warn("Node {} failed (confirmed departure), observed by {} — cluster membership degraded",

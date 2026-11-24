@@ -46,7 +46,8 @@ import org.pragmatica.lang.Promise;
 ///      read is forwarded there via the existing read-forward transport. With no committed record
 ///      (legacy / unowned partitions) it falls back to the replica-routed read so nothing breaks.
 ///   3. A REMOTE replica the LOCAL registry marks CAUGHT_UP exists → forward via {@link #attemptPrimary}
-///      (random pick + single retry on a distinct replica).
+///      (random pick + single retry on a distinct replica); when both could not be asked and self is itself a
+///      caught-up replica, the read is answered from the local copy ({@link #degradeToCoveringCopy}, #946).
 ///   4. Self is CAUGHT_UP for this partition (local has full coverage) → read local.
 ///   5. Self lagging, no locally-known caught-up peer → forward to the deterministic HRW owner (every
 ///      node computes the same owner; the owner self-promotes to CAUGHT_UP first at cold-start), failing
@@ -514,8 +515,32 @@ public final class ForwardingReadRouter<E> {
                                                  int partition,
                                                  long fromOffset,
                                                  int maxEvents) {
-        return cause instanceof StreamForwardError || isPartitionNotLocal(cause)
+        return couldNotAsk(cause)
                ? localReader.read(streamName, partition, fromOffset, maxEvents)
+               : cause.promise();
+    }
+
+    /// The one rule for a forward that failed: the peer could not be asked, or does not hold the partition, as opposed to
+    /// the peer's own typed answer. Shared by the owner forward ({@link #afterForwardFailure}) and the replica forward
+    /// ({@link #degradeToCoveringCopy}), so the two cannot disagree about which failures a local copy may stand in for.
+    private static boolean couldNotAsk(Cause cause) {
+        return cause instanceof StreamForwardError || isPartitionNotLocal(cause);
+    }
+
+    /// `ANY_REPLICA`, every remote pick failed (#946): the read is answered from this node's own copy when the peers could
+    /// not be asked ({@link #couldNotAsk}) AND this node is itself a caught-up replica of the partition
+    /// ({@link #selfCoversPartition}). That is the same guarantee row as the forwarded read -- a replica serves
+    /// `min(durable, the position the owner last reported)`, eventual, no read-your-writes -- so it is never weaker than what
+    /// the route promises, only possibly behind the peer that was asked. A node that is not a caught-up replica holds no
+    /// authoritative copy: its local read would answer an empty page that a caller cannot tell from "nothing happened", so
+    /// the remote cause is returned instead, as it is for a peer's typed answer.
+    private Promise<List<E>> degradeToCoveringCopy(Cause cause,
+                                                   String streamName,
+                                                   int partition,
+                                                   long fromOffset,
+                                                   int maxEvents) {
+        return couldNotAsk(cause) && registry.filter(reg -> selfCoversPartition(reg, streamName, partition)).isPresent()
+               ? readLocalArmed(streamName, partition, fromOffset, maxEvents)
                : cause.promise();
     }
 
@@ -571,7 +596,7 @@ public final class ForwardingReadRouter<E> {
                     partition,
                     firstCause.message());
 
-            return firstCause.promise();
+            return degradeToCoveringCopy(firstCause, streamName, partition, fromOffset, maxEvents);
         }
 
         metrics.recordRetry();
@@ -592,7 +617,13 @@ public final class ForwardingReadRouter<E> {
                                  fromOffset,
                                  maxEvents)
                      .map(result -> remoteDecoder.decode(result.events(),
-                                                         partition));
+                                                         partition))
+                     .fold(result -> result.fold(cause -> degradeToCoveringCopy(cause,
+                                                                                streamName,
+                                                                                partition,
+                                                                                fromOffset,
+                                                                                maxEvents),
+                                                 Promise::success));
     }
 
     private static ReplicaDescriptor pickReplica(List<ReplicaDescriptor> pool) {
