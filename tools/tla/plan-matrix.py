@@ -3,11 +3,17 @@
 
 Usage: plan-matrix.py --event EVENT --profile PROFILE --modules REGEX [--models models.tsv]
 Prints the GitHub matrix as one JSON line: {"include": [{"module", "root", "profile", "job_minutes", "tlc_timeout",
-"skipped_host"}]}. tlc_timeout is the per-config cap of the small and sim profiles; for full and heavy it is "" because every row
+"skipped_host", "shard", "variants"}]}. tlc_timeout is the per-config cap of the small and sim profiles; for full and heavy it is "" because every row
 runs under its own budget from budgets.tsv (run.sh reads it; an empty TLC_TIMEOUT is no override). skipped_host lists, by name,
 the rows of a full or heavy shard whose budget does not fit a GitHub-hosted runner (budgets.tsv `@hosted`): run.sh does not run
 them there and records SKIPPED-HOST, and tools/tla/run-host.sh runs them on a build host. They are also printed to stderr, one
 line each, so the plan step's log names every one; they are never passes.
+
+Shards of the small profile (#3604): a module whose small rows together would not fit one 150 min job is split by shards.tsv
+(module, shard, variant regex) into several jobs of the same profile; `variants` is the regex run.sh takes as its third
+argument. The shards of a module must partition ALL its rows (heavy ones too, so exactly one shard names each SKIPPED-HEAVY
+row): a row in no shard, or in two, or a shard that matches nothing, is an error, never a dropped or doubled row. A module
+without shards.tsv rows, and every profile but small, is one shard (shard "", variants ".*").
 
 What runs, by event (the profile argument is the workflow_dispatch input; push and schedule carry none):
   push                 profile small, every model matching the regex.
@@ -43,6 +49,39 @@ def read_models(path):
                 raise ValueError(f'{path}: module {c[0]} has two source roots')
             m[1] = m[1] or c[5] == 'heavy'
     return models
+
+
+def read_shards(path, rows):
+    """{module: [(shard, regex)]} of shards.tsv, validated against models.tsv `rows`: the shards of a module partition its rows."""
+    out = {}
+    with open(path) as f:
+        for line in f:
+            if not line.strip() or line.lstrip().startswith('#'):
+                continue
+            c = line.rstrip('\n').split('\t')
+            if len(c) != 3 or not all(c):
+                raise ValueError(f'{path}: row with {len(c)} columns (module shard variants): {line.strip()[:60]}')
+            if not re.fullmatch(r'[A-Za-z0-9_-]+', c[1]):
+                raise ValueError(f'{path}: {c[0]}: shard name {c[1]!r} must be letters, digits, _ or - (it is part of an artifact name)')
+            # run.sh matches the regex with awk (ERE), this script with Python: only the syntax both read the same way is accepted
+            if not re.fullmatch(r'[A-Za-z0-9_|().*]+', c[2]) or '(?' in c[2]:
+                raise ValueError(f'{path}: {c[0]}/{c[1]}: variant regex {c[2]!r} may use only letters, digits, _ | ( ) . and * (awk and Python must read it alike)')
+            if c[1] in [s for s, _ in out.get(c[0], [])]:
+                raise ValueError(f'{path}: {c[0]}: second shard named {c[1]}')
+            re.compile(c[2])
+            out.setdefault(c[0], []).append((c[1], c[2]))
+    for module, shards in out.items():
+        variants = [v for m, v, _ in rows if m == module]
+        if not variants:
+            raise ValueError(f'{path}: {module}: no such module in models.tsv')
+        for v in variants:
+            hit = [s for s, rx in shards if re.fullmatch(rx, v)]
+            if len(hit) != 1:
+                raise ValueError(f'{path}: {module}/{v} is in {len(hit)} shards ({", ".join(hit) or "none"}); every row is in exactly one')
+        for s, rx in shards:
+            if not any(re.fullmatch(rx, v) for v in variants):
+                raise ValueError(f'{path}: {module} shard {s} matches no row')
+    return out
 
 
 def read_rows(path):
@@ -120,7 +159,7 @@ def skipped_host_rows(rows, budgets, module, profile):
     return out
 
 
-def plan(models, event, profile, regex, rows=(), budgets=None):
+def plan(models, event, profile, regex, rows=(), budgets=None, shards_of=None):
     chosen = {k: v for k, v in models.items() if re.fullmatch(regex, k)}
     shards = []
     if event == 'push':
@@ -135,8 +174,11 @@ def plan(models, event, profile, regex, rows=(), budgets=None):
         minutes, tlc = BUDGET[prof]
         # full and heavy: every row has its own cap (budgets.tsv); the matrix carries none, an empty TLC_TIMEOUT overrides nothing
         skipped = skipped_host_rows(rows, budgets, module, prof) if budgets else []
-        shards.append({'module': module, 'root': chosen[module][0], 'profile': prof, 'job_minutes': minutes,
-                       'tlc_timeout': '' if prof in ('full', 'heavy') else tlc, 'skipped_host': ', '.join(skipped)})
+        parts = (shards_of or {}).get(module) if prof == 'small' else None
+        for shard, variants in parts or [('', '.*')]:
+            shards.append({'module': module, 'root': chosen[module][0], 'profile': prof, 'job_minutes': minutes,
+                           'tlc_timeout': '' if prof in ('full', 'heavy') else tlc, 'skipped_host': ', '.join(skipped),
+                           'shard': shard, 'variants': variants})
     return shards
 
 
@@ -153,6 +195,7 @@ def main():
     ap.add_argument('--profile', default='small')
     ap.add_argument('--modules', default='.*')
     ap.add_argument('--models', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.tsv'))
+    ap.add_argument('--shards', default=None, help='shards.tsv; default: the one beside this script, when --models is the default too')
     ap.add_argument('--budgets', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'budgets.tsv'))
     a = ap.parse_args()
     if a.profile not in PROFILES:
@@ -161,7 +204,10 @@ def main():
     try:
         models = read_models(a.models)   # first: it refuses a short row, which read_rows would not
         rows = read_rows(a.models)
-        shards = plan(models, a.event, a.profile, a.modules, rows, read_budgets(a.budgets, rows))
+        here = os.path.dirname(os.path.abspath(__file__))
+        shards_path = a.shards or (os.path.join(here, 'shards.tsv') if os.path.abspath(a.models) == os.path.join(here, 'models.tsv') else None)
+        shards = plan(models, a.event, a.profile, a.modules, rows, read_budgets(a.budgets, rows),
+                      read_shards(shards_path, rows) if shards_path else {})
     except (ValueError, OSError, re.error) as e:
         print(f'plan-matrix: ERROR {e}', file=sys.stderr)
         sys.exit(2)

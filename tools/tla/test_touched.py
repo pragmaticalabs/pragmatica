@@ -293,6 +293,48 @@ public final class A {
         rc, out = self.verdict(BASE, BASE.replace('    int other() {\n        return 9;\n    }\n', ''))
         self.assertEqual(rc, 0, out)
 
+    # --- F8 (#3604): a removed fragment is not silent ---
+    def test_deleting_a_file_that_holds_a_fragment_is_red(self):
+        self.r.write('A.java', BASE)
+        base = self.r.commit('base')
+        os.remove(os.path.join(self.r.d, 'A.java'))
+        self.r.write('Other.java', 'class O {}\n')
+        self.r.commit('head')
+        rc, out = self.r.run(base)
+        self.assertEqual(rc, 1, out)
+        self.assertIn('A.java:2: RED M:Step fragment removed (its file was deleted)', out)
+
+    def test_deleting_a_file_that_holds_a_fragment_is_excused_by_the_marker(self):
+        self.r.write('A.java', BASE)
+        base = self.r.commit('base')
+        os.remove(os.path.join(self.r.d, 'A.java'))
+        self.r.write('Other.java', 'class O {}\n')
+        self.r.commit('head')
+        rc, out = self.r.run(base, body='tla-unchanged: M: the class was folded into another model')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('fragment removed (its file was deleted), excused by tla-unchanged', out)
+
+    def test_removing_the_fragment_while_the_code_changes_is_red(self):
+        head = BASE.replace(FRAG, '').replace('int b = 2;', 'int b = 3;')
+        rc, out = self.verdict(BASE, head)
+        self.assertEqual(rc, 1, out)
+        self.assertIn('RED M:Step fragment removed (it is gone from the file)', out)
+
+    def test_removing_the_fragment_with_the_code_untouched_is_red(self):
+        rc, out = self.verdict(BASE, BASE.replace(FRAG, ''))
+        self.assertEqual(rc, 1, out)
+        self.assertIn('RED M:Step fragment removed', out)
+
+    def test_a_fragment_moved_to_another_file_is_not_removed(self):
+        self.r.write('A.java', BASE)
+        base = self.r.commit('base')
+        self.r.write('A.java', BASE.replace(FRAG, ''))
+        self.r.write('B.java', 'class B {\n' + FRAG + '    int z() {\n        return 1;\n    }\n}\n')
+        self.r.commit('head')
+        rc, out = self.r.run(base)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('fragment removed', out)
+
     def test_rename_is_followed_when_rename_detection_is_off_in_the_git_config(self):
         # touched.py asks git for renames itself (-M), so a user or runner `diff.renames=false` cannot turn a rename into add+delete
         self.r.write('A.java', BASE)

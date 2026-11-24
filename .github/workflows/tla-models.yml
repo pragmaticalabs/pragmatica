@@ -8,7 +8,8 @@
 # module; the schedule adds profile heavy for the models that have a heavy row.
 # Trigger by hand: gh workflow run tla-models.yml -f profile=small -f modules='.*'
 # One job per model (a matrix planned by tools/tla/plan-matrix.py from models.tsv), so the wall time of a run is the slowest
-# model's, not the sum. A row marked `heavy` in models.tsv (it does not finish inside the small budget) is not run by the
+# model's, not the sum; a model whose small rows would not fit one job is split into shards (tools/tla/shards.tsv, #3604).
+# A row marked `heavy` in models.tsv (it does not finish inside the small budget) is not run by the
 # small profile and is never counted as a pass: it is recorded as SKIPPED-HEAVY by name, and runs in the heavy profile, which
 # the schedule and a manual dispatch (profile heavy) run, for the models that have such rows.
 # The full and heavy profiles run every row under its own time cap and heap (tools/tla/budgets.tsv; the matrix carries no
@@ -159,7 +160,7 @@ jobs:
         run: bash tools/tla/runselftest.sh
 
   model-check:
-    name: ${{ matrix.module }} (${{ matrix.profile }})
+    name: ${{ matrix.module }}${{ matrix.shard && format(' [{0}]', matrix.shard) || '' }} (${{ matrix.profile }})
     needs: [plan, selftests]
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.job_minutes }}
@@ -206,15 +207,16 @@ jobs:
           TLC_TIMEOUT: ${{ matrix.tlc_timeout }}
           MODULE: ${{ matrix.module }}
           PROFILE: ${{ matrix.profile }}
+          VARIANTS: ${{ matrix.variants }}
         run: |
           set -euo pipefail
-          bash tools/tla/run.sh "$PROFILE" "$MODULE" | tee target-tla-summary.txt
+          bash tools/tla/run.sh "$PROFILE" "$MODULE" "$VARIANTS" | tee target-tla-summary.txt
 
       - name: Upload TLC output
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: tla-models-${{ matrix.module }}-${{ matrix.profile }}-${{ github.run_id }}
+          name: tla-models-${{ matrix.module }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}-${{ matrix.profile }}-${{ github.run_id }}
           path: |
             target/tla/
             target-tla-summary.txt
@@ -227,7 +229,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: tla-results-${{ matrix.module }}-${{ matrix.profile }}-${{ github.run_id }}
+          name: tla-results-${{ matrix.module }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}-${{ matrix.profile }}-${{ github.run_id }}
           path: target/tla/results.tsv
           if-no-files-found: warn
           retention-days: 90

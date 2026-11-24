@@ -1,0 +1,1 @@
+# module shard\tvariant regex (#3604): the shards of the small profile; every row of a module sharded here is in exactly one shard (plan-matrix.py refuses otherwise)

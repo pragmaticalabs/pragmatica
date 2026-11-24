@@ -123,7 +123,9 @@ fi
 if commit=$(git rev-parse HEAD 2>/dev/null); then
   if [[ -z $(git status --porcelain --untracked-files=no 2>/dev/null) ]]; then dirty=clean; else dirty=dirty; fi
 else commit=none; dirty=unknown; fi
-red=0; summary=(); skipped=0; skipped_host=0; runstart=$(date +%s)
+red=0; summary=(); skipped=0; skipped_host=0; runstart=$(date +%s); rowsecs=0; skiplines=(); tbl=()
+# F5 (#3604): a skipped row is job-green, so it is also a workflow warning annotation and a line of the step summary, never only a step-log line
+warn_skip() { skiplines+=("$1 $2"); [[ ${GITHUB_ACTIONS:-} == true ]] && echo "::warning title=$1::$2"; return 0; }
 pinprofile=$profile; [[ $profile == heavy ]] && pinprofile=full   # heavy runs as written, like full
 if [[ $profile == sim ]]; then
   export TLC_OPTS="${TLC_OPTS:-} -simulate num=${SIM_TRACES:-1000000} -depth ${SIM_DEPTH:-40}"
@@ -155,6 +157,7 @@ while IFS=$'\t' read -r module root variant expect property small _; do
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$commit" "$dirty" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$profile" "$module" "$variant" \
         "$expect" skipped "" "" "" SKIPPED-HOST "" >> "$results"
       echo "SKIPPED-HOST $module/$variant expect=$expect budget ${btimeout}s/${bheap} (over the hosted runner's ${hosted_t}s/${hosted_h}g: not run here, not a pass; tools/tla/run-host.sh $profile runs it on a build host)"
+      warn_skip SKIPPED-HOST "$module/$variant (budget ${btimeout}s/${bheap} is over the hosted runner: not run here, not a pass)"
       skipped_host=$((skipped_host + 1)); continue
     fi
   fi
@@ -162,6 +165,7 @@ while IFS=$'\t' read -r module root variant expect property small _; do
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$commit" "$dirty" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$profile" "$module" "$variant" \
       "$expect" skipped "" "" "" SKIPPED-HEAVY "" >> "$results"
     echo "SKIPPED-HEAVY $module/$variant expect=$expect (over the small budget: not run, not a pass; profile heavy, full and sim run it)"
+    warn_skip SKIPPED-HEAVY "$module/$variant (over the small budget: not run, not a pass; the heavy profile runs it)"
     skipped=$((skipped + 1)); continue
   fi
   consts=""; [[ $profile == small && $small != "-" ]] && consts=${small//,/ }
@@ -179,7 +183,11 @@ while IFS=$'\t' read -r module root variant expect property small _; do
   log="$outroot/$module/${module}_${variant}.log"
   violated=$(sed -nE 's/^Error: (Invariant|Temporal property|Action property) ([A-Za-z0-9_]+) (is|was) violated.*/\2/p' "$log" 2>/dev/null | head -1)
   case $rc in
-    0) got=pass ;;
+    0) got=pass
+       # F3 (#3604): exit 0 is not enough; TLC must also have printed its completion line, so an exit 0 with a garbage or empty log
+       # (a wrapper, a truncated run) is an ERROR, not a pass. Simulation (-simulate under stopAfter) ends differently: not read there.
+       if [[ $profile != sim ]] && ! grep -q '^Model checking completed. No error has been found' "$log" 2>/dev/null; then
+         got="error(exit 0, but the log has no TLC completion line: $log)"; fi ;;
     12|13) got=fail ;;
     75) got=resource ;;   # check.sh's resource guard killed TLC (disk or memory): no verdict at all
     124) got="error(exit 124: exceeded the ${cap}s budget, $capsrc)" ;;   # coreutils timeout: the row's cap, never a verdict
@@ -215,7 +223,7 @@ while IFS=$'\t' read -r module root variant expect property small _; do
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$commit" "$dirty" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$profile" "$module" "$variant" \
     "$expect" "$actual" "$violated" "$distinct" "$tlcver" "$verdict" "$consts" >> "$results"
   line="$verdict $module/$variant expect=$expect got=$got${note} ${secs}s ${simstat:-${states:-no state count}} ${consts:+[$consts]}"
-  echo "$line"; summary+=("$line")
+  echo "$line"; summary+=("$line"); rowsecs=$((rowsecs + secs)); tbl+=("| $verdict | $module/$variant | $secs |")
   [[ $verdict != OK ]] && tail -20 "$outroot/$module/run_${variant}.txt" | sed 's/^/    /'
 done <<<"$selected"
 
@@ -223,5 +231,13 @@ if [[ $host == 1 && ${#summary[@]} == 0 ]]; then
   echo "run: RED host mode ran no row (TLA_HOST=1 selected rows over the hosted limit, none was run): nothing was checked, so not GREEN"; red=1
 fi
 echo "run: evidence rows in $results (commit $commit, $dirty)"
-echo "run: profile=$profile models=$filter variants=$vfilter configs=${#summary[@]} skipped-heavy=$skipped skipped-host=$skipped_host wall=$(( $(date +%s) - runstart ))s $([[ $red == 0 ]] && echo GREEN || echo RED)$([[ $profile == sim ]] && echo ' (simulation: sampled, not a proof)')"
+if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
+  {
+    echo "### TLA+ $profile: $filter / $vfilter"
+    echo "row-seconds **$rowsecs** over ${#summary[@]} rows run, wall $(( $(date +%s) - runstart )) s, $([[ $red == 0 ]] && echo GREEN || echo RED)"
+    if (( ${#skiplines[@]} > 0 )); then echo; echo "Skipped, **not passes**:"; printf -- '- %s\n' "${skiplines[@]}"; fi
+    echo; echo "| verdict | row | s |"; echo "|---|---|---|"; (( ${#tbl[@]} > 0 )) && printf '%s\n' "${tbl[@]}"
+  } >> "$GITHUB_STEP_SUMMARY"
+fi
+echo "run: profile=$profile models=$filter variants=$vfilter configs=${#summary[@]} skipped-heavy=$skipped skipped-host=$skipped_host row-secs=$rowsecs wall=$(( $(date +%s) - runstart ))s $([[ $red == 0 ]] && echo GREEN || echo RED)$([[ $profile == sim ]] && echo ' (simulation: sampled, not a proof)')"
 exit $red

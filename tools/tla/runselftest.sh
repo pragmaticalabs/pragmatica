@@ -112,6 +112,25 @@ PINS='Fix\tok\tfull\t5\tx\n' run heavy-profile-reads-the-full-pin-and-it-differs
 # an unknown profile is refused before anything runs (exit 2), so a typo cannot read as an empty green run
 run unknown-profile-is-an-error nonzero 'profile must be small, full, sim or heavy' bogus < <(rows pass - fail Small pass - | grep -v broken)
 run heavy-profile-without-a-heavy-row-is-an-error nonzero 'no row marked heavy' heavy < <(rows pass - fail Small pass - | grep -v broken)
+# F3 (#3604): the verdict is not TLC's exit code alone. A stub `java` stands in for TLC (no TLC needed): exit 0 with a garbage log must
+# read ERROR on a pass row, exit 0 with TLC's completion line must read OK (the control: the stub can pass), and a known-bad row whose
+# exit 12 comes with a log that names no violation must not satisfy it.
+stub=$work/stub; mkdir -p "$stub"
+stubjava() { # stubjava <exit> <stdout text>
+  printf '#!/usr/bin/env bash\nprintf "%%b" %q\nexit %s\n' "$2" "$1" > "$stub/java"; chmod +x "$stub/java"; }
+okrows() { rows "$@" pass - pass - | grep -v broken | awk -F'\t' -v OFS='\t' '$3 == "bad" { $6 = "heavy" } 1'; }   # only Fix/ok runs: bad is heavy, so coverage is satisfied
+stubjava 0 'garbage\n'
+PATH="$stub:$PATH" run f3-exit-0-with-a-garbage-log-is-error nonzero '^ERROR Fix/ok expect=pass got=error\(exit 0, but the log has no TLC completion line' small < <(okrows pass -)
+stubjava 0 'Model checking completed. No error has been found.\n5 states generated, 4 distinct states found, 0 states left on queue.\n'
+PATH="$stub:$PATH" run f3-control-exit-0-with-the-completion-line-is-ok 0 '^OK Fix/ok expect=pass got=pass .*4 distinct states found' small < <(okrows pass -)
+stubjava 12 'garbage\n'
+PATH="$stub:$PATH" run f3-exit-12-without-a-named-violation-is-not-a-known-bad-pass nonzero '^RED Fix/ok expect=fail got=fail\(violated=none' small < <(okrows fail Small)
+# F5 (#3604): a skipped heavy row is job-green, so it is an annotation (::warning) and a step-summary line.
+stubjava 0 'Model checking completed. No error has been found.\n5 states generated, 4 distinct states found, 0 states left on queue.\n'
+sumfile=$work/step-summary.md; : > "$sumfile"
+GITHUB_ACTIONS=true GITHUB_STEP_SUMMARY="$sumfile" PATH="$stub:$PATH" run f5-skipped-heavy-row-is-a-warning-annotation 0 '^::warning title=SKIPPED-HEAVY::Fix/bad ' small < <(heavybad)
+want f5-skipped-heavy-row-is-in-the-step-summary 1 "$(grep -c 'SKIPPED-HEAVY: Fix/bad\|SKIPPED-HEAVY Fix/bad' "$sumfile" | tr -d ' ')"
+want f5-step-summary-names-it-not-a-pass 1 "$(grep -c 'Skipped, \*\*not passes\*\*' "$sumfile" | tr -d ' ')"
 # Evidence rows (#3584): one row per config that ran, with the actual verdict read from TLC's exit code, never from the expectation.
 run rows-control 0 'evidence rows in' small < <(rows pass - fail Small pass - | grep -v broken)
 want rows-count 3 "$(wc -l < "$res" | tr -d ' ')"

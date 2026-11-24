@@ -416,6 +416,39 @@ class InstrumentFromBase(unittest.TestCase):
         self.assertIn('RED M:Step', out)
 
 
+class ShardWiring(unittest.TestCase):
+    """#3604: the shard's variant regex reaches run.sh as one quoted argument read from the environment, never as workflow text."""
+    def setUp(self):
+        self.wf = read(MODELS_YML)
+
+    def run_blocks(self):
+        lines, out, i = self.wf.split('\n'), [], 0
+        while i < len(lines):
+            m = re.match(r'^(\s*)(?:- )?run:\s*(.*)$', lines[i])
+            if not m:
+                i += 1
+                continue
+            block, ind = [m.group(2)], len(m.group(1))
+            i += 1
+            while i < len(lines) and (not lines[i].strip() or len(lines[i]) - len(lines[i].lstrip()) > ind):
+                block.append(lines[i])
+                i += 1
+            out.append('\n'.join(block))
+        return out
+
+    def test_the_model_check_step_passes_the_variants_as_a_quoted_env_argument(self):
+        step = jobs(self.wf)['model-check'].split('- name: Model check', 1)[1].split('- name:', 1)[0]
+        self.assertIn('VARIANTS: ${{ matrix.variants }}', step)
+        self.assertIn('bash tools/tla/run.sh "$PROFILE" "$MODULE" "$VARIANTS"', step)
+
+    def test_no_run_text_interpolates_the_variants_the_shard_name_or_a_dispatch_input(self):
+        blocks = self.run_blocks()
+        self.assertGreater(len(blocks), 5, 'the run-block reader found almost no run steps: it reads nothing')
+        for b in blocks:
+            for bad in ('matrix.variants', 'matrix.shard', 'inputs.'):
+                self.assertNotIn(bad, b)
+
+
 class OneProfileList(unittest.TestCase):
     def run_sh_profiles(self):
         m = re.search(r'^\[\[ (\$profile == \w+(?: \|\| \$profile == \w+)*) \]\] \|\| \{ echo "run: ERROR profile must be', read(os.path.join(HERE, 'run.sh')), re.M)

@@ -203,9 +203,15 @@ def check(repo, base, head, body):
     red, ok = [], []
     files = diff_files(repo, mb, head)
 
-    def fragments(path):
+    def base_regions(path):
         text = show(repo, mb, path)
-        return {(m, p): t for m, p, _, _, _, t in regions(text, path)} if text and '```tla' in text else {}
+        return list(regions(text, path)) if text and '```tla' in text else []
+
+    def fragments(path):
+        return {(m, p): t for m, p, _, _, _, t in base_regions(path)}
+
+    def fragment_lines(path):
+        return {(m, p): fl for m, p, fl, _, _, _ in base_regions(path)}
 
     # a file git reports as added while another was deleted may be a move below git's similarity threshold: its base
     # fragments are those of the deleted files, matched by Module:Part
@@ -232,6 +238,26 @@ def check(repo, base, head, body):
             else:
                 red.append(f'{new}:{a}: RED {module}:{part} region L{a}-{b} (fragment at L{fline}): code changed at {ranges(hit)} but the fragment is unchanged; '
                            f'update the fragment, or state `tla-unchanged: {module}: <reason>` in the PR body if the model still holds')
+    # F8 (#3604): a fragment that existed at the merge base and exists nowhere in the head is a model change nobody reviewed:
+    # the file was deleted, or the fragment was removed (or renamed to another Part) while its code stayed or changed. A fragment
+    # that moved to another file is found there. The same per-module excuse applies.
+    present = set()
+    for old, new, _ in files:
+        text = show(repo, head, new) if new else None
+        if text and '```tla' in text:
+            present.update((m, p) for m, p, _, _, _, _ in regions(text, new))
+    for old, new, _ in files:
+        if not old:
+            continue
+        for (module, part), fline in sorted(fragment_lines(old).items(), key=lambda kv: kv[1]):
+            if (module, part) in present:
+                continue
+            how = 'its file was deleted' if new is None else 'it is gone from the file'
+            if module in excused:
+                ok.append(f'{old}:{fline}: ok {module}:{part} fragment removed ({how}), excused by tla-unchanged: {excused[module]}')
+            else:
+                red.append(f'{old}:{fline}: RED {module}:{part} fragment removed ({how}); '
+                           f'restore it, or state `tla-unchanged: {module}: <reason>` in the PR body if the removal is intended')
     return red, ok
 
 

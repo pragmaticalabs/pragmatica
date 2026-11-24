@@ -25,14 +25,15 @@ BUDGETS = (
 )
 
 
-def plan(models_text, *args, budgets=BUDGETS):
+def plan(models_text, *args, budgets=BUDGETS, shards_text=None):
     made = []
     try:
-        for text in (models_text, budgets):
+        for text in (models_text, budgets) + ((shards_text,) if shards_text is not None else ()):
             with tempfile.NamedTemporaryFile('w', suffix='.tsv', delete=False) as f:
                 f.write(text)
             made.append(f.name)
-        p = subprocess.run([sys.executable, SCRIPT, '--models', made[0], '--budgets', made[1]] + list(args), capture_output=True, text=True)
+        extra = ['--shards', made[2]] if shards_text is not None else []
+        p = subprocess.run([sys.executable, SCRIPT, '--models', made[0], '--budgets', made[1]] + extra + list(args), capture_output=True, text=True)
     finally:
         for name in made:
             os.unlink(name)
@@ -70,10 +71,72 @@ class PlanMatrix(unittest.TestCase):
         rc, out, _ = plan(ROWS, '--event', 'schedule')
         by = {(s['module'], s['profile']): s for s in json.loads(out)['include']}
         self.assertEqual(by[('Beta', 'small')], {'module': 'Beta', 'root': 'rootB', 'profile': 'small', 'job_minutes': 150,
-                                                 'tlc_timeout': 1200, 'skipped_host': ''})
+                                                 'tlc_timeout': 1200, 'skipped_host': '', 'shard': '', 'variants': '.*'})
         # full and heavy: each row runs under its own budget (budgets.tsv), so the matrix carries no per-config cap
         self.assertEqual(by[('Beta', 'heavy')]['tlc_timeout'], '')
         self.assertEqual(by[('Beta', 'heavy')]['job_minutes'], 350)
+
+    # --- shards of the small profile (#3604): a module whose small rows do not fit one job is split by shards.tsv ---
+    SHARDS = 'Beta\tone\tcode\nBeta\ttwo\tbig\n'
+
+    def sharded(self, shards_text, *args):
+        rc, out, err = plan(ROWS, *args, shards_text=shards_text)
+        return rc, (json.loads(out)['include'] if rc == 0 else out), err
+
+    def test_a_sharded_module_is_one_small_job_per_shard_carrying_its_variant_regex(self):
+        rc, inc, err = self.sharded(self.SHARDS, '--event', 'push')
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([(s['module'], s['shard'], s['variants']) for s in inc],
+                         [('Alpha', '', '.*'), ('Beta', 'one', 'code'), ('Beta', 'two', 'big'), ('Gamma', '', '.*')])
+
+    def test_shards_apply_to_the_small_profile_only(self):
+        rc, inc, err = self.sharded(self.SHARDS, '--event', 'workflow_dispatch', '--profile', 'full', '--modules', 'Beta')
+        self.assertEqual((rc, [(s['shard'], s['variants']) for s in inc]), (0, [('', '.*')]), err)
+        rc, inc, err = self.sharded(self.SHARDS, '--event', 'workflow_dispatch', '--profile', 'heavy', '--modules', 'Beta')
+        self.assertEqual((rc, [(s['shard'], s['variants']) for s in inc]), (0, [('', '.*')]), err)
+
+    def test_the_shards_must_partition_the_rows_of_the_module(self):
+        for bad, why in (('Beta\tone\tcode\n', 'Beta/big is in 0 shards'),                              # a row in no shard is dropped
+                         ('Beta\tone\tcode|big\nBeta\ttwo\tbig\n', 'Beta/big is in 2 shards'),        # a row in two shards runs twice
+                         ('Beta\tone\tcode|big\nBeta\ttwo\tnothing\n', 'shard two matches no row'),
+                         ('Nope\tone\t.*\n', 'no such module in models.tsv'),
+                         ('Beta\tone\tcode\nBeta\tone\tbig\n', 'second shard named one'),
+                         ('Beta\tone\tcode\n', 'is in 0 shards')):
+            rc, out, err = self.sharded(bad, '--event', 'push')
+            self.assertEqual(rc, 2, (bad, out))
+            self.assertIn(why, err)
+
+    def test_a_shard_regex_or_name_that_awk_and_python_could_read_differently_is_refused(self):
+        for bad, why in (('Beta\tone\t(?:code)\nBeta\ttwo\tbig\n', 'may use only'),
+                         ('Beta\tone\tcode\\d?\nBeta\ttwo\tbig\n', 'may use only'),
+                         ('Beta\tone/x\tcode\nBeta\ttwo\tbig\n', 'shard name'),
+                         ('Beta\tone\n', 'row with 2 columns')):
+            rc, out, err = self.sharded(bad, '--event', 'push')
+            self.assertEqual(rc, 2, (bad, out))
+            self.assertIn(why, err)
+
+    def test_a_shards_file_that_cannot_be_read_is_an_error_not_an_unsharded_run(self):
+        p = subprocess.run([sys.executable, SCRIPT, '--shards', '/nonexistent/shards.tsv', '--event', 'push'], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 2, p.stdout)
+
+    def test_the_real_shards_partition_the_real_table_and_awk_selects_what_python_does(self):
+        # run.sh selects a shard's rows with awk (`$3 ~ "^(" f ")$"`); the plan validated the partition with Python: they must agree
+        with open(os.path.join(HERE, 'models.tsv')) as f:
+            real = [l.rstrip('\n').split('\t') for l in f if l.strip() and not l.lstrip().startswith('#')]
+        p = subprocess.run([sys.executable, SCRIPT, '--event', 'push'], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        by_module = {}
+        for sh in json.loads(p.stdout)['include']:
+            by_module.setdefault(sh['module'], []).append(sh)
+        for module, shs in by_module.items():
+            variants = [c[2] for c in real if c[0] == module]
+            picked = []
+            for sh in shs:
+                out = subprocess.run(['awk', '-F\t', '-v', f'f={sh["variants"]}', '-v', f'm={module}', '$1 == m && $3 ~ "^(" f ")$" { print $3 }',
+                                      os.path.join(HERE, 'models.tsv')], capture_output=True, text=True).stdout.split()
+                self.assertTrue(out, (module, sh['shard']))
+                picked += out
+            self.assertEqual(sorted(picked), sorted(variants), module)   # every row in exactly one shard, as awk reads it
 
     # --- per-row budgets (#3636): a row over the hosted limit is named SKIPPED-HOST in the plan, never a pass, never dropped ---
     OVER = BUDGETS + 'Beta\tbig\t21600\t8g\tover the time limit\n' + 'Alpha\tbad\t600\t20g\tover the heap limit\n'
@@ -154,7 +217,8 @@ class PlanMatrix(unittest.TestCase):
 
     def test_real_models_tsv_every_module_is_a_small_shard_and_every_heavy_row_has_a_heavy_shard(self):
         real = os.path.join(HERE, 'models.tsv')
-        rows = [l.split('\t') for l in open(real) if l.strip() and not l.lstrip().startswith('#')]
+        with open(real) as f:
+            rows = [l.split('\t') for l in f if l.strip() and not l.lstrip().startswith('#')]
         modules = []
         for c in rows:
             if c[0] not in modules:
