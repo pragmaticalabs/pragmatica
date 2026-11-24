@@ -193,6 +193,16 @@ class PrepullTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout)
         self.assertEqual(["pull mirror.gcr.io/testcontainers/ryuk:0.12.0"], self.log.read_text().splitlines())
 
+    def test_include_excluded_switch_pulls_a_planned_excluded_module_only_when_set(self):
+        listing = "testcontainers/ryuk:0.12.0 *\nx.io/y:1 mod/c!\npostgres:16 mod/a\n"
+        result = self.run_with(listing, "mod/c\n", CI_PREPULL_INCLUDE_EXCLUDED="1")
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual(["pull mirror.gcr.io/testcontainers/ryuk:0.12.0", "pull x.io/y:1"], self.log.read_text().splitlines())
+        self.log.unlink()
+        result = self.run_with(listing, "mod/c\n", CI_PREPULL_INCLUDE_EXCLUDED="0")
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual(["pull mirror.gcr.io/testcontainers/ryuk:0.12.0"], self.log.read_text().splitlines())
+
     def test_without_a_plan_every_image_but_the_excluded_is_pulled(self):
         (self.tmp / "list").write_text("testcontainers/ryuk:0.12.0 *\npostgres:16 mod/a\nx.io/y:1 mod/c!\n")
         full = dict(os.environ, CI_TEST_IMAGES_LIST=str(self.tmp / "list"), CI_PREPULL_DOCKER=str(self.tmp / "docker"),

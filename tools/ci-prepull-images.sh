@@ -11,6 +11,8 @@
 # it, every non-excluded image is pulled. Docker Hub images are pulled through $TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX
 # (the same prefix Testcontainers applies), other registries as named. Every image gets ATTEMPTS tries with
 # BACKOFF_BASE * 2^(n-1) seconds between them (10, 20, 40 s); one image still failing fails the step.
+# CI_PREPULL_INCLUDE_EXCLUDED=1 counts a `!` module as an ordinary one: the S3 job (s3-tests.yml) runs exactly the group the
+# required jobs exclude, so it pulls the S3 image from this same list (#3629), which the inventory gate keeps equal to the tests.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,7 +44,10 @@ wanted() {
   local module list="${1//,/ }"
   set -f # `*` must stay literal in the word split below
   for module in $list; do
-    [[ "$module" == *'!' ]] && continue
+    if [[ "$module" == *'!' ]]; then
+      [ "${CI_PREPULL_INCLUDE_EXCLUDED:-}" = 1 ] || continue
+      module="${module%!}"
+    fi
     if [ "$module" = '*' ] || [ -z "$MODULES_FILE" ] || grep -qxF "$module" "$MODULES_FILE"; then
       set +f
       return 0
