@@ -188,10 +188,13 @@ class NettyConnectibleBuilderGroupReleaseTest {
         var plain = builder.plain();
 
         assertThat(plain.getConnection().await(GUARD).isFailure()).isTrue();
-        assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
-        assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
-        assertThat(builder.ownedGroup()).as("the pool still holds its lease").isNotNull();
+        awaitLeaseCount(builder, 2);
         var group = builder.ownedGroup();
+
+        assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
+        assertThat(plain.close().await(GUARD).isSuccess()).isTrue();
+        assertThat(builder.leaseCount()).as("the pool still holds its lease, released once by plain").isEqualTo(1);
+        assertThat(group.isShuttingDown()).isFalse();
 
         assertThat(pool.close().await(GUARD).isSuccess()).isTrue();
         assertTerminated(group);
@@ -212,10 +215,16 @@ class NettyConnectibleBuilderGroupReleaseTest {
                                                             });
 
         lease.delegate(delegate);
+        var busy = new CountDownLatch(1);
 
-        assertThat(lease.close().await(GUARD).isSuccess()).isTrue();
+        group.next().execute(() -> awaitQuietly(busy));
+        var closing = lease.close();
+
+        assertThat(closing.isResolved()).as("close resolves only once the group has terminated").isFalse();
+        busy.countDown();
+        assertThat(closing.await(GUARD).isSuccess()).isTrue();
         assertThat(groupShuttingDownAtDelegateClose).as("group still running while the delegate closes").isFalse();
-        assertThat(group.isTerminated()).as("close resolves only after the last lease's group terminated").isTrue();
+        assertThat(group.isTerminated()).isTrue();
     }
 
     @Test
@@ -278,6 +287,14 @@ class NettyConnectibleBuilderGroupReleaseTest {
         }
 
         assertThat(builder.leaseCount()).isEqualTo(expected);
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static void assertTerminated(EventLoopGroup group) {
