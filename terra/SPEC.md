@@ -2,7 +2,7 @@
 
 Current checkpoint (2026-10-08): compiler, migrations, HTTP/authentication, executable assembly, and expanded examples are implemented. Nine distributions compile 21 original slice implementations. The sections below retain each increment's scope and evidence; [the example matrix](example-apps/README.md) describes current application support. Streams/entities remain explicitly unsupported, with an investigation and proposed next contract.
 
-Terra builds unchanged Aether slice sources into one JVM application. The application is selected by an Aether-format blueprint and assembled from factories generated for Terra. The initial deployment contract is one process per database. Existing Aether binaries are not a compatibility target.
+Terra builds unchanged Aether slice sources into one JVM application. The application is selected by an Aether-format blueprint and assembled from factories generated for Terra. The initial deployment contract is one application process per JVM; processes that share a database are serialised only at migration time, by the database fence (see Database startup). Existing Aether binaries are not a compatibility target.
 
 ## First increment acceptance contract
 
