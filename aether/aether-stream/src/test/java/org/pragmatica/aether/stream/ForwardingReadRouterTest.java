@@ -345,6 +345,46 @@ class ForwardingReadRouterTest {
               .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.StreamNotFound.class));
     }
 
+    /// F1 (#3633): one selected peer answered typed and the other could not be asked: the typed answer is returned, never
+    /// masked by the local copy. Both orders (the typed peer may be the first pick or the retry), each over many picks so
+    /// the random pick covers both orders.
+    @Test
+    void route_propagatesTheTypedAnswer_whenOnePeerAnswersTypedAndTheOtherTimesOutAndSelfCovers() {
+        var typed = new StreamError.StreamNotFound(STREAM);
+
+        for (int i = 0; i < 40; i++) {
+            var router = router(ReadPreference.ANY_REPLICA,
+                                Option.some(registryWith(true, PEER_A, PEER_B)),
+                                successReader("local"),
+                                Option.some(forwardClientAnswering(PEER_A, typed, PEER_B, StreamForwardError.General.READ_FORWARD_TIMEOUT)),
+                                owner(OWNER));
+
+            router.route(STREAM, PARTITION, 0, 10)
+                  .await()
+                  .onSuccess(events -> Assertions.fail("typed answer masked by a local read: " + events))
+                  .onFailure(cause -> assertThat(cause).isSameAs(typed));
+        }
+    }
+
+    /// Mirror of the above with the roles swapped: the timeout peer is A, the typed peer is B.
+    @Test
+    void route_propagatesTheTypedAnswer_whenOnePeerTimesOutAndTheOtherAnswersTypedAndSelfCovers() {
+        var typed = new StreamError.StreamNotFound("typed-on-the-retry");
+
+        for (int i = 0; i < 40; i++) {
+            var router = router(ReadPreference.ANY_REPLICA,
+                                Option.some(registryWith(true, PEER_A, PEER_B)),
+                                successReader("local"),
+                                Option.some(forwardClientAnswering(PEER_A, StreamForwardError.General.READ_FORWARD_TIMEOUT, PEER_B, typed)),
+                                owner(OWNER));
+
+            router.route(STREAM, PARTITION, 0, 10)
+                  .await()
+                  .onSuccess(events -> Assertions.fail("typed answer masked by a local read: " + events))
+                  .onFailure(cause -> assertThat(cause).isSameAs(typed));
+        }
+    }
+
     @Test
     void route_readsTheRemote_whenAnyReplicaRemoteAnswers() {
         var router = router(ReadPreference.ANY_REPLICA,
@@ -499,6 +539,26 @@ class ForwardingReadRouterTest {
                 return replicaId.equals(target)
                        ? Promise.success(new ReadForwardResult(dtos, false))
                        : StreamForwardError.General.READ_FORWARD_TIMEOUT.promise();
+            }
+
+            @Override
+            public void onPublishForwardResponse(PublishForwardResponse response) {}
+
+            @Override
+            public void onReadForwardResponse(ReadForwardResponse response) {}
+        };
+    }
+
+    private static StreamForwardClient forwardClientAnswering(NodeId first, Cause firstCause, NodeId second, Cause secondCause) {
+        return new StreamForwardClient() {
+            @Override
+            public Promise<Long> publishRemote(NodeId governorId, String streamName, int partition, byte[] payload, long timestamp) {
+                return Promise.success(-1L);
+            }
+
+            @Override
+            public Promise<ReadForwardResult> readRemote(NodeId replicaId, String streamName, int partition, long fromOffset, int maxEvents) {
+                return (replicaId.equals(first) ? firstCause : secondCause).promise();
             }
 
             @Override

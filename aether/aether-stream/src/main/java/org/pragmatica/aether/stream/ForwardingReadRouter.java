@@ -527,8 +527,9 @@ public final class ForwardingReadRouter<E> {
         return cause instanceof StreamForwardError || isPartitionNotLocal(cause);
     }
 
-    /// `ANY_REPLICA`, every remote pick failed (#946): the read is answered from this node's own copy when the peers could
-    /// not be asked ({@link #couldNotAsk}) AND this node is itself a caught-up replica of the partition
+    /// `ANY_REPLICA`, every remote pick failed (#946): the read is answered from this node's own copy when EVERY selected
+    /// peer could not be asked ({@link #couldNotAsk}: the first pick and its retry; a typed answer from either is returned,
+    /// never masked -- the retry passes the first pick's cause when that was a typed answer) AND this node is itself a caught-up replica of the partition
     /// ({@link #selfCoversPartition}). That is the same guarantee row as the forwarded read -- a replica serves
     /// `min(durable, the position the owner last reported)`, eventual, no read-your-writes -- so it is never weaker than what
     /// the route promises, only possibly behind the peer that was asked. A node that is not a caught-up replica holds no
@@ -619,7 +620,9 @@ public final class ForwardingReadRouter<E> {
                                  maxEvents)
                      .map(result -> remoteDecoder.decode(result.events(),
                                                          partition))
-                     .fold(result -> result.fold(cause -> degradeToCoveringCopy(cause,
+                     .fold(result -> result.fold(cause -> degradeToCoveringCopy(couldNotAsk(firstCause)
+                                                                                ? cause
+                                                                                : firstCause,
                                                                                 streamName,
                                                                                 partition,
                                                                                 fromOffset,

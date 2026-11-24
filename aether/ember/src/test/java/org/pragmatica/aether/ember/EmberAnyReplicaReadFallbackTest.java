@@ -34,8 +34,8 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
-/// #946, multi-node: `GET /api/events` read-back (`ANY_REPLICA`) answers from a node that is up while every peer it would
-/// have selected is dead.
+/// #946, multi-node: an `ANY_REPLICA` read of a user stream (the router the `GET /api/events` read-back also uses; `/api/events`
+/// itself is not read here) answers from a node that is up while every peer it would have selected is dead.
 ///
 /// Five real nodes, one partition at the default replication (RF 3): the committed in-sync set is three of them. Five, not
 /// three, so that killing both peers leaves a consensus majority: the owner's local read needs a valid node lease, and a
@@ -108,6 +108,9 @@ class EmberAnyReplicaReadFallbackTest {
         awaitUntil(() -> peers.stream().allMatch(member -> payloads(cluster.getNode(member.id()).unwrap()).size() == ACKED),
                    REPLICA_VISIBLE_BUDGET_MS,
                    "every replica serves the acknowledged records");
+        awaitUntil(() -> listsAllAsCaughtUp(survivor, killed),
+                   REPLICA_VISIBLE_BUDGET_MS,
+                   "the survivor's replica registry lists both peers CAUGHT_UP before the kill: " + registryRows(survivor));
         assertThat(outcome(routed(survivor))).as("control: the router reads the records while every peer is alive")
                                                                          .isEqualTo(List.of("acked-0", "acked-1", "acked-2"));
 
@@ -115,8 +118,33 @@ class EmberAnyReplicaReadFallbackTest {
                                     .await(STOP_BOUND)
                                     .onFailure(cause -> Assertions.fail("kill of " + id + " failed: " + cause.message())));
 
-        assertThat(outcome(routed(survivor))).as("the survivor answers from its own copy")
+        // The path ran only if the read started while the survivor's registry still listed both dead peers CAUGHT_UP: then the
+        // router picked one, forwarded to a dead node, retried the other, and degraded. A registry already purged of them would
+        // send the read to step 4 (local) and pass without the fix. The snapshot is taken at read start and asserted, never inferred.
+        var registryAtReadStart = registryRows(survivor);
+
+        assertThat(listsAllAsCaughtUp(survivor, killed)).as("registry at read start lists both dead peers CAUGHT_UP: " + registryAtReadStart)
+                                                        .isTrue();
+        assertThat(outcome(routed(survivor))).as("the survivor answers from its own copy; registry at read start: " + registryAtReadStart)
                                                                          .isEqualTo(List.of("acked-0", "acked-1", "acked-2"));
+    }
+
+    private boolean listsAllAsCaughtUp(AetherNode node, List<String> peerIds) {
+        var rows = node.streamReadRouter().replicaSnapshot(ENGINE_KEY, PARTITION).replicas();
+
+        return peerIds.stream()
+                      .allMatch(id -> rows.stream()
+                                          .anyMatch(row -> row.nodeId().equals(id) && "CAUGHT_UP".equals(row.state()) && row.confirmedOffset() >= ACKED - 1));
+    }
+
+    private String registryRows(AetherNode node) {
+        return node.streamReadRouter()
+                   .replicaSnapshot(ENGINE_KEY, PARTITION)
+                   .replicas()
+                   .stream()
+                   .map(row -> row.nodeId() + "=" + row.state() + "@" + row.confirmedOffset())
+                   .toList()
+                   .toString();
     }
 
     private Response publishAcked(AetherNode owner, String payload) {
@@ -192,14 +220,19 @@ class EmberAnyReplicaReadFallbackTest {
 
     private Option<StreamPartitionOwnershipValue> committedRecord() {
         var seen = new HashSet<StreamPartitionOwnershipValue>();
+        var holders = new int[]{0};
 
         cluster.allNodes()
                .forEach(node -> node.kvStore()
                                     .getTyped(AetherKey.StreamPartitionOwnershipKey.streamPartitionOwnershipKey(ENGINE_KEY, PARTITION),
                                               StreamPartitionOwnershipValue.class)
-                                    .onPresent(seen::add));
+                                    .onPresent(value -> {
+                                        seen.add(value);
+                                        holders[0]++;
+                                    }));
 
-        return seen.size() == 1
+        // Every live node must hold the record and all must agree: a node still without it is a cluster still settling.
+        return seen.size() == 1 && holders[0] == cluster.allNodes().size()
                ? Option.some(seen.iterator().next())
                : Option.none();
     }
