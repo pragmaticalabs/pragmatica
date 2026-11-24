@@ -27,6 +27,7 @@ import org.pragmatica.postgres.net.Connection;
 import org.pragmatica.postgres.net.Listening;
 import org.pragmatica.postgres.net.PreparedStatement;
 import org.pragmatica.postgres.net.Transaction;
+import org.pragmatica.testing.PollUntil;
 
 import org.junit.jupiter.api.Test;
 
@@ -90,22 +91,14 @@ class NotificationListenerGroupReleaseTest {
                      .collect(Collectors.toSet());
     }
 
-    private static List<String> awaitNoNewEventLoopThreads(Set<Thread> before) throws InterruptedException {
-        var deadline = System.nanoTime() + Duration.ofMillis(THREADS_GONE_MILLIS)
-                                                   .toNanos();
-
-        while (true) {
-            var fresh = eventLoopThreads().stream()
-                                          .filter(t -> !before.contains(t) && t.isAlive())
-                                          .map(Thread::getName)
-                                          .toList();
-
-            if (fresh.isEmpty() || System.nanoTime() > deadline) {
-                return fresh;
-            }
-
-            Thread.sleep(50);
-        }
+    private static List<String> awaitNoNewEventLoopThreads(Set<Thread> before) {
+        return PollUntil.pollUntil(() -> eventLoopThreads().stream()
+                                                           .filter(t -> !before.contains(t) && t.isAlive())
+                                                           .map(Thread::getName)
+                                                           .toList(),
+                                   List::isEmpty,
+                                   Duration.ofMillis(THREADS_GONE_MILLIS))
+                        .finalValue();
     }
 
     private record RecordingConnectible(List<String> events) implements Connectible {

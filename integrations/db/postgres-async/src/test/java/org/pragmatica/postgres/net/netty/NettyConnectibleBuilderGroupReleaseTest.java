@@ -215,7 +215,7 @@ class NettyConnectibleBuilderGroupReleaseTest {
 
         assertThat(lease.close().await(GUARD).isSuccess()).isTrue();
         assertThat(groupShuttingDownAtDelegateClose).as("group still running while the delegate closes").isFalse();
-        assertTerminated(group);
+        assertThat(group.isTerminated()).as("close resolves only after the last lease's group terminated").isTrue();
     }
 
     @Test
@@ -259,10 +259,10 @@ class NettyConnectibleBuilderGroupReleaseTest {
     }
 
     @Test
-    void unresolvableHost_releasesTheStreamLease() {
+    void unresolvableHost_releasesTheStreamLease() throws IOException {
         var builder = new NettyConnectibleBuilder();
 
-        builder.hostname("no-such-host.invalid").port(5432).username("u").password("p").database("d");
+        builder.hostname("no-such-host.invalid").port(closedPort()).username("u").password("p").database("d");
         var plain = builder.plain();
 
         assertThat(plain.getConnection().await(GUARD).isFailure()).isTrue();
