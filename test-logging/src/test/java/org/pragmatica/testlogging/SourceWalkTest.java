@@ -66,6 +66,30 @@ class SourceWalkTest {
                                      .contains("pkg/target", "pkg/.git", "pkg/.m2-local", "pkg/node_modules", "pkg/.bb", "pkg/.idea");
     }
 
+    /// The order is the path order, not the directory-listing order of the file system.
+    @Test
+    void files_returnsThePathsSorted() throws IOException {
+        for (var name : List.of("z/Z.java", "m/M.java", "a/b/B.java", "a/A.java", "Root.java", "n.java")) {
+            write(name);
+        }
+
+        var found = SourceWalk.files(root);
+
+        assertThat(found).hasSize(6).isSorted();
+    }
+
+    /// A symbolic link to a file is a file of the scan; a link to a directory is never entered and a dangling link is no file.
+    @Test
+    void files_countsALinkToAFileButNeverFollowsADirectoryLink() throws IOException {
+        write("real/Target.java");
+        write("elsewhere/Inside.java");
+        Files.createSymbolicLink(root.resolve("link.java"), root.resolve("real/Target.java"));
+        Files.createSymbolicLink(root.resolve("dirlink"), root.resolve("elsewhere"));
+        Files.createSymbolicLink(root.resolve("dangling.java"), root.resolve("absent.java"));
+
+        assertThat(relative(SourceWalk.files(root))).containsExactly("elsewhere/Inside.java", "link.java", "real/Target.java");
+    }
+
     /// A root that is itself named like build output is walked: scanning `target/classes` is a legitimate use.
     @Test
     void files_walksARootThatLivesInsideBuildOutput() throws IOException {
