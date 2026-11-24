@@ -6,6 +6,7 @@ package org.pragmatica.terra;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.pragmatica.aether.resource.db.DatabaseConnectorConfig.databaseConnectorConfigBuilder;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #2787: two Terra instances start against ONE live PostgreSQL 16 database, and the migration runs exactly once.
 ///
@@ -197,18 +199,16 @@ class TerraMigrationsFenceTest {
                   + " AND wait_event_type = 'Lock'");
     }
 
-    private void awaitTrue(String sql) throws Exception {
-        var deadline = System.currentTimeMillis() + WAIT_MS;
+    private void awaitTrue(String sql) {
+        pollUntil(() -> flag(sql), held -> held == 1L, Duration.ofMillis(WAIT_MS)).assertMet("condition: " + sql);
+    }
 
-        while (System.currentTimeMillis() < deadline) {
-            if (scalar("SELECT CASE WHEN (" + sql + ") THEN 1 ELSE 0 END") == 1) {
-                return;
-            }
-
-            Thread.sleep(25);
+    private long flag(String sql) {
+        try {
+            return scalar("SELECT CASE WHEN (" + sql + ") THEN 1 ELSE 0 END");
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
         }
-
-        throw new AssertionError("condition never held: " + sql);
     }
 
     private long entries() throws SQLException {

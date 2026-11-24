@@ -29,6 +29,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,7 +53,6 @@ public interface TerraMigrations {
     long HELD_BACKOFF_CAP_MS = 45_000;
     int HELD_BACKOFF_MAX_EXPONENT = 3;
     int HELD_WARNING_THRESHOLD = 3;
-
     Promise<List<Report>> apply();
 
     /// The wait before re-running after the `held`th consecutive fenced-in-the-database outcome: 5 s x 3^held, the
@@ -127,10 +127,10 @@ public interface TerraMigrations {
                                                       .stream())
                                  .map(ParsedMigration::parsedMigration)
                                  .toList()).map(_ -> MigrationRun.migrationRun(ownerBase,
-                                                                                tasks,
-                                                                                provider,
-                                                                                SchemaMigrations.schemaMigrations(STATEMENT_TIMEOUT),
-                                                                                TerraMigrations::heldBackoff));
+                                                                               tasks,
+                                                                               provider,
+                                                                               SchemaMigrations.schemaMigrations(STATEMENT_TIMEOUT),
+                                                                               TerraMigrations::heldBackoff));
     }
 
     // Filesystem API boundary; callers lift all failures before provisioning any database.
@@ -219,8 +219,7 @@ record MigrationRun(String owner,
     private Promise<Report> migrateOne(MigrationTask task) {
         Promise<SqlConnector> acquisition = Result.lift(Causes::fromThrowable,
                                                         () -> provider.connector(task.datasource()))
-                                                  .fold(Promise::failure,
-                                                        promise -> promise);
+                                                  .fold(Promise::failure, promise -> promise);
 
         return acquisition.flatMap(connector -> migrateWhileHeld(task, connector, 0))
                           .map(result -> new Report(task.datasource(),
@@ -236,7 +235,9 @@ record MigrationRun(String owner,
     /// Every other cause ends the run as before. Recovery: FER (degrade forward: wait, then run again), and it earns only
     /// "exactly one instance runs each script, and a waiting instance starts once the holder is gone", because the fence
     /// ends with the holder's session; there is no timeout, so a holder that never ends keeps this startup waiting.
-    private Promise<SchemaMigrations.SchemaResult> migrateWhileHeld(MigrationTask task, SqlConnector connector, int held) {
+    private Promise<SchemaMigrations.SchemaResult> migrateWhileHeld(MigrationTask task,
+                                                                    SqlConnector connector,
+                                                                    int held) {
         return engine.migrate(task.datasource(),
                               task.scripts(),
                               connector,
@@ -246,31 +247,30 @@ record MigrationRun(String owner,
     }
 
     private Promise<SchemaMigrations.SchemaResult> afterRun(MigrationTask task,
-                                                           SqlConnector connector,
-                                                           int held,
-                                                           Result<SchemaMigrations.SchemaResult> outcome) {
+                                                            SqlConnector connector,
+                                                            int held,
+                                                            Result<SchemaMigrations.SchemaResult> outcome) {
         return outcome.fold(cause -> retryIfHeld(task, connector, held, cause), Promise::success);
     }
 
     private Promise<SchemaMigrations.SchemaResult> retryIfHeld(MigrationTask task,
-                                                              SqlConnector connector,
-                                                              int held,
-                                                              Cause cause) {
+                                                               SqlConnector connector,
+                                                               int held,
+                                                               Cause cause) {
         return cause instanceof MigrationError.MigrationFencedInDatabase
                ? waitThenRetry(task, connector, held + 1, cause)
                : cause.promise();
     }
 
     private Promise<SchemaMigrations.SchemaResult> waitThenRetry(MigrationTask task,
-                                                                SqlConnector connector,
-                                                                int held,
-                                                                Cause cause) {
+                                                                 SqlConnector connector,
+                                                                 int held,
+                                                                 Cause cause) {
         var delay = heldBackoff.apply(held);
 
         logHeld(task.datasource(), held, delay, cause);
 
-        return Promise.promise(delay, Result::unitResult)
-                      .flatMap(_ -> migrateWhileHeld(task, connector, held));
+        return Promise.promise(delay, Result::unitResult).flatMap(_ -> migrateWhileHeld(task, connector, held));
     }
 
     @Contract
