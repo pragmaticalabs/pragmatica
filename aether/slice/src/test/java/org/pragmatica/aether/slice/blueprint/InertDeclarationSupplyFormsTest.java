@@ -116,6 +116,14 @@ class InertDeclarationSupplyFormsTest {
                        + "so write it as [streams.orders.consumers.billing]");
     }
 
+    /// Several table arrays: the refusal names the first in sorted order, so the message does not depend on set iteration order.
+    @Test
+    void severalTableArrays_refusalNamesTheFirstInSortedOrder() {
+        assertThat(tableArrayRefusal(ORDERS + "[[streams.orders.retention]]\nmax_bytes = \"2GB\"\n[[streams.orders.hot]]\nmax_count = 100\n"))
+            .isEqualTo("Stream resource 'orders' declares [[streams.orders.hot]] as an array of tables: a stream section holds tables, "
+                       + "so write it as [streams.orders.hot]");
+    }
+
     /// The refusal is per stream: a table array under `orders2`, or one outside `streams.`, does not refuse `orders`.
     @Test
     void tableArrayUnderAnotherStream_orOutsideStreams_doesNotRefuseThisOne() {
