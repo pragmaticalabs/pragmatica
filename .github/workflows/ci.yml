@@ -13,32 +13,49 @@ on:
   workflow_dispatch:
 
 # A newer run on the same PR supersedes the in-progress one. Pushes get a per-commit group and are never
-# cancelled: each merged commit's own run is evidence. A merge_group run takes the sha group and is likewise never cancelled.
+# cancelled; a merge_group run takes the same sha group and is likewise never cancelled. On release-* the merge_group run of a
+# commit is the evidence for the push of that same commit (see push-dedupe).
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Duplicate push CI (T18): a feature branch with an open PR runs CI on `push` AND on `pull_request` for every head (#2648: 26 runs
-  # for about 8 heads). On a push whose branch has an open PR into a base the pull_request trigger covers, every job below is
-  # skipped, because the pull_request run of the same head is the one that gates. A branch with no such PR (a stacked feature
+  # Two lookups, two outputs. Both answer "is this run's evidence already on record?"; if a lookup fails the run proceeds: a
+  # duplicate run is cheaper than a missing one.
+  #
+  # skip (T18, duplicate push CI): a feature branch with an open PR runs CI on `push` AND on `pull_request` for every head (#2648:
+  # 26 runs for about 8 heads). On a push whose branch has an open PR into a base the pull_request trigger covers, every job below
+  # is skipped, because the pull_request run of the same head is the one that gates. A branch with no such PR (a stacked feature
   # branch whose PR targets another feature branch, a branch with no PR yet) and every push to main or release-* still run.
-  # If the lookup fails the run proceeds: a duplicate run is cheaper than a missing one.
+  # The base list below must equal `pull_request.branches` above.
+  #
+  # skip_tests (push to release-*): the merge queue merges by fast-forwarding the branch to the commit its merge_group run tested,
+  # so the push of a queue merge has the SAME sha as a merge_group run of this workflow that already passed every test job.
+  # skip_tests is true only when exactly one run of ci.yml with event merge_group and head_sha == this sha exists and it is
+  # completed with conclusion success. Anything else (no run, two runs, a failed or running one, an API or parse error) is false
+  # and the push runs in full; so does a push to main and a direct push to release-* (no queue run for its sha). The test jobs
+  # (test-group, build-and-test, ember-shard, consensus-shard, quarantine, stub-suites) are skipped on skip_tests. static-gates
+  # and forge-tests keep running: forge-tests primes and saves the Maven cache, which only a push does (#3338), and static-gates
+  # is cheap and re-reads the pushed tree. The trade: the push run no longer re-tests release-*; the queue run of the same sha did.
+  # Needs `actions: read` for the lookup; this job is the only one that holds it.
+  #
   # A skipped job still posts a check run, and a skipped check run named like a required context SATISFIES it (observed on #2657:
   # mergeStateStatus UNSTABLE, not BLOCKED, while the pull_request run's real build-and-test had not started). So every skipped
-  # job must post under a name no required context uses: the three single-instance required jobs (build-and-test, forge-tests,
-  # stub-suites) rename themselves when skipping; the matrix jobs post their unexpanded `name:` template, which matches nothing.
-  # The base list below must equal `pull_request.branches` above.
+  # job must post under a name no required context uses: the single-instance required jobs (build-and-test, stub-suites, and
+  # forge-tests when skip is true) rename themselves when skipping; the matrix jobs post their unexpanded `name:` template, which
+  # matches nothing. Required contexts today: build-and-test, forge-tests, stub-suites, ember-shard-N, consensus-shard-N.
   push-dedupe:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     outputs:
       skip: ${{ steps.lookup.outputs.skip }}
+      skip_tests: ${{ steps.lookup.outputs.skip_tests }}
     steps:
-      - name: Does this pushed branch have an open PR that pull_request CI covers?
+      - name: Is this push already covered by a pull_request run or a passed merge-queue run of the same commit?
         id: lookup
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,10 +63,26 @@ jobs:
           BRANCH: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
+          SHA: ${{ github.sha }}
         run: |
           skip=false
+          skip_tests=false
           case "$EVENT:$BRANCH" in
-            push:main|push:release-*) echo "push to a protected branch: its own run is the evidence" ;;
+            push:main) echo "push to main: runs in full" ;;
+            push:release-*)
+              if runs=$(gh api -X GET "repos/$REPO/actions/runs" -f "head_sha=$SHA" -f event=merge_group -f per_page=100); then
+                if verdict=$(printf '%s' "$runs" | jq -r --arg sha "$SHA" '
+                  [.workflow_runs[]? | select(.event == "merge_group" and .head_sha == $sha and .path == ".github/workflows/ci.yml")]
+                  | if length == 1 and .[0].status == "completed" and .[0].conclusion == "success" then "tested"
+                    else "not-tested: \(length) merge_group ci.yml run(s) for the sha: \(map("\(.status)/\(.conclusion)") | join(","))" end'); then
+                  echo "merge-queue lookup for $SHA: $verdict"
+                  if [ "$verdict" = tested ]; then skip_tests=true; fi
+                else
+                  echo "::warning::merge-queue answer unreadable, running the tests"
+                fi
+              else
+                echo "::warning::merge-queue lookup failed, running the tests"
+              fi ;;
             push:*)
               if bases=$(gh api -X GET "repos/$REPO/pulls" -f state=open -f "head=$OWNER:$BRANCH" --paginate --jq '.[] | select(.head.repo.full_name == "'"$REPO"'") | .base.ref'); then
                 echo "open PR base(s) for $BRANCH: ${bases:-none}"
@@ -63,7 +96,8 @@ jobs:
               fi ;;
           esac
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
-          echo "skip=$skip"
+          echo "skip_tests=$skip_tests" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip skip_tests=$skip_tests"
   # The format/lint gate and the static pins: everything build-and-test checked before it tested. They need no module
   # build, so they run beside the test groups instead of in front of them; build-and-test needs this job, so a red here
   # still fails the required check.
@@ -99,6 +133,11 @@ jobs:
 
       - name: Heavy-forge workflow pins
         run: python3 -B -m unittest discover -s tools -p test_heavy_forge_workflow.py
+
+      # The merge-queue dedupe of release-* pushes: the push-dedupe step's own shell block runs against recorded API answers, and every
+      # test job must honour skip_tests while static-gates and forge-tests keep running.
+      - name: Push dedupe pins
+        run: python3 -B -m unittest discover -s tools -p test_ci_push_dedupe.py
 
       # Release checksums (#2235): SHA256SUMS covers every published asset by bare name; the check goes red when one is dropped.
       - name: Release checksums pins
@@ -200,7 +239,7 @@ jobs:
   # The groups are tools/ci-test-groups.txt (regenerated from a run's reports); the matrix list must name exactly its groups.
   test-group:
     needs: push-dedupe
-    if: needs.push-dedupe.outputs.skip != 'true'
+    if: needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true'
     name: test-group-${{ matrix.group }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
@@ -340,9 +379,9 @@ jobs:
   # The required check. It passes only when the static gates and every test group passed: `if: always()` is load-bearing,
   # because without it a failed group SKIPS this job, and a skipped required check counts as passing.
   build-and-test:
-    name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'build-and-test (duplicate push run, skipped)' || 'build-and-test' }}
+    name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'build-and-test (duplicate push run, skipped)' || needs.push-dedupe.outputs.skip_tests == 'true' && 'build-and-test (merge queue tested this commit, skipped)' || 'build-and-test' }}
     needs: [push-dedupe, static-gates, test-group]
-    if: always() && needs.push-dedupe.outputs.skip != 'true'
+    if: always() && needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -501,7 +540,7 @@ jobs:
   # regenerate the weights from a CI run (tools/regen-shard-weights.py) to plan on measured times.
   ember-shard:
     needs: push-dedupe
-    if: needs.push-dedupe.outputs.skip != 'true'
+    if: needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true'
     name: ember-shard-${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -577,7 +616,7 @@ jobs:
   # add an entry to go from 2 shards to 3. The required check names are consensus-shard-1 .. consensus-shard-N.
   consensus-shard:
     needs: push-dedupe
-    if: needs.push-dedupe.outputs.skip != 'true'
+    if: needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true'
     name: consensus-shard-${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -653,7 +692,7 @@ jobs:
   # job excludes the tag (tools/check-quarantine.py); this job clears each exclusion and selects only the tag.
   quarantine:
     needs: push-dedupe
-    if: needs.push-dedupe.outputs.skip != 'true'
+    if: needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -752,9 +791,9 @@ jobs:
   # so three suites all wedged are ~15.4 min; the 25-minute job cap covers that plus setup, holds a fourth
   # suite, and still stops a runner-level hang long before GitHub's 6-hour default.
   stub-suites:
-    name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'stub-suites (duplicate push run, skipped)' || 'stub-suites' }}
+    name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'stub-suites (duplicate push run, skipped)' || needs.push-dedupe.outputs.skip_tests == 'true' && 'stub-suites (merge queue tested this commit, skipped)' || 'stub-suites' }}
     needs: push-dedupe
-    if: needs.push-dedupe.outputs.skip != 'true'
+    if: needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
