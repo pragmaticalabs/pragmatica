@@ -59,8 +59,7 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
 
     /// The Connectible owns the event-loop group of its builder (#3635): it is closed on a failed connect or subscribe,
     /// and with the handle otherwise.
-    private static Promise<PgNotificationSubscriber> provisionWith(DatabaseConnectorConfig dbConfig,
-                                                                   List<String> channels) {
+    static Promise<PgNotificationSubscriber> provisionWith(DatabaseConnectorConfig dbConfig, List<String> channels) {
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> buildPlainConnectible(dbConfig)).flatMap(connectible -> connectible.getConnection()
                                                                                                                                               .flatMap(connection -> subscribeToChannels(connection,
                                                                                                                                                                                          connectible,
