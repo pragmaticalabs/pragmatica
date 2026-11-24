@@ -30,6 +30,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.concurrent.PublishSlot;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -224,6 +225,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private static final long INITIAL_MAX_DATA = 64_000_000;
     private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
+    /// #3635: bound on terminating an owned group after a failed bind (enforced on the loop and, by timeout, caller-side).
+    private static final long OWNED_GROUP_TERMINATION_MS = 5_000L;
 
     private final NodeId selfId;
     private final NodeAddress selfAddress;
@@ -339,9 +342,33 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         if (future.isSuccess()) {
             publishBoundChannel(((io.netty.channel.ChannelFuture) future).channel(), promise);
         } else {
-            promise.fail(QuicTransportError.BindFailed.FACTORY.apply(port,
-                                                                     Causes.fromThrowable(future.cause())));
+            // #3635: a failed bind leaves nothing to stop() later in the common case (the caller sees a failed
+            // start), so the group this start created is released BEFORE the failure is reported. The bind failure is
+            // what the start reports; a termination failure is only logged. A supplied shared group is never released.
+            var bindFailed = QuicTransportError.BindFailed.FACTORY.apply(port,
+                                                                         Causes.fromThrowable(future.cause()));
+
+            releaseOwnedGroupAfterFailedBind().onResultRun(() -> promise.fail(bindFailed));
         }
+    }
+
+    private Promise<Unit> releaseOwnedGroupAfterFailedBind() {
+        var group = eventLoopGroup;
+
+        if (!ownsEventLoop || group == null) {
+            return Promise.unitPromise();
+        }
+
+        return Promise.<Unit> promise(done -> group.shutdownGracefully(0,
+                                                                       OWNED_GROUP_TERMINATION_MS,
+                                                                       TimeUnit.MILLISECONDS)
+                                                   .addListener(_ -> done.succeed(unit()))).timeout(TimeSpan.timeSpan(OWNED_GROUP_TERMINATION_MS + 1_000L).millis());
+    }
+
+    /// #3635 test seam: the group this server bound (or tried to bind) on. Empty before the first start.
+    @Contract
+    Option<EventLoopGroup> eventLoopGroupForTest() {
+        return option(eventLoopGroup);
     }
 
     /// #1456: the bind can land after `stop()` has already run. The slot hands the channel straight

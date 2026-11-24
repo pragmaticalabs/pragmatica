@@ -201,6 +201,87 @@ class QuicClusterNetworkLifecycleTest {
         assertThat(turnedAway).as("retries (of %d) turned away as already running right after a failed start", trials).isZero();
     }
 
+    /// #3635, L2: a start that fails on a held UDP port releases the server's AND the client's owned group before it
+    /// reports the failure. Mutation that reddens it: revert `onStartFailed` to log + `isRunning.set(false)` only.
+    @Test
+    void failedStart_releasesBothOwnedGroups_beforeReportingTheFailure() throws Exception {
+        var network = network();
+        var built = observeBuilt(network);
+
+        try (var holder = new java.net.DatagramSocket(0)) {
+            assertThat(network.startOnPort(holder.getLocalPort()).await(AWAIT).isFailure()).as("control: a start on a held port fails").isTrue();
+        }
+
+        assertThat(built).as("control: the failed attempt built a server and a client").hasSize(1);
+        assertThat(built.getFirst().server().isTerminated()).as("the failed attempt's server group is terminated").isTrue();
+        assertThat(built.getFirst().client().isTerminated()).as("the failed attempt's client group is terminated").isTrue();
+    }
+
+    /// #3635, L2: the retry after the failure orphans nothing — the failed attempt's groups are gone, the retry's are live,
+    /// and stop() releases the retry's. Mutation that reddens it: as above.
+    @Test
+    void retryAfterFailedStart_leavesOnlyTheRetrysGroupsLive_andStopReleasesThem() throws Exception {
+        var network = network();
+        var built = observeBuilt(network);
+
+        try (var holder = new java.net.DatagramSocket(0)) {
+            network.startOnPort(holder.getLocalPort()).await(AWAIT);
+        }
+        network.startOnPort(0).await(AWAIT).onFailure(cause -> fail("retry failed: " + cause.message()));
+
+        assertThat(built).as("control: two attempts were built").hasSize(2);
+        assertThat(built.get(0).server().isTerminated() && built.get(0).client().isTerminated()).as("failed attempt released").isTrue();
+        assertThat(built.get(1).server().isShuttingDown() || built.get(1).client().isShuttingDown()).as("control: the retry's groups are live").isFalse();
+
+        network.stop().await(AWAIT).onFailure(cause -> fail("stop failed: " + cause.message()));
+
+        assertThat(built.get(1).server().isTerminated() && built.get(1).client().isTerminated()).as("stop releases the retry's groups").isTrue();
+    }
+
+    /// #3635, L1: certificate rotation keeps ONE client — and so one owned group and one datagram-channel map — and only
+    /// swaps the TLS context its later dials use. Mutations that redden it: rebuild the client in `rebuildAndStart` (identity),
+    /// drop `renewSslContext` from `stopAndRestartServer` (context).
+    @Test
+    void rotations_keepOneClientAndItsLiveGroup_andRenewItsDialContext() {
+        var network = started();
+        var client = (QuicClusterClientInstance) network.clientForTests();
+        var clientGroup = client.eventLoopGroupForTest();
+
+        for (var rotation = 1; rotation <= 3; rotation++) {
+            var newClientSsl = QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("rotated-client-" + rotation)).fold(_ -> fail("client ssl"), ssl -> ssl);
+            var newServerSsl = QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("rotated-server-" + rotation)).fold(_ -> fail("server ssl"), ssl -> ssl);
+
+            network.rotateCertificate(newServerSsl, newClientSsl).await(AWAIT).onFailure(cause -> fail("rotation failed: " + cause.message()));
+
+            assertThat(network.clientForTests()).as("rotation %d keeps the same client", rotation).isSameAs(client);
+            assertThat(client.sslContextForTest()).as("rotation %d: the next dial uses the new context", rotation).isSameAs(newClientSsl);
+            assertThat(clientGroup.isShuttingDown()).as("rotation %d leaves the client's group running", rotation).isFalse();
+        }
+
+        network.stop().await(AWAIT).onFailure(cause -> fail("stop failed: " + cause.message()));
+
+        assertThat(clientGroup.isTerminated()).as("the one client's group is released by stop()").isTrue();
+    }
+
+    /// The server and client one `startOnPort` built. The server's group exists only once it has started binding, so it is read late.
+    private record Built(QuicClusterServerInstance serverInstance, QuicClusterClientInstance clientInstance) {
+        io.netty.channel.EventLoopGroup server() {
+            return serverInstance.eventLoopGroupForTest().or((io.netty.channel.EventLoopGroup) null);
+        }
+
+        io.netty.channel.EventLoopGroup client() {
+            return clientInstance.eventLoopGroupForTest();
+        }
+    }
+
+    private static List<Built> observeBuilt(QuicClusterNetwork network) {
+        var built = new java.util.concurrent.CopyOnWriteArrayList<Built>();
+
+        network.builtObserverForTests((server, client) -> built.add(new Built((QuicClusterServerInstance) server, (QuicClusterClientInstance) client)));
+
+        return built;
+    }
+
     private static int freeUdpPort() throws Exception {
         try (var socket = new java.net.DatagramSocket(0)) {
             return socket.getLocalPort();
