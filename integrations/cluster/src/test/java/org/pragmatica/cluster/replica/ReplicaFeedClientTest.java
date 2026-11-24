@@ -41,6 +41,18 @@ class ReplicaFeedClientTest {
         return net;
     }
 
+    private static ReplicaFeedMessage.ReplicaSnapshotChunk withWrongHash(ReplicaFeedMessage.ReplicaSnapshotChunk real) {
+        return new ReplicaFeedMessage.ReplicaSnapshotChunk(real.sender(),
+                                                           real.requestId(),
+                                                           real.tag(),
+                                                           real.revision(),
+                                                           real.anchor(),
+                                                           "0".repeat(64),
+                                                           real.total(),
+                                                           real.offset(),
+                                                           real.bytes());
+    }
+
     private static boolean lastPublished(Net net) {
         return net.published.getLast();
     }
@@ -104,15 +116,7 @@ class ReplicaFeedClientTest {
             net.step();
 
             var real = net.heldChunks.removeFirst();
-            var tampered = new ReplicaFeedMessage.ReplicaSnapshotChunk(real.sender(),
-                                                                       real.requestId(),
-                                                                       real.tag(),
-                                                                       real.revision(),
-                                                                       real.anchor(),
-                                                                       "0".repeat(64),
-                                                                       real.total(),
-                                                                       real.offset(),
-                                                                       real.bytes());
+            var tampered = withWrongHash(real);
 
             net.client.onSnapshotChunk(tampered);
             net.pump();
@@ -264,10 +268,30 @@ class ReplicaFeedClientTest {
             assertThat(net.clientStore.committedRevision()).isEqualTo(4);
             assertThat(net.installs.get()).as("the snapshot at the caught-up revision installed").isGreaterThanOrEqualTo(2);
         }
+
+        /// Only a lagging source's snapshot makes the worker leave it: a snapshot that fails its hash is abandoned and the same current source is asked
+        /// again (unchanged by #3359). Mutation: avoid the source on every install failure (`cause instanceof SnapshotBehind` -> `true`).
+        @Test
+        void aSnapshotThatFailsItsHash_doesNotMakeTheWorkerLeaveItsSource() {
+            var net = new Net(2);
+
+            net.genesis();
+            net.commitAll(1, put("a", "1"));
+            net.holdChunks.set(true);
+            net.step();
+            net.client.onSnapshotChunk(withWrongHash(net.heldChunks.removeFirst()));
+            net.pump();
+            net.holdChunks.set(false);
+            net.advance(300);
+            net.step();
+            net.step();
+
+            assertThat(net.subscribeTargets()).as("the same core is asked again").containsExactly(net.core(0).id, net.core(0).id);
+        }
     }
 
     /// The way out through another source: the refused source is avoided, so a core that is caught up is asked next although the lagging one was
-    /// the current source (the selector keeps the current source while it is not avoided). Mutation: drop `avoided.add` in `ReplicaFeedClient.refusedInstall`.
+    /// the current source (the selector keeps the current source while it is not avoided). Mutation: drop `avoided.add` in `ReplicaFeedClient.installFailed`.
     @Nested
     class LeavingTheLaggingSource {
         @Test
