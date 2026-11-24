@@ -59,6 +59,15 @@ final class LossAccountingFixtures {
         return network(LaneProbe.codec(), attempts, interval);
     }
 
+    /// The held-frame budget of [#networkWithoutGiveUp], far past every test's `@Timeout`.
+    static final TimeSpan NO_GIVE_UP_BUDGET = TimeSpan.timeSpan(1).hours();
+
+    /// A network whose held frame is never given up inside a test (#3686): the budget (attempts x `interval`) is an hour.
+    /// For every test whose subject is not the give-up; a test whose subject is the give-up names its own short budget.
+    static QuicClusterNetwork networkWithoutGiveUp(TimeSpan interval) {
+        return network((int) (NO_GIVE_UP_BUDGET.nanos() / interval.nanos()), interval);
+    }
+
     static QuicClusterNetwork network(Serializer serializer, TimeSpan interval) {
         return network(serializer, 3, interval);
     }
