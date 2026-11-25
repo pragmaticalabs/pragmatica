@@ -43,6 +43,10 @@
 #   R3: assert_ne <var> "" on raw HTTP response (tautology — see audit §2.1)
 #   R4: [ status -ge 200 ] && [ status -lt 400 ] outside lib/load.sh (3xx-as-success)
 #   R5: test_* function defined but never invoked via run_test (dead code)
+#   R6: a bare `sleep N` / `command sleep N` in test/*.sh (the stub suites) without `# sleep-ok: <reason>` on the line (#3424).
+#       A fixed sleep before an assertion ends before the event under CPU contention (#3421); wait on the asserted artifact
+#       with poll_until (lib/common.sh) instead. The reason must say why a fixed duration IS the point (virtual time,
+#       a timing probe, a process fixture), e.g. `sleep 600  # sleep-ok: fixture process that must outlive the probe`.
 #
 # References:
 #   audit: aether/docs/internal/audits/integration-test-audit-2026-05-21.md
@@ -229,6 +233,46 @@ while IFS= read -r line; do
     detail=$(echo "$line" | cut -d: -f3-)
     emit_finding R5 "$file" "$lineno" "$detail"
 done < <(find "$SUITES_DIR" -type f -name "test-*.sh" -exec bash -c "$(declare -f lint_r5_dead_test); lint_r5_dead_test \"\$1\"" _ {} \;)
+
+# ============================================================
+# R6 — bare sleep in the stub suites (test/*.sh) without `# sleep-ok: <reason>`
+# ============================================================
+lint_r6_bare_sleep() {
+    local file="$1"
+    # `code` = the line up to the first real comment, with quoted text removed (the quotes stay): a `#` opens a comment only
+    # outside quotes and at a word start, so `echo "step #1"; sleep 3` keeps its sleep, and `echo "a sleep 3"` has none.
+    # Inside a double-quoted string only a `$( ... )` substitution is code, and a backslash makes the next character literal (`\"`). The sleep may be reached by any path (`/bin/sleep 9`).
+    # The `# sleep-ok: <reason>` marker counts only in the real comment (`cmt`), never inside a string.
+    awk '
+        {
+            line = $0; code = ""; cmt = ""; q = ""; d = 0; n = length(line)
+            for (i = 1; i <= n; i++) {
+                c = substr(line, i, 1)
+                if (q == "") {
+                    if (c == "\\") { code = code c substr(line, i + 1, 1); i++; continue }
+                    if (c == "\047" || c == "\"") q = c
+                    else if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:];&|(]/)) { cmt = substr(line, i); break }
+                } else if (d > 0) {
+                    if (c == "(") d++; else if (c == ")") d--
+                } else if (q == "\"" && c == "\\") { i++; continue }   # \" and \\ inside double quotes: the next char is literal
+                else if (c == q) q = ""
+                else if (q == "\"" && c == "$" && substr(line, i + 1, 1) == "(") { d = 1; code = code "$("; i++; continue }
+                else continue
+                code = code c
+            }
+        }
+        code ~ /(^|[^[:alnum:]_.\047"^-])(command[[:space:]]+)?sleep[[:space:]]+[0-9$"\047]/ {
+            if (cmt !~ /^#[[:space:]]*sleep-ok:[[:space:]]*[^[:space:]]/) print FILENAME ":" NR ":bare-sleep"
+        }
+    ' "$file"
+}
+
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    file=$(echo "$line" | cut -d: -f1)
+    lineno=$(echo "$line" | cut -d: -f2)
+    emit_finding R6 "$file" "$lineno" "bare sleep in a stub suite: poll the asserted artifact with poll_until, or mark '# sleep-ok: <reason>'"
+done < <([ -d "$ROOT_DIR/test" ] && find "$ROOT_DIR/test" -type f -name "test-*.sh" | sort | while IFS= read -r f; do lint_r6_bare_sleep "$f"; done)
 
 # ============================================================
 # Report

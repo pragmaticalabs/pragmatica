@@ -24,6 +24,7 @@ import java.util.zip.ZipOutputStream;
 
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
@@ -45,6 +46,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
@@ -57,6 +59,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigurationProvider;
@@ -203,6 +206,80 @@ class BlueprintPublishOwnershipTest {
 
             assertThat(recordedOwner()).as("a non-migrating blueprint neither claims nor disturbs the record")
                                        .isEqualTo(OTHER_COORDS);
+        }
+    }
+
+    /// #834: `executeUndoStep` removes the undone versions from the history table, and a routine republish of the same blueprint
+    /// then writes `(declared maxVersion, PENDING)` over the record, so `migrate()` re-applies them. The operator's undo is the
+    /// record's version; a publish declaring a higher one is refused unless forced.
+    @Nested
+    class UndoneRepublishGuard {
+        @Test
+        void publishFromArtifact_isRefused_whenRecordWasUndoneBelowTheDeclaredVersion() {
+            seedUndoneAt(1);
+
+            publish(OWNER_COORDS, withMigrationsUpTo(OWNER_COORDS, 2)).onSuccess(_ -> Assertions.fail("Republish declaring V2 over an undo to V1 must be refused"))
+                                                                      .onFailure(cause -> assertReapplyRefused(cause, SchemaReach.UNDONE, "undo"));
+        }
+
+        /// The baseline arm: a baseline also leaves the record below what the blueprint declares, and the versions it skipped
+        /// would be applied from scratch. Same refusal, but the message names the intervention that actually happened.
+        @Test
+        void publishFromArtifact_isRefused_whenRecordWasBaselinedBelowTheDeclaredVersion() {
+            seedReachedAt(1, SchemaReach.BASELINED);
+
+            publish(OWNER_COORDS, withMigrationsUpTo(OWNER_COORDS, 2)).onSuccess(_ -> Assertions.fail("Republish declaring V2 over a baseline at V1 must be refused"))
+                                                                      .onFailure(cause -> assertReapplyRefused(cause, SchemaReach.BASELINED, "baseline"));
+            assertThat(cluster.batches).as("refused before any command is applied")
+                                       .isEmpty();
+        }
+
+        /// `force` is the operator's explicit acceptance of the re-application: the publish goes through and the declared
+        /// version wins, exactly as the declarative contract says.
+        @ParameterizedTest
+        @EnumSource(value = SchemaReach.class, names = {"UNDONE", "BASELINED"})
+        void publishFromArtifact_isAccepted_whenForced_overAnInterventionRecord(SchemaReach reach) {
+            seedReachedAt(1, reach);
+
+            publishForced(OWNER_COORDS, withMigrationsUpTo(OWNER_COORDS, 2)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(recordedVersion()).as("a forced publish writes the declared version")
+                                         .isEqualTo(2);
+            assertThat(recordedReach()).as("and the record is a forward migration from then on, so the next plain republish is not refused")
+                                       .isEqualTo(SchemaReach.MIGRATED);
+        }
+
+        /// Only an operator intervention guards: a record reached by forward migration is the ordinary upgrade path.
+        @Test
+        void publishFromArtifact_isAccepted_whenRecordWasMigratedForward() {
+            seedReachedAt(1, SchemaReach.MIGRATED);
+
+            publish(OWNER_COORDS, withMigrationsUpTo(OWNER_COORDS, 2)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(recordedVersion()).isEqualTo(2);
+        }
+
+        /// A record whose reach is `UNKNOWN` (written by a build that does not know the reach constant) never guards:
+        /// the guard refuses only on a reach it positively knows to be an operator intervention.
+        @Test
+        void publishFromArtifact_isAccepted_whenRecordReachIsUnknown() {
+            seedReachedAt(1, SchemaReach.UNKNOWN);
+
+            publish(OWNER_COORDS, withMigrationsUpTo(OWNER_COORDS, 2)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(recordedVersion()).as("an unknown reach is not an intervention, so the publish lands")
+                                         .isEqualTo(2);
+        }
+
+        /// Nothing would be re-applied when the blueprint declares no version above the one the operator left.
+        @Test
+        void publishFromArtifact_isAccepted_whenDeclaredVersionDoesNotExceedTheUndoneRecord() {
+            seedUndoneAt(2);
+
+            publish(OWNER_COORDS, withMigrationsUpTo(OWNER_COORDS, 2)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(store.get(AppBlueprintKey.appBlueprintKey(OWNER)).isPresent()).as("the publish landed")
+                                                                                     .isTrue();
         }
     }
 
@@ -474,6 +551,12 @@ class BlueprintPublishOwnershipTest {
                                .await();
     }
 
+    private Result<PublishedBlueprint> publishForced(String coords, byte[] blueprintJar) {
+        return BlueprintService.blueprintService(cluster, store, repository(), artifactStore(blueprintJar))
+                               .publishFromArtifact(coords + ":blueprint", false, true)
+                               .await();
+    }
+
     /// #759 review round 2: the DSL `publish(String)` path (`SliceRoutes.handleBlueprint`) parses
     /// this TOML directly — no jar, no `ArtifactStore` — but still resolves the declared slice
     /// through `repository()`, same as [#publish].
@@ -501,6 +584,57 @@ class BlueprintPublishOwnershipTest {
                                                   AetherValue.DeploymentOutcomeValue.failed(List.of("orders-api"),
                                                                                             "prior attempt failed",
                                                                                             1L)));
+    }
+
+    /// What `SchemaOrchestratorService.recordOutcome` leaves after an undo: COMPLETED at the target version, marker `U<version>__undo`.
+    private void seedUndoneAt(int version) {
+        seedReachedAt(version, SchemaReach.UNDONE);
+    }
+
+    private void seedReachedAt(int version, SchemaReach reach) {
+        store.processCommand(new KVCommand.Put<>(SchemaVersionKey.schemaVersionKey(DATASOURCE),
+                                                 SchemaVersionValue.schemaVersionValue(DATASOURCE,
+                                                                                       version,
+                                                                                       "U00" + version + "__undo",
+                                                                                       SchemaStatus.COMPLETED,
+                                                                                       OWNER.asString(),
+                                                                                       OWNER,
+                                                                                       0,
+                                                                                       reach)));
+    }
+
+    private SchemaReach recordedReach() {
+        return store.get(SchemaVersionKey.schemaVersionKey(DATASOURCE))
+                    .filter(SchemaVersionValue.class::isInstance)
+                    .map(SchemaVersionValue.class::cast)
+                    .map(SchemaVersionValue::reachedBy)
+                    .or(SchemaReach.UNKNOWN);
+    }
+
+    private int recordedVersion() {
+        return store.get(SchemaVersionKey.schemaVersionKey(DATASOURCE))
+                    .filter(SchemaVersionValue.class::isInstance)
+                    .map(SchemaVersionValue.class::cast)
+                    .map(SchemaVersionValue::currentVersion)
+                    .or(-1);
+    }
+
+    private static void assertReapplyRefused(Cause cause, SchemaReach reach, String operation) {
+        assertThat(cause).isInstanceOf(SchemaError.RepublishWouldReapply.class);
+        var refusal = (SchemaError.RepublishWouldReapply) cause;
+        assertThat(refusal.httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(refusal.reachedBy()).as("the typed cause names the intervention that guarded")
+                                       .isEqualTo(reach);
+        assertThat(refusal.currentVersion()).isEqualTo(1);
+        assertThat(refusal.reapplied()).isEqualTo(List.of(2));
+        assertThat(refusal.datasource()).isEqualTo(DATASOURCE);
+        assertThat(cause.message()).contains(DATASOURCE)
+                                   .contains("by an operator " + operation)
+                                   .contains("[2]");
+    }
+
+    private static byte[] withMigrationsUpTo(String blueprintId, int version) {
+        return blueprintJar(blueprintId, List.of("schema/V001__init.sql", "schema/V00" + version + "__next.sql"));
     }
 
     private void seedSchemaOwnedBy(BlueprintId owner) {
@@ -545,11 +679,15 @@ class BlueprintPublishOwnershipTest {
     /// A blueprint jar carrying `META-INF/blueprint.toml` and, when requested, one migration script
     /// under the default layout — which `BlueprintArtifactParser` maps to the `"database"` datasource.
     private static byte[] blueprintJar(String blueprintId, Option<String> migrationEntryPath) {
+        return blueprintJar(blueprintId, migrationEntryPath.map(path -> List.of(path)).or(List.of()));
+    }
+
+    private static byte[] blueprintJar(String blueprintId, List<String> migrationEntryPaths) {
         var bytes = new ByteArrayOutputStream();
 
         try (var zip = new ZipOutputStream(bytes)) {
             writeEntry(zip, "META-INF/blueprint.toml", "id = \"" + blueprintId + "\"\n" + SLICE_STANZA);
-            migrationEntryPath.onPresent(path -> writeMigration(zip, path));
+            migrationEntryPaths.forEach(path -> writeMigration(zip, path));
         } catch (IOException e) {
             throw new IllegalStateException("Failed to build test blueprint jar", e);
         }
@@ -735,6 +873,15 @@ class BlueprintPublishOwnershipTest {
         @Override
         public Option<AetherValue> get(AetherKey key) {
             return Option.option(storage.get(key));
+        }
+
+        /// #3334: the base class reads its own (never populated) map; the typed point read `BlueprintService` uses for the
+        /// committed stream row must see this double's storage.
+        @Override
+        public <VV> Option<VV> getTyped(StructuredKey key, Class<VV> valueClass) {
+            return Option.option(storage.get(key))
+                         .filter(valueClass::isInstance)
+                         .map(valueClass::cast);
         }
 
         @Override

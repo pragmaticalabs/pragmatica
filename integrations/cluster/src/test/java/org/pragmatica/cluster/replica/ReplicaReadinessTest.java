@@ -15,6 +15,7 @@ import org.pragmatica.cluster.state.kvstore.AnchorPair;
 import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.cluster.replica.FeedFixtures.LINEAGE;
 import static org.pragmatica.cluster.replica.FeedFixtures.TAG;
 
 /// Spec 2.8: `ready()` is one computation of (a)..(f). Each test names the mutation of `ReplicaReadiness` that turns it red.
@@ -50,7 +51,7 @@ class ReplicaReadinessTest {
     void ready_isFalse_whenTheHeartbeatTagIsAnotherLife() {
         readiness.sourceChanged();
         readiness.caughtUp(true);
-        readiness.onHeartbeat(IncarnationTag.incarnationTag(2, "B"), 10, true);
+        readiness.onHeartbeat(IncarnationTag.incarnationTag(2, "B", LINEAGE), 10, true);
 
         assertThat(readiness.ready()).isFalse();
     }
@@ -278,6 +279,39 @@ class ReplicaReadinessTest {
         assertThat(readiness.ready()).as("100 ms inside the cap").isTrue();
         advance(200);
         assertThat(readiness.ready()).as("100 ms past the cap, though the last renewal asked for 4500 ms more").isFalse();
+    }
+
+    /// The cap is exact: a capped carry holds through the anchor plus [ReplicaClientLimits#carryCapMillis] and ends one nanosecond later. Mutation:
+    /// the cap one millisecond longer or shorter in `renewCarry`.
+    @Test
+    void carryBeatsFor_theCapIsExactToTheNanosecond() {
+        var limits = ReplicaClientLimits.DEFAULT;
+        var grace = limits.carryGraceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(2_000);
+        readiness.carryBeatsFor(grace);
+        advance(2_000);
+        readiness.carryBeatsFor(grace);
+        advance(limits.carryCapMillis() - 4_000);
+        assertThat(readiness.ready()).as("at the cap").isTrue();
+        clock.incrementAndGet();
+        assertThat(readiness.ready()).as("one nanosecond past the cap").isFalse();
+    }
+
+    /// `carrying()` is armed by a carry, stays armed past its expiry (renewing an expired carry is refused by `carryBeatsFor` itself), and is
+    /// cleared only by a counted beat. Mutation: also test `carryExpired` in `carrying()`, or keep `carriedUntilNanos` on a counted beat.
+    @Test
+    void carrying_isArmedByACarry_andClearedOnlyByACountedBeat() {
+        var grace = ReplicaClientLimits.DEFAULT.carryGraceMillis() * MS;
+
+        assertThat(readiness.carrying()).as("no carry yet").isFalse();
+        readiness.carryBeatsFor(grace);
+        assertThat(readiness.carrying()).as("armed").isTrue();
+        advance(ReplicaClientLimits.DEFAULT.carryGraceMillis() + 1);
+        assertThat(readiness.carrying()).as("expired, still armed").isTrue();
+        readiness.onHeartbeat(TAG, 10, true);
+        assertThat(readiness.carrying()).as("a counted beat clears it").isFalse();
     }
 
     /// A counted beat clears the carry and resets the anchor: the next chain gets a full cap of its own. Mutation: keep `carryAnchorNanos` on a beat.

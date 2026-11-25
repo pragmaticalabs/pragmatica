@@ -55,15 +55,26 @@ class NettySwimTransportBoundedShutdownTest {
     private static final String LOGGER_NAME = NettySwimTransport.class.getName();
     private static final String SUCCESS_LINE = "SWIM transport stopped";
     private static final String FAILURE_LINE = "SWIM transport shutdown did NOT complete";
-    private static final int WEDGED_PORT = 19731;
-    private static final int HEALTHY_PORT = 19732;
-    /// Must outlast `NettySwimTransport.SHUTDOWN_TIMEOUT_MS` (5 s) so the bound is what ends the
-    /// wait, not the wedge clearing.
-    private static final long WEDGE_MS = 9_000L;
+    /// Port 0: the OS picks a free ephemeral port per bind, so concurrent runs on one host cannot collide (#3609). The
+    /// tests never address the socket after binding, so the bound port is not read back (the transport exposes no accessor).
+    private static final int EPHEMERAL_PORT = 0;
+    /// Mirror of `NettySwimTransport.SHUTDOWN_TIMEOUT_MS` (private there; this PR changes no production code). A change
+    /// to the production bound without this value goes red on the elapsed-time pin below, which is its purpose.
+    private static final long SHUTDOWN_BOUND_MS = 5_000L;
+    /// Tolerance below the bound: nanoTime reads taken on this thread around a timed wait that, by Netty's contract,
+    /// does not return before its timeout; 100 ms absorbs clock granularity only.
+    private static final long BOUND_FLOOR_TOLERANCE_MS = 100L;
+    /// Margin above the bound for the failing stop to return (log line, result construction, scheduler delay under
+    /// load). 4 s is far above any such cost yet below the 10 s gap a bound raised to 15 s would add.
+    private static final long BOUND_MARGIN_MS = 4_000L;
     private static final long WEDGE_ARMED_BOUND_MS = 5_000L;
     private static final long GROUP_CLEANUP_TIMEOUT_MS = 10_000L;
 
     private LogCapture capture;
+    /// Holds the wedging task on the event loop until [`#tearDown`] releases it, so the wedge outlasts
+    /// `NettySwimTransport.SHUTDOWN_TIMEOUT_MS` (5 s) by construction: the bound is what ends the wait,
+    /// never the wedge clearing, and no wall-clock guess of how long the bound takes is baked in.
+    private final CountDownLatch wedgeRelease = new CountDownLatch(1);
     /// Every group this test creates, shut down in [`#tearDown`] whatever the outcome. A Netty
     /// `NioEventLoopGroup` runs NON-daemon threads: a group left alive by a failing assertion keeps
     /// the surefire fork from exiting, which is how a first cut of this class turned a 6 s run into
@@ -78,6 +89,7 @@ class NettySwimTransportBoundedShutdownTest {
     @AfterEach
     void tearDown() {
         capture.close();
+        wedgeRelease.countDown();
         groups.forEach(group -> group.shutdownGracefully(0L, GROUP_CLEANUP_TIMEOUT_MS, TimeUnit.MILLISECONDS));
         groups.clear();
     }
@@ -87,14 +99,20 @@ class NettySwimTransportBoundedShutdownTest {
         var group = eventLoopGroup();
         var transport = externalGroupTransport(group);
 
-        assertThat(transport.start(WEDGED_PORT, (_, _) -> {}).await().isSuccess())
+        assertThat(transport.start(EPHEMERAL_PORT, (_, _) -> {}).await().isSuccess())
                 .as("instrument check: the transport must bind before the loop is wedged")
                 .isTrue();
 
         wedge(group);
 
+        var startedAt = System.nanoTime();
         var result = transport.stop().await();
+        var elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
 
+        assertThat(elapsedMs).as("the stop that cannot complete must wait out the bound, not give up early (#929)")
+                             .isGreaterThanOrEqualTo(SHUTDOWN_BOUND_MS - BOUND_FLOOR_TOLERANCE_MS);
+        assertThat(elapsedMs).as("and must return at the bound, not after the wedge (held until teardown) or a longer bound")
+                             .isLessThanOrEqualTo(SHUTDOWN_BOUND_MS + BOUND_MARGIN_MS);
         assertThat(result.isFailure()).as("a shutdown whose event loop cannot run the close task must "
                                           + "report FAILURE, not success (#929)")
                                       .isTrue();
@@ -117,7 +135,7 @@ class NettySwimTransportBoundedShutdownTest {
     void healthyShutdown_succeedsAndLogsSuccess() {
         var transport = ownGroupTransport();
 
-        assertThat(transport.start(HEALTHY_PORT, (_, _) -> {}).await().isSuccess()).isTrue();
+        assertThat(transport.start(EPHEMERAL_PORT, (_, _) -> {}).await().isSuccess()).isTrue();
 
         var result = transport.stop().await();
 
@@ -196,15 +214,15 @@ class NettySwimTransportBoundedShutdownTest {
                                  .unwrap();
     }
 
-    /// Occupy the group's only event loop for longer than the shutdown bound, and wait until the
+    /// Occupy the group's only event loop until teardown (longer than the shutdown bound), and wait until the
     /// task has actually started — otherwise the shutdown could win the race and the probe would
     /// measure nothing.
-    private static void wedge(EventLoopGroup group) {
+    private void wedge(EventLoopGroup group) {
         var armed = new CountDownLatch(1);
 
         group.execute(() -> {
             armed.countDown();
-            sleepQuietly(WEDGE_MS);
+            awaitReleaseQuietly();
         });
 
         try {
@@ -216,9 +234,9 @@ class NettySwimTransportBoundedShutdownTest {
         }
     }
 
-    private static void sleepQuietly(long millis) {
+    private void awaitReleaseQuietly() {
         try {
-            Thread.sleep(millis);
+            wedgeRelease.await();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

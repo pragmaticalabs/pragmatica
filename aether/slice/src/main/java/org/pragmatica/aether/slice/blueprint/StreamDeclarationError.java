@@ -135,6 +135,110 @@ public sealed interface StreamDeclarationError extends Cause {
         }
     }
 
+    /// A `[retention]` block that declares no bound (#3333, S2a1 section 2.2): none of `max_age`, `max_bytes`, `max_count`.
+    /// Refused rather than defaulted, because a block that bounds nothing is a mistake, not a request for the default.
+    record RetentionUndeclared(String alias) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares a [retention] block with no bound: declare at least one of max_age, max_bytes, max_count,"
+                 + " or remove the block for the default";
+        }
+    }
+
+    /// A `[retention]` block that declares `max_count` without `max_bytes` (#3333, S2a1 section 2.2): a count alone has no
+    /// byte bound a user would recognise, so it is refused here instead of at plan, where the reason would be hidden.
+    record RetentionCountOnly(String alias, long maxCount, long maxEventSize) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares retention.max_count = " + maxCount
+                 + " without retention.max_bytes: add max_bytes; max_count alone bounds this stream only at max_count x max_event_size (" + maxEventSize
+                 + " bytes per event)";
+        }
+    }
+
+    /// A key whose release has not merged yet (#3333, T-146): refused instead of accepted and ignored, so no declaration is
+    /// stored that nothing enforces. The release that lands the behaviour removes the refusal.
+    record NotYetAvailable(String alias, String key, String release) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares " + key
+                 + " with a value that is not available before release " + release;
+        }
+    }
+
+    /// `truncation.policy = "until_consumed"` with no `retention.max_bytes` (#3333, S2a1 section 2.2, O1): a stream held
+    /// for its slowest group needs a byte cap, and an age bound alone is not one.
+    record UntilConsumedUncapped(String alias) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares truncation.policy = \"until_consumed\" without retention.max_bytes: add max_bytes to [retention];"
+                 + " max_age alone does not cap a stream held for its slowest consumer group";
+        }
+    }
+
+    /// `truncation.policy = "until_consumed"` with `retention.mode = "all"` (#3333, S2a1 section 2.2): under `all` a prefix
+    /// stays until every bound is exceeded, so the age bound would lift the byte cap.
+    record UntilConsumedModeAll(String alias) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares truncation.policy = \"until_consumed\" with retention.mode = \"all\": use mode = \"any\";"
+                 + " under \"all\" the age bound would lift the byte cap";
+        }
+    }
+
+    /// `truncation.policy = "until_consumed"` on a stream kind that has no committed cursor to wait for (#3333, S2a1
+    /// section 2.2): an `entity:` log has its own floor and a DLQ has no committed cursor. `kind` names which.
+    record UntilConsumedUnsupported(String alias, String kind) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares truncation.policy = \"until_consumed\", which a " + kind
+                 + " stream does not support: remove the key";
+        }
+    }
+
+    /// `truncation.group_idle_expiry` on a stream whose policy is `window`, declared or defaulted (#3333, S2a1 section 2.2):
+    /// the key means nothing there, so it is refused rather than ignored.
+    record GroupIdleExpiryWithoutUntilConsumed(String alias) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares truncation.group_idle_expiry with truncation.policy = \"window\": the key applies only to"
+                 + " \"until_consumed\"; remove it or declare that policy";
+        }
+    }
+
+    /// A section that declares the storage model (`[retention]`, `[truncation]`, `[hot]`) and a key of today's retention
+    /// model (`retention`, `retention_value`, `retention_mode`, top-level `max_age`, `max_count`, `max_bytes`) at once
+    /// (#3333, T-163): one refusal naming one key of each, never a parse that reads one model and drops the other.
+    record ConflictingDeclarationModels(String alias, String newKey, String oldKey) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares both " + newKey
+                 + " and " + oldKey
+                 + ": declare retention in the [retention] block only and remove " + oldKey;
+        }
+    }
+
+    /// A `[[streams.<alias>.<name>]]` table array under a stream section (#3520): the section holds tables, and no part of the
+    /// parser reads an array of them, so it is refused as malformed instead of accepted and ignored. `name` is the full table
+    /// array name, as the TOML document reports it.
+    record TableArrayDeclared(String alias, String name) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares [[" + name
+                 + "]] as an array of tables: a stream section holds tables, so write it as [" + name
+                 + "]";
+        }
+    }
+
     /// Keys of the section, or of its consumer sections, that have no runtime effect ([InertKeyRules]), refused at activation
     /// as the deploy validator refuses them (#2201 E-02): a declaration that reaches a node without passing the validator
     /// does not bind with a key that silently does nothing.

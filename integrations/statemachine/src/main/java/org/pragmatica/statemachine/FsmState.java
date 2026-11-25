@@ -34,17 +34,24 @@ public interface FsmState<S extends FsmState<S, E>, E> {
 
     /// Invariant cleanup for this state. Runs once on any transition *out* of this state,
     /// after the CAS succeeds and before the transition action.
+    ///
+    /// MUST NOT dispatch events: a follow-up decided here goes through [`Fsm#followUp`], which delivers it after the
+    /// transition completes (its observer callback included), before the dispatch that ran this hook returns. Decide
+    /// the follow-up from this hook's inputs, never by reading [`Fsm#current`] after a dispatch.
     default void onExit() {}
 
     /// Invariant setup for this state. Runs once on any transition *into* this state, after the
     /// transition action and before the observer callback.
+    ///
+    /// MUST NOT dispatch events: the same follow-up rule as [`#onExit`] applies ([`Fsm#followUp`]).
     default void onEntry() {}
 
     /// Invoked on `target` when its CAS attempt loses to another thread. The state was constructed
     /// with any eager resources it declared (e.g. scheduled futures in factory methods) but never
     /// became current — CAS lost. Use this hook to release those resources.
     ///
-    /// MUST NOT dispatch events (same reentrancy constraint as `onEntry` / `onExit`).
+    /// MUST NOT dispatch events nor follow up ([`Fsm#followUp`]): this state never became current, so it decides
+    /// nothing for the FSM.
     /// MUST NOT throw (JBCT).
     default void onCasLost() {}
 }

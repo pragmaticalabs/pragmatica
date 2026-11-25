@@ -17,15 +17,15 @@ public interface UserPersistence {
                    String email,
                    boolean active,
                    Instant createdAt,
-                   Instant updatedAt,
-                   Instant deletedAt) {
+                   Option<Instant> updatedAt,
+                   Option<Instant> deletedAt) {
         static UserRow userRow(long id,
                                String name,
                                String email,
                                boolean active,
                                Instant createdAt,
-                               Instant updatedAt,
-                               Instant deletedAt) {
+                               Option<Instant> updatedAt,
+                               Option<Instant> deletedAt) {
             return new UserRow(id, name, email, active, createdAt, updatedAt, deletedAt);
         }
     }

@@ -4,14 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.backup;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
@@ -52,6 +55,8 @@ public record GitBackupRepository(Path dir,
     /// The operator's genesis declaration: `<lineage> <incarnation>`. Committed beside [#FILE] by
     /// `aether backup declare-genesis`; the only thing that lets a different lineage replace the head.
     public static final String DECLARATION = "declared-lineage.txt";
+    /// The rejection record beside [#FILE] (#3303): why a restore candidate was refused (name is a guess).
+    public static final String REJECTION_FILE = "restore-rejected.txt";
     /// Bound on any single git command — long enough for a push over a slow link, short enough that a
     /// hung remote cannot stall the backup worker indefinitely.
     public static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(60).seconds();
@@ -65,8 +70,18 @@ public record GitBackupRepository(Path dir,
                                                                        "-c",
                                                                        "maintenance.autoDetach=false");
 
+    /// Ends git's option parsing, so a caller-supplied ref or commit is a revision whatever it looks like (needs git 2.24, below the 2.43 floor).
+    private static final String END_OF_OPTIONS = "--end-of-options";
     private static final String REMOTE_NAME = "origin";
     private static final String REMOTE_REF = "refs/remotes/" + REMOTE_NAME + "/";
+    /// `ls-remote --exit-code` and `show-ref --exists` answer "no such ref" with exit 2 and nothing else does.
+    private static final int NO_SUCH_REF = 2;
+    /// git's exit status for a usage error: an option the installed git does not know (`show-ref --exists` before 2.43).
+    private static final int USAGE_ERROR = 129;
+    /// What the three-valued reads need from the installed git (`show-ref --exists`, 2.43); every reason that follows from a git older than that names it.
+    private static final String MINIMUM_GIT = "git >= 2.43";
+    private static final Pattern GIT_VERSION = Pattern.compile("^(?:git version )?(\\d+)\\.(\\d+)");
+    private static final Pattern COMMIT_ID = Pattern.compile("[0-9a-f]{40}([0-9a-f]{24})?");
 
     private static final Pattern REJECTION_STATUS = Pattern.compile("^!\\t[^\\t]*\\t(\\[rejected\\]|\\[remote rejected\\] \\((failed to update ref|reference already exists|incorrect old value provided|reference does not exist)\\))",
                                                                     Pattern.MULTILINE);
@@ -103,6 +118,18 @@ public record GitBackupRepository(Path dir,
                                                                                  GitUnavailable::new);
         }
 
+        /// A [GitRead.Unreadable] seen by a caller that cannot go on without the answer: `reason` is what git (or its absence) said.
+        record GitUnreadable(String reason, String message) implements BackupRepositoryError {
+            static final Fn1<GitUnreadable, String> FACTORY = Causes.forOneValue("git could not be read: %s",
+                                                                                 GitUnreadable::new);
+        }
+
+        /// A ref or commit beginning with `-` that was refused before git ran: git would take it for an option (`show --output=<file>` writes a file).
+        record ArgumentRefused(String argument, String message) implements BackupRepositoryError {
+            static final Fn1<ArgumentRefused, String> FACTORY = Causes.forOneValue("git argument begins with '-' and was refused: %s",
+                                                                                   ArgumentRefused::new);
+        }
+
         record PushRejected(String output, String message) implements BackupRepositoryError {
             static final Fn1<PushRejected, String> FACTORY = Causes.forOneValue("push is not a fast-forward: %s",
                                                                                 PushRejected::new);
@@ -130,27 +157,24 @@ public record GitBackupRepository(Path dir,
                               .flatMap(_ -> configureRemote());
     }
 
-    /// The document committed at the local `HEAD`, when there is one.
-    public Result<Option<String>> localHead() {
-        return hasCommits().flatMap(present -> present
-                                               ? git("show", "HEAD:" + FILE).map(Option::some)
-                                               : success(Option.none()));
-    }
-
-    /// Fetch the backup branch and return the document at its head — absent when the remote has no such
-    /// branch yet (a brand-new remote). A failure means the remote could not be reached.
-    public Result<Option<String>> fetchRemoteHead() {
-        return remoteHasBranch().flatMap(present -> present
-                                                    ? fetchAndShow().map(Option::some)
-                                                    : success(Option.none()));
-    }
-
-    /// Whether the fetched remote head is already contained in local `HEAD` — then pushing is a
-    /// fast-forward. A local repository with no commits contains nothing.
+    /// Whether the fetched remote head is already contained in local `HEAD` — then pushing is a fast-forward. A local branch that does not exist
+    /// contains nothing. `merge-base --is-ancestor` answers exit 0 (contained) or 1 (not contained); anything else (a damaged repository, a missing
+    /// ref) is [BackupRepositoryError.GitUnreadable], never "not contained": the caller resets local commits away on "not contained" (#3464).
     public Result<Boolean> localContainsRemoteHead() {
-        return hasCommits().flatMap(present -> present
-                                               ? exitStatus("merge-base", "--is-ancestor", REMOTE_REF + branch, "HEAD").map(status -> status == 0)
-                                               : success(false));
+        return found(readLocalBranch()).flatMap(present -> present.fold(() -> success(false),
+                                                                        _ -> remoteHeadIsAncestor()));
+    }
+
+    private Result<Boolean> remoteHeadIsAncestor() {
+        return run(List.of("merge-base", "--is-ancestor", REMOTE_REF + branch, "HEAD")).flatMap(GitBackupRepository::ancestry);
+    }
+
+    private static Result<Boolean> ancestry(GitResult result) {
+        return switch (result.exitCode()) {
+            case 0 -> success(true);
+            case 1 -> success(false);
+            default -> BackupRepositoryError.GitUnreadable.FACTORY.apply("merge-base --is-ancestor exited " + result.exitCode() + ": " + result.text().strip()).result();
+        };
     }
 
     /// Move the local branch to the fetched remote head, dropping local commits the remote superseded
@@ -167,31 +191,16 @@ public record GitBackupRepository(Path dir,
         return commitFile(FILE, document, message);
     }
 
-    /// Write `content` as `file` and commit it on the local branch.
+    /// Write `content` as `file` and commit it on the local branch. The commit is scoped to `file` (`-- file`): anything else staged in the index
+    /// stays staged and uncommitted (#3473, beside the rejection commits scoped by [#commitRejection]).
     public Result<Unit> commitFile(String file, String content, String message) {
         return Result.lift(cause -> BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause)),
                            () -> Files.writeString(dir.resolve(file),
                                                    content,
                                                    StandardCharsets.UTF_8))
-                     .flatMap(_ -> git("add", file))
-                     .flatMap(_ -> git("commit", "--quiet", "-m", message))
+                     .flatMap(_ -> git("add", "--", file))
+                     .flatMap(_ -> git("commit", "--quiet", "-m", message, "--", file))
                      .mapToUnit();
-    }
-
-    /// `file` as committed at the local `HEAD`, absent when there is no commit or no such file.
-    public Result<Option<String>> localFile(String file) {
-        return fileAt("HEAD", file);
-    }
-
-    /// `file` at the fetched remote head (call [#fetchRemoteHead] first), absent when it has none.
-    public Result<Option<String>> remoteFile(String file) {
-        return fileAt(REMOTE_REF + branch, file);
-    }
-
-    private Result<Option<String>> fileAt(String ref, String file) {
-        return exitStatus("cat-file", "-e", ref + ":" + file).flatMap(status -> status == 0
-                                                                                ? git("show", ref + ":" + file).map(Option::some)
-                                                                                : success(Option.none()));
     }
 
     /// Push the local branch to the remote. Never forced: a remote that moved elsewhere answers
@@ -201,42 +210,59 @@ public record GitBackupRepository(Path dir,
     }
 
     // --- restore (#1533) ---
-    /// The ref a restore reads: the freshly fetched remote branch when a remote is configured, else the
-    /// local `HEAD`. Absent when there is nothing to restore (no such remote branch, or no local commit).
-    /// A failure means the remote could not be reached — never read as "absent".
-    public Result<Option<String>> fetchRestoreRef() {
+    /// The ref a restore reads, three-valued (#3464): absent when the backup branch definitely does not exist; the freshly fetched remote branch when a
+    /// remote is configured, else the local branch. A failure means the branch could not be read or fetched — never read as "absent", so a restore
+    /// over an unreadable source blocks instead of starting fresh.
+    public Result<Option<String>> restoreRef() {
+        return found(readBranch()).flatMap(present -> present.fold(() -> success(Option.<String> none()),
+                                                                   _ -> fetchedRestoreRef().map(Option::some)));
+    }
+
+    private Result<String> fetchedRestoreRef() {
         return hasRemote()
-               ? remoteHasBranch().flatMap(present -> present
-                                                      ? fetchBranch().map(_ -> Option.some(REMOTE_REF + branch))
-                                                      : success(Option.none()))
-               : hasCommits().map(present -> present
-                                             ? Option.some("HEAD")
-                                             : Option.none());
+               ? fetchBranch().map(_ -> REMOTE_REF + branch)
+               : success("refs/heads/" + branch);
     }
 
-    /// The commit the fetched remote head names, absent when the remote has no such branch (call [#fetchRemoteHead] first).
-    public Result<Option<String>> remoteHeadCommit() {
-        return exitStatus("rev-parse", "--verify", "--quiet", REMOTE_REF + branch).flatMap(status -> status == 0
-                                                                                                     ? commitOf(REMOTE_REF + branch).map(Option::some)
-                                                                                                     : success(Option.none()));
+    /// Write `record` as [#REJECTION_FILE] and commit it on the local branch (#3303). Never pushes: the push is [#push]. Committing a record
+    /// identical to the committed one is `git`'s empty commit: exit 1, a [BackupRepositoryError.GitFailed].
+    /// The commit is scoped to [#REJECTION_FILE]: it never carries, and never leaves staged, anything else (see [#scopedToRejection]).
+    public Result<Unit> commitRejection(RejectionRecord record) {
+        return scopedToRejection(writeRejection(record).flatMap(_ -> git("add", "--", REJECTION_FILE))
+                                               .flatMap(_ -> commitOnlyRejection("restore rejected: " + record.lineageId()
+                                                                                + " " + record.incarnation()
+                                                                                + "/" + record.revision())));
     }
 
-    /// The commit `ref` names.
-    public Result<String> commitOf(String ref) {
-        return git("rev-parse", "--verify", ref + "^{commit}").map(String::strip);
+    /// Remove [#REJECTION_FILE] and commit the removal on the local branch (#3303). Never pushes: the push is [#push]. Removing an absent
+    /// record is `git rm`'s exit 128, a [BackupRepositoryError.GitFailed], never a success. `-f`: a record file that differs from the index or the
+    /// committed record (a record left staged or modified by a failed or crashed commit) is still removed; it needs no prior `git reset`.
+    public Result<Unit> removeRejection() {
+        return scopedToRejection(git("rm", "-f", "--quiet", "--", REJECTION_FILE).flatMap(_ -> commitOnlyRejection("restore rejection cleared")));
     }
 
-    /// The backup document as committed at `commit`.
-    public Result<String> documentAt(String commit) {
-        return git("show", commit + ":" + FILE);
+    /// BER for a failed rejection commit: the compensation is `git reset` of [#REJECTION_FILE], the inverse of the staging done on the way in. The
+    /// guarantee it earns is that the index holds no rejection change after a failure, so the next [#commitFile] (unscoped) cannot sweep one into a
+    /// backup commit and the retried primitive starts from the committed state. The original failure is returned; a failed reset replaces it
+    /// with the reset's own failure.
+    private Result<Unit> scopedToRejection(Result<Unit> outcome) {
+        return outcome.fold(cause -> unstageRejection().flatMap(_ -> cause.<Unit> result()), _ -> outcome);
     }
 
-    /// `<sha> <subject>` for every commit reachable from `ref`, newest first — the backup's own record of
-    /// every `(lineage, incarnation, revision)` it has written.
-    public Result<List<String>> history(String ref) {
-        return git("log", "--format=%H %s", ref).map(output -> output.lines()
-                                                                     .filter(line -> !line.isBlank())
-                                                                     .toList());
+    private Result<Unit> unstageRejection() {
+        return git("reset", "--quiet", "--", REJECTION_FILE).mapToUnit();
+    }
+
+    private Result<Unit> commitOnlyRejection(String message) {
+        return git("commit", "--quiet", "-m", message, "--", REJECTION_FILE).mapToUnit();
+    }
+
+    private Result<Unit> writeRejection(RejectionRecord record) {
+        return Result.lift(cause -> BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause)),
+                           () -> Files.writeString(dir.resolve(REJECTION_FILE),
+                                                   record.render(),
+                                                   StandardCharsets.UTF_8))
+                     .mapToUnit();
     }
 
     // --- internals ---
@@ -271,20 +297,252 @@ public record GitBackupRepository(Path dir,
                          .mapToUnit();
     }
 
-    private Result<Boolean> hasCommits() {
-        return exitStatus("rev-parse", "--verify", "--quiet", "HEAD").map(status -> status == 0);
-    }
-
-    private Result<Boolean> remoteHasBranch() {
-        return git("ls-remote", "--heads", REMOTE_NAME, branch).map(output -> !output.isBlank());
-    }
-
-    private Result<String> fetchAndShow() {
-        return fetchBranch().flatMap(_ -> git("show", REMOTE_REF + branch + ":" + FILE));
-    }
-
     private Result<String> fetchBranch() {
         return git("fetch", "--quiet", REMOTE_NAME, "+refs/heads/" + branch + ":" + REMOTE_REF + branch);
+    }
+
+    // --- three-valued reads (#3464) ---
+    /// Whether the backup branch exists: on the remote when one is configured (`ls-remote --exit-code` for the fully qualified ref, exit 2 is the
+    /// definite "no such ref"; `ls-remote` matches a pattern by suffix, so a remote holding only `refs/heads/x/<branch>` answers exit 2 too), else
+    /// in the local repository (`show-ref --exists`, exit 2 likewise; needs git 2.43). Anything else — another exit status, a timeout, lost output — is
+    /// [GitRead.Unreadable].
+    public GitRead<Unit> readBranch() {
+        return hasRemote()
+               ? read(List.of("ls-remote", "--exit-code", REMOTE_NAME, "refs/heads/" + branch),
+                      result -> classifyRemoteBranch(result.exitCode(), result.output(), branch))
+               : readLocalBranch();
+    }
+
+    /// Whether the local backup branch exists, whatever the remote: [#readBranch]'s local arm (`show-ref --exists`, exit 2 is the definite "no such
+    /// ref"; needs git 2.43), for the write path, which commits on the local branch beside a remote (#3464). Anything else is [GitRead.Unreadable].
+    public GitRead<Unit> readLocalBranch() {
+        return readRefExists("refs/heads/" + branch);
+    }
+
+    /// Whether the remote-tracking ref [#restoreRef] fetches the backup branch into exists, read without fetching again (#3464): absent when no
+    /// fetch has created it (the remote had no backup branch when it was read). Classified as [#readLocalBranch].
+    GitRead<Unit> readTrackingBranch() {
+        return readRefExists(remoteTrackingRef());
+    }
+
+    /// The remote-tracking ref [#restoreRef] fetches the backup branch into.
+    String remoteTrackingRef() {
+        return REMOTE_REF + branch;
+    }
+
+    private GitRead<Unit> readRefExists(String ref) {
+        return read(List.of("show-ref", "--exists", ref),
+                    result -> classifyLocalBranch(result.exitCode(), result.output()));
+    }
+
+    /// The commit id `ref` names. Never [GitRead.Absent]: `rev-parse --verify` fails the same way for a missing ref and for a damaged repository.
+    public GitRead<String> readCommitId(String ref) {
+        return readChecked(ref,
+                           List.of("rev-parse", "--verify", END_OF_OPTIONS, ref + "^{commit}"),
+                           result -> classifyCommitId(result.exitCode(), result.output()));
+    }
+
+    /// Whether `path` (a top-level entry) is listed in the tree of `commit`, read from the whole listing (`ls-tree --name-only`, no pathspec).
+    /// Invariant: every commit this repository writes holds at least one file (the genesis commit holds [#DECLARATION]), so a delivered listing is never
+    /// empty. Hence [GitRead.Present] when the listing names `path`, [GitRead.Absent] when a non-empty listing does not, and [GitRead.Unreadable] for
+    /// an empty listing (lost output) and for any exit other than 0. No control file is named, so the primitive does not depend on the file layout.
+    public GitRead<Unit> readPath(String commit, String path) {
+        return readChecked(commit,
+                           List.of("ls-tree", "--name-only", END_OF_OPTIONS, commit),
+                           result -> classifyPath(result.exitCode(), result.output(), path));
+    }
+
+    /// The content of `path` at `commit`. Never [GitRead.Absent]: `show` fails the same way for a missing path and for a damaged object; ask
+    /// [#readPath] first to tell them apart.
+    public GitRead<String> readFile(String commit, String path) {
+        return readChecked(commit,
+                           List.of("show", END_OF_OPTIONS, commit + ":" + path),
+                           result -> classifyFile(result.exitCode(), result.output()));
+    }
+
+    /// `<sha> <subject>` for every commit reachable from `ref`, newest first. Never [GitRead.Absent]: a ref that exists reaches at least one commit,
+    /// so an empty listing is lost output, and so is a non-zero exit; neither reads as an empty history (whose floor would come back low).
+    public GitRead<List<String>> readHistory(String ref) {
+        return readChecked(ref,
+                           List.of("log", "--format=%H %s", END_OF_OPTIONS, ref),
+                           result -> classifyHistory(result.exitCode(), result.output()));
+    }
+
+    /// The installed git's `--version` line, when it is at least 2.43 (the floor [#readBranch] needs). Anything else is [GitRead.Unreadable]; only a
+    /// version that is older, unparseable or reported under a non-zero exit names git >= 2.43. Lost output, a git that cannot be run and a failed
+    /// directory creation do not: they say nothing about the installed version, so the reason carries the cause instead of the requirement. Runs in the
+    /// repository directory's parent chain, so the directory is created first.
+    public GitRead<String> readGitVersion() {
+        return createDirectory().fold(cause -> GitRead.unreadable(cause.message()),
+                                      _ -> read(List.of("--version"),
+                                                result -> classifyGitVersion(result.exitCode(), result.output())));
+    }
+
+    /// The three-valued read as a [Result]: [GitRead.Absent] is `none`, [GitRead.Unreadable] a failure.
+    static <T> Result<Option<T>> found(GitRead<T> read) {
+        return switch (read) {
+            case GitRead.Present<T> present -> success(Option.some(present.value()));
+            case GitRead.Absent<T>_ -> success(Option.none());
+            case GitRead.Unreadable<T> unreadable -> BackupRepositoryError.GitUnreadable.FACTORY.apply(unreadable.reason()).result();
+        };
+    }
+
+    /// The three-valued read of a thing that must be there: anything but [GitRead.Present] is a failure.
+    static <T> Result<T> required(GitRead<T> read) {
+        return found(read).flatMap(value -> value.toResult(BackupRepositoryError.GitUnreadable.FACTORY.apply("git found nothing where a value was required")));
+    }
+
+    /// [#read] for a caller-supplied `ref`: one beginning with `-` is [GitRead.Unreadable] without git having run.
+    private <T> GitRead<T> readChecked(String ref, List<String> args, Fn1<GitRead<T>, GitResult> classifier) {
+        return plain(ref).fold(cause -> GitRead.unreadable(cause.message()),
+                               _ -> read(args, classifier));
+    }
+
+    /// A caller-supplied ref or commit that git cannot take for an option; the git calls also pass `--end-of-options`, so this refusal is the typed
+    /// error and that separator is the second barrier.
+    private static Result<String> plain(String argument) {
+        return argument.startsWith("-")
+               ? BackupRepositoryError.ArgumentRefused.FACTORY.apply(argument).result()
+               : success(argument);
+    }
+
+    /// stdout and stderr stay apart: a warning on stderr under exit 0 never enters a [GitRead.Present] value. stderr only explains an [GitRead.Unreadable].
+    private <T> GitRead<T> read(List<String> args, Fn1<GitRead<T>, GitResult> classifier) {
+        return runSeparate(args).fold(cause -> GitRead.unreadable(cause.message()),
+                                      result -> withDiagnostics(classifier.apply(result), result.errors()));
+    }
+
+    private static <T> GitRead<T> withDiagnostics(GitRead<T> read, String errors) {
+        return read instanceof GitRead.Unreadable<T>(var reason) && !errors.isBlank()
+               ? GitRead.unreadable(reason + "; stderr: " + errors.strip())
+               : read;
+    }
+
+    static GitRead<Unit> classifyRemoteBranch(int exit, Option<String> output, String branch) {
+        return output.fold(() -> lostOutput(exit), text -> remoteBranchOf(exit, text, branch));
+    }
+
+    static GitRead<Unit> classifyLocalBranch(int exit, Option<String> output) {
+        return output.fold(() -> lostOutput(exit), text -> localBranchOf(exit, text));
+    }
+
+    static GitRead<String> classifyCommitId(int exit, Option<String> output) {
+        return output.fold(() -> lostOutput(exit), text -> commitIdOf(exit, text));
+    }
+
+    static GitRead<Unit> classifyPath(int exit, Option<String> output, String path) {
+        return output.fold(() -> lostOutput(exit), text -> pathOf(exit, text, path));
+    }
+
+    static GitRead<List<String>> classifyHistory(int exit, Option<String> output) {
+        return output.fold(() -> lostOutput(exit), text -> historyOf(exit, text));
+    }
+
+    static GitRead<String> classifyGitVersion(int exit, Option<String> output) {
+        return output.fold(() -> lostOutput(exit), text -> versionOf(exit, text));
+    }
+
+    static GitRead<String> classifyFile(int exit, Option<String> output) {
+        return output.fold(() -> lostOutput(exit), text -> fileOf(exit, text));
+    }
+
+    private static GitRead<Unit> remoteBranchOf(int exit, String text, String branch) {
+        return exit == NO_SUCH_REF
+               ? GitRead.absent()
+               : presentWhen(exit == 0 && listsBranch(text, branch), exit, text);
+    }
+
+    private static GitRead<Unit> localBranchOf(int exit, String text) {
+        return exit == NO_SUCH_REF
+               ? GitRead.absent()
+               : localBranchPresence(exit, text);
+    }
+
+    private static GitRead<Unit> localBranchPresence(int exit, String text) {
+        return exit == 0
+               ? GitRead.present(Unit.unit())
+               : unexpected(exit, text, usageHint(exit));
+    }
+
+    /// Exit 129 on `show-ref --exists` is git refusing the option: it needs 2.43.
+    private static String usageHint(int exit) {
+        return exit == USAGE_ERROR
+               ? "show-ref --exists needs " + MINIMUM_GIT + ": "
+               : "";
+    }
+
+    private static GitRead<List<String>> historyOf(int exit, String text) {
+        var lines = text.lines().filter(line -> !line.isBlank()).toList();
+
+        return exit == 0 && !lines.isEmpty()
+               ? GitRead.present(lines)
+               : unexpected(exit, text);
+    }
+
+    private static GitRead<String> versionOf(int exit, String text) {
+        var matcher = GIT_VERSION.matcher(text.strip());
+
+        return exit == 0 && matcher.find() && atLeastMinimum(matcher)
+               ? GitRead.present(text.strip())
+               : GitRead.unreadable(MINIMUM_GIT
+                                   + " is required, but `git --version` exited " + exit
+                                   + ": " + text.strip());
+    }
+
+    private static boolean atLeastMinimum(Matcher version) {
+        var major = Integer.parseInt(version.group(1));
+        var minor = Integer.parseInt(version.group(2));
+
+        return major > 2 || major == 2 && minor >= 43;
+    }
+
+    private static GitRead<Unit> presentWhen(boolean found, int exit, String text) {
+        return found
+               ? GitRead.present(Unit.unit())
+               : unexpected(exit, text);
+    }
+
+    private static boolean listsBranch(String text, String branch) {
+        return text.lines()
+                   .anyMatch(line -> line.endsWith("\trefs/heads/" + branch));
+    }
+
+    private static GitRead<String> commitIdOf(int exit, String text) {
+        return exit == 0 && COMMIT_ID.matcher(text.strip()).matches()
+               ? GitRead.present(text.strip())
+               : unexpected(exit, text);
+    }
+
+    /// An empty listing is lost output, never an empty tree (see [#readPath]).
+    private static GitRead<Unit> pathOf(int exit, String text, String path) {
+        return exit != 0 || text.isBlank()
+               ? unexpected(exit, text)
+               : listed(text, path);
+    }
+
+    private static GitRead<Unit> listed(String text, String path) {
+        return text.lines()
+                   .anyMatch(path::equals)
+               ? GitRead.present(Unit.unit())
+               : GitRead.absent();
+    }
+
+    private static GitRead<String> fileOf(int exit, String text) {
+        return exit == 0 && !text.isBlank()
+               ? GitRead.present(text)
+               : unexpected(exit, text);
+    }
+
+    private static <T> GitRead<T> lostOutput(int exit) {
+        return GitRead.unreadable("git exited " + exit + " and its output was lost");
+    }
+
+    private static <T> GitRead<T> unexpected(int exit, String text) {
+        return unexpected(exit, text, "");
+    }
+
+    private static <T> GitRead<T> unexpected(int exit, String text, String hint) {
+        return GitRead.unreadable("git exited " + exit + ": " + hint + text.strip());
     }
 
     private Result<Unit> classifyPush(GitResult result) {
@@ -292,11 +550,11 @@ public record GitBackupRepository(Path dir,
             return Result.unitResult();
         }
 
-        return isRejection(result.output())
-               ? BackupRepositoryError.PushRejected.FACTORY.apply(result.output().strip()).result()
+        return isRejection(result.text())
+               ? BackupRepositoryError.PushRejected.FACTORY.apply(result.text().strip()).result()
                : BackupRepositoryError.GitFailed.FACTORY.apply("push",
                                                                result.exitCode(),
-                                                               result.output().strip())
+                                                               result.text().strip())
                                                         .result();
     }
 
@@ -324,10 +582,10 @@ public record GitBackupRepository(Path dir,
         var command = List.of(args);
 
         return run(command).flatMap(result -> result.exitCode() == 0
-                                              ? success(result.output())
+                                              ? success(result.text())
                                               : BackupRepositoryError.GitFailed.FACTORY.apply(String.join(" ", command),
                                                                                               result.exitCode(),
-                                                                                              result.output().strip())
+                                                                                              result.text().strip())
                                                                                        .result());
     }
 
@@ -336,20 +594,29 @@ public record GitBackupRepository(Path dir,
         return run(List.of(args)).map(GitResult::exitCode);
     }
 
+    /// stdout and stderr merged: what the commands that predate [GitRead] read.
     private Result<GitResult> run(List<String> args) {
-        return processes.start(processBuilder(args))
+        return run(processBuilder(args).redirectErrorStream(true));
+    }
+
+    private Result<GitResult> runSeparate(List<String> args) {
+        return run(processBuilder(args));
+    }
+
+    private Result<GitResult> run(ProcessBuilder builder) {
+        return processes.start(builder)
                         .flatMap(this::collect);
     }
 
     private ProcessBuilder processBuilder(List<String> args) {
         var command = new ArrayList<String>();
 
-        command.add("git");
+        command.add(gitExecutable());
         command.addAll(FOREGROUND_MAINTENANCE);
         command.add("-C");
         command.add(dir.toString());
         command.addAll(args);
-        var builder = new ProcessBuilder(command).redirectErrorStream(true);
+        var builder = new ProcessBuilder(command);
         var processEnvironment = builder.environment();
 
         processEnvironment.putAll(environment);
@@ -360,20 +627,39 @@ public record GitBackupRepository(Path dir,
         return builder;
     }
 
+    /// `git` as the process environment's `PATH` resolves it: Java looks a bare command up on the parent's `PATH`, so a `PATH` in `environment` (a test's
+    /// `git` shim, #3464) would otherwise reach only the processes git itself spawns. Empty `environment` (production): plain `git`.
+    private String gitExecutable() {
+        return Option.option(environment.get("PATH"))
+                     .flatMap(GitBackupRepository::gitOn)
+                     .or("git");
+    }
+
+    private static Option<String> gitOn(String path) {
+        return Option.from(Arrays.stream(path.split(File.pathSeparator))
+                                 .map(entry -> Path.of(entry).resolve("git"))
+                                 .filter(Files::isExecutable)
+                                 .findFirst()
+                                 .map(Path::toString));
+    }
+
     /// Output is drained on its own thread: a blocking read here would outlive the timeout of a git that
     /// hangs, which is exactly the case the timeout exists for.
     private Result<GitResult> collect(Process process) {
         var output = new FutureTask<>(() -> new String(process.getInputStream().readAllBytes(),
                                                        StandardCharsets.UTF_8));
+        var errors = new FutureTask<>(() -> new String(process.getErrorStream().readAllBytes(),
+                                                       StandardCharsets.UTF_8));
 
         Thread.ofVirtual().name("backup-git-output").start(output);
+        Thread.ofVirtual().name("backup-git-errors").start(errors);
 
         return Result.lift(GitBackupRepository::unavailable,
                            () -> process.waitFor(timeout.millis(),
                                                  TimeUnit.MILLISECONDS))
                      .onFailure(_ -> abandon(process))
                      .map(finished -> finished
-                                      ? completed(process, output)
+                                      ? completed(process, output, errors)
                                       : timedOut(process))
                      .onResultRun(() -> processes.finished(process));
     }
@@ -389,8 +675,8 @@ public record GitBackupRepository(Path dir,
         Thread.currentThread().interrupt();
     }
 
-    private GitResult completed(Process process, FutureTask<String> output) {
-        return new GitResult(process.exitValue(), outputOf(output));
+    private GitResult completed(Process process, FutureTask<String> output, FutureTask<String> errors) {
+        return new GitResult(process.exitValue(), outputOf(output), outputOf(errors).or(""));
     }
 
     /// The command outlived its bound: kill git and everything it started, before the process leaves the in-flight set. A tree that is not dead within
@@ -400,16 +686,18 @@ public record GitBackupRepository(Path dir,
         var dead = processes.killOrKeep(process, timeout.millis());
 
         return new GitResult(-1,
-                             "timed out after " + timeout + (dead
-                                                             ? ""
-                                                             : "; its process tree was still running at the bound and is left to the stop"));
+                             Option.some("timed out after " + timeout + (dead
+                                                                         ? ""
+                                                                         : "; its process tree was still running at the bound and is left to the stop")),
+                             "");
     }
 
-    private String outputOf(FutureTask<String> output) {
+    /// None when the output was lost (the read failed, timed out or was interrupted): a read that needs the output treats that as unreadable.
+    private Option<String> outputOf(FutureTask<String> output) {
         return Result.lift(GitBackupRepository::keepInterrupt,
                            () -> output.get(timeout.millis(),
                                             TimeUnit.MILLISECONDS))
-                     .or("");
+                     .option();
     }
 
     /// The stop's interrupt can land while the output is read, after git exited: it must stay visible to the caller, or the worker goes on with the
@@ -433,5 +721,11 @@ public record GitBackupRepository(Path dir,
         return BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause));
     }
 
-    private record GitResult(int exitCode, String output) {}
+    /// `output` is none when it was lost; the paths that predate [GitRead] read that as the empty string through [#text].
+    /// `errors` is stderr, empty when it was merged into `output`, lost or never read (a timeout).
+    private record GitResult(int exitCode, Option<String> output, String errors) {
+        String text() {
+            return output.or("");
+        }
+    }
 }

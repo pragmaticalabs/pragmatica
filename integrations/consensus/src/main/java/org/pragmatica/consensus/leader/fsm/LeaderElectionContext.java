@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.DoubleSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -23,10 +24,13 @@ import java.util.stream.Stream;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
+import org.pragmatica.consensus.topology.TransportView;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.statemachine.Fsm;
@@ -57,6 +61,11 @@ public final class LeaderElectionContext {
     /// so the election layer doesn't conclude "lost election" while Rabia is still resolving.
     public static final TimeSpan DEFAULT_MIN_PROPOSAL_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     public static final int DEFAULT_STUCK_ELECTION_THRESHOLD = 10;
+    /// Bound on how long a view-free removal keeps a node out of the view while the transport still lists it (#3047).
+    /// A chosen value, not a measurement: the transport is re-read at most this long after any removal, so a node SWIM
+    /// wrongly removed is back within this bound. Only the removal that arms the re-read stands for the whole period; a
+    /// removal inside an armed window shares that re-read and stands for less, down to ~0.
+    public static final TimeSpan DEFAULT_REASSERT_PERIOD = TimeSpan.timeSpan(5).seconds();
     /// Grace window after [`LeaderElectionState.QuorumWaiting`] before the FSM gives up on
     /// observing a peer-committed leader and falls through to [`LeaderElectionState.Electing`] /
     /// [`LeaderElectionState.ReElecting`]. Sized to absorb the typical KV-sync propagation
@@ -147,13 +156,13 @@ public final class LeaderElectionContext {
     public static final Supplier<Boolean> DEFAULT_CONSENSUS_READY_SUPPLIER = () -> false;
     /// Default current-leader-from-KV supplier — returns `Option.none()` when not injected.
     /// Production wiring reads `LeaderKey` from the cluster KV-Store
-    /// (`kvStore.get(LeaderKey.INSTANCE).map(LeaderValue::leader)`). The FSM consults this on
+    /// (`LeaderKey` read as the committed record, leader AND `viewSequence`, `LeaderCommitted`). The FSM consults this on
     /// entry to `Electing` / `ReElecting` to short-circuit to `Led(thatLeader)` when consensus
     /// has already committed a leader that this node missed via the notification path (e.g.
     /// a snapshot-restored state didn't re-fire `KVStoreNotification.ValuePut<LeaderKey>` for
     /// the current leader, OR a Decision arrived before the KV-store listener was wired).
     /// KV is the cluster's source of truth — pulling complements the push-notification path.
-    public static final Supplier<Option<NodeId>> DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER = Option::none;
+    public static final Supplier<Option<LeaderCommitted>> DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER = Option::none;
 
     private final NodeId self;
     private final Option<LeaderProposalHandler> proposalHandler;
@@ -214,7 +223,7 @@ public final class LeaderElectionContext {
     private final DoubleSupplier jitterSource;
     private final Supplier<Long> rabiaTermSupplier;
     private final Supplier<Boolean> consensusReadySupplier;
-    private final Supplier<Option<NodeId>> currentLeaderFromKvSupplier;
+    private final Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier;
     private final Predicate<NodeId> leaderPingFreshFn;
     // Per-FSM "singletons" — one instance per state class, shared for the lifetime of this FSM.
     // Built in the constructor via the constructor-driven initial-state factory, so the fields
@@ -229,6 +238,14 @@ public final class LeaderElectionContext {
     // Per-FSM Fsm reference — bound at construction time via the constructor-driven initial-state
     // factory. Replaces the global static FSM_REF.
     private final Fsm<LeaderElectionState, ClusterFsmEvent> fsm;
+    /// The node's one serial executor (#3587): every leader-election event of this node enters the FSM through it.
+    private final SerialExecutor serial = SerialExecutor.serialExecutor();
+    /// Dispatches refused by [#dispatchConfined] because the caller was not on the serial drainer (#3605 round-4
+    /// ruling). Counted because the refusal is otherwise easy to miss where it matters most: an unwrapped timer or
+    /// promise callback throws on a scheduler thread, where the scheduler (SharedScheduler logs the throw at WARN and
+    /// keeps the recurrence, `VirtualThreadScheduler` `runGuarded`) and Promise (which contains and logs callback
+    /// throws) report it without the rule context; the ERROR line and the count carry the rule.
+    private final AtomicLong confinementBreaches = new AtomicLong(0);
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
     private final AtomicReference<Option<NodeId>> lastAdoptedLeader = new AtomicReference<>(Option.none());
 
@@ -242,6 +259,13 @@ public final class LeaderElectionContext {
     /// that delivery instead of electing on the grace's wall clock. Installed by the consensus wiring
     /// ([`#installKvSyncPending`]); the default reports no pending sync, which keeps the plain grace.
     private final AtomicReference<Supplier<Boolean>> kvSyncPending = new AtomicReference<>(() -> false);
+
+    /// The transport's current sequenced view (#3047), read by the re-assertion a removal arms. Absent until
+    /// [`#installTransportView`]: a host without a sequencing transport (local election, stubs) never re-asserts.
+    private final AtomicReference<Option<Supplier<Option<TransportView>>>> transportView = new AtomicReference<>(Option.none());
+
+    private final AtomicBoolean reassertionArmed = new AtomicBoolean(false);
+    private final AtomicReference<TimeSpan> reassertPeriod = new AtomicReference<>(DEFAULT_REASSERT_PERIOD);
     /// Leader pre-vote (#1748). Absent until [`#enablePreVote`]: without it a follower that loses the leader
     /// re-elects immediately, which is what local-election mode and the stubs that never wire a network need.
     private final AtomicReference<Option<LeaderPreVote>> preVote = new AtomicReference<>(Option.none());
@@ -383,7 +407,7 @@ public final class LeaderElectionContext {
     /// Full-arity constructor with all injectable suppliers — production wiring (Aether's
     /// `RabiaNode`) calls this overload to plumb the rabia-term counter, the consensus-engine
     /// readiness accessor (e.g. `RabiaEngine::isActive`), AND the KV-store leader accessor
-    /// (`kvStore.get(LeaderKey).map(LeaderValue::leader)`). The KV-store accessor is the
+    /// (`LeaderKey` read as the committed record, leader AND `viewSequence`, `LeaderCommitted`). The KV-store accessor is the
     /// pull-side complement to the push-based `KVStoreNotification.ValuePut<LeaderKey>` path:
     /// `Electing` / `ReElecting` consult it on entry to short-circuit to `Led(leader)` when
     /// consensus has already committed a leader that this node missed via the notification path
@@ -402,7 +426,7 @@ public final class LeaderElectionContext {
                           DoubleSupplier jitterSource,
                           Supplier<Long> rabiaTermSupplier,
                           Supplier<Boolean> consensusReadySupplier,
-                          Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
+                          Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier) {
         this(fsm,
              self,
              proposalHandler,
@@ -439,7 +463,7 @@ public final class LeaderElectionContext {
                           DoubleSupplier jitterSource,
                           Supplier<Long> rabiaTermSupplier,
                           Supplier<Boolean> consensusReadySupplier,
-                          Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                          Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                           TimeSpan kvSyncGraceDelay) {
         this(fsm,
              self,
@@ -480,7 +504,7 @@ public final class LeaderElectionContext {
                           DoubleSupplier jitterSource,
                           Supplier<Long> rabiaTermSupplier,
                           Supplier<Boolean> consensusReadySupplier,
-                          Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                          Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                           TimeSpan kvSyncGraceDelay,
                           TimeSpan peerObservationInterval) {
         this(fsm,
@@ -524,7 +548,7 @@ public final class LeaderElectionContext {
                           DoubleSupplier jitterSource,
                           Supplier<Long> rabiaTermSupplier,
                           Supplier<Boolean> consensusReadySupplier,
-                          Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                          Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                           TimeSpan kvSyncGraceDelay,
                           TimeSpan peerObservationInterval,
                           TimeSpan leaderLeaseCheckInterval,
@@ -567,7 +591,7 @@ public final class LeaderElectionContext {
                           DoubleSupplier jitterSource,
                           Supplier<Long> rabiaTermSupplier,
                           Supplier<Boolean> consensusReadySupplier,
-                          Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                          Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                           TimeSpan kvSyncGraceDelay,
                           TimeSpan peerObservationInterval,
                           TimeSpan leaderLeaseCheckInterval,
@@ -621,6 +645,22 @@ public final class LeaderElectionContext {
 
     public Option<LeaderProposalHandler> proposalHandler() {
         return proposalHandler;
+    }
+
+    /// Local-election mode (#3092 I3): no consensus proposal handler is wired, so no commit ever carries a sequence and
+    /// [#committedViewSequence()] never advances. The same condition `LeaderManager` reads to pick its local paths.
+    public boolean isLocalMode() {
+        return proposalHandler.isEmpty();
+    }
+
+    /// The leader a local-mode election picks: the first node of the applied eligible view, none for an empty one.
+    /// The one local election rule, read by `LeaderManager`'s local view paths and by an election tick in local mode.
+    public Option<NodeId> localLeaderCandidate() {
+        var topology = currentTopology();
+
+        return topology.isEmpty()
+               ? Option.none()
+               : Option.some(topology.getFirst());
     }
 
     public List<NodeId> expectedCluster() {
@@ -682,6 +722,14 @@ public final class LeaderElectionContext {
     /// this much, never forbid it.
     public TimeSpan kvSyncMaxWait() {
         return TimeSpan.timeSpan(kvSyncGraceDelay.millis() * KV_SYNC_MAX_WAIT_GRACES).millis();
+    }
+
+    /// Wires the transport's sequenced view (#3047), re-read `period` after a view-free removal. Production:
+    /// `ClusterNetwork#sequencedView`. Replaces the no-re-assertion default.
+    @Contract
+    public void installTransportView(Supplier<Option<TransportView>> view, TimeSpan period) {
+        transportView.set(Option.some(view));
+        reassertPeriod.set(period);
     }
 
     /// Wires the signal that this node's KV state is still catching up with the committed frontier
@@ -759,6 +807,13 @@ public final class LeaderElectionContext {
                             .filter(this::isEligible);
     }
 
+    /// The leader as stored, unfiltered by eligibility: the leader the #3092 I2 site holds to the view (#3581). An
+    /// installed voter set can make the stored leader ineligible, which hides it from [#currentLeader()] while the last
+    /// notification still names it, so the site reads the stored one and its loss is announced.
+    public Option<NodeId> storedLeader() {
+        return currentLeader.get();
+    }
+
     @Contract
     public void setCurrentLeader(Option<NodeId> leader) {
         currentLeader.set(leader);
@@ -805,12 +860,45 @@ public final class LeaderElectionContext {
     }
 
     /// Removes exactly `node` from the stored view, view-free (#3044): the one write that carries no sequenced view.
-    /// It is applied iff the node is present, is not this node, and is not the last node left (an empty view is
-    /// never stored, and removing self would skew [#rankOfSelf(Option)]). It never adds a node and never moves the
+    /// It is applied iff the node is present, is not this node, and is not the last node left (a view-free removal
+    /// never empties the view: only a sequenced transport view may, #3092 I1; removing self would skew
+    /// [#rankOfSelf(Option)]). It never adds a node and never moves the
     /// sequence, so only a newer transport view undoes it. The check and the write are one atomic step with every
     /// other view write. Returns `true` iff the node was removed.
     public boolean removeFromView(NodeId node) {
-        return advanceView(new ViewCandidate.Remove(node));
+        var removed = advanceView(new ViewCandidate.Remove(node));
+
+        if (removed) {
+            armReassertion();
+        }
+
+        return removed;
+    }
+
+    /// #3047: a removal is the only event that can leave the view short of the transport's (SWIM removes a node whose
+    /// transport link stays up, and the transport emits nothing when it next agrees), so it arms ONE re-assertion
+    /// `reassertPeriod` later; removals inside that window share it. The delay is deliberate: re-reading at once would
+    /// undo the removal before it took effect. A host without a transport view arms nothing.
+    private void armReassertion() {
+        transportView.get().onPresent(this::scheduleReassertion);
+    }
+
+    private void scheduleReassertion(Supplier<Option<TransportView>> view) {
+        if (reassertionArmed.compareAndSet(false, true)) {
+            SharedScheduler.schedule(serialized(() -> reassert(view)), reassertPeriod.get());
+        }
+    }
+
+    /// Disarms BEFORE it reads the transport, so a removal that lands after the read arms the next re-assertion. The
+    /// view goes through the FSM as a sequenced transport observation: the sequence fence admits it iff it is newer
+    /// than the stored view, and it never adds a node the transport does not list.
+    private void reassert(Supplier<Option<TransportView>> view) {
+        reassertionArmed.set(false);
+        view.get().onPresent(this::dispatchTransportView);
+    }
+
+    private void dispatchTransportView(TransportView view) {
+        submit(new ClusterFsmEvent.NodeAdded(self, view.topology(), view.sequence()));
     }
 
     private boolean applyTopology(List<NodeId> topology, long sequence) {
@@ -845,8 +933,9 @@ public final class LeaderElectionContext {
         record Remove(NodeId node) implements ViewCandidate {}
     }
 
-    /// The stored view and the sequence of the last sequenced event that wrote it. An empty view is never stored
-    /// (the previous one is kept), but its sequence still advances the fence. A removal keeps the sequence.
+    /// The stored view and the sequence of the last sequenced event that wrote it. A removal keeps the sequence.
+    /// #3092 I1: an applied replace stores its view as it is, an empty one included, so no reader sees a view the
+    /// transport has replaced (an evicted leader kept under an empty view was re-adopted by every local reader).
     private record SequencedTopology(List<NodeId> topology, long sequence) {
         static final SequencedTopology INITIAL = new SequencedTopology(List.of(),
                                                                        ClusterFsmEvent.TopologyChange.NO_SEQUENCE);
@@ -858,8 +947,7 @@ public final class LeaderElectionContext {
             };
         }
 
-        /// Replace: `true` unless the candidate is dropped (a newer empty view counts as applied: its sequence advances
-        /// the fence). Remove: `true` iff the node was removed.
+        /// Replace: `true` unless the candidate is dropped. Remove: `true` iff the node was removed.
         boolean applies(ViewCandidate candidate, NodeId self) {
             return switch (candidate) {
                 case ViewCandidate.Replace replace -> !replace.isDroppedAgainst(this);
@@ -868,16 +956,10 @@ public final class LeaderElectionContext {
         }
 
         private SequencedTopology replacedBy(ViewCandidate.Replace candidate) {
-            if (candidate.isDroppedAgainst(this)) {
-                return this;
-            }
-
-            var replacement = candidate.topology().isEmpty()
-                              ? topology
-                              : candidate.topology();
-
-            return new SequencedTopology(replacement,
-                                         Math.max(sequence, candidate.sequence()));
+            return candidate.isDroppedAgainst(this)
+                   ? this
+                   : new SequencedTopology(candidate.topology(),
+                                           Math.max(sequence, candidate.sequence()));
         }
 
         private SequencedTopology without(NodeId node, NodeId self) {
@@ -901,15 +983,16 @@ public final class LeaderElectionContext {
         return consensusReadySupplier;
     }
 
-    /// Live accessor for the cluster's current leader as recorded in the KV-Store
-    /// (`LeaderKey` → `LeaderValue.leader()`). Consulted by `Electing.onEntry` /
-    /// `ReElecting.onEntry` to short-circuit to `Led(leader)` whenever consensus has already
-    /// committed a leader. Pull-side complement to the push-based
+    /// Live accessor for the cluster's current leader as recorded in the KV-Store: the committed
+    /// record (`LeaderKey` → `LeaderValue`), leader AND its own `viewSequence` (#3581), read
+    /// together so a pull never pairs a leader with a sequence observed elsewhere. Consulted by
+    /// `Electing.onEntry` / `ReElecting.onEntry` to short-circuit to `Led(leader)` whenever
+    /// consensus has already committed a leader. Pull-side complement to the push-based
     /// `KVStoreNotification.ValuePut<LeaderKey>` listener — the FSM never gets stuck waiting
     /// for a notification that already fired (or never will).
-    public Supplier<Option<NodeId>> currentLeaderFromKvSupplier() {
+    public Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier() {
         return () -> currentLeaderFromKvSupplier.get()
-                                                .filter(this::isEligible);
+                                                .filter(committed -> isEligible(committed.leader()));
     }
 
     public boolean hasEverHadLeader() {
@@ -1051,6 +1134,134 @@ public final class LeaderElectionContext {
 
     public Fsm<LeaderElectionState, ClusterFsmEvent> fsm() {
         return fsm;
+    }
+
+    /// #3587: run `task` in the node's one total order of leader-election events ([SerialExecutor#execute]). Every
+    /// `LeaderManager` entry point that reads or writes election state takes this path.
+    @Contract
+    public void serially(Runnable task) {
+        serial.execute(task);
+    }
+
+    /// Test seam (#3605): the tasks queued in the node's serial executor and not yet started ([SerialExecutor#pendingForTest]).
+    int pendingSerialTasksForTest() {
+        return serial.pendingForTest();
+    }
+
+    /// Test seam (#3605 round 4): how many dispatches [#dispatchConfined] refused because the caller was off the drainer.
+    long confinementBreachesForTest() {
+        return confinementBreaches.get();
+    }
+
+    /// #3587: `task` as a callback (a timer's, a listener's) that runs it in the node's one total order. The ONE path by
+    /// which a callback that runs off the drainer enters that order (#3605 round-3 ruling); a callback that dispatches
+    /// without it is refused by [#dispatchConfined] (round 4). Each `serialized(` site has a behaviour row in
+    /// `LeaderTimerSerialCensusTest`.
+    public Runnable serialized(Runnable task) {
+        return () -> serial.execute(task);
+    }
+
+    /// As [#serialized(Runnable)] for a callback that receives a value (a promise completion's result or cause): the
+    /// value is captured on the completing thread and `callback` runs with it in the node's one total order.
+    public <T> Consumer<T> serialized(Consumer<T> callback) {
+        return value -> serial.execute(() -> callback.accept(value));
+    }
+
+    /// #3587: deliver `event` to the FSM in the node's one total order. Inside a task (a handler following up, a
+    /// callback already serialized) it is dispatched at once, as part of that task; from any other thread it is queued.
+    ///
+    /// Every leader event, a pushed commit and every view write alike, is delivered through here, so Passive's admission
+    /// check and its write are one task, atomic against every view write. Without it ("serial" dropped from `Fixed`) the
+    /// model splits the admission into `P_Check` and `P_Write` (`LeaderElectionState`), and the configs `interleave`,
+    /// `interleavelearns` and `interleavemono` fail; the Fixed twin `interleavefixed` passes with the same constants.
+    ///
+    /// ```tla LeaderAdmission:P_Push
+    /// \* Passive's one admission for a pushed commit (#3581), one atomic step with the fix "serial" (#3587, #3605).
+    /// P_Push(r) == /\ Fix("serial")
+    ///              /\ st = "passive"
+    ///              /\ PushStep(r)
+    ///              /\ IF Admits(r, "push", view)
+    ///                 THEN AdoptP(r) /\ suspect' = IF r[2] > adSeq THEN None ELSE suspect
+    ///                 ELSE UNCHANGED <<leader, adSeq, lastAd, suspect, taken>>
+    ///              /\ UNCHANGED <<st, view, vseq, kv, base, adm, env, hi, removed, cluster>>
+    /// ```
+    @Contract
+    public void submit(ClusterFsmEvent event) {
+        if (serial.isConfined()) {
+            dispatchConfined(event);
+        } else {
+            serial.execute(() -> dispatchConfined(event));
+        }
+    }
+
+    /// #3605 round-4 ruling: the ONE FSM dispatch of leader code ([#submit], the stop, and `dispatchSelf` in the
+    /// states all go through it). GUARANTEE: no leader-code dispatch runs off the node's serial drainer; one that
+    /// would is refused before it reaches the FSM. MECHANISM: the caller must be the drainer
+    /// ([SerialExecutor#isConfined]); otherwise this logs the breach, counts it ([#confinementBreachesForTest]) and
+    /// throws [IllegalStateException] naming the rule and the calling thread (its id, and its name when it has one:
+    /// a virtual thread's name is empty). Confinement is enforced here, not counted in the source: an off-drainer
+    /// callback that dispatches without [#serialized] fails the first time it fires instead of racing the drainer. A
+    /// refusal on a scheduler thread is logged by the scheduler and by Promise at WARN/ERROR without the rule context,
+    /// so this ERROR line and the count are what carry the rule.
+    @Contract
+    void dispatchConfined(ClusterFsmEvent event) {
+        if (!serial.isConfined()) {
+            throw confinementBreach(event);
+        }
+
+        fsm.dispatch(event);
+    }
+
+    private IllegalStateException confinementBreach(ClusterFsmEvent event) {
+        var message = "#3605 confinement rule: a leader FSM dispatch runs only on the node's serial drainer (a handler, "
+                    + "a ctx.serialized(...) callback, or a serially/submit task); refused " + event.getClass()
+                                                                                                    .getSimpleName()
+                    + " dispatched from thread " + callingThread();
+
+        confinementBreaches.incrementAndGet();
+        log.error(message);
+
+        return new IllegalStateException(message);
+    }
+
+    /// The caller named usefully: `#id`, plus `'name'` when the name is non-empty (a virtual thread's is empty).
+    private static String callingThread() {
+        var thread = Thread.currentThread();
+        var name = thread.getName();
+
+        return name.isEmpty()
+               ? "#" + thread.threadId()
+               : "#" + thread.threadId() + " '" + name + "'";
+    }
+
+    /// #3587: the follow-up of the transition whose hook is running ([Fsm#followUp]): a hook never dispatches
+    /// (`FsmState`). The event is dispatched when the dispatch that ran the hook returns, after the transition's
+    /// observer callback, so it runs before the rest of that task and before any other event of the node. Every hook
+    /// runs inside a dispatch, and every dispatch inside a task, so the follow-up stays in the node's one order.
+    @Contract
+    public void followUp(ClusterFsmEvent event) {
+        fsm.followUp(event);
+    }
+
+    /// #3587: stop in order. GUARANTEE: no event reaches the FSM after the `Shutdown` task: every event submitted
+    /// before the stop is handled first, then `Shutdown`, then the executor rejects every later task
+    /// ([SerialExecutor#close]). It does NOT guarantee that `Shutdown` ran when this returns: called while another
+    /// thread drains, it queues the `Shutdown` task and returns before that task (and every event queued ahead of it)
+    /// has run ([SerialExecutor#execute] never waits). A caller that stops a collaborator right after this call may
+    /// still see election steps from the events queued ahead of `Shutdown`.
+    @Contract
+    public void stop() {
+        serial.execute(this::shutdownInOrder);
+    }
+
+    /// The executor closes on every exit, a `Shutdown` dispatch that throws (a hook or a listener) included: otherwise
+    /// the executor would stay open and keep running events after the stop.
+    private void shutdownInOrder() {
+        try {
+            dispatchConfined(new ClusterFsmEvent.Shutdown());
+        } finally {
+            serial.close();
+        }
     }
 
     // --- Derived helpers ---

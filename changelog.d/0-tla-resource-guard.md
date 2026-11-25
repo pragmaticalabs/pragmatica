@@ -1,0 +1,2 @@
+### Added (2026-11-23 — TLA+ launcher resource guard)
+- **`tools/tla/check.sh` guards every TLC run**: TLC is killed when the output filesystem reaches `TLA_DISK_MAX` percent (default 90) or `MemAvailable` falls under `TLA_MEM_MIN_MB` (default 2048), with a `RESOURCE-GUARD: killed TLC: ...` line, the run's states dir removed and exit 75. `run.sh` records it as verdict `RESOURCE` (red, actual `error`), never a pass or a fail; `results-check.py` accepts and names it. `[verified: tools/tla/runselftest.sh guard-* cases, tools/tla/test_results_check.py resource cases]`

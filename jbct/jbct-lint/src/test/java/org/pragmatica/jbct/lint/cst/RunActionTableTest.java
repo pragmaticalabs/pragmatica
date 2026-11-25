@@ -23,6 +23,7 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.NotAsked;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Notification;
 import org.pragmatica.jbct.lint.cst.RunOutcome.ParseFailed;
 import org.pragmatica.jbct.lint.cst.RunOutcome.ReadFailed;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Refused;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Rewritten;
 import org.pragmatica.jbct.lint.cst.RunOutcome.RootResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.RunResult;
@@ -298,6 +299,51 @@ class RunActionTableTest {
         assertInstanceOf(WriteFailed.class, outcome.format());
         assertEquals(1, lintTally(result).done());
         assertEquals(1, formatTally(result).writeFailed());
+        assertEquals(Kind.INCOMPLETE, result.verdict().kind());
+    }
+
+    // --- content guard (#3691): a formatted text that would lose a comment is refused, the file stays as it was.
+    // The source is a printer gap of this base (a `//` after a ternary condition is deleted by the printer); when the
+    // printer keeps it, this fixture needs another gap or the guard needs its own formatter seam.
+
+    private static final String LOSES_A_COMMENT = "package com.example;\n\nclass Plain {\n    int f(boolean c) {\n"
+                                                  + "        return c // POS4\n               ? 1\n               : 2;\n    }\n}\n";
+
+    @Test
+    void row_G1_writeRefusesAFileThatWouldLoseAComment_andLeavesItUntouched() throws IOException {
+        var module = module("m", BUSINESS);
+        var file = source(module, "Plain.java", LOSES_A_COMMENT);
+        var result = perform(plan(module), format(FormatAction.WRITE));
+        var outcome = only(result, file);
+
+        assertInstanceOf(Refused.class, outcome.format());
+        assertTrue(((Refused) outcome.format()).message().contains("comment lost: `// POS4` (input line 5)"));
+        assertEquals(LOSES_A_COMMENT, Files.readString(file));
+        assertEquals(Tally.tally(0, 0, 0, 0, 0, 0, 0, 1), formatTally(result));
+        assertEquals(Kind.INCOMPLETE, result.verdict().kind());
+    }
+
+    @Test
+    void row_G2_checkRefusesTheSameFile_notWouldChange() throws IOException {
+        var module = module("m", BUSINESS);
+        var file = source(module, "Plain.java", LOSES_A_COMMENT);
+        var result = perform(plan(module), format(FormatAction.CHECK));
+
+        assertInstanceOf(Refused.class, only(result, file).format());
+        assertEquals(LOSES_A_COMMENT, Files.readString(file));
+        assertEquals(Kind.INCOMPLETE, result.verdict().kind());
+    }
+
+    @Test
+    void row_G3_processLintsTheFileAndRefusesItsFormat() throws IOException {
+        var module = module("m", INFRASTRUCTURE);
+        var file = source(module, "Plain.java", LOSES_A_COMMENT);
+        var result = perform(plan(module), Invocation.process(Surface.MAVEN, false));
+        var outcome = only(result, file);
+
+        assertInstanceOf(Linted.class, outcome.lint());
+        assertInstanceOf(Refused.class, outcome.format());
+        assertEquals(LOSES_A_COMMENT, Files.readString(file));
         assertEquals(Kind.INCOMPLETE, result.verdict().kind());
     }
 

@@ -12,7 +12,9 @@ import org.pragmatica.aether.slice.generation.Epoch;
 /// append (`publishLocal`) with its believed-current ownership epoch; every replica it replicates to
 /// then enforces monotonicity of that token against its per-partition high-water
 /// ([org.pragmatica.aether.slice.fence.OwnershipEpochHighWater]), so a deposed owner's append is
-/// rejected everywhere with a [StreamError.StaleEpochAppend].
+/// rejected everywhere with a [StreamError.StaleEpochAppend]. A stamp of [Epoch#ZERO] is no owner's epoch (the source answers it
+/// while this node's store holds no ownership record for the arc), so it is refused as the transient
+/// [StreamError.OwnershipNotApplied] instead (#2755).
 ///
 /// Unlike the DHT's `OwnerEpochSource` (#345 item 1c) — which lives in an Apache-2.0 module that may
 /// NOT depend on the BSL-1.1 `aether/slice` module and so carries the epoch as two primitive `long`s —

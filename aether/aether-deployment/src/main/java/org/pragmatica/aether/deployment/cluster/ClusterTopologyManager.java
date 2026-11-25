@@ -89,6 +89,15 @@ public interface ClusterTopologyManager extends TopologyManager {
     void onClusterPhaseChanged(ClusterPhase newPhase);
     void activate();
     void deactivate();
+
+    /// The tenure of this node's current activation: a positive value that changes on every activation, or 0 while the
+    /// manager is not active (after `activate` returns; during the activation window the value may lag). The
+    /// drain-ledger consumers compare it to decide whether a drain entry belongs to the activation that issued it.
+    /// Default 0, so implementations that never activate (test fakes) are untouched.
+    default long drainTenure() {
+        return 0;
+    }
+
     TopologyObserver observer();
 
     record CircuitBreakerState(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
@@ -125,11 +134,30 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Put — bounded by consensus latency, not zero; a node behind on apply answers the previous
     /// value until then. Absent key means enabled (the pre-#685 default).
     boolean isAutoHealEnabled();
-    /// Spec §8.4 — whether `subject` may NOT act on its own now because the operator disabled auto-heal: a worker source/role, a
-    /// community, or the core surplus ([#coreSubject], #3324). Held while the subject's committed scaling value equals the one recorded
-    /// at disable time; a hold is raised once as an operator warning and announced as resumed when it ends. Abstract, not defaulted: an
-    /// implementation that answered "never held" by default would silently lift the gate.
-    boolean scalingHeld(String subject);
+    /// Spec §8.4 — whether `asker` may NOT act on `subject` on its own now because the operator disabled auto-heal: a worker source/role,
+    /// a community, or the core surplus ([#coreSubject], #3324). `pending` is the asker's answer to "is there a change to this subject
+    /// that I would make on the cluster's own initiative" (a deficit, a surplus, a victim). The subject is HELD while the union of its
+    /// askers' latest answers is non-empty and its committed scaling value equals the one recorded at disable time; it closes only when
+    /// every asker of it has answered "nothing pending" (#3358), when auto-heal is enabled, or when a value is committed after the disable. The
+    /// last is judged for every held subject on each ask, not only the asked one, so a subject whose source, role or community left the
+    /// configuration (nobody asks for it any more) is released by the next ask for any subject.
+    /// A hold is raised once as an operator warning on the closed-to-open edge of that union and announced as resumed on the open-to-closed
+    /// edge. The answer returned is the asker's own: held only when it has something pending. Every asker asks on every pass it evaluates,
+    /// true or false. Abstract, not defaulted: an implementation that answered "never held" by default would silently lift the gate.
+    boolean scalingHeld(String subject, ScalingAsker asker, boolean pending);
+
+    /// #3358 — the closed set of parties that ask [#scalingHeld]. Two askers of one subject decide two different things (the reconciler's
+    /// drain room and the retirement's victim for `core`), so a subject stays held while either has a change pending.
+    enum ScalingAsker {
+        /// [org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler]'s core surplus drain: subject `core`.
+        RECONCILER,
+        /// The voter-excluded core retirement: subject `core`.
+        RETIREMENT,
+        /// The worker reconcile pass of one source/role: subject `worker <source>/<role>`.
+        WORKER_DELTA,
+        /// The community placement reconciler beginning an operation: subject `community <id>`.
+        COMMUNITY
+    }
 
     /// #3324 — the subject the auto-heal hold of the core surplus drain is asked and raised for; its scaling value is the committed core count.
     static String coreSubject() {
@@ -339,6 +367,21 @@ public interface ClusterTopologyManager extends TopologyManager {
         }
     }
 
+    /// #3626: why [#drainNode] queued nothing for `node`: it is the node the topology manager runs on, which carries the DRAIN
+    /// commands while it leads. The owner ruling of 2026-11-18 stands: a typed refusal now, a leadership hand-off before the
+    /// drain later. The operator route's `LeaderCannotBeDrained` states the same rule for its own channel. A leader that is
+    /// still a voter is refused by the voter-handoff refusal first, so this cause names the case where leadership moves by
+    /// itself (the leader applies the voter configuration that excludes it) and the remedy only for when it does not.
+    record LeaderCannotDrainItself(NodeId node) implements org.pragmatica.lang.Cause {
+        @Override
+        public String message() {
+            return "Node " + node.id()
+                 + " is the node carrying the drain commands (the leader) and never queues a drain of itself;"
+                 + " it gives up leadership when it applies the voter configuration that excludes it, and the next leader drains it;"
+                 + " if leadership does not move, stop its process from outside the cluster so another leader is elected";
+        }
+    }
+
     /// #2062: where the persisted "termination not confirmed" marks are read from (the replicated store), so that a new leader inherits every
     /// open mark. Default: none.
     default org.pragmatica.lang.Unit setUnconfirmedMarks(java.util.function.Supplier<java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue>> reader) {
@@ -450,10 +493,14 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// meant. One provider listing per call — the caller owns the cadence.
     Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId);
     /// #1049 — the hard ceiling on how long an auto-heal replacement of `intendedRole` may stay in-flight
-    /// while its provider still reports it existing or booting (or cannot report at all). Resolved from
-    /// the `replacement_ceiling` of the cloud source backing the role in the persisted cluster config,
-    /// else the ten-minute `SourceProfile.DEFAULT_REPLACEMENT_CEILING`.
-    TimeSpan replacementCeiling(NodeRole intendedRole);
+    /// while its provider still reports it existing or booting (or cannot report at all). #2811: it is the
+    /// `replacement_ceiling` of the source the replacement of `departed` resolves to (the resolution `provisionReplacement`
+    /// uses), read whether or not that source still declares the role, the ten-minute
+    /// `SourceProfile.DEFAULT_REPLACEMENT_CEILING` where it declares none or is not in the configuration. When that source cannot be
+    /// resolved the answer is the LONGEST ceiling over every source declaring the role, so no replacement of a declaring source is
+    /// abandoned before that source's ceiling. The leader asks it for the bound while a create is in flight and for an inherited entry;
+    /// a dispatched entry keeps the ceiling its [ProvisionDisposition.Dispatched] carries, read in the same call that dispatched it.
+    TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed);
     /// Membership v2 / E2 — reconcile current cluster membership against configured size
     /// (spec §7.4). Derives action from the SWIM-converged member count plus the KV
     /// configured count: shortfall → `provisionReplacement` per missing slot; surplus →

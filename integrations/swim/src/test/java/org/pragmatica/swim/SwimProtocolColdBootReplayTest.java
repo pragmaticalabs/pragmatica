@@ -81,7 +81,7 @@ class SwimProtocolColdBootReplayTest {
     void phantomSeed_suppressedDuringColdBoot_departsWhenGateCloses_withoutWaitingForSweep() {
         var booting = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -120,7 +120,7 @@ class SwimProtocolColdBootReplayTest {
     void replayPrecedesSweep_whenGateClosesAndResidencyExpiresInTheSameTick() throws InterruptedException {
         var booting = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -149,7 +149,7 @@ class SwimProtocolColdBootReplayTest {
     void genuineSlowPeer_comesUpBeforeGateCloses_isNeverDeparted() {
         var booting = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -192,7 +192,7 @@ class SwimProtocolColdBootReplayTest {
     void genuinePeerWithLiveLink_whenGateCloses_isHeldByTransportVeto() {
         var booting = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -231,7 +231,7 @@ class SwimProtocolColdBootReplayTest {
     void vetoedFaulty_linkDropsWhileStillFaulty_departsWithoutWaitingForSweep() {
         var linkUp = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -266,7 +266,7 @@ class SwimProtocolColdBootReplayTest {
     void vetoedThenRecoveredHealthy_linkDrops_isNeverDeparted() throws InterruptedException {
         var linkUp = new AtomicBoolean(true);
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -308,7 +308,7 @@ class SwimProtocolColdBootReplayTest {
     @Test
     void vetoedFaulty_linkStaysUp_isNeverDeparted() {
         var observations = new RecordingObservationSink();
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,

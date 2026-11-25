@@ -19,20 +19,26 @@ public final class LeaderElectionEvents {
     /// A leader has been committed to the KV-store. Typically triggered by
     /// `KVStoreNotification.ValuePut<LeaderKey>` on every node. `viewSequence` is the committed
     /// leader-election sequence (H4 fence) — STRICTLY POSITIVE for a real consensus commit, and a
-    /// non-positive sentinel ([`#NO_SEQUENCE`]) for the sequence-less synthesis paths (KV-pull
-    /// adoption, local-election mode) that carry no sequence. The `Led` swap fence treats a
-    /// sentinel sequence as "always adoptable" so those paths keep their prior unfenced behaviour.
+    /// non-positive sentinel ([`#NO_SEQUENCE`]) for the sequence-less synthesis paths (local-election
+    /// mode, a re-adoption of the leader already held) that carry no sequence; a KV pull carries the
+    /// record's own (#3588 F1). The `Led` swap fence treats a sentinel sequence as "always adoptable"
+    /// so those paths keep their prior unfenced behaviour.
     public record LeaderCommitted(NodeId leader, long viewSequence) implements ClusterFsmEvent {
         /// Sentinel sequence for commits synthesized without a real consensus viewSequence
-        /// (KV-pull adoption in `adoptLeaderFromKvIfPresent`, local-election mode). Bypasses the
-        /// `Led` swap fence.
+        /// (local-election mode, a re-adoption of the leader already held). Bypasses the `Led` swap
+        /// fence.
         public static final long NO_SEQUENCE = 0L;
 
         /// Sequence-less convenience constructor — synthesizes a commit carrying [`#NO_SEQUENCE`].
-        /// Used by KV-pull adoption and local-election mode, neither of which carries a real
-        /// committed sequence.
+        /// Used by local-election mode and the re-adoption of a held leader, neither of which
+        /// carries a real committed sequence.
         public LeaderCommitted(NodeId leader) {
             this(leader, NO_SEQUENCE);
+        }
+
+        /// The committed record as the KV-Store holds it: the leader and its own `viewSequence`.
+        public static LeaderCommitted leaderCommitted(NodeId leader, long viewSequence) {
+            return new LeaderCommitted(leader, viewSequence);
         }
     }
 
@@ -86,7 +92,15 @@ public final class LeaderElectionEvents {
     /// A view-free removal of one peer from the stored topology (#3044): the observer saw `node` fail but carries no
     /// sequenced view, so it removes exactly that node and never adds one. It is not fenced and never stale; the
     /// storage keeps the view when the node is absent, is this node itself, or is the last node left (see
-    /// `LeaderElectionContext#removeFromView`). In `Led`, a removal of the leader loses the leader whatever the
-    /// storage kept. Placed here rather than in `ClusterFsmEvent` so the cluster-lifecycle vocabulary is unchanged.
+    /// `LeaderElectionContext#removeFromView`). A removal of the held leader loses it whatever the storage kept
+    /// (`LeaderElectionState#holdLeaderToView`). Placed here rather than in `ClusterFsmEvent` so the cluster-lifecycle
+    /// vocabulary is unchanged.
     public record PeerRemovedFromView(NodeId node) implements ClusterFsmEvent {}
+
+    /// Dispatched by the one #3092 I2 site (`LeaderElectionState#holdLeaderToView`) when the leader the current state
+    /// holds is absent from the stored view, or is the node a view-free removal named failed: `Led` loses it,
+    /// `Passive` drops the observed leader, every other state holds none and ignores it. Carries the leader the site
+    /// checked, so a check that outlives its tenure (leader swapped meanwhile) is discarded rather than deposing the
+    /// new leader.
+    public record LeaderOutOfView(NodeId leader) implements ClusterFsmEvent {}
 }

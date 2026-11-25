@@ -10,9 +10,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.resource.entity.EntityLogError;
+import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.stream.RingGeometry;
+import org.pragmatica.aether.stream.EntityRingWindow;
 import org.pragmatica.aether.stream.EvictionListener;
-import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
@@ -112,8 +117,8 @@ class StreamEntityLogSubstrateTest {
 
     /// Pins the entity ring window as BUILT: the config a created entity log enforces carries the literals of
     /// `EntityRingWindow` (10 000 entries, 64 MiB, 365 days, 1 MiB record), so a drift of any one constant goes red here.
-    /// `CAPACITY` is also pinned, in one direction, by sizing in `append_failsWithEventDropped_whenFrozenRingCannotFitRecord...`; `MAX_BYTES`
-    /// and `MAX_AGE_MS` have no other pin.
+    /// `CAPACITY`, `MAX_BYTES`
+    /// and `MAX_AGE_MS` are pinned here and nowhere else.
     @Test
     void ensureLog_buildsTheEntityRingWindowFromTheDeclaredLiterals() {
         var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
@@ -236,16 +241,36 @@ class StreamEntityLogSubstrateTest {
         assertThat(substrate.read("orders", 0, 0L, 10).await().map(List::size).or(-1)).isEqualTo(1);
     }
 
-    /// #1233: an entity keyspace log is durable state even at replicationFactor = 1 with no WAL (Forge,
-    /// embedded, or the non-durable opt-in). A record the frozen partition ring cannot store must FAIL the
-    /// append, never be acked as a committed write. Driven through the real `ensureLog`/`append` path so
-    /// the `entity:` naming the drop rule keys on (`EntityPartitionArc.arcName` here,
-    /// `StreamPartitionManager`'s entity prefix there) cannot drift apart unnoticed.
+    /// #1233, ring invariant (S2b-2a, ruling 2026-11-23): a ring holds at least one `max_event_size` event of its current life, so an
+    /// entity record of exactly the ring's `max_event_size` is ACKED, never dropped, even at replicationFactor = 1 with no WAL
+    /// (Forge, embedded, or the non-durable opt-in) and a budget that admits no growth, because the ring reserves a whole
+    /// `max_event_size` region at creation. The SPM-level pin of the ring's `EVENT_DROPPED` was deleted as unreachable for a legal
+    /// record (the ring-level drop is pinned in `OffHeapRingBufferTest.FrozenRingDrop`); this stays enabled because it asserts the invariant
+    /// itself. Driven through the real `ensureLog`/`append` path (over a pre-created `entity:` ring with a 256 KiB `max_event_size`, see the test body) so
+    /// the `entity:` naming `EntityPartitionArc.arcName` here and `StreamPartitionManager`'s entity prefix there cannot drift apart unnoticed.
     @Test
-    void append_failsWithEventDropped_whenFrozenRingCannotFitRecord_evenAtReplicationFactorOneWithoutWal() {
-        // Exactly one entity partition floor (10k index slots + the 256 KiB first segment of the 64 MiB
-        // cap, per StreamEntityLogSubstrate's ring sizing): creation fits, every growth is refused.
-        var floor = OffHeapRingBuffer.floorBytes(10_000L, 64L * 1024 * 1024);
+    void append_acksAnEntityRecordOfFullMaxEventSize_atReplicationFactorOneWithoutWalAndNoGrowthBudget() {
+        // The `entity:` ring is created here BEFORE `ensureLog` (which tolerates an existing stream of the same shape) so that its
+        // `max_event_size` is the first segment (256 KiB) instead of the entity 1 MiB: with the ring sized from the hot window the
+        // entity ring reserves its whole `max_event_size` up front, so a legal 1 MiB record can no longer outgrow it and the drop
+        // is only reachable through a smaller first region. Its window is the entity window (10k entries, 64 MiB; the entity
+        // ring takes it from `EntityRingWindow`, never from a declaration, and before the ring reads the declaration it takes it
+        // from this retention), so the floor is the same with and without the declaration read. The budget is exactly that floor:
+        // creation fits, every growth is refused, and the record below is one full `max_event_size`.
+        var arcName = EntityPartitionArc.arcName("ledger");
+        var ring = StreamConfig.streamConfig(arcName,
+                                             1,
+                                             RetentionPolicy.retentionPolicy(EntityRingWindow.CAPACITY,
+                                                                             EntityRingWindow.MAX_BYTES,
+                                                                             EntityRingWindow.MAX_AGE_MS),
+                                             "earliest",
+                                             RingGeometry.SEGMENT_BYTES,
+                                             ConsistencyMode.EVENTUAL,
+                                             3,
+                                             1,
+                                             StreamCompression.NONE,
+                                             Option.none());
+        var floor = RingGeometry.floorBytes(EntityRingWindow.CAPACITY, EntityRingWindow.MAX_BYTES, RingGeometry.SEGMENT_BYTES);
         var partitionManager = StreamPartitionManager.streamPartitionManager(floor);
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
@@ -256,13 +281,15 @@ class StreamEntityLogSubstrateTest {
                                                  null,
                                                  null);
 
+        partitionManager.createDeclaredStream(ring).unwrap();
         substrate.ensureLog("ledger", 1, new org.pragmatica.aether.slice.ReplicationFactors(3, 1)).unwrap();
         substrate.append("ledger", 0, new byte[16]).await().unwrap();
 
-        substrate.append("ledger", 0, new byte[300_000])
+        substrate.append("ledger", 0, new byte[(int) RingGeometry.SEGMENT_BYTES])
                  .await()
-                 .onSuccess(offset -> fail("an entity record the frozen ring dropped was acked at offset " + offset))
-                 .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
+                 .onSuccess(offset -> assertThat(offset).isEqualTo(1L))
+                 .onFailure(cause -> fail("a ring must hold one max_event_size event: an entity record of exactly max_event_size was refused: "
+                                     + cause.message()));
     }
 
     /// T-278 refusal arm (O19 ruled (c)): the entity `max_event_size` is 1 MiB. A record one byte over is refused with the

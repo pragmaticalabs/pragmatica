@@ -450,7 +450,18 @@ aether events
 
 # Events since a specific time
 aether events --since 2024-01-15T10:30:00Z
+
+# One operator-warning class, by its details.code (exact match; an unknown code lists nothing)
+aether events --code swim-kill-gate-held
+
+# WARNING and CRITICAL events only (a minimum level; INFO, WARNING or CRITICAL, any case)
+aether events --severity warning
+
+# Both: the code AND at least this severity
+aether events --code core-absence-fence --severity CRITICAL
 ```
+
+`--code` and `--severity` map to the `code` and `severity` query parameters of [`GET /api/v1/events`](management-api.md#get-apiv1events). A `--severity` value other than `INFO`, `WARNING` or `CRITICAL` is refused by the node with a 400.
 
 Output:
 ```
@@ -616,13 +627,13 @@ aether blueprints validate <file.toml>
 aether blueprints delete <blueprintId> [-f|--force]
 
 # Deploy a blueprint from an artifact in the cluster repository
-aether blueprints deploy <coords> [--wait] [--timeout <seconds>]
+aether blueprints deploy <coords> [--wait] [--timeout <seconds>] [--force]
 
 # Publish a blueprint already present in the artifact repository
-aether blueprints publish <coords>
+aether blueprints publish <coords> [--force]
 
 # Upload a blueprint JAR file and deploy it
-aether blueprints upload <file> -g <groupId> -a <artifactId> -v <version>
+aether blueprints upload <file> -g <groupId> -a <artifactId> -v <version> [--force]
 ```
 
 Example blueprint file (`order-system.toml`):
@@ -922,23 +933,6 @@ aether thresholds set cpu -w 0.7 -c 0.9
 # Remove a threshold
 aether thresholds remove cpu
 ```
-
-#### aspects
-
-Manage dynamic aspects on slice methods:
-
-```bash
-# List all configured aspects
-aether aspects list
-
-# Set aspect mode on a method
-aether aspects set org.example:my-slice:1.0.0#processOrder LOG_AND_METRICS
-
-# Remove aspect configuration
-aether aspects remove org.example:my-slice:1.0.0#processOrder
-```
-
-Available modes: `NONE`, `LOG`, `METRICS`, `LOG_AND_METRICS`
 
 #### traces
 
@@ -1521,13 +1515,12 @@ version fails with `409 Conflict` (``Baseline conflict for datasource '<name>': 
 migrations already applied up to version <existingVersion>``) — undo to the target version instead,
 or baseline at (or above) the existing version.
 
-`undo` (and, for the same declarative-contract reason, `baseline`) is not sticky across a
-republish: the artifact's declared version wins on every publish, so republishing (or
-redeploying) a blueprint that declares a version higher than the undo target re-arms migration
-and re-applies from scratch whatever rows the undo removed — nothing compares the live record to
-the request first. To keep an undo, deploy a blueprint that declares the lower version instead of
-republishing the higher one, or accept the re-migration. A guard that refuses (or requires
-`force` for) such a publish is tracked separately in #834, not implemented here.
+A republish does not silently undo an `undo` or a `baseline` (#834). The declared version still wins on a publish, but
+`aether blueprints deploy`, `publish` and `upload` refuse with `409 Conflict` when the blueprint declares a version above the one
+the operator left. The message names the datasource, the intervention (`undo` or `baseline`), the version left, and the versions
+that would be applied again. To keep the undo, deploy a blueprint that declares the lower version. To accept the re-migration,
+repeat the command with `--force`. Declaring only versions at or below the one left is not refused. A record undone or baselined
+by a build older than #834 is not guarded. [verified: `BlueprintPublishOwnershipTest` `UndoneRepublishGuard`; `BlueprintForceOptionTest` for the flag]
 
 `migrate` similarly refuses (#760 review BLOCKING 1) when the record is `COMPLETED` **and** the
 owning blueprint has at least one slice instance already `ACTIVE` — re-arming to `MIGRATING` would
@@ -1757,7 +1750,7 @@ commands are LOCAL: they describe, and act on, the node the CLI is pointed at.
 Show every consumer group over a durable topic — one per durable subscriber method, identified as the
 runtime identifies it (`artifactBase#method`) — and, per partition, which node consumes it and which
 owns it, the consensus-committed cursor with its rewind epoch, the live cursor where this node runs the
-consumer, and the projection state (`LIVE` / `REBUILDING`) where this node hosts the group's projection.
+consumer, and the projection state (`LIVE` / `REBUILDING`) where this node hosts the group's projection (on a node other than the consumer, `LIVE` only means the group's cursor passed the captured head, not that the local model is complete; #3736).
 
 ```bash
 aether topics groups com.example:projection-events:1.0.0
@@ -1782,7 +1775,7 @@ aether topics rebuild com.example:projection-events:1.0.0 'com.example:orders-sl
 
 The answer carries the new generation, the rewind token and the captured range per partition. Follow
 progress with `aether topics groups`: the partition reads `REBUILDING` with `nextReplayOffset` advancing,
-then `LIVE`; `committedEpoch` equals the returned token once the rewound consumer has checkpointed. A
+then `LIVE` (which off the consumer node says only that the group's cursor passed the captured head; read the model on the consumer, #3736); `committedEpoch` equals the returned token once the rewound consumer has checkpointed. A
 replay event that dead-letters is skipped and stays out of the rebuilt model until redriven.
 
 See [Management API — Rebuild Projection](management-api.md#rebuild-projection).

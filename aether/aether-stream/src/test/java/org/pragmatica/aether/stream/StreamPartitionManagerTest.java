@@ -65,17 +65,38 @@ class StreamPartitionManagerTest {
         private static final String FENCE_STREAM = "orders";
         private static final int FENCE_PARTITION = 0;
 
+        /// #2755: the zero stamp against an advanced high-water is a writer that has not applied its ownership record, not a
+        /// deposed one: refused with the transient `OwnershipNotApplied` naming the high-water, never `StaleEpochAppend`.
         @Test
-        void appendRecovered_zeroEpoch_rejectedWhenHighWaterAdvanced() {
-            // Pre-fix behavior: the 4-arg recovery overload stamps Epoch.ZERO. With the committed high-water at
-            // 1:3, 0:0 is STRICTLY older → the append is fenced (StaleEpochAppend) — the real-infra symptom.
+        void appendRecovered_zeroEpoch_refusedAsOwnershipNotAppliedWhenHighWaterAdvanced() {
             var fenced = fencedManager(highWaterAt(Epoch.epoch(0L, 1, 3)));
             assertThat(fenced.createStream(StreamConfig.streamConfig(FENCE_STREAM)).isSuccess()).isTrue();
 
             var rejected = fenced.appendRecovered(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L);
 
             assertThat(rejected.isFailure()).isTrue();
-            rejected.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.StaleEpochAppend.class));
+            rejected.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.OwnershipNotApplied.class)
+                                                         .isInstanceOf(Cause.Transient.class)
+                                                         .isEqualTo(new StreamError.OwnershipNotApplied(FENCE_STREAM,
+                                                                                                        FENCE_PARTITION,
+                                                                                                        Epoch.epoch(0L, 1, 3))));
+            rejected.onFailure(cause -> assertThat(cause.message()).contains("has not yet applied the committed ownership record")
+                                                                   .contains("0:1:3"));
+            assertThat(fenced.nextExpectedOffset(FENCE_STREAM, FENCE_PARTITION)).as("nothing appended").isZero();
+            fenced.close();
+        }
+
+        /// #2755: the local owner publish (the issue's path: the source answers ZERO before the record applied) is refused
+        /// with the same transient cause.
+        @Test
+        void publishLocal_ownerWithoutAppliedRecord_refusedAsOwnershipNotApplied() {
+            var fenced = fencedManager(highWaterAt(Epoch.epoch(0L, 1, 3)));
+            assertThat(fenced.createStream(StreamConfig.streamConfig(FENCE_STREAM)).isSuccess()).isTrue();
+
+            var rejected = fenced.publishLocal(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L);
+
+            assertThat(rejected.isFailure()).isTrue();
+            rejected.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.OwnershipNotApplied.class));
             fenced.close();
         }
 
@@ -119,7 +140,10 @@ class StreamPartitionManagerTest {
             var rejected = fenced.publishLocal(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L, Epoch.epoch(0L, 1, 2));
 
             assertThat(rejected.isFailure()).isTrue();
-            rejected.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.StaleEpochAppend.class));
+            rejected.onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.StaleEpochAppend(FENCE_STREAM,
+                                                                                                     FENCE_PARTITION,
+                                                                                                     Epoch.epoch(0L, 1, 2),
+                                                                                                     Epoch.epoch(0L, 1, 3))));
             fenced.close();
         }
 
@@ -500,8 +524,10 @@ class StreamPartitionManagerTest {
             // Cap allows exactly one stream
             var cappedManager = StreamPartitionManager.streamPartitionManager(streamBytes + 1);
 
-            var config1 = StreamConfig.streamConfig("first", 1, retention, "latest");
-            var config2 = StreamConfig.streamConfig("second", 1, retention, "latest");
+            // The hot window is declared equal to the retention (a data region below one segment, so the event size does not
+            // move the floor): the cap above holds whether the ring is sized from retention or from the declared window.
+            var config1 = HotWindowFixture.declaredHot(StreamConfig.streamConfig("first", 1, retention, "latest"), 100, 4096);
+            var config2 = HotWindowFixture.declaredHot(StreamConfig.streamConfig("second", 1, retention, "latest"), 100, 4096);
 
             cappedManager.createStream(config1)
                          .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));

@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.LongStream;
 
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Option;
@@ -80,7 +81,7 @@ class TieredReaderRetentionRaceTest {
         reader.read(STREAM, PARTITION, 2, 10)
               .await()
               .onSuccess(events -> fail("expected CursorExpired, got events starting at " + events.getFirst().offset()))
-              .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(2, 5)));
+              .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(2, 5, RemovalCause.RETENTION)));
     }
 
     /// v-2490 B1: a SHORT read (the consumer's default batch is 1) whose segment is removed between the two lookups has a range
@@ -93,7 +94,7 @@ class TieredReaderRetentionRaceTest {
         reader.read(STREAM, PARTITION, 2, 3)
               .await()
               .onSuccess(events -> fail("expected CursorExpired, got events starting at " + events.getFirst().offset()))
-              .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(2, 5)));
+              .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(2, 5, RemovalCause.RETENTION)));
     }
 
     /// v-2490 T1: an interior segment removed between the lookups leaves a gap inside the run the range lookup returns
@@ -111,7 +112,7 @@ class TieredReaderRetentionRaceTest {
         reader.read(STREAM, PARTITION, 5, 10)
               .await()
               .onSuccess(events -> fail("expected CursorExpired, got events starting at " + events.getFirst().offset()))
-              .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(5, 10)));
+              .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(5, 10, RemovalCause.RETENTION)));
     }
 
     /// Retention removing the only segment under the read leaves nothing to start at: the tier answers empty (what an

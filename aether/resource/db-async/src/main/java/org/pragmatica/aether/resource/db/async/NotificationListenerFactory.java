@@ -14,12 +14,16 @@ import org.pragmatica.aether.slice.PgNotificationSubscriber;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.postgres.net.Connectible;
 import org.pragmatica.postgres.net.Connection;
 import org.pragmatica.postgres.net.Listening;
 import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
+
+import static org.pragmatica.postgres.net.ReleaseChain.releaseAll;
+import static org.pragmatica.postgres.net.ReleaseChain.releasingOnFailure;
 
 
 public final class NotificationListenerFactory implements ResourceFactory<PgNotificationSubscriber, PgNotificationConfig> {
@@ -37,8 +41,8 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
 
     @Override
     public Promise<PgNotificationSubscriber> provision(PgNotificationConfig config) {
-        return resolveDatasourceConfig(config.datasource()).flatMap(dbConfig -> createDedicatedConnection(dbConfig).flatMap(connection -> subscribeToChannels(connection,
-                                                                                                                                                              config.channels())));
+        return resolveDatasourceConfig(config.datasource()).flatMap(dbConfig -> provisionWith(dbConfig,
+                                                                                              config.channels()));
     }
 
     @Override
@@ -57,8 +61,24 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
                             .async();
     }
 
-    private static Promise<Connection> createDedicatedConnection(DatabaseConnectorConfig config) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> buildPlainConnectible(config)).flatMap(Connectible::getConnection);
+    static Promise<PgNotificationSubscriber> provisionWith(DatabaseConnectorConfig dbConfig, List<String> channels) {
+        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> buildPlainConnectible(dbConfig)).flatMap(connectible -> listenOn(connectible,
+                                                                                                                                            channels));
+    }
+
+    /// The Connectible holds the lease on its builder's event-loop group and the connection holds the channel (#3635).
+    /// A failed connect closes the Connectible; a failed subscribe closes the connection, then the Connectible
+    /// (ReleaseChain invariant); a successful provision hands both to the handle.
+    static Promise<PgNotificationSubscriber> listenOn(Connectible connectible, List<String> channels) {
+        return releasingOnFailure(connectible.getConnection()
+                                             .flatMap(connection -> subscribeOn(connection, connectible, channels)),
+                                  connectible::close);
+    }
+
+    private static Promise<PgNotificationSubscriber> subscribeOn(Connection connection,
+                                                                 Connectible connectible,
+                                                                 List<String> channels) {
+        return releasingOnFailure(subscribeToChannels(connection, connectible, channels), connection::close);
     }
 
     private static Connectible buildPlainConnectible(DatabaseConnectorConfig config) {
@@ -74,25 +94,38 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
         return builder.plain();
     }
 
-    private static Promise<PgNotificationSubscriber> subscribeToChannels(Connection connection, List<String> channels) {
-        var handle = new NotificationListenerHandle(connection);
+    private static Promise<PgNotificationSubscriber> subscribeToChannels(Connection connection,
+                                                                         Connectible connectible,
+                                                                         List<String> channels) {
+        var handle = new NotificationListenerHandle(connection, connectible);
         var subscriptions = channels.stream()
                                     .map(channel -> connection.subscribe(channel, handle::onNotification)
                                                               .map(handle::addListening))
                                     .toList();
 
-        return Promise.allOf(subscriptions).map(_ -> handle);
+        return Promise.allOf(subscriptions)
+                      .flatMap(NotificationListenerFactory::allSubscribed)
+                      .map(_ -> handle);
+    }
+
+    /// A refused LISTEN fails the provision: a subscriber missing one of its channels is not what was configured.
+    private static Promise<Unit> allSubscribed(List<Result<Listening>> subscriptions) {
+        return Result.allOf(subscriptions)
+                     .mapToUnit()
+                     .async();
     }
 }
 
 @SuppressWarnings("JBCT-RET-01")
 final class NotificationListenerHandle implements PgNotificationSubscriber {
     private final Connection connection;
+    private final Connectible connectible;
     private final List<Listening> listenings = new CopyOnWriteArrayList<>();
     private volatile java.util.function.Consumer<org.pragmatica.aether.slice.PgNotification> callback;
 
-    NotificationListenerHandle(Connection connection) {
+    NotificationListenerHandle(Connection connection, Connectible connectible) {
         this.connection = connection;
+        this.connectible = connectible;
     }
 
     void setCallback(java.util.function.Consumer<org.pragmatica.aether.slice.PgNotification> callback) {
@@ -113,9 +146,19 @@ final class NotificationListenerHandle implements PgNotificationSubscriber {
         return listening;
     }
 
+    /// Unlisten, close the connection, close the Connectible (its group lease): each runs whatever the earlier ones did,
+    /// and the first failure is the result (ReleaseChain invariant, #3635).
     Promise<Unit> close() {
-        var unlistens = listenings.stream().map(Listening::unlisten).toList();
+        return releaseAll(this::unlistenAll, connection::close, connectible::close);
+    }
 
-        return Promise.allOf(unlistens).flatMap(_ -> connection.close());
+    private Promise<Unit> unlistenAll() {
+        return Promise.allOf(listenings.stream().map(Listening::unlisten).toList()).flatMap(NotificationListenerHandle::allUnlistened);
+    }
+
+    private static Promise<Unit> allUnlistened(List<Result<Unit>> unlistens) {
+        return Result.allOf(unlistens)
+                     .mapToUnit()
+                     .async();
     }
 }

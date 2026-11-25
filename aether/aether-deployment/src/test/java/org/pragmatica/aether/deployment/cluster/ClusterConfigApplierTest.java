@@ -59,6 +59,11 @@ class ClusterConfigApplierTest {
         applier = ClusterConfigApplier.clusterConfigApplier(topologyManager);
     }
 
+    @Test
+    void drainTenure_nonOverridingImplementer_isZero() {
+        assertThat(topologyManager.drainTenure()).isZero();
+    }
+
     @Nested
     class CoreScale {
         @Test
@@ -330,7 +335,7 @@ class ClusterConfigApplierTest {
                                                                   Option<NodeId> failedPeer,
                                                                   Set<NodeId> clusterMembers,
                                                                   NodeRole intendedRole) {
-            return Promise.success(ProvisionDisposition.dispatched());
+            return Promise.success(ProvisionDisposition.dispatched(SourceProfile.DEFAULT_REPLACEMENT_CEILING));
         }
 
         @Override
@@ -344,7 +349,7 @@ class ClusterConfigApplierTest {
         }
 
         @Override
-        public TimeSpan replacementCeiling(NodeRole intendedRole) {
+        public TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed) {
             return SourceProfile.DEFAULT_REPLACEMENT_CEILING;
         }
 
@@ -428,7 +433,7 @@ class ClusterConfigApplierTest {
         }
 
         @Override
-        public boolean scalingHeld(String subject) {
+        public boolean scalingHeld(String subject, ScalingAsker asker, boolean pending) {
             return false;
         }
 

@@ -325,18 +325,23 @@ public sealed interface TopologyAssembly {
                                                                           FailedVoterEvidence.forNode(metricsCollector,
                                                                                                       membershipFsmRef::get),
                                                                           clusterNode::reconfigure);
+        var surplusRefusals = SurplusRefusals.surplusRefusals((node, cause) -> LOG.warn("Core voter reconciliation: surplus core {} not drained: {}",
+                                                                                        node,
+                                                                                        cause.message()));
 
-        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(() -> coreVoterReconciler.reconcile()
-                                                                                        .flatMap(_ -> retireExcludedCores(clusterNode,
-                                                                                                                          membershipFsmRef::get,
-                                                                                                                          kvStore,
-                                                                                                                          nodeReplacements,
-                                                                                                                          deploymentMap,
-                                                                                                                          clusterTopologyManager,
-                                                                                                                          readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
-                                                                                                                                              membershipFsmRef::get)))
-                                                                                        .onFailure(cause -> LOG.warn("Core voter reconciliation: {}",
-                                                                                                                     cause.message())),
+        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(() -> retirementPass(coreVoterReconciler.reconcile(),
+                                                                                    surplusRefusals,
+                                                                                    () -> retireExcludedCores(clusterNode,
+                                                                                                              membershipFsmRef::get,
+                                                                                                              kvStore,
+                                                                                                              nodeReplacements,
+                                                                                                              deploymentMap,
+                                                                                                              clusterTopologyManager,
+                                                                                                              leaderReconcilerRef::get,
+                                                                                                              readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
+                                                                                                                                  membershipFsmRef::get),
+                                                                                                              surplusRefusals)).onFailure(cause -> LOG.warn("Core voter reconciliation: {}",
+                                                                                                                                                            cause.message())),
                                                                TimeSpan.timeSpan(1).seconds()));
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
@@ -840,50 +845,111 @@ public sealed interface TopologyAssembly {
                          .option();
     }
 
-    private static Promise<Unit> retireExcludedCores(RabiaNode<KVCommand<AetherKey>> cluster,
-                                                     Supplier<MembershipFsm> membership,
-                                                     KVStore<AetherKey, AetherValue> store,
-                                                     NodeReplacementIndex replacements,
-                                                     DeploymentMap deployments,
-                                                     ClusterTopologyManager topology,
-                                                     Set<NodeId> ready) {
+    /// #3626: one 1 s pass of the core retirement. A pass that tries nothing forgets every refusal told so far (a failed voter
+    /// reconcile skips the retirement here, a non-leader skips it in [#retireExcludedCores]), so a refusal that returns after
+    /// leadership came back is told again.
+    static Promise<Unit> retirementPass(Promise<Unit> reconciled,
+                                        SurplusRefusals refusals,
+                                        Supplier<Promise<Unit>> retirement) {
+        return reconciled.onFailure(_ -> refusals.retainOnly(List.of()))
+                         .flatMap(_ -> retirement.get());
+    }
+
+    /// #1055: the grace gate is built HERE from the reconciler holder, not handed in as a predicate, so the one line that applies
+    /// the drain-safety grace to the retirement path is reachable by a test that drives this method (`CoreRetirementWiringTest`).
+    static Promise<Unit> retireExcludedCores(RabiaNode<KVCommand<AetherKey>> cluster,
+                                             Supplier<MembershipFsm> membership,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             NodeReplacementIndex replacements,
+                                             DeploymentMap deployments,
+                                             ClusterTopologyManager topology,
+                                             Supplier<LeaderReconciler> reconciler,
+                                             Set<NodeId> ready,
+                                             SurplusRefusals refusals) {
         if (!cluster.leaderManager().isLeader()) {
+            refusals.retainOnly(List.of());
+
             return Promise.unitPromise();
         }
 
-        var victims = excludedCoreNodes(cluster, membership, store, replacements, ready).stream()
-                                       .filter(node -> deployments.byNode(node)
-                                                                  .isEmpty())
-                                       .toList();
+        var victims = retirementVictims(excludedCoreNodes(cluster, membership, store, replacements, ready),
+                                        node -> deployments.byNode(node)
+                                                           .isEmpty(),
+                                        pastDrainGrace(reconciler));
 
-        return retireSurplusCores(victims, topology);
+        return retireSurplusCores(victims, topology, refusals);
+    }
+
+    /// #1055: the voter-excluded core retirement drains as `OVERPROVISION_SCALE_DOWN`, a surplus trim, so it obeys the same rule as
+    /// the reconciler's surplus drain: a member younger than the drain-safety grace is never a victim. A young core is simply not
+    /// returned here; the 1 s retirement cadence offers it again on every pass until it matures.
+    static List<NodeId> retirementVictims(Set<NodeId> excluded,
+                                          Predicate<NodeId> hostsNothing,
+                                          Predicate<NodeId> pastDrainGrace) {
+        return excluded.stream()
+                       .filter(hostsNothing)
+                       .filter(pastDrainGrace)
+                       .toList();
+    }
+
+    /// #1055: the ONE age rule, [LeaderReconciler#pastDrainSafetyGrace] (same grace window, same `MembershipFsm.memberAgeMs`
+    /// source), reached through the reconciler holder. The holder is empty until the reconciler is published, and an
+    /// unpublished reconciler cannot vouch for any age, so the gate is fail-closed like every other reap gate on this holder.
+    static Predicate<NodeId> pastDrainGrace(Supplier<LeaderReconciler> reconciler) {
+        return node -> Option.option(reconciler.get())
+                             .map(r -> r.pastDrainSafetyGrace(node))
+                             .or(false);
     }
 
     /// #3324: the production wiring of the voter-excluded core retirement: the hold asked is `topology`'s own, for the subject `core`,
-    /// and every victim leaves as an `OVERPROVISION_SCALE_DOWN` drain (the reason that keeps the retirement refusal and the grace re-check).
-    static Promise<Unit> retireSurplusCores(List<NodeId> victims, ClusterTopologyManager topology) {
+    /// as the [ClusterTopologyManager.ScalingAsker#RETIREMENT] asker, and every victim leaves as an `OVERPROVISION_SCALE_DOWN` drain (the
+    /// reason that keeps the retirement refusal and the grace re-check).
+    static Promise<Unit> retireSurplusCores(List<NodeId> victims,
+                                            ClusterTopologyManager topology,
+                                            SurplusRefusals refusals) {
         return drainSurplusCores(victims,
-                                 () -> topology.scalingHeld(ClusterTopologyManager.coreSubject()),
-                                 node -> topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN));
+                                 pending -> topology.scalingHeld(ClusterTopologyManager.coreSubject(),
+                                                                 ClusterTopologyManager.ScalingAsker.RETIREMENT,
+                                                                 pending),
+                                 node -> topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN),
+                                 refusals);
     }
 
     /// #3324: a core excluded from the voter set is core surplus; with auto-heal disabled it is not drained on the cluster's own
-    /// initiative. `coreHeld` is asked only when there is a victim, so it is the worker and community gates' accessor
-    /// ([ClusterTopologyManager#scalingHeld]) and raises the same operator warning only for a surplus that is really held back.
+    /// initiative. `coreHeld` is the worker and community gates' accessor ([ClusterTopologyManager#scalingHeld]) and raises the same
+    /// operator warning only for a surplus that is really held back. #3358: it is asked on EVERY evaluated pass, with `pending` =
+    /// "there is a victim", so this asker's answer is true only while it names a victim; the `core` subject closes when this answer and
+    /// the reconciler's are both false. Not evaluated, so not asked: a non-leader pass ([#retireExcludedCores]) and a pass whose voter
+    /// reconcile failed ([#retirementPass]); a leader change drops every answer, and the next evaluated pass answers for itself.
+    /// #3626: a refused victim (the leader's own id among them) skips only itself; every victim after it is still tried, and the
+    /// refusal is warned once per transition through `refusals`.
     static Promise<Unit> drainSurplusCores(List<NodeId> victims,
-                                           BooleanSupplier coreHeld,
-                                           Function<NodeId, Promise<Unit>> drain) {
-        if (victims.isEmpty() || coreHeld.getAsBoolean()) {
+                                           Predicate<Boolean> coreHeld,
+                                           Function<NodeId, Promise<Unit>> drain,
+                                           SurplusRefusals refusals) {
+        var held = coreHeld.test(!victims.isEmpty());
+
+        if (victims.isEmpty() || held) {
+            refusals.retainOnly(List.of());
+
             return Promise.unitPromise();
         }
 
+        refusals.retainOnly(victims);
         var work = Promise.unitPromise();
 
         for (var node : victims) {
-            work = work.flatMap(_ -> drain.apply(node));
+            work = work.flatMap(_ -> drainVictim(node, drain, refusals));
         }
 
         return work;
+    }
+
+    private static Promise<Unit> drainVictim(NodeId node,
+                                             Function<NodeId, Promise<Unit>> drain,
+                                             SurplusRefusals refusals) {
+        return drain.apply(node)
+                    .replaceResult(result -> refusals.settle(node, result));
     }
 
     private static void restoreRetirementIndex(KVStore<AetherKey, AetherValue> store, CommunityRetirementIndex index) {

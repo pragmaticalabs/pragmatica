@@ -23,8 +23,10 @@ import org.pragmatica.statemachine.FsmTestHarness;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeader;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// Leader-adoption gating (FIX 1 + FIX-1 refinement). Adoption of a COMMITTED `LeaderKey` is:
 ///   - **sequence-gated WITHIN an election** (`Electing` / `ReElecting`): a node that decided to
@@ -59,7 +61,7 @@ class LeaderAdoptionSequenceGateTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         () -> true,
-                                                        kvLeader::get,
+                                                        () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                         LONG,
                                                         LONG);
                     return ctx.dormant();
@@ -85,6 +87,9 @@ class LeaderAdoptionSequenceGateTest {
         var h = harness(new AtomicReference<>(Option.<NodeId>none()));
         var ctx = ctxOf(h);
         var manager = new org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager(ctx.fsm(), ctx, false);
+        // #3581: the excluded core is a passive observer, which adopts a committed leader only while its stored view
+        // holds it, so the transport view names the cluster first.
+        h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, List.of(SELF, LEADER, SUCCESSOR), seq()));
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         manager.onLeaderCommitted(LEADER, 5);
         assertThat(manager.leader()).isEqualTo(Option.some(LEADER));
@@ -147,14 +152,13 @@ class LeaderAdoptionSequenceGateTest {
         assertThat(((LeaderElectionState.Electing) h.state()).entryBaseline()).isEqualTo(5L);
 
         // Stale pull/push: the corpse (LEADER) is still LeaderKey at seq 5 (== baseline). IGNORED.
-        h.dispatch(new LeaderCommitted(LEADER));
+        commitLeader(h, LEADER);
         assertThat(h.state())
                 .as("stale pre-death commit (seq == baseline) must NOT be adopted")
                 .isInstanceOf(LeaderElectionState.Electing.class);
 
         // A fresh successor commits at seq 6 (> baseline) — observed, then the LeaderCommitted lands.
-        ctxOf(h).observeViewSequence(6L);
-        h.dispatch(new LeaderCommitted(SUCCESSOR));
+        commitLeader(h, SUCCESSOR, 6L);
         assertThat(h.state())
                 .as("a post-election commit (seq > baseline) is adopted by the elector")
                 .isInstanceOf(LeaderElectionState.Led.class);
@@ -168,9 +172,10 @@ class LeaderAdoptionSequenceGateTest {
         var kvLeader = new AtomicReference<>(Option.some(LEADER));
         var h = harness(kvLeader);
 
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        // Topology deliberately excludes the healthy LEADER — the transport-absent FIX-1 condition.
+        // Topology deliberately excludes the healthy LEADER — the transport-absent FIX-1 condition. The view is applied
+        // BEFORE the adoption: a view applied after it would lose the absent leader (#3092 I2, ViewApplicationTableTest).
         h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF), seq()));
+        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new ConsensusReady());
 
         assertThat(h.state())
@@ -196,8 +201,7 @@ class LeaderAdoptionSequenceGateTest {
 
         // The other elector's proposal commits first at seq 3. This (losing) node observes it and
         // adopts — it does NOT re-propose, because 3 > its baseline 2.
-        ctxOf(h).observeViewSequence(3L);
-        h.dispatch(new LeaderCommitted(SUCCESSOR));
+        commitLeader(h, SUCCESSOR, 3L);
         assertThat(h.state())
                 .as("the losing elector adopts the winner's commit (seq > baseline) — no ping-pong")
                 .isInstanceOf(LeaderElectionState.Led.class);
@@ -216,8 +220,7 @@ class LeaderAdoptionSequenceGateTest {
         assertThat(((LeaderElectionState.Electing) h.state()).entryBaseline()).isEqualTo(0L);
 
         // A peer's proposal commits at seq 1 (> baseline 0) and arrives via the push path.
-        ctxOf(h).observeViewSequence(1L);
-        h.dispatch(new LeaderCommitted(SUCCESSOR));
+        commitLeader(h, SUCCESSOR, 1L);
 
         assertThat(h.state())
                 .as("a peer push commit above baseline is adopted mid-election")

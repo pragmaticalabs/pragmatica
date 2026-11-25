@@ -69,6 +69,8 @@ sealed interface Round2Outcome<C extends Command> {
 final class PhaseData<C extends Command> {
     private final Phase phase;
     private final long epoch;
+    /// #2644: local `System.nanoTime()` at which this node first held the slot; the origin of the decision duration.
+    private final long startedAtNanos = System.nanoTime();
     private final Map<NodeId, ReconfigurationCommand> configurations = new ConcurrentHashMap<>();
 
     private record ProposalIdentity(Batch.Id batch, Option<ReconfigurationCommand> configuration) {}
@@ -154,6 +156,11 @@ final class PhaseData<C extends Command> {
     PhaseData(Phase phase, long epoch) {
         this.phase = phase;
         this.epoch = epoch;
+    }
+
+    /// Nanoseconds from this node first holding the slot to now (monotonic, local clock).
+    long elapsedNanos() {
+        return System.nanoTime() - startedAtNanos;
     }
 
     long epoch() {

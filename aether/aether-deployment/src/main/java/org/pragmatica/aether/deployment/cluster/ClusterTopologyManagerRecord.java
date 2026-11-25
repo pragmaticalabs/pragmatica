@@ -7,13 +7,16 @@ package org.pragmatica.aether.deployment.cluster;
 import java.net.SocketAddress;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -152,7 +155,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicReference<TerminationRetirement> reapRetirement,
                                     AtomicReference<TerminationRetirement> forcedClearRetirement,
                                     AtomicBoolean sourceUnresolved,
-                                    Set<String> heldScaling) implements ClusterTopologyManager {
+                                    ConcurrentMap<String, Set<ClusterTopologyManager.ScalingAsker>> heldScaling) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -313,7 +316,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(TerminationRetirement.NONE),
                                                 new AtomicReference<>(TerminationRetirement.NONE),
                                                 new AtomicBoolean(false),
-                                                ConcurrentHashMap.newKeySet());
+                                                new ConcurrentHashMap<>());
     }
 
     @Override
@@ -1026,14 +1029,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return "worker " + sourceName + "/" + role;
     }
 
-    /// Spec §8.4 — whether the worker, community and core surplus (#3324) paths may NOT act on their own now. Auto-heal enabled: they may, and every hold raised
-    /// earlier is announced as resumed. Disabled: `subject` is held while its own committed scaling value (count or community `target_size`)
+    /// Spec §8.4 — whether `asker` may NOT act on `subject` on its own now: the worker, community and core surplus (#3324) paths. Auto-heal
+    /// enabled: they may, and every hold raised earlier is announced as resumed. Disabled: `subject` is held while the union of its
+    /// askers' latest answers is non-empty ([#answerScaling]) and its own committed scaling value (count or community `target_size`)
     /// equals the one recorded at disable time ([AutoHealStateValue#disabledAtScaling]); a commit that leaves it unchanged releases
-    /// nothing. A value an operator committed after the disable differs: that is explicit intent, the subject is released (its hold, if
-    /// raised, is announced as resumed) and acted on. An operator-directed retirement never asks here. The hold is raised once per
-    /// `subject` for the run of holds (the set is the flood guard; a release or resume removes the subject).
+    /// nothing. A value an operator committed after the disable differs: that is explicit intent, every answer for the subject is dropped
+    /// (its hold, if raised, is announced as resumed) and acted on. The same rule runs for EVERY held subject on each ask, not only the
+    /// asked one: a subject whose source, role or community left the committed configuration (nobody asks for it any more) is released by
+    /// the next ask for any subject, and the core subject is asked on every quorum-safe pass of the leader. A subject whose askers all
+    /// answer "nothing pending" (the surplus went away by itself or by an explicit drain, #3358) ends the hold the same way: the warning
+    /// describes a change being held back, so it closes when there is none, and only then, however many askers a subject has. An
+    /// operator-directed retirement never asks here. The returned answer is the asker's own: held only when it has something pending.
     @Override
-    public boolean scalingHeld(String subject) {
+    public boolean scalingHeld(String subject, ScalingAsker asker, boolean pending) {
         var state = autoHealStateReader.get();
 
         if (state.map(AutoHealStateValue::enabled).or(true)) {
@@ -1042,56 +1050,90 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return false;
         }
 
-        if (state.filter(value -> unchangedSinceDisable(value, subject)).isPresent()) {
-            holdScaling(subject);
+        var recorded = state.map(AutoHealStateValue::disabledAtScaling).or(Map.of());
+        var committed = scalingOf(clusterConfigReader.get());
 
-            return true;
+        heldScaling.keySet()
+                   .stream()
+                   .filter(held -> !unchangedSinceDisable(recorded, committed, held))
+                   .forEach(this::releaseScaling);
+        if (unchangedSinceDisable(recorded, committed, subject)) {
+            answerScaling(subject, asker, pending);
+
+            return pending;
         }
-
-        releaseScaling(subject);
 
         return false;
     }
 
-    private boolean unchangedSinceDisable(AutoHealStateValue state, String subject) {
-        return Option.option(state.disabledAtScaling().get(subject)).equals(Option.option(scalingOf(clusterConfigReader.get()).get(subject)));
+    private static boolean unchangedSinceDisable(Map<String, Integer> recorded,
+                                                 Map<String, Integer> committed,
+                                                 String subject) {
+        return Option.option(recorded.get(subject)).equals(Option.option(committed.get(subject)));
     }
 
+    /// The ONE mutation point of a subject's hold: its askers' latest "pending" answers, changed and judged for an edge inside one atomic
+    /// `compute` on the subject's key. The HELD event is published on the closed-to-open edge of the union and the RESUMED event on the
+    /// open-to-closed one, from inside that same compute, so two threads touching one subject cannot publish them out of order (the sink
+    /// only enqueues, it never re-enters this map). A closed subject keeps its empty entry until the leader changes ([#deactivate]).
     @Contract
-    private void holdScaling(String subject) {
-        if (heldScaling.add(subject)) {
-            OperatorWarnings.raise(log,
-                                   warningSink.get(),
-                                   OperatorWarningCode.AUTO_HEAL_SCALING_HELD,
-                                   subject,
-                                   "Auto-heal is disabled: {} is not provisioned, drained or terminated on the cluster's own initiative; commit a new count, drain a node explicitly (aether nodes drain <nodeId>), or enable auto-heal (aether cluster topology auto-heal enable)",
-                                   subject);
-        }
+    private void answerScaling(String subject, ScalingAsker asker, boolean pending) {
+        heldScaling.compute(subject,
+                            (_, before) -> settle(subject, before, askers -> withAnswer(askers, asker, pending)));
+    }
+
+    /// Drops every answer for `subject`: the operator committed a value after the disable, or auto-heal was enabled.
+    @Contract
+    private void releaseScaling(String subject) {
+        heldScaling.compute(subject, (_, before) -> settle(subject, before, _ -> Set.of()));
     }
 
     @Contract
     private void resumeScaling() {
-        drainHeld(heldScaling, this::raiseResumed);
+        heldScaling.keySet().forEach(this::releaseScaling);
     }
 
-    @Contract
-    private void releaseScaling(String subject) {
-        releaseHeld(heldScaling, subject, this::raiseResumed);
+    private Set<ScalingAsker> settle(String subject,
+                                     Set<ScalingAsker> before,
+                                     Function<Set<ScalingAsker>, Set<ScalingAsker>> change) {
+        var was = Option.option(before).or(Set.of());
+        var now = change.apply(was);
+
+        announceEdge(subject, was.isEmpty(), now.isEmpty());
+
+        return now;
     }
 
-    /// Announces every held subject as resumed, one element at a time: a subject is resumed only by the call that removed it, so a hold
-    /// added concurrently (the community reconcile and the worker poll run on different threads) is either drained here with its resume
-    /// or stays held for the next one, and never cleared without its resume.
-    @Contract
-    static void drainHeld(Set<String> held, Consumer<String> resumed) {
-        held.forEach(subject -> releaseHeld(held, subject, resumed));
-    }
+    private static Set<ScalingAsker> withAnswer(Set<ScalingAsker> askers, ScalingAsker asker, boolean pending) {
+        var next = EnumSet.noneOf(ScalingAsker.class);
 
-    @Contract
-    static void releaseHeld(Set<String> held, String subject, Consumer<String> resumed) {
-        if (held.remove(subject)) {
-            resumed.accept(subject);
+        next.addAll(askers);
+        if (pending) {
+            next.add(asker);
+        } else {
+            next.remove(asker);
         }
+
+        return Collections.unmodifiableSet(next);
+    }
+
+    @Contract
+    private void announceEdge(String subject, boolean wasClosed, boolean nowClosed) {
+        if (wasClosed && !nowClosed) {
+            raiseHeld(subject);
+        } else if (!wasClosed && nowClosed) {
+            raiseResumed(subject);
+        }
+    }
+
+    @Contract
+    private void raiseHeld(String subject) {
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.AUTO_HEAL_SCALING_HELD,
+                               subject,
+                               "Auto-heal is disabled: {} is not provisioned, drained or terminated on the cluster's own initiative; commit a new count, drain a node explicitly (aether nodes drain <nodeId>), or enable auto-heal (aether cluster topology auto-heal enable)",
+                               subject);
     }
 
     @Contract
@@ -1100,7 +1142,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                warningSink.get(),
                                OperatorWarningCode.AUTO_HEAL_SCALING_RESUMED,
                                subject,
-                               "Auto-heal is enabled again, or a new value was committed: {} is no longer held",
+                               "Auto-heal is enabled again, a new value was committed, or nothing is waiting to change any more: {} is no longer held",
                                subject);
     }
 
@@ -1211,6 +1253,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
         // #1111: the source this create goes to, kept so a drop of the replacement can look the instance up where it was (to be) made.
         replacementSources.put(newNodeId, sourceName);
+        // #2811: read for the source this create goes to, so the entry the reconciler keeps carries this source's ceiling and no other's.
+        var ceiling = ceilingOf(sourceName);
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                    roleInstanceType(intendedRole, sourceName),
                                                    intendedRole.value(),
@@ -1227,16 +1271,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                         intendedRole,
                                                                                         sourceName))
                                     .withSuccess(_ -> provisionedRoleIntents.put(newNodeId, intendedRole))
-                                    .map(ClusterTopologyManagerRecord::asDispatched)
+                                    .map(instance -> asDispatched(instance, ceiling))
                                     .fold(result -> completeProvision(result, sourceName))
                                     .withFailure(cause -> recordProvisioningFailure(sourceName.value(),
                                                                                     cause));
     }
 
     /// A refusal before any provider effect (source admission, incomplete inventory) is a deferral for the reconciler: nothing was
-    /// provisioned and the placeholder is removed. It is still a refused provision, so it is counted and logged through
-    /// [#recordProvisioningFailure] (WARN, last failure, circuit after 3): a permanent refusal (fleet limit reached) must not retry
-    /// invisibly on every reconcile tick for ever.
+    /// provisioned and the placeholder is removed. It is NOT counted as a provisioning failure: [#recordAdmissionDeferral] keeps a source
+    /// admission refusal as the last failure for diagnostics and paces it with its own refusal window ([#recordRefusal]), and tells the
+    /// operator once per run, so a permanent refusal (fleet limit reached) neither retries invisibly on every reconcile tick nor trips the
+    /// circuit. The exception is the wait for a complete inventory (`AdmissionFailure.INVENTORY_UNAVAILABLE`): [#recordInventoryWait] counts
+    /// it and holds it as the current wait; it is not the last failure, sets no refusal window, and the operator is told by a bounded log line,
+    /// not a warning. Any other failure stays in the failure channel and is counted by [#recordProvisioningFailure] (WARN, last failure,
+    /// circuit after 3).
     private Promise<ProvisionDisposition> completeProvision(Result<ProvisionDisposition> result,
                                                             SourceName sourceName) {
         return result.fold(cause -> provisionRefused(cause, sourceName), this::provisionAccepted);
@@ -1362,8 +1410,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// [InstanceInfo] is deliberately discarded HERE and recorded in [#recordProvisionedReplacement]
     /// instead — a disposition carries no provider identity, and inventing one would put a cloud id into
     /// a type the reconciler compares by kind.
-    private static ProvisionDisposition asDispatched(InstanceInfo instanceInfo) {
-        return ProvisionDisposition.dispatched();
+    private static ProvisionDisposition asDispatched(InstanceInfo instanceInfo, TimeSpan ceiling) {
+        return ProvisionDisposition.dispatched(ceiling);
     }
 
     /// #1049 — classify the provider's listing for the replacement minted as `nodeId`. One listing per
@@ -1422,21 +1470,39 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return ReplacementInstanceState.UNKNOWN;
     }
 
-    /// #1049 — the in-flight ceiling for a replacement of `intendedRole`, resolved through the SAME
-    /// [#cloudSourceFor] lookup as the replacement's zones, instance type and source name, so all four
-    /// ride one source profile. The ten-minute default applies when there is no committed TOML (the
-    /// bootstrap seed) or it is unparseable, or no cloud source backs the role (Docker / forge).
+    /// #1049, #2811 — the in-flight ceiling for a replacement of `departed`, read for the source [#healSource] resolves for it. It is the
+    /// bound of an entry while its create call is in flight and of an entry a new leader inherits; the ceiling an entry keeps once its
+    /// provision is dispatched is the one `provisionReplacement` read for the source it dispatched to ([ProvisionDisposition.Dispatched]),
+    /// never this second resolution. `replacement_ceiling` is source-level, so it is read from that source whether or not it still
+    /// declares the role ([#ceilingOf]); the ten-minute default applies when there is no committed TOML (the bootstrap seed), it is
+    /// unparseable, that source is not in it, or that source declares none (Docker / forge). When [#healSource] refuses (several sources
+    /// declare the role and the node carries none) the answer is the LONGEST ceiling over the sources declaring the role
+    /// ([#longestCeilingDeclaring]): the source the replacement goes to is not known, and the longest bound never abandons a replacement
+    /// of a declaring source before that source's ceiling.
     @Override
-    public TimeSpan replacementCeiling(NodeRole intendedRole) {
-        return persistedCloudSource(intendedRole).map(SourceProfile::effectiveReplacementCeiling)
-                                   .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
+    public TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed) {
+        return healSource(departed, intendedRole).fold(_ -> longestCeilingDeclaring(intendedRole), this::ceilingOf);
     }
 
-    /// The cloud [SourceProfile] backing `intendedRole` in the persisted cluster TOML, or empty when there
-    /// is no committed TOML (the bootstrap seed) or it is unparseable or no cloud source declares the role.
-    private Option<SourceProfile> persistedCloudSource(NodeRole intendedRole) {
+    /// The `replacement_ceiling` of the named source: source-level, so no role filter (a source that stopped declaring `core` is still the
+    /// one its in-flight replacement was dispatched to).
+    private TimeSpan ceilingOf(SourceName sourceName) {
         return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
-                            .flatMap(config -> cloudSourceFor(config, intendedRole));
+                            .flatMap(config -> Option.option(config.sources().get(sourceName.value())))
+                            .map(SourceProfile::effectiveReplacementCeiling)
+                            .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
+    }
+
+    private TimeSpan longestCeilingDeclaring(NodeRole intendedRole) {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> Option.from(config.sources()
+                                                                 .values()
+                                                                 .stream()
+                                                                 .filter(source -> source.roles()
+                                                                                         .containsKey(intendedRole))
+                                                                 .map(SourceProfile::effectiveReplacementCeiling)
+                                                                 .max(Comparator.comparingLong(TimeSpan::millis))))
+                            .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
     }
 
     /// #334 — auto-heal zone rotation. Mirrors the bootstrap rotation (`BootstrapPhaseProvision`):
@@ -1720,7 +1786,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     public synchronized void installCommunityPlacement(CommunityPlacementReconciler reconciler) {
         communityPlacement.set(Option.some(reconciler));
-        reconciler.holdAutonomy(this::scalingHeld);
+        reconciler.holdAutonomy(subject -> scalingHeld(subject, ScalingAsker.COMMUNITY, true));
         startWorkerTopologyPolling(TimeSpan.timeSpan(10).seconds());
     }
 
@@ -1939,17 +2005,23 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private Promise<Unit> applyWorkerDelta(AetherValue.TopologyEntry entry, List<InstanceInfo> actual, long epoch) {
-        if (entry.role().equals(NodeRole.WORKER.value()) && usesExplicitCommunities()) {
-            return Promise.unitPromise();
-        }
-
+        // A stale or inactive pass never asks: it must not write into a newer activation's answers (the leader change cleared them, and the
+        // evaluated pass of the new activation answers for itself).
         if (!active.get() || activationEpoch.get() != epoch) {
             return Promise.unitPromise();
         }
 
-        var delta = entry.count() - actual.size();
+        if (entry.role().equals(NodeRole.WORKER.value()) && usesExplicitCommunities()) {
+            return surrenderWorkerSubject(entry);
+        }
 
-        if (delta == 0 || scalingHeld(workerSubject(entry.sourceName(), entry.role()))) {
+        var delta = entry.count() - actual.size();
+        // Asked on every pass, delta zero included (#3358): a hold raised for a deficit or surplus that is gone closes here.
+        var held = scalingHeld(workerSubject(entry.sourceName(), entry.role()),
+                               ScalingAsker.WORKER_DELTA,
+                               delta != 0);
+
+        if (delta == 0 || held) {
             return Promise.unitPromise();
         }
 
@@ -1966,6 +2038,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return delta > 0
                ? provisionWorkers(entry, delta, epoch)
                : terminateSurplusWorkers(entry, actual, -delta, epoch);
+    }
+
+    /// With explicit communities the `worker` role is placed by the community path, so this pass owns no change to its subject: it answers
+    /// "nothing pending" (#3358), closing a hold raised before the communities were declared.
+    @Contract
+    private Promise<Unit> surrenderWorkerSubject(AetherValue.TopologyEntry entry) {
+        scalingHeld(workerSubject(entry.sourceName(), entry.role()),
+                    ScalingAsker.WORKER_DELTA,
+                    false);
+
+        return Promise.unitPromise();
     }
 
     private Promise<Unit> provisionWorkers(AetherValue.TopologyEntry entry, int deficit, long epoch) {
@@ -2200,9 +2283,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      .or(List.of());
     }
 
-    /// The cloud [SourceProfile] backing the given role: the first `CLOUD`-type source whose role
-    /// table declares the role. Only cloud replacements consume user-data, so non-cloud sources are
-    /// skipped (the empty result degrades the render to a no-op above).
+    /// The [SourceProfile] named `sourceName`, when its role table declares `role`: looked up by name, whatever its type, and
+    /// empty for a name the configuration does not hold or a source that does not declare the role.
     private static Option<SourceProfile> sourceFor(ClusterBootstrapConfig config,
                                                    SourceName sourceName,
                                                    NodeRole role) {
@@ -2210,6 +2292,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                               .containsKey(role));
     }
 
+    /// Whether SOME cloud source declares the role (the first by name, only its presence is read: [#nodeIsCloudBacked]).
     private static Option<SourceProfile> cloudSourceFor(ClusterBootstrapConfig config, NodeRole role) {
         return Option.from(config.sources()
                                  .values()
@@ -2334,6 +2417,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// #1543: a SURPLUS trim of a node a live replacement pairing protects is refused — the `LeaderReconciler`
     /// surplus drain picks a fresh ephemeral core first, which is exactly the +1 replacement. Non-surplus
     /// reasons are not gated by the pairing: a never-joined zombie (`JOIN_GRACE_REAP`) has no other reaper.
+    ///
+    /// #3626: the refusals are one table, ordered by specificity: the voter-handoff refusal (it resolves itself), then the
+    /// replacement pairing, then, at [#writeDrainCommand], the leader's own id. A leader that is still a voter is therefore told
+    /// that its retirement awaits the voter handoff, never told to stop its process. Nothing is recorded as pending, no DEPARTING
+    /// is raised and no grace-terminate backstop is scheduled for a refused target.
     @Override
     public synchronized Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
         if (!active.get() || retirementRefusal.get().apply(targetNodeId).isPresent()) {
@@ -2346,17 +2434,39 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                    .promise();
         }
 
-        var epoch = activationEpoch.get();
-
-        if (Option.option(pendingDrains.putIfAbsent(targetNodeId, epoch)).isPresent()) {
+        if (pendingDrains.containsKey(targetNodeId)) {
             return Promise.unitPromise();
         }
 
         log.info("CTM v2: drainNode requested (target={}, reason={}) — enqueuing DRAIN command", targetNodeId, reason);
-        drainCommandSink.accept(targetNodeId);
+
+        return writeDrainCommand(targetNodeId).map(_ -> trackPendingDrain(targetNodeId, reason))
+                                .async();
+    }
+
+    /// The pending entry is recorded only once the DRAIN command is written, so a refused target never reads as pending (a
+    /// second request is refused again, not short-cut as a duplicate). `drainNode`'s monitor makes the presence check and this
+    /// record one step: it is the only writer that adds to `pendingDrains`.
+    private Unit trackPendingDrain(NodeId targetNodeId, DrainReason reason) {
+        var epoch = activationEpoch.get();
+
+        pendingDrains.put(targetNodeId, epoch);
         scheduleGraceTerminate(targetNodeId, reason, epoch);
 
-        return Promise.success(unit());
+        return unit();
+    }
+
+    /// #3626: the ONE place a DRAIN command is written, by every writer ([#drainNode] and the two rejoin evictions), and the one
+    /// enforcer of the rule that this manager never drains the node it runs on: that node carries the DRAIN commands while it
+    /// leads. It is the last row of the refusal table, so a more specific refusal is told first.
+    private Result<Unit> writeDrainCommand(NodeId targetNodeId) {
+        if (targetNodeId.equals(observer.self().id())) {
+            return new LeaderCannotDrainItself(targetNodeId).result();
+        }
+
+        drainCommandSink.accept(targetNodeId);
+
+        return Result.unitResult();
     }
 
     @Override
@@ -3620,7 +3730,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var refused = cause instanceof NodeLifecycleManager.ReadmissionRefused;
 
         if (refused) {
-            drainCommandSink.accept(nodeId);
+            evict(nodeId);
         }
 
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
@@ -3650,7 +3760,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// A node a replacement retired joined again: its identity is superseded. It is refused and evicted (the DRAIN command, no reap), never admitted again, and the
     /// operator is told which node replaced it.
     private void refuseSupersededIdentity(NodeId nodeId, NodeLifecycleManager.RetiredIdentityRejoined retired) {
-        drainCommandSink.accept(nodeId);
+        evict(nodeId);
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
                                                               org.pragmatica.utility.warning.OperatorWarningCode.NODE_RETIRED_IDENTITY_REJOINED,
@@ -3658,6 +3768,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               "Node {} joined again but it was retired by a replacement ({}): its identity is superseded, so it is refused and is being drained; it is not admitted beside its replacement",
                                                               nodeId.id(),
                                                               retired.replacement());
+    }
+
+    /// A rejoin eviction writes the DRAIN command through [#writeDrainCommand]. FER: refused for this manager's own node, the
+    /// eviction degrades to the logged refusal; the operator warning beside it is still raised, and the node is drained by the
+    /// next leader once leadership moves. Nothing retries it here: a later join of the node runs the eviction again.
+    @Contract
+    private void evict(NodeId nodeId) {
+        writeDrainCommand(nodeId).onFailure(cause -> log.warn("CTM: the eviction of {} was not queued: {}",
+                                                              nodeId,
+                                                              cause.message()));
     }
 
     /// A drain was issued to the previous incarnation: it does not apply to the one that has just joined. The pending entry is removed, so the grace expiry
@@ -4154,6 +4274,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         pendingDrains.keySet().forEach(drainCommandClear);
         pendingDrains.clear();
         log.info("CTM: Deactivated");
+    }
+
+    /// The activation epoch while active, 0 otherwise, once `activate` has returned. Lock-free: never called under the
+    /// KVStore monitor, so it must not take this manager's monitor (`activate`/`deactivate` are synchronized). A bare-site
+    /// leftover reads visible between the `active` flip and the epoch bump in `activate`: the previous activation's epoch
+    /// is returned for that window.
+    @Override
+    public long drainTenure() {
+        return active.get()
+               ? activationEpoch.get()
+               : 0;
     }
 
     @Override

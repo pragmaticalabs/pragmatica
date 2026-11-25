@@ -21,6 +21,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.metrics.MinuteAggregate;
 import org.pragmatica.aether.api.BuildInfo;
 import org.pragmatica.aether.api.ClusterEvent;
+import org.pragmatica.aether.api.ClusterEventFilter;
 import org.pragmatica.aether.api.ManagementApiResponses.CertificateStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterEventView;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterInfo;
@@ -53,10 +54,8 @@ import org.pragmatica.aether.node.lifecycle.NodeState;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.http.routing.PathParameter;
@@ -119,7 +118,9 @@ public final class StatusRoutes implements RouteSource {
                                          .asJson(),
                          ManagementRoutes.<List<ClusterEventView>> route(ManagementRoute.EVENTS)
                                          .withQuery(QueryParameter.aLong("sinceEpoch"),
-                                                    QueryParameter.aLong("sinceSeq"))
+                                                    QueryParameter.aLong("sinceSeq"),
+                                                    QueryParameter.aString("code"),
+                                                    QueryParameter.aString("severity"))
                                          .to(this::buildEventsResponse)
                                          .asJson(),
                          ManagementRoutes.<CertificateStatusResponse> route(ManagementRoute.CERTIFICATES_LIST).toJson(this::buildCertificateStatusResponse),
@@ -135,13 +136,24 @@ public final class StatusRoutes implements RouteSource {
                                   ctx.isAuthenticated());
     }
 
+    /// #1631: the `code`/`severity` filter is parsed first, so an unknown severity answers 400 before any read, and is
+    /// applied to whatever the cursor selected.
     private Promise<List<ClusterEventView>> buildEventsResponse(Option<Long> sinceEpochParam,
-                                                                Option<Long> sinceSeqParam) {
+                                                                Option<Long> sinceSeqParam,
+                                                                Option<String> codeParam,
+                                                                Option<String> severityParam) {
+        return ClusterEventFilter.clusterEventFilter(codeParam, severityParam)
+                                 .async()
+                                 .mapWith(__ -> selectEvents(sinceEpochParam, sinceSeqParam),
+                                          ClusterEventFilter::apply)
+                                 .map(StatusRoutes::toEventViews);
+    }
+
+    private Promise<List<ClusterEvent>> selectEvents(Option<Long> sinceEpochParam, Option<Long> sinceSeqParam) {
         var aggregator = nodeSupplier.get().eventAggregator();
 
         if (sinceEpochParam.isEmpty() && sinceSeqParam.isEmpty()) {
-            return aggregator.events()
-                             .map(StatusRoutes::toEventViews);
+            return aggregator.events();
         }
         // BEHAVIOR CHANGE (review C5): the `since` cursor is now an Instant in the namespace-stream
         // events API. The legacy `?sinceSeq=` cursor (an opaque sequence number in rc1) is remapped
@@ -151,8 +163,7 @@ public final class StatusRoutes implements RouteSource {
         // timestamps. See CHANGELOG.
         var sinceMillis = sinceSeqParam.fold(() -> 0L, seq -> seq);
 
-        return aggregator.eventsSince(Instant.ofEpochMilli(sinceMillis))
-                         .map(StatusRoutes::toEventViews);
+        return aggregator.eventsSince(Instant.ofEpochMilli(sinceMillis));
     }
 
     /// Project the sealed {@link ClusterEvent} list onto the self-describing
@@ -274,10 +285,8 @@ public final class StatusRoutes implements RouteSource {
                                                                        .name()));
     }
 
-    /// E.6 (spec §7.2): route through `ManageableNode.clusterPhaseSupplier()` so the
-    /// status consumers observe the derived `ClusterPhaseView` value (post-E.8: always derived)
-    /// is on, and the legacy `ClusterPhaseKey` cache when it's off — a single migration
-    /// switch covers all consumers.
+    /// Routes through `ManageableNode.clusterPhaseSupplier()`, so status consumers observe the value derived by
+    /// `ClusterPhaseView`.
     private static String readClusterPhase(ManageableNode node) {
         return node.clusterPhaseSupplier()
                    .get()
@@ -422,7 +431,8 @@ public final class StatusRoutes implements RouteSource {
         return new LiveNodeEntry(nodeId.id(), address, role, swimAlive, reportedState);
     }
 
-    private NodesResponse buildNodesResponse() {
+    /// Package-visible for `StatusRoutesNodesListTest` (#3411: a node that hosts only slices is listed).
+    NodesResponse buildNodesResponse() {
         var node = nodeSupplier.get();
         var metrics = node.metricsCollector().allMetrics();
         var topology = node.topologyManager();
@@ -433,10 +443,9 @@ public final class StatusRoutes implements RouteSource {
         for (NodeId nodeId : metrics.keySet()) {
             nodeIds.add(nodeId.id());
         }
-
-        node.kvStore().forEach(SliceNodeKey.class,
-                               SliceNodeValue.class,
-                               (key, _) -> nodeIds.add(key.nodeId().id()));
+        // #3411: the engine's per-node slice rows (no engine writes a `SliceNodeKey` row), so a node hosting only slices is listed.
+        node.sliceRows().forEachRow(node.kvStore(),
+                                    (nodeId, _, _) -> nodeIds.add(nodeId.id()));
         var roleOverrides = collectRoleOverrides(node);
         var leaderId = node.leader().map(NodeId::id);
         var enrichedNodes = nodeIds.stream()

@@ -324,7 +324,7 @@ public interface HashService {
         public static Result<HashRequest> hashRequest(String algorithm, String input) {
             var validAlgorithm = Verify.ensure(algorithm, Verify.Is::present,
                                                HashError.missingAlgorithm())
-                                       .map(String::toLowerCase)
+                                       .map(alg -> alg.toLowerCase(Locale.ROOT))
                                        .flatMap(alg -> Verify.ensure(alg, SUPPORTED::contains,
                                                                      UNSUPPORTED_ALGORITHM.apply(alg)));
             var validInput = Verify.ensure(input, Verify.Is::present, HashError.missingInput());
@@ -370,7 +370,7 @@ public interface HashService {
 
     @SuppressWarnings("JBCT-EX-01")
     private static String digest(HashRequest request) throws Exception {
-        var md = java.security.MessageDigest.getInstance(request.algorithm().toUpperCase());
+        var md = java.security.MessageDigest.getInstance(request.algorithm().toUpperCase(Locale.ROOT));
         var bytes = md.digest(request.input().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return java.util.HexFormat.of().formatHex(bytes);
     }

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.slice;
 
 import java.util.Locale;
+import java.util.Map;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -13,6 +14,33 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class SliceStateTest {
+
+    /// Every constant with its expected `isServing` answer; a new `SliceState` fails the coverage test until it is listed.
+    private static final Map<SliceState, Boolean> SERVING = Map.ofEntries(Map.entry(SliceState.LOAD, false),
+                                                                          Map.entry(SliceState.LOADING, false),
+                                                                          Map.entry(SliceState.LOADED, false),
+                                                                          Map.entry(SliceState.ACTIVATE, false),
+                                                                          Map.entry(SliceState.ACTIVATING, true),
+                                                                          Map.entry(SliceState.ROUTING, true),
+                                                                          Map.entry(SliceState.ACTIVE, true),
+                                                                          Map.entry(SliceState.DEACTIVATE, false),
+                                                                          Map.entry(SliceState.DEACTIVATING, false),
+                                                                          Map.entry(SliceState.FAILED, false),
+                                                                          Map.entry(SliceState.UNLOAD, false),
+                                                                          Map.entry(SliceState.UNLOADING, false),
+                                                                          Map.entry(SliceState.UNKNOWN, false));
+
+    @Test
+    void isServing_isTrueOnlyForActivatingRoutingActive() {
+        SERVING.forEach((state, expected) -> assertThat(state.isServing()).as(state.name())
+                                                                          .isEqualTo(expected));
+    }
+
+    @Test
+    void isServing_classificationCoversEveryState() {
+        assertThat(SERVING.keySet()).as("a new SliceState must be classified in SERVING")
+                                    .containsExactlyInAnyOrder(SliceState.values());
+    }
 
     @Test
     void transitional_states_have_timeouts() {

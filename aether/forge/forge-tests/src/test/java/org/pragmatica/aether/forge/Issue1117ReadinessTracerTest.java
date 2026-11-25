@@ -2,19 +2,28 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
-import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault;
@@ -40,31 +49,23 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Option;
 
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.TreeMap;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.locks.LockSupport;
-import java.util.function.Function;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
-import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+
 
 /// #1117 tracer T (deployment-FSM rewrite, phase 3, design §13.1). The scenario is the
 /// [DeclarativeStreamConsumerTest] shape: a declarative stream-consumer blueprint on five nodes. The property is that
@@ -115,7 +116,6 @@ class Issue1117ReadinessTracerTest {
     private static final int BASE_APP_HTTP_PORT = 26200;
     private static final int NODES = 5;
     private static final int INSTANCES = 5;
-
     /// X in the tracer's assertions `[guess: 10 s]`.
     private static final Duration GRACE = Duration.ofSeconds(10);
     /// How long the run keeps sampling after the outcome reads SUCCEEDED: past the 30 s ROUTING timer and the 30 s
@@ -125,21 +125,22 @@ class Issue1117ReadinessTracerTest {
     private static final Duration SAMPLING_CAP = Duration.ofSeconds(240);
     private static final Duration SAMPLE_INTERVAL = Duration.ofMillis(200);
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
-
     private static final boolean INJECT = Boolean.parseBoolean(System.getProperty("t1117.inject", "true"));
+
     /// The global selector `-Daether.deployment.engine=fsm2` ([EngineSelector], which replaced this class's private `t1117.engine`) runs the
     /// cluster on the FSM2 engine; the default keeps the LEGACY mode the tracer was written for. EmberCluster already constructs its nodes with
     /// the selected engine; this flag only switches the assertions.
-    private static final boolean FSM2 = EngineSelector.fromSystemProperty()
-                                                      .or(DeploymentEngine.LEGACY) == DeploymentEngine.FSM2;
-    private static final String EXPECTED_WARNS = "/fsm2/expected-warns-t1117.txt";
+    private static final boolean FSM2 = EngineSelector.fromSystemProperty().or(DeploymentEngine.LEGACY) == DeploymentEngine.FSM2;
 
+    private static final String EXPECTED_WARNS = "/fsm2/expected-warns-t1117.txt";
     private static final String CONSUMER_SLICE = TestArtifacts.STREAM_CONSUMER_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:t1117-tracer:1.0.0";
     private static final String TARGET_STREAM = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "consumer-events");
+
     private static final List<String> STREAMS = List.of(TARGET_STREAM,
                                                         TestArtifacts.streamEngineKey(BLUEPRINT_ID, "order-events"),
                                                         TestArtifacts.streamEngineKey(BLUEPRINT_ID, "spread-events"));
+
     private static final String REMEDIATION_MARKER = " locally after ";
     private static final String CAPTURE_LOGGER = "org.pragmatica.aether.deployment.node.fsm";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
@@ -153,17 +154,24 @@ class Issue1117ReadinessTracerTest {
     @BeforeAll
     void setUp() {
         installCapture();
-        sensors = FSM2 ? Fsm2Sensors.capture() : null;
+        sensors = FSM2
+                  ? Fsm2Sensors.capture()
+                  : null;
         var configProvider = ConfigurationProvider.builder()
                                                   .withSystemProperties("aether.")
                                                   .withEnvironment("AETHER_")
                                                   .build();
+
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "t11", Option.some(configProvider));
         if (FSM2) {
             cluster.withDeploymentEngine(DeploymentEngine.FSM2);
         }
+
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-        await().atMost(WAIT_TIMEOUT).pollInterval(Duration.ofMillis(500)).until(() -> cluster.currentLeader().isPresent());
+        await().atMost(WAIT_TIMEOUT)
+             .pollInterval(Duration.ofMillis(500))
+             .until(() -> cluster.currentLeader()
+                                 .isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(Duration.ofMillis(500)).until(this::allNodesHealthy);
     }
 
@@ -173,12 +181,14 @@ class Issue1117ReadinessTracerTest {
         if (sensors != null) {
             sensors.close();
         }
+
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort());
 
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
             LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
+
         removeCapture();
     }
 
@@ -192,8 +202,14 @@ class Issue1117ReadinessTracerTest {
         } else {
             ActivationWriteFault.disarm();
         }
-        System.out.printf("T1117 engine=%s inject=%s target=%s (HRW owner of %s[0])%n", FSM2 ? "FSM2" : "LEGACY", INJECT, target.id(), TARGET_STREAM);
 
+        System.out.printf("T1117 engine=%s inject=%s target=%s (HRW owner of %s[0])%n",
+                          FSM2
+                          ? "FSM2"
+                          : "LEGACY",
+                          INJECT,
+                          target.id(),
+                          TARGET_STREAM);
         deployBlueprint();
         var samples = sample(artifact);
         var succeededAt = samples.stream().filter(Sample::succeeded).findFirst().map(Sample::atMs);
@@ -203,25 +219,26 @@ class Issue1117ReadinessTracerTest {
                           ActivationWriteFault.unansweredSubmissions(),
                           remediationLines.size());
         remediationLines.forEach(line -> System.out.println("T1117 remediation: " + line));
-
         assertSetup(succeededAt, target);
         assertTracer(samples, succeededAt.orElseThrow(), artifact, target);
     }
 
     // --- SETUP preconditions: a failure here is never a tracer verdict --------------------------------------
-
     private void assertSetup(Optional<Long> succeededAt, NodeId target) {
         if (succeededAt.isEmpty()) {
             fail("SETUP: the blueprint's outcome never read SUCCEEDED within %s", SAMPLING_CAP);
         }
+
         var unanswered = ActivationWriteFault.unansweredSubmissions();
 
         if (INJECT && unanswered == 0) {
             fail("SETUP: the fault was armed for %s but never fired; this run measured nothing", target.id());
         }
+
         if (!INJECT && unanswered != 0) {
             fail("SETUP: the control run left %d submissions unanswered; the fault was not disarmed", unanswered);
         }
+
         if (FSM2) {
             return;
         }
@@ -237,21 +254,29 @@ class Issue1117ReadinessTracerTest {
     }
 
     // --- the tracer's assertions ------------------------------------------------------------------------------
-
     private void assertTracer(List<Sample> samples, long succeededAt, Artifact artifact, NodeId target) {
         var late = lateNonActive(samples, succeededAt);
         var violations = new ArrayList<String>(late);
 
-        violations.addAll(FSM2 ? fsm2Sensors(target) : forcedTransitions(artifact));
-        violations.addAll(FSM2 ? notDeterminable() : lateAssignmentMoves(samples, succeededAt));
+        violations.addAll(FSM2
+                          ? fsm2Sensors(target)
+                          : forcedTransitions(artifact));
+        violations.addAll(FSM2
+                          ? notDeterminable()
+                          : lateAssignmentMoves(samples, succeededAt));
         violations.addAll(mapLocalDisagreement(samples, succeededAt));
-
         if (!FSM2 && INJECT) {
             assertLegacyReproducerStillRed(late);
+
             return;
         }
-        assertThat(violations).describedAs("T1117 tracer violations (engine=%s, inject=%s); timeline above", FSM2 ? "FSM2" : "LEGACY", INJECT)
-                              .isEmpty();
+
+        assertThat(violations).describedAs("T1117 tracer violations (engine=%s, inject=%s); timeline above",
+                                           FSM2
+                                           ? "FSM2"
+                                           : "LEGACY",
+                                           INJECT)
+                  .isEmpty();
     }
 
     /// #1117 is the LEGACY engine's defect and this tracer is its reproducer: with the fault armed, LEGACY is RED BY DESIGN
@@ -262,9 +287,9 @@ class Issue1117ReadinessTracerTest {
     /// fixed, or the fault no longer reaches the write): drop the tripwire and let LEGACY+inject use the real assertion.
     private static void assertLegacyReproducerStillRed(List<String> late) {
         assertThat(late).describedAs("#1117 no longer reproduces on LEGACY with the fault armed (no instance stayed non-ACTIVE past X after "
-                                     + "SUCCEEDED); the tracer's LEGACY+inject arm is a tripwire that expects the defect. Remove the "
-                                     + "tripwire and assert 'no violations' for this arm")
-                        .isNotEmpty();
+                                    + "SUCCEEDED); the tracer's LEGACY+inject arm is a tripwire that expects the defect. Remove the "
+                                    + "tripwire and assert 'no violations' for this arm")
+                  .isNotEmpty();
     }
 
     /// (c) under FSM2: the stream-consumer reader is not FSM2-fed until phase 4a, so no assignment exists to move. Reported, not faked; not a
@@ -281,10 +306,14 @@ class Issue1117ReadinessTracerTest {
         var violations = new ArrayList<String>();
 
         for (var node : nodeIds()) {
-            lastNonActive(samples, sample -> sample.map().get(node)).filter(at -> at - succeededAt > GRACE.toMillis())
-                                                                    .onPresent(at -> violations.add(lateLine("map", node, at - succeededAt)));
-            lastNonActive(samples, sample -> sample.local().get(node)).filter(at -> at - succeededAt > GRACE.toMillis())
-                                                                      .onPresent(at -> violations.add(lateLine("local", node, at - succeededAt)));
+            lastNonActive(samples,
+                          sample -> sample.map()
+                                          .get(node)).filter(at -> at - succeededAt > GRACE.toMillis())
+                         .onPresent(at -> violations.add(lateLine("map", node, at - succeededAt)));
+            lastNonActive(samples,
+                          sample -> sample.local()
+                                          .get(node)).filter(at -> at - succeededAt > GRACE.toMillis())
+                         .onPresent(at -> violations.add(lateLine("local", node, at - succeededAt)));
         }
 
         return violations;
@@ -292,13 +321,13 @@ class Issue1117ReadinessTracerTest {
 
     private static String lateLine(String view, String node, long afterMs) {
         return "T(a) %s: %s instance still non-ACTIVE %.1f s after the outcome read SUCCEEDED (X = %d s)".formatted(node,
-                                                                                                                   view,
-                                                                                                                   afterMs / 1000.0,
-                                                                                                                   GRACE.toSeconds());
+                                                                                                                    view,
+                                                                                                                    afterMs / 1000.0,
+                                                                                                                    GRACE.toSeconds());
     }
 
     private static Option<Long> lastNonActive(List<Sample> samples, Function<Sample, SliceState> view) {
-        var last = Option.<Long>none();
+        var last = Option.<Long> none();
 
         for (var sample : samples) {
             if (view.apply(sample) != SliceState.ACTIVE) {
@@ -331,9 +360,9 @@ class Issue1117ReadinessTracerTest {
 
                 if (previous != null && !previous.equals(entry.getValue()) && afterMs > GRACE.toMillis()) {
                     violations.add("T(c) %s moved %s -> %s at %.1f s after the outcome read SUCCEEDED".formatted(entry.getKey(),
-                                                                                                                  previous,
-                                                                                                                  entry.getValue(),
-                                                                                                                  afterMs / 1000.0));
+                                                                                                                 previous,
+                                                                                                                 entry.getValue(),
+                                                                                                                 afterMs / 1000.0));
                 }
             }
         }
@@ -349,11 +378,14 @@ class Issue1117ReadinessTracerTest {
 
         for (var node : nodeIds()) {
             if (last.map().get(node) != SliceState.ACTIVE || last.local().get(node) != SliceState.ACTIVE) {
-                violations.add("T(d) %s at the end: map=%s local=%s".formatted(node, last.map().get(node), last.local().get(node)));
+                violations.add("T(d) %s at the end: map=%s local=%s".formatted(node,
+                                                                               last.map().get(node),
+                                                                               last.local().get(node)));
             }
+
             longestDisagreement(samples, node).filter(span -> span > GRACE.toMillis())
-                                              .onPresent(span -> violations.add("T(d) %s map and local disagreed for %.1f s".formatted(node,
-                                                                                                                                      span / 1000.0)));
+                               .onPresent(span -> violations.add("T(d) %s map and local disagreed for %.1f s".formatted(node,
+                                                                                                                        span / 1000.0)));
         }
 
         return violations;
@@ -361,7 +393,7 @@ class Issue1117ReadinessTracerTest {
 
     private static Option<Long> longestDisagreement(List<Sample> samples, String node) {
         var longest = 0L;
-        var since = Option.<Long>none();
+        var since = Option.<Long> none();
 
         for (var sample : samples) {
             var disagree = sample.map().get(node) != sample.local().get(node);
@@ -369,13 +401,17 @@ class Issue1117ReadinessTracerTest {
             if (disagree && since.isEmpty()) {
                 since = Option.some(sample.atMs());
             }
+
             if (!disagree && since.isPresent()) {
-                longest = Math.max(longest, sample.atMs() - since.unwrap());
+                longest = Math.max(longest,
+                                   sample.atMs() - since.unwrap());
                 since = Option.none();
             }
         }
+
         if (since.isPresent()) {
-            longest = Math.max(longest, samples.getLast().atMs() - since.unwrap());
+            longest = Math.max(longest,
+                               samples.getLast().atMs() - since.unwrap());
         }
 
         return longest > 0
@@ -384,7 +420,6 @@ class Issue1117ReadinessTracerTest {
     }
 
     // --- sampling ---------------------------------------------------------------------------------------------
-
     /// One observation: ms since the deploy, whether the outcome reads SUCCEEDED, the leader's deployment map, every
     /// node's local FSM view, and the committed consumer assignments of this blueprint's streams.
     private record Sample(long atMs,
@@ -403,7 +438,9 @@ class Issue1117ReadinessTracerTest {
         }
 
         boolean sameObservation(Sample other) {
-            return succeeded == other.succeeded && map.equals(other.map) && local.equals(other.local)
+            return succeeded == other.succeeded
+                   && map.equals(other.map)
+                   && local.equals(other.local)
                    && assignments.equals(other.assignments);
         }
 
@@ -412,7 +449,8 @@ class Issue1117ReadinessTracerTest {
                          .stream()
                          .map(entry -> entry.getKey() + ":" + (entry.getValue() == null
                                                                ? "-"
-                                                               : entry.getValue().name()))
+                                                               : entry.getValue()
+                                                                      .name()))
                          .collect(Collectors.joining(",", "{", "}"));
         }
     }
@@ -420,7 +458,7 @@ class Issue1117ReadinessTracerTest {
     private List<Sample> sample(Artifact artifact) {
         var samples = new ArrayList<Sample>();
         var start = System.nanoTime();
-        var stopAt = Option.<Long>none();
+        var stopAt = Option.<Long> none();
 
         while (true) {
             var atMs = (System.nanoTime() - start) / 1_000_000;
@@ -430,28 +468,31 @@ class Issue1117ReadinessTracerTest {
             if (sample.succeeded() && stopAt.isEmpty()) {
                 stopAt = Option.some(atMs + OBSERVE_AFTER_SUCCEEDED.toMillis());
             }
+
             var observedEnough = stopAt.map(bound -> atMs >= bound).or(false) && allActiveAndAgreeing(sample);
 
             if (observedEnough || atMs >= SAMPLING_CAP.toMillis()) {
                 return samples;
             }
+
             LockSupport.parkNanos(SAMPLE_INTERVAL.toNanos());
         }
     }
 
     private boolean allActiveAndAgreeing(Sample sample) {
         return nodeIds().stream()
-                        .allMatch(node -> sample.map().get(node) == SliceState.ACTIVE
-                                          && sample.local().get(node) == SliceState.ACTIVE);
+                      .allMatch(node -> sample.map()
+                                              .get(node) == SliceState.ACTIVE && sample.local()
+                                                                                       .get(node) == SliceState.ACTIVE);
     }
 
     private boolean succeeded() {
         var id = BlueprintId.blueprintId(BLUEPRINT_ID).unwrap();
 
         return anyNode().blueprintService()
-                        .outcome(id)
-                        .map(outcome -> outcome.status() == DeploymentOutcomeStatus.SUCCEEDED)
-                        .or(false);
+                      .outcome(id)
+                      .map(outcome -> outcome.status() == DeploymentOutcomeStatus.SUCCEEDED)
+                      .or(false);
     }
 
     /// The cluster deployment map as the current leader mirrors it.
@@ -463,9 +504,7 @@ class Issue1117ReadinessTracerTest {
         var states = new TreeMap<String, SliceState>();
 
         nodeIds().forEach(node -> states.put(node, null));
-        leaderNode().deploymentMap()
-                    .byArtifact(artifact)
-                    .forEach((node, state) -> states.put(node.id(), state));
+        leaderNode().deploymentMap().byArtifact(artifact).forEach((node, state) -> states.put(node.id(), state));
 
         return states;
     }
@@ -479,14 +518,14 @@ class Issue1117ReadinessTracerTest {
         var states = new TreeMap<String, SliceState>();
 
         for (var node : cluster.allNodes()) {
-            states.put(node.self().id(), localState(node, artifact));
+            states.put(node.self().id(),
+                       localState(node, artifact));
         }
 
         return states;
     }
 
     // --- FSM2: the committed rows, the serving surface, the sensors -----------------------------------------------------
-
     /// The leader's committed `SliceObservedKey` row of each node for the artifact.
     private Map<String, SliceState> committedRows(Artifact artifact) {
         var states = new TreeMap<String, SliceState>();
@@ -494,10 +533,13 @@ class Issue1117ReadinessTracerTest {
 
         for (var node : cluster.allNodes()) {
             states.put(node.self().id(),
-                       store.getTyped(SliceObservedKey.sliceObservedKey(node.self(), artifact), SliceObservedValue.class)
+                       store.getTyped(SliceObservedKey.sliceObservedKey(node.self(),
+                                                                        artifact),
+                                      SliceObservedValue.class)
                             .map(row -> SliceState.valueOf(row.state() == AetherValue.SliceObservedState.UNLOADED
                                                            ? "UNLOADING"
-                                                           : row.state().name()))
+                                                           : row.state()
+                                                                .name()))
                             .or((SliceState) null));
         }
 
@@ -511,7 +553,8 @@ class Issue1117ReadinessTracerTest {
         var states = new TreeMap<String, SliceState>();
 
         for (var node : cluster.allNodes()) {
-            states.put(node.self().id(), servingSurface(node, artifact));
+            states.put(node.self().id(),
+                       servingSurface(node, artifact));
         }
 
         return states;
@@ -520,7 +563,8 @@ class Issue1117ReadinessTracerTest {
     private static boolean routesPublished(AetherNode node, Artifact artifact) {
         return node.appHttpServer()
                    .httpRoutePublisher()
-                   .map(publisher -> publisher.getSliceRouter(artifact).isPresent())
+                   .map(publisher -> publisher.getSliceRouter(artifact)
+                                              .isPresent())
                    .or(false);
     }
 
@@ -531,10 +575,14 @@ class Issue1117ReadinessTracerTest {
 
         return node.deploymentWiring()
                    .system()
-                   .flatMap(system -> system.nodeInterpreter().model().instance(artifact).observed())
+                   .flatMap(system -> system.nodeInterpreter()
+                                            .model()
+                                            .instance(artifact)
+                                            .observed())
                    .map(row -> SliceState.valueOf(row.state() == AetherValue.SliceObservedState.UNLOADED
                                                   ? "UNLOADING"
-                                                  : row.state().name()))
+                                                  : row.state()
+                                                       .name()))
                    .or((SliceState) null);
     }
 
@@ -546,10 +594,15 @@ class Issue1117ReadinessTracerTest {
         var warnLines = sensors.warnLines();
         var targetNode = cluster.getNode(target.id()).unwrap();
 
-        System.out.printf("T1117 FSM2 WARN/ERROR lines=%d, sensor lines=%d%n", warnLines.size(), sensors.sensorLines(target.id(), "write-").size());
+        System.out.printf("T1117 FSM2 WARN/ERROR lines=%d, sensor lines=%d%n",
+                          warnLines.size(),
+                          sensors.sensorLines(target.id(), "write-").size());
         warnLines.forEach(line -> System.out.println("T1117 warn: " + line));
         warnLines.stream()
-                 .filter(line -> expectations.stream().filter(e -> e.kind().equals("warn")).noneMatch(e -> e.matches(line)))
+                 .filter(line -> expectations.stream()
+                                             .filter(e -> e.kind()
+                                                           .equals("warn"))
+                                             .noneMatch(e -> e.matches(line)))
                  .forEach(line -> violations.add("T(b) WARN not on the expected list: " + line));
         for (var entry : expectations) {
             var count = switch (entry.kind()) {
@@ -562,7 +615,14 @@ class Issue1117ReadinessTracerTest {
                          : entry.admits(count);
 
             if (!admits) {
-                violations.add("T(b) %s %s: %d, expected %d..%d%s".formatted(entry.kind(), entry.name(), count, entry.min(), entry.max(), INJECT ? "" : " (control: silent)"));
+                violations.add("T(b) %s %s: %d, expected %d..%d%s".formatted(entry.kind(),
+                                                                             entry.name(),
+                                                                             count,
+                                                                             entry.min(),
+                                                                             entry.max(),
+                                                                             INJECT
+                                                                             ? ""
+                                                                             : " (control: silent)"));
             }
         }
 
@@ -572,14 +632,16 @@ class Issue1117ReadinessTracerTest {
     private static SliceState localState(AetherNode node, Artifact artifact) {
         var current = nodeDeploymentContext(node).fsm().current();
 
-        if (!(current instanceof NodeDeploymentState.Active active)) {
+        if (! (current instanceof NodeDeploymentState.Active active)) {
             return null;
         }
 
         return active.deployments()
                      .values()
                      .stream()
-                     .filter(deployment -> deployment.key().artifact().equals(artifact))
+                     .filter(deployment -> deployment.key()
+                                                     .artifact()
+                                                     .equals(artifact))
                      .map(NodeDeploymentManager.SliceDeployment::state)
                      .findFirst()
                      .orElse(null);
@@ -598,7 +660,8 @@ class Issue1117ReadinessTracerTest {
 
             return (NodeDeploymentContext) ctxField.get(manager);
         } catch (ReflectiveOperationException e) {
-            throw new AssertionError("SETUP: cannot reach the node-deployment FSM of " + node.self().id(), e);
+            throw new AssertionError("SETUP: cannot reach the node-deployment FSM of " + node.self().id(),
+                                     e);
         }
     }
 
@@ -606,35 +669,39 @@ class Issue1117ReadinessTracerTest {
         var assigned = new TreeMap<String, String>();
 
         leaderNode().kvStore()
-                    .forEach(ConsumerAssignmentKey.class,
-                             ConsumerAssignmentValue.class,
-                             (key, value) -> recordAssignment(assigned, key, value));
+                  .forEach(ConsumerAssignmentKey.class,
+                           ConsumerAssignmentValue.class,
+                           (key, value) -> recordAssignment(assigned, key, value));
 
         return assigned;
     }
 
-    private static void recordAssignment(Map<String, String> assigned, ConsumerAssignmentKey key, ConsumerAssignmentValue value) {
+    private static void recordAssignment(Map<String, String> assigned,
+                                         ConsumerAssignmentKey key,
+                                         ConsumerAssignmentValue value) {
         var alias = STREAMS.indexOf(key.streamName());
 
         if (alias >= 0) {
-            assigned.put(key.streamName().split(":")[1] + "[" + key.partitionIndex() + "]", value.assignee().id());
+            assigned.put(key.streamName().split(":") [1] + "[" + key.partitionIndex() + "]",
+                         value.assignee().id());
         }
     }
 
     private void printTimeline(List<Sample> samples) {
-        var previous = Option.<Sample>none();
+        var previous = Option.<Sample> none();
 
         for (var sample : samples) {
             if (previous.map(prior -> !prior.sameObservation(sample)).or(true)) {
                 System.out.println("T1117 " + sample.render());
             }
+
             previous = Option.some(sample);
         }
+
         System.out.println("T1117 last " + samples.getLast().render());
     }
 
     // --- target selection and topology -------------------------------------------------------------------------
-
     /// The HRW owner of `(stream, partition)` over the five members, as a fresh cluster with no committed owner
     /// computes it ([ReplicaPlacement#place]). [#assertSetup] checks it against the owner the node reports.
     private NodeId partitionOwner(String stream, int partition) {
@@ -647,12 +714,14 @@ class Issue1117ReadinessTracerTest {
 
     private String reportedOwner(String stream, int partition) {
         var row = Pattern.compile("\\{\"partition\":" + partition
-                                                  + ",(?:\"consumerNode\":\"[^\"]*\",)?\"ownerNode\":\"([^\"]*)\"\\}");
+                                 + ",(?:\"consumerNode\":\"[^\"]*\",)?\"ownerNode\":\"([^\"]*)\"\\}");
 
         return cluster.status()
                       .nodes()
                       .stream()
-                      .map(node -> consumerFragment(httpGet(node.mgmtPort(), "/api/v1/streams/declarative-consumers"), stream))
+                      .map(node -> consumerFragment(httpGet(node.mgmtPort(),
+                                                            "/api/v1/streams/declarative-consumers"),
+                                                    stream))
                       .map(row::matcher)
                       .filter(Matcher::find)
                       .map(matcher -> matcher.group(1))
@@ -662,17 +731,23 @@ class Issue1117ReadinessTracerTest {
 
     private static String consumerFragment(String body, String stream) {
         return Arrays.stream(body.split("\\{\"stream\":\""))
-                               .filter(fragment -> fragment.startsWith(stream + "\""))
-                               .findFirst()
-                               .orElse("");
+                     .filter(fragment -> fragment.startsWith(stream + "\""))
+                     .findFirst()
+                     .orElse("");
     }
 
     private List<String> nodeIds() {
-        return cluster.allNodes().stream().map(node -> node.self().id()).sorted().toList();
+        return cluster.allNodes()
+                      .stream()
+                      .map(node -> node.self()
+                                       .id())
+                      .sorted()
+                      .toList();
     }
 
     private AetherNode anyNode() {
-        return cluster.allNodes().getFirst();
+        return cluster.allNodes()
+                      .getFirst();
     }
 
     private AetherNode leaderNode() {
@@ -685,7 +760,8 @@ class Issue1117ReadinessTracerTest {
         return cluster.status()
                       .nodes()
                       .stream()
-                      .allMatch(node -> httpGet(node.mgmtPort(), "/api/v1/health").contains("\"quorum\":true"));
+                      .allMatch(node -> httpGet(node.mgmtPort(),
+                                                "/api/v1/health").contains("\"quorum\":true"));
     }
 
     private void deployBlueprint() {
@@ -706,12 +782,11 @@ class Issue1117ReadinessTracerTest {
         var response = send(request);
 
         assertThat(response).describedAs("SETUP: declarative-consumer blueprint deployment")
-                            .doesNotContain("\"error\"")
-                            .contains("\"status\":\"applied\"");
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     // --- log capture for (b) -------------------------------------------------------------------------------------
-
     /// Captures the remediation WARN lines of the node-deployment FSM package. The shared `LogCapture` installs that logger's config at
     /// the capture threshold, the inherited level raised to WARN, so for the life of this class the package's INFO and DEBUG lines are
     /// suppressed: they reach neither the capture nor the run log (under forge-core's log4j2.xml the package inherits the root's INFO).
@@ -743,11 +818,11 @@ class Issue1117ReadinessTracerTest {
         if (capture == null) {
             return;
         }
+
         capture.close();
     }
 
     // --- HTTP ----------------------------------------------------------------------------------------------------
-
     private String httpGet(int port, String path) {
         return send(HttpRequest.newBuilder()
                                .uri(URI.create("http://localhost:" + port + path))

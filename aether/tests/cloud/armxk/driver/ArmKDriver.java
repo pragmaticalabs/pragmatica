@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 
 
@@ -80,7 +81,7 @@ public final class ArmKDriver {
                           + ",\"measureEndMs\":" + measureTo
                           + ",\"measureSeconds\":" + measureMs / 1000
                           + ",\"ok\":" + ok
-                          + ",\"opsPerSec\":" + String.format("%.2f", ok * 1000.0 / measureMs)
+                          + ",\"opsPerSec\":" + String.format(Locale.ROOT, "%.2f", ok * 1000.0 / measureMs)
                           + ",\"errors\":{\"http\":" + http
                           + ",\"timeout\":" + timeout
                           + ",\"io\":" + io
@@ -102,7 +103,7 @@ public final class ArmKDriver {
 
         var index = Math.min(sorted.length - 1, (int) Math.ceil(q * sorted.length) - 1);
 
-        return String.format("%.3f", sorted[Math.max(0, index)] / 1000.0);
+        return String.format(Locale.ROOT, "%.3f", sorted[Math.max(0, index)] / 1000.0);
     }
 
     private static final class Worker implements Runnable {
@@ -141,7 +142,7 @@ public final class ArmKDriver {
             while (System.currentTimeMillis() < measureTo) {
                 var n = serial.incrementAndGet();
                 var payload = "{\"key\":\"" + prefix + (n % KEYS)
-                            + "\",\"value\":\"v-" + String.format("%012d", n)
+                            + "\",\"value\":\"v-" + String.format(Locale.ROOT, "%012d", n)
                             + "\"}";
                 var request = HttpRequest.newBuilder(url)
                                          .timeout(Duration.ofSeconds(10))

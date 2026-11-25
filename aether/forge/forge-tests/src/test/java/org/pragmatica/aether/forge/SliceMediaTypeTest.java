@@ -2,28 +2,29 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.aether.ember.EmberCluster;
+
+import org.awaitility.core.ConditionTimeoutException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.awaitility.core.ConditionTimeoutException;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
 
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
-import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// Proves the #339 `produces` media types reach the wire: a deployed slice route declared with
 /// `produces = "text/csv"` returns the `text/csv` Content-Type, and a route declared with
@@ -56,11 +57,8 @@ class SliceMediaTypeTest {
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "smt");
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
         deployEchoSlice();
     }
 
@@ -90,11 +88,7 @@ class SliceMediaTypeTest {
     @Test
     void binaryRoute_returnsVerbatimBytesUnderOctetStream() {
         var port = appPort();
-        var expected = new byte[]{(byte) BINARY_SEED,
-                                  (byte) (BINARY_SEED + 1),
-                                  (byte) (BINARY_SEED + 2),
-                                  (byte) (BINARY_SEED + 3)};
-
+        var expected = new byte[]{(byte) BINARY_SEED, (byte)(BINARY_SEED + 1), (byte)(BINARY_SEED + 2), (byte)(BINARY_SEED + 3)};
         var response = http.sendBytes(getRequest(port, BINARY_PATH))
                            .await()
                            .onFailure(cause -> {
@@ -111,11 +105,10 @@ class SliceMediaTypeTest {
 
     private void deployEchoSlice() {
         var deployResponse = deploy(TEST_ARTIFACT);
-        assertThat(deployResponse)
-            .describedAs("Deployment response")
-            .doesNotContain("\"error\"")
-            .contains("\"status\":\"applied\"");
 
+        assertThat(deployResponse).describedAs("Deployment response")
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
         awaitRoutesServing();
     }
 
@@ -125,16 +118,19 @@ class SliceMediaTypeTest {
     private void awaitRoutesServing() {
         try {
             await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(() -> {
-                       if (sliceHasFailed()) {
-                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
-                       }
-                   })
-                   .until(this::routesServe);
+                 .pollInterval(POLL_INTERVAL)
+                 .failFast(() -> {
+                               if (sliceHasFailed()) {
+                                   throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
+                               }
+                           })
+                 .until(this::routesServe);
         } catch (ConditionTimeoutException e) {
-            throw new AssertionError("Routes " + CSV_PATH + " and " + BINARY_PATH + " did not answer 200 within "
-                                     + WAIT_TIMEOUT + "; last probe: " + lastProbe, e);
+            throw new AssertionError("Routes " + CSV_PATH
+                                    + " and " + BINARY_PATH
+                                    + " did not answer 200 within " + WAIT_TIMEOUT
+                                    + "; last probe: " + lastProbe,
+                                     e);
         }
     }
 
@@ -143,24 +139,26 @@ class SliceMediaTypeTest {
 
         if (ports.isEmpty()) {
             lastProbe = "no available app HTTP port";
+
             return false;
         }
+
         servingPort = ports.getFirst();
+
         return answers200(servingPort, CSV_PATH) && answers200(servingPort, BINARY_PATH);
     }
 
     private boolean answers200(int port, String path) {
-        var status = http.sendBytes(getRequest(port, path))
-                         .await()
-                         .map(HttpResult::statusCode)
-                         .or(-1);
+        var status = http.sendBytes(getRequest(port, path)).await().map(HttpResult::statusCode).or(-1);
 
         lastProbe = "GET " + path + " on port " + port + " -> " + status;
+
         return status == 200;
     }
 
     private int appPort() {
         assertThat(servingPort).describedAs("app HTTP port that served both routes").isPositive();
+
         return servingPort;
     }
 
@@ -181,20 +179,24 @@ class SliceMediaTypeTest {
             instances = 3
             """.formatted(BLUEPRINT_ID, artifact);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+
         return postBlueprintWithRetry(leaderPort, blueprint);
     }
 
     private String postBlueprintWithRetry(int port, String body) {
         String lastResponse = null;
+
         for (int attempt = 1; attempt <= 3; attempt++) {
             lastResponse = httpRequestBlueprint(port, body);
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;
             }
+
             if (attempt < 3) {
                 sleepQuietly();
             }
         }
+
         return lastResponse;
     }
 
@@ -213,6 +215,7 @@ class SliceMediaTypeTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -222,7 +225,9 @@ class SliceMediaTypeTest {
     private boolean sliceHasFailed() {
         return cluster.slicesStatus()
                       .stream()
-                      .anyMatch(s -> s.artifact().equals(TEST_ARTIFACT) && s.state().equals("FAILED"));
+                      .anyMatch(s -> s.artifact()
+                                      .equals(TEST_ARTIFACT) && s.state()
+                                                                 .equals("FAILED"));
     }
 
     private String getSlices() {
@@ -237,6 +242,9 @@ class SliceMediaTypeTest {
     }
 
     private int anyMgmtPort() {
-        return cluster.status().nodes().getFirst().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .getFirst()
+                      .mgmtPort();
     }
 }

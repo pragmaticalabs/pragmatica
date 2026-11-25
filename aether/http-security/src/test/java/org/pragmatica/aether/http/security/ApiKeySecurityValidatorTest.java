@@ -7,8 +7,11 @@ package org.pragmatica.aether.http.security;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.Role;
+import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.lang.Option;
 
 import java.util.List;
 import java.util.Map;
@@ -240,6 +243,57 @@ class ApiKeySecurityValidatorTest {
         validator.validate(request, SecurityPolicy.unspecified())
                  .onSuccessRun(() -> fail("Expected failure — unresolved policy must deny, not grant"))
                  .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+    }
+
+    @Test
+    void authenticate_mintsGrant_forAdminAuthorizationRoleKey() {
+        assertThat(grantFor(ApiKeyEntry.apiKeyEntry("admin-svc", Set.of("service"), "ADMIN")).isPresent())
+            .as("an ADMIN authorization role mints, whatever the roles").isTrue();
+    }
+
+    @Test
+    void authenticate_mintsNone_forOperatorKey() {
+        assertThat(grantFor(ApiKeyEntry.apiKeyEntry("operator-svc", Set.of("service"), "OPERATOR")).isPresent())
+            .as("an OPERATOR key mints no grant").isFalse();
+    }
+
+    @Test
+    void authenticate_mintsNone_forOperatorKeyCarryingAdminRole() {
+        assertThat(grantFor(ApiKeyEntry.apiKeyEntry("operator-svc", Set.of("admin"), "OPERATOR")).isPresent())
+            .as("roles() never mints: only the authorization role does").isFalse();
+    }
+
+    @Test
+    void validate_matchesAuthenticateContext_forAdminKey() {
+        var validator = HttpAuthenticator.apiKeyValidator(Map.of(
+            VALID_KEY, ApiKeyEntry.apiKeyEntry("admin-svc", Set.of("service"), "ADMIN")));
+        var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
+
+        assertThat(validator.validate(request, SecurityPolicy.authenticated()).map(SecurityContext::authorizationRole)
+                            .or(AuthorizationRole.VIEWER))
+            .isEqualTo(AuthorizationRole.ADMIN);
+    }
+
+    @Test
+    void authenticate_mintsNone_onAnonymousPaths_whileAnAdminKeyIsConfigured() {
+        var validator = HttpAuthenticator.apiKeyValidator(Map.of(
+            VALID_KEY, ApiKeyEntry.apiKeyEntry("admin-svc", Set.of("service"), "ADMIN")));
+        var anonymous = createRequest(Map.of());
+
+        assertThat(validator.authenticate(anonymous, SecurityPolicy.publicRoute()).map(Authenticated::grant).or(Option.none()).isPresent())
+            .as("the Public path is anonymous: it mints no grant").isFalse();
+        assertThat(validator.authenticate(anonymous, SecurityPolicy.optional()).map(Authenticated::grant).or(Option.none()).isPresent())
+            .as("the OptionalAuth path with no key is anonymous: it mints no grant").isFalse();
+    }
+
+    private Option<AdminGrant> grantFor(ApiKeyEntry entry) {
+        var validator = HttpAuthenticator.apiKeyValidator(Map.of(VALID_KEY, entry));
+        var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
+
+        return validator.authenticate(request, SecurityPolicy.authenticated())
+                        .onFailureRun(() -> fail("Expected success"))
+                        .map(Authenticated::grant)
+                        .or(Option.none());
     }
 
     private HttpRequestContext createRequest(Map<String, List<String>> headers) {

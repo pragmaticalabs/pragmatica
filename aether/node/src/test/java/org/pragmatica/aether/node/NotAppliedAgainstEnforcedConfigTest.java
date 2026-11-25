@@ -57,8 +57,13 @@ class NotAppliedAgainstEnforcedConfigTest {
 
         events.clear();
         commit(config(4, 5, 1, 1L));
-        assertThat(notApplied()).as("adopted: RF raise with a CF lowering").isEmpty();
-        assertThat(manager.confirmationFactorFor("orders")).as("adopted").isEqualTo(1);
+        assertThat(notApplied()).as("not adopted: an RF raise with a CF lowering is weaker durability").hasSize(1);
+        assertThat(manager.confirmationFactorFor("orders")).as("still enforced").isEqualTo(3);
+
+        events.clear();
+        commit(config(4, 5, 3, 1L));
+        assertThat(notApplied()).as("adopted: RF raise at unchanged CF").isEmpty();
+        assertThat(manager.confirmationFactorFor("orders")).as("adopted").isEqualTo(3);
 
         events.clear();
         commit(config(4, 3, 1, 9L));

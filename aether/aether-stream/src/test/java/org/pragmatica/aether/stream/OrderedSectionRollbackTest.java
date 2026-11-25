@@ -33,6 +33,8 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 class OrderedSectionRollbackTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
+    /// The frozen-ring fixture's declared hot data region: one floor segment, which is also today's first region at any retention bytes.
+    private static final long FLOOR_SEGMENT_BYTES = 256 * 1024L;
     private static final Epoch E1 = Epoch.epoch(0, 1, 0);
 
     /// NT-27: a failed continuation of an ordered batch leaves the head where it was, and the next append takes the withdrawn offset.
@@ -202,7 +204,9 @@ class OrderedSectionRollbackTest {
 
         @Test
         void publishBatch_oversizeRun_isRefusedUntouched_andTheSinglePublishFallbackStaysContiguous() throws Exception {
-            var config = StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(4, 1_000_000L, 3_600_000L), "earliest");
+            var config = HotWindowFixture.declaredHot(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(4, 1_000_000L, 3_600_000L), "earliest"),
+                                                      4,
+                                                      1_000_000L);
             var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
 
             manager.createStream(config).onFailure(cause -> fail(cause.message()));
@@ -226,8 +230,9 @@ class OrderedSectionRollbackTest {
         }
     }
 
-    /// NT-33: T-017 through the rollback, batch variant. A frozen ring that cannot fit a run's event writes no WAL record and leaves the
-    /// offsets intact; the next run lands at the next contiguous offset. Enabled regression guard, GREEN before and after PR-2c.
+    /// NT-33: T-017 through the rollback, batch variant. A frozen ring that cannot fit a run writes no WAL record and leaves the
+    /// offsets intact; the next run lands at the next contiguous offset. Enabled regression guard, GREEN before and after PR-2c. The run
+    /// is events that each fit the declared window (a window below `max_event_size` is not creatable, S2b-2a) and jointly exceed it.
     @Nested
     class FrozenRingBatch {
         @TempDir
@@ -235,7 +240,8 @@ class OrderedSectionRollbackTest {
 
         @Test
         void publishBatch_onAFrozenRingThatCannotFitAnEvent_writesNoWalRecord_andLeavesOffsetsIntact() throws Exception {
-            var config = StreamConfig.streamConfig("feed-2c", 1, RetentionPolicy.retentionPolicy(), "earliest");
+            var base = StreamConfig.streamConfig("feed-2c", 1, RetentionPolicy.retentionPolicy(), "earliest");
+            var config = HotWindowFixture.declaredHot(base, base.retention().maxCount(), FLOOR_SEGMENT_BYTES);
             var manager = streamPartitionManager(OffHeapRingBuffer.floorBytes(config.retention().maxCount(), config.retention().maxBytes()),
                                                  Option.some(walDir));
 
@@ -243,8 +249,8 @@ class OrderedSectionRollbackTest {
             manager.publishLocalBatchAtFloor("feed-2c", PARTITION, List.of(bytes("evt-0"), bytes("evt-1")), 1L, 0)
                    .onFailure(cause -> fail(cause.message()));
 
-            manager.publishLocalBatchAtFloor("feed-2c", PARTITION, List.of(bytes("evt-2"), new byte[300_000]), 2L, 0)
-                   .onSuccess(offset -> fail("a run holding an event the frozen ring cannot fit was appended through " + offset))
+            manager.publishLocalBatchAtFloor("feed-2c", PARTITION, List.of(bytes("evt-2"), new byte[150_000], new byte[150_000]), 2L, 0)
+                   .onSuccess(offset -> fail("a run the frozen ring cannot fit was appended through " + offset))
                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.RUN_DOES_NOT_FIT));
 
             assertThat(walOffsetsOf(manager, "feed-2c")).as("the refused run wrote no WAL record").containsExactly(0L, 1L);

@@ -210,7 +210,7 @@ class ClusterTopologyManagerReplacementStateTest {
 
     @Test
     void replacementCeiling_noPersistedConfig_isTenMinuteDefault() {
-        assertThat(ctm.replacementCeiling(NodeRole.CORE).millis()).isEqualTo(timeSpan(10).minutes().millis());
+        assertThat(ctm.replacementCeiling(NodeRole.CORE, Option.none()).millis()).isEqualTo(timeSpan(10).minutes().millis());
         assertThat(SourceProfile.DEFAULT_REPLACEMENT_CEILING.millis()).isEqualTo(timeSpan(10).minutes().millis());
     }
 
@@ -220,14 +220,14 @@ class ClusterTopologyManagerReplacementStateTest {
     void replacementCeiling_configuredOnCloudSourceBackingTheRole_isRead() {
         seedConfig(CLOUD_TOML.formatted("replacement_ceiling = \"7m\""));
 
-        assertThat(ctm.replacementCeiling(NodeRole.CORE).millis()).isEqualTo(timeSpan(7).minutes().millis());
+        assertThat(ctm.replacementCeiling(NodeRole.CORE, Option.none()).millis()).isEqualTo(timeSpan(7).minutes().millis());
     }
 
     @Test
     void replacementCeiling_roleNotBackedByTheConfiguredSource_isDefault() {
         seedConfig(CLOUD_TOML.formatted("replacement_ceiling = \"7m\""));
 
-        assertThat(ctm.replacementCeiling(NodeRole.WORKER).millis()).isEqualTo(timeSpan(10).minutes().millis());
+        assertThat(ctm.replacementCeiling(NodeRole.WORKER, Option.none()).millis()).isEqualTo(timeSpan(10).minutes().millis());
     }
 
     private void seedConfig(String toml) {

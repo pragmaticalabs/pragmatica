@@ -39,7 +39,7 @@ class AetherNodeBackupCoordinatorStopWiringTest {
     void stop_runsTheStopSequence_onlyAfterTheBackupFlush() {
         var source = AssemblySource.spaced();
 
-        assertThat(source).containsOnlyOnce("return quorumLeft.map(this::stopDeploymentWiring) .flatMap(() -> stopNodeComponents(backupFlushed)) .flatMap(() -> NodeStopSequence.run(");
+        assertThat(source).containsOnlyOnce("return NodeStopSequence.run(NodeStopSequence.Steps.steps(() -> quorumLeft, this::stopDeploymentWiring, () -> stopNodeComponents(backupFlushed), this::releaseWatchesThenDeactivate,");
     }
 
     /// Know 6ee3dc3f0d (P-C): a worker holds a partial replica and must not stop-flush; the role is the node's own worker role (configuration or label,

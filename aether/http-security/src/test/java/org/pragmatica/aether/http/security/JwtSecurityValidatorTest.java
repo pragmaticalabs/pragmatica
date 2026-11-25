@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
+import org.pragmatica.aether.http.handler.security.Principal;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.http.HttpStatus;
@@ -188,7 +189,7 @@ class JwtSecurityValidatorTest {
                      .onSuccess(ctx -> fail("Expected failure"))
                      .onFailure(cause -> {
                          assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class);
-                         assertThat(cause.message()).contains("Bearer");
+                         assertThat(cause.message()).isEqualTo("JWT token is missing");
                      });
         }
     }
@@ -342,6 +343,43 @@ class JwtSecurityValidatorTest {
             validator.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(ctx -> assertThat(ctx.hasRole(Role.ADMIN)).isTrue());
+        }
+    }
+
+    @Nested
+    class GrantMintingTests {
+        @Test
+        void authenticate_mintsGrant_forAdminToken() {
+            assertThat(grantForRole(Option.some("ADMIN")).isPresent()).as("an ADMIN token mints").isTrue();
+        }
+
+        @Test
+        void authenticate_mintsNone_forOperatorToken() {
+            assertThat(grantForRole(Option.some("OPERATOR")).isPresent())
+                .as("an OPERATOR token mints no grant: the mint reads the token's role, not the inner default")
+                .isFalse();
+        }
+
+        @Test
+        void authenticate_mintsNone_forTokenWithoutRoleClaim() {
+            assertThat(grantForRole(Option.none()).isPresent()).as("a token defaulting to VIEWER mints no grant").isFalse();
+        }
+
+        @Test
+        void authenticate_grantedBy_isTheTokenSubject() {
+            assertThat(grantForRole(Option.some("ADMIN")).map(AdminGrant::grantedBy).map(Principal::value).or(""))
+                .isEqualTo("user:" + TEST_SUBJECT);
+        }
+
+        private Option<AdminGrant> grantForRole(Option<String> role) {
+            var claims = new LinkedHashMap<String, Object>(Map.of("sub", TEST_SUBJECT, "exp", futureExp()));
+
+            role.onPresent(value -> claims.put("role", value));
+
+            return validator.authenticate(requestWithToken(buildToken(claims)), SecurityPolicy.bearerTokenRequired())
+                            .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                            .map(Authenticated::grant)
+                            .or(Option.none());
         }
     }
 
@@ -553,6 +591,14 @@ class JwtSecurityValidatorTest {
                   .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class))
                   .onFailure(cause -> assertThat(((SecurityError) cause).httpStatus()).isEqualTo(HttpStatus.UNAUTHORIZED));
         }
+    }
+
+    @Test
+    void authenticate_mintsNone_onAnonymousPaths() {
+        assertThat(validator.authenticate(requestWithoutToken(), SecurityPolicy.publicRoute()).map(Authenticated::grant).or(Option.none()).isPresent())
+            .as("the Public path is anonymous: it mints no grant").isFalse();
+        assertThat(validator.authenticate(requestWithoutToken(), SecurityPolicy.optional()).map(Authenticated::grant).or(Option.none()).isPresent())
+            .as("the OptionalAuth path with no token is anonymous: it mints no grant").isFalse();
     }
 
     private static HttpRequestContext requestWithAuthorization(String value) {

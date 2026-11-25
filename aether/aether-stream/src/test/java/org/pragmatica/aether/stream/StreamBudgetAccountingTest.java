@@ -35,11 +35,20 @@ class StreamBudgetAccountingTest {
     private static final long HEADER = 64L;
     private static final long INDEX_ENTRY = 24L;
 
-    /// The management-API default retention (StreamRoutes.MANAGEMENT_API_RETENTION): 10_000 count,
+    /// The management-API default retention (the pre-#3334 `MANAGEMENT_API_RETENTION`, since removed): 10_000 count,
     /// 4 MiB bytes, 1h. 4 partitions per the stream default.
     private static StreamConfig mgmtDefault(String name) {
-        var retention = RetentionPolicy.retentionPolicy(10_000, 4L * 1024 * 1024, 60 * 60 * 1000L);
-        return StreamConfig.streamConfig(name, 4, retention, "latest");
+        return declaredWindow(name, 4, 10_000, 4L * 1024 * 1024, 60 * 60 * 1000L);
+    }
+
+    /// A stream whose hot window equals its retention (count, bytes) and whose `max_event_size` is one segment, so its first
+    /// data region is `min(SEGMENT, bytes)` whether the ring is sized from retention or from the declared window
+    /// (the invariance rule of the ring-window restatement).
+    private static StreamConfig declaredWindow(String name, int partitions, long maxCount, long maxBytes, long maxAgeMs) {
+        var retention = RetentionPolicy.retentionPolicy(maxCount, maxBytes, maxAgeMs);
+        var config = StreamConfig.streamConfig(name, partitions, retention, "latest", SEGMENT);
+
+        return HotWindowFixture.declaredHot(config, maxCount, maxBytes);
     }
 
     private static long perPartitionFloor(long maxCount, long maxBytes) {
@@ -158,8 +167,7 @@ class StreamBudgetAccountingTest {
         void append_growsTowardCap_accountsEachSegment() {
             var manager = streamPartitionManager(64 * 1024 * 1024L);
             try {
-                var retention = RetentionPolicy.retentionPolicy(1_000, 4L * SEGMENT, 60_000);
-                var config = StreamConfig.streamConfig("grow", 1, retention, "latest");
+                var config = declaredWindow("grow", 1, 1_000, 4L * SEGMENT, 60_000);
                 manager.createStream(config).onFailure(_ -> fail("Expected success"));
 
                 var floor = perPartitionFloor(1_000, 4L * SEGMENT);
@@ -191,8 +199,7 @@ class StreamBudgetAccountingTest {
         void destroyStream_releasesLiveAllocatedBytes_returnsToZero() {
             var manager = streamPartitionManager(64 * 1024 * 1024L);
             try {
-                var retention = RetentionPolicy.retentionPolicy(1_000, 4L * SEGMENT, 60_000);
-                var config = StreamConfig.streamConfig("temp", 2, retention, "latest");
+                var config = declaredWindow("temp", 2, 1_000, 4L * SEGMENT, 60_000);
                 manager.createStream(config).onFailure(_ -> fail("Expected success"));
 
                 // Grow both partitions past the floor so destroy must release MORE than the floor.
@@ -250,8 +257,7 @@ class StreamBudgetAccountingTest {
                     var t = new Thread(() -> {
                         ready.countDown();
                         awaitQuietly(go);
-                        var retention = RetentionPolicy.retentionPolicy(maxCount, maxBytes, 60_000);
-                        manager.createStream(StreamConfig.streamConfig(name, 1, retention, "latest"))
+                        manager.createStream(declaredWindow(name, 1, maxCount, maxBytes, 60_000))
                                .onSuccess(_ -> succeeded.incrementAndGet());
                         // Invariant must hold at EVERY observation: never over-commit the pool.
                         assertThat(manager.totalAllocatedBytes()).isLessThanOrEqualTo(max);

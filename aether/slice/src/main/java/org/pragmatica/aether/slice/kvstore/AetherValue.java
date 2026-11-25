@@ -4,11 +4,14 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -39,6 +42,7 @@ import org.pragmatica.cluster.state.kvstore.HolderFenced;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
 import org.pragmatica.cluster.state.kvstore.ScopedMonotonic;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
+import org.pragmatica.cluster.state.kvstore.RestoreAuthority;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -57,9 +61,54 @@ import static org.pragmatica.lang.Option.some;
 @SuppressWarnings("JBCT-NAM-01")
 public sealed interface AetherValue {
     /// The digest (size, MD5, SHA-1, SHA-256) of the content bound to one file of one coordinate, keyed by `AetherKey.ArtifactContentKey`
-    /// (#1778). The applier keeps the FIRST committed value ([GrowOnlyMergeable]: a later write merges into the
-    /// committed one and yields it unchanged), so the binding is decided once, by the consensus log.
-    record ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+    /// (#1778), with the block manifest of that content (#420): `blocks` is ONE array of 32 * n bytes, the raw SHA-256
+    /// block ids concatenated in chunk order (empty for a binding that carries no manifest). The applier keeps the FIRST
+    /// committed value ([GrowOnlyMergeable]: a later write merges into the committed one and yields it unchanged), so the
+    /// binding is decided once, by the consensus log.
+    ///
+    /// **Value equality (R-2).** A record's generated `equals` compares an array component by identity, and `KVStore`'s
+    /// replay compares a stored value with the one it last delivered by `equals`, so every binding would be re-delivered
+    /// as a changed put after a state transfer. This record therefore overrides `equals`, `hashCode` and `toString` over
+    /// the array's contents, and copies the array on construction and on access.
+    record ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt, byte[] blocks) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+        public ArtifactContentValue {
+            blocks = blocks.clone();
+        }
+
+        /// A binding without a block manifest: `blocks` is empty.
+        public ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt) {
+            this(size, md5, sha1, sha256, deployedAt, new byte[0]);
+        }
+
+        @Override
+        public byte[] blocks() {
+            return blocks.clone();
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof ArtifactContentValue that
+                   && sameDigest(that)
+                   && deployedAt == that.deployedAt
+                   && Arrays.equals(blocks, that.blocks);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * Objects.hash(size, md5, sha1, sha256, deployedAt) + Arrays.hashCode(blocks);
+        }
+
+        @Override
+        public String toString() {
+            return "ArtifactContentValue[size=" + size
+                 + ", md5=" + md5
+                 + ", sha1=" + sha1
+                 + ", sha256=" + sha256
+                 + ", deployedAt=" + deployedAt
+                 + ", blocks=" + HexFormat.of().formatHex(blocks)
+                 + "]";
+        }
+
         /// Whether `other` describes the same CONTENT: size, MD5, SHA-1 and SHA-256, not the deploy time. The deploy
         /// time is the FIRST proposer's, kept with the binding so that completing an interrupted write rewrites the
         /// file's metadata with its original time instead of a new one.
@@ -1392,41 +1441,6 @@ public sealed interface AetherValue {
         }
     }
 
-    record WorkerSliceDirectiveValue(Artifact artifact,
-                                     int targetInstances,
-                                     String placement,
-                                     Option<String> targetCommunity,
-                                     long updatedAt) implements AetherValue {
-        public static WorkerSliceDirectiveValue workerSliceDirectiveValue(Artifact artifact,
-                                                                          int targetInstances,
-                                                                          String placement) {
-            return new WorkerSliceDirectiveValue(artifact,
-                                                 targetInstances,
-                                                 placement,
-                                                 none(),
-                                                 System.currentTimeMillis());
-        }
-
-        public static WorkerSliceDirectiveValue workerSliceDirectiveValue(Artifact artifact,
-                                                                          int targetInstances,
-                                                                          String placement,
-                                                                          String targetCommunity) {
-            return new WorkerSliceDirectiveValue(artifact,
-                                                 targetInstances,
-                                                 placement,
-                                                 Option.option(targetCommunity),
-                                                 System.currentTimeMillis());
-        }
-
-        public WorkerSliceDirectiveValue withInstances(int newCount) {
-            return new WorkerSliceDirectiveValue(artifact,
-                                                 newCount,
-                                                 placement,
-                                                 targetCommunity,
-                                                 System.currentTimeMillis());
-        }
-    }
-
     /// Worker/core activation directive (worker-membership-spec §4 line 79): the leader-authored,
     /// node-keyed role assignment. Extended additively with `communityId` + `governorHint` so a
     /// WORKER directive carries its community assignment and a governor address hint through the
@@ -1745,22 +1759,6 @@ public sealed interface AetherValue {
         UNKNOWN
     }
 
-    record ClusterPhaseValue(ClusterPhase phase, long updatedAt) implements AetherValue {
-        public ClusterPhaseValue {
-            if (phase == null) {
-                phase = ClusterPhase.COLD_BOOT;
-            }
-        }
-
-        public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase) {
-            return new ClusterPhaseValue(phase, System.currentTimeMillis());
-        }
-
-        public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase, long updatedAt) {
-            return new ClusterPhaseValue(phase, updatedAt);
-        }
-    }
-
     /// The deployment engine a cluster runs (phase-3 design 8.2). `FSM2` is the default of every node; `LEGACY` is the engine it replaces (removed in F7).
     @Codec
     enum DeploymentEngine {
@@ -1830,39 +1828,171 @@ public sealed interface AetherValue {
         SKIPPED_EXISTING_STATE,
         /// The deciding leader has no `[backup]` enabled.
         DISABLED,
+        /// A blocked restore was abandoned (#3303, restore-authority r3.1 §2 row 10): the gated keys it wrote were removed
+        /// and the header is cleared; `removedKeys` counts them.
+        ABANDONED,
         /// Wire sentinel: an ordinal this node cannot name decodes here instead of throwing. Not terminal,
         /// so a node that cannot name the outcome keeps its restore gate closed. Must stay LAST.
         UNKNOWN;
         /// Whether the decision is final — the restore gate opens only on these.
         public boolean isTerminal() {
-            return this == RESTORED || this == FRESH || this == SKIPPED_EXISTING_STATE || this == DISABLED;
+            return this == RESTORED || this == FRESH || this == SKIPPED_EXISTING_STATE || this == DISABLED || this == ABANDONED;
         }
     }
 
     /// The committed restore decision (#1533). `lineageId`/`incarnation`/`revision` are the restored
     /// document's header and `commit` its backup commit, for [BackupRestoreOutcome#IN_PROGRESS] and
     /// [BackupRestoreOutcome#RESTORED]; empty and zero otherwise.
+    ///
+    /// The one restore-authority value (#3303, restore-authority r3.1 §2-§3), so it lives only at [AetherKey.BackupRestoreKey]
+    /// and every write of it is a leader transaction judged by [#admitsAfter]. An `IN_PROGRESS` marker is split by two
+    /// fields: `rejection` (some key `k`: the restore was refused at `k`, REJECTED) and `abandon` (a blocked restore is
+    /// being abandoned). `removedKeys` is the count an [BackupRestoreOutcome#ABANDONED] decision records. `rejection` is
+    /// none, `abandon` false and `removedKeys` zero unless set.
     record BackupRestoreValue(BackupRestoreOutcome outcome,
                               String lineageId,
                               long incarnation,
                               long revision,
-                              String commit) implements AetherValue {
+                              String commit,
+                              Option<String> rejection,
+                              boolean abandon,
+                              long removedKeys) implements AetherValue, LeaderAuthorized, RestoreAuthority {
+        public static BackupRestoreValue backupRestoreValue(BackupRestoreOutcome outcome,
+                                                            String lineageId,
+                                                            long incarnation,
+                                                            long revision,
+                                                            String commit,
+                                                            Option<String> rejection,
+                                                            boolean abandon,
+                                                            long removedKeys) {
+            return new BackupRestoreValue(outcome,
+                                          lineageId,
+                                          incarnation,
+                                          revision,
+                                          commit,
+                                          rejection,
+                                          abandon,
+                                          removedKeys);
+        }
+
+        /// A decision with no `rejection`, no `abandon` and no removed keys.
         public static BackupRestoreValue backupRestoreValue(BackupRestoreOutcome outcome,
                                                             String lineageId,
                                                             long incarnation,
                                                             long revision,
                                                             String commit) {
-            return new BackupRestoreValue(outcome, lineageId, incarnation, revision, commit);
+            return backupRestoreValue(outcome, lineageId, incarnation, revision, commit, none(), false, 0L);
         }
 
         /// A decision that restores nothing.
         public static BackupRestoreValue decided(BackupRestoreOutcome outcome) {
-            return new BackupRestoreValue(outcome, "", 0L, 0L, "");
+            return backupRestoreValue(outcome, "", 0L, 0L, "");
         }
 
-        /// The same restore, finished.
+        /// The abandoned decision (row 10): the header is cleared, only the count of removed keys remains.
+        public static BackupRestoreValue abandoned(long removedKeys) {
+            return backupRestoreValue(BackupRestoreOutcome.ABANDONED, "", 0L, 0L, "", none(), false, removedKeys);
+        }
+
+        /// The same restore, finished (rows 5 and 8): a `rejection` is dropped.
         public BackupRestoreValue restored() {
-            return new BackupRestoreValue(BackupRestoreOutcome.RESTORED, lineageId, incarnation, revision, commit);
+            return backupRestoreValue(BackupRestoreOutcome.RESTORED, lineageId, incarnation, revision, commit);
+        }
+
+        /// Restore-unit writes are admitted only under an `IN_PROGRESS` marker that is not being abandoned (r3.1 §3).
+        @Override
+        public boolean admitsUnits() {
+            return outcome == BackupRestoreOutcome.IN_PROGRESS && !abandon;
+        }
+
+        /// Exactly the `Put` rows of r3.1 §2 (1-10); every other replacement is refused. A committed value that is not a
+        /// `BackupRestoreValue` admits nothing.
+        @Override
+        public boolean admitsAfter(Option<RestoreAuthority> committed) {
+            return committed.fold(this::isFirstDecision,
+                                  previous -> previous instanceof BackupRestoreValue value && admitsReplacing(value));
+        }
+
+        /// Rows 1-4: absent -> (c), FRESH, SKIPPED_EXISTING_STATE, DISABLED.
+        private boolean isFirstDecision() {
+            return unmarked() && opensADecision(outcome);
+        }
+
+        /// The outcomes a first decision may carry; exhaustive, so a new outcome does not compile until it is placed.
+        private static boolean opensADecision(BackupRestoreOutcome outcome) {
+            return switch (outcome) {
+                case IN_PROGRESS, FRESH, SKIPPED_EXISTING_STATE, DISABLED -> true;
+                case RESTORED, ABANDONED, UNKNOWN -> false;
+            };
+        }
+
+        /// Rows 5-7 from (c), rows 8-9 from (c,r), row 10 from (c,a).
+        private boolean admitsReplacing(BackupRestoreValue committed) {
+            return replacesRestoring(committed) || replacesRejected(committed) || replacesAbandoning(committed);
+        }
+
+        /// Rows 5-7: (c) -> RESTORED, (c,r), (c,a), header equal.
+        private boolean replacesRestoring(BackupRestoreValue committed) {
+            return committed.isRestoring()
+                   && sameHeader(committed)
+                   && (isFinished() || isRejected() || isAbandoning());
+        }
+
+        /// Rows 8-9: (c,r) -> RESTORED, or (c,r) refused at another key, header equal.
+        private boolean replacesRejected(BackupRestoreValue committed) {
+            return committed.isRejected()
+                   && sameHeader(committed)
+                   && (isFinished() || isRejectedElsewhere(committed));
+        }
+
+        /// Row 10: (c,a) -> ABANDONED.
+        private boolean replacesAbandoning(BackupRestoreValue committed) {
+            return committed.isAbandoning() && isAbandoned();
+        }
+
+        /// Row 9's `k' != k`.
+        private boolean isRejectedElsewhere(BackupRestoreValue committed) {
+            return isRejected() && !rejection.equals(committed.rejection);
+        }
+
+        /// (c): `IN_PROGRESS`, neither refused nor being abandoned.
+        private boolean isRestoring() {
+            return outcome == BackupRestoreOutcome.IN_PROGRESS && unmarked();
+        }
+
+        /// (c,r): `IN_PROGRESS` refused at some key, not being abandoned.
+        private boolean isRejected() {
+            return outcome == BackupRestoreOutcome.IN_PROGRESS
+                   && rejection.isPresent()
+                   && !abandon;
+        }
+
+        /// (c,a): `IN_PROGRESS` being abandoned, never refused.
+        private boolean isAbandoning() {
+            return outcome == BackupRestoreOutcome.IN_PROGRESS
+                   && rejection.isEmpty()
+                   && abandon;
+        }
+
+        private boolean isFinished() {
+            return outcome == BackupRestoreOutcome.RESTORED && unmarked();
+        }
+
+        private boolean isAbandoned() {
+            return outcome == BackupRestoreOutcome.ABANDONED && unmarked();
+        }
+
+        /// Neither field set: a decision other than `IN_PROGRESS` carrying one is no state of §1 and matches no row.
+        private boolean unmarked() {
+            return rejection.isEmpty() && !abandon;
+        }
+
+        /// "header equal" of §2: the restored document's header and its backup commit.
+        private boolean sameHeader(BackupRestoreValue other) {
+            return lineageId.equals(other.lineageId)
+                   && incarnation == other.incarnation
+                   && revision == other.revision
+                   && commit.equals(other.commit);
         }
     }
 
@@ -1999,39 +2129,6 @@ public sealed interface AetherValue {
         UNRECOGNISED,
         /// Wire sentinel (#964) — see the type docstring. Must stay LAST.
         UNKNOWN
-    }
-
-    /// Phase 1 step J — replicated mirror of the in-process `JOIN_DEADLINE` scheduler
-    /// entry. `deadlineMs` is wall-clock millis (epoch) when the join deadline fires;
-    /// `setAt` is the HLC stamp of the originating JOINING-entry transition (provides
-    /// causal ordering across leader takeover for observers reconstructing the deadline).
-    /// Pure observability atom — see [AetherKey.JoinDeadlineKey] for trigger semantics.
-    record JoinDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
-        public JoinDeadlineValue {
-            if (setAt == null) {
-                setAt = HlcTimestamp.ZERO;
-            }
-        }
-
-        public static JoinDeadlineValue joinDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
-            return new JoinDeadlineValue(deadlineMs, setAt);
-        }
-    }
-
-    /// Phase 1 step J — replicated mirror of the in-process `DRAIN_DEADLINE` scheduler
-    /// entry. `deadlineMs` is wall-clock millis (epoch) when the drain hard-deadline
-    /// fires; `setAt` is the HLC stamp of the DRAINING-entry transition. Pure
-    /// observability atom — see [AetherKey.DrainDeadlineKey] for trigger semantics.
-    record DrainDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
-        public DrainDeadlineValue {
-            if (setAt == null) {
-                setAt = HlcTimestamp.ZERO;
-            }
-        }
-
-        public static DrainDeadlineValue drainDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
-            return new DrainDeadlineValue(deadlineMs, setAt);
-        }
     }
 
     record NodeArtifactValue(SliceState state,
@@ -2391,7 +2488,8 @@ public sealed interface AetherValue {
                               String artifactCoords,
                               BlueprintId owningBlueprint,
                               int attemptCount,
-                              long updatedAt) implements AetherValue {
+                              long updatedAt,
+                              SchemaReach reachedBy) implements AetherValue {
         public static SchemaVersionValue schemaVersionValue(String datasourceName,
                                                             int currentVersion,
                                                             String lastMigration,
@@ -2405,7 +2503,8 @@ public sealed interface AetherValue {
                                           artifactCoords,
                                           owningBlueprint,
                                           0,
-                                          System.currentTimeMillis());
+                                          System.currentTimeMillis(),
+                                          SchemaReach.MIGRATED);
         }
 
         public static SchemaVersionValue schemaVersionValue(String datasourceName,
@@ -2422,7 +2521,29 @@ public sealed interface AetherValue {
                                           artifactCoords,
                                           owningBlueprint,
                                           attemptCount,
-                                          System.currentTimeMillis());
+                                          System.currentTimeMillis(),
+                                          SchemaReach.MIGRATED);
+        }
+
+        /// The record of a status or attempt change, or of an undo or baseline outcome: `reachedBy` is stated, never defaulted, so a
+        /// writer that only moves the status cannot silently turn an undone or baselined version back into a forward-migrated one (#834).
+        public static SchemaVersionValue schemaVersionValue(String datasourceName,
+                                                            int currentVersion,
+                                                            String lastMigration,
+                                                            SchemaStatus status,
+                                                            String artifactCoords,
+                                                            BlueprintId owningBlueprint,
+                                                            int attemptCount,
+                                                            SchemaReach reachedBy) {
+            return new SchemaVersionValue(datasourceName,
+                                          currentVersion,
+                                          lastMigration,
+                                          status,
+                                          artifactCoords,
+                                          owningBlueprint,
+                                          attemptCount,
+                                          System.currentTimeMillis(),
+                                          reachedBy);
         }
 
         /// The typed reading of `artifactCoords`: [MigrationSourceError.Absent] when blank,
@@ -2440,7 +2561,8 @@ public sealed interface AetherValue {
                                           artifactCoords,
                                           owningBlueprint,
                                           attemptCount,
-                                          updatedAt);
+                                          updatedAt,
+                                          reachedBy);
         }
     }
 
@@ -2487,6 +2609,23 @@ public sealed interface AetherValue {
         @Override
         public long fenceVersion() {
             return lockVersion;
+        }
+    }
+
+    /// How a datasource's `currentVersion` was reached (#834): by a forward migration, by an operator undo, or by an operator
+    /// baseline. A publish that declares a version above an `UNDONE` or `BASELINED` record would re-apply what the operator removed or
+    /// skipped, so `BlueprintService` refuses it unless forced.
+    @Codec
+    enum SchemaReach {
+        MIGRATED,
+        UNDONE,
+        BASELINED,
+        /// Wire sentinel, same contract as `SchemaStatus.UNKNOWN`: an ordinal this node cannot name decodes here. Treated as
+        /// forward-migrated (no guard), because an unreadable value must not block a publish. Must stay LAST.
+        UNKNOWN;
+        /// Whether a publish declaring a higher version would re-apply what an operator intervention left out.
+        public boolean guardsRepublish() {
+            return this == UNDONE || this == BASELINED;
         }
     }
 
@@ -2551,13 +2690,25 @@ public sealed interface AetherValue {
     /// guard on [StreamCursorCheckpointValue] writes. `epoch` is `Epoch(rabiaTerm, assignmentTerm)`, so it
     /// advances on a leader change and on every same-term reassignment; [EpochBearing] fences a deposed
     /// leader's stale write to this record. Replaces the never-used `StreamPartitionAssignmentValue`.
-    record ConsumerAssignmentValue(NodeId assignee, Epoch epoch, long assignmentTerm, HlcTimestamp assignedAt) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
+    record ConsumerAssignmentValue(NodeId assignee,
+                                   Epoch epoch,
+                                   long assignmentTerm,
+                                   HlcTimestamp assignedAt,
+                                   Option<String> member) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
         /// The token a checkpoint must carry to be admitted: this exact assignee at this exact epoch.
         /// Equality on both halves is what makes an A→B→A flap refuse A's writes from its FIRST tenure.
+        /// `member` names the consumer-group member the assignment was granted to; a token with a member equals only
+        /// a token with the same member, and a no-member token equals only a no-member token.
         @Codec
-        public record AssignmentToken(NodeId assignee, Epoch epoch) {
+        public record AssignmentToken(NodeId assignee, Epoch epoch, Option<String> member) {
+            public static AssignmentToken assignmentToken(NodeId assignee, Epoch epoch, Option<String> member) {
+                return new AssignmentToken(assignee, epoch, member);
+            }
+
+            /// Shim for callers that predate `member`: a no-member token. Removed at S1a-4d, once S1a-1b has moved
+            /// every production caller to the member-taking factory.
             public static AssignmentToken assignmentToken(NodeId assignee, Epoch epoch) {
-                return new AssignmentToken(assignee, epoch);
+                return assignmentToken(assignee, epoch, none());
             }
         }
 
@@ -2572,14 +2723,24 @@ public sealed interface AetherValue {
         }
 
         public AssignmentToken token() {
-            return AssignmentToken.assignmentToken(assignee, epoch);
+            return AssignmentToken.assignmentToken(assignee, epoch, member);
         }
 
         public static ConsumerAssignmentValue consumerAssignmentValue(NodeId assignee,
                                                                       Epoch epoch,
                                                                       long assignmentTerm,
+                                                                      HlcTimestamp assignedAt,
+                                                                      Option<String> member) {
+            return new ConsumerAssignmentValue(assignee, epoch, assignmentTerm, assignedAt, member);
+        }
+
+        /// Shim for callers that predate `member`: a no-member assignment. Removed at S1a-4d, once S1a-1b has moved
+        /// every production caller to the member-taking factory.
+        public static ConsumerAssignmentValue consumerAssignmentValue(NodeId assignee,
+                                                                      Epoch epoch,
+                                                                      long assignmentTerm,
                                                                       HlcTimestamp assignedAt) {
-            return new ConsumerAssignmentValue(assignee, epoch, assignmentTerm, assignedAt);
+            return consumerAssignmentValue(assignee, epoch, assignmentTerm, assignedAt, none());
         }
     }
 
@@ -3486,6 +3647,155 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Per-`(stream, partition)` state of one partition's life (#3303): the row the split's elect, re-mint, close and release
+    /// transitions read and write.
+    ///
+    /// `incarnation` is the incarnation of the committed stream configuration; `generation` counts the partition's lives (1 at
+    /// the first write) and `lifeStart` is the offset the current life begins at. `state` is [PartitionState#OPEN] until the
+    /// close records `lastOffset` ([PartitionState#CLOSED]; `lastOffset` is empty while open) and the release ends the partition
+    /// ([PartitionState#RELEASED]); the row is kept after release while the stream lives. `election` is set by the leader's
+    /// elect transaction and cleared by the elected node's re-mint. `parents` and `children` name the partitions this one split
+    /// from and into.
+    ///
+    /// `activationGeneration` is the LAST component and is dormant: no writer sets a non-zero value yet. It is part of the value's
+    /// shape from the value's first wire line, so the step that starts writing it needs no wire bump. There is one factory and no
+    /// overload that defaults the component, and every copy method passes it through, so a write derived from the committed row
+    /// cannot drop it.
+    ///
+    /// Construction: no validation beyond non-null lists; writers own their invariants.
+    ///
+    /// @param incarnation          incarnation of the committed stream configuration
+    /// @param generation           the partition's life counter, 1 at the first write
+    /// @param lifeStart            offset the current life begins at
+    /// @param state                where the partition stands
+    /// @param firstOffset          first offset of the partition
+    /// @param lastOffset           the cut offset, recorded by the close; empty while open
+    /// @param election             the committed election, until the elected node's re-mint clears it
+    /// @param parents              the partitions this one split from
+    /// @param children             the partitions this one split into
+    /// @param activationGeneration dormant; passed through by every copy method
+    record StreamPartitionStateValue(long incarnation,
+                                     long generation,
+                                     long lifeStart,
+                                     PartitionState state,
+                                     long firstOffset,
+                                     Option<Long> lastOffset,
+                                     Option<Election> election,
+                                     List<Integer> parents,
+                                     List<Integer> children,
+                                     long activationGeneration) implements AetherValue {
+        public StreamPartitionStateValue {
+            parents = List.copyOf(parents);
+            children = List.copyOf(children);
+        }
+
+        public static StreamPartitionStateValue streamPartitionStateValue(long incarnation,
+                                                                          long generation,
+                                                                          long lifeStart,
+                                                                          PartitionState state,
+                                                                          long firstOffset,
+                                                                          Option<Long> lastOffset,
+                                                                          Option<Election> election,
+                                                                          List<Integer> parents,
+                                                                          List<Integer> children,
+                                                                          long activationGeneration) {
+            return new StreamPartitionStateValue(incarnation,
+                                                 generation,
+                                                 lifeStart,
+                                                 state,
+                                                 firstOffset,
+                                                 lastOffset,
+                                                 election,
+                                                 parents,
+                                                 children,
+                                                 activationGeneration);
+        }
+
+        /// The same row with election `election` (empty clears it).
+        public StreamPartitionStateValue withElection(Option<Election> election) {
+            return new StreamPartitionStateValue(incarnation,
+                                                 generation,
+                                                 lifeStart,
+                                                 state,
+                                                 firstOffset,
+                                                 lastOffset,
+                                                 election,
+                                                 parents,
+                                                 children,
+                                                 activationGeneration());
+        }
+
+        /// The same row closed at `lastOffset`: [PartitionState#CLOSED], the election carried.
+        public StreamPartitionStateValue closed(long lastOffset) {
+            return new StreamPartitionStateValue(incarnation,
+                                                 generation,
+                                                 lifeStart,
+                                                 PartitionState.CLOSED,
+                                                 firstOffset,
+                                                 some(lastOffset),
+                                                 election,
+                                                 parents,
+                                                 children,
+                                                 activationGeneration());
+        }
+
+        /// The same row released: [PartitionState#RELEASED], every other component carried.
+        public StreamPartitionStateValue released() {
+            return new StreamPartitionStateValue(incarnation,
+                                                 generation,
+                                                 lifeStart,
+                                                 PartitionState.RELEASED,
+                                                 firstOffset,
+                                                 lastOffset,
+                                                 election,
+                                                 parents,
+                                                 children,
+                                                 activationGeneration());
+        }
+
+        /// The next life of the same partition, beginning at `lifeStart`: one generation later, with no election; `state`,
+        /// `lastOffset`, `parents` and `children` are carried (a new life keeps state, parents and children).
+        public StreamPartitionStateValue newLife(long lifeStart) {
+            return new StreamPartitionStateValue(incarnation,
+                                                 generation + 1,
+                                                 lifeStart,
+                                                 state,
+                                                 firstOffset,
+                                                 lastOffset,
+                                                 none(),
+                                                 parents,
+                                                 children,
+                                                 activationGeneration());
+        }
+
+        /// Where a partition stands in its lifecycle.
+        @Codec
+        public enum PartitionState {
+            OPEN,
+            CLOSED,
+            RELEASED,
+            UNKNOWN
+        }
+
+        /// A committed election: the epoch the leader minted, the elected node, whether the election loses entity state, and
+        /// the in-sync set the partition had before it.
+        ///
+        /// @param epoch      the epoch the elect transaction minted
+        /// @param node       the elected node
+        /// @param entityLoss whether the election loses entity state
+        /// @param isr        the in-sync set before the election
+        @Codec
+        public record Election(Epoch epoch, NodeId node, boolean entityLoss, List<NodeId> isr) {
+            public Election {
+                isr = List.copyOf(isr);
+            }
+
+            public static Election election(Epoch epoch, NodeId node, boolean entityLoss, List<NodeId> isr) {
+                return new Election(epoch, node, entityLoss, isr);
+            }
+        }
+    }
+
     /// One owner epoch of a stream partition and the offset its owner began writing at (#1730 phase 2, Kafka's leader
     /// epoch start offset). `StreamPartitionOwnershipValue#epochStarts` lists the newest ones, oldest first: a consumer that
     /// read under an older epoch is valid only while its cursor does not pass the start of the epoch that followed.
@@ -4372,6 +4682,79 @@ public sealed interface AetherValue {
 
         public static EntityFoldCheckpointValue entityFoldCheckpointValue(long throughOffset, String blockIdHex) {
             return new EntityFoldCheckpointValue(throughOffset, blockIdHex, System.currentTimeMillis());
+        }
+    }
+
+    /// Payload of an [AetherKey.EntitySeedOfferKey] — a parent partition's offer of its state to the children of a split
+    /// (#3303, design r8.2 V1).
+    ///
+    /// `parentLife` is the offering parent's life and `L` is the parent's cut offset (`L = lastOffset`); the read-back pointer is
+    /// `(L, blockIdHex)`. `parentOwnerEpoch` fences the owner that wrote it. `blockIdHex` names the seed block in stream storage.
+    /// Each [OfferEntry] carries the `keyCount` and `timerCount` of one child for the preview and the events only; no arm reads
+    /// them. A plain Put (V1): the owner writes it, so it carries no leader-authorization marker.
+    ///
+    /// @param parentLife       life of the offering parent
+    /// @param L                the parent's cut offset (`lastOffset`); with `blockIdHex` the read-back pointer
+    /// @param parentOwnerEpoch owner epoch of the parent that wrote the offer
+    /// @param blockIdHex       content id of the seed block in stream storage
+    /// @param entries          one entry per child the offer covers
+    record EntitySeedOfferValue(long parentLife,
+                                long L,
+                                long parentOwnerEpoch,
+                                String blockIdHex,
+                                List<OfferEntry> entries) implements AetherValue {
+        public EntitySeedOfferValue {
+            entries = List.copyOf(entries);
+        }
+
+        public static EntitySeedOfferValue entitySeedOfferValue(long parentLife,
+                                                                long L,
+                                                                long parentOwnerEpoch,
+                                                                String blockIdHex,
+                                                                List<OfferEntry> entries) {
+            return new EntitySeedOfferValue(parentLife, L, parentOwnerEpoch, blockIdHex, entries);
+        }
+
+        /// What one child takes from the offer: its id and how many keys and timers it adopts.
+        public record OfferEntry(int child, long keyCount, long timerCount) {
+            public static OfferEntry offerEntry(int child, long keyCount, long timerCount) {
+                return new OfferEntry(child, keyCount, timerCount);
+            }
+        }
+    }
+
+    /// Payload of an [AetherKey.EntityArcWaiverKey] — the operator's recorded decision to accept the loss of a child's inherited
+    /// base (#3303, design r8.2 V6, `accept-loss`).
+    ///
+    /// `case` is the admitted cause the waiver answers and `discarded` the block ids of the seed blocks given up. [LeaderAuthorized]:
+    /// only the leader's `accept-loss` transaction may write it, so a plain Put is dropped.
+    ///
+    /// @param childLife  life of the child whose base is waived
+    /// @param waiverCase admitted cause of the waiver
+    /// @param discarded  block ids of the discarded seed blocks
+    record EntityArcWaiverValue(long childLife, WaiverCase waiverCase, List<String> discarded) implements AetherValue, LeaderAuthorized {
+        public EntityArcWaiverValue {
+            discarded = List.copyOf(discarded);
+        }
+
+        public static EntityArcWaiverValue entityArcWaiverValue(long childLife,
+                                                                WaiverCase waiverCase,
+                                                                List<String> discarded) {
+            return new EntityArcWaiverValue(childLife, waiverCase, discarded);
+        }
+
+        /// The causes `accept-loss` admits.
+        @Codec
+        public enum WaiverCase {
+            BLOCK_LOST,
+            UNDECODABLE,
+            SEED_CORRUPT,
+            CANNOT_REPRODUCE,
+            FETCH_FAILED,
+            ARC_PARENT_RELEASED,
+            ARC_BASE_WITHHELD,
+            /// Sentinel: a constant a newer node wrote that this one does not know.
+            UNKNOWN
         }
     }
 

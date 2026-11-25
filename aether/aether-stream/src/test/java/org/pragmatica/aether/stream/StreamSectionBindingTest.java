@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import io.netty.buffer.ByteBuf;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.resource.ResourceFactory;
@@ -21,8 +22,10 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
 import org.pragmatica.aether.slice.blueprint.StreamDeclarationError;
+import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.config.source.TomlConfigSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -35,6 +38,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -81,6 +85,15 @@ class StreamSectionBindingTest {
     private static ConfigurationProvider providerOf(String toml) {
         return ConfigurationProvider.builder()
                                     .withSource(TomlConfigSource.tomlConfigSource(toml).unwrap())
+                                    .build();
+    }
+
+    /// The TOML text as the file-backed layer plus `overlay` as a layer that is not file-backed: such a layer is not in
+    /// `staticKeys()`, which is why the section's own key list never names what it supplies.
+    private static ConfigurationProvider overlaidProviderOf(String toml, Map<String, String> overlay) {
+        return ConfigurationProvider.builder()
+                                    .withSource(TomlConfigSource.tomlConfigSource(toml).unwrap())
+                                    .withSource(MapConfigSource.mapConfigSource("overlay", overlay, 100).unwrap())
                                     .build();
     }
 
@@ -132,6 +145,18 @@ class StreamSectionBindingTest {
                                                                     .withDeclared(RetentionDimensions.BYTES));
         }
 
+        /// F4 (#3491): a TOML-declared stream's ring is sized by its declared count and bytes, as before this PR (the TOML
+        /// path never took the declaration defaults for a declared key). EVERY_KEY declares count 5 000 and bytes 8 MB =
+        /// 8 388 608: floor = 64 + 24 x 5 000 + min(8 388 608, 256 KiB) = 64 + 120 000 + 262 144 = 382 208; cap =
+        /// 64 + 120 000 + 8 388 608 = 8 508 672.
+        @Test
+        void declaredToml_ringFloorAndCapEqualTheDeclaredValues() {
+            var retention = bindWith(new StreamPublisherFactory(), EVERY_KEY).retention();
+
+            assertThat(OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(382_208L);
+            assertThat(OffHeapRingBuffer.capBytes(retention.maxCount(), retention.maxBytes())).isEqualTo(8_508_672L);
+        }
+
         private static void assertEveryKeyBound(StreamConfig config) {
             assertThat(config.name()).isEqualTo(ALIAS);
             assertThat(config.partitions()).isEqualTo(3);
@@ -170,6 +195,45 @@ class StreamSectionBindingTest {
             }
         }
 
+        /// #3495 item 1 tripwire (ENABLED, current behaviour): a `[retention]` / `[hot]` key reaches activation without the
+        /// validator and is refused as inert, naming the key. Design arm below.
+        @Test
+        void declarationRetentionAndHotKeys_areRefused_namingThem() {
+            assertRefused("[streams.orders]\n[streams.orders.retention]\nmax_bytes = \"2GB\"\n", "retention.max_bytes");
+            assertRefused("[streams.orders]\n[streams.orders.hot]\nmax_count = 100\n", "hot.max_count");
+        }
+
+        /// #3520: a `[hot]` or `[retention]` key supplied by a layer that is not a TOML file (environment, system property, KV) is
+        /// refused as the file-backed one is: the gate asks the section view the parser reads, not the static key list. The
+        /// control proves the overlay layer reaches the binder at all.
+        @Test
+        void declarationKeysFromAnOverlayLayer_areRefused_namingThem() {
+            assertRefusedWithOverlay("[streams.orders]\n", Map.of("streams.orders.hot.max_count", "100"), "hot.max_count");
+            assertRefusedWithOverlay("[streams.orders]\n", Map.of("streams.orders.retention.max_bytes", "2GB"), "retention.max_bytes");
+            assertRefusedWithOverlay("[streams.orders]\n[streams.orders.retention]\nmax_age = \"1h\"\n",
+                                     Map.of("streams.orders.retention.max_bytes", "2GB"),
+                                     "retention.max_bytes");
+        }
+
+        @Test
+        void anOverlayKeyThatIsNotInert_bindsThroughTheSameProvider() {
+            var bound = StreamSectionBinding.bindStreamSection(overlaidProviderOf("[streams.orders]\n", Map.of("streams.orders.partitions", "3")),
+                                                               SECTION,
+                                                               BINDING_CONTEXT)
+                                            .onFailure(cause -> fail(cause.message()))
+                                            .unwrap();
+
+            assertThat(bound.partitions()).isEqualTo(3);
+        }
+
+        @Disabled("S2a3 wires [retention] and S2b wires [hot]: enable and delete the tripwire above")
+        @Test
+        void declarationRetentionAndHotKeys_bind_onceWired() {
+            var toml = "[streams.orders]\n[streams.orders.retention]\nmax_bytes = \"2GB\"\n[streams.orders.hot]\nmax_count = 100\n";
+
+            assertThat(StreamSectionBinding.bindStreamSection(providerOf(toml), SECTION, BINDING_CONTEXT).isSuccess()).isTrue();
+        }
+
         /// The consumer defaults are not inert values: a section that spells them out binds.
         @Test
         void consumerKeysAtTheirDefaults_bind() {
@@ -186,6 +250,13 @@ class StreamSectionBindingTest {
                     """;
 
             assertThat(StreamSectionBinding.bindStreamSection(providerOf(toml), SECTION, BINDING_CONTEXT).isSuccess()).isTrue();
+        }
+
+        private static void assertRefusedWithOverlay(String toml, Map<String, String> overlay, String key) {
+            StreamSectionBinding.bindStreamSection(overlaidProviderOf(toml, overlay), SECTION, BINDING_CONTEXT)
+                                .onSuccess(config -> fail("`" + key + "` from an overlay layer has no runtime effect and must be refused, yet bound: " + config))
+                                .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.InertKeysRefused.class))
+                                .onFailure(cause -> assertThat(cause.message()).contains(key + " = "));
         }
 
         private static void assertRefused(String toml, String key) {
@@ -250,8 +321,10 @@ class StreamSectionBindingTest {
             }
         }
 
+        /// The ring is sized from the hot window, not retention: a retention count past the index bound is accepted, and the
+        /// ring is the default window. The index refusal now reads the hot-window count (`StreamRingWindowTest$CountBound`).
         @Test
-        void unindexableCount_isRefusedTyped_notThrown() {
+        void unboundedRetentionCount_isAccepted_andTheRingIsTheDefaultWindow() {
             var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
             try {
                 var config = bindWith(new StreamPublisherFactory(), """
@@ -261,8 +334,8 @@ class StreamSectionBindingTest {
                         """);
 
                 manager.createStream(config)
-                       .onSuccess(_ -> fail("an unindexable count must be refused"))
-                       .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.RetentionCountUnindexable.class));
+                       .onFailure(cause -> fail("a retention count no longer sizes the ring: " + cause.message()));
+                assertDefaultWindow(manager, config.name());
             } finally {
                 manager.close();
             }
@@ -348,17 +421,16 @@ class StreamSectionBindingTest {
                                                                                                                                                               1))));
         }
 
+        /// A retention count one past the old one-segment index bound is accepted: retention no longer sizes the ring.
         @Test
-        void countOnePastTheIndexableCapacity_isRefusedTyped() {
-            assertRefused("max_count = \"" + (OffHeapRingBuffer.MAX_CAPACITY + 1) + "\"",
-                          new StreamError.RetentionCountUnindexable(ALIAS, OffHeapRingBuffer.MAX_CAPACITY + 1, OffHeapRingBuffer.MAX_CAPACITY));
+        void retentionCountOnePastTheIndexableCapacity_isAccepted_andTheRingIsTheDefaultWindow() {
+            assertAcceptedAtTheDefaultWindow("max_count = \"" + (OffHeapRingBuffer.MAX_CAPACITY + 1) + "\"");
         }
 
-        /// At the capacity itself the ring is indexable in principle but not affordable: the refusal is the
-        /// budget's typed one, not a throw.
+        /// A retention count at the old index bound is accepted: the ring is the default window, which the budget affords.
         @Test
-        void countAtTheIndexableCapacity_isRefusedByTheBudget_typed() {
-            assertRefused("max_count = \"" + OffHeapRingBuffer.MAX_CAPACITY + "\"", StreamError.General.STREAM_MEMORY_EXCEEDED);
+        void retentionCountAtTheIndexableCapacity_isAccepted_andTheRingIsTheDefaultWindow() {
+            assertAcceptedAtTheDefaultWindow("max_count = \"" + OffHeapRingBuffer.MAX_CAPACITY + "\"");
         }
 
         @Test
@@ -403,16 +475,25 @@ class StreamSectionBindingTest {
             }
         }
 
-        private static void assertRefused(String boundLine, Cause expected) {
+        private static void assertAcceptedAtTheDefaultWindow(String boundLine) {
             var manager = StreamPartitionManager.streamPartitionManager(128L * 1024 * 1024);
             try {
                 manager.createStream(bindWith(new StreamPublisherFactory(), compound(boundLine)))
-                       .onSuccess(_ -> fail("expected " + expected))
-                       .onFailure(cause -> assertThat(cause).isEqualTo(expected));
+                       .onFailure(cause -> fail("a retention count no longer sizes the ring: " + cause.message()));
+                assertDefaultWindow(manager, ALIAS);
             } finally {
                 manager.close();
             }
         }
+    }
+
+    private static void assertDefaultWindow(StreamPartitionManager manager, String stream) {
+        var ring = manager.partitionBuffer(stream, 0)
+                          .onEmpty(() -> fail("no ring for " + stream))
+                          .unwrap();
+
+        assertThat(ring.controlBytes()).as("the index is the default window's")
+                                       .isEqualTo(RingGeometry.HEADER_SIZE + RingGeometry.INDEX_ENTRY_SIZE * RingGeometry.HOT_WINDOW_ENTRIES);
     }
 
     /// v1557 probed two cases where deploy (TOML text) and activation (flattened provider) disagreed; both views
@@ -430,14 +511,30 @@ class StreamSectionBindingTest {
             assertBothRefuseWith(toml, StreamDeclarationError.UnknownStreamKeys.class);
         }
 
+        /// `retention` is a known sub-section since #3333, so what is refused here is `retention.value`: a key that
+        /// sub-section does not read.
         @Test
-        void subTableOtherThanConsumers_isRefusedAtBoth() {
+        void unknownKeyInAKnownSubSection_isRefusedAtBoth() {
             var toml = """
                     [streams.orders]
                     version = "1.0.0"
 
                     [streams.orders.retention]
                     value = "5"
+                    """;
+
+            assertBothRefuseWith(toml, StreamDeclarationError.UnknownStreamKeys.class);
+        }
+
+        /// `storage` is no sub-section of a stream: a wholly unknown sub-table (the in-memory streams work reads it later).
+        @Test
+        void unknownSubTable_isRefusedAtBoth() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+
+                    [streams.orders.storage]
+                    kind = "memory"
                     """;
 
             assertBothRefuseWith(toml, StreamDeclarationError.UnknownStreamKeys.class);

@@ -31,7 +31,7 @@ import org.pragmatica.serialization.Codec;
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
 /// discriminator-keyed dispatch, structured log, or no-op).
 @Codec
-public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ClusterEvent.CommunityMinted, ClusterEvent.CommunityStateChanged, ClusterEvent.CommunityMemberJoined, ClusterEvent.CommunityMemberLeft, ClusterEvent.DhtReplicationUnsettled, ClusterEvent.DhtReplicationSettled, ClusterEvent.DhtWriterStale, ClusterEvent.DhtWriterStaleResolved, ClusterEvent.StreamFailoverRefused, ClusterEvent.StreamFailoverResolved, ClusterEvent.StreamIsrBelowMinimum, ClusterEvent.StreamIsrRestored, ClusterEvent.StreamLineageRestarted, ClusterEvent.StreamConfigChangeNotApplied, ClusterEvent.ScheduledTaskOutcomeUnknown, ClusterEvent.ScheduledTaskOutcomeRestored, ClusterEvent.ScheduledTaskFireHeld, ClusterEvent.ScheduledTaskFireReleased, ClusterEvent.RoutePrefixCollision, ClusterEvent.RoutePrefixCollisionCleared, ExtendedEvent {
+public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ClusterEvent.CommunityMinted, ClusterEvent.CommunityStateChanged, ClusterEvent.CommunityMemberJoined, ClusterEvent.CommunityMemberLeft, ClusterEvent.DhtReplicationUnsettled, ClusterEvent.DhtReplicationSettled, ClusterEvent.DhtWriterStale, ClusterEvent.DhtWriterStaleResolved, ClusterEvent.StreamFailoverRefused, ClusterEvent.StreamFailoverResolved, ClusterEvent.StreamIsrBelowMinimum, ClusterEvent.StreamIsrRestored, ClusterEvent.StreamLineageRestarted, ClusterEvent.StreamConfigChangeNotApplied, ClusterEvent.StreamRetentionChanged, ClusterEvent.ScheduledTaskOutcomeUnknown, ClusterEvent.ScheduledTaskOutcomeRestored, ClusterEvent.ScheduledTaskFireHeld, ClusterEvent.ScheduledTaskFireReleased, ClusterEvent.RoutePrefixCollision, ClusterEvent.RoutePrefixCollisionCleared, ExtendedEvent {
     /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
     HlcTimestamp at();
 
@@ -545,6 +545,15 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
         }
     }
 
+    /// #3334: a committed config changed a running stream's retention bounds. A point event; no resolved pair.
+    /// `details`: `stream`, `oldBounds`, `newBounds`, `eventId`.
+    record StreamRetentionChanged(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new StreamRetentionChanged(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
     /// #1723: a scheduled task has a fire whose outcome is unknown, so it is not known whether the work ran. Derived on
     /// every node from the committed task state; published once, by the cluster-events owner, throttled per task.
     /// `details`: `task` (`section/artifact/method`), `node` (ALL-mode only), `fireAt`.
@@ -667,7 +676,7 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     ///
     /// This is one generic event rather than a variant per condition. `details.code` is the stable
     /// identifier of the condition, taken from the `OperatorWarningCode` catalogue, so adding a condition
-    /// does not add a wire type. Neither `GET /api/events` nor `aether events` can filter on it yet. Every one of these is a per-node fact, reported by the node that saw it, so it goes
+    /// does not add a wire type. `GET /api/events?code=` and `aether events --code` filter on it (#1631), and `severity=`/`--severity` select a minimum level. Every one of these is a per-node fact, reported by the node that saw it, so it goes
     /// through the aggregator's ungated `emitLocal` path, like [SelfDrainInitiated]. The emit is throttled
     /// to one per `(code, subject)` per minute. The log line at the call site is never throttled.
     ///

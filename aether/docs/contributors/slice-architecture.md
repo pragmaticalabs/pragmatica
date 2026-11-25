@@ -166,7 +166,7 @@ public interface OrderService {
 The factory provides two entry points. The generated factory method signature is:
 
 ```java
-public static Promise<SliceName> sliceName(Aspect<SliceName> aspect, SliceCreationContext ctx)
+public static Promise<SliceName> sliceName(SliceCreationContext ctx)
 ```
 
 Full example:
@@ -175,9 +175,7 @@ Full example:
 public final class OrderServiceFactory {
     private OrderServiceFactory() {}
 
-    public static Promise<OrderService> orderService(
-            Aspect<OrderService> aspect,
-            SliceCreationContext ctx) {
+    public static Promise<OrderService> orderService(SliceCreationContext ctx) {
         // Local proxy for slice dependency
         record inventoryService(MethodHandle<Integer, String> checkStockHandle)
                 implements InventoryService {
@@ -196,14 +194,11 @@ public final class OrderServiceFactory {
                 var validator = OrderValidator.orderValidator();
                 // Slice dep - instantiate proxy from method handle
                 var inventory = new inventoryService(inventory_checkStock);
-                return aspect.apply(
-                    OrderService.orderService(validator, inventory));
+                return OrderService.orderService(validator, inventory);
             });
     }
 
-    public static Promise<Slice> orderServiceSlice(
-            Aspect<OrderService> aspect,
-            SliceCreationContext ctx) {
+    public static Promise<Slice> orderServiceSlice(SliceCreationContext ctx) {
         record orderServiceSlice(OrderService delegate) implements Slice {
             @Override
             public List<SliceMethod<?, ?>> methods() {
@@ -218,7 +213,7 @@ public final class OrderServiceFactory {
             }
         }
 
-        return orderService(aspect, ctx)
+        return orderService(ctx)
                    .map(orderServiceSlice::new);
     }
 }
@@ -228,7 +223,7 @@ public final class OrderServiceFactory {
 
 1. **Local proxy records**: Slice dependency proxies are generated as local records with `MethodHandle<R, I>` fields inside the factory method, not as separate classes. This keeps the implementation encapsulated.
 
-2. **Aspect support**: The `Aspect<T>` parameter allows runtime decoration (logging, metrics, etc.) without modifying slice code.
+2. **Observability outside the factory**: The factory takes no decoration parameter. Logging, metrics and tracing are attached at the dispatch seams (`SliceInvoker`, `AdmittedSliceBridge`, `HttpRoutePublisher`) through `ObservabilityStrategyCell`, switchable at runtime without touching slice code (see [07-observability.md](../architecture/07-observability.md)).
 
 3. **SliceCreationContext**: The runtime provides a `SliceCreationContext` which bundles the `SliceInvokerFacade` (for cross-slice calls) and `ResourceProviderFacade` (for infrastructure resources). Proxy records obtain method handles via `ctx.invoker().methodHandle(...)`.
 
@@ -427,20 +422,6 @@ org.example\:pricing\:api=2.1.0
 This file is created by the `jbct:collect-slice-deps` goal, which scans Maven dependencies with `scope=provided` and `classifier=api`.
 
 ## Extension Points
-
-### Custom Aspects
-
-Implement `Aspect<T>` to decorate slice instances:
-
-```java
-public class LoggingAspect<T> implements Aspect<T> {
-    @Override
-    public T apply(T instance) {
-        // Return proxy that logs method calls
-        return createLoggingProxy(instance);
-    }
-}
-```
 
 ### SliceCreationContext
 

@@ -75,7 +75,7 @@ class HotWindowFixtureTest {
 
     @Test
     void declaredHot_leavesEveryOtherComponentEqualToTheSource() {
-        var copy = HotWindowFixture.declaredHot(SOURCE, 10L, 20L);
+        var copy = HotWindowFixture.declaredHot(SOURCE, 10L, SOURCE.maxEventSizeBytes());
 
         assertThat(copy.name()).isEqualTo(SOURCE.name());
         assertThat(copy.partitions()).isEqualTo(SOURCE.partitions());
@@ -88,5 +88,11 @@ class HotWindowFixtureTest {
         assertThat(copy.compression()).isEqualTo(SOURCE.compression());
         assertThat(copy.encryptionKeyId()).isEqualTo(SOURCE.encryptionKeyId());
         assertThat(copy.incarnation()).isEqualTo(SOURCE.incarnation());
+    }
+
+    @Test
+    void declaredHot_lowersMaxEventSizeToAWindowBelowIt_andNeverRaisesIt() {
+        assertThat(HotWindowFixture.declaredHot(SOURCE, 10L, 20L).maxEventSizeBytes()).isEqualTo(20L);
+        assertThat(HotWindowFixture.declaredHot(SOURCE, 10L, Long.MAX_VALUE).maxEventSizeBytes()).isEqualTo(SOURCE.maxEventSizeBytes());
     }
 }

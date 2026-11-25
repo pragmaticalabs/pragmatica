@@ -4,6 +4,7 @@
 package org.pragmatica.aether.forge.simulator;
 
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Set;
 
 import org.pragmatica.lang.Cause;
@@ -182,7 +183,7 @@ public sealed interface ChaosEvent {
         public String description() {
             var target = sliceArtifact.or("all slices");
 
-            return String.format("Inject %.0f%% failure rate for %s", failureRate * 100, target);
+            return String.format(Locale.ROOT, "Inject %.0f%% failure rate for %s", failureRate * 100, target);
         }
 
         public static Result<InvocationFailure> invocationFailure(Option<String> artifact,
@@ -228,7 +229,7 @@ public sealed interface ChaosEvent {
     }
 
     private static String formatPercentageMessage(String metricName, double level, String nodeId) {
-        return String.format("Simulate %.0f%% %s on node %s", level * 100, metricName, nodeId);
+        return String.format(Locale.ROOT, "Simulate %.0f%% %s on node %s", level * 100, metricName, nodeId);
     }
 
     record unused() implements ChaosEvent {

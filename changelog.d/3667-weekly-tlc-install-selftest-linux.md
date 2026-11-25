@@ -1,0 +1,2 @@
+### Fixed (2026-11-24 — #3667: weekly-TLC install selftest failed on the Linux CI runner)
+- **`tools/tla/install-weekly.sh` called `plutil -lint` unconditionally, and the ubuntu runner has no `plutil`**, so the TLA+ models workflow's `selftests` job failed three install rows at 276b5ef179 and skipped every model job behind it. The lint now runs only where `plutil` exists (the Mac, where the install runs). `[verified: tools/tla/weekly-host.selftest.sh on a Linux host: release tip 26 ok + the same 3 FAIL rows as CI; this branch 29 ok; macOS 29 ok]`

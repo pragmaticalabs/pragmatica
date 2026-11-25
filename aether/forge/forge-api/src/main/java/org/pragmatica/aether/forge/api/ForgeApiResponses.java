@@ -6,6 +6,7 @@ package org.pragmatica.aether.forge.api;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 
 import org.pragmatica.lang.Option;
 
@@ -19,7 +20,7 @@ public final class ForgeApiResponses {
         var minutes = (totalSeconds % 3600) / 60;
         var seconds = totalSeconds % 60;
 
-        return String.format("%02d:%02d:%02d", hours, minutes, seconds);
+        return String.format(Locale.ROOT, "%02d:%02d:%02d", hours, minutes, seconds);
     }
 
     public record SuccessResponse(boolean success) {

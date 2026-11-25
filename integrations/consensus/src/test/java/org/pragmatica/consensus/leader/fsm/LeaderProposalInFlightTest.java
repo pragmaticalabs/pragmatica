@@ -29,8 +29,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeaderOnDrainer;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// #1797: the in-flight proposal guard is held from submit until the proposal COMMITS (the FSM leaves
 /// `Electing` / `ReElecting` on the committed `LeaderKey`) or the proposal timeout releases it — never
@@ -73,7 +75,7 @@ class LeaderProposalInFlightTest {
                                                  LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                  LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                  () -> true,
-                                                 kvLeader,
+                                                 () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                  LONG,
                                                  LONG).dormant());
     }
@@ -86,20 +88,20 @@ class LeaderProposalInFlightTest {
     }
 
     private static void enterElecting(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) {
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
-        h.dispatch(new ConsensusReady());
-        h.dispatch(new KvSyncGraceTimeout());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
+        OnDrainer.dispatch(h, new ConsensusReady());
+        OnDrainer.dispatch(h, new KvSyncGraceTimeout());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Electing.class);
     }
 
     private static void enterReElecting(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) {
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
-        h.dispatch(new ConsensusReady());
-        h.dispatch(new LeaderCommitted(SELF));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
+        OnDrainer.dispatch(h, new ConsensusReady());
+        commitLeaderOnDrainer(h, SELF);
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
-        h.dispatch(new ClusterFsmEvent.NodeGone(SELF, List.of(PEER_A, PEER_B), seq()));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeGone(SELF, List.of(PEER_A, PEER_B), seq()));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
     }
 
@@ -117,15 +119,15 @@ class LeaderProposalInFlightTest {
         var h = buildHarness(submittingHandler(proposals), LONG, LONG);
 
         enterReElecting(h);
-        h.dispatch(new ElectionTick());
+        OnDrainer.dispatch(h, new ElectionTick());
         assertThat(proposals.get()).as("first tick proposes").isEqualTo(1);
         assertThat(ctxOf(h).proposalInFlight()).as("the submit settle leaves the guard held until commit").isTrue();
 
-        h.dispatch(new ElectionTick());
+        OnDrainer.dispatch(h, new ElectionTick());
 
         assertThat(proposals.get()).as("a second schedule between submit-settle and commit must not re-propose")
                                    .isEqualTo(1);
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     @Test
@@ -134,14 +136,14 @@ class LeaderProposalInFlightTest {
         var h = buildHarness(submittingHandler(proposals), LONG, LONG);
 
         enterElecting(h);
-        h.dispatch(new ElectionTick());
+        OnDrainer.dispatch(h, new ElectionTick());
         assertThat(proposals.get()).as("first tick proposes").isEqualTo(1);
 
-        h.dispatch(new ElectionTick());
+        OnDrainer.dispatch(h, new ElectionTick());
 
         assertThat(proposals.get()).as("a second schedule between submit-settle and commit must not re-propose")
                                    .isEqualTo(1);
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     @Test
@@ -150,15 +152,15 @@ class LeaderProposalInFlightTest {
         var h = buildHarness(submittingHandler(proposals), SHORT_RETRY, LONG);
 
         enterReElecting(h);
-        h.dispatch(new ElectionTick());
+        OnDrainer.dispatch(h, new ElectionTick());
         assertThat(proposals.get()).as("first tick proposes").isEqualTo(1);
 
-        h.dispatch(new ClusterFsmEvent.NodeGone(PEER_B, List.of(SELF, PEER_A), seq()));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeGone(PEER_B, List.of(SELF, PEER_A), seq()));
         Thread.sleep(400);
 
         assertThat(proposals.get()).as("the tick a topology change reschedules must not re-propose either")
                                    .isEqualTo(1);
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     /// The guard is held for the commit, so the commit must release it: the FSM leaves `ReElecting` on the
@@ -171,11 +173,10 @@ class LeaderProposalInFlightTest {
 
         enterReElecting(h);
         var ctx = ctxOf(h);
-        h.dispatch(new ElectionTick());
+        OnDrainer.dispatch(h, new ElectionTick());
         assertThat(ctx.proposalInFlight()).isTrue();
 
-        ctx.observeViewSequence(1L);
-        h.dispatch(new LeaderCommitted(SELF, 1L));
+        commitLeaderOnDrainer(h, SELF, 1L);
 
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
         assertThat(ctx.proposalInFlight()).as("leaving ReElecting on the commit releases the guard").isFalse();
@@ -189,8 +190,8 @@ class LeaderProposalInFlightTest {
         var h = buildHarness(submittingHandler(proposals), SHORT_RETRY, SHORT_PROPOSAL_TIMEOUT);
 
         enterReElecting(h);
-        h.dispatch(new ElectionTick());
-        h.dispatch(new ElectionTick());
+        OnDrainer.dispatch(h, new ElectionTick());
+        OnDrainer.dispatch(h, new ElectionTick());
         assertThat(proposals.get()).as("held before the timeout").isEqualTo(1);
 
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
@@ -199,7 +200,7 @@ class LeaderProposalInFlightTest {
         }
 
         assertThat(proposals.get()).as("the timeout released the guard and the retry re-proposed").isEqualTo(2);
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     /// #1797 F1: a tick whose own KV-pull adoption moves the FSM to `Led` (the commit was observed but its
@@ -218,23 +219,23 @@ class LeaderProposalInFlightTest {
 
         enterElecting(h);
         var ctx = ctxOf(h);
-        h.dispatch(new ElectionTick());
+        OnDrainer.dispatch(h, new ElectionTick());
         assertThat(proposals).containsExactly(1L);
 
         kvLeader.set(Option.some(PEER_A));
         ctx.observeViewSequence(1L);
-        h.dispatch(new ElectionTick());
+        OnDrainer.dispatch(h, new ElectionTick());
 
         assertThat(h.state()).as("the tick's adoption moved the FSM to Led").isInstanceOf(LeaderElectionState.Led.class);
         assertThat(proposals).as("no proposal from the left state").containsExactly(1L);
         assertThat(ctx.proposalInFlight()).as("no leaked guard").isFalse();
 
-        h.dispatch(new ClusterFsmEvent.NodeGone(PEER_A, List.of(SELF, PEER_B), seq()));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeGone(PEER_A, List.of(SELF, PEER_B), seq()));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
         kvLeader.set(Option.none());
-        h.dispatch(new ElectionTick());
+        OnDrainer.dispatch(h, new ElectionTick());
 
         assertThat(proposals.size()).as("the next ReElecting round can propose").isEqualTo(2);
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 }

@@ -17,6 +17,7 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -46,6 +47,7 @@ import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.swim.SwimConfig.swimConfig;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 class SwimProtocolTest {
     private static final NodeId SELF_ID = new NodeId("node-self");
@@ -67,7 +69,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -225,7 +227,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -330,7 +332,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
             observations = new RecordingObservationSink();
             protocol.addObservationListener(observations);
@@ -447,7 +449,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
             observations = new RecordingObservationSink();
             protocol.addObservationListener(observations);
@@ -562,7 +564,7 @@ class SwimProtocolTest {
             var config = swimConfig(timeSpan(50).millis(), timeSpan(20).millis(), 3, timeSpan(100).millis(), 8);
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -601,7 +603,7 @@ class SwimProtocolTest {
             );
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
                                             .fold(cause -> null, v -> v);
 
             localProtocol.addSeedMember(NODE_A, ADDR_A);
@@ -642,10 +644,7 @@ class SwimProtocolTest {
             localProtocol.start();
             try {
                 // Wait suspectTimeout (500ms) plus margin for tick scheduling.
-                var deadline = System.currentTimeMillis() + 3_000L;
-                while (localListener.faulty.isEmpty() && System.currentTimeMillis() < deadline) {
-                    Thread.sleep(50L);
-                }
+                pollUntil(() -> localListener.faulty.isEmpty(), none -> !none, Duration.ofSeconds(10), Duration.ofMillis(50));
 
                 assertThat(localListener.faulty)
                     .as("NODE_A must transition to FAULTY despite continuous SUSPECT gossip rebroadcasts")
@@ -697,7 +696,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -974,7 +973,7 @@ class SwimProtocolTest {
         @Test
         void stopDuringAnAttempt_doesNotAnnounceToTheRemainingSeeds() throws InterruptedException {
             var blocking = new ParkingTransport();
-            var local = SwimProtocol.swimProtocol(swimConfig(), blocking, new RecordingListener(), SELF_ID, SELF_ADDR)
+            var local = SwimTestProtocols.swimProtocol(swimConfig(), blocking, new RecordingListener(), SELF_ID, SELF_ADDR)
                                     .fold(cause -> null, v -> v);
 
             local.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A, ADDR_B));
@@ -1056,12 +1055,10 @@ class SwimProtocolTest {
             return ticks.get();
         }
 
-        private static void waitUntil(java.util.function.BooleanSupplier condition, long timeoutMs)
-            throws InterruptedException {
-            var deadline = System.currentTimeMillis() + timeoutMs;
-            while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
-                Thread.sleep(25L);
-            }
+        /// Waits for the condition; the deadline bounds only a failure (a pass returns at once), so it never drops below 10 s whatever the caller passes.
+        /// A miss is silent: the caller's own assertion decides.
+        private static void waitUntil(java.util.function.BooleanSupplier condition, long timeoutMs) {
+            pollUntil(condition::getAsBoolean, met -> met, Duration.ofMillis(Math.max(timeoutMs, 10_000L)), Duration.ofMillis(25));
         }
 
         private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
@@ -1082,7 +1079,7 @@ class SwimProtocolTest {
 
         @Test
         void start_alreadyRunning_returnsError() {
-            var protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            var protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                        .fold(cause -> null, v -> v);
 
             protocol.start();
@@ -1095,7 +1092,7 @@ class SwimProtocolTest {
 
         @Test
         void stop_notRunning_returnsError() {
-            var protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            var protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                        .fold(cause -> null, v -> v);
 
             var result = protocol.stop();
@@ -1120,7 +1117,7 @@ class SwimProtocolTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(cause -> null, v -> v);
         }
 
@@ -1182,15 +1179,7 @@ class SwimProtocolTest {
             try {
                 // Drive an inbound Ping each poll; the returned Ack piggyback carries the
                 // buffered self-ALIVE once a probe tick has refreshed it.
-                var deadline = System.currentTimeMillis() + 3_000L;
-                Option<MembershipUpdate> selfAlive = Option.none();
-                while (selfAlive.isEmpty() && System.currentTimeMillis() < deadline) {
-                    protocol.onMessage(ADDR_A, new Ping(NODE_A, 99L, List.of()));
-                    selfAlive = latestSelfAliveInLastAck();
-                    if (selfAlive.isEmpty()) {
-                        Thread.sleep(25L);
-                    }
-                }
+                var selfAlive = pollUntil(this::pingThenReadSelfAlive, found -> found.isPresent(), Duration.ofSeconds(10), Duration.ofMillis(25)).finalValue();
 
                 assertThat(selfAlive.isPresent())
                     .as("a proactive self-ALIVE must be disseminated on the probe round")
@@ -1201,6 +1190,12 @@ class SwimProtocolTest {
             } finally {
                 protocol.stop();
             }
+        }
+
+        private Option<MembershipUpdate> pingThenReadSelfAlive() {
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 99L, List.of()));
+
+            return latestSelfAliveInLastAck();
         }
 
         private Option<MembershipUpdate> latestSelfAliveInLastAck() {
@@ -1251,7 +1246,7 @@ class SwimProtocolTest {
             );
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
                                             .fold(cause -> null, v -> v);
 
             localProtocol.addSeedMember(FLAPPER, FLAPPER_ADDR);
@@ -1262,21 +1257,12 @@ class SwimProtocolTest {
                 // Budget: well over period*N + suspectTimeout. With the old global-index code
                 // the flapper churn starves the dead peer and it never reaches FAULTY inside this
                 // window; with LRP the dead peer is probed within a couple of periods and decays.
-                var deadline = System.currentTimeMillis() + 5_000L;
-                var pingedSeq = 0;
-                while (localListener.faulty.stream().noneMatch(m -> m.nodeId().equals(DEAD_PEER))
-                       && System.currentTimeMillis() < deadline) {
-                    // Keep the flapper genuinely probable AND churning: ack any Ping sent to it
-                    // (so it stays ALIVE / refutes), and alternate ALIVE<->SUSPECT gossip about it
-                    // so its membership entry is constantly rewritten — the condition that
-                    // reshuffled values() order under the old index.
-                    ackPingsTo(localTransport, FLAPPER_ADDR, localProtocol);
-                    var state = (pingedSeq % 2 == 0) ? MemberState.ALIVE : MemberState.SUSPECT;
-                    var gossip = MembershipUpdate.membershipUpdate(FLAPPER, state, 1L, FLAPPER_ADDR);
-                    localProtocol.onMessage(FLAPPER_ADDR, new Ping(FLAPPER, 5_000L + pingedSeq, List.of(gossip)));
-                    pingedSeq++;
-                    Thread.sleep(15L);
-                }
+                var round = new AtomicInteger(0);
+
+                pollUntil(() -> churnFlapperThenCheckDeadFaulty(localTransport, localProtocol, localListener, round.getAndIncrement()),
+                          deadFaulty -> deadFaulty,
+                          Duration.ofSeconds(10),
+                          Duration.ofMillis(15));
 
                 assertThat(pingsTo(localTransport, DEAD_ADDR))
                     .as("dead peer must receive at least one direct Ping despite the flapper's churn (LRP fairness)")
@@ -1304,7 +1290,7 @@ class SwimProtocolTest {
             );
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener, SELF_ID, SELF_ADDR)
                                             .fold(cause -> null, v -> v);
 
             // Three stable members + one id that churns in and out between selections.
@@ -1339,6 +1325,23 @@ class SwimProtocolTest {
             assertThat(min)
                 .as("every stable member must be probed at least once")
                 .isGreaterThanOrEqualTo(1);
+        }
+
+        /// Keep the flapper genuinely probable AND churning: ack any Ping sent to it (so it stays ALIVE / refutes), and alternate
+        /// ALIVE<->SUSPECT gossip about it so its membership entry is constantly rewritten — the condition that reshuffled values()
+        /// order under the old index. Returns whether the dead peer has reached FAULTY.
+        private static boolean churnFlapperThenCheckDeadFaulty(RecordingTransport transport,
+                                                               SwimProtocol protocol,
+                                                               RecordingListener listener,
+                                                               int round) {
+            ackPingsTo(transport, FLAPPER_ADDR, protocol);
+
+            var state = (round % 2 == 0) ? MemberState.ALIVE : MemberState.SUSPECT;
+            var gossip = MembershipUpdate.membershipUpdate(FLAPPER, state, 1L, FLAPPER_ADDR);
+
+            protocol.onMessage(FLAPPER_ADDR, new Ping(FLAPPER, 5_000L + round, List.of(gossip)));
+
+            return listener.faulty.stream().anyMatch(m -> m.nodeId().equals(DEAD_PEER));
         }
 
         private static void ackPingsTo(RecordingTransport transport, InetSocketAddress addr, SwimProtocol protocol) {
@@ -1383,7 +1386,7 @@ class SwimProtocolTest {
                                     timeSpan(60).seconds());  // joinGrace (≫ test window)
             var localTransport = new RecordingTransport();
             var localListener = new RecordingListener();
-            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener,
+            var localProtocol = SwimTestProtocols.swimProtocol(config, localTransport, localListener,
                                                           SELF_ID, SELF_ADDR, () -> false)
                                             .fold(cause -> null, v -> v);
 

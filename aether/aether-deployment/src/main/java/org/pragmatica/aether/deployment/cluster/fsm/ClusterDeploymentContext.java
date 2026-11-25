@@ -18,7 +18,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.CommunityPolicyView;
 import org.pragmatica.aether.deployment.cluster.community.CommunityLivenessView;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.write.FsmWriter;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;

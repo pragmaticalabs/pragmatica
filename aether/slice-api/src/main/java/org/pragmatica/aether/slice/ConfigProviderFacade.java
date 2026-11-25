@@ -26,7 +26,7 @@ import org.pragmatica.lang.utils.Causes;
 ///
 /// Keys are addressed as `section + "." + key`, matching the flat key space the slice-composite is
 /// built in (`SliceStore#flattenSections`) and the convention
-/// `NodeDeploymentManager.ConfigServiceConfigFacade` already used on the notification path.
+/// `DeploymentConfigFacades.ConfigServiceConfigFacade` already used on the notification path.
 ///
 /// Two deliberate divergences from that older adapter, both in the direction of working rather than
 /// failing:

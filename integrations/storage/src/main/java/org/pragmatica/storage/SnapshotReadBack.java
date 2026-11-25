@@ -32,7 +32,9 @@ sealed interface SnapshotReadBack {
     }
 
     private static boolean headerMatches(MetadataSnapshot captured, Map<String, String> headers) {
-        return DefaultSnapshotManager.FORMAT_VERSION.equals(headers.get("format"))
+        return DefaultSnapshotManager.formatOf(captured).equals(headers.get("format"))
+               && captured.storageId()
+                          .equals(Option.option(headers.get("storageId")))
                && String.valueOf(captured.epoch()).equals(headers.get("epoch"))
                && captured.nodeId()
                           .equals(headers.get("nodeId"))

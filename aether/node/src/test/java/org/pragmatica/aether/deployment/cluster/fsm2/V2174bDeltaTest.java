@@ -49,7 +49,7 @@ class V2174bDeltaTest {
     /// is never reported by anyone (the leader is still this node).
     @Test
     void activationBlocked_committedWhileSuspended_isAnnouncedAfterTheResume() {
-        var h = LcSupport.leader(org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
+        var h = LcSupport.leader(org.pragmatica.aether.deployment.cluster.DeploymentAtomicity.ALL_OR_NOTHING,
                                  0.5d,
                                  CORE_1);
 
@@ -63,7 +63,8 @@ class V2174bDeltaTest {
                                                                                      "g:a:1",
                                                                                      blueprintId("org.example:app:1.0.0"),
                                                                                      2,
-                                                                                     FsmHarness.START_WALL));
+                                                                                     FsmHarness.START_WALL,
+                                                                                     org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach.MIGRATED));
         h.drain();
         assertThat(h.model().schemas.containsKey("ds")).as("precondition: indexed while suspended").isTrue();
         h.commitLeader(FsmHarness.SELF, 2L);

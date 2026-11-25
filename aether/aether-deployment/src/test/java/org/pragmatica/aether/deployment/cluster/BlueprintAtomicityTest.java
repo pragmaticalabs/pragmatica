@@ -17,7 +17,6 @@ import org.pragmatica.lang.Option;
 import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import static org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active.InFlightBlueprint;
 
 class BlueprintAtomicityTest {

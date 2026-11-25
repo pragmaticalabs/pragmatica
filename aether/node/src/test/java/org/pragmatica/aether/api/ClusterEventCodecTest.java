@@ -14,6 +14,7 @@ import org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused;
 import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
 import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
+import org.pragmatica.aether.api.ClusterEvent.StreamRetentionChanged;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
 import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMinted;
@@ -384,6 +385,7 @@ class ClusterEventCodecTest {
                        new StreamIsrRestored(ts, sev, "StreamIsrRestored", d),
                        new StreamLineageRestarted(ts, sev, "StreamLineageRestarted", d),
                        new StreamConfigChangeNotApplied(ts, sev, "StreamConfigChangeNotApplied", d),
+                       new StreamRetentionChanged(ts, sev, "StreamRetentionChanged", d),
                        new ClusterEvent.ScheduledTaskOutcomeUnknown(ts, sev, "ScheduledTaskOutcomeUnknown", d),
                        new ClusterEvent.ScheduledTaskOutcomeRestored(ts, sev, "ScheduledTaskOutcomeRestored", d),
                        new ClusterEvent.ScheduledTaskFireHeld(ts, sev, "ScheduledTaskFireHeld", d),

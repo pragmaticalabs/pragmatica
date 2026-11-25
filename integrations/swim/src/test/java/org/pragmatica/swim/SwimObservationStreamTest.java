@@ -79,7 +79,7 @@ class SwimObservationStreamTest {
             transport = new RecordingTransport();
             listener = new RecordingListener();
             observations = new RecordingObservationSink();
-            protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
             protocol.addObservationListener(observations);
         }
@@ -175,7 +175,7 @@ class SwimObservationStreamTest {
             transport = new RecordingTransport();
             listener = new RecordingListener();
             observations = new RecordingObservationSink();
-            protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
             protocol.addObservationListener(observations);
         }
@@ -255,7 +255,7 @@ class SwimObservationStreamTest {
             transport = new RecordingTransport();
             listener = new RecordingListener();
             observations = new RecordingObservationSink();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
             protocol.addObservationListener(observations);
         }
@@ -326,7 +326,7 @@ class SwimObservationStreamTest {
             transport = new RecordingTransport();
             listener = new RecordingListener();
             observations = new RecordingObservationSink();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
             protocol.addObservationListener(observations);
         }
@@ -382,7 +382,7 @@ class SwimObservationStreamTest {
         void setUp() {
             transport = new RecordingTransport();
             listener = new RecordingListener();
-            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+            protocol = SwimTestProtocols.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
                                    .fold(_ -> null, v -> v);
         }
 
@@ -443,7 +443,7 @@ class SwimObservationStreamTest {
         }
 
         private SwimProtocol protocolWith(SwimConfig config) {
-            var protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
+            var protocol = SwimTestProtocols.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)
                                        .fold(_ -> null, v -> v);
             protocol.addObservationListener(observations);
             return protocol;

@@ -28,6 +28,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.consensus.net.NetworkMessage;
@@ -169,6 +170,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     @Contract
     default void useOperatorWarningSink(OperatorWarningSink sink) {}
 
+    /// Binds the remedy sentence of the genesis dead-seat warning (#1654) to a supplier read once, when the warning is raised.
+    /// Default no-op for implementations without a Rabia engine.
+    @Contract
+    default void useGenesisSeatRemedy(Supplier<String> remedy) {}
+
     default Result<Unit> configurePassiveClient() {
         return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
     }
@@ -197,7 +203,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     }
 
     default java.util.Set<NodeId> verifiedVoterHistoryIds() {
-        return java.util.Set.of();
+        return Set.of();
     }
 
     default Result<Unit> initializeVoters(VoterConfiguration configuration) {
@@ -250,6 +256,14 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     default Option<VoterConfiguration> voterConfiguration() {
         return Option.none();
+    }
+
+    /// Test seam (#1654 Ember): genesis members whose last two reports this pending node holds as consecutive rounds of its own view.
+    /// Read-only diagnostic for tests: it is not a consensus decision input and nothing in the protocol reads it.
+    /// Empty for a node that never ran a genesis agreement or whose engine is a test double. After genesis is installed the snapshot stays
+    /// frozen at its last value: it does not turn empty.
+    default Set<NodeId> genesisStableReporters() {
+        return Set.of();
     }
 
     default org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {
@@ -375,7 +389,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     /// Full-arity overload accepting a `currentLeaderFromKvSupplier` — pull-side complement
     /// to the push-based `KVStoreNotification.ValuePut<LeaderKey>` listener. Production wiring
-    /// (Aether's `AetherNode`) plumbs `() -> kvStore.get(LeaderKey.INSTANCE).map(LeaderValue::leader)`
+    /// (Aether's `AetherNode`) plumbs `LeaderKey` read as the committed `LeaderCommitted(leader, viewSequence)`
     /// so the leader-election FSM can adopt the cluster-committed leader on entry to
     /// `Electing` / `ReElecting`, even when the rejoining node missed the notification path.
     ///
@@ -393,7 +407,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               TlsConfig tlsConfig,
                                                               Supplier<Long> rabiaTermSupplier,
                                                               Predicate<NodeId> isDecommissioned,
-                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                               GenerationSnapshotSource snapshotSource,
                                                               Supplier<HlcTimestamp> hlcSupplier) {
         return rabiaNode(config,
@@ -433,7 +447,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               TlsConfig tlsConfig,
                                                               Supplier<Long> rabiaTermSupplier,
                                                               Predicate<NodeId> isDecommissioned,
-                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                               GenerationSnapshotSource snapshotSource,
                                                               Supplier<HlcTimestamp> hlcSupplier,
                                                               SyncHoldRegistry syncHoldRegistry,
@@ -476,7 +490,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               TlsConfig tlsConfig,
                                                               Supplier<Long> rabiaTermSupplier,
                                                               Predicate<NodeId> isDecommissioned,
-                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                               Predicate<NodeId> leaderPingFreshFn,
                                                               GenerationSnapshotSource snapshotSource,
                                                               Supplier<HlcTimestamp> hlcSupplier,
@@ -532,7 +546,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                  boolean useConsensusLeaderElection,
                                                                  RabiaPersistence<C> persistence,
                                                                  Supplier<Long> rabiaTermSupplier,
-                                                                 Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                                 Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                                  Predicate<NodeId> leaderPingFreshFn,
                                                                  SyncHoldRegistry syncHoldRegistry,
                                                                  SyncHoldConfig syncHoldConfig,
@@ -611,6 +625,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // local election has no network to ask over.
         if (useConsensusLeaderElection) {
             leaderManager.enableLeaderPreVote();
+            // #3047: a node SWIM removed while its transport link stayed up returns via the transport's own view.
+            leaderManager.installTransportView(network::sequencedView);
         }
         // Collect sealed hierarchy entries
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class).route(route(SetClusterSize.class,
@@ -812,6 +828,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             }
 
             @Override
+            @Contract
+            public void useGenesisSeatRemedy(Supplier<String> remedy) {
+                consensus().useGenesisSeatRemedy(remedy);
+            }
+
+            @Override
             public Result<Unit> configurePassiveClient() {
                 return consensus().configurePassiveClient();
             }
@@ -897,6 +919,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public Option<VoterConfiguration> voterConfiguration() {
                 return consensus().voterConfiguration();
+            }
+
+            @Override
+            public Set<NodeId> genesisStableReporters() {
+                return consensus().genesisStableReporters();
             }
 
             @Override

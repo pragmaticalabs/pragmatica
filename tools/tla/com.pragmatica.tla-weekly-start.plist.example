@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- #3659: starts the weekly host-only TLC run, Sunday 02:00 (the Mac's local time zone: CET on the owner's Mac; launchd has no zone key).
+     launchd runs a fire missed during sleep once at wake; a fire missed while the Mac is OFF is lost, and the router's TLC-MISSING
+     (no verdict row in 8 days) is what notices. install-weekly.sh fills @TOOLS@ (this directory) and @HOME@. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.pragmatica.tla-weekly-start</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>@TOOLS@/weekly-host.sh</string><string>start</string></array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>StartCalendarInterval</key>
+  <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/tla-weekly.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/tla-weekly.log</string>
+</dict>
+</plist>

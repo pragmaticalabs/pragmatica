@@ -146,6 +146,23 @@ CREATE TRIGGER order_change_trigger
 - On slice unload: UNLISTEN all channels, close the dedicated connection
 - One dedicated connection per `[pg-notifications.xxx]` config section
 
+## Failure at Provisioning
+
+Provisioning opens the dedicated connection and issues one `LISTEN` per configured channel. If the connection cannot be
+opened, or the server refuses any `LISTEN` (for example a role without the privilege, or an invalid channel name), the
+provisioning of that `[pg-notifications.xxx]` resource **fails**; the slice does not receive a subscriber that is missing
+one of its channels.
+
+- **What the slice sees:** the slice does not start. The failure is a `ResourceCreationFailed` for `PgNotificationSubscriber`
+  and the config section (a permanent, non-retried failure, like any other resource that cannot be created); its cause
+  carries the refused `LISTEN` (the server's message), or the connect failure.
+- **What is left behind:** nothing. On a failed provision the dedicated connection is closed, then the connection holder
+  that owns the driver's event-loop threads, so a refused `LISTEN` leaves no database backend and no driver thread
+  running.
+- **What changed:** earlier versions handed the slice a subscriber that was deaf on the refused channels, so the failure
+  showed up only as notifications that never arrived. Fix the cause (grant the privilege, correct
+  the channel list in `resources.toml`) and redeploy.
+
 ## Use Cases
 
 1. **Cache Invalidation** -- NOTIFY on data change, handler evicts cache entry

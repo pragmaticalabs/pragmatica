@@ -25,11 +25,13 @@ import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.IdentityFacts;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.OutboundMessageLimit;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.concurrent.PublishSlot;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -224,6 +226,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private static final long INITIAL_MAX_DATA = 64_000_000;
     private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
+    /// #3635: bound on terminating an owned group after a failed bind (enforced on the loop and, by timeout, caller-side).
+    private static final long OWNED_GROUP_TERMINATION_MS = 5_000L;
 
     private final NodeId selfId;
     private final NodeAddress selfAddress;
@@ -249,6 +253,10 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     /// production, which is why the race is only reachable deterministically from here. No-op unless
     /// a test installs a hook.
     private volatile Runnable beforePublish = () -> {};
+
+    /// #3635 test seam: runs after a failed bind's owned group is released and before the failure is reported, so a test can
+    /// attach its observer to the start promise before it can resolve. No-op unless a test installs a hook.
+    private volatile Runnable beforeBindFailureReport = () -> {};
 
     /// The bound on a stream's preamble/Hello. A field only so a test can shorten it; production leaves the default.
     private volatile long helloTimeoutMs = DEFAULT_HELLO_TIMEOUT_MS;
@@ -302,6 +310,12 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         beforePublish = hook;
     }
 
+    /// #3635 test seam — see [#beforeBindFailureReport].
+    @Contract
+    void beforeBindFailureReportForTest(Runnable hook) {
+        beforeBindFailureReport = hook;
+    }
+
     @Override
     public Option<Integer> boundPort() {
         return serverChannel.current()
@@ -339,9 +353,39 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         if (future.isSuccess()) {
             publishBoundChannel(((io.netty.channel.ChannelFuture) future).channel(), promise);
         } else {
-            promise.fail(QuicTransportError.BindFailed.FACTORY.apply(port,
-                                                                     Causes.fromThrowable(future.cause())));
+            // #3635: a failed bind leaves nothing to stop() later in the common case (the caller sees a failed
+            // start), so the group this start created is released BEFORE the failure is reported. The bind failure is
+            // what the start reports; a termination failure is only logged. A supplied shared group is never released.
+            var bindFailed = QuicTransportError.BindFailed.FACTORY.apply(port,
+                                                                         Causes.fromThrowable(future.cause()));
+
+            releaseOwnedGroupAfterFailedBind().onResultRun(() -> reportBindFailure(promise, bindFailed));
         }
+    }
+
+    @Contract
+    private void reportBindFailure(Promise<Unit> promise, Cause bindFailed) {
+        beforeBindFailureReport.run();
+        promise.fail(bindFailed);
+    }
+
+    private Promise<Unit> releaseOwnedGroupAfterFailedBind() {
+        var group = eventLoopGroup;
+
+        if (!ownsEventLoop || group == null) {
+            return Promise.unitPromise();
+        }
+
+        return Promise.<Unit> promise(done -> group.shutdownGracefully(0,
+                                                                       OWNED_GROUP_TERMINATION_MS,
+                                                                       TimeUnit.MILLISECONDS)
+                                                   .addListener(_ -> done.succeed(unit()))).timeout(TimeSpan.timeSpan(OWNED_GROUP_TERMINATION_MS + 1_000L).millis());
+    }
+
+    /// #3635 test seam: the group this server bound (or tried to bind) on. Empty before the first start.
+    @Contract
+    Option<EventLoopGroup> eventLoopGroupForTest() {
+        return option(eventLoopGroup);
     }
 
     /// #1456: the bind can land after `stop()` has already run. The slot hands the channel straight

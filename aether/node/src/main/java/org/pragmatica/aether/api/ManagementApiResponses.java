@@ -285,7 +285,8 @@ public sealed interface ManagementApiResponses {
     /// its own window, the same contract `/metrics/transport` serves. NODE-LOCAL scope — each core
     /// answers for itself. `pendingBatches` and `oldestPendingBatchAgeMs` are levels (the age is 0 when
     /// nothing is pending, #1117); `applyTimeoutCount` is the monotonic total of applies never answered
-    /// within the apply timeout; `avgDecisionLatencyMs` is derived over the cumulative counts. #2045:
+    /// within the apply timeout; `avgDecisionLatencyMs` is the mean over the SAMPLED decisions only
+    /// (those this node held locally, which carry a measured duration), not over the decision total. #2045:
     /// `consecutiveEmptySlotsWithPending` is a level, the slots decided in a row without applying a batch while this node
     /// held pending batches (one that keeps climbing is the empty-slot livelock), and `firstChoiceBatchId` is the batch
     /// this node proposes first, absent when nothing is pending (voters that disagree on it name the split).

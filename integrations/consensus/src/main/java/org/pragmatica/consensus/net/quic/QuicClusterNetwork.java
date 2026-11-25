@@ -31,11 +31,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -56,6 +58,7 @@ import org.pragmatica.consensus.net.quic.QuicTransportMetrics.DropSite;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
+import org.pragmatica.consensus.topology.TransportView;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -578,6 +581,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private volatile QuicClusterServer server;
     private volatile QuicClusterClient client;
 
+    /// #3635 test seam — see [#builtObserverForTests]. No-op unless a test installs one.
+    private volatile BiConsumer<QuicClusterServer, QuicClusterClient> builtObserver = (_, _) -> {};
+
+    /// #3635 test seam — see [#beforeRebuildForTests]. No-op unless a test installs one.
+    private volatile Runnable beforeRebuild = () -> {};
+
+    /// #3635 test seam — see [#releaseTapForTests]. Identity unless a test installs one.
+    private volatile UnaryOperator<Promise<Unit>> releaseTap = release -> release;
+
     enum ViewChangeOperation {
         ADD,
         REMOVE,
@@ -849,11 +861,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      this::onMessageReceived,
                                                      bootTokens,
                                                      this::onLaneStreamEvent);
+        builtObserver.accept(server, client);
         // #1461: a stop() that overtook this start (after the check above) may have read `server`/`client`
         // before they were assigned and released nothing. Re-checked after the assignment, this start then
         // releases what it just created itself.
         if (closed.get()) {
-            return stopServerAndClient(unit()).flatMap(_ -> NETWORK_STOPPED.<Unit> promise());
+            return releaseAndReportStopped();
         }
 
         var serverRef = server;
@@ -870,8 +883,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                         .withSuccess(_ -> transportReady.set(true))
                         .continueOn()
                         .withSuccess(_ -> fireReadyHooks())
-                        .withFailure(this::onStartFailed)
-                        .mapToUnit();
+                        .fold(outcome -> outcome.fold(this::onStartFailed,
+                                                      _ -> Promise.<Unit> unitPromise()));
     }
 
     /// #1461: the reconciler and keepalive are armed only while the network is not closed, and cancelled again
@@ -1429,6 +1442,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private Promise<Unit> stopAndRestartServer(int port, QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
         // Update client context immediately — new outbound connections use the new cert
         clientSslContext = newClientSsl;
+        // #3635: the one client serves every rotation (see rebuildAndStart); dials that start from here use the new cert.
+        option(client).onPresent(current -> current.renewSslContext(newClientSsl));
         serverSslContext = newServerSsl;
         // #487: unpin the loopback loop before the OLD server's event loop group is shut down, so a
         // self-send during the cert-rotation window takes the drop+WARN fallback (NoPeerState) instead of
@@ -1444,7 +1459,31 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return stopPromise.flatMap(_ -> rebuildAndStart(port, newServerSsl, newClientSsl));
     }
 
+    /// The release a re-check performs when it finds the network stopped, at both sites ([#startOnPort] #1461, [#rebuildAndStart]
+    /// #3635). Close-chain rule: every release runs, the FIRST failure wins. The first failure is the stop the re-check
+    /// observed: it is what triggers the release, so the outcome is `NETWORK_STOPPED` whatever the release does after it.
+    ///
+    /// FER (degrade forward): a failed release is absorbed with a WARN rather than displacing the stop. Guarantee earned: the
+    /// caller learns that the network is stopped, which is the fact it must act on; the release itself was attempted for both the server and the
+    /// client (`stopServerAndClient` initiates both before it joins them), and the WARN is the only record of a release that failed.
+    private Promise<Unit> releaseAndReportStopped() {
+        return releaseTap.apply(stopServerAndClient(unit()))
+                         .onFailure(cause -> log.warn("Releasing the transport built after stop() failed: {}",
+                                                      cause.message()))
+                         .fold(_ -> NETWORK_STOPPED.<Unit> promise());
+    }
+
+    /// #3635: a rotation racing stop() builds nothing after the stop, in the #1461 shape of [#startOnPort]. A stop that
+    /// landed while the old server was stopping is seen by the first check, and nothing is built. A stop that overtakes
+    /// the first check may have read `server`/`client` before they were assigned and released nothing, so the check
+    /// is repeated after the assignment and this rotation releases what it just built. Either way the rotation fails
+    /// with `NETWORK_STOPPED`.
     private Promise<Unit> rebuildAndStart(int port, QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
+        if (closed.get()) {
+            return NETWORK_STOPPED.promise();
+        }
+
+        beforeRebuild.run();
         server = QuicClusterServer.quicClusterServer(self.id(),
                                                      self.address(),
                                                      self.labels(),
@@ -1457,17 +1496,29 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      this::onMessageReceived,
                                                      bootTokens,
                                                      this::onLaneStreamEvent);
-        client = QuicClusterClient.quicClusterClient(self.id(),
-                                                     self.address(),
-                                                     self.labels(),
-                                                     serializer,
-                                                     deserializer,
-                                                     quicMetrics,
-                                                     newClientSsl,
-                                                     Option.empty(),
-                                                     this::onMessageReceived,
-                                                     bootTokens,
-                                                     this::onLaneStreamEvent);
+        // #3635: the client is NOT rebuilt. It owns an event-loop group and the per-peer datagram-channel map, and a
+        // replacement orphaned both with the old client's dialed connections (documented to outlive a rotation). Only
+        // its TLS context for later dials changes (stopAndRestartServer). None exists only when a stop() overtook the first
+        // check and cleared it; the one built here is then released by the re-check below.
+        if (client == null) {
+            client = QuicClusterClient.quicClusterClient(self.id(),
+                                                         self.address(),
+                                                         self.labels(),
+                                                         serializer,
+                                                         deserializer,
+                                                         quicMetrics,
+                                                         newClientSsl,
+                                                         Option.empty(),
+                                                         this::onMessageReceived,
+                                                         bootTokens,
+                                                         this::onLaneStreamEvent);
+        }
+
+        builtObserver.accept(server, client);
+        if (closed.get()) {
+            return releaseAndReportStopped();
+        }
+
         var serverRef = server;
 
         return serverRef.start(port)
@@ -1478,9 +1529,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
                         .mapToUnit();
     }
 
-    private void onStartFailed(Cause cause) {
+    /// #3635: a failed start releases what it built, server AND client, before the failure is reported: both own an
+    /// event-loop group, and the fields are overwritten by the next `startOnPort`, so an unreleased pair is orphaned for
+    /// the life of the process. The fields are cleared and both releases are INITIATED here; the client's group then
+    /// terminates after Netty's default 2 s quiet period, which a failed start does not wait for (the server's own group was
+    /// already terminated by its failed bind). A retry therefore finds the fields empty and builds its own pair. A release
+    /// failure is logged; the start's own cause is what the caller sees.
+    private Promise<Unit> onStartFailed(Cause cause) {
         log.error("Failed to start QUIC server: {}", cause.message());
+        stopServerAndClient(unit()).onFailure(releaseCause -> log.warn("Release after failed QUIC start did not complete: {}",
+                                                                       releaseCause.message()));
         isRunning.set(false);
+
+        return cause.<Unit> promise();
     }
 
     /// Routes incoming messages received from peers after Hello handshake.
@@ -4238,9 +4299,41 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return Option.option(peers.get(peerId)).map(PeerState::phase);
     }
 
+    /// Package-private test seam (#1749) — the reconciler-clock time of the last dial the per-peer backoff allowed for a
+    /// peer (0 when none). Set synchronously on the tick's thread, before the dial's CONNECTING begins on the resolver
+    /// thread, so a test reads the dial DECISION instead of timing the dial.
+    long reconcileLastAttemptMsForTests(NodeId peerId) {
+        return Option.option(peers.get(peerId))
+                     .map(PeerState::reconcileLastAttemptMs)
+                     .or(0L);
+    }
+
     /// Package-private test seam (#3033) — the dial client, so a test can run a dial that is not attached by this network.
     QuicClusterClient clientForTests() {
         return client;
+    }
+
+    /// Package-private test seam (#3635) — told, on every `startOnPort` or rotation rebuild that gets past its first guard,
+    /// which server and client it holds (a rotation builds a server and keeps the client it found). A failed start releases
+    /// and clears both fields, so a test cannot read them afterwards; this is how it still reaches the event-loop groups
+    /// the failed start owned.
+    void builtObserverForTests(BiConsumer<QuicClusterServer, QuicClusterClient> observer) {
+        builtObserver = observer;
+    }
+
+    /// Package-private test seam (#3635) — run by a rotation rebuild after its first `closed` check and before it assigns
+    /// `server`/`client`: the window a racing stop() can land in. A test runs stop() here to reach the re-check.
+    @Contract
+    void beforeRebuildForTests(Runnable hook) {
+        beforeRebuild = hook;
+    }
+
+    /// Package-private test seam (#3635) — wraps the release a re-check performs after finding the network stopped (see
+    /// [#releaseAndReportStopped]): the release still runs, and a test makes the wrapped promise fail to reach the path of
+    /// a failed release.
+    @Contract
+    void releaseTapForTests(UnaryOperator<Promise<Unit>> tap) {
+        releaseTap = tap;
     }
 
     /// Package-private test seam (#1578) — the connection a peer is currently bound to, or empty when
@@ -4562,6 +4655,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var epoch = observedEpochSupplier;
 
         connectivityReporter.onPeerConnected(peerId, epoch.term(), epoch.counter());
+    }
+
+    /// #3047: the sequence is taken before the view is read, as in `processViewChange`, so the returned view orders
+    /// against the observations exactly like one of them.
+    @Override
+    public Option<TransportView> sequencedView() {
+        var sequence = observationSequence.incrementAndGet();
+
+        return Option.some(TransportView.transportView(currentView(), sequence));
     }
 
     private List<NodeId> currentView() {

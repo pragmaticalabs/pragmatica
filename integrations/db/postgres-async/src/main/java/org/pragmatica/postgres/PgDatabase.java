@@ -8,6 +8,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.postgres.net.ReleaseChain.releasingOnFailure;
 
 
 public class PgDatabase extends PgConnectible {
@@ -19,11 +20,17 @@ public class PgDatabase extends PgConnectible {
     @Override
     public Promise<Connection> getConnection() {
         return obtainStream.get()
-                           .flatMap(stream -> new PgConnection(stream, dataConverter, 0).connect(username,
-                                                                                                 password,
-                                                                                                 database,
-                                                                                                 applicationName))
-                           .flatMap(this::validateConnection);
+                           .flatMap(this::connectOn);
+    }
+
+    /// The stream is open once obtained: a failed connect or validation closes it (ReleaseChain invariant, #3635).
+    private Promise<Connection> connectOn(ProtocolStream stream) {
+        return releasingOnFailure(new PgConnection(stream, dataConverter, 0).connect(username,
+                                                                                     password,
+                                                                                     database,
+                                                                                     applicationName)
+                                                                            .flatMap(this::validateConnection),
+                                  stream::close);
     }
 
     private Promise<Connection> validateConnection(Connection connection) {

@@ -1,17 +1,25 @@
 package org.pragmatica.lang.io;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.CopyOption;
+import java.nio.file.FileVisitResult;
+import java.nio.file.FileVisitor;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -46,15 +54,86 @@ public sealed interface FileOps {
                            () -> Files.readAllBytes(path));
     }
 
-    /// Walk a directory tree, collecting paths matching a predicate.
+    /// Walk a directory tree, collecting paths matching a predicate (pre-order, directories included).
+    ///
+    /// Total over entries that vanish while the walk runs: a tree that other writers change (an atomic write
+    /// creates a temp file and renames it) can lose an entry between the directory read and the attribute read,
+    /// and such an entry is skipped while every other entry is still listed. Any other I/O failure -- an unreadable
+    /// directory, a missing `start` -- fails the walk.
+    ///
+    /// A failure carries `WalkFailed(start, detail)` where `detail` is always the `IOException`'s `getMessage()`
+    /// (for an unreadable path, the bare path), on the lift path and the visitor path alike: that is what the walk
+    /// reported before the visitor existed and what [#list] and every other operation here reports.
+    ///
+    /// A root removed during the walk yields the entries listed before it went: the root's children are read
+    /// before the root is reported, exactly as `Files.walk` behaves, so the result is `Success` with those entries.
     static Result<List<Path>> walk(Path start, Predicate<? super Path> predicate) {
-        return Result.lift(e -> new FileError.WalkFailed(start, e.getMessage()),
-                           () -> {
-                               try (var stream = Files.walk(start)) {
-                                   return stream.filter(predicate)
-                                                .toList();
-                               }
-                           });
+        var found = new ArrayList<Path>();
+        var failure = new AtomicReference<IOException>();
+
+        return Result.lift(e -> new FileError.WalkFailed(start,
+                                                         e.getMessage()),
+                           () -> Files.walkFileTree(start,
+                                                    collector(start, predicate, found, failure)))
+                     .flatMap(_ -> walkOutcome(start, found, failure));
+    }
+
+    private static FileVisitor<Path> collector(Path start,
+                                               Predicate<? super Path> predicate,
+                                               List<Path> found,
+                                               AtomicReference<IOException> failure) {
+        return new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attributes) {
+                return keepIfMatching(found, dir, predicate);
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
+                return keepIfMatching(found, file, predicate);
+            }
+
+            @Override
+            public FileVisitResult visitFileFailed(Path file, IOException cause) {
+                return skipVanishedOrStop(start, file, cause, failure);
+            }
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path dir, IOException cause) {
+                return Option.option(cause)
+                             .map(failed -> skipVanishedOrStop(start, dir, failed, failure))
+                             .or(FileVisitResult.CONTINUE);
+            }
+        };
+    }
+
+    private static FileVisitResult keepIfMatching(List<Path> found, Path path, Predicate<? super Path> predicate) {
+        if (predicate.test(path)) {
+            found.add(path);
+        }
+
+        return FileVisitResult.CONTINUE;
+    }
+
+    /// An entry other than the walk root that no longer exists is not a failure of the walk: a concurrent
+    /// writer removed it after its directory was read, so it is skipped. The root missing, or any other failure,
+    /// is recorded and stops the walk.
+    private static FileVisitResult skipVanishedOrStop(Path start,
+                                                      Path path,
+                                                      IOException cause,
+                                                      AtomicReference<IOException> failure) {
+        if (cause instanceof NoSuchFileException && !path.equals(start)) {
+            return FileVisitResult.CONTINUE;
+        }
+
+        failure.set(cause);
+
+        return FileVisitResult.TERMINATE;
+    }
+
+    private static Result<List<Path>> walkOutcome(Path start, List<Path> found, AtomicReference<IOException> failure) {
+        return Option.option(failure.get()).fold(() -> success(List.copyOf(found)),
+                                                 cause -> new FileError.WalkFailed(start, cause.getMessage()).result());
     }
 
     /// Walk a directory tree, collecting all paths.

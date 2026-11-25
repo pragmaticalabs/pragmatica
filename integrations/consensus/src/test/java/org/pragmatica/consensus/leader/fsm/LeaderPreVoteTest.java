@@ -15,7 +15,6 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
-import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
@@ -39,6 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeaderOnDrainer;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -165,10 +165,10 @@ class LeaderPreVoteTest {
         }
 
         private void wire(Node node) {
-            node.harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            node.harness.dispatch(new ClusterFsmEvent.NodeAdded(node.id, ALL, seq()));
-            node.harness.dispatch(new ConsensusReady());
-            node.harness.dispatch(new LeaderCommitted(believes.getOrDefault(node.id, N1), 1L));
+            OnDrainer.dispatch(node.harness, new ClusterFsmEvent.QuorumEstablished());
+            OnDrainer.dispatch(node.harness, new ClusterFsmEvent.NodeAdded(node.id, ALL, seq()));
+            OnDrainer.dispatch(node.harness, new ConsensusReady());
+            commitLeaderOnDrainer(node.harness, believes.getOrDefault(node.id, N1), 1L);
         }
 
         private void route(NodeId from, Send send) {
@@ -222,11 +222,11 @@ class LeaderPreVoteTest {
 
             removed.add(gone);
             view.removeAll(removed);
-            node(node).harness.dispatch(new ClusterFsmEvent.NodeGone(gone, view, seq()));
+            OnDrainer.dispatch(node(node).harness, new ClusterFsmEvent.NodeGone(gone, view, seq()));
         }
 
         void stop() {
-            nodes.values().forEach(n -> n.harness.dispatch(new ClusterFsmEvent.Shutdown()));
+            nodes.values().forEach(n -> OnDrainer.dispatch(n.harness, new ClusterFsmEvent.Shutdown()));
             network.shutdownNow();
         }
     }
@@ -362,7 +362,7 @@ class LeaderPreVoteTest {
         void doubtVerdict_forALeaderTheFollowerNoLongerSuspects_isDiscarded() {
             cluster = new Cluster(true, Map.of());
 
-            cluster.node(N3).harness.dispatch(new LeaderElectionEvents.LeaderDoubtConfirmed(N1));
+            OnDrainer.dispatch(cluster.node(N3).harness, new LeaderElectionEvents.LeaderDoubtConfirmed(N1));
             sleep(300);
 
             assertThat(cluster.node(N3).isLedBy(N1)).as("N3 still sees N1, so the verdict is stale").isTrue();
@@ -485,7 +485,7 @@ class LeaderPreVoteTest {
 
             router.addRoute(Send.class, (Consumer<Send>) requests::add);
             var h = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness("single-voter", fsm -> {
-                var ctx = new LeaderElectionContext(fsm, N3, Option.none(), List.of(N3), router, RETRY, LONG, LONG, LONG,
+                var ctx = new LeaderElectionContext(fsm, N3, Option.none(), List.of(N3, N1), router, RETRY, LONG, LONG, LONG,
                                                     LeaderElectionContext.DEFAULT_STUCK_ELECTION_THRESHOLD,
                                                     LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                     LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER, () -> true, Option::none,
@@ -495,18 +495,20 @@ class LeaderPreVoteTest {
                 return ctx.dormant();
             });
 
-            h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            h.dispatch(new ClusterFsmEvent.NodeAdded(N3, List.of(N3, N1), seq()));
-            h.dispatch(new ConsensusReady());
-            h.dispatch(new LeaderCommitted(N1, 1L));
-            h.dispatch(new ClusterFsmEvent.NodeGone(N1, List.of(N3), seq()));
+            OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+            OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(N3, List.of(N3, N1), seq()));
+            OnDrainer.dispatch(h, new ConsensusReady());
+            commitLeaderOnDrainer(h, N1, 1L);
+            // N1 leaves the electorate with its leadership: the voter set shrinks to this node alone, as production's does.
+            h.state().ctx().installVoters(List.of(N3));
+            OnDrainer.dispatch(h, new ClusterFsmEvent.NodeGone(N1, List.of(N3), seq()));
 
             assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
             assertThat(requests).isEmpty();
             assertThat(h.handled().stream().filter(x -> x.event() instanceof ClusterFsmEvent.NodeGone))
                 .as("the NodeGone was answered by a transition, not by a handler that re-dispatches from inside itself")
                 .isEmpty();
-            h.dispatch(new ClusterFsmEvent.Shutdown());
+            OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
         }
 
         /// Without the pre-vote enabled (local mode, stubs) the edge is the old immediate one.
@@ -591,7 +593,7 @@ class LeaderPreVoteTest {
             cluster = new Cluster(true, Map.of());
             var quorumLost = cluster.node(N2);
 
-            quorumLost.harness.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+            OnDrainer.dispatch(quorumLost.harness, new ClusterFsmEvent.QuorumDisappeared());
 
             assertThat(askAbout(N2, N1)).isEmpty();
         }

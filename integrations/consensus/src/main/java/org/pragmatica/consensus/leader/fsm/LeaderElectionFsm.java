@@ -15,6 +15,7 @@ import java.util.function.Supplier;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
@@ -27,7 +28,9 @@ import org.pragmatica.statemachine.FsmObserver;
 /// [`LeaderElectionContext`] (which in turn builds every per-FSM state singleton), captures the
 /// context in an `AtomicReference` holder for the caller, and returns the `Dormant` initial state.
 ///
-/// No executor, no queue, no dispatcher thread — `Fsm.dispatch` runs on the caller thread.
+/// No dispatcher thread: `Fsm.dispatch` runs on the thread draining the node's serial executor (#3587,
+/// [`LeaderElectionContext#serially`]), which every leader-election event of the node enters; a direct `Fsm.dispatch`
+/// (tests only) runs on the caller's thread.
 public final class LeaderElectionFsm {
     /// Pair of the built Fsm and its context. Returned together so the factory caller (the
     /// `LeaderManager` builder) can wire both into the final `LeaderManager` record.
@@ -124,7 +127,7 @@ public final class LeaderElectionFsm {
     /// Full-arity factory accepting all injectable suppliers including the cluster KV-Store
     /// leader accessor. Production wiring (Aether's `RabiaNode`) plumbs:
     ///   - `RabiaEngine::isActive` as `consensusReadySupplier` (push-side: ready-state poll)
-    ///   - `() -> kvStore.get(LeaderKey).map(LeaderValue::leader)` as `currentLeaderFromKvSupplier`
+    ///   - `LeaderKey` read as the committed `LeaderCommitted(leader, viewSequence)` as `currentLeaderFromKvSupplier`
     ///     (pull-side: cluster's source-of-truth leader read)
     /// Together they make the FSM pull-and-push on every `Electing`/`ReElecting` entry + tick:
     /// the FSM never gets stuck waiting for a notification that already fired (or never will).
@@ -138,7 +141,7 @@ public final class LeaderElectionFsm {
                                                    FsmObserver<LeaderElectionState, ClusterFsmEvent> observer,
                                                    Supplier<Long> rabiaTermSupplier,
                                                    Supplier<Boolean> consensusReadySupplier,
-                                                   Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
+                                                   Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier) {
         return leaderElectionFsm(self,
                                  proposalHandler,
                                  expectedCluster,
@@ -167,7 +170,7 @@ public final class LeaderElectionFsm {
                                                    FsmObserver<LeaderElectionState, ClusterFsmEvent> observer,
                                                    Supplier<Long> rabiaTermSupplier,
                                                    Supplier<Boolean> consensusReadySupplier,
-                                                   Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                   Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                    Predicate<NodeId> leaderPingFreshFn) {
         var ctxHolder = new AtomicReference<LeaderElectionContext>();
         var timeout = LeaderElectionContext.proposalTimeoutFor(proposalRetryDelay);
@@ -202,7 +205,7 @@ public final class LeaderElectionFsm {
                                                                    TimeSpan proposalTimeout,
                                                                    Supplier<Long> rabiaTermSupplier,
                                                                    Supplier<Boolean> consensusReadySupplier,
-                                                                   Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                                   Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                                    Predicate<NodeId> leaderPingFreshFn) {
         var ctx = new LeaderElectionContext(fsm,
                                             self,

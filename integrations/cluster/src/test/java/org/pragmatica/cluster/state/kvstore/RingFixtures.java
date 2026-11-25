@@ -19,6 +19,8 @@ import org.pragmatica.serialization.Serializer;
 final class RingFixtures {
     private RingFixtures() {}
 
+    static final String LINEAGE = "L";
+
     record Key(String id) implements StructuredKey {}
 
     /// The stand-in for the cluster incarnation key.
@@ -32,7 +34,7 @@ final class RingFixtures {
         @Override
         public IncarnationTag read(Function<StructuredKey, Object> lookup) {
             return lookup.apply(IncKey.INSTANCE) instanceof IncValue value
-                   ? IncarnationTag.incarnationTag(value.incarnation(), value.id())
+                   ? IncarnationTag.incarnationTag(value.incarnation(), value.id(), LINEAGE)
                    : IncarnationTag.NONE;
         }
 

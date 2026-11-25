@@ -34,6 +34,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.stream.HotWindowFixture.declaredHot;
 import static org.pragmatica.aether.stream.PartitionedStreamAccess.streamAccess;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
@@ -53,9 +54,8 @@ class SegmentFallbackTest {
     /// Small ring buffer capacity to force eviction quickly.
     private static final int RING_CAPACITY = 5;
     private static final int RING_DATA_BYTES = 1024;
-    /// Ring control layout (header then 24-byte index entries); mirrors `OffHeapRingBuffer`'s private constants.
-    private static final long HEADER_CAPACITY = 40;
-    private static final long INDEX_START = 64;
+    /// Ring index layout (24-byte entries, slot `i` at `i * INDEX_ENTRY_SIZE` of the index slice); mirrors
+    /// `OffHeapRingBuffer`'s private constants.
     private static final long INDEX_ENTRY_SIZE = 24;
 
     private StorageInstance storage;
@@ -76,13 +76,20 @@ class SegmentFallbackTest {
 
         // Wire SegmentSealer as the eviction listener so evicted events get sealed
         partitionManager = streamPartitionManager(Long.MAX_VALUE, sealer);
-        var retention = RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_DATA_BYTES, 600_000);
-        partitionManager.createStream(StreamConfig.streamConfig(STREAM, PARTITION_COUNT, retention, "earliest"));
+        partitionManager.createStream(ringConfig());
 
         PartitionedStreamAccess.CursorCheckpointWriter noopWriter = (_, _, _, _) -> org.pragmatica.lang.Promise.unitPromise();
         access = streamAccess(partitionManager, identitySerializer(), identityDeserializer(),
                               STREAM, PARTITION_COUNT, Option.<Function<byte[], Object>>none(),
                               noopWriter, tieredReader);
+    }
+
+    /// The fixture's ring: retention and declared hot window agree (count, bytes), so the ring holds the same entries
+    /// whether it is sized from retention or from the hot window.
+    private static StreamConfig ringConfig() {
+        var retention = RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_DATA_BYTES, 600_000);
+
+        return declaredHot(StreamConfig.streamConfig(STREAM, PARTITION_COUNT, retention, "earliest"), RING_CAPACITY, RING_DATA_BYTES);
     }
 
     @AfterEach
@@ -159,9 +166,8 @@ class SegmentFallbackTest {
         @Test
         void fetch_offsetInNeitherTier_failsExplicitly_insteadOfEmpty() {
             var unsealedManager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP);
-            var retention = RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_DATA_BYTES, 600_000);
 
-            unsealedManager.createStream(StreamConfig.streamConfig(STREAM, PARTITION_COUNT, retention, "earliest"));
+            unsealedManager.createStream(ringConfig());
 
             PartitionedStreamAccess.CursorCheckpointWriter noopWriter = (_, _, _, _) -> org.pragmatica.lang.Promise.unitPromise();
             var unsealedAccess = streamAccess(unsealedManager, identitySerializer(), identityDeserializer(),
@@ -186,9 +192,8 @@ class SegmentFallbackTest {
         void fetch_offsetWhoseSealIsPending_failsInFlightAndTransient() {
             var pendingSeals = new CopyOnWriteArrayList<Promise<Unit>>();
             var inFlightManager = streamPartitionManager(Long.MAX_VALUE, segmentSealer((_, _) -> pendingSeal(pendingSeals)));
-            var retention = RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_DATA_BYTES, 600_000);
 
-            inFlightManager.createStream(StreamConfig.streamConfig(STREAM, PARTITION_COUNT, retention, "earliest"));
+            inFlightManager.createStream(ringConfig());
 
             PartitionedStreamAccess.CursorCheckpointWriter noopWriter = (_, _, _, _) -> Promise.unitPromise();
             var inFlightAccess = streamAccess(inFlightManager, identitySerializer(), identityDeserializer(),
@@ -245,25 +250,33 @@ class SegmentFallbackTest {
         }
 
         private static void corruptEveryIndexSlot(OffHeapRingBuffer ring) {
-            var control = controlSegment(ring);
-            var capacity = control.get(ValueLayout.JAVA_LONG, HEADER_CAPACITY);
+            var indexSlice = ringIndex(ring);
+            var capacity = ringHeader(ring).capacity();
 
             assertThat(capacity).as("PRECONDITION: ring capacity read from the header").isPositive();
 
             for (long slot = 0; slot < capacity; slot++) {
-                control.set(ValueLayout.JAVA_LONG, INDEX_START + slot * INDEX_ENTRY_SIZE, -1_000L);
+                indexSlice.set(ValueLayout.JAVA_LONG, slot * INDEX_ENTRY_SIZE, -1_000L);
             }
         }
 
-        private static MemorySegment controlSegment(OffHeapRingBuffer ring) {
+        private static RingHeader ringHeader(OffHeapRingBuffer ring) {
+            return (RingHeader) ringField(ring, "header");
+        }
+
+        private static MemorySegment ringIndex(OffHeapRingBuffer ring) {
+            return (MemorySegment) ringField(ring, "index");
+        }
+
+        private static Object ringField(OffHeapRingBuffer ring, String name) {
             try {
-                var field = OffHeapRingBuffer.class.getDeclaredField("controlSegment");
+                var field = OffHeapRingBuffer.class.getDeclaredField(name);
 
                 field.setAccessible(true);
 
-                return (MemorySegment) field.get(ring);
+                return field.get(ring);
             } catch (ReflectiveOperationException e) {
-                throw new AssertionError("controlSegment field not reachable", e);
+                throw new AssertionError(name + " field not reachable", e);
             }
         }
     }

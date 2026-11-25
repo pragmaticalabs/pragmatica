@@ -70,7 +70,8 @@ public final class LocalGenerator implements Generator {
     }
 
     private String formatInstructionsText(Path outputDir, int nodes, int mgmtPort, int clusterPort) {
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             Local cluster scripts generated in: %s
 
             Prerequisites:
@@ -108,7 +109,8 @@ public final class LocalGenerator implements Generator {
         var peerList = buildPeerList(nodes, clusterPort);
         var nodeStarts = buildNodeStarts(nodes, config, peerList);
 
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             #!/bin/bash
             set -e
 
@@ -159,7 +161,8 @@ public final class LocalGenerator implements Generator {
     }
 
     private String formatNodeStart(int index, int mgmtPort, int clusterPort, String heap, String gc, String peerList) {
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             echo "Starting node %d (management: %d, cluster: %d)..."
             java -XX:+ExitOnOutOfMemoryError -Xmx%s -XX:+Use%s \\
                 -DNODE_ID=%d \\
@@ -195,7 +198,8 @@ public final class LocalGenerator implements Generator {
     private String generateStopScript(AetherConfig config) {
         var lastNode = config.cluster().nodes() - 1;
 
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             #!/bin/bash
 
             SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -226,7 +230,8 @@ public final class LocalGenerator implements Generator {
                      ? "https"
                      : "http";
 
-        return String.format("""
+        return String.format(Locale.ROOT,
+                             """
             #!/bin/bash
 
             SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

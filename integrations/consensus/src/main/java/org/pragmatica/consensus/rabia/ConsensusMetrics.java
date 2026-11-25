@@ -32,13 +32,21 @@ import org.pragmatica.lang.Option;
 /// return is the contract (no meaningful result to surface to the caller).
 @Contract
 public interface ConsensusMetrics {
-    /// Record a decision being made.
+    /// Record a decision being applied. Called once for EVERY applied decision, including a slot this node first saw as
+    /// its own Decision (#2644); the duration, when there is one, is reported by [#recordDecisionDuration].
     ///
     /// @param nodeId     The node making the decision
     /// @param phase      The phase number
     /// @param stateValue The decided value (V0 or V1)
-    /// @param durationNs Duration from phase start to decision in nanoseconds
-    void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long durationNs);
+    void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue);
+
+    /// Record the duration of a decision this node held locally, from first holding the slot to the decision, in
+    /// nanoseconds (#2644). Optional: a slot first seen as its own Decision has no start point and reports none.
+    ///
+    /// @param nodeId     The node making the decision
+    /// @param phase      The phase number
+    /// @param durationNs Duration from the slot's start on this node to the decision in nanoseconds
+    default void recordDecisionDuration(NodeId nodeId, Phase phase, long durationNs) {}
 
     /// Record a proposal being sent or received.
     ///
@@ -113,7 +121,7 @@ public interface ConsensusMetrics {
     enum NoopMetrics implements ConsensusMetrics {
         INSTANCE;
         @Override
-        public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long durationNs) {}
+        public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue) {}
         @Override
         public void recordProposal(NodeId nodeId, Phase phase) {}
         @Override

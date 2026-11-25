@@ -7,11 +7,12 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.List;
 import java.util.Map;
 
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
@@ -116,7 +117,8 @@ class AnnouncementTest {
                                       "g:a:1",
                                       blueprintId("org.example:app:1.0.0"),
                                       2,
-                                      FsmHarness.START_WALL);
+                                      FsmHarness.START_WALL,
+                                      SchemaReach.MIGRATED);
     }
 
     /// Red when: an acting leader does not announce a committed FAILED schema record (slices held), or announces it twice.

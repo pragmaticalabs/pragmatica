@@ -42,8 +42,21 @@ import org.pragmatica.lang.utils.SharedScheduler;
 /// Protects only the NEW node; an old binary rejoining an upgraded cluster is stopped only by the operator
 /// procedure (`aether/upgrade.sh`).
 public interface JoinGenerationGuard {
-    /// This binary's wire generation. Bump on every wire/codec change that an older node cannot decode.
-    int WIRE_GENERATION = 2;
+    /// This binary's wire generation. Bump on every wire/codec change that an older node cannot decode; the
+    /// `GENERATION` line of `wire-assignment-baseline.txt` records it and `scripts/wire-generation-check.sh` gates it.
+    /// 3: #3303 RA-3b (`BackupRestoreValue` changed shape).
+    /// 4: #420 flag day (`ArtifactContentValue` re-tagged, artifact-content binding added).
+    /// 5: #3303 RA-2 (`TransactionResult` gained its refusal).
+    /// 6: #3481 M1b (`ReadRefusal.Kind` enum changed).
+    /// 7: #3334 S1a-1a flag day (`ConsumerAssignmentValue`, `AssignmentToken` and `StreamCursorCheckpointValue` re-tagged, `member` added).
+    /// 8: #3530 (four dead key types and their values left the wire baseline: their TAG and SHAPE lines are gone).
+    /// 9: #3458 M-1b (`ReadRefusal` gained its removal cause).
+    /// 10: #3458 M-1c (`ReadRefusal` gained its removal-cause set, `causes`).
+    /// 11: #3458 W-4 (`ReadRefusal.Kind` gained `BELOW_COPY_TAIL`; `UNKNOWN`'s ordinal moved from 16 to 17).
+    /// 12: #3345 (`DHTMessage.MigrationDataAck` gained `bootToken`, `storeGeneration` and `draining`).
+    /// 13: #3458 M-1 (`StreamDeclaration` gained `storage`; `StreamConfigValue` moved from tag 2920 to 3014).
+    /// 14: #3359 (`IncarnationTag` gained `lineageId`).
+    int WIRE_GENERATION = 14;
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.

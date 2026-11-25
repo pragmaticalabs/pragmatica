@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeaderOnDrainer;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -71,10 +72,10 @@ class LeaderElectionStaleTimerTest {
     void transitionOutOfElecting_cancelsStaleTickFuture() {
         var h = buildHarness();
         // Drive the FSM into Electing via Dormant → QuorumWaiting → Electing.
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
         // Drive the AwaitingKvSync → Electing fall-through manually (long grace timer suppressed).
-        h.dispatch(new KvSyncGraceTimeout());
+        OnDrainer.dispatch(h, new KvSyncGraceTimeout());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Electing.class);
         var electing = (LeaderElectionState.Electing) h.state();
         var pendingTick = electing.tickFuture().get();
@@ -82,7 +83,7 @@ class LeaderElectionStaleTimerTest {
         assertThat(pendingTick.isCancelled()).isFalse();
 
         // Transition out: QuorumDisappeared → QuorumLost.
-        h.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumDisappeared());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.QuorumLost.class);
         assertThat(pendingTick.isCancelled())
                 .as("Electing.onExit must cancel the pending tick future")
@@ -92,13 +93,13 @@ class LeaderElectionStaleTimerTest {
     @Test
     void shutdownFromElecting_cancelsStaleTickFuture() {
         var h = buildHarness();
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
-        h.dispatch(new KvSyncGraceTimeout());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        OnDrainer.dispatch(h, new KvSyncGraceTimeout());
         var electing = (LeaderElectionState.Electing) h.state();
         var pendingTick = electing.tickFuture().get();
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Stopped.class);
         assertThat(pendingTick.isCancelled())
                 .as("Electing.onExit must cancel pending tick on Shutdown path")
@@ -112,22 +113,22 @@ class LeaderElectionStaleTimerTest {
         // Dormant → QuorumWaiting → Electing → Led → ReElecting. We populate `currentTopology`
         // via NodeAdded in QuorumWaiting so that `adoptLeaderIfInTopology` accepts the
         // synthesized `LeaderCommitted` event.
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
-        h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
+        OnDrainer.dispatch(h, new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
         // LeaderCommitted handled directly by AwaitingKvSync.handle — no need for the grace
         // timeout. This mirrors the cold-boot fix path: AwaitingKvSync absorbs the leader-commit
         // notification and transitions straight to Led without ever entering Electing.
-        h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted(SELF));
+        commitLeaderOnDrainer(h, SELF);
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
-        h.dispatch(new ClusterFsmEvent.NodeGone(SELF, List.of(PEER_A, PEER_B), seq()));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeGone(SELF, List.of(PEER_A, PEER_B), seq()));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
         var reElecting = (LeaderElectionState.ReElecting) h.state();
         var pendingTick = reElecting.tickFuture().get();
         assertThat((Object) pendingTick).isNotNull();
         assertThat(pendingTick.isCancelled()).isFalse();
 
-        h.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumDisappeared());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.QuorumLost.class);
         assertThat(pendingTick.isCancelled())
                 .as("ReElecting.onExit must cancel the pending tick future")
@@ -141,10 +142,10 @@ class LeaderElectionStaleTimerTest {
         // already in a different state. This isolates the `onCasLost` cleanup contract.
         var h = buildHarness();
         // Drive into QuorumLost (a non-Electing state).
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
-        h.dispatch(new KvSyncGraceTimeout());
-        h.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        OnDrainer.dispatch(h, new KvSyncGraceTimeout());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumDisappeared());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.QuorumLost.class);
         var fsm = h.fsm();
 
@@ -174,10 +175,10 @@ class LeaderElectionStaleTimerTest {
     @Test
     void casLostOnReElecting_cancelsTickFuture() {
         var h = buildHarness();
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
-        h.dispatch(new KvSyncGraceTimeout());
-        h.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        OnDrainer.dispatch(h, new KvSyncGraceTimeout());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumDisappeared());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.QuorumLost.class);
 
         var ctx = ((LeaderElectionState.QuorumLost) h.state()).ctx();
@@ -198,16 +199,16 @@ class LeaderElectionStaleTimerTest {
     @Test
     void electingHolderIsAtomicReference() {
         var h = buildHarness();
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
-        h.dispatch(new KvSyncGraceTimeout());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        OnDrainer.dispatch(h, new KvSyncGraceTimeout());
         var electing = (LeaderElectionState.Electing) h.state();
         AtomicReference<ScheduledFuture<?>> holder = electing.tickFuture();
         assertThat(holder).isNotNull();
         AtomicReference<ScheduledFuture<?>> proposalHolder = electing.proposalTimeoutFuture();
         assertThat(proposalHolder).isNotNull();
         // Cleanup.
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     /// Suppress unused warning if the framework needs the Fsm reference type-locked.

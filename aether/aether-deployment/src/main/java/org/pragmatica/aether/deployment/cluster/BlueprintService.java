@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.stream.Stream;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.zip.ZipInputStream;
 
@@ -45,6 +46,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsVa
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
@@ -100,6 +103,17 @@ public interface BlueprintService {
     /// When `registerOnly == false`, behaves as the default `publishFromArtifact` —
     /// the new version is immediately activated.
     Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly);
+
+    /// #834: `force` lets a publish declare a version above a schema record an operator left by undo or baseline, which re-applies
+    /// the versions the operator removed or skipped; without it such a publish is refused
+    /// ([org.pragmatica.aether.deployment.schema.SchemaError.RepublishWouldReapply], 409). An implementation that does not guard
+    /// ignores `force`.
+    default Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords,
+                                                            boolean registerOnly,
+                                                            boolean force) {
+        return publishFromArtifact(artifactCoords, registerOnly);
+    }
+
     Option<ExpandedBlueprint> get(BlueprintId id);
     /// Durable terminal outcome of `id`'s last deployment attempt (#759 review, BLOCKING 3). Bounded
     /// to exactly one record per blueprint id: the FSM writes via `KVCommand.Put` at
@@ -377,6 +391,11 @@ class BlueprintServiceInstance implements BlueprintService {
 
     @Override
     public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
+        return publishFromArtifact(artifactCoords, registerOnly, false);
+    }
+
+    @Override
+    public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly, boolean force) {
         var parsed = parseArtifactWithClassifier(artifactCoords);
 
         return parsed.artifact()
@@ -388,7 +407,8 @@ class BlueprintServiceInstance implements BlueprintService {
                                                                  .async())
                      .flatMap(artifact -> expandAndStoreArtifact(artifact,
                                                                  parsed.baseCoords(),
-                                                                 registerOnly))
+                                                                 registerOnly,
+                                                                 force))
                      .onFailure(cause -> log.warn("Failed to publish blueprint from artifact (registerOnly={}): {}",
                                                   registerOnly,
                                                   cause.message()));
@@ -624,7 +644,8 @@ class BlueprintServiceInstance implements BlueprintService {
 
     private Promise<PublishedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact,
                                                                String artifactCoords,
-                                                               boolean registerOnly) {
+                                                               boolean registerOnly,
+                                                               boolean force) {
         return BlueprintExpander.expand(blueprintArtifact.blueprint(),
                                         repository)
                                 .flatMap(expanded -> applyResourcesConfig(expanded,
@@ -635,7 +656,8 @@ class BlueprintServiceInstance implements BlueprintService {
                                                                               blueprintArtifact.roleHints(),
                                                                               blueprintArtifact.schemaMigrations(),
                                                                               artifactCoords,
-                                                                              registerOnly))
+                                                                              registerOnly,
+                                                                              force))
                                 .onSuccess(this::raiseDeployWarnings);
     }
 
@@ -647,16 +669,19 @@ class BlueprintServiceInstance implements BlueprintService {
                                                               Map<String, String> roleHints,
                                                               Map<String, List<MigrationEntry>> migrations,
                                                               String artifactCoords,
-                                                              boolean registerOnly) {
+                                                              boolean registerOnly,
+                                                              boolean force) {
         var expanded = preflighted.expanded();
 
         return ensureMigrationOwnership(expanded.id(),
-                                        migrations).flatMap(_ -> StreamResourceValidator.ensureHonourableConsistency(resourcesConfig))
+                                        migrations).flatMap(_ -> ensureNoUndoneReapplied(migrations, force))
+                                       .flatMap(_ -> StreamResourceValidator.ensureHonourableConsistency(resourcesConfig))
                                        .flatMap(_ -> replicationContext())
                                        .flatMap(replication -> streamBindings(expanded.id(),
                                                                               resourcesConfig,
                                                                               roleHints,
-                                                                              replication))
+                                                                              replication,
+                                                                              this::committedStreamConfig))
                                        .map(bindings -> bindings.withWarnings(preflighted.replicationWarnings()))
                                        .async()
                                        .flatMap(bindings -> applyAllCommands(expanded,
@@ -799,6 +824,49 @@ class BlueprintServiceInstance implements BlueprintService {
         return SchemaError.DatasourceOwnershipConflict.datasourceOwnershipConflict(datasource, current, rejected).result();
     }
 
+    /// #834: the declared version wins on every publish, but a record an operator left by undo or baseline holds a lower version
+    /// ON PURPOSE, and a publish declaring a higher one makes `migrate()` re-apply every version the history table no longer
+    /// holds. Refused before any command is applied, naming the versions that would come back, unless `force`. First failure only,
+    /// for the same reason as [#ensureMigrationOwnership]: a composite cause is not `HttpStatusAware`.
+    private Result<Unit> ensureNoUndoneReapplied(Map<String, List<MigrationEntry>> migrations, boolean force) {
+        return force
+               ? Result.unitResult()
+               : Result.firstFailureOf(migrations.entrySet()
+                                                 .stream()
+                                                 .map(entry -> ensureDatasourceNotReapplied(entry.getKey(),
+                                                                                            declaredVersions(entry.getValue())))
+                                                 .toList()).mapToUnit();
+    }
+
+    private Result<Unit> ensureDatasourceNotReapplied(String datasource, List<Integer> declared) {
+        return interventionRecord(datasource).flatMap(record -> reapplication(record, declared))
+                                 .map(BlueprintServiceInstance::refused)
+                                 .or(Result::unitResult);
+    }
+
+    private static Result<Unit> refused(Cause cause) {
+        return cause.result();
+    }
+
+    private Option<SchemaVersionValue> interventionRecord(String datasource) {
+        return store.get(SchemaVersionKey.schemaVersionKey(datasource))
+                    .filter(SchemaVersionValue.class::isInstance)
+                    .map(SchemaVersionValue.class::cast)
+                    .filter(record -> record.reachedBy()
+                                            .guardsRepublish());
+    }
+
+    private static Option<Cause> reapplication(SchemaVersionValue record, List<Integer> declared) {
+        var reapplied = declared.stream().filter(version -> version > record.currentVersion()).toList();
+
+        return Option.option(reapplied)
+                     .filter(versions -> !versions.isEmpty())
+                     .map(versions -> SchemaError.RepublishWouldReapply.republishWouldReapply(record.datasourceName(),
+                                                                                              record.reachedBy(),
+                                                                                              record.currentVersion(),
+                                                                                              versions));
+    }
+
     private Option<BlueprintId> currentMigrationOwner(String datasource) {
         return store.get(SchemaVersionKey.schemaVersionKey(datasource))
                     .filter(SchemaVersionValue.class::isInstance)
@@ -881,6 +949,12 @@ class BlueprintServiceInstance implements BlueprintService {
 
     /// #1564: the committed cluster config read as replication state — the `[replication]` defaults and the
     /// desired core count — the same conversion the nodes resolve resource declarations with at activation.
+    private Option<StreamConfig> committedStreamConfig(String engineKey) {
+        return store.getTyped(AetherKey.StreamConfigKey.streamConfigKey(engineKey),
+                              StreamConfigValue.class)
+                    .map(StreamConfigValue::config);
+    }
+
     private Result<ReplicationContext> replicationContext() {
         return ClusterReplication.context(store.getTyped(AetherKey.ClusterConfigKey.CURRENT, ClusterConfigValue.class));
     }
@@ -921,14 +995,19 @@ class BlueprintServiceInstance implements BlueprintService {
     /// `UnboundStreamAlias`. It now partitions: a section failing a per-alias rule is dropped and
     /// returned in `rejected`; a rule leaving nothing to bind is the `Result` failure and refuses the
     /// publish — see [StreamResourceValidator#partition] for which rules are which.
+    ///
+    /// #3334 (section 2.5): `committedRows` is the committed `StreamConfigKey` row by engine key, so a redeploy that
+    /// changes an immutable key of a committed stream is refused here, before any command is built.
     private static Result<StreamBindings> streamBindings(BlueprintId blueprintId,
                                                          Option<String> resourcesConfig,
                                                          Map<String, String> roleHints,
-                                                         ReplicationContext replication) {
+                                                         ReplicationContext replication,
+                                                         Function<String, Option<StreamConfig>> committedRows) {
         return StreamResourceValidator.partition(resourcesConfig,
                                                  blueprintId.artifact(),
                                                  roleHints,
-                                                 replication)
+                                                 replication,
+                                                 committedRows)
                                       .map(partition -> StreamBindings.streamBindings(toNamedAddresses(blueprintId,
                                                                                                        partition.accepted()),
                                                                                       partition.rejected(),
@@ -1000,12 +1079,7 @@ class BlueprintServiceInstance implements BlueprintService {
                                                        BlueprintId owningBlueprint) {
         var datasource = entry.getKey();
         var migrationList = entry.getValue();
-        var maxVersion = migrationList.stream()
-                                      .map(MigrationEntry::filename)
-                                      .filter(f -> f.startsWith("V"))
-                                      .mapToInt(BlueprintService::extractVersionNumber)
-                                      .max()
-                                      .orElse(0);
+        var maxVersion = declaredVersions(migrationList).stream().mapToInt(Integer::intValue).max().orElse(0);
         var lastFilename = migrationList.isEmpty()
                            ? ""
                            : migrationList.getLast().filename();
@@ -1018,6 +1092,15 @@ class BlueprintServiceInstance implements BlueprintService {
                                                           owningBlueprint);
 
         return new Put<>(key, value);
+    }
+
+    private static List<Integer> declaredVersions(List<MigrationEntry> migrationList) {
+        return migrationList.stream()
+                            .map(MigrationEntry::filename)
+                            .filter(f -> f.startsWith("V"))
+                            .map(BlueprintService::extractVersionNumber)
+                            .sorted()
+                            .toList();
     }
 
     private Promise<Preflighted> validatePubSub(ExpandedBlueprint expanded) {
@@ -1197,7 +1280,8 @@ class BlueprintServiceInstance implements BlueprintService {
     private Promise<StreamBindings> sliceStreamBindings(ExpandedBlueprint expanded) {
         return loadSliceDeclarations(expanded).flatMap(declarations -> replicationContext().flatMap(replication -> sliceBindings(expanded.id(),
                                                                                                                                  declarations,
-                                                                                                                                 replication))
+                                                                                                                                 replication,
+                                                                                                                                 this::committedStreamConfig))
                                                                                          .async());
     }
 
@@ -1223,10 +1307,12 @@ class BlueprintServiceInstance implements BlueprintService {
     /// same text. A gating failure in any declaration refuses the publish.
     private static Result<StreamBindings> sliceBindings(BlueprintId blueprintId,
                                                         List<Option<String>> declarations,
-                                                        ReplicationContext replication) {
+                                                        ReplicationContext replication,
+                                                        Function<String, Option<StreamConfig>> committedRows) {
         return Result.allOf(declarations.stream().map(StreamResourceValidator::ensureHonourableConsistency).toList()).flatMap(_ -> derivedSliceBindings(blueprintId,
                                                                                                                                                         declarations,
-                                                                                                                                                        replication));
+                                                                                                                                                        replication,
+                                                                                                                                                        committedRows));
     }
 
     /// A blueprint whose slices ship no `resources.toml` at all still runs the derivation once, with no
@@ -1234,15 +1320,17 @@ class BlueprintServiceInstance implements BlueprintService {
     /// silent about a reserved namespace the artifact path reports (#1336 review, NIT-5).
     private static Result<StreamBindings> derivedSliceBindings(BlueprintId blueprintId,
                                                                List<Option<String>> declarations,
-                                                               ReplicationContext replication) {
+                                                               ReplicationContext replication,
+                                                               Function<String, Option<StreamConfig>> committedRows) {
         var present = declarations.stream().flatMap(Option::stream).toList();
         var perSlice = present.isEmpty()
-                       ? List.of(streamBindings(blueprintId, Option.none(), Map.of(), replication))
+                       ? List.of(streamBindings(blueprintId, Option.none(), Map.of(), replication, committedRows))
                        : present.stream()
                                 .map(toml -> streamBindings(blueprintId,
                                                             Option.some(toml),
                                                             Map.of(),
-                                                            replication))
+                                                            replication,
+                                                            committedRows))
                                 .toList();
 
         return Result.allOf(perSlice).flatMap(BlueprintServiceInstance::unionSliceBindings);

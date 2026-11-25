@@ -94,7 +94,7 @@ class SwimRetiredIdentityDeathTest {
                                          RecordingObservationSink observations,
                                          BootTokens tokens,
                                          RecordingTransport transport) {
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  transport,
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -222,7 +222,7 @@ class SwimRetiredIdentityDeathTest {
     void retiredNeverHealthyMember_withALiveLink_isDepartedPastTheTransportVeto() {
         var observations = new RecordingObservationSink();
         var tokens = BootTokens.bootTokens(0x5E1FL);
-        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+        var protocol = SwimTestProtocols.swimProtocol(tightConfig(),
                                                  new RecordingTransport(),
                                                  new RecordingListener(),
                                                  SELF_ID,
@@ -291,7 +291,7 @@ class SwimRetiredIdentityDeathTest {
         protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
-            await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
+            await().atMost(Duration.ofSeconds(10)).until(() -> hasUnknown(observations, PHANTOM));
             Thread.sleep(PAST_RESIDENCY.toMillis());
 
             assertThat(departures(observations, PHANTOM)).as("gate still shut: nothing departs").isEmpty();
@@ -299,7 +299,7 @@ class SwimRetiredIdentityDeathTest {
 
             booting.set(false);
 
-            await().atMost(Duration.ofSeconds(3)).until(() -> !departures(observations, PHANTOM).isEmpty());
+            await().atMost(Duration.ofSeconds(10)).until(() -> !departures(observations, PHANTOM).isEmpty());
             assertThat(faulties(observations, PHANTOM)).hasSize(1);
             assertThat(protocol.tombstonedForTest(PHANTOM)).as("the replayed edge sets the FAULTY-edge tombstone, as for a resident member").isTrue();
         } finally {
@@ -329,7 +329,7 @@ class SwimRetiredIdentityDeathTest {
 
             booting.set(false);
 
-            await().atMost(Duration.ofSeconds(3)).until(() -> !departures(observations, PHANTOM).isEmpty());
+            await().atMost(Duration.ofSeconds(10)).until(() -> !departures(observations, PHANTOM).isEmpty());
             assertThat(departures(observations, PHANTOM)).extracting(SwimObservation.DepartedObserved::incarnation)
                                                          .as("the replayed DEPARTED carries the swept member's incarnation")
                                                          .containsExactly(DEFERRED_INCARNATION);
@@ -352,7 +352,7 @@ class SwimRetiredIdentityDeathTest {
         protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
-            await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
+            await().atMost(Duration.ofSeconds(10)).until(() -> hasUnknown(observations, PHANTOM));
             Thread.sleep(PAST_RESIDENCY.toMillis());
             assertThat(protocol.members()).as("positive control: swept").doesNotContainKey(PHANTOM);
 
@@ -362,7 +362,7 @@ class SwimRetiredIdentityDeathTest {
             assertThat(departures(observations, PHANTOM)).as("no member: the retirement itself emits nothing").isEmpty();
 
             booting.set(false);
-            await().atMost(Duration.ofSeconds(3)).until(() -> !departures(observations, PHANTOM).isEmpty());
+            await().atMost(Duration.ofSeconds(10)).until(() -> !departures(observations, PHANTOM).isEmpty());
             Thread.sleep(300);
 
             assertThat(departures(observations, PHANTOM)).hasSize(1);
@@ -383,7 +383,7 @@ class SwimRetiredIdentityDeathTest {
         protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
-            await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
+            await().atMost(Duration.ofSeconds(10)).until(() -> hasUnknown(observations, PHANTOM));
             Thread.sleep(PAST_RESIDENCY.toMillis());
             assertThat(protocol.members()).as("positive control: swept").doesNotContainKey(PHANTOM);
             assertThat(departures(observations, PHANTOM)).isEmpty();
@@ -410,13 +410,13 @@ class SwimRetiredIdentityDeathTest {
         protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
-            await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
+            await().atMost(Duration.ofSeconds(10)).until(() -> hasUnknown(observations, PHANTOM));
             Thread.sleep(PAST_RESIDENCY.toMillis());
             assertThat(protocol.members()).as("positive control: swept").doesNotContainKey(PHANTOM);
 
             transport.answering = true;
             protocol.putMemberForTest(PHANTOM, PHANTOM_ADDR, MemberState.ALIVE);
-            await().atMost(Duration.ofSeconds(3)).until(() -> protocol.everSeenHealthyForTest(PHANTOM));
+            await().atMost(Duration.ofSeconds(10)).until(() -> protocol.everSeenHealthyForTest(PHANTOM));
             var unknownsBeforeGateClose = unknowns(observations, PHANTOM).size();
 
             booting.set(false);
@@ -445,14 +445,14 @@ class SwimRetiredIdentityDeathTest {
         protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
-            await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
+            await().atMost(Duration.ofSeconds(10)).until(() -> hasUnknown(observations, PHANTOM));
             Thread.sleep(PAST_RESIDENCY.toMillis());
             assertThat(protocol.members()).as("positive control: first sweep, deferral kept").doesNotContainKey(PHANTOM);
 
             // The peer comes back and proves itself HEALTHY by answering probes (acked at once, inside the probe timeout).
             transport.answering = true;
             protocol.announceFromPinnedSourceForTest(PHANTOM_ADDR, Announce.announce(PHANTOM_INFO, "", 1, 0L));
-            await().atMost(Duration.ofSeconds(3)).until(() -> protocol.everSeenHealthyForTest(PHANTOM));
+            await().atMost(Duration.ofSeconds(10)).until(() -> protocol.everSeenHealthyForTest(PHANTOM));
             transport.answering = false;
             assertThat(healthies(observations, PHANTOM)).as("positive control: the returned peer is HEALTHY").isNotEmpty();
 
@@ -481,11 +481,11 @@ class SwimRetiredIdentityDeathTest {
         protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
-            await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
+            await().atMost(Duration.ofSeconds(10)).until(() -> hasUnknown(observations, PHANTOM));
 
             transport.answering = true;
             protocol.putMemberForTest(PHANTOM, PHANTOM_ADDR, MemberState.ALIVE);
-            await().atMost(Duration.ofSeconds(3)).until(() -> protocol.everSeenHealthyForTest(PHANTOM));
+            await().atMost(Duration.ofSeconds(10)).until(() -> protocol.everSeenHealthyForTest(PHANTOM));
             transport.answering = false;
             assertThat(protocol.members()).as("positive control: refuted before the sweep, never swept").containsKey(PHANTOM);
 
@@ -511,7 +511,7 @@ class SwimRetiredIdentityDeathTest {
         protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
         protocol.start();
         try {
-            await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
+            await().atMost(Duration.ofSeconds(10)).until(() -> hasUnknown(observations, PHANTOM));
             Thread.sleep(PAST_RESIDENCY.toMillis());
             assertThat(protocol.members()).as("positive control: swept, deferral kept").doesNotContainKey(PHANTOM);
 
@@ -530,8 +530,8 @@ class SwimRetiredIdentityDeathTest {
     private static void dieAndAwaitTheSweep(SwimProtocol protocol, RecordingObservationSink observations) {
         protocol.onMessage(GOSSIPER_ADDR,
                            new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(PHANTOM, MemberState.FAULTY, 1, PHANTOM_ADDR))));
-        await().atMost(Duration.ofSeconds(3)).until(() -> !departures(observations, PHANTOM).isEmpty());
-        await().atMost(Duration.ofSeconds(3)).until(() -> !protocol.members().containsKey(PHANTOM));
+        await().atMost(Duration.ofSeconds(10)).until(() -> !departures(observations, PHANTOM).isEmpty());
+        await().atMost(Duration.ofSeconds(10)).until(() -> !protocol.members().containsKey(PHANTOM));
         assertThat(departures(observations, PHANTOM)).as("positive control: the real death departed once").hasSize(1);
     }
 

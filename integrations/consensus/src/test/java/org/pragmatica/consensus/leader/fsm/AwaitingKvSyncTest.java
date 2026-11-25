@@ -27,8 +27,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeader;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// Verifies the cold-boot self-proposal race fix: when a fresh node boots into a cluster of
 /// peers booting simultaneously, the new `AwaitingKvSync` gate defers leader-proposal submission
@@ -70,7 +72,7 @@ class AwaitingKvSyncTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         () -> true,
-                                                        () -> kvLeader,
+                                                        () -> kvLeader.map(leader -> leaderCommitted(leader, 1L)),
                                                         kvSyncGraceDelay);
                     return ctx.dormant();
                 });
@@ -98,7 +100,7 @@ class AwaitingKvSyncTest {
                 .isInstanceOf(LeaderElectionState.AwaitingKvSync.class);
 
         // Peer KV-sync delivers LeaderKey → AetherNode dispatches LeaderCommitted.
-        h.dispatch(new LeaderCommitted(PEER_A));
+        commitLeader(h, PEER_A);
 
         // FSM must transition to Led(PEER_A) without ever proposing.
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
@@ -172,7 +174,7 @@ class AwaitingKvSyncTest {
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ConsensusReady());
-        h.dispatch(new LeaderCommitted(SELF));
+        commitLeader(h, SELF);
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
 
         // Drop quorum and recover — re-enters AwaitingKvSync from QuorumLost.

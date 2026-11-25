@@ -8,7 +8,7 @@ import java.util.Comparator;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;

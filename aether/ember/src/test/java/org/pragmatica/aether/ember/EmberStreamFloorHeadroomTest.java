@@ -17,6 +17,7 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.stream.PublishOutcome;
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
@@ -94,10 +95,11 @@ class EmberStreamFloorHeadroomTest {
             awaitAllocationsQuiesced();
 
             StreamTripwireSupport.createStream(cluster.allNodes().getFirst(),
-                                               StreamConfig.streamConfig(engineKey(LATE),
-                                                                         LATE_PARTITIONS,
-                                                                         RetentionPolicy.retentionPolicy(1_000, 64 * MIB, 3_600_000L),
-                                                                         "earliest"));
+                                               declaredWindow(StreamConfig.streamConfig(engineKey(LATE),
+                                                                                        LATE_PARTITIONS,
+                                                                                        RetentionPolicy.retentionPolicy(1_000, 64 * MIB, 3_600_000L),
+                                                                                        "earliest",
+                                                                                        SEGMENT)));
 
             var lateCopies = settledCopies();
             var deferrals = StreamTripwireSupport.logLines(capture, Level.WARN)
@@ -115,13 +117,24 @@ class EmberStreamFloorHeadroomTest {
         }
     }
 
+    /// `config` with its hot window declared equal to its retention, so the ring is the same size whether it is sized from
+    /// retention or from the declared window. Every config here also pins `max_event_size` to [#SEGMENT] (a data region above 256 KiB
+    /// would otherwise reserve a first region of its `max_event_size`), so the floors are the same in both.
+    private static StreamConfig declaredWindow(StreamConfig config) {
+        return HotWindowFixture.declaredHot(config, config.retention().maxCount(), config.retention().maxBytes());
+    }
+
     /// Creates `stream` (one partition, a ring far larger than the budget) and publishes [#FILL_BYTES_PER_STREAM] through its
     /// owner, in batches, starting once the owner accepts writes ([#awaitOwnerAcceptsWrites]).
     private void fill(String stream) {
         var key = engineKey(stream);
 
         StreamTripwireSupport.createStream(cluster.allNodes().getFirst(),
-                                           StreamConfig.streamConfig(key, 1, RetentionPolicy.retentionPolicy(20_000, 256 * MIB, 3_600_000L), "earliest"));
+                                           declaredWindow(StreamConfig.streamConfig(key,
+                                                                                    1,
+                                                                                    RetentionPolicy.retentionPolicy(20_000, 256 * MIB, 3_600_000L),
+                                                                                    "earliest",
+                                                                                    SEGMENT)));
 
         var record = StreamTripwireSupport.awaitFullIsr(cluster, key, 60_000L);
         var router = StreamTripwireSupport.component(cluster.getNode(record.owner().id()).unwrap(), "streamWriteRouter", StreamWriteRouter.class);

@@ -73,7 +73,7 @@ class SwimUndecodableStateTest {
 
     @BeforeEach
     void setUp() {
-        protocol = SwimProtocol.swimProtocol(config(),
+        protocol = SwimTestProtocols.swimProtocol(config(),
                                              new SilentTransport(),
                                              new SilentListener(),
                                              SELF_ID,

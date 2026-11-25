@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.lang.Option;
 
@@ -51,7 +52,7 @@ class G2SchemaScenariosTest {
     }
 
     private static SchemaVersionValue schemaAt(String datasource, SchemaStatus status, long updatedAt) {
-        return new SchemaVersionValue(datasource, 1, "m1", status, "g:a:1", OWNER, 2, updatedAt);
+        return new SchemaVersionValue(datasource, 1, "m1", status, "g:a:1", OWNER, 2, updatedAt, SchemaReach.MIGRATED);
     }
 
     /// A record whose last write is 600 s old when the harness starts: older than the stall threshold (45 s + 2 ticks), as after a cold restart,

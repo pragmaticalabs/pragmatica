@@ -62,6 +62,7 @@ import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
+import org.pragmatica.swim.SwimTestProtocols;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.ULID;
@@ -574,6 +575,58 @@ class LeaderReconcilerTest {
         triggerAndFireReconcile();
         assertThat(ctm.provisionReplacementCalls()).hasSize(2);
         assertThat(ctm.provisionReplacementFailedPeers()).containsExactlyInAnyOrder(Option.some(PEER_C), Option.some(PEER_D));
+    }
+
+    /// #2811: the in-flight ceiling of a placeholder is read for the source of the node it replaces, so the reconciler must ask for the ceiling
+    /// of the SAME departed node it dispatches the replacement for: a ceiling asked without it would be one source's guess for another's.
+    @Test
+    void dispatchAsksTheCeilingOfTheSameDepartedVoterItDispatchesFor() {
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactlyInAnyOrder(Option.some(PEER_C), Option.some(PEER_D));
+        assertThat(ctm.replacementCeilingDeparted()).containsExactlyInAnyOrderElementsOf(ctm.provisionReplacementFailedPeers());
+    }
+
+    /// #2811 F3/F5: the entry of each placeholder carries the ceiling its OWN dispatch returned (the dispatched source's), not the one asked
+    /// for while the create was in flight (the shared 10 minutes here). Two departed voters, two ceilings: after 135s only the placeholder
+    /// paired with the 2-minute one is past its ceiling, and the 4-minute one goes at 255s.
+    @Test
+    void eachPlaceholderEntryTakesTheCeilingItsOwnDispatchCarried() {
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+        ctm.dispatchWithCeilingFor(PEER_C, timeSpan(2).minutes());
+        ctm.dispatchWithCeilingFor(PEER_D, timeSpan(4).minutes());
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+
+        var placeholders = ctm.provisionReplacementCalls();
+        var departed = ctm.provisionReplacementFailedPeers();
+        var forC = placeholders.get(departed.indexOf(Option.some(PEER_C)));
+        var forD = placeholders.get(departed.indexOf(Option.some(PEER_D)));
+
+        for (var i = 0; i < 9; i++) {
+            advanceAndRunSweepOnly(EXPECTED_POLL_INTERVAL.millis());
+        }
+
+        assertThat(reconciler.inFlightProvisioningKeys()).as("at 135s the 2-minute entry is gone, the 4-minute one is kept")
+                                                         .doesNotContain(forC)
+                                                         .contains(forD);
+
+        for (var i = 0; i < 8; i++) {
+            advanceAndRunSweepOnly(EXPECTED_POLL_INTERVAL.millis());
+        }
+
+        assertThat(reconciler.inFlightProvisioningKeys()).as("at 255s the 4-minute entry is past its ceiling").doesNotContain(forD);
     }
 
     /// #2115: fewer placeholders than departed voters pairs the placeholder with the same departed node on every pass (smallest id first), so
@@ -1417,6 +1470,7 @@ class LeaderReconcilerTest {
 
             assertThat(ctm.drainNodeCalls()).as("a held surplus core member must not be drained").isEmpty();
             assertThat(ctm.scalingHeldAsked()).as("the hold is asked through the worker/community accessor").contains(ClusterTopologyManager.coreSubject());
+            assertThat(ctm.scalingHeldAskers()).as("the reconciler asks as itself").containsOnly(ClusterTopologyManager.ScalingAsker.RECONCILER);
         }
 
         @Test
@@ -1470,29 +1524,76 @@ class LeaderReconcilerTest {
             fireDebouncedReconcile();
         }
 
+        /// #3358: asked on every pass, with nothing pending when there is no surplus, so the answer is "not held" and no hold is left open.
         @Test
-        void noSurplus_autoHealDisabled_neverAsksTheHold() {
+        void noSurplus_autoHealDisabled_asksWithNothingPending_andRaisesNoHold() {
             configuredCoreCount.set(4);
             ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
 
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            assertThat(ctm.scalingHeldAsked()).as("no surplus: no hold is raised").doesNotContain(ClusterTopologyManager.coreSubject());
+            assertThat(ctm.scalingHeldAsked()).as("asked on the pass even with no surplus").contains(ClusterTopologyManager.coreSubject());
+            assertThat(ctm.scalingHeldPending()).as("nothing was pending").containsOnly(false);
+            assertThat(ctm.heldNow()).as("no surplus: no hold is raised").isEmpty();
+        }
+
+        /// #3358: the surplus goes away by itself (the committed core count rises to the member count): the next pass asks with nothing
+        /// pending and the open hold closes. Positive control: the same pass before the change left it open.
+        @Test
+        void heldSurplus_surplusGoneByItself_closesTheHold() {
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(ctm.heldNow()).as("control: the surplus is held").containsExactly(ClusterTopologyManager.coreSubject());
+
+            configuredCoreCount.set(4);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.heldNow()).as("no surplus any more: the hold is closed").isEmpty();
+            assertThat(ctm.drainNodeCalls()).as("nothing was drained either way").isEmpty();
+        }
+
+        /// #3358: the exit the warning itself names: the operator drains the surplus member by hand, so the member count falls to the
+        /// configured one and the hold closes on the next pass, with auto-heal still disabled.
+        @Test
+        void heldSurplus_surplusDrainedByHand_closesTheHold() {
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(ctm.heldNow()).as("control: the surplus is held").containsExactly(ClusterTopologyManager.coreSubject());
+
+            removePeers(PEER_C);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.heldNow()).as("the surplus member is gone: the hold is closed").isEmpty();
+            assertThat(ctm.scalingHeldPending().getLast()).as("the closing ask had nothing pending").isFalse();
+        }
+
+        /// #3358: a surplus that returns is held again: the close is not a latch.
+        @Test
+        void heldSurplus_closedThenSurplusReturns_isHeldAgain() {
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            configuredCoreCount.set(4);
+            triggerAndFireReconcile();
+            assertThat(ctm.heldNow()).as("closed").isEmpty();
+
+            configuredCoreCount.set(3);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.heldNow()).as("a surplus again: held again").containsExactly(ClusterTopologyManager.coreSubject());
         }
     }
 
-    /// Drain-safety grace (Wave 2 defense in depth at the drain authority) — narrowed by the
-    /// Approach-3 victim-selection rewrite to apply to CONFIGURED SEEDS only. A just-joined
-    /// configured seed whose role labels may still be propagating is never picked as a surplus
-    /// victim while inside `nttDepartureTimeout × 2`; an EPHEMERAL (CTM-provisioned, ULID-suffix)
-    /// node that owns no slices is drainable regardless of age (it was added for scale-up and owns
-    /// nothing — resolving the maturity-grace tension that previously forced seed-draining). These
-    /// tests therefore use CONFIGURED-SHAPED young members (`aether-test-cluster-node-<ordinal>`)
-    /// where they assert the grace protects a young node, and ephemeral-shaped (`randomNodeId`)
-    /// members where they assert young-ephemeral nodes drain. An all-young CONFIGURED candidate
-    /// pool DEFERS the drain (WARN + exactly one armed follow-up reconcile) instead of silently
-    /// dropping the surplus.
+    /// Drain-safety grace (Wave 2 defense in depth at the drain authority): ONE shield over every
+    /// surplus-drain candidate (#1055). No member whose membership is younger than
+    /// `nttDepartureTimeout × 2` is picked as a surplus victim, whatever its shape (configured seed or
+    /// EPHEMERAL CTM-provisioned, ULID-suffix) and whatever its slice ownership: a drain cannot be
+    /// undone once delivered, and a just-joined replacement is in-flight churn, not settled surplus.
+    /// An all-young candidate pool DEFERS the drain (WARN + exactly one armed follow-up reconcile)
+    /// instead of silently dropping the surplus.
     @Nested
     class DrainSafetyGrace {
         /// Configured-shaped young seeds (numeric ordinal suffix → NOT a ULID → the grace applies).
@@ -1515,6 +1616,27 @@ class LeaderReconcilerTest {
             sampler.sample();
         }
 
+        /// #1055: the ONE age rule, public so the voter-excluded core retirement (`TopologyAssembly`, a second surplus-trim
+        /// drain site) asks the same question with the same grace and the same `MembershipFsm.memberAgeMs` source. A member
+        /// is past the grace at exactly the grace and not one millisecond earlier.
+        @Test
+        void pastDrainSafetyGrace_isFalseBelowTheGrace_trueAtExactlyTheGrace() {
+            seedYoungPeers(youngSeed1);
+
+            assertThat(reconciler.pastDrainSafetyGrace(youngSeed1)).as("age 0: young").isFalse();
+
+            fsmWallClockMs.addAndGet(EXPECTED_DRAIN_GRACE.millis() - 1);
+            assertThat(reconciler.pastDrainSafetyGrace(youngSeed1)).as("one ms short of the grace: still young").isFalse();
+
+            fsmWallClockMs.addAndGet(1);
+            assertThat(reconciler.pastDrainSafetyGrace(youngSeed1)).as("exactly the grace: mature").isTrue();
+        }
+
+        @Test
+        void pastDrainSafetyGrace_untrackedMember_countsAsMature() {
+            assertThat(reconciler.pastDrainSafetyGrace(youngSeed2)).as("no readable age: legacy behaviour, mature").isTrue();
+        }
+
         @Test
         void surplusDrain_youngConfiguredVictimSkipped_matureVictimSelected() {
             configuredCoreCount.set(3);
@@ -1534,12 +1656,13 @@ class LeaderReconcilerTest {
                 .doesNotContain(youngSeed1);
         }
 
+        /// #1055: a replacement drained the moment it joined (`reason=OVERPROVISION_PARTITION_HEAL`).
+        /// SELF + two mature peers, plus one just-joined EPHEMERAL (CTM-shaped, ULID-suffix)
+        /// non-owner. The ephemeral preference must not reach past the grace: the surplus is drawn
+        /// from a mature peer, and the young replacement stays.
         @Test
-        void surplusDrain_youngEphemeralNode_isDrainable_graceDoesNotBlock() {
+        void surplusDrain_youngEphemeralNonOwner_isShieldedByGrace_matureVictimSelected() {
             configuredCoreCount.set(3);
-            // SELF + two mature peers, plus one just-joined EPHEMERAL (CTM-shaped, ULID-suffix)
-            // node. The grace must NOT protect it — it owns no slices and was added for scale-up,
-            // so it is the PREFERRED victim despite its youth (the maturity-grace resolution).
             seedClusterWithPeers(PEER_A, PEER_B);
             var youngEphemeral = NodeId.randomNodeId();
             seedYoungPeers(youngEphemeral);
@@ -1547,9 +1670,69 @@ class LeaderReconcilerTest {
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            // Surplus = 4 - 3 = 1: the young ephemeral node is eligible and drained.
+            // Surplus = 4 - 3 = 1: one MATURE victim is drained; the young replacement is never selected.
             assertThat(ctm.drainNodeCalls())
-                .as("a young ephemeral non-slice-owner must be drainable — the grace does not block it")
+                .as("a young ephemeral non-slice-owner must not be the surplus victim (#1055)")
+                .hasSize(1)
+                .doesNotContain(youngEphemeral);
+        }
+
+        /// #1055, every candidate young: the only non-SELF candidates are young EPHEMERAL non-owners
+        /// (SELF, the leader, is never a victim, #1089). The surplus is DEFERRED: no drain is
+        /// dispatched, the intent counts zero drains, and exactly one re-evaluation follow-up is armed.
+        @Test
+        void surplusDrain_allCandidatesYoungEphemeral_defersWithFollowUp_noDrainDispatched() {
+            configuredCoreCount.set(2);
+            seedYoungPeers(NodeId.randomNodeId(), NodeId.randomNodeId());
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(listener.events().getFirst().drainCount())
+                .as("an all-young ephemeral candidate pool must defer the surplus drain entirely")
+                .isZero();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY))
+                .as("a deferred drain must arm one re-evaluation follow-up — never silently dropped")
+                .hasSize(1);
+        }
+
+        /// #1055, a second deferral inside the same window must not arm a second follow-up: the pending one stays the only
+        /// follow-up ever scheduled (the pending-ref short-circuit; the lost-CAS cancel is only the backstop for a race).
+        @Test
+        void surplusDrain_secondDeferralInTheSameWindow_armsNoSecondFollowUp() {
+            configuredCoreCount.set(2);
+            seedYoungPeers(NodeId.randomNodeId(), NodeId.randomNodeId());
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY)).as("the first deferral armed one").hasSize(1);
+
+            triggerAndFireReconcile();
+
+            assertThat(ctm.drainNodeCalls()).as("the second pass still defers: every candidate is young").isEmpty();
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY))
+                .as("one follow-up scheduled in total — a second deferral reuses the pending one")
+                .hasSize(1);
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY).getFirst().cancelled())
+                .as("and the retained one is live").isFalse();
+        }
+
+        /// #1055, deferral is not a drop: once the young ephemeral candidates age past the grace the
+        /// armed follow-up drains the surplus.
+        @Test
+        void deferredEphemeralSurplusDrain_firesAfterGraceElapses_viaArmedFollowUp() {
+            configuredCoreCount.set(2);
+            seedYoungPeers(NodeId.randomNodeId(), NodeId.randomNodeId());
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+
+            agePastDrainSafetyGrace();
+            scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY).getFirst().runIfLive();
+            fireDebouncedReconcile();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("the deferred ephemeral-surplus drain must fire once the candidates mature")
                 .hasSize(1);
         }
 
@@ -1569,6 +1752,26 @@ class LeaderReconcilerTest {
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
             assertThat(ctm.drainNodeCalls()).as("the paired surge node is not surplus").isEmpty();
+        }
+
+        /// #1880: a CONFIGURED member is seeded at wiring (the formation bootstrap), but only JOINS —
+        /// first reachability evidence — long after. The grace measures time since it joined, never
+        /// since the FSM first tracked it: a late joiner inside the grace must not be the victim.
+        @Test
+        void surplusDrain_configuredSeedJoiningLongAfterWiring_isYoungForTheGrace_notSelected() {
+            configuredCoreCount.set(1);
+            // Wiring: the configured topology is seeded; the node has not been reached yet.
+            membershipFsm.seed(Set.of(youngSeed1));
+            // Long after wiring the node finally joins: first reachability evidence, now.
+            agePastDrainSafetyGrace();
+            seedYoungPeers(youngSeed1);
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("a configured member that joined seconds ago must not be drained, however long ago it was seeded")
+                .doesNotContain(youngSeed1);
         }
 
         @Test
@@ -2113,13 +2316,13 @@ class LeaderReconcilerTest {
                 .doesNotContain(seed1, seed2, seed3, seed4, seed5);
         }
 
-        /// Maturity-grace resolution: a YOUNG ephemeral node that owns no slices IS drainable —
-        /// the grace (which now governs configured seeds only) does not block it.
+        /// #1055: a YOUNG ephemeral node that owns no slices is shielded by the drain-safety grace like
+        /// every other candidate — when it is the only non-owner, the drain takes no one rather than it.
         @Test
-        void youngEphemeralNonOwner_isDrainable_graceDoesNotBlock() {
+        void youngEphemeralNonOwner_isNotDrained_graceShieldsIt() {
             configuredCoreCount.set(2);
             // SELF + seed1 (mature) + ctm1 (YOUNG ephemeral). Shield the mature ones so ctm1 is the
-            // only eligible victim — proving the young ephemeral is selected despite its age.
+            // only age-blind candidate — proving the young ephemeral is held back by its age.
             seedClusterWithPeers(seed1);
             health.markHealthy(ctm1);
             observeCoreHealthy(ctm1);
@@ -2129,11 +2332,11 @@ class LeaderReconcilerTest {
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            // Members = 3, configured = 2, surplus = 1, only ctm1 eligible (others shielded) → drained
-            // even though it is young.
+            // Members = 3, configured = 2, surplus = 1; ctm1 young, SELF never: the victim falls to the
+            // mature owner seed1 (the default guard permits it), never to the young ctm1.
             assertThat(ctm.drainNodeCalls())
-                .as("a young ephemeral non-slice-owner is drainable — the grace does not block it")
-                .containsExactly(ctm1);
+                .as("a young ephemeral non-slice-owner must not be drained (#1055)")
+                .containsExactly(seed1);
         }
 
         /// Combined orderings: every ephemeral candidate is a slice owner, so the drain takes a mature
@@ -2494,7 +2697,7 @@ class LeaderReconcilerTest {
             ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
             advancePollIntervals(3);
             timeSource.advanceTimeMillis(10_000);
-            pendingProvision.succeed(ProvisionDisposition.dispatched());
+            pendingProvision.succeed(ProvisionDisposition.dispatched(DEFAULT_REPLACEMENT_CEILING));
             await().atMost(2, TimeUnit.SECONDS).until(() -> tickAndCountQueries() >= 1);
             ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
             advancePollIntervals(1);
@@ -2598,7 +2801,7 @@ class LeaderReconcilerTest {
 
             ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
             timeSource.advanceTimeMillis(55_000);
-            pendingProvision.succeed(ProvisionDisposition.dispatched());
+            pendingProvision.succeed(ProvisionDisposition.dispatched(DEFAULT_REPLACEMENT_CEILING));
             await().atMost(2, TimeUnit.SECONDS).until(() -> tickInPlaceAndCountQueries() >= 1);
             for (var i = 1; i < EXPECTED_ABSENT_LISTINGS; i++) {
                 advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
@@ -3095,7 +3298,7 @@ class LeaderReconcilerTest {
 
             assertThat(ctm.instanceStateQueries()).isEmpty();
 
-            pendingProvision.succeed(ProvisionDisposition.dispatched());
+            pendingProvision.succeed(ProvisionDisposition.dispatched(DEFAULT_REPLACEMENT_CEILING));
 
             await().atMost(2, TimeUnit.SECONDS).until(() -> tickAndCountQueries() >= 1);
         }
@@ -3459,7 +3662,7 @@ class LeaderReconcilerTest {
         /// gossiped ALIVE update from a peer, delivered to a real `SwimProtocol` whose observations feed
         /// the fixture FSM. The role label is whatever that gossip carries.
         private void seedGossipLearnedCore(NodeId id) {
-            var protocol = SwimProtocol.swimProtocol(swimConfig(), new NullSwimTransport(), new NullSwimListener(), SELF, SWIM_SELF)
+            var protocol = SwimTestProtocols.swimProtocol(swimConfig(), new NullSwimTransport(), new NullSwimListener(), SELF, SWIM_SELF)
                                        .unwrap();
 
             protocol.addObservationListener(this::routeToFsm);
@@ -4702,8 +4905,10 @@ class LeaderReconcilerTest {
         // to a success-valued Dispatched (a real boot is coming → the reconciler KEEPS its in-flight
         // placeholder). Tests flip this to a Deferred (no-boot deferral → placeholder REMOVED) or to
         // a failure (genuine boot failure → placeholder REMOVED) to exercise the three outcomes.
-        private final AtomicReference<Promise<ProvisionDisposition>> nextProvisionResult =
-            new AtomicReference<>(Promise.success(ProvisionDisposition.dispatched()));
+        private final AtomicReference<Promise<ProvisionDisposition>> nextProvisionResult = new AtomicReference<>();
+        // #2811 — the ceiling a default (Dispatched) provision carries, per departed node; the shared `replacementCeiling` otherwise. It
+        // differs from what `replacementCeiling(role, departed)` answers while the create is in flight, as it does when the source moves.
+        private final Map<NodeId, TimeSpan> dispatchedCeilingByDeparted = new ConcurrentHashMap<>();
         // #1049 — what the fake provider reports about each replacement's instance: UNKNOWN unless a test
         // says otherwise (a fake that cannot answer must read neither as "exists" nor as "gone"); every
         // status query the reconciler issued; an optional held answer (a slow provider); and the
@@ -4713,6 +4918,7 @@ class LeaderReconcilerTest {
         private final AtomicReference<Option<Promise<ReplacementInstanceState>>> heldInstanceStateAnswer =
             new AtomicReference<>(Option.none());
         private final AtomicReference<TimeSpan> replacementCeiling = new AtomicReference<>(DEFAULT_REPLACEMENT_CEILING);
+        private final List<Option<NodeId>> replacementCeilingDeparted = new CopyOnWriteArrayList<>();
 
         @Contract
         void reportInstanceState(NodeId nodeId, ReplacementInstanceState state) {
@@ -4735,8 +4941,17 @@ class LeaderReconcilerTest {
         }
 
         @Contract
+        void dispatchWithCeilingFor(NodeId departed, TimeSpan ceiling) {
+            dispatchedCeilingByDeparted.put(departed, ceiling);
+        }
+
+        @Contract
         void setReplacementCeiling(TimeSpan ceiling) {
             replacementCeiling.set(ceiling);
+        }
+
+        List<Option<NodeId>> replacementCeilingDeparted() {
+            return List.copyOf(replacementCeilingDeparted);
         }
 
         List<NodeId> instanceStateQueries() {
@@ -4815,7 +5030,9 @@ class LeaderReconcilerTest {
             if (real != null) {
                 return real.provisionReplacement(newNodeId, failedPeer, clusterMembers, intendedRole);
             }
-            return nextProvisionResult.get();
+            return Option.option(nextProvisionResult.get())
+                         .or(() -> Promise.success(ProvisionDisposition.dispatched(failedPeer.flatMap(departed -> Option.option(dispatchedCeilingByDeparted.get(departed)))
+                                                                                             .or(replacementCeiling.get()))));
         }
 
         @Override
@@ -4837,7 +5054,9 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public TimeSpan replacementCeiling(NodeRole intendedRole) {
+        public TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed) {
+            replacementCeilingDeparted.add(departed);
+
             return replacementCeiling.get();
         }
 
@@ -4937,21 +5156,49 @@ class LeaderReconcilerTest {
         }
 
         private final List<String> scalingHeldAsked = new CopyOnWriteArrayList<>();
+        private final List<Boolean> scalingHeldPending = new CopyOnWriteArrayList<>();
+        private final List<ScalingAsker> scalingHeldAskers = new CopyOnWriteArrayList<>();
+
+        /// The subjects whose hold is open: raised by an ask that is held, closed by an ask that is not (the real hold's warning set).
+        private final Set<String> heldNow = ConcurrentHashMap.newKeySet();
 
         /// Stands for an operator's value committed after the disable, which releases the hold as the real one does.
         private final AtomicBoolean scalingReleased = new AtomicBoolean(false);
 
-        /// #3324: answers as the real hold does: held while auto-heal is disabled, unless a value committed after the disable released
-        /// it. Records each subject asked, so a test can see the reconciler asked through this accessor.
+        /// #3324: answers as the real hold does: held while auto-heal is disabled and a change is pending, unless a value committed after
+        /// the disable released it (#3358: nothing pending closes it too). Records each subject asked, with the pending flag it was asked
+        /// with, and which holds are open, so a test can see the reconciler asked through this accessor and what it left open.
         @Override
-        public boolean scalingHeld(String subject) {
+        public boolean scalingHeld(String subject, ScalingAsker asker, boolean pending) {
             scalingHeldAsked.add(subject);
+            scalingHeldAskers.add(asker);
+            scalingHeldPending.add(pending);
 
-            return !autoHealEnabled.get() && !scalingReleased.get();
+            var held = !autoHealEnabled.get() && !scalingReleased.get() && pending;
+
+            if (held) {
+                heldNow.add(subject);
+            } else {
+                heldNow.remove(subject);
+            }
+
+            return held;
+        }
+
+        Set<String> heldNow() {
+            return Set.copyOf(heldNow);
+        }
+
+        List<Boolean> scalingHeldPending() {
+            return List.copyOf(scalingHeldPending);
         }
 
         void releaseScaling() {
             scalingReleased.set(true);
+        }
+
+        List<ScalingAsker> scalingHeldAskers() {
+            return List.copyOf(scalingHeldAskers);
         }
 
         List<String> scalingHeldAsked() {

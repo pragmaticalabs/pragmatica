@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,11 +40,13 @@ class ShapeCensusCommandTest {
     private final ByteArrayOutputStream err = new ByteArrayOutputStream();
     private PrintStream originalOut;
     private PrintStream originalErr;
+    private Locale originalLocale;
 
     @BeforeEach
     void captureStreams() throws Exception {
         originalOut = System.out;
         originalErr = System.err;
+        originalLocale = Locale.getDefault();
         System.setOut(new PrintStream(out, true, UTF_8));
         System.setErr(new PrintStream(err, true, UTF_8));
         Files.writeString(sources.resolve("Sample.java"),
@@ -68,6 +71,7 @@ class ShapeCensusCommandTest {
     void restoreStreams() {
         System.setOut(originalOut);
         System.setErr(originalErr);
+        Locale.setDefault(originalLocale);
     }
 
     private int run(String... args) {
@@ -138,5 +142,20 @@ class ShapeCensusCommandTest {
         assertThat(out.toString(UTF_8))
                   .as("an empty run must not print a zero histogram that reads as a measured result")
                   .doesNotContain("Method-shape census");
+    }
+
+    /// #3051: `%d`/`%.4f` in the JSON writer follow the default locale unless pinned; `ar-EG` prints Arabic-Indic digits,
+    /// which no JSON parser reads. No CI runner has such a locale, so it is forced here.
+    @Test
+    void shapeCensus_json_underArabicDefaultLocale_hasAsciiDigits() {
+        Locale.setDefault(Locale.forLanguageTag("ar-EG"));
+
+        assertThat(run("--format", "json", sources.toString())).isZero();
+
+        var root = JSON.readTree(out.toString(UTF_8));
+
+        assertThat(root.get("filesParsed").asInt()).isEqualTo(1);
+        assertThat(out.toString(UTF_8)).contains("\"filesParsed\": 1,")
+                                       .containsPattern("\"residualRate\": [0-9]\\.[0-9]{4},");
     }
 }

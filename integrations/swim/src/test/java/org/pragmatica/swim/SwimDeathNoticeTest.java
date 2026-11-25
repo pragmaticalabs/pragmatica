@@ -83,7 +83,7 @@ class SwimDeathNoticeTest {
 
     private void createHolder(int maxPiggyback) {
         transport = new RecordingTransport();
-        protocol = SwimProtocol.swimProtocol(config(maxPiggyback),
+        protocol = SwimTestProtocols.swimProtocol(config(maxPiggyback),
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,
@@ -333,7 +333,7 @@ class SwimDeathNoticeTest {
             }
         };
 
-        claimant = SwimProtocol.swimProtocol(config(8), relayerTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
+        claimant = SwimTestProtocols.swimProtocol(config(8), relayerTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
                                .unwrap();
         claimant.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
         claimant.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
@@ -530,7 +530,7 @@ class SwimDeathNoticeTest {
                .until(() -> !protocol.members().containsKey(NODE_A) && !protocol.tombstonedForTest(NODE_A));
         var claimantTransport = new RecordingTransport();
 
-        claimant = SwimProtocol.swimProtocol(config(8),
+        claimant = SwimTestProtocols.swimProtocol(config(8),
                                              claimantTransport,
                                              new RecordingListener(),
                                              NODE_A,

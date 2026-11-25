@@ -67,8 +67,14 @@ FLOGS="$WORK/failure-logs"
 ( export PATH="$WORK/bin:$PATH" CALLS="$WORK/curl.calls" TARGET_HOST=localhost AETHER_FAILURE_LOGS_DIR="$FLOGS" SUITE_TAG=03-scaling TEST_TAG=Scale_down \
          API_KEY=k APP_ENDPOINT=http://178.105.27.245:8070
   source "${INTEG_DIR}/lib/load.sh" > /dev/null 2>&1
-  start_load 20 2 GET /api/echo/health > /dev/null 2>&1
-  sleep 3
+  # Wait on the EVENT the assertions need, never a fixed sleep: under CPU contention a 2s load window produced < 4 ticks (#3421).
+  # The window is only an upper bound here (stop_load kills the loop); the bodies file is $$-scoped, written by the loop's ticks.
+  start_load 20 60 GET /api/echo/health > /dev/null 2>&1
+  FB="/tmp/load_failure_bodies_$$.txt"; wait_deadline=$((SECONDS + 60))
+  until [ "$(grep -c . "$FB" 2>/dev/null || echo 0)" -ge 4 ] && grep -q 'Quorum disappeared' "$FB" && grep -q 'Route table propagating' "$FB"; do
+      [ "$SECONDS" -ge "$wait_deadline" ] && break
+      sleep 0.1  # sleep-ok: poll interval of the wait on the recorded samples
+  done
   stop_load > "$WORK/stop.out" 2> "$WORK/stop.err" )
 LF="$FLOGS/03-scaling/load-failures-Scale_down.log"
 n_lines=$(grep -c . "$LF" 2>/dev/null || echo 0)
@@ -255,7 +261,7 @@ mkdir -p "$WORK/bin-realtimeout"
 cat > "$WORK/bin-realtimeout/ssh" <<'STUB'
 #!/bin/bash
 trap '' TERM
-exec sleep 600
+exec sleep 600  # sleep-ok: fixture process that must outlive the probe
 STUB
 chmod +x "$WORK/bin-realtimeout/ssh"
 body_demotion_hang() {
@@ -281,7 +287,7 @@ else ok "D8 (skipped: no timeout/gtimeout binary on this host; the fallback loop
 # The job's child is a uniquely-timed sleep so a survivor can be counted: a job killed AFTER its children respawns one in
 # between (#1886), and that orphan outlives the reap and the suite. Counted, then removed, so a red here cannot leak.
 body_reap() {
-    ( trap '' TERM; while :; do sleep 1.37; done ) &
+    ( trap '' TERM; while :; do sleep 1.37; done ) &  # sleep-ok: respawning child counted by the reap probe
     local pid=$!
     local t0=$SECONDS
     reap_bg_job "$pid" 2
@@ -299,7 +305,7 @@ else fail "D9 out=$(head -c 160 "$WORK/reap/out")"; fi
 body_reap_tree() {
     ( trap '' TERM; while :; do bash -c 'sleep 1.41; :'; done ) &
     local pid=$!
-    sleep 0.3
+    sleep 0.3  # sleep-ok: lets the fixture child start before the reap probe
     reap_bg_job "$pid" 1
     local orphans; orphans=$(pgrep -f '^sleep 1\.41$' | grep -c .)
     pkill -KILL -f '^sleep 1\.41$' 2>/dev/null

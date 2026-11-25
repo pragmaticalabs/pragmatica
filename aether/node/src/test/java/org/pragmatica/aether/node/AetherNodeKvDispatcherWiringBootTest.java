@@ -17,7 +17,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -29,7 +28,6 @@ import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -145,13 +143,7 @@ class AetherNodeKvDispatcherWiringBootTest {
     }
 
     private static boolean slowHandlerRaised(AetherNode node, String subject) {
-        return node.eventAggregator()
-                   .lastRaisedOperatorWarning()
-                   .filter(ClusterEvent.OperatorWarning.class::isInstance)
-                   .map(ClusterEvent.OperatorWarning.class::cast)
-                   .filter(event -> "kv-dispatch-slow-handler".equals(event.details().get("code")))
-                   .filter(event -> subject.equals(event.details().get("subject")))
-                   .isPresent();
+        return RaisedWarnings.raised(node.eventAggregator(), "kv-dispatch-slow-handler", subject);
     }
 
     private static boolean eventually(java.util.function.BooleanSupplier condition) throws InterruptedException {
@@ -225,7 +217,7 @@ class AetherNodeKvDispatcherWiringBootTest {
                                                                                                                                    "INFO")))));
         assertThat(held.await(20, TimeUnit.SECONDS)).as("the dispatcher is held in the marker's handler").isTrue();
         nodes.remove(node);
-        Promise<Unit> stopped = node.stop();
+        Promise<StopReport> stopped = node.stop();
 
         try {
             assertThat(eventually(() -> store.deliveryMetrics().closed())).as("the stop reached the store's close").isTrue();

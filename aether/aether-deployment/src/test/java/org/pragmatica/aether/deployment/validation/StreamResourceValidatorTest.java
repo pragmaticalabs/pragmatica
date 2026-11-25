@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.validation;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
@@ -329,6 +330,13 @@ class StreamResourceValidatorTest {
     /// equal to the hardcoded default asserts nothing false.
     @Nested
     class InertConfigRejection {
+        /// The whole clause of each table (#3520): `contains("S2b")` could not tell which clause carried the step name.
+        private static final String RETENTION_CLAUSE = "the stream's retention still comes from today's keys (`retention`, `retention_value`, "
+                                                       + "`retention_mode`, `max_age`, `max_count`, `max_bytes`) until release step S2a3 enforces the [retention] "
+                                                       + "declaration (#3334). Remove the [retention] sub-section and declare retention with today's keys until S2a3.";
+        private static final String HOT_CLAUSE = "the ring is still sized from today's retention until release step S2b sizes it from the [hot] "
+                                                 + "window (#3334). Remove the [hot] sub-section until S2b.";
+
         @Test
         void encryptionKeyIdIsRejected() {
             var toml = """
@@ -343,6 +351,71 @@ class StreamResourceValidatorTest {
                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
                                               .extracting(StreamValidationFailure::rule)
                                               .contains(StreamResourceValidator.RULE_INERT_STREAM_CONFIG));
+        }
+
+        /// #3495 item 1 tripwire (ENABLED, current behaviour): `[retention]` and `[hot]` keys parse but no runtime code reads
+        /// them, so deploy refuses them as inert, naming the step that wires them (R-12).
+        @Test
+        void retentionAndHotDeclarationKeys_areRefusedAsInert_namingTheWiringStep() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    [streams.orders.retention]
+                    max_bytes = "2GB"
+                    [streams.orders.hot]
+                    max_count = 100
+                    """;
+
+            StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT)
+                                   .onSuccessRun(() -> fail("Expected failure"))
+                                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                                               .allSatisfy(failure -> assertThat(failure.rule()).isEqualTo(StreamResourceValidator.RULE_INERT_STREAM_CONFIG))
+                                                               .allSatisfy(failure -> assertThat(failure.field()).isEqualTo("[streams.orders]"))
+                                                               .extracting(StreamValidationFailure::message)
+                                                               .containsExactlyInAnyOrder("retention.max_bytes = '2GB' has no runtime effect yet — " + RETENTION_CLAUSE,
+                                                                                          "hot.max_count = '100' has no runtime effect yet — " + HOT_CLAUSE));
+        }
+
+        /// Item 1 design assertion, beside the tripwire: accepted once S2a3 / S2b wire the tables.
+        @Disabled("S2a3 wires [retention] and S2b wires [hot]: enable and delete the tripwire above")
+        @Test
+        void retentionAndHotDeclarationKeys_areAccepted_onceWired() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    [streams.orders.retention]
+                    max_bytes = "2GB"
+                    [streams.orders.hot]
+                    max_count = 100
+                    """;
+
+            assertThat(StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT).isSuccess()).isTrue();
+        }
+
+        /// #3520: a table array under a stream section is never read by the parser, so deploy refuses it as malformed instead of
+        /// accepting and ignoring it; the stream beside it still binds.
+        @Test
+        void tableArrayUnderAStreamSection_isRefusedAsMalformed_andTheStreamBesideItStillBinds() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    [streams.billing]
+                    version = "1.0.0"
+                    [[streams.billing.retention]]
+                    max_bytes = "2GB"
+                    """;
+
+            StreamResourceValidator.partition(Option.some(toml), APP_ARTIFACT, Map.of(), ReplicationContext.BUILT_IN)
+                                   .onFailure(cause -> fail(cause.message()))
+                                   .onSuccess(partition -> assertThat(partition.accepted()).containsOnlyKeys("orders"))
+                                   .onSuccess(partition -> assertThat(partition.rejected())
+                                                                   .extracting(StreamValidationFailure::field,
+                                                                               StreamValidationFailure::rule,
+                                                                               StreamValidationFailure::message)
+                                                                   .containsExactly(tuple("[streams.billing]",
+                                                                                          StreamResourceValidator.RULE_STREAM_RESOURCE_INVALID,
+                                                                                          "Stream resource 'billing' declares [[streams.billing.retention]] as an array of tables: "
+                                                                                          + "a stream section holds tables, so write it as [streams.billing.retention]")));
         }
 
         @Test
@@ -635,6 +708,35 @@ class StreamResourceValidatorTest {
                                                  .filter(message -> message.contains(key))
                                                  .findFirst()
                                                  .orElseGet(() -> fail("No inert refusal names '" + key + "'"));
+        }
+    }
+
+    /// #3333: each declaration refusal of the stream parser reports its own rule id, not the generic section rule.
+    @Nested
+    class DeclarationRuleIds {
+        @Test
+        void emptyRetentionBlock_reportsRetentionUndeclared() {
+            assertRuleFor("[streams.orders.retention]\nmode = \"any\"\n", StreamResourceValidator.RULE_RETENTION_UNDECLARED);
+        }
+
+        @Test
+        void countOnlyRetention_reportsRetentionCountOnly() {
+            assertRuleFor("[streams.orders.retention]\nmax_count = 100\n", StreamResourceValidator.RULE_RETENTION_COUNT_ONLY);
+        }
+
+        @Test
+        void untilConsumed_reportsNotYetAvailable() {
+            assertRuleFor("[streams.orders.truncation]\npolicy = \"until_consumed\"\n", StreamResourceValidator.RULE_NOT_YET_AVAILABLE);
+        }
+
+        private void assertRuleFor(String sections, String rule) {
+            var toml = "[streams.orders]\nversion = \"1.0.0\"\n\n" + sections;
+
+            StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT)
+                                   .onSuccessRun(() -> fail("Expected failure"))
+                                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                                               .extracting(StreamValidationFailure::rule)
+                                                               .containsExactly(rule));
         }
     }
 }

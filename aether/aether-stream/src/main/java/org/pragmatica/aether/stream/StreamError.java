@@ -5,13 +5,21 @@
 package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
+import java.util.EnumSet;
+import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 
 public sealed interface StreamError extends Cause {
@@ -108,10 +116,147 @@ public sealed interface StreamError extends Cause {
         }
     }
 
-    record CursorExpired(long requestedOffset, long tailOffset) implements StreamError {
+    /// A cursor whose offset is no longer readable. `reason` says why in two classes: [Reason#EXPIRED] (retention reclaimed
+    /// it) or [Reason#LOST] (the data is gone with no retention decision behind it); `cause` names the removal itself
+    /// ([RemovalCause]). The two agree: [#reasonOf] gives the reason a cause fixes, and the compact constructor refuses a
+    /// pair that disagrees and refuses [RemovalCause#NOT_APPLICABLE] (a refusal that is not a removal is never a
+    /// `CursorExpired`). [RemovalCause#UNRECORDED] and [RemovalCause#UNKNOWN] fix no reason and go with either; no
+    /// constructor here writes `UNKNOWN`, it is reserved for decoding. The refusal guards a programming error only.
+    ///
+    /// `causes` is the SET of removal causes behind the refused range, as well as the one `cause` it names: the compact
+    /// constructor stores an immutable copy and refuses [RemovalCause#NOT_APPLICABLE] in it, as it does for `cause`.
+    /// [#maskOf] and [#causesOf] are the wire pair: one bit per [RemovalCause] ordinal, and a bit at or above
+    /// [RemovalCause#UNKNOWN]'s ordinal is a newer node's code and reads back as `UNKNOWN`. Every constructor that predates
+    /// `causes` derives it: a form that names a cause gives `{cause}`, and [RemovalCause#UNRECORDED] gives the empty set.
+    ///
+    /// The shim forms name no cause and pass [RemovalCause#UNRECORDED]: `(requested, tail, reason)` and `(requested,
+    /// tail)` = ([Reason#EXPIRED], `UNRECORDED`), with the empty set. On the forward the reason rides `ReadRefusal`'s `flag`
+    /// slot (`false` = [Reason#EXPIRED]), the cause its own `cause` slot and the set its `causes` mask.
+    record CursorExpired(long requestedOffset,
+                         long tailOffset,
+                         Reason reason,
+                         RemovalCause cause,
+                         Set<RemovalCause> causes) implements StreamError {
+        public enum Reason {
+            EXPIRED,
+            LOST
+        }
+
+        /// The refusal of a pair that cannot be a removal is a throw (a record constructor has no other channel) and guards a
+        /// programming error only: every constructor call is a constant pair or goes through `reasonOf`, and the decode
+        /// maps before it constructs, so no wire value reaches it.
+        @SuppressWarnings("JBCT-EX-01") public CursorExpired {
+            if (disagrees(reason, cause)) {
+                throw new IllegalArgumentException("CursorExpired reason " + reason + " does not match cause " + cause);
+            }
+
+            if (causes.contains(RemovalCause.NOT_APPLICABLE)) {
+                throw new IllegalArgumentException("CursorExpired causes " + causes
+                                                  + " name a refusal that is not a removal");
+            }
+
+            causes = Set.copyOf(causes);
+        }
+
+        public CursorExpired(long requestedOffset, long tailOffset, Reason reason, RemovalCause cause) {
+            this(requestedOffset, tailOffset, reason, cause, causesNamedBy(cause));
+        }
+
+        public CursorExpired(long requestedOffset, long tailOffset, RemovalCause cause) {
+            this(requestedOffset, tailOffset, fixedReason(cause), cause);
+        }
+
+        public CursorExpired(long requestedOffset, long tailOffset, Reason reason) {
+            this(requestedOffset, tailOffset, reason, RemovalCause.UNRECORDED);
+        }
+
+        public CursorExpired(long requestedOffset, long tailOffset) {
+            this(requestedOffset, tailOffset, Reason.EXPIRED, RemovalCause.UNRECORDED);
+        }
+
+        /// The set a shim form derives from the one cause it names: `{cause}`, and the empty set for
+        /// [RemovalCause#UNRECORDED], which names no removal cause.
+        public static Set<RemovalCause> causesNamedBy(RemovalCause cause) {
+            return cause == RemovalCause.UNRECORDED
+                   ? Set.of()
+                   : Set.of(cause);
+        }
+
+        /// The wire mask of a set: the bit `1 << ordinal` for each cause.
+        public static int maskOf(Set<RemovalCause> causes) {
+            return causes.stream()
+                         .mapToInt(CursorExpired::bitOf)
+                         .reduce(0,
+                                 (left, right) -> left | right);
+        }
+
+        /// The set a wire mask names, never throwing so a decoded value always builds: a bit at or above
+        /// [RemovalCause#UNKNOWN]'s ordinal is a newer node's code and becomes `UNKNOWN`, and the
+        /// [RemovalCause#NOT_APPLICABLE] bit is dropped (a set never carries it).
+        public static Set<RemovalCause> causesOf(int mask) {
+            return Stream.of(RemovalCause.values())
+                         .filter(cause -> carries(mask, cause))
+                         .collect(Collectors.toCollection(() -> EnumSet.noneOf(RemovalCause.class)));
+        }
+
+        private static int bitOf(RemovalCause cause) {
+            return 1 << cause.ordinal();
+        }
+
+        private static boolean carries(int mask, RemovalCause cause) {
+            return cause == RemovalCause.NOT_APPLICABLE
+                   ? false
+                   : cause == RemovalCause.UNKNOWN
+                     ? mask >>> cause.ordinal() != 0
+                     : (mask & bitOf(cause)) != 0;
+        }
+
+        /// The reason a cause fixes: the ONE switch from a cause to its class, exhaustive with no default branch. The
+        /// three causes that say nothing about a removal's class fix none.
+        public static Option<Reason> reasonOf(RemovalCause cause) {
+            return switch (cause) {
+                case RETENTION, AGE, COUNT, BYTES -> some(Reason.EXPIRED);
+                case RING_FROZEN, OVER_SHARE, DROPPED_RUN, BLOCK_PUT_FAILED, BLOCK_ABSENT, UNLISTED_TAIL, LIFE_LOST -> some(Reason.LOST);
+                case UNRECORDED, NOT_APPLICABLE, UNKNOWN -> none();
+            };
+        }
+
+        private static boolean disagrees(Reason reason, RemovalCause cause) {
+            return cause == RemovalCause.NOT_APPLICABLE || reasonOf(cause).fold(() -> false, fixed -> fixed != reason);
+        }
+
+        private static Reason fixedReason(RemovalCause cause) {
+            return reasonOf(cause).fold(() -> refusedNoReason(cause), fixed -> fixed);
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private static Reason refusedNoReason(RemovalCause cause) {
+            throw new IllegalArgumentException("Cause " + cause + " fixes no reason: name the reason too");
+        }
+
         @Override
         public String message() {
             return "Cursor at offset %d has expired, oldest available is %d".formatted(requestedOffset, tailOffset);
+        }
+    }
+
+    /// A read below the first offset this copy ever held, made by a caller that is not the owner: the neutral fact "this copy
+    /// never held it". `firstHeld` is the first offset the copy holds and `tailOffset` its tail. It names no removal cause,
+    /// because this copy removed nothing (a removal is a [CursorExpired]); the requested offset is not a field, the caller has
+    /// it. The owner answers it, so it is a retry-elsewhere refusal on the wire (`ReadRefusal.Kind.BELOW_COPY_TAIL`, 503). The
+    /// compact constructor refuses a `firstHeld` above the tail, which no copy can hold (a programming error only).
+    record BelowCopyTail(long firstHeld, long tailOffset) implements StreamError {
+        @SuppressWarnings("JBCT-EX-01") public BelowCopyTail {
+            if (firstHeld > tailOffset) {
+                throw new IllegalArgumentException("BelowCopyTail firstHeld " + firstHeld
+                                                  + " is above tail " + tailOffset);
+            }
+        }
+
+        @Override
+        public String message() {
+            return "Read is below the first offset this copy held: it holds from %d, tail is %d".formatted(firstHeld,
+                                                                                                           tailOffset);
         }
     }
 
@@ -294,6 +439,16 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// The stream's existence is confirmed by a committed read, but this node's engine does not hold it yet (config committed,
+    /// apply lagging, or metadata-only placement). Transient: repeat or ask elsewhere. DISTINCT from [StreamNotFound], which
+    /// means no committed config is visible.
+    record StreamNotMaterialized(String streamName) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Stream " + streamName + " is registered but not materialized on this node yet";
+        }
+    }
+
     /// Owner-side forwarded-publish config-visibility race (write-forward race fix): a metadata-only node
     /// auto-creates + commits this stream's `StreamConfigKey` and forwards the FIRST publish to the HRW
     /// owner IMMEDIATELY, so the owner's KV apply of that config can lag the forward — the owner then
@@ -456,15 +611,17 @@ public sealed interface StreamError extends Cause {
         }
     }
 
-    /// A retention count the ring cannot index (#1549): the ring's index is sized from `maxCount`, and a count
-    /// past [OffHeapRingBuffer#MAX_CAPACITY] overflows the allocation size. Rejected PRE-COMMIT on create
-    /// rather than built over a truncated index; a fatal config error, never retried.
+    /// A hot-window count the ring cannot index (#1549): the ring's index is sized from the stream's hot-window count
+    /// (`hot.max_count`, or the window a `system:` or `entity:` ring keeps), and a count past
+    /// [org.pragmatica.aether.slice.stream.RingGeometry#maxCapacity] of the ring's first data region overflows the
+    /// allocation size. Rejected PRE-COMMIT on create rather than built over a truncated index; a fatal config error, never
+    /// retried. `maxCount` is the window's count; retention's count no longer sizes the ring.
     record RetentionCountUnindexable(String streamName, long maxCount, long maxCapacity) implements StreamError {
         @Override
         public String message() {
-            return "Stream '%s' retention max_count %d exceeds the indexable ring capacity %d".formatted(streamName,
-                                                                                                         maxCount,
-                                                                                                         maxCapacity);
+            return "Stream '%s' hot window max_count %d exceeds the indexable ring capacity %d".formatted(streamName,
+                                                                                                          maxCount,
+                                                                                                          maxCapacity);
         }
     }
 
@@ -479,6 +636,37 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A ring sized below the stream's `max_event_size` (S2b-2a, ruling know e8888553b4): a ring holds at least one maximal
+    /// event of its current life, and a window smaller than one event would make the ring's effective maximum the window
+    /// instead of `max_event_size` (an event between the two was refused at the ring as too large). `key` names the setting
+    /// that sizes the ring: a declared `[hot] max_bytes`, or the `retention max_bytes` a `system:` ring is sized from (#3390
+    /// F3). Refused at the commit validator, naming the key and both values; a fatal config error, never retried. An absent
+    /// `[hot]` never reaches here: its default window is at least one maximal event
+    /// ([org.pragmatica.aether.slice.stream.RingGeometry#hotWindowBytes]).
+    record HotWindowBelowMaxEvent(String streamName, String key, long windowBytes, long maxEventSizeBytes) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' declares %s = %d, below its max_event_size %d: its ring must hold at least one maximal event".formatted(streamName,
+                                                                                                                                        key,
+                                                                                                                                        windowBytes,
+                                                                                                                                        maxEventSizeBytes);
+        }
+    }
+
+    /// A commit of a life's own config that changes one of its immutable keys (`max_event_size`, `encryption_key_id`,
+    /// `[truncation]`; #3390 F1, ruling know e8888553b4 (2): within a life `max_event_size` is immutable). The life's rings and
+    /// WALs were built under the enforced value. Refused at the commit, naming the key and both values; a fatal config error,
+    /// never retried. A new life (destroy, then create) may change the key.
+    record ImmutableKeyChanged(String streamName, String key, String enforced, String requested) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' changes %s from %s to %s within one life: the key is immutable for the life of a stream".formatted(streamName,
+                                                                                                                                   key,
+                                                                                                                                   enforced,
+                                                                                                                                   requested);
+        }
+    }
+
     /// A stream config whose replication factors the engine refuses (#1564): `1 <= CF <= RF` fails, or a declared
     /// stream is redeclared with factors different from its committed ones. `cause` is the typed
     /// [org.pragmatica.aether.slice.ReplicationFactorsError].
@@ -486,6 +674,17 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Stream '" + streamName + "': " + cause.message();
+        }
+    }
+
+    /// A stream config whose declared storage mode this build cannot read (#3458 M-1): the config was decoded from a newer
+    /// build's value, so its `storage` is `UNKNOWN`, and `UNKNOWN` is decode-only. Refused at the WRITE of a config, so a
+    /// decoded `UNKNOWN` is never written back as a mode a newer build would read as one of its own. A fatal config error for
+    /// this build, never retried.
+    record StreamStorageUnknown(String streamName) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' declares a storage mode this build does not know".formatted(streamName);
         }
     }
 
@@ -520,6 +719,20 @@ public sealed interface StreamError extends Cause {
                                                                                                                                                  partition,
                                                                                                                                                  presented,
                                                                                                                                                  current);
+        }
+    }
+
+    /// Ownership-not-applied refusal (#2755): the append was stamped with the unfenced floor ([Epoch#ZERO]) because this node's
+    /// store holds no ownership record for `(streamName, partition)` yet, while the partition high-water has already observed
+    /// the committed epoch `current`. The writer is NOT deposed: it has simply not applied the record it owns the arc by, so
+    /// presenting a stale epoch would misname a transient apply lag as a fencing event. Nothing is appended. Transient: the
+    /// record's apply lands within a replication round, and the caller retries against the same owner.
+    record OwnershipNotApplied(String streamName, int partition, Epoch current) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Stream append refused for %s[%d]: this node has not yet applied the committed ownership record (partition high-water %s)".formatted(streamName,
+                                                                                                                                                        partition,
+                                                                                                                                                        current);
         }
     }
 

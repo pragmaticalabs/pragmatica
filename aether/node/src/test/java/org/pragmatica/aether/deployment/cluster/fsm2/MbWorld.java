@@ -14,7 +14,7 @@ import java.util.function.UnaryOperator;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.cluster.CommunityPlacement;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;

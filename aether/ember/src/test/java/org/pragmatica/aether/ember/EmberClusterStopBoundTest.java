@@ -5,15 +5,19 @@
 package org.pragmatica.aether.ember;
 
 import java.lang.reflect.Proxy;
+import java.util.List;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.StopReport;
+import org.pragmatica.aether.node.StopReport.StepFailure;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
@@ -48,6 +52,49 @@ class EmberClusterStopBoundTest {
                                                                       .as("the failure names the bound that expired")
                                                                       .contains(TimeSpan.timeSpan(10).seconds().toString()));
         assertThat(cluster.allNodes()).as("the registry is still cleared").isEmpty();
+    }
+
+    /// #3565: a node whose stop SUCCEEDED with a report carrying failures (its HTTP listener close timed out, every later step ran)
+    /// is stopped. The cluster stop counts it as stopped, and fails only for a node whose stop did not settle or failed.
+    @Test
+    @Timeout(40)
+    void clusterStop_succeeds_whenANodeStopCompletedWithFailures_theNodeCountsAsStopped() {
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
+        var listenerCloseTimedOut = StopReport.of(List.of(StepFailure.stepFailure("App HTTP server",
+                                                                                                    Causes.cause("Promise timed out after 2000ms"))));
+
+        adopt(cluster, "sb-1", PORT, () -> Promise.success(unit()));
+        adoptReporting(cluster, "sb-2", PORT + 1, () -> Promise.success(listenerCloseTimedOut));
+
+        var capture = StreamTripwireSupport.captureLogs();
+
+        try {
+            var outcome = cluster.stop().await(PAST_THE_BOUND);
+
+            assertThat(outcome.isSuccess()).as("a stop completed with failures is a stopped node, got %s", outcome).isTrue();
+            assertThat(cluster.allNodes()).as("the registry is cleared").isEmpty();
+            assertThat(StreamTripwireSupport.logLines(capture, Level.WARN)).as("the dropped step failure is logged (FER, #3565)")
+                                                                           .anyMatch(line -> line.startsWith("WARN")
+                                                                                             && line.contains("Node sb-2 stopped with 1 step failure(s)")
+                                                                                             && line.contains("App HTTP server: Promise timed out after 2000ms"));
+        } finally {
+            capture.close();
+        }
+    }
+
+    /// The other side of the line: a stop that FAILS (the sequence could not complete) is a node that did not stop.
+    @Test
+    @Timeout(40)
+    void clusterStop_failsNamingTheNode_whenANodeStopFails() {
+        var cluster = emberCluster(3, PORT, PORT + 100, "sb");
+
+        adopt(cluster, "sb-1", PORT, () -> Promise.success(unit()));
+        adoptReporting(cluster, "sb-2", PORT + 1, () -> Causes.cause("stop sequence could not complete").promise());
+
+        var outcome = cluster.stop().await(PAST_THE_BOUND);
+
+        assertThat(outcome.isFailure()).as("a failed stop is a node that did not stop, got %s", outcome).isTrue();
+        outcome.onFailure(cause -> assertThat(cause.message()).contains("sb-2").doesNotContain("sb-1"));
     }
 
     @Test
@@ -204,12 +251,16 @@ class EmberClusterStopBoundTest {
     }
 
     private static void adopt(EmberCluster cluster, String id, int port, Supplier<Promise<Unit>> stop) {
+        adoptReporting(cluster, id, port, () -> stop.get().map(_ -> StopReport.clean()));
+    }
+
+    private static void adoptReporting(EmberCluster cluster, String id, int port, Supplier<Promise<StopReport>> stop) {
         var nodeId = nodeId(id).unwrap();
 
         cluster.adoptNode(NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap()), fakeNode(nodeId, stop));
     }
 
-    private static AetherNode fakeNode(NodeId id, Supplier<Promise<Unit>> stop) {
+    private static AetherNode fakeNode(NodeId id, Supplier<Promise<StopReport>> stop) {
         return (AetherNode) Proxy.newProxyInstance(AetherNode.class.getClassLoader(),
                                                    new Class<?>[]{AetherNode.class},
                                                    (proxy, method, args) -> switch (method.getName()) {

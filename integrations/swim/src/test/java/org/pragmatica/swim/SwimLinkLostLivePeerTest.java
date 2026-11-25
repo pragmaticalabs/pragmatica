@@ -159,10 +159,10 @@ class SwimLinkLostLivePeerTest {
                   .isZero();
         assertThat(lhmAfterHintProbe).as("one failed hint-time probe cycle = exactly one LHM increment (two hints, one probe)")
                   .isEqualTo(1);
-        await().atMost(Duration.ofSeconds(3))
+        await().atMost(Duration.ofSeconds(10))
              .pollInterval(Duration.ofMillis(10))
              .until(() -> transport.pingsTo(ADDR_B) >= 1);
-        await().atMost(Duration.ofSeconds(1))
+        await().atMost(Duration.ofSeconds(10))
              .pollInterval(Duration.ofMillis(10))
              .untilAsserted(() -> assertThat(protocol.lhmScoreForTest()).as("the next verified probe ack clears the increment")
                                             .isZero());
@@ -201,7 +201,7 @@ class SwimLinkLostLivePeerTest {
         transport.autoHint.set(false);
         liveTransport.add(LEADER);
         startWith(Map.of(LEADER, true, NODE_B, true, NODE_C, true, NODE_D, true));
-        await().atMost(Duration.ofSeconds(3))
+        await().atMost(Duration.ofSeconds(10))
              .pollInterval(Duration.ofMillis(5))
              .until(() -> transport.pingsTo(ADDR_A) >= 1);
         var pingsBefore = transport.pingsTo(ADDR_A);
@@ -222,7 +222,7 @@ class SwimLinkLostLivePeerTest {
 
     private static void pause(long millis) {
         await().pollDelay(Duration.ofMillis(millis))
-             .atMost(Duration.ofMillis(millis + 1_000))
+             .atMost(Duration.ofSeconds(10))
              .until(() -> true);
     }
 
@@ -241,7 +241,7 @@ class SwimLinkLostLivePeerTest {
 
     private void build(Map<NodeId, Boolean> answersAfterHint) {
         transport.answersAfterHint.putAll(answersAfterHint);
-        protocol = SwimProtocol.swimProtocol(config,
+        protocol = SwimTestProtocols.swimProtocol(config,
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,

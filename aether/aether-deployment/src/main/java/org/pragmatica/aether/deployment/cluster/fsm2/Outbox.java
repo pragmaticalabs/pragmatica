@@ -582,29 +582,41 @@ public sealed interface Outbox {
     // the submission's pending entries were already released and its intent is re-derived level-triggered from the mirror.
     /// ```tla Fsm2Leader:Settle
     /// \* WriteSettled of this incarnation: Outbox.java. W accepted (code): rule E notifies from the committed pair, a deposed
-    /// \* writer included (Warnings.accepted / notified; mutant "nodeposed": a writer that is not the committed leader emits
+    /// \* writer included (Warnings.accepted, Warnings.notified until ruling B; mutant "nodeposed": a writer that is not the committed leader emits
     /// \* nothing; mutant "noruleE": no notification at all), and the mirror takes the mutations; the landed prefix (ld) is the
     /// \* tx's covered count, always 0 (nothing is held in any mode); refused: the refusal's values re-index the mirror,
     /// \* m.leader := refusal leader, unlanded marks
     /// \* dirty (Outbox.java; Warnings.java); failed: re-drafted by the next reconcile.
+    /// \* #3203 (STAMP # "off"): rule E reads the replacement rows the writer's mirror does not hold at a newer revision (Kept,
+    /// \* Warnings.superseded at 34c4517a15); each emitted transition goes through this node's sink (Passes, EffectTranslator.ordered at 34c4517a15), and a
+    /// \* delivered one becomes the operator view's entry for the row; "cand" (ruling B): rule E emits nothing here, the committed
+    /// \* put published the transition at KvApply. PUTFIRST: a late accepted settlement waits for the mirror.
     /// Settle(s) ==
     ///   /\ s \in settles /\ fsm[s.node] = "Active" /\ s.inc = inc[s.node]
+    ///   /\ (PUTFIRST /\ s.kind = "W" /\ s.out = "acc")
+    ///          => \A x \in DOMAIN s.wrep : kv[x].rv > s.wrep[x].rv => rows[s.node][x].rv > s.wrep[x].rv
     ///   /\ LET n == s.node
     ///          isW == s.kind = "W"
     ///          ref == s.out = "ref"
     ///          dep == ref /\ s.lv[1] # n                   \* routeRefusal: the refusal names another node, nothing is resubmitted
     ///          stale == ref /\ ~dep /\ s.lv # s.tx.lv     \* routeRefusal: names this node under a new witness, resubmit unchanged
-    ///          r == IF isW /\ s.out = "acc" THEN Overlay(rows[n], s.wrep)
-    ///               ELSE IF isW /\ ref THEN Overlay(rows[n], s.seen)
+    ///          r == IF isW /\ s.out = "acc" THEN Mirror(rows[n], s.wrep)
+    ///               ELSE IF isW /\ ref THEN Mirror(rows[n], s.seen)
     ///               ELSE rows[n]
     ///          d == IF isW /\ ref /\ ~dep /\ ~stale THEN TRUE ELSE dirty[n]   \* rederive -> Warnings.unlanded marks dirty
     ///          ld == IF isW /\ s.out = "acc" THEN s.cov ELSE lnd[n]          \* Warnings.committed: landed := covered
     ///          v == IF ref THEN s.lv ELSE view[n]
+    ///          emits == isW /\ s.out = "acc" /\ MODE = "code" /\ MUT # "noruleE" /\ (MUT # "nodeposed" \/ kvLeader = n) /\ ~CommitPub
+    ///          kept == Kept(n, s.wrep)
+    ///          tr == IF emits THEN Tr(s.tx.wexp, kept) ELSE {}
+    ///          dl == IF STAMP = "off" THEN {} ELSE {x \in tr : Passes(n, x, kept[x])}   \* delivered by this node's sink
     ///      IN /\ settles' = settles \ {s}
     ///         /\ view' = [view EXCEPT ![n] = v]
     ///         /\ redo' = [redo EXCEPT ![n] = IF stale THEN redo[n] \cup {s.tx} ELSE redo[n]]
-    ///         /\ notes' = IF isW /\ s.out = "acc" /\ MODE = "code" /\ MUT # "noruleE" /\ (MUT # "nodeposed" \/ kvLeader = n)
-    ///                    THEN Emit(notes, s.c, s.tx.wexp, s.wrep) ELSE notes
+    ///         /\ notes' = IF emits THEN Emit(notes, s.c, s.tx.wexp, kept) ELSE notes
+    ///         /\ newest' = [newest EXCEPT ![n] = [x \in Subjects |-> IF x \in tr THEN Max(newest[n][x], Stamp(kept[x]))
+    ///                                                               ELSE newest[n][x]]]
+    ///         /\ opv' = View(dl, kept)
     ///         /\ Apply(n, warned[n], r, d, IF isW THEN stale ELSE wInfl[n], IF isW THEN gInfl[n] ELSE stale,
     ///                  gIntent[n], FALSE, flushQ[n] \/ stale,
     ///                  shown, held[n], ld, v)

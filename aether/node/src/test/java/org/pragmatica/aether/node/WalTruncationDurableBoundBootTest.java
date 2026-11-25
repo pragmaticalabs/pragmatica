@@ -25,6 +25,7 @@ import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
@@ -164,9 +165,13 @@ class WalTruncationDurableBoundBootTest {
     /// fired async — this single-node harness never elects a leader (`GUARD[empty-topology]`), so a SYNC
     /// `createStream` would wait on a consensus round that cannot complete.
     private static void createStream(StreamPartitionManager manager) {
+        // The hot window is declared equal to the retention so the ring holds the same RING_EVENTS entries whether it is sized
+        // from retention or from the declared window; the data region (40 KiB) is under 256 KiB, so the first segment is the same in both.
         var retention = RetentionPolicy.retentionPolicy(RING_EVENTS, 2L * RING_EVENTS * PAYLOAD, 600_000);
 
-        manager.ensureStreamMaterialized(StreamConfig.streamConfig(STREAM, 1, retention, "earliest"))
+        manager.ensureStreamMaterialized(HotWindowFixture.declaredHot(StreamConfig.streamConfig(STREAM, 1, retention, "earliest"),
+                                                                        retention.maxCount(),
+                                                                        retention.maxBytes()))
                .onFailure(cause -> fail("ensureStreamMaterialized: " + cause.message()));
     }
 

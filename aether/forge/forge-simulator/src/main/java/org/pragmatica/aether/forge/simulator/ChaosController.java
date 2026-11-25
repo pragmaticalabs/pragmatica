@@ -6,6 +6,7 @@ package org.pragmatica.aether.forge.simulator;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -216,7 +217,8 @@ public final class ChaosController {
         public String toJson() {
             var durationStr = event.duration().map(ChaosController::durationText).or("indefinite");
 
-            return String.format("{\"eventId\":\"%s\",\"type\":\"%s\",\"description\":\"%s\",\"startedAt\":\"%s\",\"duration\":\"%s\"}",
+            return String.format(Locale.ROOT,
+                                 "{\"eventId\":\"%s\",\"type\":\"%s\",\"description\":\"%s\",\"startedAt\":\"%s\",\"duration\":\"%s\"}",
                                  eventId,
                                  event.type(),
                                  event.description(),
@@ -239,7 +241,8 @@ public final class ChaosController {
         public String toJson() {
             var eventsJson = buildEventsJson();
 
-            return String.format("{\"enabled\":%b,\"activeEventCount\":%d,\"activeEvents\":%s}",
+            return String.format(Locale.ROOT,
+                                 "{\"enabled\":%b,\"activeEventCount\":%d,\"activeEvents\":%s}",
                                  enabled,
                                  activeEventCount,
                                  eventsJson);

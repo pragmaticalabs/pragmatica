@@ -5,13 +5,16 @@
 package org.pragmatica.aether.api;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -33,6 +36,7 @@ import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
 import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
 import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
+import org.pragmatica.aether.api.ClusterEvent.StreamRetentionChanged;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
@@ -52,6 +56,7 @@ import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
 import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.controller.ScalingEvent;
+import org.pragmatica.aether.deployment.cluster.fsm2.Warnings;
 import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.metrics.deployment.ReconciliationAdjustment;
@@ -59,12 +64,14 @@ import org.pragmatica.aether.slice.StreamAccess.PartitionInfo;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.ObservedSliceListener;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -285,6 +292,11 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     static final long OPERATOR_WARNING_RETRY_MS = 5_000L;
 
     private volatile Option<ClusterEvent> lastRaisedOperatorWarning = Option.none();
+
+    /// How many admitted operator warnings [#raisedOperatorWarnings] keeps; the oldest is dropped past it.
+    private static final int RAISED_HISTORY_LIMIT = 256;
+
+    private final ConcurrentLinkedDeque<ClusterEvent> raisedOperatorWarnings = new ConcurrentLinkedDeque<>();
 
     /// A key with no call for this long is evicted by [#evictIdleThrottleWindows] (#1617 R3). Twice the
     /// window, so a key is never evicted while its window could still hold a call back.
@@ -1151,7 +1163,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
 
         var event = warningEvent(warning, window.suppressedBefore());
 
-        lastRaisedOperatorWarning = Option.some(event);
+        recordRaised(event);
         if (replayed.getAsBoolean()) {
             LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
             shortenWindow(key, window);
@@ -1373,7 +1385,7 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
 
     private void publishRecovery(String closedKey, ClusterEvent event, Settle settle) {
         operatorWarningThrottle.remove(closedKey);
-        lastRaisedOperatorWarning = Option.some(event);
+        recordRaised(event);
         redelivery.deliver(stampedOrAsIs(event), _ -> settle.lost(), settle::landed);
     }
 
@@ -1382,6 +1394,25 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                                                 severityOf(warning.code().level()),
                                                 warning.message(),
                                                 operatorWarningDetails(warning, suppressedSince));
+    }
+
+    private void recordRaised(ClusterEvent event) {
+        lastRaisedOperatorWarning = Option.some(event);
+        raisedOperatorWarnings.addLast(event);
+        trimRaisedHistory();
+    }
+
+    private void trimRaisedHistory() {
+        while (raisedOperatorWarnings.size() > RAISED_HISTORY_LIMIT) {
+            raisedOperatorWarnings.pollFirst();
+        }
+    }
+
+    /// Observability: the operator-warning events this node admitted for publication, oldest first, bounded to the last
+    /// 256 (RAISED_HISTORY_LIMIT). Unlike [#lastRaisedOperatorWarning] a later warning does not hide an earlier one, so a
+    /// reader asking "was a warning with code X raised" is not overwritten by an unrelated producer (#3403).
+    public List<ClusterEvent> raisedOperatorWarnings() {
+        return List.copyOf(raisedOperatorWarnings);
     }
 
     /// Observability: the operator-warning event this node most recently admitted for publication,
@@ -1885,8 +1916,14 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     /// replay still does not re-publish history.
     ///
     /// The WARN log is the surface that survives everything this contract is about: it needs no leader,
-    /// quorum, replica or network. `/api/events` read-back is NOT claimed here — that read prefers a
-    /// remote replica and can fail while the event sits in the local ring.
+    /// quorum, replica or network. `/api/events` read-back (#946) is served from a node that is up even when every
+    /// peer it would select is dead, provided that node is itself a caught-up replica of the partition (`ANY_REPLICA`
+    /// degrades to the local copy, `ForwardingReadRouter#degradeToCoveringCopy`); the guarantee is the replica read
+    /// row of `guarantees.md` (eventual, behind the owner by at most what the owner last reported). A node that holds
+    /// no caught-up copy answers the remote failure instead of an empty page. `[mechanism: the cluster-events consumer reads
+    /// through the same `ForwardingReadRouter` as the user stream that ForwardingReadRouterTest and
+    /// EmberAnyReplicaReadFallbackTest exercise; no test reads `GET /api/events` itself with its peers dead, because that
+    /// needs the system stream's own in-sync set to include the surviving node, which an Ember test cannot pin]`
     @Contract
     public void onConfirmedDeparture(NodeId departed) {
         LOG.warn("Node {} failed (confirmed departure), observed by {} — cluster membership degraded",
@@ -2023,6 +2060,29 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                                                event.oldValue(),
                                                event.cause().value())
                                 .forEach(this::emitCommitted);
+    }
+
+    /// #3203 (CTO ruling B): a family warning of the cluster FSM is published from the committed `FsmWarningKey` put, never from the
+    /// writer's settlement. Rule E reads the committed pair (the row this put replaced at its KV index, and the put), so every node derives
+    /// the same notice at one index, and [#emitCommitted] lets one node publish it, in commit order: a deposed leader's late settlement
+    /// can no longer reopen a key its successor closed. A code that is not an `OperatorWarningCode` is not published; every family
+    /// opener and recovery code is one (`FsmWarningCatalogueTest`).
+    @Contract
+    public void onFsmWarningPut(ValuePut<FsmWarningKey, FsmWarningValue> event) {
+        Warnings.committedNotice(event.cause().key(),
+                                 event.oldValue(),
+                                 event.cause().value())
+                .flatMap(ClusterEventAggregator::catalogued)
+                .onPresent(warning -> emitCommitted(warningEvent(warning, 0)));
+    }
+
+    private static Option<OperatorWarning> catalogued(Warnings.Notice notice) {
+        return Option.from(Arrays.stream(OperatorWarningCode.values())
+                                 .filter(code -> code.code()
+                                                     .equals(notice.code()))
+                                 .findFirst()).map(code -> OperatorWarning.operatorWarning(code,
+                                                                                           notice.subject(),
+                                                                                           notice.message()));
     }
 
     @Contract
@@ -2695,6 +2755,27 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
                                                      event.reason())));
     }
 
+    /// Taste: INFO. A committed retention change is routine operator action; the summary states the change only, no
+    /// prediction of what the stream will retain. Raised on every node whose stream manager ADOPTS the committed config Put
+    /// (its adopt site, #3554), with `oldBounds` the bounds that node enforced before, so it takes the committed gate
+    /// ([#emitCommitted], #1671 I-35): one node per KV index publishes it, with the raiser's eventId unchanged.
+    @Contract
+    public void onStreamRetentionChanged(OperationalEvent.StreamRetentionChanged event) {
+        emitCommitted(new StreamRetentionChanged(hlcClock.now(),
+                                                 Severity.INFO,
+                                                 "Stream " + event.stream()
+                                                + " retention bounds changed: committed " + event.oldBounds()
+                                                + " -> " + event.newBounds(),
+                                                 Map.of(ClusterEventIdentity.EVENT_ID,
+                                                        event.eventId(),
+                                                        "stream",
+                                                        event.stream(),
+                                                        "oldBounds",
+                                                        event.oldBounds(),
+                                                        "newBounds",
+                                                        event.newBounds())));
+    }
+
     @Contract
     public void onStreamLineageRestarted(OperationalEvent.StreamLineageRestarted event) {
         emit(new StreamLineageRestarted(hlcClock.now(),
@@ -2916,6 +2997,6 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
             return durationMs + "ms";
         }
 
-        return String.format("%.1fs", durationMs / 1000.0);
+        return String.format(Locale.ROOT, "%.1fs", durationMs / 1000.0);
     }
 }

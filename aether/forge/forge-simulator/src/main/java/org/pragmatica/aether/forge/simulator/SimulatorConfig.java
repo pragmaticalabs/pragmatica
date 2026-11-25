@@ -6,6 +6,7 @@ package org.pragmatica.aether.forge.simulator;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.regex.MatchResult;
@@ -115,7 +116,8 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                                                    String custs,
                                                    int minQ,
                                                    int maxQ) {
-            return String.format("{\"callsPerSecond\":%d,\"enabled\":%b,\"products\":%s,\"customerIds\":%s,\"minQuantity\":%d,\"maxQuantity\":%d}",
+            return String.format(Locale.ROOT,
+                                 "{\"callsPerSecond\":%d,\"enabled\":%b,\"products\":%s,\"customerIds\":%s,\"minQuantity\":%d,\"maxQuantity\":%d}",
                                  cps,
                                  en,
                                  prods,
@@ -245,7 +247,8 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                                               double fail,
                                               double spike,
                                               int spikeLat) {
-            return String.format("{\"stockMode\":\"%s\",\"refillRate\":%d,\"baseLatencyMs\":%d,\"jitterMs\":%d,\"failureRate\":%.4f,\"spikeChance\":%.4f,\"spikeLatencyMs\":%d}",
+            return String.format(Locale.ROOT,
+                                 "{\"stockMode\":\"%s\",\"refillRate\":%d,\"baseLatencyMs\":%d,\"jitterMs\":%d,\"failureRate\":%.4f,\"spikeChance\":%.4f,\"spikeLatencyMs\":%d}",
                                  mode,
                                  refill,
                                  baseLat,

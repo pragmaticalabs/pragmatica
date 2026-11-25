@@ -63,7 +63,7 @@ graph TB
         SI["SliceInvoker<br/>Local/remote dispatch,<br/>load balancing, retry"]
         IH["InvocationHandler<br/>Incoming remote calls"]
         IC["InvocationContext<br/>ScopedValue: requestId,<br/>depth, sampled, principal"]
-        DAI["DynamicAspectInterceptor<br/>Runtime LOG/METRICS toggle"]
+        OSC["ObservabilityStrategyCell<br/>Per-method runtime toggle"]
     end
 
     subgraph Slices["Slice Container"]
@@ -82,7 +82,7 @@ graph TB
     end
 
     subgraph State["Consensus State"]
-        KV[("KV-Store<br/>(Rabia)<br/>Blueprints, SliceState,<br/>Routes, Endpoints,<br/>Aspects, Alerts,<br/>Subscriptions, Config")]
+        KV[("KV-Store<br/>(Rabia)<br/>Blueprints, SliceState,<br/>Routes, Endpoints,<br/>Observability config, Alerts,<br/>Subscriptions, Config")]
         KNR["KVNotificationRouter<br/>Change event dispatch"]
         LM["LeaderManager<br/>Election, failover"]
     end
@@ -132,7 +132,7 @@ graph TB
     AHS --> SI
     AHS -->|Forward| MR
     IH --> SI
-    SI --> DAI --> SS
+    SI --> OSC --> SS
     SS --> SA & SB
 
     %% Management to subsystems
@@ -188,7 +188,7 @@ graph TB
 | **State** | -- | KV-Store (Rabia), LeaderManager, KVNotificationRouter |
 | **Network** | -- | ClusterNetwork, TopologyManager, MessageRouter |
 | **HTTP** | -- | AppHttpServer, ManagementServer |
-| **Invocation** | -- | SliceInvoker, InvocationHandler, DynamicAspectInterceptor |
+| **Invocation** | -- | SliceInvoker, InvocationHandler, ObservabilityStrategyCell |
 | **Storage** | -- | DHTNode, ArtifactStore, DHTCacheBackend, AntiEntropy, Rebalancer |
 | **Messaging** | -- | TopicSubscriptionRegistry, TopicPublisher, ScheduledTaskManager |
 | **Container** | -- | SliceStore, SliceRegistry, per-slice ClassLoaders |

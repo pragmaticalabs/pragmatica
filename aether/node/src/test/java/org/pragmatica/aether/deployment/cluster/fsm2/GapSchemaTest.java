@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaReach;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -30,7 +31,7 @@ class GapSchemaTest {
     private static final BlueprintId OWNER = blueprintId("org.example:app:1.0.0");
 
     private static SchemaVersionValue schema(String datasource, SchemaStatus status) {
-        return new SchemaVersionValue(datasource, 1, "m1", status, "g:a:1", OWNER, 2, FsmHarness.START_WALL);
+        return new SchemaVersionValue(datasource, 1, "m1", status, "g:a:1", OWNER, 2, FsmHarness.START_WALL, SchemaReach.MIGRATED);
     }
 
     /// Red when: a PENDING record found at rebuild is not dispatched to the orchestrator.

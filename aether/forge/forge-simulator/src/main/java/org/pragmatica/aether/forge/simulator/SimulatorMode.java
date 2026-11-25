@@ -62,7 +62,8 @@ public enum SimulatorMode {
                        .withGlobalMultiplier(rateMultiplier);
     }
     public String toJson() {
-        return String.format("{\"mode\":\"%s\",\"displayName\":\"%s\",\"loadGeneratorEnabled\":%b,"
+        return String.format(Locale.ROOT,
+                             "{\"mode\":\"%s\",\"displayName\":\"%s\",\"loadGeneratorEnabled\":%b,"
                             + "\"realisticLatency\":%b,\"chaosEnabled\":%b,\"rateMultiplier\":%.2f}",
                              name(),
                              displayName,

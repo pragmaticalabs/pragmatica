@@ -46,7 +46,8 @@ import org.pragmatica.lang.Promise;
 ///      read is forwarded there via the existing read-forward transport. With no committed record
 ///      (legacy / unowned partitions) it falls back to the replica-routed read so nothing breaks.
 ///   3. A REMOTE replica the LOCAL registry marks CAUGHT_UP exists → forward via {@link #attemptPrimary}
-///      (random pick + single retry on a distinct replica).
+///      (random pick + single retry on a distinct replica); when both could not be asked and self is itself a
+///      caught-up replica, the read is answered from the local copy ({@link #degradeToCoveringCopy}, #946).
 ///   4. Self is CAUGHT_UP for this partition (local has full coverage) → read local.
 ///   5. Self lagging, no locally-known caught-up peer → forward to the deterministic HRW owner (every
 ///      node computes the same owner; the owner self-promotes to CAUGHT_UP first at cold-start), failing
@@ -253,7 +254,7 @@ public final class ForwardingReadRouter<E> {
     private Promise<List<E>> readLocalFirstThenOwner(String streamName, int partition, long fromOffset, int maxEvents) {
         return registry.fold(() -> localOrForwardOnNotLocal(streamName, partition, fromOffset, maxEvents),
                              reg -> selfCoversPartition(reg, streamName, partition)
-                                    ? localReader.read(streamName, partition, fromOffset, maxEvents)
+                                    ? readLocalArmed(streamName, partition, fromOffset, maxEvents)
                                     : localThenForwardIfEmpty(streamName, partition, fromOffset, maxEvents));
     }
 
@@ -306,9 +307,9 @@ public final class ForwardingReadRouter<E> {
                : Promise.success(local);
     }
 
-    /// Recover ONLY the typed `PARTITION_NOT_LOCAL` local-read failure by forwarding to the owner; every
-    /// other cause propagates. Matches the enum singleton, so the discrimination is typed — no string
-    /// matching.
+    /// Recover ONLY two typed local-read failures by forwarding to the owner: `PARTITION_NOT_LOCAL` (the HRW owner,
+    /// {@link #forwardToOwner}) and {@link StreamError.BelowCopyTail} ({@link #forwardBelowCopyTail}); every other cause
+    /// propagates. Matches the enum singleton and the record type, so the discrimination is typed — no string matching.
     private Promise<List<E>> recoverNotLocal(Cause cause,
                                              String streamName,
                                              int partition,
@@ -316,7 +317,52 @@ public final class ForwardingReadRouter<E> {
                                              int maxEvents) {
         return isPartitionNotLocal(cause)
                ? forwardToOwner(streamName, partition, fromOffset, maxEvents)
+               : forwardBelowCopyTail(cause, streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// The FIRST local read of an arm that has no other recovery (M-9f): a {@link StreamError.BelowCopyTail} is forwarded
+    /// once ({@link #forwardBelowCopyTail}), any other answer is returned as it is.
+    private Promise<List<E>> readLocalArmed(String streamName, int partition, long fromOffset, int maxEvents) {
+        return localReader.read(streamName, partition, fromOffset, maxEvents)
+                          .fold(result -> result.fold(cause -> forwardBelowCopyTail(cause,
+                                                                                    streamName,
+                                                                                    partition,
+                                                                                    fromOffset,
+                                                                                    maxEvents),
+                                                      Promise::success));
+    }
+
+    /// A copy that does not hold the range asked answers {@link StreamError.BelowCopyTail}; the router that made that LOCAL
+    /// read forwards it ONCE to the owner, and the owner's answer is the read's answer. The arm sits on the first local
+    /// read of each arm, never on a read that follows a forward ({@link #forwardToOwner}'s fallback,
+    /// {@link #afterForwardFailure}) nor around {@link #route}, so a `BelowCopyTail` that came back FROM a forward is
+    /// never forwarded again. With no target, or no forward client, the original cause surfaces (`NN_RETRY`, 503); a failed
+    /// transport degrades through {@link #forwardReadToNode} to the same un-armed local answer. Any other cause propagates.
+    private Promise<List<E>> forwardBelowCopyTail(Cause cause,
+                                                  String streamName,
+                                                  int partition,
+                                                  long fromOffset,
+                                                  int maxEvents) {
+        return cause instanceof StreamError.BelowCopyTail
+               ? belowCopyTailTarget(streamName, partition).flatMap(owner -> forwardClient.map(client -> forwardReadToNode(client,
+                                                                                                                           owner,
+                                                                                                                           streamName,
+                                                                                                                           partition,
+                                                                                                                           fromOffset,
+                                                                                                                           maxEvents)))
+                                    .or(() -> cause.<List<E>> promise())
                : cause.promise();
+    }
+
+    /// The committed owner when a committed record exists, else the HRW owner (the target pattern of {@link #forwardStale}).
+    /// UNLIKE it, a committed owner that IS this node yields no target and no fall-through to HRW: the copy that answered is
+    /// the committed owner, its role view lagging by one apply. An HRW owner that is this node yields none either.
+    private Option<NodeId> belowCopyTailTarget(String streamName, int partition) {
+        return committedOwnerSource.flatMap(source -> source.committedOwner(streamName, partition))
+                                   .map(CommittedOwner::owner)
+                                   .fold(() -> ownerResolver.resolve(streamName, partition),
+                                         Option::some)
+                                   .filter(owner -> !owner.equals(selfNodeId));
     }
 
     private static boolean isPartitionNotLocal(Cause cause) {
@@ -382,7 +428,7 @@ public final class ForwardingReadRouter<E> {
 
     private Promise<List<E>> readFromReplicaOrLocal(String streamName, int partition, long fromOffset, int maxEvents) {
         return registry.map(reg -> selectAndRead(reg, streamName, partition, fromOffset, maxEvents))
-                       .or(() -> localReader.read(streamName, partition, fromOffset, maxEvents));
+                       .or(() -> readLocalArmed(streamName, partition, fromOffset, maxEvents));
     }
 
     private Promise<List<E>> selectAndRead(ReplicaRegistry reg,
@@ -403,7 +449,7 @@ public final class ForwardingReadRouter<E> {
         }
 
         if (selfCoversPartition(reg, streamName, partition)) {
-            return localReader.read(streamName, partition, fromOffset, maxEvents);
+            return readLocalArmed(streamName, partition, fromOffset, maxEvents);
         }
 
         return forwardToOwner(streamName, partition, fromOffset, maxEvents);
@@ -469,8 +515,34 @@ public final class ForwardingReadRouter<E> {
                                                  int partition,
                                                  long fromOffset,
                                                  int maxEvents) {
-        return cause instanceof StreamForwardError || isPartitionNotLocal(cause)
+        return couldNotAsk(cause)
                ? localReader.read(streamName, partition, fromOffset, maxEvents)
+               : cause.promise();
+    }
+
+    /// The one rule for a forward that failed: the peer could not be asked, or does not hold the partition, as opposed to
+    /// the peer's own typed answer. Shared by the owner forward ({@link #afterForwardFailure}) and the replica forward
+    /// ({@link #degradeToCoveringCopy}), so the two cannot disagree about which failures a local copy may stand in for.
+    private static boolean couldNotAsk(Cause cause) {
+        return cause instanceof StreamForwardError || isPartitionNotLocal(cause);
+    }
+
+    /// `ANY_REPLICA`, every remote pick failed (#946): the read is answered from this node's own copy when EVERY selected
+    /// peer could not be asked ({@link #couldNotAsk}: the first pick and its retry; a typed answer from either is returned,
+    /// never masked -- the retry passes the first pick's cause when that was a typed answer) AND this node is itself a caught-up replica of the partition
+    /// ({@link #selfCoversPartition}). That is the same guarantee row as the forwarded read -- a replica serves
+    /// `min(durable, the position the owner last reported)`, eventual, no read-your-writes -- so it is never weaker than what
+    /// the route promises, only possibly behind the peer that was asked. A node that is not a caught-up replica holds no
+    /// authoritative copy: its local read would answer an empty page that a caller cannot tell from "nothing happened", so
+    /// the remote cause is returned instead, as it is for a peer's typed answer.
+    private Promise<List<E>> degradeToCoveringCopy(Cause cause,
+                                                   String streamName,
+                                                   int partition,
+                                                   long fromOffset,
+                                                   int maxEvents) {
+        return couldNotAsk(cause) && registry.filter(reg -> selfCoversPartition(reg, streamName, partition))
+                                             .isPresent()
+               ? readLocalArmed(streamName, partition, fromOffset, maxEvents)
                : cause.promise();
     }
 
@@ -526,7 +598,7 @@ public final class ForwardingReadRouter<E> {
                     partition,
                     firstCause.message());
 
-            return firstCause.promise();
+            return degradeToCoveringCopy(firstCause, streamName, partition, fromOffset, maxEvents);
         }
 
         metrics.recordRetry();
@@ -547,7 +619,15 @@ public final class ForwardingReadRouter<E> {
                                  fromOffset,
                                  maxEvents)
                      .map(result -> remoteDecoder.decode(result.events(),
-                                                         partition));
+                                                         partition))
+                     .fold(result -> result.fold(cause -> degradeToCoveringCopy(couldNotAsk(firstCause)
+                                                                                ? cause
+                                                                                : firstCause,
+                                                                                streamName,
+                                                                                partition,
+                                                                                fromOffset,
+                                                                                maxEvents),
+                                                 Promise::success));
     }
 
     private static ReplicaDescriptor pickReplica(List<ReplicaDescriptor> pool) {

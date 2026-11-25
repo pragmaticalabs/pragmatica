@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.fail;
 /// fail if someone put a key back in the file, which is the single thing this test exists to catch.
 ///
 /// The assertions then run the pipeline `ManagementServerImpl#validateManagementSecurity` runs —
-/// `securityValidator.validate(...)` then `RoleEnforcer.enforce(...)` — against the validator
+/// `securityValidator.context(...)` then `RoleEnforcer.enforce(...)` — against the validator
 /// wiring `AetherNode` installs for the management plane, with an EMPTY KV store, which is a
 /// freshly-started node before any bootstrap admin key is registered. That is the state a
 /// `docker run` of the published image is in.
@@ -99,7 +99,7 @@ class PublishedImageConfigFailsClosedTest {
     }
 
     private Result<SecurityContext> pipeline(SecurityValidator validator, String apiKey, String method, String path) {
-        return validator.validate(request(apiKey, method, path), SecurityPolicy.apiKeyRequired())
+        return validator.context(request(apiKey, method, path), SecurityPolicy.apiKeyRequired())
                         .flatMap(sc -> RoleEnforcer.enforce(sc, ManagementServerImpl.resolvePermission(method, path)));
     }
 

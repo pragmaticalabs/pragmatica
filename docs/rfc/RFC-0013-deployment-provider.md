@@ -671,14 +671,14 @@ public record HetznerContainerDeploymentProvider(
 
     // --- Leaf: pull container image on remote host ---
     private Promise<Unit> pullImage(String host) {
-        var cmd = strategy.runtime().name().toLowerCase()
+        var cmd = strategy.runtime().name().toLowerCase(Locale.ROOT)
                   + " pull " + strategy.registry() + "/" + strategy.image();
         return sshClient.execute(host, cmd).mapToUnit();
     }
 
     // --- Leaf: run container on remote host ---
     private Promise<Unit> runContainer(String host, NodeDeploymentConfig config) {
-        var rt = strategy.runtime().name().toLowerCase();
+        var rt = strategy.runtime().name().toLowerCase(Locale.ROOT);
         var envFlags = config.toEnvVars().stream()
                              .map(e -> "-e " + e.name() + "=" + e.value())
                              .reduce((a, b) -> a + " " + b)
@@ -744,13 +744,13 @@ public record HetznerBinaryDeploymentProvider(
     // --- Leaf: install Adoptium JDK ---
     // Extracted from HetznerCloudCluster.CLOUD_INIT_SCRIPT
     private Promise<Unit> installAdoptium(String host, int majorVersion) {
-        var script = """
+        var script = String.format(Locale.ROOT, """
             mkdir -p /opt/java && cd /opt/java && \
             wget -q https://api.adoptium.net/v3/binary/latest/%d/ga/linux/x64/jdk/hotspot/normal/eclipse \
               -O jdk.tar.gz && \
             tar xzf jdk.tar.gz --strip-components=1 && \
             ln -sf /opt/java/bin/java /usr/local/bin/java
-            """.formatted(majorVersion);
+            """, majorVersion);
         return sshClient.execute(host, script).mapToUnit();
     }
 

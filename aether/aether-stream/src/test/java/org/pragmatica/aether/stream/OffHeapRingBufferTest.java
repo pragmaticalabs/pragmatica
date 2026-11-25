@@ -5,11 +5,14 @@
 
 package org.pragmatica.aether.stream;
 
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.stream.RemovalCause;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
 import java.util.List;
@@ -17,9 +20,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongPredicate;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.OffHeapRingBuffer.offHeapRingBuffer;
 
 class OffHeapRingBufferTest {
@@ -37,6 +42,14 @@ class OffHeapRingBufferTest {
     @AfterEach
     void tearDown() {
         buffer.close();
+    }
+
+    /// stream-mem M-1b-delta: the ring's tail check names `RETENTION` (it cannot tell which bound evicted the offset), hence
+    /// `EXPIRED`. Mutant: the raise site naming another cause -> RED.
+    private static void assertExpiredByRetention(Cause cause) {
+        assertThat(cause).asInstanceOf(InstanceOfAssertFactories.type(StreamError.CursorExpired.class))
+                         .extracting(StreamError.CursorExpired::reason, StreamError.CursorExpired::cause)
+                         .containsExactly(StreamError.CursorExpired.Reason.EXPIRED, RemovalCause.RETENTION);
     }
 
     @Nested
@@ -232,7 +245,26 @@ class OffHeapRingBufferTest {
                 // Offset 0 has been evicted
                 smallBuffer.read(0, 10)
                            .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
-                           .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+                           .onFailure(OffHeapRingBufferTest::assertExpiredByRetention);
+            } finally {
+                smallBuffer.close();
+            }
+        }
+
+        /// The slice read's own tail check refuses an evicted offset the same way the batch read does. stream-mem M-1b-delta
+        /// mutant: that site naming another cause -> RED.
+        @Test
+        void readSlice_returnsCursorExpired_whenOffsetEvicted() {
+            var smallBuffer = offHeapRingBuffer(3, 1024);
+
+            try {
+                for (int i = 0; i < 6; i++) {
+                    smallBuffer.append(("msg-" + i).getBytes(), 1000L + i);
+                }
+
+                smallBuffer.readSlice(0)
+                           .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                           .onFailure(OffHeapRingBufferTest::assertExpiredByRetention);
             } finally {
                 smallBuffer.close();
             }
@@ -384,6 +416,107 @@ class OffHeapRingBufferTest {
             var localBuffer = offHeapRingBuffer(10, 256);
             localBuffer.close();
             localBuffer.close(); // should not throw
+        }
+    }
+
+    /// #1233, re-pinned at the ring (S2b-2a, ruling 2026-11-23): a ring whose allocation is smaller than a legal event and whose
+    /// growth the seam refuses can only drop it. The manager's create admission keeps this unreachable for a stream (a ring holds one
+    /// `max_event_size` event, see `StreamRingWindowTest`), so the behaviour is pinned here, on a ring built smaller than the event
+    /// (no `maxEventSize`: a 256 KiB first region) in a 4 MiB window. DROP_OLDEST reports `EVENT_DROPPED`, never success at the current
+    /// head (a phantom offset); REJECT_WHEN_FULL reports `STREAM_MEMORY_EXCEEDED` at the refused growth. Both the single-event and the
+    /// batch gate (`appendIfFitsAllocated`, `appendBatchIfFitsAllocated`).
+    @Nested
+    class FrozenRingDrop {
+        private static final long FIRST_REGION = 256L * 1024;
+        private static final long WINDOW = 4L * 1024 * 1024;
+        private static final int EVENT = 300_000;
+        private static final LongPredicate REFUSE_GROWTH = _ -> false;
+        private static final LongPredicate ADMIT_GROWTH = _ -> true;
+
+        @Test
+        void append_dropsAnEventLargerThanTheFrozenRing_andReportsNoOffset() {
+            var ring = ring(EvictionPolicy.DROP_OLDEST, REFUSE_GROWTH);
+
+            try {
+                assertThat(ring.allocatedBytes()).as("the ring is built smaller than the event")
+                               .isEqualTo(OffHeapRingBuffer.floorBytes(CAPACITY, WINDOW));
+                ring.append(new byte[EVENT], 1L)
+                    .onSuccess(offset -> fail("an event the frozen ring cannot store was acked at offset " + offset))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
+                assertThat(ring.headOffset()).as("nothing was written").isEqualTo(-1L);
+                assertThat(ring.eventCount()).isZero();
+                ring.append(new byte[16], 2L).onFailure(cause -> fail("a ring that dropped must stay usable: " + cause.message()));
+                assertThat(ring.headOffset()).as("the next event takes the first offset: no phantom").isZero();
+            } finally {
+                ring.close();
+            }
+        }
+
+        @Test
+        void appendBatch_dropsABatchLargerThanTheFrozenRing_andReportsNoOffset() {
+            var ring = ring(EvictionPolicy.DROP_OLDEST, REFUSE_GROWTH);
+
+            try {
+                ring.appendBatch(List.of(new byte[EVENT / 2], new byte[EVENT / 2]), new long[] {1L, 2L})
+                    .onSuccess(offset -> fail("a batch the frozen ring cannot store was acked at offset " + offset))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
+                assertThat(ring.headOffset()).as("nothing was written").isEqualTo(-1L);
+                assertThat(ring.eventCount()).isZero();
+            } finally {
+                ring.close();
+            }
+        }
+
+        @Test
+        void append_underRejectWhenFull_reportsMemoryExceeded_notADrop() {
+            var ring = ring(EvictionPolicy.REJECT_WHEN_FULL, REFUSE_GROWTH);
+
+            try {
+                ring.append(new byte[EVENT], 1L)
+                    .onSuccess(offset -> fail("an event the frozen ring cannot store was acked at offset " + offset))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_MEMORY_EXCEEDED));
+                assertThat(ring.headOffset()).isEqualTo(-1L);
+            } finally {
+                ring.close();
+            }
+        }
+
+        @Test
+        void appendBatch_underRejectWhenFull_reportsMemoryExceeded_notADrop() {
+            var ring = ring(EvictionPolicy.REJECT_WHEN_FULL, REFUSE_GROWTH);
+
+            try {
+                ring.appendBatch(List.of(new byte[EVENT / 2], new byte[EVENT / 2]), new long[] {1L, 2L})
+                    .onSuccess(offset -> fail("a batch the frozen ring cannot store was acked at offset " + offset))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.STREAM_MEMORY_EXCEEDED));
+                assertThat(ring.headOffset()).isEqualTo(-1L);
+            } finally {
+                ring.close();
+            }
+        }
+
+        /// The controls: the drop is the allocation's doing. An event of exactly the first region fits the same frozen ring, and the
+        /// event that was dropped fits the same ring when growth is admitted.
+        @Test
+        void controls_aRegionSizedEventFitsTheFrozenRing_andTheLargeEventFitsOnceGrowthIsAdmitted() {
+            var frozen = ring(EvictionPolicy.DROP_OLDEST, REFUSE_GROWTH);
+            var growing = ring(EvictionPolicy.DROP_OLDEST, ADMIT_GROWTH);
+
+            try {
+                frozen.append(new byte[(int) FIRST_REGION], 1L).onFailure(cause -> fail("a region-sized event must fit: " + cause.message()));
+                frozen.appendBatch(List.of(new byte[(int) FIRST_REGION / 2], new byte[(int) FIRST_REGION / 2]), new long[] {2L, 3L})
+                      .onFailure(cause -> fail("a region-sized batch must fit: " + cause.message()));
+                growing.append(new byte[EVENT], 1L).onFailure(cause -> fail("with growth admitted the event must fit: " + cause.message()));
+                growing.appendBatch(List.of(new byte[EVENT / 2], new byte[EVENT / 2]), new long[] {2L, 3L})
+                       .onFailure(cause -> fail("with growth admitted the batch must fit: " + cause.message()));
+            } finally {
+                frozen.close();
+                growing.close();
+            }
+        }
+
+        private static OffHeapRingBuffer ring(EvictionPolicy policy, LongPredicate reserve) {
+            return offHeapRingBuffer("frozen", 0, CAPACITY, WINDOW, EvictionListener.NOOP, policy, reserve, _ -> {}).unwrap();
         }
     }
 

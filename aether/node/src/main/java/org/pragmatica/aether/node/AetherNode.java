@@ -194,6 +194,7 @@ import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -296,7 +297,9 @@ public interface AetherNode extends ManageableNode {
     String DEPLOYMENT_CONFIG_LISTENER = "deployment-config-applied";
     NodeId self();
     Promise<Unit> start();
-    Promise<Unit> stop();
+    /// Stops the node. Succeeds with a [StopReport] once every step has settled: clean, or completed with the failures of the steps that
+    /// failed (the node is stopped either way, #3565). Fails only when the stop sequence itself could not complete.
+    Promise<StopReport> stop();
     KVStore<AetherKey, AetherValue> kvStore();
     SliceStore sliceStore();
     ClusterSyncCollector metricsCollector();
@@ -805,9 +808,11 @@ public interface AetherNode extends ManageableNode {
         // node's process is gone; a restart is a fresh NTT-gated join, so there is no stale KV
         // STOPPED record to refuse rejoin against.
         Predicate<NodeId> isDecommissioned = _ -> false;
-        Supplier<Option<NodeId>> currentLeaderFromKvSupplier = () -> kvStore.getTyped(LeaderKey.INSTANCE,
-                                                                                      LeaderValue.class)
-                                                                            .map(LeaderValue::leader);
+        // #3581: the committed record, leader AND its own viewSequence, so the passive pull adopts what was committed.
+        Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier = () -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                               LeaderValue.class)
+                                                                                     .map(value -> LeaderCommitted.leaderCommitted(value.leader(),
+                                                                                                                                   value.viewSequence()));
         // Leader-acting lease (zero-leader-wedge recovery edge): the leader-election FSM, while in
         // Led(X) where X != self, re-elects when X's leader-stamped ClusterSync ping goes silent
         // for the silence threshold. The freshness signal is the follower's observed leader-ping
@@ -1961,7 +1966,7 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
-            public Promise<Unit> stop() {
+            public Promise<StopReport> stop() {
                 log.info("Stopping Aether node {}", self());
                 // D1-react (KVStore dispatcher design §3.5.1 "Gate predicate"): the stopping flag is set FIRST, so a reaction
                 // still queued on a react executor cannot restart what the steps below cancel (#642).
@@ -1995,34 +2000,34 @@ public interface AetherNode extends ManageableNode {
                 // Active.onExit, which nothing reached at shutdown — a stopped node kept running full
                 // deployment reconciles. deactivate() is the same designed path a leader loss takes.
                 //
-                // It heads the chain, so the rest of the shutdown DEPENDS on it staying infallible: it
-                // currently dispatches an FSM event and returns unitPromise(), never a failure. Should
-                // it ever gain a failure path, every stop below — management server, app HTTP, slice
-                // invoker, cluster node — would be skipped by flatMap short-circuit. Recover here at
-                // that point rather than leaving the node half-stopped.
+                // #3565: one invariant, kept by NodeStopSequence — once the stop begins, every step below runs exactly once,
+                // whatever any earlier step returned (a failed leaveQuorum no longer skips the FSM2 close, the components' stops,
+                // the listeners and the cluster node, which a flatMap chain did). The promise stop() returns carries the FIRST
+                // failure; all of them are logged there and carried by the StopReport the stop succeeds with.
                 //
-                // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
-                // skipped past rather than ending the shutdown.
-                return quorumLeft.map(this::stopDeploymentWiring)
-                                 .flatMap(() -> stopNodeComponents(backupFlushed))
-                                 .flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
-                                                                                                  () -> managementServer.map(ManagementServer::stop)
-                                                                                                                        .or(Promise.unitPromise()),
-                                                                                                  appHttpServer::stop,
-                                                                                                  sliceInvoker::stop,
-                                                                                                  this::closeSharedResources,
-                                                                                                  this::shutdownStorage,
-                                                                                                  clusterNode::stop)))
-                                 .withResult(_ -> closeKvStore())
-                                 .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                          self()));
+                // #1612: that includes a failed HTTP listener stop (a timed-out close or termination).
+                return NodeStopSequence.run(NodeStopSequence.Steps.steps(() -> quorumLeft,
+                                                                         this::stopDeploymentWiring,
+                                                                         () -> stopNodeComponents(backupFlushed),
+                                                                         this::releaseWatchesThenDeactivate,
+                                                                         () -> managementServer.map(ManagementServer::stop)
+                                                                                               .or(Promise.unitPromise()),
+                                                                         appHttpServer::stop,
+                                                                         sliceInvoker::stop,
+                                                                         this::closeSharedResources,
+                                                                         this::shutdownStorage,
+                                                                         clusterNode::stop))
+                                       .withResult(_ -> closeKvStore())
+                                       .onSuccess(report -> log.info("Aether node {} stopped{}",
+                                                                     self(),
+                                                                     report.logSuffix()));
             }
 
             /// B13: the FSM2 interpreters close, after the quiesce that follows the delivery of the passive notification's `LeaderChange` reaction (#2688).
-            private Unit stopDeploymentWiring(Unit unit) {
+            private Unit stopDeploymentWiring() {
                 deploymentWiring.stop();
 
-                return unit;
+                return Unit.unit();
             }
 
             /// The components' stops, after the quiesce and the FSM2 close (rc5's order, restored by #2688). Returns the backup's
@@ -2055,6 +2060,9 @@ public interface AetherNode extends ManageableNode {
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
                 presenceSampler.stop();
+                // #3557: the membership FSM's per-member timers (join grace, eviction backstop, DEPARTING timeout, rejoin
+                // re-offer) are on the same JVM-global scheduler; closing cancels them and turns a task already running into a no-op.
+                membershipFsm.close();
                 // #590: cancel the core-absence tick. Forge runs many nodes in ONE JVM on a shared
                 // scheduler, so a tick left armed after stop() outlives its node.
                 coreAbsenceDetector.stop();
@@ -3026,6 +3034,11 @@ public interface AetherNode extends ManageableNode {
                                                          deploymentWiring.forceClearRetirement(retirement));
         // #1654: genesis seat warnings raised by the consensus engine reach THIS node's event log.
         clusterNode.useOperatorWarningSink(operatorWarningSink);
+        // #1654: the remedy sentence is chosen at raise time from the live auto-heal state and from whether a compute provider exists (the
+        // lifecycle manager's own gate), so the warning is true in every state. The binding is `GenesisSeatRemedy.remedyBinding`, tested there.
+        clusterNode.useGenesisSeatRemedy(GenesisSeatRemedy.remedyBinding(clusterTopologyManager::isAutoHealEnabled,
+                                                                         lifecycleManager,
+                                                                         config.autoHeal()));
         // FDB-2a: a migration fenced in the database for long, and an unfenced CockroachDB run, reach the event log.
         schemaOrchestrator.setOperatorWarningSink(operatorWarningSink);
         var appHttpServerOut = SliceRuntimeAssembly.appHttpServer(new SliceRuntimeAssembly.AppHttpServerInputs(config,
@@ -3351,21 +3364,26 @@ public interface AetherNode extends ManageableNode {
                                                                                           presenceSampler,
                                                                                           membershipFsm,
                                                                                           leaderReconciler));
-        var quorumLossDrain = DrainAssembly.quorumLossDrain(new DrainAssembly.QuorumLossInputs(config,
-                                                                                               clusterNode,
-                                                                                               leaderReconciler,
-                                                                                               quorumLossDetector,
-                                                                                               membershipFsm,
-                                                                                               swimHealthDetector,
-                                                                                               swimIsBootingSupplier,
-                                                                                               metricsCollector,
-                                                                                               nodeReportedStateHolder,
-                                                                                               drainProcedure,
-                                                                                               alertManager,
-                                                                                               isLeaderSupplier,
-                                                                                               drainCommandRegistry,
-                                                                                               operatorWarningSink,
-                                                                                               periodicTasks::defer));
+        var quorumLossInputs = new DrainAssembly.QuorumLossInputs(config,
+                                                                  clusterNode,
+                                                                  leaderReconciler,
+                                                                  quorumLossDetector,
+                                                                  membershipFsm,
+                                                                  swimHealthDetector,
+                                                                  swimIsBootingSupplier,
+                                                                  metricsCollector,
+                                                                  nodeReportedStateHolder,
+                                                                  drainProcedure,
+                                                                  alertManager,
+                                                                  isLeaderSupplier,
+                                                                  drainCommandRegistry,
+                                                                  operatorWarningSink,
+                                                                  periodicTasks::defer,
+                                                                  kvStore,
+                                                                  pongSignalFan);
+        var quorumLossDrain = DrainAssembly.quorumLossDrain(quorumLossInputs);
+
+        AssemblyObserver.quorumLoss(quorumLossInputs, quorumLossDrain, kvStore, pongSignalFan);
         var quorumLossChain = quorumLossDrain.quorumLossChain();
         var coreAbsenceDetector = quorumLossDrain.coreAbsenceDetector();
         var communityLiveness = WorkerHierarchyAssembly.communityReachability(new WorkerHierarchyAssembly.CommunityReachabilityInputs(config,
@@ -3864,14 +3882,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                clusterNode,
                                                                                                                                                                serializer,
                                                                                                                                                                deserializer,
-                                                                                                                                                               membershipFsmRef,
                                                                                                                                                                resourceProviderSetup,
                                                                                                                                                                logLevelRegistry,
                                                                                                                                                                traceStore,
                                                                                                                                                                configRegistry,
                                                                                                                                                                scheduledTaskRegistry,
                                                                                                                                                                scheduledTaskStateRegistry,
-                                                                                                                                                               drainCommandRegistry,
+                                                                                                                                                               quorumLossDrain.drainPort(),
                                                                                                                                                                alertManager,
                                                                                                                                                                dynamicConfigManager,
                                                                                                                                                                operatorWarningSink,
@@ -3883,6 +3900,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                entityCheckpointDriver,
                                                                                                                                                                node,
                                                                                                                                                                deploymentMeters));
+
+                                                      AssemblyObserver.management(managementServer);
 
                                                       return new aetherNode(workerMetadataChannel,
                                                                             replicaClient,
@@ -5107,6 +5126,7 @@ public interface AetherNode extends ManageableNode {
                                                          deploymentWiring.legacy("B21.events.NodeArtifactKey.put",
                                                                                  eventAggregator::onNodeArtifactPut))
                                                   .onPut(AetherKey.CommunityKey.class, eventAggregator::onCommunityPut)
+                                                  .onPut(AetherKey.FsmWarningKey.class, eventAggregator::onFsmWarningPut)
                                                   .onPut(AetherKey.GovernorAnnouncementKey.class,
                                                          eventAggregator::onGovernorAnnouncementPut)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
@@ -5372,12 +5392,12 @@ public interface AetherNode extends ManageableNode {
         // fires for those, but the fresh QUIC handshake produces a TransportObservation.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
                                               eventAggregator::onPeerJoined));
-        // #926: resolve the node-health alert raised on the DEAD edge when the node comes back. Bound
-        // to the SAME ungated handshake that sources NODE_JOINED, so recovery is exactly as reachable
-        // as the failure it clears — a failure signal whose matching recovery signal is less reachable
-        // leaves a permanently red surface, which trains an operator to ignore it.
+        // #926: the handshake ends the announced-departure marks. It no longer resolves the node-health
+        // alert (#2061): a handshake from a node the FSM still holds DEAD resolved it with nothing to
+        // re-raise it. The alert is resolved on the FSM's edge into Member (MembershipAssembly), the
+        // same FSM whose DEAD edge raised it.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
-                                              msg -> alertManager.clearNodeHealthAlert(msg.nodeId())));
+                                              msg -> alertManager.forgetDepartureMarks(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         // NODE_LEFT (graceful departures) is sourced from MembershipDecision. NODE_FAILED is NO LONGER
         // sourced here (#210) — it now rides the ungated FSM DEAD edge (membershipFsm.onConfirmedDeparture

@@ -13,6 +13,8 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.FsmTestHarness;
@@ -24,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 
 /// R6 verification: `QuorumWaiting` is part of the always-listening KV poll path. On entry it
 /// pulls the cluster KV-Store via `currentLeaderFromKvSupplier`; the periodic re-check ALSO
@@ -42,15 +45,27 @@ class QuorumWaitingKvPollTest {
     private static final TimeSpan KV_SYNC_GRACE_DELAY = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan LONG_OBSERVATION_INTERVAL = TimeSpan.timeSpan(60).seconds();
 
+    /// Cluster mode (a proposal handler is present): FIX 1 adopts a committed KV leader absent from the view only in
+    /// cluster mode; #3092 I2 holds a LOCAL-mode leader to the applied view, so the local mode of this harness
+    /// would drop PEER_A against the empty topology.
+    private static final LeaderProposalHandler CLUSTER_HANDLER = (candidate, viewSequence) -> Promise.success(Unit.unit());
+
     private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> buildHarness(
             AtomicBoolean consensusReady,
             AtomicReference<Option<NodeId>> kvLeader) {
+        return buildHarness(consensusReady, kvLeader, Option.some(CLUSTER_HANDLER));
+    }
+
+    private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> buildHarness(
+            AtomicBoolean consensusReady,
+            AtomicReference<Option<NodeId>> kvLeader,
+            Option<LeaderProposalHandler> proposalHandler) {
         return FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness(
                 "quorum-waiting-kv-poll-test",
                 fsm -> {
                     var ctx = new LeaderElectionContext(fsm,
                                                         SELF,
-                                                        Option.<LeaderProposalHandler>none(),
+                                                        proposalHandler,
                                                         List.of(SELF, PEER_A, PEER_B),
                                                         MessageRouter.mutable(),
                                                         PROPOSAL_RETRY_DELAY,
@@ -61,7 +76,7 @@ class QuorumWaitingKvPollTest {
                                                         LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                                         LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                                         consensusReady::get,
-                                                        kvLeader::get,
+                                                        () -> kvLeader.get().map(leader -> leaderCommitted(leader, 1L)),
                                                         KV_SYNC_GRACE_DELAY,
                                                         LONG_OBSERVATION_INTERVAL);
                     return ctx.dormant();
@@ -143,6 +158,25 @@ class QuorumWaitingKvPollTest {
                 .as("committed KV leader adopted despite empty topology — consensus overrides transport (FIX 1)")
                 .isInstanceOf(LeaderElectionState.Led.class);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(PEER_A);
+
+        h.dispatch(new ClusterFsmEvent.Shutdown());
+    }
+
+    /// #3092 I2, LOCAL mode (no proposal handler): the counterpart of the cluster-mode test above. A KV leader absent
+    /// from the applied view is dropped on the QuorumWaiting entry pull, not adopted: no `Led`, no leader published.
+    @Test
+    void local_quorumWaiting_kvLeaderNotInTopology_isDropped() {
+        var consensusReady = new AtomicBoolean(false);
+        var kvLeader = new AtomicReference<>(Option.some(PEER_A));
+        var h = buildHarness(consensusReady, kvLeader, Option.none());
+
+        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
+
+        assertThat(h.state().ctx().isLocalMode()).as("control: local mode").isTrue();
+        assertThat(h.state())
+                .as("I2 local: no Led for a KV leader absent from the view")
+                .isNotInstanceOf(LeaderElectionState.Led.class);
+        assertThat(h.state().ctx().currentLeader()).as("no leader published").isEqualTo(Option.none());
 
         h.dispatch(new ClusterFsmEvent.Shutdown());
     }

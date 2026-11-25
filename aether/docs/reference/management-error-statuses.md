@@ -18,7 +18,7 @@ A publish is not idempotent. On the stream publish route a raw stream engine ref
 
 ## Statuses that changed
 
-85 causes answered 500 and now answer the status shown. Everything not listed is unchanged.
+96 causes are listed: 85 answered 500 and now answer the status shown, and 11 are new, with Before = n/a (new): they did not exist when this table was written (2026-10-26), so they never answered 500 on a management route. Everything not listed answers 500, as before: a cause the code maps to any other status has a row, which `ManagementErrorStatusesDocTest` checks against `StreamErrorStatus`.
 
 ### Plain causes (42)
 
@@ -73,10 +73,11 @@ A publish is not idempotent. On the stream publish route a raw stream engine ref
 |---|---|---|
 | `ConsumerGroupCoordinator$CoordinatorError#NOT_LEADER` | Internal Server Error | Conflict |
 
-### Raw stream engine errors (42), every route except publish
+### Raw stream engine errors (53), every route except publish
 
 | Cause | Before | After |
 |---|---|---|
+| `org.pragmatica.aether.stream.StreamError$BelowCopyTail` | n/a (new) | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$CursorExpired` | Internal Server Error | Gone |
 | `org.pragmatica.aether.stream.StreamError$EpochDiverged` | Internal Server Error | Conflict |
 | `org.pragmatica.aether.stream.StreamError$EventTooLarge` | Internal Server Error | Bad Request |
@@ -90,19 +91,27 @@ A publish is not idempotent. On the stream publish route a raw stream engine ref
 | `org.pragmatica.aether.stream.StreamError$General#CONSUMER_STALLED` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$General#EVENT_DROPPED` | Internal Server Error | Bad Request |
 | `org.pragmatica.aether.stream.StreamError$General#PARTITION_NOT_LOCAL` | Internal Server Error | Service Unavailable |
+| `org.pragmatica.aether.stream.StreamError$General#REPLICATION_BEHIND` | n/a (new) | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$General#SEALING_BEHIND` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$General#SEGMENT_TIER_FULL` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$General#STREAM_ALREADY_EXISTS` | Internal Server Error | Conflict |
 | `org.pragmatica.aether.stream.StreamError$General#STREAM_CLOSED` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$General#STREAM_MEMORY_EXCEEDED` | Internal Server Error | Service Unavailable |
+| `org.pragmatica.aether.stream.StreamError$HotWindowBelowMaxEvent` | n/a (new) | Bad Request |
+| `org.pragmatica.aether.stream.StreamError$ImmutableKeyChanged` | n/a (new) | Conflict |
 | `org.pragmatica.aether.stream.StreamError$LinearizableRoundTimeout` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$MaterializeBudgetExceeded` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$NotCurrentOwner` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$NotOwnerAppend` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$OwnerCatchupPending` | Internal Server Error | Service Unavailable |
+| `org.pragmatica.aether.stream.StreamError$OwnerLeaseLapsed` | n/a (new) | Service Unavailable |
+| `org.pragmatica.aether.stream.StreamError$OwnerLeaseLapsedBeforeAck` | n/a (new) | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$OwnerNotActivated` | Internal Server Error | Service Unavailable |
+| `org.pragmatica.aether.stream.StreamError$OwnershipMovedBeforeAck` | n/a (new) | Service Unavailable |
+| `org.pragmatica.aether.stream.StreamError$OwnershipNotApplied` | n/a (new) | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$PartitionCapExceeded` | Internal Server Error | Bad Request |
 | `org.pragmatica.aether.stream.StreamError$PartitionCeilingExceeded` | Internal Server Error | Bad Request |
+| `org.pragmatica.aether.stream.StreamError$PartitionFailStopped` | n/a (new) | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$PartitionHeldNotMaterialized` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$PartitionOutOfRange` | Internal Server Error | Bad Request |
 | `org.pragmatica.aether.stream.StreamError$RepairNotAuthorized` | Internal Server Error | Service Unavailable |
@@ -118,4 +127,6 @@ A publish is not idempotent. On the stream publish route a raw stream engine ref
 | `org.pragmatica.aether.stream.StreamError$StaleEpochRead` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$StreamConfigNotYetVisible` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$StreamNotFound` | Internal Server Error | Not Found |
+| `org.pragmatica.aether.stream.StreamError$StreamNotMaterialized` | n/a (new) | Service Unavailable |
+| `org.pragmatica.aether.stream.StreamError$StreamStorageUnknown` | n/a (new) | Conflict |
 | `org.pragmatica.aether.stream.StreamError$SystemStreamWriteRefused` | Internal Server Error | Method Not Allowed |

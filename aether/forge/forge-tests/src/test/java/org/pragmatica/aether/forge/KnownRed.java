@@ -11,6 +11,7 @@ import java.lang.annotation.Target;
 
 import org.junit.jupiter.api.extension.ExtendWith;
 
+
 /// A test that is red for a known, ticketed reason: an ENABLED tripwire, never a `@Disabled` (a disabled test is silence).
 ///
 /// The test keeps asserting the CORRECT behaviour. [KnownRedExtension] gives three outcomes:
@@ -34,10 +35,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 public @interface KnownRed {
     /// The ticket, e.g. `#1717`.
     String ticket();
-
     /// The expected failure's class (matched with `isInstance`); not a catch-all (`Throwable`, `Exception`, `RuntimeException`, `Error`).
     Class<? extends Throwable> exception();
-
     /// A non-blank substring of the expected failure's message, or of a cause's.
     String messageContains();
 }

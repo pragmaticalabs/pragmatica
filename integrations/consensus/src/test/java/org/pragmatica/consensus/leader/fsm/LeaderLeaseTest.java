@@ -12,7 +12,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
-import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
@@ -28,6 +27,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
 import static org.pragmatica.consensus.fsm.Observations.seq;
+import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeader;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Verifies the leader-acting lease in [`LeaderElectionState.Led`] (Option A: a node in `Led(X)`
@@ -107,12 +107,22 @@ class LeaderLeaseTest {
     /// Drives the FSM into `Led(leader)` via Dormant → QuorumWaiting → AwaitingKvSync →
     /// (LeaderCommitted) → Led. The `LeaderCommitted` is absorbed directly by AwaitingKvSync's
     /// `adoptLeaderUnconditionally` (no grace timeout needed, mirroring the cold-boot fix path).
-    private void driveToLed(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h, LeaderCommitted commit) {
+    private void driveToLed(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h, NodeId leader) {
+        reachAwaitingKvSync(h);
+        commitLeader(h, leader);
+        assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
+    }
+
+    private void driveToLed(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h, NodeId leader, long viewSequence) {
+        reachAwaitingKvSync(h);
+        commitLeader(h, leader, viewSequence);
+        assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
+    }
+
+    private void reachAwaitingKvSync(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) {
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ConsensusReady());
-        h.dispatch(commit);
-        assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
     }
 
     private static boolean awaitState(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h,
@@ -136,7 +146,7 @@ class LeaderLeaseTest {
         Predicate<NodeId> alwaysSilent = _ -> false;
         var h = buildHarness(alwaysSilent, SHORT_LEASE_INTERVAL);
 
-        driveToLed(h, new LeaderCommitted(PEER_A));
+        driveToLed(h, PEER_A);
         assertThat(((LeaderElectionState.Led) h.state()).leader())
                 .as("follower tenure for PEER_A")
                 .isEqualTo(PEER_A);
@@ -165,7 +175,7 @@ class LeaderLeaseTest {
         Predicate<NodeId> alwaysSilent = _ -> false;
         var h = buildHarness(alwaysSilent, SHORT_LEASE_INTERVAL, LONG_LEASE_WARMUP);
 
-        driveToLed(h, new LeaderCommitted(PEER_A));
+        driveToLed(h, PEER_A);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(PEER_A);
 
         // Let well over LEADER_SILENCE_THRESHOLD_INTERVALS × interval (4 × 30ms = 120ms) elapse.
@@ -191,7 +201,7 @@ class LeaderLeaseTest {
         Predicate<NodeId> alwaysSilent = _ -> false;
         var h = buildHarness(alwaysSilent, SHORT_LEASE_INTERVAL);
 
-        driveToLed(h, new LeaderCommitted(SELF));
+        driveToLed(h, SELF);
         var led = (LeaderElectionState.Led) h.state();
         assertThat(led.leader()).as("self tenure").isEqualTo(SELF);
         assertThat((Object) led.leaseFuture().get())
@@ -222,7 +232,7 @@ class LeaderLeaseTest {
         Predicate<NodeId> flapThenFresh = _ -> silentChecks.getAndIncrement() >= 2;
         var h = buildHarness(flapThenFresh, SHORT_LEASE_INTERVAL);
 
-        driveToLed(h, new LeaderCommitted(PEER_A));
+        driveToLed(h, PEER_A);
 
         // Let well over LEADER_SILENCE_THRESHOLD_INTERVALS checks elapse (300ms / 30ms ≈ 10
         // checks). Because the counter resets on the first fresh check (3rd check onward), it
@@ -246,20 +256,19 @@ class LeaderLeaseTest {
         Predicate<NodeId> alwaysFresh = _ -> true;
         var h = buildHarness(alwaysFresh, LONG_LEASE_INTERVAL);
 
-        // Adopt PEER_A at sequence 5 (production seeds observeViewSequence before dispatch; model
-        // that by carrying the sequence on the event — adoptLeaderUnconditionally records it).
-        driveToLed(h, new LeaderCommitted(PEER_A, 5L));
+        // Adopt PEER_A at sequence 5 (commitLeader observes the sequence before dispatching, as production does).
+        driveToLed(h, PEER_A, 5L);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(PEER_A);
 
         // A later-arriving LOWER-sequence commit (seq 3 < adopted 5) is fenced out — the straggling
         // crossed-pointer commit that would otherwise overwrite the newer leader.
-        h.dispatch(new LeaderCommitted(PEER_B, 3L));
+        commitLeader(h, PEER_B, 3L);
         assertThat(((LeaderElectionState.Led) h.state()).leader())
                 .as("stale lower-sequence LeaderCommitted is discarded by the crossed-pointer fence")
                 .isEqualTo(PEER_A);
 
         // A HIGHER-sequence commit (seq 7 > adopted 5) advances — the leader swaps to PEER_B.
-        h.dispatch(new LeaderCommitted(PEER_B, 7L));
+        commitLeader(h, PEER_B, 7L);
         assertThat(((LeaderElectionState.Led) h.state()).leader())
                 .as("higher-sequence LeaderCommitted advances past the fence and swaps the leader")
                 .isEqualTo(PEER_B);
@@ -275,12 +284,12 @@ class LeaderLeaseTest {
         Predicate<NodeId> alwaysFresh = _ -> true;
         var h = buildHarness(alwaysFresh, LONG_LEASE_INTERVAL);
 
-        driveToLed(h, new LeaderCommitted(PEER_A, 9L));
+        driveToLed(h, PEER_A, 9L);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(PEER_A);
 
         // Sequence-less swap (NO_SEQUENCE) — even though 0 <= adopted 9, the sentinel bypasses the
         // fence and the swap applies (local-mode / KV-pull synthesis behaviour preserved).
-        h.dispatch(new LeaderCommitted(PEER_B));
+        commitLeader(h, PEER_B);
         assertThat(((LeaderElectionState.Led) h.state()).leader())
                 .as("sequence-less synthetic commit bypasses the fence (legacy path preserved)")
                 .isEqualTo(PEER_B);
@@ -307,10 +316,10 @@ class LeaderLeaseTest {
 
         // Case 1: a node believing PEER_A, whose ping is silent.
         var hBelievesA = buildHarness(_ -> false, SHORT_LEASE_INTERVAL);
-        driveToLed(hBelievesA, new LeaderCommitted(PEER_A));
+        driveToLed(hBelievesA, PEER_A);
         // Case 2: a node believing PEER_B, whose ping is silent (the crossed pointer).
         var hBelievesB = buildHarness(_ -> false, SHORT_LEASE_INTERVAL);
-        driveToLed(hBelievesB, new LeaderCommitted(PEER_B));
+        driveToLed(hBelievesB, PEER_B);
 
         assertThat(awaitState(hBelievesA, LeaderElectionState.ReElecting.class, 5000))
                 .as("node believing PEER_A re-elects when PEER_A's ping is silent")
@@ -339,7 +348,7 @@ class LeaderLeaseTest {
         Predicate<NodeId> alwaysFresh = _ -> true;
         var h = buildHarness(alwaysFresh, LONG_LEASE_INTERVAL);
 
-        driveToLed(h, new LeaderCommitted(PEER_A));
+        driveToLed(h, PEER_A);
         var led = (LeaderElectionState.Led) h.state();
         AtomicReference<ScheduledFuture<?>> holder = led.leaseFuture();
         var leaseFuture = holder.get();
@@ -361,12 +370,10 @@ class LeaderLeaseTest {
     void led_onCasLost_cancelsLeaseFuture() {
         Predicate<NodeId> alwaysFresh = _ -> true;
         var h = buildHarness(alwaysFresh, LONG_LEASE_INTERVAL);
-        // Reach a stable ctx via a self tenure (no timer to leak), then build a fresh follower Led.
-        driveToLed(h, new LeaderCommitted(SELF));
-        var ctx = ((LeaderElectionState.Led) h.state()).ctx();
-
-        var freshLed = LeaderElectionState.Led.fresh(ctx, PEER_A);
-        freshLed.onEntry();
+        // The FSM's own follower tenure: its entry armed the lease. (A Led built outside the FSM is not the FSM's
+        // current state, which local-mode entry reads as a tenure that left the view, #3092 I2.)
+        driveToLed(h, PEER_A);
+        var freshLed = (LeaderElectionState.Led) h.state();
         var leaseFuture = freshLed.leaseFuture().get();
         assertThat((Object) leaseFuture)
                 .as("fresh follower Led arms a lease future on entry")

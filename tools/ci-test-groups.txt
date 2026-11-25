@@ -53,6 +53,7 @@ g3 aether/environment/azure  # 2.3 s at run 41351583462
 g3 aether/environment/gcp  # 2.9 s at run 41351583462
 g3 aether/environment/hetzner  # 5.9 s at run 41351583462
 g3 aether/forge/forge-api  # 0.4 s at run 41351583462
+g3 aether/forge/forge-simulator  # first test class added by #3051 (SimulatorJsonLocaleTest); unmeasured, < 1 s
 g3 aether/http-routing-adapter  # 4.0 s at run 41351583462
 g3 aether/http-security  # 9.4 s at run 41351583462
 g3 aether/resource/db-async  # 7.2 s at run 41351583462

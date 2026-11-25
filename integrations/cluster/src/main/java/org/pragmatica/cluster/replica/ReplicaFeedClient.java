@@ -18,6 +18,7 @@ import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
+import org.pragmatica.cluster.replica.ReplicaApplier.SnapshotBehind;
 import org.pragmatica.cluster.replica.ReplicaApplier.Step;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaEntries;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaHeartbeat;
@@ -31,6 +32,7 @@ import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -130,6 +132,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
     private final AtomicLong droppedMessages = new AtomicLong();
     private volatile boolean followsCore;
     private boolean wasGovernor;
+    private boolean previousSessionFailed = true;
     private Session session;
     private volatile Option<NodeId> currentSource = Option.none();
     private long requestCounter;
@@ -352,7 +355,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
         session = new Session(++requestCounter, source, mode, nanos.getAsLong());
         currentSource = Option.some(source);
         if (resume) {
-            readiness.carryBeatsFor(limits.carryGraceMillis() * NANOS_PER_MILLI);
+            carryOnResume();
             applier.beginLive();
         } else {
             readiness.sourceChanged();
@@ -361,6 +364,16 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
 
         subscribed.incrementAndGet();
         send.accept(source, subscribeMessage(session, held, resume));
+    }
+
+    /// The carry window (readiness) is armed only when the previous session FAILED: a deliberate move (rebalance, election hand-off) keeps the old
+    /// counted heartbeats on their ordinary freshness bound, so a new source that stays silent costs no not-ready dip before the silence is detected
+    /// (#2502). Renewal is one rule: any resume while a carry is armed renews it up to the cap, a deliberate move included, so a move made while a
+    /// failure-armed carry runs does not let it lapse before that move's own silence is detected.
+    private void carryOnResume() {
+        if (previousSessionFailed || readiness.carrying()) {
+            readiness.carryBeatsFor(limits.carryGraceMillis() * NANOS_PER_MILLI);
+        }
     }
 
     private ReplicaSubscribe subscribeMessage(Session open, ReplicaPosition held, boolean resume) {
@@ -486,8 +499,7 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
         }
 
         assemble(open, message).onSuccess(transfer -> advanceTransfer(open, transfer))
-                .onFailure(cause -> abandonTransfer(open,
-                                                    cause.message()));
+                .onFailure(cause -> transferFailed(open, message, cause));
     }
 
     private Result<Transfer> assemble(Session open, ReplicaSnapshotChunk message) {
@@ -507,13 +519,15 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
             return Causes.cause("snapshot refused: no usable tag or length").result();
         }
 
-        open.transfer = new Transfer(message.tag(),
-                                     message.revision(),
-                                     message.hash(),
-                                     message.anchor(),
-                                     (int) message.total());
+        return applier.admits(message.tag(),
+                              message.revision())
+                      .flatMap(_ -> begin(open, message));
+    }
 
-        return append(open.transfer, message);
+    private static Result<Transfer> begin(Session open, ReplicaSnapshotChunk first) {
+        open.transfer = new Transfer(first.tag(), first.revision(), first.hash(), first.anchor(), (int) first.total());
+
+        return append(open.transfer, first);
     }
 
     private static Result<Transfer> append(Transfer transfer, ReplicaSnapshotChunk message) {
@@ -550,6 +564,36 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
                  .onSuccess(step -> installed(open, step))
                  .onFailure(cause -> abandonTransfer(open,
                                                      cause.message()));
+    }
+
+    /// A transfer that cannot go on is abandoned. One refused on its first chunk ([ReplicaApplier#admits], #3359: below what this replica holds)
+    /// is a refusal: see [#refuseSnapshot].
+    private void transferFailed(Session open, ReplicaSnapshotChunk message, Cause cause) {
+        if (cause instanceof SnapshotBehind) {
+            refuseSnapshot(open, message);
+        }
+
+        abandonTransfer(open, cause.message());
+    }
+
+    /// The replica keeps its state and pulls no further byte. The refusal counts, so the backoff of [#everyUplinkAvoided] grows (and its jitter,
+    /// seeded per attempt, varies) while every uplink is behind; the source is avoided, as the selector keeps a current source that is not, so a
+    /// caught-up core is asked next. A snapshot longer than its first chunk still holds one of the source's serve slots: one request at
+    /// `offset == total` ("no more bytes") releases it. If that one message is lost, the slot stays held until the source's `transferIdleMillis`,
+    /// as for any client that stops pulling. A single-chunk snapshot sends nothing: the source freed its slot with that chunk and would answer
+    /// `EVICTED` to a session that is gone.
+    private void refuseSnapshot(Session open, ReplicaSnapshotChunk first) {
+        consecutiveRefusals++;
+        avoided.add(open.source);
+        if (first.bytes().length < first.total()) {
+            send.accept(open.source,
+                        new ReplicaSnapshotRequest(self,
+                                                   open.id,
+                                                   first.tag(),
+                                                   first.revision(),
+                                                   first.hash(),
+                                                   first.total()));
+        }
     }
 
     private void installed(Session open, Step drained) {
@@ -606,17 +650,18 @@ public final class ReplicaFeedClient<K extends StructuredKey, V> {
             governorRetryAt.put(open.source, nanos.getAsLong() + GOVERNOR_RETRY_MILLIS * NANOS_PER_MILLI);
         }
 
-        retire(open, retryAfterMillis);
+        retire(open, retryAfterMillis, true);
     }
 
     /// Retires a session because the selector (or the hand-off) chose another source: the old one did nothing wrong and is not penalized.
     private void endDeliberately(Session open) {
-        retire(open, 0L);
+        retire(open, 0L, false);
     }
 
     /// The replica keeps its place across a re-parent: readiness (e) is lost only when the position was discarded and a snapshot must follow.
-    private void retire(Session open, long retryAfterMillis) {
+    private void retire(Session open, long retryAfterMillis, boolean failed) {
         session = null;
+        previousSessionFailed = failed;
         retryAtNanos = nanos.getAsLong() + retryAfterMillis * NANOS_PER_MILLI;
         if (!applier.position().isResumable()) {
             readiness.caughtUp(false);

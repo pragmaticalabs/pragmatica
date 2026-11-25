@@ -3,7 +3,9 @@ package org.pragmatica.swim;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +34,7 @@ import org.pragmatica.swim.SwimMessage.Ping;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.swim.SwimConfig.swimConfig;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// Per-process BOOT TOKEN gate (owner ruling, session 28 — terminal removal is the identity model).
 ///
@@ -56,7 +59,7 @@ class SwimBootTokenTest {
 
     @BeforeEach
     void setUp() {
-        protocol = SwimProtocol.swimProtocol(config(), targetTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
+        protocol = SwimTestProtocols.swimProtocol(config(), targetTransport, new RecordingListener(), SELF_ID, SELF_ADDR, () -> false)
                                .unwrap();
         protocol.addObservationListener(observations::add);
     }
@@ -251,7 +254,7 @@ class SwimBootTokenTest {
     void probeAck_fromRetiredIdentity_doesNotReviveMember() {
         var transport = new RecordingTransport();
         var tokens = BootTokens.bootTokens(0x5E1FL);
-        var probing = SwimProtocol.swimProtocol(probingConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
+        var probing = SwimTestProtocols.swimProtocol(probingConfig(), transport, new RecordingListener(), SELF_ID, SELF_ADDR)
                                   .unwrap();
 
         probing.setBootTokens(tokens);
@@ -275,28 +278,17 @@ class SwimBootTokenTest {
     }
 
     private static long awaitPingSequence(RecordingTransport transport) {
-        var deadline = System.currentTimeMillis() + 5_000;
-
-        while (System.currentTimeMillis() < deadline) {
-            var ping = transport.sentMessages.stream()
-                                             .filter(Ping.class::isInstance)
-                                             .map(Ping.class::cast)
-                                             .findFirst();
-
-            if (ping.isPresent()) {
-                return ping.get().sequence();
-            }
-            sleep(10);
-        }
-        throw new AssertionError("the protocol never probed the seeded member");
+        return pollUntil(() -> firstPing(transport), ping -> ping.isPresent(), Duration.ofSeconds(5)).assertMet("the protocol probed the seeded member")
+                                                                                                    .finalValue()
+                                                                                                    .orElseThrow()
+                                                                                                    .sequence();
     }
 
-    private static void sleep(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+    private static Optional<Ping> firstPing(RecordingTransport transport) {
+        return transport.sentMessages.stream()
+                                     .filter(Ping.class::isInstance)
+                                     .map(Ping.class::cast)
+                                     .findFirst();
     }
 
     private static SwimConfig probingConfig() {
@@ -346,10 +338,8 @@ class SwimBootTokenTest {
         return targetTransport.sentMessages.stream().filter(sent -> sent.message() instanceof SwimMessage.IdentityRefused).count();
     }
 
-    private void awaitRefusals(long expected) throws InterruptedException {
-        for (var attempt = 0; attempt < 100 && identityRefusals() < expected; attempt++) {
-            Thread.sleep(50);
-        }
+    private void awaitRefusals(long expected) {
+        pollUntil(this::identityRefusals, count -> count >= expected, Duration.ofSeconds(5)).assertMet(expected + " identity refusals");
         assertThat(identityRefusals()).isEqualTo(expected);
     }
 

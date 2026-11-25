@@ -5,10 +5,12 @@
 
 package org.pragmatica.aether.stream;
 
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
@@ -29,6 +31,7 @@ import java.util.zip.CRC32;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.aether.stream.HotWindowFixture.declaredHot;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 
@@ -42,6 +45,8 @@ class StreamPartitionManagerRecoveryTest {
     private static final int PARTITION = 0;
     private static final int EVENTS = 6;
     private static final int SMALL_RING_EVENTS = 4;
+    /// The ring's data region, retention bytes and declared hot bytes alike (at most one 256 KiB segment either way).
+    private static final long RING_BYTES = 64 * 1024;
     private static final int RECOVERY_EVENTS = 30;
     /// Two pending one-event segments of an `evt-N` payload (20-byte header + up to 6 bytes each).
     private static final long TWO_SEGMENTS_BYTES = 2 * (20 + 6);
@@ -317,10 +322,10 @@ class StreamPartitionManagerRecoveryTest {
     }
 
     private static void createStream(StreamPartitionManager manager, int ringEvents) {
-        var retention = RetentionPolicy.retentionPolicy(ringEvents, 64 * 1024, 600_000);
+        var retention = RetentionPolicy.retentionPolicy(ringEvents, RING_BYTES, 600_000);
+        var config = StreamConfig.streamConfig(STREAM, 1, retention, "earliest");
 
-        manager.createStream(StreamConfig.streamConfig(STREAM, 1, retention, "earliest"))
-               .onFailure(cause -> fail(cause.message()));
+        manager.createStream(declaredHot(config, ringEvents, RING_BYTES)).onFailure(cause -> fail(cause.message()));
     }
 
     private static void publishAll(StreamPartitionManager manager) {
@@ -343,10 +348,14 @@ class StreamPartitionManagerRecoveryTest {
         return manager.readLocal(STREAM, PARTITION, fromOffset, 100).onFailure(cause -> fail(cause.message())).unwrap();
     }
 
+    /// stream-mem M-1b-delta: a reclaimed offset is refused naming `RETENTION`, hence `EXPIRED`, never by type alone. Mutant: the
+    /// raise site naming another cause -> RED.
     private static void assertCursorExpired(StreamPartitionManager manager, long fromOffset) {
         manager.readLocal(STREAM, PARTITION, fromOffset, 100)
                .onSuccess(events -> fail("expected CursorExpired at " + fromOffset + " but read " + events.size() + " events"))
-               .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+               .onFailure(cause -> assertThat(cause).asInstanceOf(InstanceOfAssertFactories.type(StreamError.CursorExpired.class))
+                                                    .extracting(StreamError.CursorExpired::reason, StreamError.CursorExpired::cause)
+                                                    .containsExactly(StreamError.CursorExpired.Reason.EXPIRED, RemovalCause.RETENTION));
     }
 
     private static LastSealedOffsetSource sealedUpTo(long bound) {

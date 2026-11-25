@@ -15,6 +15,7 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Queue;
 import java.util.Random;
 import java.util.Set;
@@ -30,9 +31,10 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.config.ConfigSource;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -63,6 +65,7 @@ import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.config.SecurityMode;
+import org.pragmatica.aether.config.RepositoryType;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.StorageConfig;
@@ -80,6 +83,8 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.concurrent.CancellableTask;
+import org.pragmatica.aether.http.HttpRoutePublisher;
+import org.pragmatica.aether.http.RouteTable;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.topology.BackoffConfig;
@@ -238,7 +243,21 @@ public final class EmberCluster {
     /// ids, and those rebuilt nodes must read `PARTICIPATED` rather than re-asserting newness. A
     /// fresh `EmberCluster` — a new test — gets a fresh dir and therefore genuinely new nodes.
     /// Harness-scoped; production nodes get their marker from the deployment path instead.
-    private final Option<Path> participationMarkerBaseDir = createParticipationMarkerBaseDir();
+    ///
+    /// Created LAZILY, by the first node that needs it (#3021): [#withHarnessTempRoot] runs after construction, so an eager
+    /// creation would already have put a directory in `java.io.tmpdir` that the seam can no longer redirect.
+    private Option<Path> participationMarkerBaseDir = Option.none();
+    /// #3021 — where this cluster's harness temp dirs (participation marker, unwritable storage root) are created
+    /// instead of `java.io.tmpdir`; [Option#none] (the default) keeps today's location. See [#withHarnessTempRoot].
+    private final AtomicReference<Option<Path>> harnessTempRoot = new AtomicReference<>(Option.none());
+    /// #3021 — the repositories every node resolves slices from; defaults to `[Local]`. See [#withSliceRepositories].
+    private final AtomicReference<SliceConfig> sliceConfig = new AtomicReference<>(SliceConfig.sliceConfig());
+
+    /// #3021 — a test-supplied config source layered into every node's provider; see [#withConfigSource].
+    private final AtomicReference<Option<ConfigSource>> testConfigSource = new AtomicReference<>(Option.none());
+
+    /// #3021 probe 2 — see [#withRoutePublicationHeld]; off by default.
+    private final AtomicBoolean routePublicationHeld = new AtomicBoolean(false);
 
     /// #1276 — the storage root for nodes when the test did not opt into [#withDataBaseDir]: a path
     /// under a regular FILE in a per-instance temp dir, so no directory can ever be created beneath it,
@@ -662,6 +681,20 @@ public final class EmberCluster {
                              .map(AetherNodeConfig::quicTls);
     }
 
+    /// TEST SEAM (#3021) — the slice repositories in the most recently constructed node's real [AetherNodeConfig].
+    Option<List<RepositoryType>> wiredSliceRepositories() {
+        return lastNodeConfig.get()
+                             .map(config -> config.sliceConfig()
+                                                  .repositories());
+    }
+
+    /// TEST SEAM (#3021) — `key` as the most recently constructed node's real configuration provider answers it.
+    Option<String> wiredConfigString(String key) {
+        return lastNodeConfig.get()
+                             .flatMap(AetherNodeConfig::configProvider)
+                             .flatMap(provider -> provider.getString(key));
+    }
+
     private EnvironmentIntegration emberEnvironment() {
         return emberEnvironmentRef.updateAndGet(this::resolveEnvironment);
     }
@@ -788,6 +821,104 @@ public final class EmberCluster {
         return Result.unitResult();
     }
 
+    private boolean notStarted() {
+        return nodes.isEmpty() && heldBackNodes.isEmpty();
+    }
+
+    private Result<Unit> refuseAfterStart(String what) {
+        return org.pragmatica.lang.utils.Causes.cause(what + " must be configured before start")
+                                               .result();
+    }
+
+    /// Set the repositories EVERY node resolves slices from (#3021), before [#start]; the default is `[Local]`. The Ember
+    /// JUnit extension passes `[Staged(root, moduleSet)]` and nothing else, so a module coordinate that is not in the staged
+    /// root has no repository left to fall through to. A null list, an empty one or one holding a null entry is refused with an
+    /// `InvalidSliceConfig`, like [SliceConfig#sliceConfigFromNames] refuses an empty list.
+    public Result<Unit> withSliceRepositories(List<RepositoryType> repositories) {
+        if (!notStarted()) {
+            return refuseAfterStart("Slice repositories");
+        }
+
+        return Option.option(repositories)
+                     .filter(EmberCluster::usableRepositories)
+                     .toResult(SliceConfig.SliceConfigError.InvalidSliceConfig.invalidSliceConfig("repositories list cannot be null, empty or hold a null entry"))
+                     .map(List::copyOf)
+                     .onSuccess(valid -> sliceConfig.updateAndGet(current -> current.withRepositories(valid)))
+                     .mapToUnit();
+    }
+
+    private static boolean usableRepositories(List<RepositoryType> repositories) {
+        return ! repositories.isEmpty() && repositories.stream()
+                                                       .noneMatch(Objects::isNull);
+    }
+
+    /// Layer one more [ConfigSource] into every node's configuration provider (#3021), before [#start]. Refused when the
+    /// cluster was built with a constructor `configProvider`: two competing sources of node configuration would leave the
+    /// layering to chance, and the constructor one is the caller's declared single source.
+    public Result<Unit> withConfigSource(ConfigSource source) {
+        if (!notStarted()) {
+            return refuseAfterStart("Config source");
+        }
+
+        if (configProvider.isPresent()) {
+            return org.pragmatica.lang.utils.Causes.cause("A config source cannot be added to a cluster built with a configProvider")
+                                                   .result();
+        }
+
+        testConfigSource.set(Option.some(source));
+
+        return Result.unitResult();
+    }
+
+    /// Create this cluster's harness temp dirs (participation marker, unwritable storage root) under `root` instead of
+    /// `java.io.tmpdir` (#3021), before [#start]. Creates `root` when it does not exist.
+    public Result<Unit> withHarnessTempRoot(Path root) {
+        if (!notStarted()) {
+            return refuseAfterStart("Harness temp root");
+        }
+
+        return Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
+                           () -> Files.createDirectories(root))
+                     .onSuccess(created -> harnessTempRoot.set(Option.some(created)))
+                     .mapToUnit();
+    }
+
+    /// TEST SEAM (#3021 probe 2): HOLD route publication on every node, before [#start]. A slice deployed while the hold is
+    /// on is activated as usual, but its routes are only recorded as pending: they are not in any route table and not in
+    /// the cluster until [#releaseRoutePublication]. Only the route table lags; slice activation is not held back.
+    public Result<Unit> withRoutePublicationHeld() {
+        if (!notStarted()) {
+            return refuseAfterStart("Route publication hold");
+        }
+
+        routePublicationHeld.set(true);
+
+        return Result.unitResult();
+    }
+
+    /// End the hold set by [#withRoutePublicationHeld]: every node publishes its pending routes. Completes when all nodes
+    /// have them in the cluster; later deployments publish at once. Without a hold it completes at once.
+    public Promise<Unit> releaseRoutePublication() {
+        routePublicationHeld.set(false);
+
+        return Promise.allOf(nodes.values().stream().map(EmberCluster::releasedPublications).toList()).flatMap(results -> Result.allOf(results)
+                                                                                                                                .mapToUnit()
+                                                                                                                                .async());
+    }
+
+    private static Promise<Unit> releasedPublications(AetherNode node) {
+        return node.appHttpServer()
+                   .httpRoutePublisher()
+                   .map(HttpRoutePublisher::releaseRoutePublication)
+                   .or(Promise.unitPromise());
+    }
+
+    /// The route table `nodeIdStr` currently serves from, or none when no such node is running (#3021).
+    public Option<RouteTable> routeTable(String nodeIdStr) {
+        return getNode(nodeIdStr).map(node -> node.appHttpServer()
+                                                  .currentRouteTable());
+    }
+
     /// Measurement-only: with more than 100 slots a node's SWIM UDP port (its cluster port + 100) lands on another slot's QUIC port.
     /// A stride of 3 keeps every QUIC port at an offset divisible by 3 and every SWIM port at one that leaves remainder 1, so they never meet.
     /// Configure before starting nodes.
@@ -900,18 +1031,16 @@ public final class EmberCluster {
             }
 
             nodes.put(nodeIdStr, node);
-            startPromises.add(node.start()
-                                  .onFailure(cause -> startFailures.put(nodeIdStr,
-                                                                        cause.message()))
-                                  .onFailure(firstFailure::fail)
-                                  .map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
-                                                                            port,
-                                                                            mgmtPort,
-                                                                            Option.none()))
-                                  .recover(cause -> NodeStartResult.nodeStartResult(nodeIdStr,
-                                                                                    port,
-                                                                                    mgmtPort,
-                                                                                    Option.some(cause))));
+            var recorded = recordFailureThenSignal(node.start(), nodeIdStr, startFailures, firstFailure);
+
+            startPromises.add(recorded.map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
+                                                                                port,
+                                                                                mgmtPort,
+                                                                                Option.none()))
+                                      .recover(cause -> NodeStartResult.nodeStartResult(nodeIdStr,
+                                                                                        port,
+                                                                                        mgmtPort,
+                                                                                        Option.some(cause))));
         }
 
         var outcome = Promise.<Unit> promise();
@@ -922,6 +1051,27 @@ public final class EmberCluster {
         firstFailure.onFailure(cause -> abortStart(cause, startFailures).onResult(outcome::resolve));
 
         return outcome;
+    }
+
+    /// #1611: record the failing node, THEN signal the abort, in ONE `onFailure` handler. The abort
+    /// snapshots `startFailures`, so the entry must already be there when `firstFailure` fires. With two
+    /// registrations on `start`, a `start` that resolved between them ran the second inline in `push()`
+    /// while the first was still queued, so the signal could precede the put; one handler has no such
+    /// window. Package-visible so `EmberClusterStartFailureOrderTest` pins it with a delayed map put.
+    static <T> Promise<T> recordFailureThenSignal(Promise<T> start,
+                                                  String nodeIdStr,
+                                                  Map<String, String> startFailures,
+                                                  Promise<Unit> firstFailure) {
+        return start.onFailure(cause -> recordThenSignal(cause, nodeIdStr, startFailures, firstFailure));
+    }
+
+    private static Promise<Unit> recordThenSignal(Cause cause,
+                                                  String nodeIdStr,
+                                                  Map<String, String> startFailures,
+                                                  Promise<Unit> firstFailure) {
+        startFailures.put(nodeIdStr, cause.message());
+
+        return firstFailure.fail(cause);
     }
 
     /// #727: the first node-start failure aborts the whole start, instead of waiting for every node.
@@ -943,9 +1093,8 @@ public final class EmberCluster {
         var registered = registeredNow();
         var stopPromises = nodes.values()
                                 .stream()
-                                .map(node -> node.stop()
-                                                 .timeout(NODE_TIMEOUT)
-                                                 .recover(_ -> Unit.unit()))
+                                .map(node -> stopped(node).timeout(NODE_TIMEOUT)
+                                                    .recover(_ -> Unit.unit()))
                                 .toList();
 
         return clearThenSettle(settledWithLateArrivals(stopPromises, registered),
@@ -1064,10 +1213,9 @@ public final class EmberCluster {
     private Promise<Unit> stopFailedHeldBackNode(String nodeIdStr, AetherNode node, Cause cause) {
         log.error("Held-back node {} failed to start: {}", nodeIdStr, cause.message());
 
-        return node.stop()
-                   .timeout(NODE_TIMEOUT)
-                   .recover(_ -> Unit.unit())
-                   .flatMap(_ -> cause.promise());
+        return stopped(node).timeout(NODE_TIMEOUT)
+                      .recover(_ -> Unit.unit())
+                      .flatMap(_ -> cause.promise());
     }
 
     private static Promise<Unit> allHeldBackStartedOrFail(List<Result<Unit>> results) {
@@ -1120,9 +1268,8 @@ public final class EmberCluster {
         var registered = registeredNow();
         var stopPromises = succeeded.stream()
                                     .map(r -> Option.option(nodes.get(r.nodeId()))
-                                                    .map(node -> node.stop()
-                                                                     .timeout(NODE_TIMEOUT)
-                                                                     .recover(_ -> Unit.unit()))
+                                                    .map(node -> stopped(node).timeout(NODE_TIMEOUT)
+                                                                        .recover(_ -> Unit.unit()))
                                                     .or(Promise.success(Unit.unit())))
                                     .toList();
 
@@ -1249,11 +1396,28 @@ public final class EmberCluster {
                                                              node).onResult(promise::resolve)).timeout(NODE_TIMEOUT);
     }
 
+    /// `node.stop()` as a plain "the node is stopped" outcome (#3565): the stop succeeds with a report once every step has
+    /// settled, so a report carrying step failures (a listener close that timed out) still means STOPPED. It is logged here and
+    /// never read as "did not stop"; only a stop that FAILS (the sequence could not complete) is a node that did not stop.
+    /// Strategy: FER (degrade forward) -- the step failures are dropped from the outcome because every step ran and the node is stopped;
+    /// the WARN line here, the step's own WARN in `NodeStopSequence` and the report itself keep them legible. Pinned by
+    /// `EmberClusterStopBoundTest#clusterStop_succeeds_whenANodeStopCompletedWithFailures_theNodeCountsAsStopped`.
+    private static Promise<Unit> stopped(AetherNode node) {
+        return node.stop()
+                   .onSuccess(report -> Option.option(report)
+                                              .filter(r -> !r.isClean())
+                                              .onPresent(r -> log.warn("Node {} stopped with {} step failure(s): {}",
+                                                                       node.self().id(),
+                                                                       r.failures().size(),
+                                                                       r.summary())))
+                   .mapToUnit();
+    }
+
     /// Start `node.stop()` and keep it in [#inFlightStops] until it resolves. The returned promise is the node's own, never
     /// failed by a bound: bound a COPY with [#bounded], so a stop that resolves after its bound is still seen.
     private Promise<Unit> trackedStop(String nodeId, AetherNode node) {
         var token = new Object();
-        var raw = node.stop();
+        var raw = stopped(node);
 
         inFlightStops.put(token, new InFlightStop(nodeId, raw));
 
@@ -1833,7 +1997,7 @@ public final class EmberCluster {
                                           ProtocolConfig.testConfig(participationMarker(nodeId),
                                                                     identityLedgerFile(nodeId)),
                                           SliceActionConfig.sliceActionConfig(),
-                                          SliceConfig.sliceConfig(),
+                                          sliceConfig.get(),
                                           mgmtPort,
                                           dhtReplication.get(),
                                           DHTConfig.CACHE_DEFAULT,
@@ -1845,7 +2009,7 @@ public final class EmberCluster {
                                           Option.some(emberEnvironment()),
                                           AutoHealConfig.DEFAULT,
                                           observability,
-                                          ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
+                                          DeploymentAtomicity.ALL_OR_NOTHING,
                                           activationGated,
                                           nodeTimeouts,
                                           Option.some(certificateProvider),
@@ -1887,7 +2051,16 @@ public final class EmberCluster {
         return AetherNode.aetherNode(config,
                                      code -> onNodeExit(nodeId.id(),
                                                         code))
+                         .map(this::publicationHoldApplied)
                          .unwrap();
+    }
+
+    private AetherNode publicationHoldApplied(AetherNode node) {
+        if (routePublicationHeld.get()) {
+            node.appHttpServer().httpRoutePublisher().onPresent(HttpRoutePublisher::holdRoutePublication);
+        }
+
+        return node;
     }
 
     /// Per-node `storageConfig` map for [#createNode]. When a writable base dir was set via
@@ -1909,7 +2082,7 @@ public final class EmberCluster {
         var configured = dataBaseDir.get();
         var base = configured.isPresent()
                    ? configured
-                   : participationMarkerBaseDir;
+                   : participationMarkerBase();
 
         return base.map(dir -> dir.resolve(nodeId.id())
                                   .resolve(".aether-participation"))
@@ -1924,7 +2097,7 @@ public final class EmberCluster {
         var configured = dataBaseDir.get();
         var base = configured.isPresent()
                    ? configured
-                   : participationMarkerBaseDir;
+                   : participationMarkerBase();
 
         return base.map(dir -> dir.resolve(nodeId.id())
                                   .resolve(".aether-identity")
@@ -1934,9 +2107,23 @@ public final class EmberCluster {
     /// [Option#none] when the temp dir cannot be created — the nodes then get no marker at all and
     /// fall back to the amnesiac's adoption bound, which is #1171's behaviour. A harness that cannot
     /// write to the temp dir should degrade to "slower to form quorum", never to "unsafe".
-    private static Option<Path> createParticipationMarkerBaseDir() {
+    ///
+    /// Package-visible so a test can check where the marker dir lives and that nothing is created before first use.
+    synchronized Option<Path> participationMarkerBase() {
+        participationMarkerBaseDir = participationMarkerBaseDir.orElse(() -> createHarnessTempDir("ember-participation-"));
+
+        return participationMarkerBaseDir;
+    }
+
+    /// A fresh temp dir under the [#harnessTempRoot] when one is set, else under `java.io.tmpdir`; [Option#none] when it
+    /// cannot be created.
+    private Option<Path> createHarnessTempDir(String prefix) {
         try {
-            return Option.some(Files.createTempDirectory("ember-participation-"));
+            return Option.some(harnessTempRoot.get()
+                                              .isPresent()
+                               ? Files.createTempDirectory(harnessTempRoot.get().unwrap(),
+                                                           prefix)
+                               : Files.createTempDirectory(prefix));
         } catch (IOException e) {
             return Option.none();
         }
@@ -1963,6 +2150,7 @@ public final class EmberCluster {
         }
 
         configProvider.onPresent(builder::withSource);
+        testConfigSource.get().onPresent(builder::withSource);
 
         return builder.build();
     }
@@ -1977,7 +2165,7 @@ public final class EmberCluster {
     /// The current [#unwritableStorageBaseDir], creating it on first use. Package-visible so a test can
     /// check where nodes are rooted and that [#stop] removes it.
     Option<Path> unwritableStorageBase() {
-        return unwritableStorageBaseDir.updateAndGet(current -> current.orElse(EmberCluster::createUnwritableStorageBaseDir));
+        return unwritableStorageBaseDir.updateAndGet(current -> current.orElse(this::createUnwritableStorageBaseDir));
     }
 
     /// Delete the [#unwritableStorageBaseDir] this cluster created, if any: the blocker file and the temp
@@ -1997,9 +2185,13 @@ public final class EmberCluster {
 
     /// [Option#none] when the temp dir cannot be created — the nodes then get the empty `storageConfig`
     /// and the production default, which is the pre-#1276 behaviour.
-    private static Option<Path> createUnwritableStorageBaseDir() {
+    private Option<Path> createUnwritableStorageBaseDir() {
+        return createHarnessTempDir("ember-storage-").flatMap(EmberCluster::writeStorageBlocker);
+    }
+
+    private static Option<Path> writeStorageBlocker(Path dir) {
         try {
-            var blocker = Files.createTempDirectory("ember-storage-").resolve("not-a-directory");
+            var blocker = dir.resolve("not-a-directory");
 
             Files.writeString(blocker, "#1276: storage roots under this file cannot be created");
 

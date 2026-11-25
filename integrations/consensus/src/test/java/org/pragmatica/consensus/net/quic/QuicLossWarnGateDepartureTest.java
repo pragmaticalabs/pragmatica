@@ -30,6 +30,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.AWAIT;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.PEER;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.network;
+import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.networkWithoutGiveUp;
+import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.stallFor;
 import static org.pragmatica.consensus.net.quic.LossAccountingFixtures.stream;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.awaitTrue;
 
@@ -39,16 +41,19 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.awaitT
 class QuicLossWarnGateDepartureTest {
     /// Three attempts 100 ms apart: the retry is still waiting for its next attempt when the peer departs.
     private static final TimeSpan SLOW = TimeSpan.timeSpan(100).millis();
+    /// Two and a half times the 200 ms a retry of [#SLOW] needs to give up: a stall no fixture that gives up survives (#3686).
+    private static final TimeSpan PAST_THE_GIVE_UP = TimeSpan.timeSpan(500).millis();
     private static final byte[] BYTES = {1};
 
     @Test
     void departedPeer_withRetryInFlightAndALateRefusal_leavesNoGateEntry() {
-        var network = network(SLOW);
+        var network = networkWithoutGiveUp(SLOW);
 
         network.seedPeerForTests(PEER, PeerState.peerState(PEER, System.nanoTime()));
         var retried = network.writeIfWritableForTest(stream(false), BYTES, PEER, StreamType.CONSENSUS);
 
         assertThat(retried).isInstanceOf(WriteOutcome.Sent.class);
+        stallFor(PAST_THE_GIVE_UP);
         assertThat(network.consensusRetriesInFlight()).as("control: the retry is in flight at the departure").isEqualTo(1);
 
         network.departurePermanent(PEER);
@@ -78,12 +83,13 @@ class QuicLossWarnGateDepartureTest {
 
     @Test
     void retryGivingUpAfterTheDeparture_logsNoWarnForTheDepartedPeer() {
-        var network = network(SLOW);
+        var network = networkWithoutGiveUp(SLOW);
 
         network.seedPeerForTests(PEER, PeerState.peerState(PEER, System.nanoTime()));
         try (var capture = LogCapture.capture("org.pragmatica.consensus.net.quic.QuicClusterNetwork", Level.INFO, false)) {
             var _ = network.writeIfWritableForTest(stream(false), BYTES, PEER, StreamType.CONSENSUS);
 
+            stallFor(PAST_THE_GIVE_UP);
             network.departurePermanent(PEER);
             awaitTrue(() -> network.consensusRetriesInFlight() == 0, AWAIT, "the in-flight retry to give up");
 

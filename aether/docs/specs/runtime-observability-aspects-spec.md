@@ -13,8 +13,8 @@
 > for east-west/topic/timer — now absorbed — and `SliceRouter.invokeHandler` for north-south HTTP entry),
 > **not** a generated per-call-site wrapper or an `AspectFactory` codegen path. The slice-processor codegen
 > sections (§5, §11 IP-table / always-generate-wrapper) are **NOT built** and are retained only as the
-> superseded design record; the dormant factory `Aspect` seam is slated for deletion in a final cleanup
-> increment (no envelope bump). One `AtomicStrategy` volatile lambda per `(artifactBase, methodName)` cell
+> superseded design record; the factory `Aspect<T>` seam has since been **deleted** (the generated factory
+> is `xxx(SliceCreationContext ctx)`, no aspect argument; no envelope bump). One `AtomicStrategy` volatile lambda per `(artifactBase, methodName)` cell
 > carries the behaviour; the write-side `ObservabilityConfigRegistry` pre-composes the KV config into an
 > "around" strategy and swaps it in wholesale. **Posture (variant C, single engine):** an unconfigured
 > injection point runs the **baseline** (ambient facets — depth-leveled logging, sampled tracing, invocation
@@ -130,6 +130,10 @@ pattern to the full observability seam over slices *and* resources.
 
 ### 3.1 The aspect seam — EXISTS, unconditional, but dead (always identity)
 
+> **⚠ REMOVED.** §3.1 and §3.2 record the state at 2026-06-24. The `Aspect<T>` factory parameter, `Aspect.identity()`
+> and every generated `aspect.apply(...)` call were later removed from the code; they no longer exist. Retained
+> as the superseded record of the premise.
+
 - `Aspect<T>` = `@FunctionalInterface T apply(T instance)` (`aether/slice-api/.../Aspect.java:8`), with
   `compose`/`andThen` (`:15-21`). It transforms a **slice instance** (wraps the object), applied **once
   at construction** — not a per-call hook.
@@ -222,8 +226,8 @@ boundaries (slice entry, cross-slice, resource call) map 1:1 onto these.
 
 > **⚠ SUPERSEDED (2026-07-05).** This section describes the generated-wrapper / factory-`Aspect`-seam
 > mechanism, which was **NOT built**. As shipped, observation attaches at the two native dispatch seams
-> as runtime strategy cells (see the banner + §6.1); the dormant factory `Aspect` seam is slated for
-> deletion. Retained as the superseded design record.
+> as runtime strategy cells (see the banner + §6.1); the factory `Aspect` seam has since been
+> deleted. Retained as the superseded design record.
 
 > **Decision.** (a) **Slice:** replace the hardcoded `Aspect.identity()` (`SliceFactory.java:143`) with
 > the **system observability aspect** for that injection point. (b) **Resource:** make
@@ -445,7 +449,7 @@ push keeps its last-good snapshot — fail-safe, observability must never break 
 > passthrough; (3) e2e switch proof; (4) scope hierarchy + absence-default → counting baseline; (5) the
 > `ObservabilityInterceptor` fleet layer absorbed into the baseline (single engine), depth store unified;
 > (5b) configured facets compose the shared baseline bodies by toggle, the REST/CLI/docs management triad,
-> the STEP-0 bench, and the dormant `ObservabilityDepthKey/Value` cleanup; (6, pending) delete the dead
+> the STEP-0 bench, and the dormant `ObservabilityDepthKey/Value` cleanup; (6, done) delete the dead
 > factory `Aspect` seam. No envelope implications for the core mechanism. Retained as the superseded plan.
 
 | Phase | Scope | Anchors |
@@ -486,7 +490,7 @@ interceptors unchanged.
 2. **Cross-slice double-observation.** A cross-slice call passes through the caller's aspect *and* the
    callee's aspect; confirm the depth model (`InvocationContext.DEPTH`) dedups/links so one logical call
    isn't double-counted.
-3. **Resource aspect typing.** `Aspect<T>` is typed; resources are heterogeneous. Confirm the wrap uses a
+3. **Resource aspect typing.** *(Superseded: moot, the `Aspect<T>` seam was removed.)* `Aspect<T>` is typed; resources are heterogeneous. Confirm the wrap uses a
    single `Aspect<Object>`/raw observability decorator at the facade vs a per-type aspect.
 4. **Spans build-out owner.** This spec provides the seam; which ticket owns actual span creation/tree
    assembly (RFC-0010 deferred items / #304)?

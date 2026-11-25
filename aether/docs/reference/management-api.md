@@ -138,6 +138,14 @@ A management request may land on any core node, but where it is ultimately serve
 - **Per-node diagnostic routes are served node-locally** (metrics, traces, alerts, logs, storage, DHT replication map, certificates). These report the receiving node's own view and are not forwarded.
 - **Per-node addressed routes** (those with an `{id}` node parameter) are forwarded to the named node.
 
+The per-node addressed forms of the status, slice and in-flight reads are:
+
+| Request | Same answer as | Role |
+|---------|----------------|------|
+| `GET /api/v1/nodes/status/{id}` | [`GET /api/v1/nodes/status`](#get-apiv1nodesstatus), from node `{id}` | VIEWER |
+| `GET /api/v1/nodes/slices/{id}` | [`GET /api/v1/nodes/slices`](#get-apiv1nodesslices), from node `{id}` | VIEWER |
+| `GET /api/v1/nodes/inflight/{id}` | [`GET /api/v1/nodes/inflight`](#get-apiv1nodesinflight), from node `{id}` | VIEWER |
+
 ---
 
 ## Cluster Status
@@ -424,6 +432,11 @@ Get cluster events from the event aggregator. Returns structured events includin
 
 Both parameters must be used together to form a cursor. Clients should persist the `originEpoch` and `originSeq` fields from the last received event and pass them on the next request.
 
+- `code` (optional) -- keep only the events whose `details.code` equals this value. The match is exact and case-sensitive: a code is the stable kebab-case identifier of an operator warning (for example `swim-kill-gate-held`, see `OPERATOR_WARNING` under Event Types below), and `OPERATOR_WARNING` events are the ones that carry one. A code no event carries answers `200` with an empty list, not an error.
+- `severity` (optional) -- a minimum level: keep the events at this severity or above, in the order `INFO` < `WARNING` < `CRITICAL`. `severity=WARNING` keeps `WARNING` and `CRITICAL` events. The value is case-insensitive; anything other than `INFO`, `WARNING` or `CRITICAL` (including `UNKNOWN`, which only marks a level the answering node cannot name) is refused with `400` and no events are read. An event whose own severity is `UNKNOWN` passes every `severity` filter, because the node cannot rank it below the minimum.
+
+`code` and `severity` combine with AND, and apply to the events the cursor selected. They filter the answering node's view of the feed; the staleness and de-duplication rules below are unchanged.
+
 **Examples:**
 ```bash
 # All events
@@ -431,7 +444,21 @@ curl http://localhost:8080/api/v1/events
 
 # Events after a known cursor position
 curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
+
+# One warning class
+curl "http://localhost:8080/api/v1/events?code=swim-kill-gate-held"
+
+# WARNING and CRITICAL events only
+curl "http://localhost:8080/api/v1/events?severity=warning"
+
+# Both: that warning class, only when it is CRITICAL
+curl "http://localhost:8080/api/v1/events?code=core-absence-fence&severity=CRITICAL"
+
+# 400: not a severity
+curl "http://localhost:8080/api/v1/events?severity=loud"
 ```
+
+CLI: `aether events [--code <code>] [--severity <level>]`.
 
 **Response:**
 ```json
@@ -520,13 +547,13 @@ event per advance would be a 1 Hz stream with no information beyond "the leader 
 changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on demand from
 `GET /api/v1/cluster/generation`.
 
-**Delivery when a publish fails (#1640).** A node whose event publish does not land keeps the event and re-sends it. The common case is a forward to a cluster-events owner that has just died, which reports "Publish outcome unknown". The node re-sends once a second with backoff up to 8 s, and immediately when the partition gets a new owner, for up to 5 minutes. It holds at most 1,024 such events and drops the oldest beyond that. Every dropped event is counted, and one WARN line names the dropped event types on the next publish that lands (during a long outage, the counters are the only live signal); the first expiry is also logged once at ERROR. Each event carries `details.eventId` (`<node-process incarnation>:<sequence>`), and a re-sent event keeps it, so an event that did land before its outcome was known is not listed twice: `GET /api/v1/events` de-duplicates every read by `eventId` (events without one by `at`) and lists events in `at` order. The live feed follows an offset cursor and sends events in the order they land, so a late event is still sent, possibly after events with a later `at`. It sends each event once for as long as its first copy is retained: it remembers every `eventId` it sent until retention trims that event, so a re-sent copy is not sent again, and a copy landing after its first copy was trimmed is sent a second time. After an owner failover, the new owner can reuse offsets the feed already read; the feed then re-reads the log from its oldest retained offset (on the node applying the ownership change, or when the log moves back below its cursor) and sends only what it has not sent. A worker learns of the ownership change from its metadata projection (polled once a second), so on a worker these events can arrive a little later, but they are not lost while retained. `eventId` collapses the copies of ONE raise: an owner-gated fact raised on both sides of a cluster-events ownership handover appears twice, with distinct `eventId`s (at-least-once across a handover; see guarantees.md row 14b). **The raw stream read (`GET /api/v1/streams/system/cluster-events/1.0.0/read`) does not de-duplicate or sort:** it returns the log as stored, so it can show a re-sent event twice and out of `at` order; de-duplicate by `details.eventId`. The limit: redelivery needs a writable owner. On a cluster where the dead owner is not re-placed, or a partition flagged for an operator, the held events expire after 5 minutes, counted, and the logs are the only record.
+**Delivery when a publish fails (#1640).** A node whose event publish does not land keeps the event and re-sends it. The common case is a forward to a cluster-events owner that has just died, which reports "Publish outcome unknown". The node re-sends once a second with backoff up to 8 s, and immediately when the partition gets a new owner, for up to 5 minutes. It holds at most 1,024 such events and drops the oldest beyond that. Every dropped event is counted, and one WARN line names the dropped event types on the next publish that lands (during a long outage, the counters are the only live signal); the first expiry is also logged once at ERROR. Each event carries `details.eventId` (`<node-process incarnation>:<sequence>`), and a re-sent event keeps it, so an event that did land before its outcome was known is not listed twice: `GET /api/v1/events` de-duplicates every read by `eventId` (events without one by `at`) and lists events in `at` order. The live feed follows an offset cursor and sends events in the order they land, so a late event is still sent, possibly after events with a later `at`. It sends each event once for as long as its first copy is retained: it remembers every `eventId` it sent until retention trims that event, so a re-sent copy is not sent again, and a copy landing after its first copy was trimmed is sent a second time. After an owner failover, the new owner can reuse offsets the feed already read; the feed then re-reads the log from its oldest retained offset (on the node applying the ownership change, or when the log moves back below its cursor) and sends only what it has not sent. A worker learns of the ownership change from its metadata projection (polled once a second), so on a worker these events can arrive a little later, but they are not lost while retained. `eventId` collapses the copies of ONE raise: an owner-gated fact raised on both sides of a cluster-events ownership handover appears twice, with distinct `eventId`s (at-least-once across a handover; see guarantees.md row 14b). **The raw stream read (`GET /api/v1/streams/system/cluster-events/1.0.0/read/{partition}`) does not de-duplicate or sort:** it returns the log as stored, so it can show a re-sent event twice and out of `at` order; de-duplicate by `details.eventId`. The limit: redelivery needs a writable owner. On a cluster where the dead owner is not re-placed, or a partition flagged for an operator, the held events expire after 5 minutes, counted, and the logs are the only record.
 
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 
 `DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
 
-`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Neither this endpoint nor `aether events` can filter on it (or on severity) yet, so fetch the feed and match `details.code` yourself. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node, except an INFO recovery code, which follows the warning it closes (see `stream-consumer-state-repaired`); `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes:
+`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Filter on it with `GET /api/v1/events?code=<code>` or `aether events --code <code>` (#1631), and select a minimum severity with `severity=` / `--severity`. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node, except an INFO recovery code, which follows the warning it closes (see `stream-consumer-state-repaired`); `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes:
 
 - `swim-kill-gate-held` (WARNING — SWIM is holding the death of a long-healthy peer that only this node accused)
 - `core-absence-fence` (CRITICAL — a worker lost the core and is dissolving locally)
@@ -591,8 +618,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `json-config-rejected` (CRITICAL — a committed `[json]` change was refused for a slice and its HTTP routes keep the JSON codec selection they had; `subject` is `<slice artifact>/json`, the message names each refused key, its value and why, and the selection kept; raised once per node on the transition into refusal; the same configuration fails the slice's next provisioning, issue #2378)
 - `json-config-applied` (INFO — the recovery: a valid `[json]` configuration was adopted after a refusal; published only after a published `json-config-rejected` for the same `subject`)
 - `instance-reap-held` (WARNING — auto-heal is disabled, so the cluster did not delete the instance of a node it would otherwise have reaped: a departed node, an orphan the sweep found, a surplus trim, the reap of a never-joined zombie, or the retry or re-check of any of them; `subject` is the node, the message names which. The instance is kept for diagnosis and keeps billing. Raised once per node by the leader that held the reap; enable auto-heal to have it reaped, or terminate it at the provider yourself)
-- `auto-heal-scaling-held` (WARNING — auto-heal is disabled, so the cluster did not provision or terminate workers, begin a community placement operation, or drain a surplus core member on its own initiative; `subject` is `worker <source>/<role>`, `community <id>` or `core` (#3324); raised once per subject for the run of holds. A count or `target_size` changed while disabled, and an operator-directed retirement, are not held)
-- `auto-heal-scaling-resumed` (INFO — the recovery: auto-heal is enabled again and the paths act on their own again; published only after a published `auto-heal-scaling-held` for the same `subject`)
+- `auto-heal-scaling-held` (WARNING — auto-heal is disabled, so the cluster did not provision or terminate workers, begin a community placement operation, or drain a surplus core member on its own initiative; `subject` is `worker <source>/<role>`, `community <id>` or `core` (#3324); raised once per subject for the run of holds. A count or `target_size` changed while disabled, and an operator-directed retirement, are not held; a `worker` subject closes with `auto-heal-scaling-resumed` when its deficit or surplus is gone, and `core` when no surplus core member is left to drain (both the leader's surplus drain and the voter-excluded core retirement must have nothing pending), even while auto-heal stays disabled (#3358); a `community` hold closes only by the exits above, and a subject whose source, role or community was removed from the committed configuration, or whose count or `target_size` was changed, is released at the next core ask, i.e. the next quorum-safe pass of the leader)
+- `auto-heal-scaling-resumed` (INFO — the recovery: auto-heal is enabled again and the paths act on their own again, or nothing is left to change for the subject (#3358); published only after a published `auto-heal-scaling-held` for the same `subject`)
 - `instance-reap-released` (INFO — the recovery: auto-heal is enabled again and the reap is no longer held (it is then subject to the usual liveness and refusal checks), or the instance was deleted by a directed retirement after the reap was held, or the node joined the cluster again; published only after a published `instance-reap-held` for the same `subject`. Raised by the leader that held the reap, so a leader change in between leaves the held event open)
 - `upload-node-cap-saturated` (WARNING — an upload was refused `429` because the node holds `[app-http.upload] max_concurrent` uploads; `subject` is the node; raised once per episode on the first refusal, not once per refused request; a per-principal refusal raises nothing; issue #2410)
 - `upload-node-cap-restored` (INFO — the recovery: an upload finished and the node accepts uploads again; published only after a published `upload-node-cap-saturated` for the same `subject`)
@@ -1179,6 +1206,9 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 }
 ```
 
+`force` (boolean, optional, absent means `false`) accepts a publish that would re-apply schema versions an
+operator undid or baselined; see [Republish over an undo or baseline](#republish-over-an-undo-or-baseline-409-conflict).
+
 **Response:**
 ```json
 {
@@ -1309,12 +1339,51 @@ Why refuse rather than namespace: datasource names are cluster-global (the defau
 same node-global config section), so two blueprints migrating one physical database would
 interleave unrelated version sequences.
 
+#### Republish over an undo or baseline (409 Conflict)
+
+The declared version wins on every publish, but an operator's `undo` or `baseline` deliberately leaves a datasource at a version
+below what its blueprint declares. Publishing the unchanged blueprint would write the declared version over that record, and the
+migration would then re-apply every version the undo removed (or the baseline skipped). Both artifact-based entry points
+(`/deploy` and `/publish`) therefore refuse, with **409 Conflict**, a request that declares a version above a record an operator
+left behind:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Publish refused — datasource 'orders_db' was left at version 1 by an operator undo, and this blueprint declares versions [2] which would be applied again. Deploy a blueprint that declares version 1, or repeat the publish with force to accept the re-application."
+}
+```
+
+Rules:
+
+- Every schema record carries how its version was reached: a forward migration (or a publish), an `undo`, a `baseline`, or
+  unknown. Only a record left by `undo` or `baseline` guards. A record reached by forward migration, an unknown reach, and a
+  datasource with no record never refuse.
+- The refusal names the datasource, the intervention (`undo` or `baseline`), the version the operator left, and the declared
+  versions above it that would be applied again. Declaring only versions at or below the one the operator left is not refused.
+- The check runs before any KV command is applied, so a refused publish writes nothing. It reports the first datasource that fails;
+  an artifact that declares migrations for several datasources may need the operator's fix repeated.
+- `force: true` (CLI `--force`) skips the check for the whole request. The publish then writes the declared version, the record is
+  a forward migration from then on, and the removed versions are applied again. Unlike `baseline` with `force` (`SCHEMA_BASELINE_FORCED`), the override leaves no audit entry of its own. `POST /api/v1/blueprints/deploy` writes only the ordinary blueprint-deployed entry; `POST /api/v1/blueprints/publish` (register-only) writes none.
+- A record written by a build older than #834 has no recorded reach and reads as a forward migration, so an undo or baseline made
+  before the upgrade is not guarded.
+- `POST /api/v1/blueprints` (raw blueprint content) carries no migrations and is not subject to the check.
+- Like the single-migrator gate it is a read of the record followed by a write of the publish commands, not a compare-and-swap: an
+  undo that commits between the two is not seen.
+
+[verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/cluster/BlueprintPublishOwnershipTest.java` `UndoneRepublishGuard` (refusal for undo and baseline, forced acceptance, no refusal for a forward-migrated record or a declared version not above the record)]
+[verified: `aether/node/src/test/java/org/pragmatica/aether/api/routes/BlueprintForceFieldTest.java` (the route body field reaches the service on both routes, absent reads false)]
+[mechanism: `BlueprintService.ensureNoUndoneReapplied` short-circuits on `force`; `SchemaReach.guardsRepublish` is true for UNDONE and BASELINED only; `SchemaOrchestratorService` records the reach]
+
 ### POST /api/v1/blueprints/publish
 
 Publish a blueprint from an artifact already present in the cluster's artifact
 repository. Orthogonal to `POST /api/v1/blueprints` (which takes raw blueprint
-content in the body). Same body shape as `POST /api/v1/blueprints/deploy`, and subject to the same
-[single-migrator gate](#single-migrator-gate-409-conflict).
+content in the body). Same body shape (including the optional `force`) as `POST /api/v1/blueprints/deploy`, and
+subject to the same [single-migrator gate](#single-migrator-gate-409-conflict) and
+[republish guard](#republish-over-an-undo-or-baseline-409-conflict).
 
 **Request Body:**
 ```json
@@ -1513,8 +1582,9 @@ The response has two halves with different time semantics, deliberately:
 - The `consensus` block (#674) is **live** — cumulative monotonic totals read from the consensus
   collector at request time, present from the node's first request. Consumers measuring load
   difference the totals over their own window (the same contract as `/api/v1/metrics/transport`).
-  `pendingBatches` is a level, not a total; `avgDecisionLatencyMs` is derived over the cumulative
-  counts; `leaderId` is absent until a leader is known.
+  `pendingBatches` is a level, not a total; `avgDecisionLatencyMs` is the mean over the SAMPLED
+  decisions only (those this node held locally, which carry a measured duration), not over `decisionsCount`;
+  `leaderId` is absent until a leader is known.
 
 **Response:**
 The `intervalMeanLatencyP*` fields summarize the distribution of interval means, not
@@ -4235,6 +4305,15 @@ curl http://localhost:8080/repository/info/org/example/my-slice/1.0.0
 }
 ```
 
+### GET /repository/artifacts
+
+**Not implemented — returns HTTP 501.** The route is registered, but artifacts are content-addressed in the DHT, which
+exposes no scan primitive, so a repository-wide listing needs an index that does not exist yet (tracked by #527).
+Use `GET /repository/{groupPath}/{artifactId}/maven-metadata.xml` (`aether artifacts versions <group:artifact>`) to list
+the versions of a known artifact, `GET /repository/info/{groupPath}/{artifactId}/{version}` for one artifact, and
+`GET /api/v1/artifacts/metrics` for repository totals. A group id that begins with `artifacts.` is unaffected: only the
+exact path `/repository/artifacts` is refused.
+
 ### GET /repository/{groupPath}/{artifactId}/{version}/{filename}
 
 Download an artifact file from the repository.
@@ -4721,6 +4800,17 @@ Observe node membership/readiness and drive graceful operations (drain, shutdown
 Node membership is presence-derived (SWIM/QUIC via NTT); node readiness/drain is heartbeat-reported and leader-cached. This state is **never** stored in or committed to the KV-Store. See `aether/docs/specs/membership-architecture-v2-spec.md`.
 
 **Readiness values (heartbeat-reported):** `SYNCING`, `READY`, `DRAINING`. A node that is no longer present (SWIM/QUIC) simply disappears from the membership view — there is no terminal KV state.
+
+### GET /api/v1/nodes/inflight
+
+Number of requests this node's in-flight tracker is currently counting (the tracker the drain gate closes and
+waits on). **Routing:** LOCAL on the bare form; `GET /api/v1/nodes/inflight/{id}` is forwarded to node `{id}`.
+**Auth:** VIEWER.
+
+**Response:**
+```json
+{"count": 3}
+```
 
 ### GET /api/v1/nodes/lifecycle
 
@@ -5254,9 +5344,9 @@ A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a m
 
 | Status | Class | Engine refusals |
 |---|---|---|
-| `400` | the request is wrong | `PartitionOutOfRange`, `EventTooLarge`, `EVENT_DROPPED`, `AHSE_REQUIRED_FOR_STRONG`, `PartitionCeilingExceeded`, `RetentionCountUnindexable`, `RetentionBoundInvalid`, `PartitionCapExceeded` |
+| `400` | the request is wrong | `PartitionOutOfRange`, `EventTooLarge`, `EVENT_DROPPED`, `AHSE_REQUIRED_FOR_STRONG`, `PartitionCeilingExceeded`, `RetentionCountUnindexable`, `RetentionBoundInvalid`, `HotWindowBelowMaxEvent`, `PartitionCapExceeded` |
 | `404` | unknown to this node's engine | `StreamNotFound`, `CONSUMER_NOT_FOUND` |
-| `409` | conflicts with what exists | `STREAM_ALREADY_EXISTS`, `CONSUMER_ALREADY_SUBSCRIBED`, `ReplicationRefused`, `EpochDiverged` (a cursor from a replaced owner lineage) |
+| `409` | conflicts with what exists | `STREAM_ALREADY_EXISTS`, `CONSUMER_ALREADY_SUBSCRIBED`, `ReplicationRefused`, `ImmutableKeyChanged`, `EpochDiverged` (a cursor from a replaced owner lineage) |
 | `410` | the cursor's offset was reclaimed by retention (a judgement call: the offset was valid) | `CursorExpired` |
 | `503` | retry later or elsewhere | `PARTITION_NOT_LOCAL`, `PartitionHeldNotMaterialized`, `MaterializeBudgetExceeded`, `ReshufflePaced`, `STREAM_MEMORY_EXCEEDED`, `SEGMENT_TIER_FULL`, `SEALING_BEHIND`, `BUFFER_FULL`, `StreamConfigNotYetVisible`, the ownership and epoch refusals (`NotOwnerAppend`, `OwnerNotActivated`, `NotCurrentOwner`, `StaleEpochAppend`, `StaleEpochRead`, `OwnerCatchupPending`, `LinearizableRoundTimeout`, `ReplicaQuarantined`, `ReplicaNotVerified`, `RepairNotAuthorized`, `RepairWitnessFailed`), the closed and stalled signals, `CONSENSUS_PATH_UNAVAILABLE` |
 | `500` | engine integrity or an internal signal | `WalReplayMismatch`, `WalHeadLost`, `STREAM_CONFIG_COMMIT_FAILED`, `RingIndexCorrupted`, `EventProcessingFailed`, `SeedRejected`, `ProvenanceRegression`, `ProvenanceMismatch`, `ReplicaOffsetGap`, `ReplicaEntryConflict`, `UNREADABLE_CONSISTENCY_MODE`, `BUFFER_EMPTY`, `RUN_DOES_NOT_FIT`, `DivergenceNotEstablished`, `TruncateBelowRetained` |
@@ -5340,7 +5430,7 @@ Returns schema migration status for all datasources.
 | `lastMigration` | string | Filename of the last migration recorded |
 | `status` | string | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
 | `owningBlueprint` | string | Blueprint id (`group:artifact:version`) that declared the migrations. Whose slices this record holds while `status` is not `COMPLETED` |
-| `heldSlices` | string[] | Slices owned by this record's blueprint that are currently sitting in `LOADED` state and being held back from `ACTIVE` by a blocking `status` (#760). Requires BOTH a blocking status (`PENDING`, `MIGRATING`, or `FAILED`) AND at least one owned slice in `LOADED`; empty when `status` is `COMPLETED`, and equally empty under a blocking status if no owned slice is currently `LOADED` (e.g. already `ACTIVE`, or not yet loaded) `[mechanism: ClusterDeploymentState.blocksSliceActivation]` |
+| `heldSlices` | string[] | Slices owned by this record's blueprint that are currently sitting in `LOADED` state and being held back from `ACTIVE` by a blocking `status` (#760). Requires BOTH a blocking status (`PENDING`, `MIGRATING`, or `FAILED`) AND at least one owned slice in `LOADED`; empty when `status` is `COMPLETED`, and equally empty under a blocking status if no owned slice is currently `LOADED` (e.g. already `ACTIVE`, or not yet loaded) `[mechanism: SchemaHold.blocksSliceActivation]` |
 
 ### GET /api/v1/schema/status/{datasource}
 
@@ -5467,15 +5557,12 @@ A target version with no matching undo script in the artifact, or one whose scri
 longer matches its recorded checksum, is rejected rather than silently no-op'd — see
 `UndoNotAvailable` / `ChecksumMismatch` in the status-code table.
 
-> **Not sticky across a republish.** The deployment contract is declarative — the artifact's
-> declared version wins on every publish — so an undo is an operator intervention performed
-> between deploys, not a persistent state change. Republishing (or redeploying) a blueprint that
-> declares a version higher than the undo target re-arms migration at that declared version and
-> migrates forward from the live (now-rolled-back) record: rows removed by the undo are
-> re-applied from scratch, with nothing comparing the live record to the request first. To keep
-> the undo, deploy a blueprint that declares the lower version instead of republishing the higher
-> one — or accept the re-migration. A guard that refuses (or requires `force` for) a publish that
-> would do this is tracked separately in #834, not implemented here.
+> **Guarded against a republish.** The deployment contract is declarative, so the declared version still wins on a publish, but a
+> publish that declares a version above the one an undo left is refused with `409 Conflict` instead of silently re-applying the
+> rows the undo removed (#834). To keep the undo, deploy a blueprint that declares the lower version. To accept the re-migration,
+> repeat the publish with `force`. See [Republish over an undo or baseline](#republish-over-an-undo-or-baseline-409-conflict) for
+> the exact rule. A record undone by a build older than #834 is not guarded.
+> [verified: `BlueprintPublishOwnershipTest` `UndoneRepublishGuard`]
 
 ### POST /api/v1/schema/retry/{datasource}
 
@@ -5533,11 +5620,11 @@ is checked again under the orchestrator's migration fence, before the database i
 refusal names the stage (after the second check the database baseline has already run).
 [verified: `aether/node/src/test/java/org/pragmatica/aether/api/routes/SchemaRoutesBaselineTest.java` `InFlightGuard` — route plus the real orchestrator over a fake schema manager, not a cluster run]
 
-> **Likewise not sticky across a republish**, for the same declarative-contract reason as undo
-> above: the artifact's declared version wins on every publish. A republish (or redeploy) that
-> declares a version different from the one baseline established resumes forward migration from
-> the live record rather than treating baseline's version as pinned — see the undo section above
-> for the operator's correct sequence and #834.
+> **Likewise guarded against a republish**: a publish that declares a version above the one baseline left is refused with
+> `409 Conflict` naming the baseline and the versions that would be applied from scratch, unless it carries `force`. A publish that
+> declares only versions at or below the baseline version is not refused. See the undo section above and
+> [Republish over an undo or baseline](#republish-over-an-undo-or-baseline-409-conflict).
+> [verified: `BlueprintPublishOwnershipTest` `UndoneRepublishGuard.publishFromArtifact_isRefused_whenRecordWasBaselinedBelowTheDeclaredVersion`]
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -5585,10 +5672,10 @@ refusal names the stage (after the second check the database baseline has alread
 > failure, or either of these two should one day be wired up, still answers `500`.
 > [design intent — unverified]**
 >
-> **A thirteenth variant, `DatasourceOwnershipConflict`, is deliberately absent from this table** —
-> it is a publish-time blueprint-validation check (compares datasource *names* across blueprints,
-> not one of these six routes' own failure modes) and is documented instead alongside blueprint
-> publish. Its migration-time companion `PhysicalDatasourceOwnershipConflict` (which compares the
+> **Two variants, `DatasourceOwnershipConflict` and `RepublishWouldReapply` (#834), are deliberately absent from this table** —
+> they are publish-time blueprint-validation checks (the first compares datasource *names* across blueprints, the second compares
+> the declared versions with a record left by `undo` or `baseline`; neither is one of these six routes' own failure modes) and are
+> documented instead alongside blueprint publish. Its migration-time companion `PhysicalDatasourceOwnershipConflict` (which compares the
 > underlying physical database and IS reachable from `migrate`/`undo`/`baseline` alike, via the
 > shared ownership claim) is in the table above.
 
@@ -6043,9 +6130,9 @@ Three kinds of fact sit in one row, with three different scopes, so read each co
 
 - **Cluster facts, identical from every node:** `consumerNode` / `ownerNode` (the #535 assignment, computed locally and identically everywhere), and `committedCursor` / `committedEpoch` — the group's consensus-committed checkpoint read from KV. `committedEpoch` is the rewind epoch the checkpoint was committed under, `0/0` for a group never rewound; after a rebuild it equals the token the rebuild answered with.
 - **This node's facts:** `heldHere`, `liveCursor`, `liveEpoch`, `lastCursorCommitFailure` — the consumer THIS node runs for the partition. Present only where `heldHere` is `true`. `committedCursor` can LAG `liveCursor`, or be ABSENT while `liveCursor` is not: checkpoints are requested from an ack on the 500 ms / 1000-event cadence, so a partition that goes quiet keeps its committed cursor at the last cadence-triggered commit — or has none, when every event landed within 500 ms of the attach — until the next event or a graceful detach `[verified: DurableProjectionRebuildForgeTest measured 3 committed against 7 live, and none against 7, on a quiet single-partition topic]`. The lag bounds redelivery after an ungraceful move; it is not a stall.
-- **The hosted projection's facts:** `projection` (its name) and, per partition, `replayState` with `nextReplayOffset` / `replayThroughOffset` while `REBUILDING`. `replayState` is `UNKNOWN` on a node that hosts no projection for the group — the store's status lives inside the slice, and a node that does not run the slice cannot see it. Ask the node named in `consumerNode`.
+- **The hosted projection's facts:** `projection` (its name) and, per partition, `replayState` with `nextReplayOffset` / `replayThroughOffset` while `REBUILDING`. `replayState` is `UNKNOWN` on a node that hosts no projection for the group — the store's status lives inside the slice, and a node that does not run the slice cannot see it. Ask the node named in `consumerNode`. On a node other than `consumerNode`, `LIVE` says only that the group's committed cursor passed the captured head; it does not say this node's model is complete. Read the model on `consumerNode`, and after a partition move even there it may be incomplete (#3736).
 
-`cursorReportFailures` counts, node-wide since boot, the committed-cursor reports a hosted projection refused or threw on; a non-zero value with a projection stuck `REBUILDING` is the first thing to look at.
+`cursorReportFailures` counts, node-wide since boot, the committed-cursor reports a hosted projection refused or threw on; a non-zero value with a projection stuck `REBUILDING` is the first thing to look at. Reports come from local commits AND from accepted checkpoints of any node, so a refusal on the assignee can be counted twice.
 
 **Response:**
 ```json
@@ -6077,7 +6164,7 @@ Three kinds of fact sit in one row, with three different scopes, so read each co
 | `groups[].projection` | Name of the projection attached for this group ON THIS NODE; empty when this node hosts none |
 | `groups[].partitions[].committedCursor` / `committedEpoch` | Consensus-committed checkpoint (next offset to read) and the rewind epoch it carries. Absent / `""` before the first checkpoint |
 | `groups[].partitions[].heldHere`, `liveCursor`, `liveEpoch`, `lastCursorCommitFailure` | This node's consumer for the partition, when it runs one; `lastCursorCommitFailure` as on [Declarative Stream Consumers](#declarative-stream-consumers) |
-| `groups[].partitions[].replayState` | `LIVE`, `REBUILDING`, or `UNKNOWN` (no projection for the group hosted here). While `REBUILDING`: `nextReplayOffset` (the next offset the store will admit) and `replayThroughOffset` (the captured head it goes LIVE past) |
+| `groups[].partitions[].replayState` | `LIVE`, `REBUILDING`, or `UNKNOWN` (no projection for the group hosted here). While `REBUILDING`: `nextReplayOffset` (the next offset the store will admit) and `replayThroughOffset` (the captured head it goes LIVE past). Off `consumerNode`, `LIVE` means only that the group's cursor passed the captured head, not that this node's model is complete; read the model on `consumerNode`, where after a move it may still be incomplete (#3736) |
 | `groups[].unassignedPartitions`, `diagnostic` | As on Declarative Stream Consumers |
 
 ### Rebuild Projection
@@ -6172,7 +6259,7 @@ registration has been removed; nothing serves that path any more.
 ### Read Events
 
 ```
-GET /api/v1/streams/read/{name}/{partition}?from={offset}&max={count}
+GET /api/v1/streams/{namespace}/{stream}/{version}/read/{partition}?from={offset}&max={count}
 ```
 
 **Auth:** ALL_AUTHENTICATED
@@ -6309,6 +6396,17 @@ aether streams consumer-group status <group> [<stream>]
 }
 ```
 
+### Stream Consumers
+
+```
+GET /api/v1/streams/{namespace}/{stream}/{version}/consumers
+```
+
+**Auth:** VIEWER. Per-partition offsets of one stream version, as the receiving stream node holds them. The address is
+validated first (a malformed address is `400`); an unknown stream is refused with the stream-manager's typed status.
+
+**Response:** `{"name": "<namespace:stream:version>", "partitions": [{"partition": 0, "headOffset": 0, "tailOffset": 41, "eventCount": 42}]}`
+
 ---
 
 ## Stream Namespaces
@@ -6325,32 +6423,37 @@ Path parameters appear in route order as `{namespace}/{stream}/{version}` (versi
 ### List Registered Streams (namespaced)
 
 ```
-GET /api/v1/streams/list[?namespace={ns}]
+GET /api/v1/streams[?namespace={ns}&limit={n}&cursor={c}]
 ```
 
-Snapshot of all registered stream versions across the namespace registry. The optional
-`namespace` query parameter filters to a single namespace.
+Snapshot of all registered stream versions across the namespace registry
+(`{"streams": [{namespace, stream, version, refCount, registeredAtEpochMs}]}`). The optional
+`namespace` query parameter filters to a single namespace and `limit` caps the number of entries
+returned. `cursor` is accepted but not applied: the route returns the (capped) snapshot, not pages.
 
 ### List Versions
 
 ```
-GET /api/v1/streams/versions/{namespace}/{stream}
+GET /api/v1/streams/{namespace}/{stream}
 ```
 
-Lists all registered versions of a given `(namespace, stream)`.
+Lists all registered versions of a given `(namespace, stream)`
+(`{"namespace", "stream", "versions": [{namespace, stream, version, refCount, registeredAtEpochMs}]}`).
+An unregistered `(namespace, stream)` answers `404`.
 
 ### Latest Version
 
 ```
-GET /api/v1/streams/latest/{namespace}/{stream}
+GET /api/v1/streams/{namespace}/{stream}/latest
 ```
 
-Resolves the highest registered version for a `(namespace, stream)`.
+Resolves the highest registered version for a `(namespace, stream)`; the response has the shape of
+[Stream Metadata](#stream-metadata).
 
 ### Stream Metadata
 
 ```
-GET /api/v1/streams/metadata/{namespace}/{stream}/{version}
+GET /api/v1/streams/{namespace}/{stream}/{version}
 ```
 
 Returns the registry entry for an exact stream version (config, partitions, retention, reference
@@ -6359,22 +6462,23 @@ count, `registeredBy`, `registeredAtEpochMs`).
 ### Read Events (tail polling)
 
 ```
-GET /api/v1/streams/events/{namespace}/{stream}/{version}?fromOffset={n}&maxEvents={k}
+GET /api/v1/streams/{namespace}/{stream}/{version}/events?fromOffset={n}&maxEvents={k}
 ```
 
 Paginated event read used by `aether stream tail`. Returns a page of events plus `nextOffset`
 and `hasMore`. `maxEvents` is server-capped (1000). A streaming `tail` subscription
-(SSE/WebSocket) over `/api/v1/streams/tail/...` is **deferred to issue #212**; polling `/events` is
+(SSE/WebSocket) over `/api/v1/streams/{namespace}/{stream}/{version}/tail` is **deferred to issue #212**; polling `/events` is
 the supported tail mechanism today.
 
 ### Tail (reserved)
 
 ```
-GET /api/v1/streams/tail/{namespace}/{stream}/{version}
+GET /api/v1/streams/{namespace}/{stream}/{version}/tail
 ```
 
-Reserved for the deferred SSE/WebSocket subscription (#212). Operators tail via polling
-`/api/v1/streams/events/...` in the interim.
+Reserved for the deferred SSE/WebSocket subscription (#212); the route is registered and answers
+`501 Not Implemented`, with a message that names the polling `/events` form. Operators tail via polling
+`/api/v1/streams/{namespace}/{stream}/{version}/events` in the interim.
 
 ### Create Stream Version
 
@@ -6490,24 +6594,31 @@ segment disambiguates them.
 ### Consumer Groups (namespaced)
 
 ```
-GET    /api/v1/streams/groups/{namespace}/{stream}/{version}            # list groups
-POST   /api/v1/streams/groups/create/{namespace}/{stream}/{version}     # create a durable group
-DELETE /api/v1/streams/groups/delete/{namespace}/{stream}/{version}/{group}   # delete a group
+GET    /api/v1/streams/{namespace}/{stream}/{version}/groups            # list groups
+POST   /api/v1/streams/{namespace}/{stream}/{version}/groups            # create a durable group
+DELETE /api/v1/streams/{namespace}/{stream}/{version}/groups/{group}    # delete a group
 ```
 
-`create` and `delete` are **OPERATOR_AND_ABOVE** and are subject to the `system:*` write gate.
-Deleting a group releases its reference on the stream version.
+Create and delete are **OPERATOR_AND_ABOVE** and are subject to the `system:*` write gate.
+Create takes the body `{"groupId": "<id>", "initialPosition": "<position>"}` and answers
+`{"address", "groupId", "status": "created"}`; only `groupId` is read, `initialPosition` is accepted
+and not applied. Delete answers `{"address", "groupId", "status": "deleted"}` after removing the
+group's consumers on that stream version, or `404` for an unknown group. Deleting a group releases
+its reference on the stream version. The list route answers `{"address", "groups": []}` for a valid address: it
+does not enumerate groups today (use [Consumer Group Status](#consumer-group-status) or
+`GET /api/v1/streams/{namespace}/{stream}/{version}/consumers`).
 
 ### Namespace Registry Lookup
 
 ```
-GET /api/v1/stream-namespaces/list
-GET /api/v1/stream-namespaces/get/{namespace}/{stream}/{version}
+GET /api/v1/streams/namespaces
+GET /api/v1/streams/namespaces/{address}
 ```
 
 Read-only views served **locally on every node** (target `LOCAL`) — non-governor nodes answer
 these from replicated registry state (see [Stream metadata registries](#stream-metadata-registries)).
-`list` returns all registry entries; `get` is an exact lookup returning `404` when the address is
+The first returns all registry entries (`{"entries": [...]}`); the second is an exact lookup by the
+full `namespace:stream:version` address as ONE path segment (`{"entry": {...}}`), returning `404` when the address is
 not registered. Each entry carries `namespace`, `stream`, `version`, `registeredBy`,
 `registeredAtEpochMs`, and `refCount`.
 
@@ -6615,7 +6726,7 @@ Stream metadata is held in **two complementary, consensus-replicated registries*
   directly from the replicated KV store.
 
 Because both registries are replicated through consensus, **non-governor nodes serve stream
-metadata (and the `/api/v1/stream-namespaces/*` views) from local replicated state** rather than
+metadata (and the `/api/v1/streams/namespaces` views) from local replicated state** rather than
 forwarding to the governor — the #215 fix that gave every node a durable, consistent view of the
 stream registry.
 

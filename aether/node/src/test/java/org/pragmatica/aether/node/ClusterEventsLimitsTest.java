@@ -104,11 +104,39 @@ class ClusterEventsLimitsTest {
         assertRefused(ClusterEventsLimits.MAX_EVENT_SIZE_BYTES_VARIABLE, String.valueOf(Long.MAX_VALUE));
     }
 
+    /// The byte bound is raised with it (#3390 F3): at the 16 MiB default byte bound a ceiling-sized event no longer fits the
+    /// ring, which the boot now refuses ([#clusterEventsLimits_maxBytesBelowMaxEventSize_refusesTheBoot_namingBoth]). The byte
+    /// bound EQUAL to the event size is the accepted edge.
     @Test
     void clusterEventsLimits_eventSizeAtTheOneFrameCeiling_isAccepted() {
-        var limits = limitsFrom(Map.of(ClusterEventsLimits.MAX_EVENT_SIZE_BYTES_VARIABLE, String.valueOf(StreamEventLimits.MAX_EVENT_SIZE_BYTES))).unwrap();
+        var ceiling = String.valueOf(StreamEventLimits.MAX_EVENT_SIZE_BYTES);
+        var limits = limitsFrom(Map.of(ClusterEventsLimits.MAX_EVENT_SIZE_BYTES_VARIABLE, ceiling,
+                                       ClusterEventsLimits.MAX_BYTES_VARIABLE, ceiling)).unwrap();
 
         assertThat(limits.maxEventSizeBytes()).isEqualTo(StreamEventLimits.MAX_EVENT_SIZE_BYTES);
+        assertThat(limits.maxBytes()).isEqualTo(StreamEventLimits.MAX_EVENT_SIZE_BYTES);
+    }
+
+    /// #3390 F3 (ruling know e8888553b4): every stream ring holds at least one `max_event_size` event, and this stream's ring
+    /// is sized from CLUSTER_EVENTS_MAX_BYTES, so a byte bound below the event size refuses the boot, naming both variables.
+    /// Mutants: drop the cross-check (accepted); compare with `<=` (the equal edge above is refused).
+    @Test
+    void clusterEventsLimits_maxBytesBelowMaxEventSize_refusesTheBoot_namingBoth() {
+        limitsFrom(Map.of(ClusterEventsLimits.MAX_BYTES_VARIABLE, "65536",
+                          ClusterEventsLimits.MAX_EVENT_SIZE_BYTES_VARIABLE, "131072"))
+                .onSuccess(limits -> fail("expected a refusal, bound " + limits))
+                .onFailure(cause -> assertThat(cause.message()).contains(ClusterEventsLimits.MAX_BYTES_VARIABLE + "='65536' is below",
+                                                                         ClusterEventsLimits.MAX_EVENT_SIZE_BYTES_VARIABLE + "=131072"));
+    }
+
+    @Test
+    void clusterEventsLimits_defaultMaxBytesBelowADeclaredEventSize_refusesTheBoot() {
+        var eventSize = ClusterEventsLimits.DEFAULT_MAX_BYTES + 1;
+
+        limitsFrom(Map.of(ClusterEventsLimits.MAX_EVENT_SIZE_BYTES_VARIABLE, String.valueOf(eventSize)))
+                .onSuccess(limits -> fail("expected a refusal, bound " + limits))
+                .onFailure(cause -> assertThat(cause.message()).contains(ClusterEventsLimits.MAX_BYTES_VARIABLE + "='"
+                                                                         + ClusterEventsLimits.DEFAULT_MAX_BYTES + "' is below"));
     }
 
     @Test

@@ -15,7 +15,9 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.HotWindowFixture;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerPeerReads;
@@ -314,7 +316,7 @@ class ReplicaCatchupTierFallbackTest {
         var refused = client.readRemoteCatchup(OWNER, STREAM, PARTITION, 0, 10).await();
 
         assertThat(failureMessage(refused)).contains("Cursor at offset 0 has expired, oldest available is 1");
-        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new StreamError.CursorExpired(0L, 1L));
+        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new StreamError.CursorExpired(0L, 1L, RemovalCause.RETENTION));
     }
 
     /// #1555 (v1555 R3): the owner promotion gate reads the CANDIDATE'S own window exactly as a peer's catch-up
@@ -450,7 +452,7 @@ class ReplicaCatchupTierFallbackTest {
         var refused = client.readRemoteCatchup(OWNER, STREAM, PARTITION, 0, 10).await();
 
         assertThat(failureMessage(refused)).contains("Cursor at offset 0 has expired, oldest available is 1");
-        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new StreamError.CursorExpired(0L, 1L));
+        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new StreamError.CursorExpired(0L, 1L, RemovalCause.RETENTION));
     }
 
     /// Production shape (`AetherNode.assembleNode`): the HRW owner is known (members = `[OWNER]`), the probe answers
@@ -562,17 +564,22 @@ class ReplicaCatchupTierFallbackTest {
         return SealedSegment.sealedSegment(STREAM, PARTITION, startOffset, endOffset, count, 1L, 1L, buffer.array());
     }
 
+    /// The hot window is declared equal to the retention (the ring holds the same `RING_CAPACITY` entries whether it is sized
+    /// from retention or from the declared window) and `max_event_size` is pinned to the first segment (256 KiB), so the
+    /// ring's first data region is the same in both.
     private static StreamConfig config() {
-        return StreamConfig.streamConfig(STREAM,
-                                         1,
-                                         RetentionPolicy.retentionPolicy(RING_CAPACITY, 1_048_576L, 60_000L),
-                                         "earliest",
-                                         1_048_576L,
-                                         ConsistencyMode.EVENTUAL,
-                                         3,
-                                         2,
-                                         StreamCompression.NONE,
-                                         Option.none());
+        return HotWindowFixture.declaredHot(StreamConfig.streamConfig(STREAM,
+                                                                      1,
+                                                                      RetentionPolicy.retentionPolicy(RING_CAPACITY, 1_048_576L, 60_000L),
+                                                                      "earliest",
+                                                                      256 * 1024L,
+                                                                      ConsistencyMode.EVENTUAL,
+                                                                      3,
+                                                                      2,
+                                                                      StreamCompression.NONE,
+                                                                      Option.none()),
+                                            RING_CAPACITY,
+                                            1_048_576L);
     }
 
     /// The real sink, with a gate: while holding, seals wait until `release()` — an in-flight seal the test controls.

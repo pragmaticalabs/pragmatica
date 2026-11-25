@@ -148,6 +148,13 @@ class StreamPartitionCapTest {
             }
         }
 
+        /// A `system:` ring is sized from its retention bytes and holds one event (#3390 F3): its event size is those bytes.
+        private static long eventSize(String name, StreamConfig defaults) {
+            return name.startsWith("system:")
+                   ? defaults.retention().maxBytes()
+                   : defaults.maxEventSizeBytes();
+        }
+
         private static StreamConfig replicasConfig(String name, int replicas, int confirmation) {
             var defaults = capConfig(name, 1);
 
@@ -155,7 +162,7 @@ class StreamPartitionCapTest {
                                              defaults.partitions(),
                                              defaults.retention(),
                                              defaults.autoOffsetReset(),
-                                             defaults.maxEventSizeBytes(),
+                                             eventSize(name, defaults),
                                              defaults.consistencyMode(),
                                              replicas,
                                              confirmation,

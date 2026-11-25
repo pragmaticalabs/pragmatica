@@ -16,13 +16,17 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -42,6 +46,7 @@ import org.pragmatica.swim.SwimProtocolTest.RecordingTransport;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #1783: membership must converge for a joiner independent of piggyback retention. The seed answers an
 /// ANNOUNCE with its membership view (unsolicited `Ack`s, sequence 0); the joiner merges it through the
@@ -56,6 +61,10 @@ class SwimJoinSyncTest {
     private final Map<InetSocketAddress, SwimTransport.SwimMessageHandler> net = new ConcurrentHashMap<>();
     private final ExecutorService wire = Executors.newSingleThreadExecutor();
     private final List<SwimProtocol> started = new ArrayList<>();
+    /// Per receiving port, every message whose handler has returned.
+    private final Map<Integer, List<SwimMessage>> handled = new ConcurrentHashMap<>();
+    /// Per sending port, every message handed to the transport's `send` (recorded synchronously on the calling thread).
+    private final Map<Integer, List<SwimMessage>> sent = new ConcurrentHashMap<>();
 
     @AfterEach
     void tearDown() {
@@ -101,8 +110,9 @@ class SwimJoinSyncTest {
 
         await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> assertThat(seed.members()).as("the seed received the ANNOUNCE")
                                                                                           .containsKey(new NodeId("joiner-b")));
+        awaitJoinAckHandledBy(JOINER_ADDR.getPort());
         joiner.setMembershipEligibility(_ -> true);
-        sleepQuietly(500);
+        awaitScopeChangeSettled(joiner, JOINER_ADDR.getPort());
 
         assertThat(joiner.members()).as("a scope that grew, with no re-ask, recovers nothing").doesNotContainKey(X);
 
@@ -112,18 +122,48 @@ class SwimJoinSyncTest {
                                                                                               .containsKey(X));
     }
 
-    private static void sleepQuietly(long millis) {
+    /// Barrier for an ABSENCE assertion after `setMembershipEligibility` (a time window is not one). That call runs on the
+    /// protocol's state executor; a no-op through the same executor returns only after it ran, and anything it sent was
+    /// handed to the transport synchronously, so the outbound check is then exact: exactly the one ANNOUNCE the test sent,
+    /// no re-ask. Whatever was sent is queued on the wire thread before the wire no-op, so after it every delivery (and
+    /// every handler effect on the joiner's view) has happened and the caller's map-absence check reads the final state.
+    private void awaitScopeChangeSettled(SwimProtocol node, int port) {
+        node.onStateExecutorForTest(() -> {});
+        assertThat(sent.getOrDefault(port, List.of())).as("the scope growing sent no re-ask: only the test's own ANNOUNCE")
+                                                      .filteredOn(Announce.class::isInstance)
+                                                      .hasSize(1);
+        awaitWireDrained();
+    }
+
+    private void awaitWireDrained() {
         try {
-            Thread.sleep(millis);
+            wire.submit(() -> {})
+                .get(10, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } catch (ExecutionException | TimeoutException e) {
+            throw new AssertionError("the wire thread did not drain", e);
         }
+    }
+
+    /// The join ack reached the joiner and its handler returned (the transport records a message only after the handler did), so the ack's
+    /// entries were merged or dropped under the eligibility in force BEFORE the caller changes it, and nothing is left in flight to wait out.
+    private void awaitJoinAckHandledBy(int port) {
+        pollUntil(() -> handled.getOrDefault(port, List.of()).stream().anyMatch(SwimJoinSyncTest::isJoinAck),
+                  received -> received,
+                  Duration.ofSeconds(10)).assertMet("the join ack handled by the node on port " + port);
+    }
+
+    /// Matches the FIRST sequence-0 Ack, so it is a "nothing left in flight" barrier only for a 1-member snapshot
+    /// (this test: the seed knows one member). `replyWithMembershipSnapshot` may send several pages plus a notice ack.
+    private static boolean isJoinAck(SwimMessage message) {
+        return message instanceof Ack ack && ack.sequence() == 0L;
     }
 
     @Test
     void announceReply_carriesLiveMembers_notAnnouncerNorFaulty() {
         var transport = new RecordingTransport();
-        var seed = SwimProtocol.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), SEED, SEED_ADDR)
+        var seed = SwimTestProtocols.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), SEED, SEED_ADDR)
                                .unwrap();
 
         seed.putMemberForTest(X, X_ADDR, MemberState.ALIVE);
@@ -145,7 +185,7 @@ class SwimJoinSyncTest {
     @Test
     void announceReply_withNothingToTell_stillSendsAnEmptySequenceZeroAck() {
         var transport = new RecordingTransport();
-        var seed = SwimProtocol.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), SEED, SEED_ADDR)
+        var seed = SwimTestProtocols.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), SEED, SEED_ADDR)
                                .unwrap();
 
         seed.putMemberForTest(new NodeId("joiner-b"), JOINER_ADDR, MemberState.ALIVE);
@@ -175,7 +215,7 @@ class SwimJoinSyncTest {
     @Test
     void staleReplyEntry_doesNotRegressHigherIncarnation() {
         var transport = new RecordingTransport();
-        var joiner = SwimProtocol.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), new NodeId("joiner-b"), JOINER_ADDR)
+        var joiner = SwimTestProtocols.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), new NodeId("joiner-b"), JOINER_ADDR)
                                  .unwrap();
 
         joiner.onMessage(SEED_ADDR, Ack.ack(SEED, 0L, List.of(MembershipUpdate.membershipUpdate(X, MemberState.ALIVE, 5, X_ADDR))));
@@ -205,7 +245,7 @@ class SwimJoinSyncTest {
     private SwimProtocol joinerHoldingFaulty(NodeId subject) {
         var transport = new RecordingTransport();
         var config = SwimConfig.swimConfig(timeSpan(1).hours(), timeSpan(1).hours(), 3, timeSpan(1).hours(), 8, timeSpan(1).hours());
-        var joiner = SwimProtocol.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId("joiner-b"), JOINER_ADDR, () -> false)
+        var joiner = SwimTestProtocols.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId("joiner-b"), JOINER_ADDR, () -> false)
                                  .unwrap();
 
         joiner.onMessage(SEED_ADDR, new Ping(SEED, 1L, List.of(MembershipUpdate.membershipUpdate(subject, MemberState.ALIVE, 0, X_ADDR))));
@@ -229,7 +269,7 @@ class SwimJoinSyncTest {
                      : manualConfig();
         var address = new InetSocketAddress("127.0.0.1", port);
         var transport = new MemoryTransport(address);
-        var protocol = SwimProtocol.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId(id), address)
+        var protocol = SwimTestProtocols.swimProtocol(config, transport, new SwimProtocolTest.RecordingListener(), new NodeId(id), address)
                                    .unwrap();
 
         transport.start(port, protocol::onMessage);
@@ -257,6 +297,7 @@ class SwimJoinSyncTest {
 
         @Override
         public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
+            sent.computeIfAbsent(self.getPort(), _ -> new CopyOnWriteArrayList<>()).add(message);
             wire.submit(() -> deliver(target, message));
 
             return Promise.success(Unit.unit());
@@ -267,6 +308,7 @@ class SwimJoinSyncTest {
 
             if (handler != null) {
                 handler.onMessage(self, message);
+                handled.computeIfAbsent(target.getPort(), _ -> new CopyOnWriteArrayList<>()).add(message);
             }
         }
 

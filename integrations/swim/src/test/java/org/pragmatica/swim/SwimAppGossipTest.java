@@ -57,7 +57,7 @@ class SwimAppGossipTest {
     @BeforeEach
     void setUp() {
         transport = new RecordingTransport();
-        protocol = SwimProtocol.swimProtocol(swimConfig(timeSpan(1).seconds(), timeSpan(500).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(1).seconds()),
+        protocol = SwimTestProtocols.swimProtocol(swimConfig(timeSpan(1).seconds(), timeSpan(500).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(1).seconds()),
                                              transport,
                                              new RecordingListener(),
                                              SELF_ID,
@@ -232,7 +232,7 @@ class SwimAppGossipTest {
 
         @Test
         void tick_runsAppGossip_onTheProbeCadence() {
-            var ticking = SwimProtocol.swimProtocol(swimConfig(timeSpan(50).millis(), timeSpan(40).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(20).millis()),
+            var ticking = SwimTestProtocols.swimProtocol(swimConfig(timeSpan(50).millis(), timeSpan(40).millis(), 3, timeSpan(5).seconds(), 8, timeSpan(20).millis()),
                                                     transport,
                                                     new RecordingListener(),
                                                     SELF_ID,

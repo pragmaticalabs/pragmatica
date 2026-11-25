@@ -2,27 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.ClassOrderer;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestClassOrder;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.Order;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
-import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Option;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -41,10 +21,34 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
+import org.pragmatica.aether.stream.replication.ReplicaPlacement;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.ClassOrderer;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestClassOrder;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// #535 — a declarative consumer delivers under a DEFAULT placement, where the partition owner does
 /// not host the slice.
@@ -88,16 +92,13 @@ class DeclarativeConsumerPlacementTest {
     private static final int BASE_MGMT_PORT = 18600;
     private static final int BASE_APP_HTTP_PORT = 18700;
     private static final int NODES = 7;
-
     /// Three instances (the #1495 floor) against a FIVE-partition stream on seven nodes: every partition
     /// whose owner is not one of the three hosts must be consumed by reading through its owner.
     private static final int INSTANCES = 3;
     private static final int SPREAD_PARTITIONS = 5;
-
     /// Partitions of the three streams the fixture slice declares: `consumer-events` (1),
     /// `order-events` (1) and `spread-events` (5).
     private static final int DECLARED_PARTITIONS = 1 + 1 + SPREAD_PARTITIONS;
-
     /// Attachments expected cluster-wide once settled, DERIVED from the assignment rule rather than
     /// observed. `StreamConsumerManager.assignPartition` gives every partition of every declared stream
     /// exactly one consumer — its HRW owner when the owner hosts the slice, else the HRW pick over the
@@ -106,24 +107,28 @@ class DeclarativeConsumerPlacementTest {
     /// declared partition count, independent of how many candidates exist: 7 with one instance, 7 with
     /// three. What changes with three candidates is only WHICH nodes hold the 7, never the total.
     private static final int EXPECTED_ATTACHMENTS = DECLARED_PARTITIONS;
-
     /// Bound on redeploys while the placement is vacuous (every spread-events owner hosts the slice).
     private static final int MAX_PLACEMENT_ATTEMPTS = 5;
     private static final int EVENT_COUNT = 25;
     private static final int BURST_PUBLISHERS = 8;
-
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(90);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-
     private static final String CONSUMER_SLICE = TestArtifacts.STREAM_CONSUMER_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:declarative-consumer-placement:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
-
     /// The engine key the declarative consumer attaches under, as `/api/v1/streams/declarative-consumers`
     /// reports it ([TestArtifacts#streamEngineKey]): the blueprint-qualified key, not the bare alias,
     /// which matches nothing since #1041.
     private static final String SPREAD_EVENTS_STREAM = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "spread-events");
+    private static final String DECLARATIVE_CONSUMERS_PATH = "/api/v1/streams/declarative-consumers";
+
+    /// The three streams the fixture slice declares, as the endpoint keys them.
+    private static final List<String> DECLARED_STREAMS = List.of(TestArtifacts.streamEngineKey(BLUEPRINT_ID,
+                                                                                               "consumer-events"),
+                                                                 TestArtifacts.streamEngineKey(BLUEPRINT_ID,
+                                                                                               "order-events"),
+                                                                 SPREAD_EVENTS_STREAM);
 
     private static final Pattern COUNT_FIELD = Pattern.compile("\"count\"\\s*:\\s*(\\d+)");
     private static final Pattern ATTACHED_FIELD = Pattern.compile("\"attachedSubscriptions\"\\s*:\\s*(\\d+)");
@@ -131,8 +136,7 @@ class DeclarativeConsumerPlacementTest {
 
     /// One `partitionAssignments` row. Field order follows the record's component order, so consumer
     /// and owner can be compared per partition without a JSON parser.
-    private static final Pattern ASSIGNMENT_ROW =
-        Pattern.compile("\\{\"partition\":\\d+,\"consumerNode\":\"([^\"]+)\",\"ownerNode\":\"([^\"]+)\"\\}");
+    private static final Pattern ASSIGNMENT_ROW = Pattern.compile("\\{\"partition\":\\d+,\"consumerNode\":\"([^\"]+)\",\"ownerNode\":\"([^\"]+)\"\\}");
 
     /// Matches `unassignedPartitions` carrying at least one partition. The serializer omits empty
     /// collections, so a healthy response has no such field at all and this must never match.
@@ -150,15 +154,9 @@ class DeclarativeConsumerPlacementTest {
 
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "dcp", Option.some(configProvider));
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::allNodesHealthy);
-
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
         placeNonVacuously();
     }
 
@@ -180,61 +178,40 @@ class DeclarativeConsumerPlacementTest {
         var attempt = 1;
 
         deployAndSettle();
-
         while (expectedForwarded() == 0 && attempt < MAX_PLACEMENT_ATTEMPTS) {
             undeployAndSettle();
             deployAndSettle();
             attempt++;
         }
 
-        assertThat(expectedForwarded())
-                .describedAs("after %d placement attempt(s) every spread-events owner %s still hosts the slice %s — "
-                             + "the configuration under test was never reached",
-                             attempt, observedOwners(), hostNodes())
-                .isGreaterThanOrEqualTo(1);
+        assertThat(expectedForwarded()).describedAs("after %d placement attempt(s) every spread-events owner %s still hosts the slice %s — "
+                                                   + "the configuration under test was never reached",
+                                                    attempt,
+                                                    observedOwners(),
+                                                    hostNodes())
+                  .isGreaterThanOrEqualTo(1);
     }
 
     private void deployAndSettle() {
         deployConsumerSlice();
-
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .until(this::hostsAgreedOnEveryNode);
-
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .until(this::appHttpReady);
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .until(this::appHttpReady);
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .until(this::publishReady);
-
-        // Gate on every partition of all three declared streams being held by exactly one assignee (see
-        // EXPECTED_ATTACHMENTS); anything less means the assignment has not settled and a delivery
-        // assertion would be measuring attach timing.
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .until(() -> totalAttachedSubscriptions() == EXPECTED_ATTACHMENTS);
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> IntStream.range(0, SPREAD_PARTITIONS)
-                                     .mapToObj(this::observedOwner)
-                                     .noneMatch(String::isBlank));
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .until(this::publishReady);
+        awaitConverged();
     }
 
     private void undeployAndSettle() {
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
         httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> hostNodes().isEmpty() && totalAttachedSubscriptions() == 0);
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> hostNodes().isEmpty() && totalAttachedSubscriptions() == 0);
     }
 
     /// Spread-events partitions whose owner does not host the slice — the reads that must be forwarded.
@@ -242,8 +219,8 @@ class DeclarativeConsumerPlacementTest {
         var hosts = hostNodes();
 
         return observedOwners().stream()
-                               .filter(owner -> !hosts.contains(owner))
-                               .count();
+                             .filter(owner -> !hosts.contains(owner))
+                             .count();
     }
 
     /// True once EVERY node's deployment map names the same [#INSTANCES] ACTIVE hosts. The consumer
@@ -259,67 +236,175 @@ class DeclarativeConsumerPlacementTest {
                            .map(node -> node.deploymentMap()
                                             .allDeployments()
                                             .stream()
-                                            .filter(info -> info.artifact().equals(CONSUMER_SLICE))
-                                            .flatMap(info -> info.instances().stream())
+                                            .filter(info -> info.artifact()
+                                                                .equals(CONSUMER_SLICE))
+                                            .flatMap(info -> info.instances()
+                                                                 .stream())
                                             .filter(instance -> instance.state() == SliceState.ACTIVE)
                                             .map(instance -> instance.nodeId())
                                             .collect(Collectors.toSet()))
                            .distinct()
                            .toList();
 
-        return views.size() == 1 && views.getFirst().size() == INSTANCES;
+        return views.size() == 1 && views.getFirst()
+                                         .size() == INSTANCES;
     }
 
     /// Nodes with an ACTIVE instance of the consumer slice.
     private Set<String> hostNodes() {
         return cluster.slicesStatus()
                       .stream()
-                      .filter(status -> status.artifact().equals(CONSUMER_SLICE))
-                      .flatMap(status -> status.instances().stream())
+                      .filter(status -> status.artifact()
+                                              .equals(CONSUMER_SLICE))
+                      .flatMap(status -> status.instances()
+                                               .stream())
                       .filter(instance -> "ACTIVE".equals(instance.state()))
                       .map(EmberCluster.SliceInstanceStatus::nodeId)
                       .collect(Collectors.toSet());
+    }
+
+    /// #1879: waits for [#clusterConverged], the one state from which a delivery count means anything.
+    private void awaitConverged() {
+        await().atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .until(this::clusterConverged);
+    }
+
+    /// #1879 — the ONE settled-state invariant every measurement here starts from, replacing the
+    /// piecemeal gates (deployment-map agreement, attachment total, non-blank owners) that each let one more
+    /// run start while the cluster was still moving. A consumer assignment is a function of membership: the
+    /// leader's ring decides partition owners, owners decide assignees, and the committed assignment follows
+    /// them. While any node's membership is still growing the assignment MOVES, and a move redelivers from
+    /// the last committed cursor, which `guarantees.md` §4 allows (at-least-once across a move). So the
+    /// state is converged only when ALL hold on EVERY node: (1) its membership view names all [#NODES]
+    /// nodes; (2) the deployment map names the same [#INSTANCES] ACTIVE hosts; (3) it reports, for every
+    /// spread-events partition, the owner the placement function gives over the FULL membership (an owner
+    /// handoff still in flight reports the previous owner and fails this); (4) the endpoint's assignment
+    /// rows agree across nodes and respect placement, and the node's attached subscriptions equal the rows
+    /// naming it (attachment follows the COMMITTED assignment, the rows are computed, so equality is the
+    /// committed state having caught up).
+    private boolean clusterConverged() {
+        var nodeIds = cluster.allNodes().stream().map(AetherNode::self).toList();
+
+        return membershipConverged(nodeIds)
+               && hostsAgreedOnEveryNode()
+               && ownersConverged(nodeIds)
+               && assignmentsConverged();
+    }
+
+    private boolean membershipConverged(List<NodeId> nodeIds) {
+        return cluster.allNodes()
+                      .stream()
+                      .allMatch(node -> node.membershipView()
+                                            .presentMembers()
+                                            .containsAll(nodeIds));
+    }
+
+    private boolean ownersConverged(List<NodeId> nodeIds) {
+        return IntStream.range(0, SPREAD_PARTITIONS).allMatch(partition -> ownerAgreedOnEveryNode(nodeIds, partition));
+    }
+
+    private boolean ownerAgreedOnEveryNode(List<NodeId> nodeIds, int partition) {
+        var expected = ReplicaPlacement.place(SPREAD_EVENTS_STREAM, partition, nodeIds, 1).map(placement -> placement.owner()
+                                                                                                                     .id());
+
+        return expected.isPresent() && cluster.allNodes()
+                                              .stream()
+                                              .allMatch(node -> node.streamReadRouter()
+                                                                    .replicaSnapshot(SPREAD_EVENTS_STREAM, partition)
+                                                                    .ownerNodeId()
+                                                                    .equals(expected));
+    }
+
+    private boolean assignmentsConverged() {
+        var hosts = hostNodes();
+        var bodies = mgmtPorts().stream().map(port -> httpGet(port, DECLARATIVE_CONSUMERS_PATH)).toList();
+
+        return DECLARED_STREAMS.stream().allMatch(stream -> rowsAgreeAndRespectPlacement(bodies, stream, hosts)) && attachmentsFollowRows(bodies.getFirst());
+    }
+
+    private boolean rowsAgreeAndRespectPlacement(List<String> bodies, String stream, Set<String> hosts) {
+        var views = bodies.stream().map(body -> rowsOf(body, stream)).distinct().toList();
+
+        return views.size() == 1
+               && !views.getFirst()
+                        .isEmpty()
+               && rowsRespectPlacement(views.getFirst(), hosts);
+    }
+
+    /// A row is `[consumer, owner]`: the consumer must host the slice, and must be the owner whenever the
+    /// owner hosts it (otherwise it is the placement pick over the hosts, which every node computes alike).
+    private static boolean rowsRespectPlacement(List<List<String>> rows, Set<String> hosts) {
+        return rows.stream()
+                   .allMatch(row -> hosts.contains(row.getFirst()) && (!hosts.contains(row.getLast()) || row.getFirst()
+                                                                                                            .equals(row.getLast())));
+    }
+
+    private boolean attachmentsFollowRows(String referenceBody) {
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .allMatch(node -> firstInt(ATTACHED_FIELD,
+                                                 httpGet(node.mgmtPort(),
+                                                         DECLARATIVE_CONSUMERS_PATH)) == rowsNaming(referenceBody,
+                                                                                                    node.id()));
+    }
+
+    private static long rowsNaming(String body, String node) {
+        return DECLARED_STREAMS.stream()
+                               .flatMap(stream -> rowsOf(body, stream).stream())
+                               .filter(row -> row.getFirst()
+                                                 .equals(node))
+                               .count();
+    }
+
+    private static List<List<String>> rowsOf(String body, String stream) {
+        return ASSIGNMENT_ROW.matcher(consumerFragment(body, stream))
+                             .results()
+                             .map(row -> List.of(row.group(1),
+                                                 row.group(2)))
+                             .toList();
     }
 
     /// The configuration under test really is the one that used to deliver nothing. These assertions
     /// are what stop a co-located run from passing for free.
     @Nested
     class PlacementShape {
-
         @Test
         void placement_leavesMostPartitionOwnersWithoutTheSlice() {
             var hosts = hostNodes();
 
-            assertThat(hosts).describedAs("the placement argument depends on exactly %d hosts on %d nodes", INSTANCES, NODES)
-                             .hasSize(INSTANCES);
-
+            assertThat(hosts).describedAs("the placement argument depends on exactly %d hosts on %d nodes",
+                                          INSTANCES,
+                                          NODES)
+                      .hasSize(INSTANCES);
             var owners = observedOwners();
             var expectedForwarded = owners.stream().filter(owner -> !hosts.contains(owner)).count();
 
             assertThat(consumerNodes()).describedAs("every spread-events assignee must be a node hosting the slice")
-                                       .isSubsetOf(hosts);
-            assertThat(forwardedPartitionCount())
-                    .describedAs("the cluster places spread-events owners at %s and the slice on %s, so exactly "
-                                 + "the partitions whose owner is not a host MUST be read through their owners — "
-                                 + "this is the case #488 could not express and the live cluster failed "
-                                 + "(endpoint assignment rows: %s)",
-                                 owners, hosts, assignmentRows())
-                    .isEqualTo(expectedForwarded);
+                      .isSubsetOf(hosts);
+            assertThat(forwardedPartitionCount()).describedAs("the cluster places spread-events owners at %s and the slice on %s, so exactly "
+                                                             + "the partitions whose owner is not a host MUST be read through their owners — "
+                                                             + "this is the case #488 could not express and the live cluster failed "
+                                                             + "(endpoint assignment rows: %s)",
+                                                              owners,
+                                                              hosts,
+                                                              assignmentRows())
+                      .isEqualTo(expectedForwarded);
             // Independent of any placement function: the configuration under test is uncovered only if
             // at least one owner is not a host. Zero here would make every Delivery assertion vacuous.
-            assertThat(expectedForwarded)
-                    .describedAs("at least one spread-events owner must lack the slice, "
-                                 + "or this test is exercising the co-located case #488 already covers")
-                    .isGreaterThanOrEqualTo(1);
+            assertThat(expectedForwarded).describedAs("at least one spread-events owner must lack the slice, "
+                                                     + "or this test is exercising the co-located case #488 already covers")
+                      .isGreaterThanOrEqualTo(1);
         }
 
         @Test
         void declarativeConsumersEndpoint_namesConsumerAndOwnerForEveryPartition() {
             var fragment = spreadFragment();
 
-            assertThat(OWNER_NODE_FIELD.matcher(fragment).results().count())
-                    .describedAs("an operator must be able to answer 'who consumes partition 3' from any node")
-                    .isEqualTo(SPREAD_PARTITIONS);
+            assertThat(OWNER_NODE_FIELD.matcher(fragment).results().count()).describedAs("an operator must be able to answer 'who consumes partition 3' from any node")
+                      .isEqualTo(SPREAD_PARTITIONS);
         }
 
         /// The endpoint must not claim a gap that does not exist, and must not use its FAULT channel
@@ -330,51 +415,53 @@ class DeclarativeConsumerPlacementTest {
         void declarativeConsumersEndpoint_reportsNoUnassignedPartitions() {
             var fragment = spreadFragment();
 
-            assertThat(UNASSIGNED_NONEMPTY.matcher(fragment).find())
-                    .describedAs("the slice IS active somewhere, so no partition may be reported as consumed by nobody")
-                    .isFalse();
+            assertThat(UNASSIGNED_NONEMPTY.matcher(fragment).find()).describedAs("the slice IS active somewhere, so no partition may be reported as consumed by nobody")
+                      .isFalse();
             assertThat(fragment).doesNotContain("NOT being consumed by anyone")
-                                .doesNotContain("not being consumed YET")
-                                .describedAs("forwarding is normal operation and must not occupy the fault channel")
-                                .doesNotContain("forwarded to the owner");
+                      .doesNotContain("not being consumed YET")
+                      .describedAs("forwarding is normal operation and must not occupy the fault channel")
+                      .doesNotContain("forwarded to the owner");
         }
     }
 
     @Nested
     class Delivery {
-
         /// The headline #535 assertion: a default deployment delivers. Against the pre-fix runtime this
         /// stays at 0 forever for every partition whose owner lacks the slice.
         @Test
         void declaredConsumer_receivesEveryEvent_whenOwnersDoNotHostTheSlice() {
+            awaitConverged();
             var baseline = settledSpreadReceived();
 
             publishSpreadBatch(EVENT_COUNT);
-
             await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .untilAsserted(() -> assertThat(spreadReceived() - baseline)
-                           .describedAs("every published event must arrive even though some owners cannot run the consumer")
-                           .isEqualTo(EVENT_COUNT));
+                 .pollInterval(POLL_INTERVAL)
+                 .untilAsserted(() -> assertThat(spreadReceived() - baseline).describedAs("every published event must arrive even though some owners cannot run the consumer")
+                                                .isEqualTo(EVENT_COUNT));
         }
 
-        /// Reading through an owner must not turn one event into several. The hold past several
-        /// reconcile ticks is what catches a late second assignee, which a single sample would miss.
+        /// Reading through an owner must not turn one event into several WHILE THE ASSIGNMENT IS STABLE. That
+        /// condition is part of the claim: `guarantees.md` §4 is at-least-once across an assignee move, which
+        /// redelivers from the last committed cursor, so a count above [#EVENT_COUNT] during a move is the
+        /// documented guarantee, not a defect (#1879: the test used to start before membership converged and
+        /// measured exactly that). The window therefore starts only from [#clusterConverged] and the
+        /// assertion says when the premise itself was lost. The hold past several reconcile ticks is what
+        /// catches a late second assignee, which a single sample would miss.
         @Test
-        void declaredConsumer_deliversEachEventExactlyOnceClusterWide() {
+        void declaredConsumer_deliversEachEventExactlyOnce_whileTheAssignmentIsStable() {
+            awaitConverged();
             var baseline = settledSpreadReceived();
 
             publishSpreadBatch(EVENT_COUNT);
-
             await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .untilAsserted(() -> assertThat(spreadReceived() - baseline).isEqualTo(EVENT_COUNT));
-
+                 .pollInterval(POLL_INTERVAL)
+                 .untilAsserted(() -> assertThat(spreadReceived() - baseline).isEqualTo(EVENT_COUNT));
             sleep(Duration.ofSeconds(12));
-
-            assertThat(spreadReceived() - baseline)
-                    .describedAs("exactly one node is assigned per partition, and it stays the only one")
-                    .isEqualTo(EVENT_COUNT);
+            assertThat(clusterConverged()).describedAs("the assignment moved during the window; guarantees.md section 4 is at-least-once across a move, "
+                                                      + "so exactly-once is only asserted while it is stable")
+                      .isTrue();
+            assertThat(spreadReceived() - baseline).describedAs("exactly one node is assigned per partition, and it stays the only one")
+                      .isEqualTo(EVENT_COUNT);
         }
     }
 
@@ -395,39 +482,40 @@ class DeclarativeConsumerPlacementTest {
 
         @Test
         void declaredConsumer_assigneeMove_redeliversOnlyPastLastCheckpoint() {
+            awaitConverged();
             var baseline = settledSpreadReceived();
 
             sleep(QUIET_BEYOND_CADENCE);
             publishSpreadBurst(BURST_COUNT);
             await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .untilAsserted(() -> assertThat(spreadReceived() - baseline).isEqualTo(BURST_COUNT));
+                 .pollInterval(POLL_INTERVAL)
+                 .untilAsserted(() -> assertThat(spreadReceived() - baseline).isEqualTo(BURST_COUNT));
             sleep(QUIET_BEYOND_CADENCE);
-
             var victim = busiestNonLeaderAssignee();
             var receivedBefore = receivedByHost();
 
             assertThat(receivedBefore.get(victim)).describedAs("the victim consumed part of the batch, or the test proves nothing")
-                                                  .isGreaterThanOrEqualTo(2);
-
+                      .isGreaterThanOrEqualTo(2);
             // Cut the victim off first: Ember's in-JVM kill still closes the node, and the close flushes the final cursor, which
             // would commit the tail of the burst on its way out and hide exactly the gap under test. A crashed machine does not.
-            LifecycleAwait.nodeBestEffort("blackhole assignee " + victim + " in declaredConsumer_assigneeMove_redeliversOnlyPastLastCheckpoint()",
+            LifecycleAwait.nodeBestEffort("blackhole assignee " + victim
+                                         + " in declaredConsumer_assigneeMove_redeliversOnlyPastLastCheckpoint()",
                                           cluster,
                                           cluster.blackhole(victim));
             sleep(Duration.ofSeconds(1));
-            LifecycleAwait.nodeBestEffort("kill assignee " + victim + " in declaredConsumer_assigneeMove_redeliversOnlyPastLastCheckpoint()",
+            LifecycleAwait.nodeBestEffort("kill assignee " + victim
+                                         + " in declaredConsumer_assigneeMove_redeliversOnlyPastLastCheckpoint()",
                                           cluster,
                                           cluster.killNode(victim, false));
             await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> !hostNodes().contains(victim) && totalAttachedSubscriptions() == EXPECTED_ATTACHMENTS);
+                 .pollInterval(POLL_INTERVAL)
+                 .until(() -> !hostNodes().contains(victim) && totalAttachedSubscriptions() == EXPECTED_ATTACHMENTS);
             var survivorsBefore = receivedBefore.entrySet()
                                                 .stream()
-                                                .filter(entry -> !entry.getKey().equals(victim))
+                                                .filter(entry -> !entry.getKey()
+                                                                       .equals(victim))
                                                 .mapToInt(Map.Entry::getValue)
                                                 .sum();
-
             // Sampled over a COMPLETE host set only: Ember's slice status is one arbitrary node's view, and the replacement
             // node that heals the cluster after the kill joins with an empty view for a while. A bare hostNodes() then
             // drops every host from the sum, which reads as -N "redelivered" events (#3099).
@@ -437,15 +525,14 @@ class DeclarativeConsumerPlacementTest {
                                           .collect(Collectors.toSet());
 
             await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> spreadReceivedOnCompleteHostSet(survivors) >= survivorsBefore);
+                 .pollInterval(POLL_INTERVAL)
+                 .until(() -> spreadReceivedOnCompleteHostSet(survivors) >= survivorsBefore);
             settledOnCompleteHostSet(survivors);
             sleep(Duration.ofSeconds(12));
-
-            assertThat(completeHostSetCount(survivors) - survivorsBefore)
-                    .describedAs("events delivered again after the assignee %s died: the cursor committed within one cadence of "
-                                 + "the last ack, so nothing lies past the last checkpoint", victim)
-                    .isZero();
+            assertThat(completeHostSetCount(survivors) - survivorsBefore).describedAs("events delivered again after the assignee %s died: the cursor committed within one cadence of "
+                                                                                     + "the last ack, so nothing lies past the last checkpoint",
+                                                                                      victim)
+                      .isZero();
         }
 
         /// The delivered count summed over the complete set of hosting instances, or -1 while that set is not complete:
@@ -462,12 +549,15 @@ class DeclarativeConsumerPlacementTest {
 
         private int sumOfCountsOrIncomplete(Set<String> hosts) {
             var counts = hostAppPorts(hosts).stream()
-                                            .map(port -> httpPost(port, "/api/stream-consumer/received-spread", "{}"))
-                                            .map(COUNT_FIELD::matcher)
-                                            .toList();
+                                     .map(port -> httpPost(port, "/api/stream-consumer/received-spread", "{}"))
+                                     .map(COUNT_FIELD::matcher)
+                                     .toList();
 
-            return counts.stream().allMatch(Matcher::find)
-                   ? counts.stream().mapToInt(matcher -> Integer.parseInt(matcher.group(1))).sum()
+            return counts.stream()
+                         .allMatch(Matcher::find)
+                   ? counts.stream()
+                           .mapToInt(matcher -> Integer.parseInt(matcher.group(1)))
+                           .sum()
                    : -1;
         }
 
@@ -476,8 +566,8 @@ class DeclarativeConsumerPlacementTest {
             var sample = new AtomicInteger(-1);
 
             await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> sample.updateAndGet(previous -> spreadReceivedOnCompleteHostSet(required)) >= 0);
+                 .pollInterval(POLL_INTERVAL)
+                 .until(() -> sample.updateAndGet(previous -> spreadReceivedOnCompleteHostSet(required)) >= 0);
 
             return sample.get();
         }
@@ -487,8 +577,9 @@ class DeclarativeConsumerPlacementTest {
             var lastSample = new AtomicInteger(-2);
 
             await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> isRepeatCompleteSample(lastSample, spreadReceivedOnCompleteHostSet(required)));
+                 .pollInterval(POLL_INTERVAL)
+                 .until(() -> isRepeatCompleteSample(lastSample,
+                                                     spreadReceivedOnCompleteHostSet(required)));
         }
 
         private static boolean isRepeatCompleteSample(AtomicInteger lastSample, int current) {
@@ -503,7 +594,8 @@ class DeclarativeConsumerPlacementTest {
                                  .results()
                                  .map(match -> match.group(1))
                                  .filter(node -> !node.equals(leader))
-                                 .collect(Collectors.groupingBy(node -> node, Collectors.counting()))
+                                 .collect(Collectors.groupingBy(node -> node,
+                                                                Collectors.counting()))
                                  .entrySet()
                                  .stream()
                                  .max(Map.Entry.comparingByValue())
@@ -528,7 +620,6 @@ class DeclarativeConsumerPlacementTest {
     }
 
     // --- publish / receive ---------------------------------------------------
-
     private void publishSpreadBurst(int count) {
         try (var publishers = Executors.newFixedThreadPool(BURST_PUBLISHERS)) {
             var published = IntStream.range(0, count)
@@ -538,7 +629,7 @@ class DeclarativeConsumerPlacementTest {
                                      .toList();
 
             published.forEach(response -> assertThat(bodyOf(response)).describedAs("publish must succeed — it write-forwards to each partition owner")
-                                                                      .contains("published"));
+                                                    .contains("published"));
         }
     }
 
@@ -556,10 +647,12 @@ class DeclarativeConsumerPlacementTest {
 
     private void publishSpreadBatch(int count) {
         for (var i = 0; i < count; i++) {
-            var response = httpPost(appPort(), "/api/stream-consumer/publish-spread", "{\"payload\":\"spread-" + i + "\"}");
+            var response = httpPost(appPort(),
+                                    "/api/stream-consumer/publish-spread",
+                                    "{\"payload\":\"spread-" + i + "\"}");
 
             assertThat(response).describedAs("publish must succeed — it write-forwards to each partition owner")
-                                .contains("published");
+                      .contains("published");
         }
     }
 
@@ -571,9 +664,9 @@ class DeclarativeConsumerPlacementTest {
     /// would undercount now that three instances each hold a share.
     private int spreadReceived() {
         return hostAppPorts().stream()
-                             .map(port -> httpPost(port, "/api/stream-consumer/received-spread", "{}"))
-                             .mapToInt(body -> firstInt(COUNT_FIELD, body))
-                             .sum();
+                           .map(port -> httpPost(port, "/api/stream-consumer/received-spread", "{}"))
+                           .mapToInt(body -> firstInt(COUNT_FIELD, body))
+                           .sum();
     }
 
     /// App-HTTP port of every hosting node. Ember assigns each node one slot and derives both ports from
@@ -598,8 +691,9 @@ class DeclarativeConsumerPlacementTest {
         var lastSample = new AtomicInteger(-1);
 
         await().atMost(DELIVERY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> isRepeatSample(lastSample, spreadReceived()));
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> isRepeatSample(lastSample,
+                                         spreadReceived()));
 
         return lastSample.get();
     }
@@ -610,9 +704,9 @@ class DeclarativeConsumerPlacementTest {
 
     private int totalAttachedSubscriptions() {
         return mgmtPorts().stream()
-                          .map(port -> httpGet(port, "/api/v1/streams/declarative-consumers"))
-                          .mapToInt(body -> firstInt(ATTACHED_FIELD, body))
-                          .sum();
+                        .map(port -> httpGet(port, "/api/v1/streams/declarative-consumers"))
+                        .mapToInt(body -> firstInt(ATTACHED_FIELD, body))
+                        .sum();
     }
 
     /// The owner of every spread-events partition as the CLUSTER reports it: the owner-authoritative
@@ -623,12 +717,11 @@ class DeclarativeConsumerPlacementTest {
     /// (`StreamConsumerManager`'s `ownership.ownerOf`), so the two can disagree, which is what makes
     /// the equality below a check rather than a restatement.
     private List<String> observedOwners() {
-        var owners = IntStream.range(0, SPREAD_PARTITIONS)
-                              .mapToObj(this::observedOwner)
-                              .toList();
+        var owners = IntStream.range(0, SPREAD_PARTITIONS).mapToObj(this::observedOwner).toList();
 
-        assertThat(owners).describedAs("every spread-events partition must have an owner-authoritative view (%s)", owners)
-                          .allSatisfy(owner -> assertThat(owner).isNotBlank());
+        assertThat(owners).describedAs("every spread-events partition must have an owner-authoritative view (%s)",
+                                       owners)
+                  .allSatisfy(owner -> assertThat(owner).isNotBlank());
 
         return owners;
     }
@@ -638,10 +731,12 @@ class DeclarativeConsumerPlacementTest {
     private String observedOwner(int partition) {
         return cluster.allNodes()
                       .stream()
-                      .map(node -> node.streamReadRouter().replicaSnapshot(SPREAD_EVENTS_STREAM, partition))
+                      .map(node -> node.streamReadRouter()
+                                       .replicaSnapshot(SPREAD_EVENTS_STREAM, partition))
                       .filter(ReplicaSetView::servedByOwner)
                       .findFirst()
-                      .flatMap(view -> view.ownerNodeId().toOptional())
+                      .flatMap(view -> view.ownerNodeId()
+                                           .toOptional())
                       .orElse("");
     }
 
@@ -668,7 +763,8 @@ class DeclarativeConsumerPlacementTest {
     private long forwardedPartitionCount() {
         return ASSIGNMENT_ROW.matcher(spreadFragment())
                              .results()
-                             .filter(match -> !match.group(1).equals(match.group(2)))
+                             .filter(match -> !match.group(1)
+                                                    .equals(match.group(2)))
                              .count();
     }
 
@@ -676,11 +772,11 @@ class DeclarativeConsumerPlacementTest {
     /// assignment, but only the host can report `sliceDeployedLocally` and the forwarding diagnostic.
     private String spreadFragment() {
         return mgmtPorts().stream()
-                          .map(port -> consumerFragment(httpGet(port, "/api/v1/streams/declarative-consumers"),
-                                                        SPREAD_EVENTS_STREAM))
-                          .filter(fragment -> fragment.contains("\"sliceDeployedLocally\":true"))
-                          .findFirst()
-                          .orElseThrow(() -> new AssertionError("No node reports hosting the declarative consumer slice"));
+                        .map(port -> consumerFragment(httpGet(port, "/api/v1/streams/declarative-consumers"),
+                                                      SPREAD_EVENTS_STREAM))
+                        .filter(fragment -> fragment.contains("\"sliceDeployedLocally\":true"))
+                        .findFirst()
+                        .orElseThrow(() -> new AssertionError("No node reports hosting the declarative consumer slice"));
     }
 
     /// The slice of the declarative-consumers JSON describing one stream. Substring-scoped rather than
@@ -702,7 +798,6 @@ class DeclarativeConsumerPlacementTest {
     }
 
     // --- deployment + readiness ---------------------------------------------
-
     private void deployConsumerSlice() {
         var blueprint = """
             id = "%s"
@@ -715,8 +810,8 @@ class DeclarativeConsumerPlacementTest {
         var response = httpPostToml(leaderPort, "/api/v1/blueprints", blueprint);
 
         assertThat(response).describedAs("placement-restricted consumer slice deployment")
-                            .doesNotContain("\"error\"")
-                            .contains("\"status\":\"applied\"");
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     private boolean appHttpReady() {
@@ -728,7 +823,7 @@ class DeclarativeConsumerPlacementTest {
 
         var body = httpPost(ports.getFirst(), "/api/stream-consumer/received-spread", "{}");
 
-        return !body.contains("\"error\"") && body.contains("count");
+        return ! body.contains("\"error\"") && body.contains("count");
     }
 
     private boolean publishReady() {
@@ -740,13 +835,15 @@ class DeclarativeConsumerPlacementTest {
 
         var response = httpPost(ports.getFirst(), "/api/stream-consumer/publish-spread", "{\"payload\":\"__warmup__\"}");
 
-        return !response.contains("\"error\"") && response.contains("published");
+        return ! response.contains("\"error\"") && response.contains("published");
     }
 
     private void failIfSliceFailed() {
         var failed = cluster.slicesStatus()
                             .stream()
-                            .anyMatch(status -> status.artifact().equals(CONSUMER_SLICE) && status.state().equals("FAILED"));
+                            .anyMatch(status -> status.artifact()
+                                                      .equals(CONSUMER_SLICE) && status.state()
+                                                                                       .equals("FAILED"));
 
         if (failed) {
             throw new AssertionError("Declarative-consumer slice deployment FAILED: " + CONSUMER_SLICE);
@@ -769,7 +866,10 @@ class DeclarativeConsumerPlacementTest {
     }
 
     private int anyMgmtPort() {
-        return cluster.status().nodes().getFirst().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .getFirst()
+                      .mgmtPort();
     }
 
     private boolean allNodesHealthy() {
@@ -788,7 +888,8 @@ class DeclarativeConsumerPlacementTest {
 
         return http.sendString(request)
                    .await()
-                   .map(response -> response.statusCode() == 200 && response.body().contains("\"quorum\":true"))
+                   .map(response -> response.statusCode() == 200 && response.body()
+                                                                            .contains("\"quorum\":true"))
                    .or(false);
     }
 
@@ -797,7 +898,6 @@ class DeclarativeConsumerPlacementTest {
     }
 
     // --- HTTP ----------------------------------------------------------------
-
     private String httpPostToml(int port, String path, String body) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))

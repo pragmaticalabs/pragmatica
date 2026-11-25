@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -39,6 +40,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -91,6 +93,10 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// The entity ring window and the entity max event size live in [EntityRingWindow].
     private static final String AUTO_OFFSET_RESET_EARLIEST = "earliest";
     private static final TimeSpan AT_ONCE = TimeSpan.timeSpan(0).millis();
+    /// The bound on [#unconfirmed] per pointer: a pointer fails this many 30 s checkpoint ticks in a row (about eight minutes of an
+    /// unreachable write quorum) before the oldest block is forgotten and left in storage (logged at WARN). `[guess]`: one block per
+    /// failed tick, sized so an outage of minutes is still reclaimed and the list stays a handful of ids per partition.
+    private static final int MAX_UNCONFIRMED_PER_POINTER = 16;
 
     /// How a writer reclaims the checkpoint blocks its pointer swaps displace (PR-3c, spec 6.4 item 1): how long a displaced block outlives
     /// the swap, and the bounded retry of a delete the store refuses.
@@ -123,6 +129,12 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// block can still be named again (by a late duplicate publish of the same bytes) and is not deleted yet. Each is deleted once a later
     /// re-read shows a claim above its own, which the fence never lets fall back. In memory only: a restart leaks them (L-12).
     private final Map<EntityCheckpointKey, Map<BlockId, Long>> deferred = new ConcurrentHashMap<>();
+    /// Blocks whose put failed with its outcome unknown (#2536: a write quorum missed with some replicas holding the block), per pointer:
+    /// no pointer names them and none ever will, since the publish follows only a put that succeeded. Each is deleted once a later save of
+    /// the same pointer is confirmed ([#releaseUnconfirmed]). At most [#MAX_UNCONFIRMED_PER_POINTER] per pointer, the oldest dropped past
+    /// it; in memory only, so a restart leaks them (L-12). A node that loses the partition before a later save of its own is confirmed keeps
+    /// its recorded ids and never deletes the blocks (the new owner does not know them): the same leak, the same class.
+    private final Map<EntityCheckpointKey, List<BlockId>> unconfirmed = new ConcurrentHashMap<>();
 
     private StreamEntityLogSubstrate(StreamPartitionManager partitionManager,
                                      StreamPartitionManager.ReplicaCatchupSource catchupSource,
@@ -677,7 +689,14 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// Then reclaim (PR-3c, I-15): the pointer read before the put names the block this save may displace, and the pointer re-read after
     /// the publish decides what may be deleted ([#reclaimDisplaced]). A block a pointer in this node's view names is not deleted: checked again
     /// when the delete runs ([#deleteUnlessNamed]). A crash between the put and the publish, or between the publish and a scheduled delete,
-    /// leaks the blocks written since the last confirmed swap; nothing sweeps them (L-12).
+    /// leaks the blocks written since the last confirmed swap; nothing sweeps them (L-12). A put that FAILS, its outcome unknown, is recorded
+    /// instead ([#unconfirmed]) and deleted once a later save of this pointer is confirmed (#2536).
+    ///
+    /// A restart re-saves only when the committed claim is below its candidate, this node holds no private durable copy of the
+    /// committed block, or the candidate's content (lineage, claim, snapshot; all but the nonce) differs from the committed block's (#3480). At an equal claim with such a copy the save writes nothing and resolves successfully: a re-save would put a
+    /// block of its own (every put carries a fresh nonce), displace the committed one at an equal claim, and park it in [#deferred], which a
+    /// further restart or a handover before the next advance loses, leaking the block. A new owner holds no such copy, so it still writes a
+    /// durable block of its own; a shared or cache copy does not count ([StorageInstance#holdsPrivateDurableCopy]).
     @Override
     public Promise<Unit> saveCheckpoint(String keyspace,
                                         int partition,
@@ -686,11 +705,87 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                         Option<byte[]> lineage) {
         var key = EntityCheckpointKey.entityCheckpointKey(keyspace, partition);
         var replaced = committedPointer(key);
+        var frame = CheckpointFrame.frame(keyspace, partition, throughOffset, snapshot, lineage);
 
-        return storage.put(CheckpointFrame.frame(keyspace, partition, throughOffset, snapshot, lineage))
+        return alreadyHeldAt(replaced, throughOffset, frame).flatMap(held -> writeUnlessHeld(held,
+                                                                                             key,
+                                                                                             replaced,
+                                                                                             frame,
+                                                                                             throughOffset));
+    }
+
+    private Promise<Boolean> alreadyHeldAt(Option<ClaimedBlock> committed, long throughOffset, byte[] frame) {
+        return committed.filter(block -> block.through() == throughOffset)
+                        .map(block -> heldOnAPrivateDurableTier(block, frame))
+                        .or(Promise.success(false));
+    }
+
+    /// FER: a check that fails answers "not held", which degrades forward to the re-save this path did before the skip existed; the
+    /// guarantee kept is that a save is never dropped on an unanswered check, at the cost of the deferral leak the skip avoids.
+    /// The pointer names only the block and its claim, so content equality (A5: lineage, claim and snapshot, all but the per-put nonce)
+    /// is read from the local copy; an unreadable or absent block, or a v1 block with no nonce, compares unequal and is re-saved.
+    private Promise<Boolean> heldOnAPrivateDurableTier(ClaimedBlock committed, byte[] frame) {
+        return storage.holdsPrivateDurableCopy(committed.block())
+                      .flatMap(held -> held
+                                       ? sameContentAsCommitted(committed, frame)
+                                       : Promise.success(false))
+                      .recover(_ -> false);
+    }
+
+    private Promise<Boolean> sameContentAsCommitted(ClaimedBlock committed, byte[] frame) {
+        return storage.get(committed.block())
+                      .map(block -> block.filter(bytes -> CheckpointFrame.sameContent(bytes, frame))
+                                         .isPresent());
+    }
+
+    private Promise<Unit> writeUnlessHeld(boolean held,
+                                          EntityCheckpointKey key,
+                                          Option<ClaimedBlock> replaced,
+                                          byte[] frame,
+                                          long throughOffset) {
+        return held
+               ? Promise.unitPromise()
+               : writeThenPublish(key, replaced, frame, throughOffset);
+    }
+
+    private Promise<Unit> writeThenPublish(EntityCheckpointKey key,
+                                           Option<ClaimedBlock> replaced,
+                                           byte[] frame,
+                                           long throughOffset) {
+        return storage.put(frame)
+                      .withFailure(_ -> recordUnconfirmed(key, frame))
                       .flatMap(blockId -> publishThenReclaim(key,
                                                              replaced,
                                                              ClaimedBlock.claimedBlock(blockId, throughOffset)));
+    }
+
+    /// BER, the first half (#2536): a put that failed may still have landed on some replicas (no write quorum; the shared tier is never
+    /// undone by the put's own cleanup), and the block id is the hash of the frame, so it is known here although the put returned none. The
+    /// failure still propagates; this only records the inverse the confirmed save of the same pointer runs ([#releaseUnconfirmed]). A put
+    /// that never landed is recorded too, and its delete removes nothing.
+    @Contract
+    private void recordUnconfirmed(EntityCheckpointKey key, byte[] frame) {
+        BlockId.blockId(frame).onSuccess(block -> record(key, block));
+    }
+
+    private void record(EntityCheckpointKey key, BlockId block) {
+        unconfirmed.merge(key, List.of(block), (held, added) -> boundedWith(key, held, added));
+    }
+
+    private static List<BlockId> boundedWith(EntityCheckpointKey key, List<BlockId> held, List<BlockId> added) {
+        var all = Stream.concat(held.stream(), added.stream()).toList();
+        var dropped = Math.max(0, all.size() - MAX_UNCONFIRMED_PER_POINTER);
+
+        if (dropped > 0) {
+            LOG.warn("Checkpoint pointer {} has {} blocks of failed puts awaiting a confirmed save; the {} oldest are forgotten and stay in storage",
+                     key,
+                     MAX_UNCONFIRMED_PER_POINTER,
+                     dropped);
+        }
+
+        return all.stream()
+                  .skip(dropped)
+                  .toList();
     }
 
     private Promise<Unit> publishThenReclaim(EntityCheckpointKey key,
@@ -743,6 +838,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                                     old,
                                                     claim,
                                                     reclaim.grace()));
+            releaseUnconfirmed(key);
         } else {
             deleteOrDefer(key, written, claim, AT_ONCE);
         }
@@ -750,6 +846,26 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         releaseDeferred(key, claim);
 
         return Unit.unit();
+    }
+
+    /// BER, the second half (#2536): the swap is confirmed, so every block a failed put of this pointer may have landed is deleted, through
+    /// the same delete as a displaced block: after the grace, and not if a pointer names it when the delete runs (the block of an attempt is
+    /// never the one just confirmed: every put carries a fresh nonce). The list is taken whole, so each block goes to one delete; one that
+    /// is not deleted within the retry bound is recorded again ([#keepRecorded]).
+    private void releaseUnconfirmed(EntityCheckpointKey key) {
+        Option.option(unconfirmed.remove(key)).onPresent(blocks -> blocks.forEach(block -> scheduleStaleDelete(key,
+                                                                                                               block)));
+    }
+
+    private void scheduleStaleDelete(EntityCheckpointKey key, BlockId block) {
+        SharedScheduler.schedule(() -> deleteWithRetry(block, cause -> keepRecorded(key, block, cause)), reclaim.grace());
+    }
+
+    private void keepRecorded(EntityCheckpointKey key, BlockId block, Cause cause) {
+        LOG.warn("Checkpoint block {} of a failed put could not be deleted within the retry bound ({}); it stays recorded for the next confirmed save",
+                 block,
+                 cause.message());
+        record(key, block);
     }
 
     private void deleteOrDefer(EntityCheckpointKey key, ClaimedBlock displaced, long claim, TimeSpan after) {
@@ -779,11 +895,12 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// previous owner wrote it), so a `release` would reclaim nothing. A delete the store refuses (the DHT quorum unreachable) is retried
     /// within [CheckpointReclaim#deleteRetry]'s bound; past it the block stays where it is, a leak logged at WARN.
     private void scheduleDelete(BlockId block, TimeSpan after) {
-        SharedScheduler.schedule(() -> deleteWithRetry(block), after);
+        SharedScheduler.schedule(() -> deleteWithRetry(block, cause -> logUndeleted(block, cause)), after);
     }
 
-    private void deleteWithRetry(BlockId block) {
-        reclaim.deleteRetry().execute(() -> deleteUnlessNamed(block)).onFailure(cause -> logUndeleted(block, cause));
+    @Contract
+    private void deleteWithRetry(BlockId block, Consumer<Cause> undeleted) {
+        reclaim.deleteRetry().execute(() -> deleteUnlessNamed(block)).onFailure(undeleted);
     }
 
     /// The pointers are read again when the delete runs, on every attempt, and a block one of them names is not deleted: the decision made
@@ -943,6 +1060,41 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                 EntityFoldCheckpointValue.class)
                       .fold(() -> Promise.success(Option.none()),
                             pointer -> fetchCheckpointBlock(pointer));
+    }
+
+    @Override
+    public Promise<CheckpointLoad> loadCheckpointOutcome(String keyspace, int partition) {
+        return kvStore.getTyped(EntityCheckpointKey.entityCheckpointKey(keyspace, partition),
+                                EntityFoldCheckpointValue.class)
+                      .fold(() -> Promise.success(CheckpointLoad.absent()),
+                            pointer -> fetchCheckpointOutcome(pointer));
+    }
+
+    private Promise<CheckpointLoad> fetchCheckpointOutcome(EntityFoldCheckpointValue pointer) {
+        return BlockId.fromHex(pointer.blockIdHex()).fold(_ -> Promise.success(unreadable(pointer,
+                                                                                          UnreadableCause.UNDECODABLE)),
+                                                          blockId -> readCheckpointBlock(pointer, blockId));
+    }
+
+    /// The failed read is TYPED, not absorbed (design-out of the silent collapse): `FETCH_FAILED` carries it to the caller, which decides.
+    private Promise<CheckpointLoad> readCheckpointBlock(EntityFoldCheckpointValue pointer, BlockId blockId) {
+        return storage.get(blockId)
+                      .map(bytes -> bytes.fold(() -> unreadable(pointer, UnreadableCause.BLOCK_LOST),
+                                               block -> loadedCheckpoint(pointer, block)))
+                      .recover(_ -> unreadable(pointer, UnreadableCause.FETCH_FAILED));
+    }
+
+    private static CheckpointLoad loadedCheckpoint(EntityFoldCheckpointValue pointer, byte[] block) {
+        return CheckpointLoad.loaded(CheckpointFrame.unframe(pointer.throughOffset(), block));
+    }
+
+    private static CheckpointLoad unreadable(EntityFoldCheckpointValue pointer, UnreadableCause cause) {
+        LOG.warn("Entity checkpoint block {} (through offset {}) is unreadable: {}",
+                 pointer.blockIdHex(),
+                 pointer.throughOffset(),
+                 cause);
+
+        return CheckpointLoad.unreadable(cause, pointer.blockIdHex());
     }
 
     /// A pointer whose block cannot be fetched resolves to [Option#none] — "no usable checkpoint" — rather

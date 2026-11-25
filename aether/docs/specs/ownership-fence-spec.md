@@ -305,7 +305,8 @@ Recovery: the next write of the key by its current owner supersedes the spread v
 |---|---|---|
 | Fenced KV put | `StaleEpoch(key, presented, current)` | re-resolve owner; retry against current owner/epoch |
 | DHT put losing its quorum to fences | `DHTError.WriteIndeterminate(required, achieved, fenced)` | treat as "may have been applied"; per-consumer handling in §7.1 |
-| Stream append | `StaleEpochAppend(stream, partition, presented, current)` | same |
+| Stream append (deposed writer: a real epoch strictly below the high-water) | `StaleEpochAppend(stream, partition, presented, current)` | same |
+| Stream append presenting `Epoch.ZERO` while the high-water is above it: the owner's store has not applied its ownership record yet, so the source answered the unfenced floor (#2755; raised by `StreamPartitionManager.staleRefusal`, `Cause.Transient`) | `OwnershipNotApplied(stream, partition, current)` | retry against the **same** owner; the record's apply lands within a replication round. Do not re-resolve: the writer is not deposed |
 | Owner read (deposed) | `NotCurrentOwner(redirectTo)` | route to the resolved current owner |
 
 Rejections are **silent at the data layer** (no value mutation, no notification — mirroring

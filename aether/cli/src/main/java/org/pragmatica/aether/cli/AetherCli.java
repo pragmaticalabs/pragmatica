@@ -7,8 +7,10 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyManagementException;
@@ -49,7 +51,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
-import picocli.AutoComplete.GenerateCompletion;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
@@ -60,10 +61,21 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.TopicsCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.backup.BackupCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.warnings.WarningsCommand.class, GenerateCompletion.class})
+@Command(name = "aether", versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.TopicsCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.backup.BackupCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.warnings.WarningsCommand.class, GenerateCompletionCommand.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
+
+    /// #2261 — declared here with `scope = INHERIT` instead of `mixinStandardHelpOptions = true`, which
+    /// puts `-h`/`--help` on the root command only. A subcommand with a required parameter (e.g.
+    /// `cluster apply <configFile>`) then read `--help` as an unknown option and exited 2 on the missing
+    /// parameter; an inherited usage-help option short-circuits required-parameter validation on every
+    /// command in the tree. `-V`/`--version` stays root-only (several subcommands own `-v`/`--version`).
+    @CommandLine.Option(names = {"-h", "--help"}, usageHelp = true, scope = CommandLine.ScopeType.INHERIT, description = "Show this help message and exit.")
+    private boolean helpRequested;
+
+    @CommandLine.Option(names = {"-V", "--version"}, versionHelp = true, description = "Print version information and exit.")
+    private boolean versionRequested;
 
     @CommandLine.Option(names = {"-c", "--connect", "--endpoint"}, description = "Node address to connect to (host:port)")
     private String nodeAddress;
@@ -779,6 +791,14 @@ public class AetherCli implements Runnable {
                       : body.replace("\\", "\\\\").replace("\"", "\\\"");
 
         return "{\"error\":\"HTTP " + response.statusCode() + ": " + escaped + "\"}";
+    }
+
+    private static final String FORCE_REAPPLY_DESCRIPTION = "Accept re-applying schema versions an operator undid or baselined (refused with 409 otherwise)";
+
+    private static String forceField(boolean force) {
+        return force
+               ? ",\"force\":true"
+               : "";
     }
 
     private static String escapeJsonValue(String s) {
@@ -2363,13 +2383,16 @@ public class AetherCli implements Runnable {
             @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when waiting", defaultValue = "300")
             private int timeoutSeconds;
 
+            @CommandLine.Option(names = "--force", description = FORCE_REAPPLY_DESCRIPTION)
+            private boolean force;
+
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var fullCoords = coords.split(":").length == 3
                                  ? coords + ":blueprint"
                                  : coords;
-                var body = "{\"artifact\":\"" + escapeJsonValue(fullCoords) + "\"}";
+                var body = "{\"artifact\":\"" + escapeJsonValue(fullCoords) + "\"" + forceField(force) + "}";
                 var response = blueprintParent.parent.post(BLUEPRINT_DEPLOY, body);
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    blueprintParent.parent.outputOptions(),
@@ -2438,6 +2461,9 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
             private String coordinates;
 
+            @CommandLine.Option(names = "--force", description = FORCE_REAPPLY_DESCRIPTION)
+            private boolean force;
+
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
@@ -2450,7 +2476,7 @@ public class AetherCli implements Runnable {
                 }
 
                 var fullCoords = coordinates + ":blueprint";
-                var body = "{\"artifact\":\"" + escapeJsonValue(fullCoords) + "\"}";
+                var body = "{\"artifact\":\"" + escapeJsonValue(fullCoords) + "\"" + forceField(force) + "}";
                 var response = blueprintParent.parent.post(BLUEPRINT_PUBLISH_ARTIFACT, body);
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    blueprintParent.parent.outputOptions(),
@@ -2497,6 +2523,9 @@ public class AetherCli implements Runnable {
             @CommandLine.Option(names = {"-v", "--version"}, description = "Version", required = true)
             private String version;
 
+            @CommandLine.Option(names = "--force", description = FORCE_REAPPLY_DESCRIPTION)
+            private boolean force;
+
             @Override
             @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
             public Integer call() {
@@ -2534,7 +2563,7 @@ public class AetherCli implements Runnable {
                         return uploadError;
                     }
 
-                    var deployBody = "{\"artifact\":\"" + escapeJsonValue(coordinates) + "\"}";
+                    var deployBody = "{\"artifact\":\"" + escapeJsonValue(coordinates) + "\"" + forceField(force) + "}";
                     var deployResponse = blueprintParent.parent.post(BLUEPRINT_DEPLOY, deployBody);
                     var deployError = OutputFormatter.checkResponseError(deployResponse,
                                                                          blueprintParent.parent.outputOptions(),
@@ -3681,6 +3710,12 @@ public class AetherCli implements Runnable {
         @CommandLine.Option(names = {"--since"}, description = "Show events since ISO-8601 timestamp (e.g. 2024-01-15T10:30:00Z)")
         private String since;
 
+        @CommandLine.Option(names = {"--code"}, description = "Show only events whose details.code equals this operator-warning code (exact match, e.g. swim-kill-gate-held); an unknown code lists nothing")
+        private String code;
+
+        @CommandLine.Option(names = {"--severity"}, description = "Show only events at this severity or above: INFO, WARNING or CRITICAL (case-insensitive); anything else is refused")
+        private String severity;
+
         @Override
         public Integer call() {
             var response = parent.fetch(EVENTS, List.of(), buildEventsQuery());
@@ -3689,8 +3724,15 @@ public class AetherCli implements Runnable {
         }
 
         private String buildEventsQuery() {
-            return option(since).map(s -> "since=" + s)
-                         .or("");
+            return Stream.of(option(since).map(v -> "since=" + v),
+                             option(code).map(v -> "code=" + encode(v)),
+                             option(severity).map(v -> "severity=" + encode(v)))
+                         .flatMap(Option::stream)
+                         .collect(Collectors.joining("&"));
+        }
+
+        private static String encode(String value) {
+            return URLEncoder.encode(value, StandardCharsets.UTF_8);
         }
     }
 
