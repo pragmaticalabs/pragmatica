@@ -17,15 +17,19 @@ import static org.pragmatica.lang.Result.unitResult;
 
 /// The formatter's content-preservation invariant (#3691): a formatted text is returned only when it carries the
 /// same content as its input. Both texts are read with the parser's own lexer (never a regex over raw text, because
-/// string literals and text blocks contain `//` and `/*`) and compared on two sequences:
+/// string literals and text blocks contain `//` and `/*`) and compared on three sequences:
 ///
 /// 1. the comments, line and block, in order. The text is compared with trailing whitespace of every line removed; a
 ///    doc block comment (`/** */`) is also compared with the leading whitespace of every line removed, because the
 ///    formatter re-indents the continuation lines of a javadoc;
-/// 2. the non-whitespace, non-comment tokens, in order, with `\r\n` read as `\n` inside a token (a text block).
+/// 2. the non-whitespace, non-comment, non-import tokens, in order, with `\r\n` read as `\n` inside a token (a text
+///    block);
+/// 3. the import declarations, as a sorted list without duplicates: the one named exception, because the formatter
+///    sorts, groups and deduplicates imports. A reordered or repeated import is accepted; a lost, added or changed
+///    one is refused.
 ///
-/// The first difference of either sequence is a [FormattingError.ContentChanged] naming the file, the input line of
-/// the first lost, added or changed item and its text. No formatter rule is allowed to change either sequence: a rule
+/// The first difference of any sequence is a [FormattingError.ContentChanged] naming the file, the input line of
+/// the first lost, added or changed item and its text. No other formatter rule is allowed to change a sequence: a rule
 /// that must (for example moving a comment together with the declaration it documents) is a named exception here,
 /// stated and tested, never a loosened comparison.
 public interface ContentGuard {

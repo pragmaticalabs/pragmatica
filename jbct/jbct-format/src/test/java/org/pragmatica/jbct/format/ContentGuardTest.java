@@ -10,8 +10,10 @@ import org.pragmatica.lang.Result;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.jbct.format.JbctFormatter.jbctFormatter;
 
-/// The content-preservation invariant (#3691): a formatted text is returned only when its comment sequence and its
-/// non-whitespace, non-comment token sequence equal the input's. Unit rows drive [ContentGuard] with a hand-written
+/// The content-preservation invariant (#3691): a formatted text is returned only when its comment sequence, its
+/// non-whitespace, non-comment, non-import token sequence and its import list (sorted, without duplicates: a reordered
+/// or repeated import is accepted, a lost, added or changed one is refused) equal the input's. Unit rows drive
+/// [ContentGuard] with a hand-written
 /// "formatted" text, so they do not depend on any printer gap; the end-to-end rows push the five positions of #3691
 /// through the formatter.
 class ContentGuardTest {
