@@ -2973,7 +2973,7 @@ class ClusterEventAggregatorTest {
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
     /// C-16 (behind the ring, the hole, and the cursor expiry), the held detach flush of #1960, the 13 FSM2 recoveries of the D.6 ruling (#2761) and the schema-migration stall pair (#2773), the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316, a stream partition's WAL fail-stop of #2201); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316, a stream partition's WAL fail-stop of #2201, the stuck-SYNCING core voter of #2136); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the departure sole-copy pair of #2034); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
     @Test
@@ -3033,6 +3033,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.CORE_REPLACEMENT_SOURCE_RESOLVED,
                 OperatorWarningCode.WORKFLOW_RESOLVED,
                 OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                OperatorWarningCode.CORE_VOTER_SYNCING_ENDED,
                 OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
                 OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
                 OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
@@ -3125,6 +3126,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.AUTO_HEAL_SCALING_HELD,
                 OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
                 OperatorWarningCode.CORE_REPLACEMENT_SOURCE_UNRESOLVED,
+                OperatorWarningCode.CORE_VOTER_SYNCING_STUCK,
                 OperatorWarningCode.WORKFLOW_ESCALATED,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,

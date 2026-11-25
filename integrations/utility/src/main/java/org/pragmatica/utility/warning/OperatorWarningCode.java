@@ -660,6 +660,17 @@ public enum OperatorWarningCode {
     /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
     OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
+    /// A core voter stayed in one SYNCING episode for the stuck bound (5 minutes) while the leader led without interruption, its own
+    /// consensus was active and the voter's reports kept arriving (#2136). From now on the leader counts it as failed evidence for the
+    /// core voter reconciler: at most one such voter, only while no voter of the roster has other failure evidence, and it is replaced
+    /// only by an admitted READY candidate, one seat per settled roster change; with no candidate nothing is removed. Raised once per
+    /// episode by the leader; subject is the voter; the message names it and the elapsed time. Closed by [#CORE_VOTER_SYNCING_ENDED].
+    /// Recovery action: none needed when a candidate exists (the seat is healed); otherwise restart or replace the voter, or add capacity.
+    CORE_VOTER_SYNCING_STUCK("core-voter-syncing-stuck", "consensus", WarningLevel.WARNING),
+    /// The recovery of [#CORE_VOTER_SYNCING_STUCK], same subject (#2136): the voter's SYNCING episode ended (a READY or missing report,
+    /// a leader change, consensus inactivity on the leader, or the voter left the roster, for example by being healed). INFO, published
+    /// only after a published stuck warning for the voter (#752 mechanism).
+    CORE_VOTER_SYNCING_ENDED("core-voter-syncing-ended", "consensus", WarningLevel.INFO, CORE_VOTER_SYNCING_STUCK),
     /// Genesis formed with a seat of the agreed roster that was not a connected, authenticated peer when the roster was installed
     /// (#1654): the view agreement counts each member's last two reports with no freshness, so a member that reported the view and
     /// then died is still agreed. Formation is not blocked; auto-heal is expected to replace the seat. Raised once per seat by the node

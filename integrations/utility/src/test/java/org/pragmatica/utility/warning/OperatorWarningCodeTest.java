@@ -277,6 +277,18 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
     }
 
+    /// #2136: a core voter stuck in SYNCING is a WARNING closed by an INFO recovery of the same subsystem; both wire strings are pinned.
+    @Test
+    void coreVoterSyncingStuck_isClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_ENDED.recoveryOf()
+                                                               .unwrap()).isEqualTo(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK);
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_ENDED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK.code()).isEqualTo("core-voter-syncing-stuck");
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_ENDED.code()).isEqualTo("core-voter-syncing-ended");
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_ENDED.subsystem()).isEqualTo(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK.subsystem());
+    }
+
     /// #2316: a refused responder snapshot leaves the node out of service with no automatic exit, so it is critical and closed
     /// by an INFO recovery of the same subsystem when any restore succeeds; both wire strings are pinned.
     @Test
