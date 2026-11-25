@@ -363,7 +363,7 @@ class StreamResourceValidatorTest {
                     [streams.orders.retention]
                     max_bytes = "2GB"
                     [streams.orders.hot]
-                    max_count = 100
+                    max_count = 10000
                     """;
 
             StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT)
@@ -373,7 +373,7 @@ class StreamResourceValidatorTest {
                                                                .allSatisfy(failure -> assertThat(failure.field()).isEqualTo("[streams.orders]"))
                                                                .extracting(StreamValidationFailure::message)
                                                                .containsExactlyInAnyOrder("retention.max_bytes = '2GB' has no runtime effect yet — " + RETENTION_CLAUSE,
-                                                                                          "hot.max_count = '100' has no runtime effect yet — " + HOT_CLAUSE));
+                                                                                          "hot.max_count = '10000' has no runtime effect yet — " + HOT_CLAUSE));
         }
 
         /// Item 1 design assertion, beside the tripwire: accepted once S2a3 / S2b wire the tables.
@@ -386,7 +386,7 @@ class StreamResourceValidatorTest {
                     [streams.orders.retention]
                     max_bytes = "2GB"
                     [streams.orders.hot]
-                    max_count = 100
+                    max_count = 10000
                     """;
 
             assertThat(StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT).isSuccess()).isTrue();
