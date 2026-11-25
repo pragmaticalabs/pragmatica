@@ -124,6 +124,9 @@ class TerraManagementLaunchTest {
         try {
             assertThat(compact(secureGet(shared.port(), "/actuator", "X-API-Key", KEY)))
                 .contains("\"href\":\"https://localhost:" + shared.port() + "/actuator\"");
+            assertThat(compact(secureGet(shared.port(), "/actuator", "X-API-Key", KEY, "X-Forwarded-Proto", "http")))
+                .as("the listener's own TLS outranks the proxy's X-Forwarded-Proto")
+                .contains("\"href\":\"https://localhost:" + shared.port() + "/actuator\"");
         } finally { close(shared); }
     }
 
@@ -132,7 +135,8 @@ class TerraManagementLaunchTest {
     @Test void managementKeys_environmentUnderscoreForm_readsAsTheDashedKey_andConflictingFormsAreRefused() throws Exception {
         Files.writeString(directory.resolve("terra.toml"), "[management.endpoints.web]\nbase-path = \"/toml\"\n");
         var environment = TerraConfiguration.environment(Map.of("TERRA_MANAGEMENT__ENDPOINTS__WEB__BASE_PATH", "/env",
-                                                                "TERRA_MANAGEMENT__ENDPOINT__HEALTH__SHOW_DETAILS", "always")).unwrap();
+                                                                "TERRA_MANAGEMENT__ENDPOINT__HEALTH__SHOW_DETAILS", "always",
+                                                                "TERRA_INFO__APP__BUILD_ID", "7")).unwrap();
         var deployment = new TerraConfiguration.Deployment(ConfigurationProvider.builder().withSource(environment).build(),
                                                            ConfigurationProvider.builder().build());
         var conflict = TerraLaunchPlan.managementKeys(TerraConfiguration.host(directory, deployment).unwrap());
@@ -144,7 +148,9 @@ class TerraManagementLaunchTest {
         var agreed = TerraLaunchPlan.managementKeys(TerraConfiguration.host(directory, deployment).unwrap()).unwrap();
 
         assertThat(agreed).containsEntry("management.endpoints.web.base-path", "/env")
-                          .containsEntry("management.endpoint.health.show-details", "always");
+                          .containsEntry("management.endpoint.health.show-details", "always")
+                          .as("only management.* keys read _ as -; an info.* key keeps its name")
+                          .containsEntry("info.app.build_id", "7");
         assertThat(basePathOf(agreed)).isEqualTo("/env");
 
         var envOnly = new TerraConfiguration.Deployment(ConfigurationProvider.builder().withSource(environment).build(), ConfigurationProvider.builder().build());

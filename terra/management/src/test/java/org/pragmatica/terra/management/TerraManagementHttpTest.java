@@ -30,12 +30,14 @@ import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.terra.TerraApplication;
 import org.pragmatica.terra.TerraBlueprint;
 import org.pragmatica.terra.TerraContext;
 import org.pragmatica.terra.TerraFactory;
 import org.pragmatica.terra.http.TerraHttpConfig;
+import org.pragmatica.terra.http.TerraHttpMount;
 import org.pragmatica.terra.http.TerraHttpServer;
 import org.pragmatica.terra.management.HealthIndicator.Health;
 import org.pragmatica.terra.management.HealthIndicator.Status;
@@ -163,6 +165,28 @@ class TerraManagementHttpTest {
         var exclude = ManagementConfig.managementConfig(Map.of("management.endpoints.web.exposure.exclude", "[info]")).unwrap();
 
         assertThat(exclude.exclude()).containsExactly("info");
+    }
+
+    /// A separate management port is a listener of its own that keeps the application transport's maximum content length
+    /// (and its TLS: pinned through a launch in the launcher tests); the port equal to the application's shares it.
+    @Test
+    void separatePort_listenerInheritsTheApplicationTransport_samePortSharesIt() {
+        var application = HttpServerConfig.httpServerConfig("terra-app", 8080).withMaxContentLength(12345);
+
+        var separate = mountFor("9090", application).unwrap().unwrap();
+        var listener = separate.listener().unwrap();
+
+        assertThat(listener.port()).isEqualTo(9090);
+        assertThat(listener.name()).isEqualTo("terra-app-management");
+        assertThat(listener.maxContentLength()).isEqualTo(12345);
+        assertThat(mountFor("8080", application).unwrap().unwrap().listener().isEmpty()).isTrue();
+        assertThat(mountFor("-1", application).unwrap().isEmpty()).isTrue();
+    }
+
+    private static Result<Option<TerraHttpMount>> mountFor(String port, HttpServerConfig application) {
+        return ManagementConfig.managementConfig(Map.of("management.server.port", port))
+                               .flatMap(config -> TerraManagement.terraManagement(config, Map.of(), Map.of(), Option.empty()))
+                               .flatMap(management -> management.mount(application));
     }
 
     @Test
