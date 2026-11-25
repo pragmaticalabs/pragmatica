@@ -1,8 +1,40 @@
-# Streams and durable entities in Terra
+---
+RFC: 0020
+Title: Streams and durable entities in Terra
+Status: Draft (partly superseded by #2099 and #2100)
+Superseded-By: (partly: #2099 Kafka resource for streams, #2100 Postgres durable-entity provider; both open, neither shipped)
+Author: Sergiy Yevtushenko
+Created: 2026-10-18
+Updated: 2026-11-24
+Affects: [terra, aether-stream]
+---
+
+# RFC-0020: Streams and durable entities in Terra
+
+Moved from `terra/STREAMS-AND-ENTITIES.md` (#2801). The text below the status table is the original document, unchanged except for the heading level of its title; the table and the banners say which parts a later direction has replaced.
+
+## Status of each part
+
+Product direction of 2026-11-06: Terra ships SPI resource clients that work from both runtimes, so the runtime (Terra or Aether) and each resource's backend are chosen independently, and state lives in external standard infrastructure. Streams and durable entities follow that direction through two tickets, both **open**: the Kafka-backed provider for the slice stream resources (#2099) and the database-backed durable-entity provider (#2100). Until they ship, the Terra compiler still refuses stream and durable-entity dependencies; nothing in this RFC is implemented.
+
+| Part of this RFC | State | Why |
+| --- | --- | --- |
+| Reusable code already present (table) | **Still accurate as a survey**, no longer a plan | It lists what exists in `aether-stream` and `integrations/storage`. A Kafka or Postgres resource client does not reuse it. |
+| Contract 1-2: one process owns a data directory, exclusive OS lock, factors fixed at one | **Superseded** by #2099 and #2100 | The embedded local-WAL route is replaced by external infrastructure that holds the state, so a Terra instance owns no data directory and a second instance is the normal case (the two-instance standard), not a refused one. |
+| Contract 3: partitions, offsets, cursors advance after handling, redelivery after a crash, no exactly-once claim | **Superseded as the mechanism, kept as the delivery semantics to be earned** | Consumer progress maps onto the backend's own consumer-group commit (#2099 lists it among what maps directly). The "advance after successful handling, never skip silently, no exactly-once external side-effect" statement is a requirement the provider must meet, not something this RFC provides. |
+| Contract 4: separate stream declarations from external references | **Open** | Not addressed by either ticket; it concerns the compiler and the deployment configuration, not the backend. |
+| Contract 5: per-key serialisation, durable timers, atomic fire/cancel/delete | **Superseded as the mechanism, kept as the behaviour to be earned** | State and timers move to the database under #2100; the ordering and atomicity requirements remain. |
+| Contract 6: recovery before readiness, shutdown order, no queue advance on a caller timeout | **Still applicable** | Lifecycle rules for any Terra resource client; they do not depend on the storage choice. |
+| Contract 7: reporting offsets, lag, timers, storage failures | **Still applicable** as a requirement on each provider | #2099 and #2100 each state their guarantees per operation. The surface the numbers reach is the observability work (#2796); this RFC defines none. |
+| Suggested implementation order | **Superseded** | It sequences a local-storage build that is no longer planned. |
+| "Do not promote `InMemoryDurableEntity` from test sources into production" | **Still applicable** | It cannot meet acknowledged-write or timer-restart behaviour on any route. |
+| Executed feasibility checks (2026-10-08) | **Historical** | Counts for the Aether suites on that date; not re-run for this move. |
+
+## Original document
 
 This is an implementation investigation and proposed next contract, **not shipped Terra support**. The compiler still refuses stream and durable-entity dependencies. Ephemeral pub-sub remains a distinct, implemented capability.
 
-## Reusable code already present
+### Reusable code already present
 
 | Concern | Existing implementation | Terra implication |
 | --- | --- | --- |
@@ -16,7 +48,9 @@ This is an implementation investigation and proposed next contract, **not shippe
 
 The current local WAL constructor demonstrates that a cluster is not intrinsically required for storage. It does **not** by itself provide a Terra resource provider, consumer activation, durable cursor/checkpoint lifecycle, or process exclusivity.
 
-## Proposed single-process contract
+### Proposed single-process contract
+
+> Per-item status is in the table at the top: items 1-2, 3 (mechanism) and 5 (mechanism) are superseded by #2099 and #2100; 6 and 7 still apply.
 
 1. One process owns an application data directory and acquires an exclusive operating-system lock before opening logs. Refuse a second owner. Store format/version and application identity; refuse incompatible data rather than overwriting it. Recovery is to stop the other owner or restore compatible data/build artifacts.
 2. Resolve omitted replication/confirmation factors to one for this target; reject explicit factors above one. This offers local disk durability, not replicated availability. Lost/corrupt storage requires backup recovery. Do not silently reinterpret Aether quorum declarations.
@@ -28,12 +62,14 @@ The current local WAL constructor demonstrates that a cluster is not intrinsical
 
 These are design proposals; they are not yet failure-mode guarantees for Terra.
 
-## Suggested implementation order
+### Suggested implementation order
+
+> Superseded: it sequences a local-storage build that #2099 and #2100 replace.
 
 First isolate the local storage/codec lifecycle and prove append/restart/corruption/exclusive-owner behavior. Then implement stream publisher/access and one durable consumer group, and run notification-service plus analytics unchanged. Notification-emailer additionally needs a controlled SMTP sink and tests of delivery failure/replay. Finally extract the entity state machine from owner admission, wire its timers/checkpoints, and prove entity/timer restart and deletion/cancellation races. This order lets entities use a storage layer already tested through application code.
 
 Do not promote `InMemoryDurableEntity` from test sources into production. It cannot meet acknowledged-write or timer-restart behavior.
 
-## Executed feasibility checks
+### Executed feasibility checks
 
 On 2026-10-08, the existing Aether suites passed: **28** tests across `StreamPartitionManagerWalTest`, `StreamPartitionManagerRecoveryTest`, and `StreamPartitionManagerWalTruncateTest`; **41** across `EntityFoldTest`, `EntityTimerDriverTest`, and `PerKeySerialExecutorTest`. Stream tests use local temporary WAL files; entity tests use controlled substrates. These support code reuse, and are **not** an end-to-end Terra stream/entity proof or a multi-node availability test.
