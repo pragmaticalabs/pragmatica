@@ -113,7 +113,7 @@ class Http3ResponseFinLossTest {
 
     private void start(boolean drop, boolean emptyBody) {
         server = Http3Server.create(HttpServerConfig.httpServerConfig("h3-fin-loss", 0),
-                                    QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols()).unwrap(),
+                                    QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols()).flatMap(LiveTls::liveQuicTls).unwrap(),
                                     (request, writer) -> answerLater(request, writer, drop, emptyBody))
                             .await(timeSpan(10).seconds())
                             .unwrap();

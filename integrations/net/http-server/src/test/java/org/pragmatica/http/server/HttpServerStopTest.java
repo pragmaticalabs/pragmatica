@@ -279,8 +279,9 @@ class HttpServerStopTest {
                               .unwrap();
         }
 
-        private static QuicSslContext quicSsl() {
+        private static LiveTls<QuicSslContext> quicSsl() {
             return QuicSslContextFactory.createSelfSignedServer()
+                                        .flatMap(LiveTls::liveQuicTls)
                                         .unwrap();
         }
     }

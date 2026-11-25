@@ -235,8 +235,7 @@ class HttpServerBindHostTest {
     class OverHttp3 {
         private Http3Server start(HttpServerConfig config) {
             h3 = Http3Server.create(config,
-                                    QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
-                                                         .unwrap(),
+                                    quicSsl(),
                                     ANSWER_OK)
                             .await(timeSpan(10).seconds())
                             .unwrap();
@@ -314,8 +313,9 @@ class HttpServerBindHostTest {
             assertThat(datagramRefused(InetAddress.getLoopbackAddress(), port)).as("nothing is listening").isTrue();
         }
 
-        private static QuicSslContext quicSsl() {
+        private static LiveTls<QuicSslContext> quicSsl() {
             return QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
+                                        .flatMap(LiveTls::liveQuicTls)
                                         .unwrap();
         }
 

@@ -75,6 +75,20 @@ public sealed interface HttpServerError extends Cause {
         }
     }
 
+    /// #2032: a [LiveTls] holder was offered a context its protocol cannot serve; a refused swap keeps the current one.
+    enum TlsContextRefused implements HttpServerError {
+        NOT_HTTP1_SERVER("An HTTP/1.1 listener needs a server-side, non-QUIC TLS context"),
+        NOT_HTTP3_SERVER("An HTTP/3 listener needs a server-side QUIC TLS context");
+        private final String message;
+        TlsContextRefused(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
     /// The request target carried a malformed percent-escape, so it could not be decoded.
     record MalformedRequestTarget(Cause cause) implements HttpServerError {
         @Override

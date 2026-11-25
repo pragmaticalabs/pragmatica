@@ -334,8 +334,9 @@ class HttpRequestTrailersTest {
 
         /// Built as the node's self-signed HTTP/3 listener builds it, `h3` ALPN token included: this test hands
         /// [Http3Server] its context directly, so it must offer the token itself.
-        private static QuicSslContext serverSsl() {
+        private static LiveTls<QuicSslContext> serverSsl() {
             return QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
+                                        .flatMap(LiveTls::liveQuicTls)
                                         .unwrap();
         }
 

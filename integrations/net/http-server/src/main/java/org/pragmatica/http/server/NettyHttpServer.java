@@ -41,7 +41,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.net.tcp.TlsContextFactory;
 import org.pragmatica.utility.IdGenerator;
 
 import io.netty.bootstrap.ServerBootstrap;
@@ -181,11 +180,27 @@ final class NettyHttpServer implements HttpServer {
                                             EventLoopGroup bossGroup,
                                             EventLoopGroup workerGroup,
                                             boolean ownsGroups) {
+        return serverTls(config).fold(cause -> tlsBuildFailed(config, cause, ownsGroups, bossGroup, workerGroup),
+                                      liveTls -> bindConfigured(config,
+                                                                handler,
+                                                                bossGroup,
+                                                                workerGroup,
+                                                                ownsGroups,
+                                                                liveTls));
+    }
+
+    /// #2032: the TLS the listener reads per connection: the caller's holder, else one wrapping the context built from
+    /// the configured `TlsConfig`, else none (plain HTTP).
+    private static Result<Option<LiveTls<SslContext>>> serverTls(HttpServerConfig config) {
+        return config.liveTls()
+                     .map(liveTls -> Result.success(some(liveTls)))
+                     .or(() -> builtTls(config));
+    }
+
+    private static Result<Option<LiveTls<SslContext>>> builtTls(HttpServerConfig config) {
         return config.tls()
-                     .map(tls -> TlsContextFactory.createServer(tls).map(Option::some))
-                     .or(Result.success(Option.<SslContext> empty()))
-                     .fold(cause -> tlsBuildFailed(config, cause, ownsGroups, bossGroup, workerGroup),
-                           sslContext -> bindConfigured(config, handler, bossGroup, workerGroup, ownsGroups, sslContext));
+                     .map(tls -> LiveTls.liveTls(tls).map(Option::some))
+                     .or(Result.success(Option.<LiveTls<SslContext>> empty()));
     }
 
     /// A TLS configuration that fails to build refuses startup: serving plain HTTP on a port the operator
@@ -207,11 +222,11 @@ final class NettyHttpServer implements HttpServer {
                                                       EventLoopGroup bossGroup,
                                                       EventLoopGroup workerGroup,
                                                       boolean ownsGroups,
-                                                      Option<SslContext> sslContext) {
+                                                      Option<LiveTls<SslContext>> liveTls) {
         var socketOptions = config.socketOptions();
         var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
                                              .channel(NioServerSocketChannel.class)
-                                             .childHandler(new HttpServerInitializer(config, handler, sslContext))
+                                             .childHandler(new HttpServerInitializer(config, handler, liveTls))
                                              .option(ChannelOption.SO_BACKLOG,
                                                      socketOptions.soBacklog())
                                              .childOption(ChannelOption.SO_KEEPALIVE,
@@ -219,13 +234,13 @@ final class NettyHttpServer implements HttpServer {
 
         return config.bindAddress()
                      .fold(cause -> bindHostRefused(config, cause, ownsGroups, bossGroup, workerGroup),
-                           address -> bindTo(address, bootstrap, config, sslContext, bossGroup, workerGroup, ownsGroups));
+                           address -> bindTo(address, bootstrap, config, liveTls, bossGroup, workerGroup, ownsGroups));
     }
 
     private static Promise<HttpServer> bindTo(InetSocketAddress address,
                                               ServerBootstrap bootstrap,
                                               HttpServerConfig config,
-                                              Option<SslContext> sslContext,
+                                              Option<LiveTls<SslContext>> liveTls,
                                               EventLoopGroup bossGroup,
                                               EventLoopGroup workerGroup,
                                               boolean ownsGroups) {
@@ -233,7 +248,7 @@ final class NettyHttpServer implements HttpServer {
                                                    .addListener((ChannelFuture future) -> onBind(config,
                                                                                                  promise,
                                                                                                  future,
-                                                                                                 sslContext,
+                                                                                                 liveTls,
                                                                                                  bossGroup,
                                                                                                  workerGroup,
                                                                                                  ownsGroups)));
@@ -254,12 +269,12 @@ final class NettyHttpServer implements HttpServer {
     private static void onBind(HttpServerConfig config,
                                Promise<HttpServer> promise,
                                ChannelFuture future,
-                               Option<SslContext> sslContext,
+                               Option<LiveTls<SslContext>> liveTls,
                                EventLoopGroup bossGroup,
                                EventLoopGroup workerGroup,
                                boolean ownsGroups) {
         if (future.isSuccess()) {
-            var protocol = sslContext.map(_ -> "HTTPS").or("HTTP");
+            var protocol = liveTls.map(_ -> "HTTPS").or("HTTP");
             var boundPort = ((InetSocketAddress) future.channel().localAddress()).getPort();
 
             log.info("{} server '{}' started on port {}", protocol, config.name(), boundPort);
@@ -290,15 +305,15 @@ final class NettyHttpServer implements HttpServer {
     private static class HttpServerInitializer extends ChannelInitializer<SocketChannel> {
         private final HttpServerConfig config;
         private final BiConsumer<HttpRequest, ResponseWriter> handler;
-        private final Option<SslContext> sslContext;
+        private final Option<LiveTls<SslContext>> liveTls;
         private final Map<String, WebSocketEndpoint> wsEndpoints;
 
         HttpServerInitializer(HttpServerConfig config,
                               BiConsumer<HttpRequest, ResponseWriter> handler,
-                              Option<SslContext> sslContext) {
+                              Option<LiveTls<SslContext>> liveTls) {
             this.config = config;
             this.handler = handler;
-            this.sslContext = sslContext;
+            this.liveTls = liveTls;
             this.wsEndpoints = new HashMap<>();
             for (var endpoint : config.webSocketEndpoints()) {
                 wsEndpoints.put(endpoint.path(), endpoint);
@@ -311,7 +326,8 @@ final class NettyHttpServer implements HttpServer {
             var pipeline = ch.pipeline();
 
             ResponseSequence.install(ch, config.responseTimeout());
-            sslContext.onPresent(ctx -> pipeline.addLast(ctx.newHandler(ch.alloc())));
+            // #2032: the holder's context is read here, once per connection, so a swap reaches every later connection
+            liveTls.onPresent(tls -> pipeline.addLast(tls.current().newHandler(ch.alloc())));
             // I3: reader-idle events; HttpRequestHandler closes the connection on one unless a response is pending
             pipeline.addLast(new IdleStateHandler(config.readTimeout().millis(),
                                                   0,
