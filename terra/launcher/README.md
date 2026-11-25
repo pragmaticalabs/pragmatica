@@ -89,4 +89,4 @@ Differences from Spring Boot: GET only, every other method including `HEAD` answ
 
 `--check` parses the graph/configuration and migration inputs without creating resources or listeners. It cannot establish database connectivity, validate every resource factory's settings, or prove TLS key validity. Those checks happen during startup; a startup error exits nonzero. Health probes are `/__terra/health/live` and `/__terra/health/ready`.
 
-The example archive runs Catalog and composition/cache/pub-sub fixtures without a database. The embeddable PostgreSQL proof is described in [Terra's guide](../README.md).
+The example archive runs Catalog and composition/cache/pub-sub fixtures without a database. The embeddable PostgreSQL proof is described in [Terra reference](../SPEC.md#database-startup).

@@ -118,6 +118,24 @@ class CstExtractorTest {
 
         @Test void jsonb() { assertThat(CstExtractor.extractDataType(dataTypeFrom("jsonb")).normalized()).isEqualTo("jsonb"); }
 
+        @Test void doublePrecision() {
+            assertThat(CstExtractor.extractDataType(dataTypeFrom("DOUBLE PRECISION")).normalized()).isEqualTo("double precision");
+        }
+
+        @Test void doublePrecisionAcrossNewlineIsOneSpaced() {
+            assertThat(CstExtractor.extractDataType(dataTypeFrom("Double\n   \tPrecision")).normalized()).isEqualTo("double precision");
+        }
+
+        @Test void characterVaryingAcrossWhitespaceIsOneSpaced() {
+            var dt = CstExtractor.extractDataType(dataTypeFrom("CHARACTER\n VARYING(100)"));
+            assertThat(dt.normalized()).isEqualTo("character varying");
+            assertThat(dt.modifiers()).containsExactly(100);
+        }
+
+        @Test void bitVaryingAcrossWhitespaceIsOneSpaced() {
+            assertThat(CstExtractor.extractDataType(dataTypeFrom("bit  varying")).baseName()).isEqualTo("bit varying");
+        }
+
         @Test void integerArray() {
             var dt = CstExtractor.extractDataType(dataTypeFrom("integer[]"));
             assertThat(dt.normalized()).isEqualTo("integer");

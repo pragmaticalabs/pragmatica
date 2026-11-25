@@ -8,6 +8,8 @@ Updated: 2026-01-16
 Affects: [jbct-cli, aether]
 ---
 
+> **Superseded (aspect removal, #3649).** The `aspect.apply(...)` call in the example below is **superseded**: the `Aspect<T>` factory parameter was removed and the generated factory is `xxx(SliceCreationContext ctx)`.
+
 ## Summary
 
 Defines the dependency file sections (`[shared]`, `[infra]`, `[slices]`) and how Aether's ClassLoader hierarchy treats each category.

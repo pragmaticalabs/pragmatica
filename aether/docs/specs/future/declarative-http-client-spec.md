@@ -20,7 +20,7 @@ A compile-time-generated HTTP client that lets slice developers declare outbound
 - JSON via `JsonMapper` integration (no raw Jackson exposure)
 - Error handling via `Promise` failure channel with typed `Cause` (no exceptions, never `Promise<Result<T>>`)
 - `HttpOperations` as the underlying resource type (implementation-agnostic)
-- Built-in observability via Aspect wrapping (same as slices)
+- Built-in observability through the runtime-switchable observability cells (same engine as slices)
 
 ---
 
@@ -274,7 +274,7 @@ On non-2xx: run error factory.
 void emit(Event event);
 ```
 
-Requires `@Contract` annotation — compile-time error without it. Sends the request, does not process completion. Errors and failures are not tracked. Documented consequence: no error factory invocation, no failure propagation. The Aspect still captures the call at entry.
+Requires `@Contract` annotation — compile-time error without it. Sends the request, does not process completion. Errors and failures are not tracked. Documented consequence: no error factory invocation, no failure propagation. The observability cell still captures the call at entry.
 
 ### 4.5 Compile-Time Restrictions
 
@@ -429,16 +429,16 @@ If no `[http.X.json]` section is present, `JsonMapper.defaultJsonMapper()` is us
 
 ## 7. Observability
 
-### 7.1 Aspect Wrapping
+### 7.1 Observability Cells
 
-Every generated HTTP client adapter is wrapped with a built-in Aspect — the same observability infrastructure that slices get. The processor generates `aspect.apply(new PaymentApiHttpAdapter(...))` exactly like it does for slices.
+Every provisioned HTTP client adapter is observed through the same runtime-switchable engine that slices use (`ObservabilityStrategyCell`, see `aether/docs/architecture/07-observability.md`). The processor generates no decoration code: there is no `Aspect` factory parameter, and the cell is carried by the resource-call injection point (resource-call injection points are pending, see feature-catalog #42a).
 
 This provides:
 - Logging of method entry/exit at DEBUG level
 - Metrics collection (call count, latency, error rate)
 - Dynamic reconfiguration at runtime (change log level, toggle metrics)
 
-No configuration needed. Every provisioned HTTP client interface automatically gets the Aspect.
+No configuration needed. Every provisioned HTTP client interface automatically gets the observability cell.
 
 ### 7.2 Request ID Propagation
 
@@ -492,7 +492,7 @@ The slice-processor, upon encountering a `@ResourceQualifier(type = HttpOperatio
 
 1. Validates the interface: all methods return `Promise<T>` (or `void` with `@Contract`), each has exactly one HTTP method annotation, all template variables have matching parameters, at most one body parameter (or all-unmatched for `FORM` category), no generic methods, no interface inheritance.
 2. Generates `<InterfaceName>HttpAdapter` class implementing the interface.
-3. Wraps adapter with built-in Aspect.
+3. Leaves observability to the runtime cell (no generated wrapper).
 4. Records the dependency in the slice manifest (resource type + config section).
 
 ### 9.2 Generated Adapter Structure
@@ -549,7 +549,7 @@ The generated adapter is instantiated during resource provisioning:
 
 1. `SpiResourceProvider` provisions `HttpOperations` from the config section (with retry/circuit-breaker baked in)
 2. The generated `SliceFactory` wraps it into the adapter with `JsonMapper` and error factory
-3. The adapter is wrapped with the built-in Aspect
+3. The adapter is observed through the runtime observability cell (no generated wrapper)
 4. The adapter is injected as the interface type into the slice
 
 ---
@@ -592,7 +592,7 @@ No mocking framework needed. No generated code involved in tests. The interface 
 10. Detect `@ResourceQualifier(type = HttpOperations.class)` on interface-typed parameters.
 11. Validate interface methods (return types, template variables, body parameters, restrictions).
 12. Generate `<Interface>HttpAdapter` implementing the interface.
-13. Generate Aspect wrapping for the adapter.
+13. (No step: observability is attached by the runtime cell, not generated.)
 14. Generate adapter instantiation in `SliceFactory`.
 
 ### Layer C: Config + Provisioning
@@ -626,7 +626,7 @@ No mocking framework needed. No generated code involved in tests. The interface 
 | Content type | `@Consumes`/`@Produces` with `CommonContentType` enum | Type-safe, no strings |
 | Content type module | `integrations/net/content-type` shared module | Avoids circular deps, not in core |
 | Compile-time generation | Annotation processor | Consistent with existing slice-processor |
-| Observability | Built-in Aspect wrapping | Same as slices, dynamically reconfigurable |
+| Observability | Runtime observability cell | Same as slices, dynamically reconfigurable |
 | Per-method timeout | `TimeoutConfig` via `@ResourceQualifier` | Consistent resource provisioning pattern |
 | Retry/circuit-breaker | Config in TOML, applied at `HttpOperations` provisioning | No annotation needed, infrastructure concern |
 | Void methods | Allowed with `@Contract` | Intent explicit, consequences documented |
