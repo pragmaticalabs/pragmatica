@@ -25,10 +25,10 @@ class AiToolsInstallerCopyTest {
     /// Child-JVM entry: `args[0]` is the project directory.
     public static void main(String[] args) throws Exception {
         var project = Path.of(args[0]);
-        Method copyFromCache = AiToolsInstaller.class.getDeclaredMethod("copyFromCache");
+        Method copyFromCache = AiToolsInstaller.class.getDeclaredMethod("copyFromCache", AiToolsRef.class);
 
         copyFromCache.setAccessible(true);
-        ((Result<?>) copyFromCache.invoke(AiToolsInstaller.aiToolsInstaller(project)))
+        ((Result<?>) copyFromCache.invoke(AiToolsInstaller.aiToolsInstaller(project), new AiToolsRef("ai-tools-v1.0.0")))
             .onSuccess(outcome -> System.out.println(render(project, (AiToolsOutcome) outcome)))
             .onFailure(cause -> System.out.println("FAILURE=" + cause.message()));
     }
