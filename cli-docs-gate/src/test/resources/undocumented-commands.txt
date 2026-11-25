@@ -27,3 +27,4 @@ jbct fix-slice
 jbct migrate
 jbct obligations
 jbct shape-census
+jbct update
