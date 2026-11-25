@@ -82,32 +82,6 @@ public record HttpServerConfig(String name,
         webSocketEndpoints = List.copyOf(webSocketEndpoints);
     }
 
-    /// The shape before the bind host existed: the listening socket binds every interface.
-    public HttpServerConfig(String name,
-                            int port,
-                            Option<TlsConfig> tls,
-                            int maxContentLength,
-                            List<WebSocketEndpoint> webSocketEndpoints,
-                            boolean chunkedWriteEnabled,
-                            SocketOptions socketOptions,
-                            TimeSpan readTimeout,
-                            BodyRateLimit bodyRateLimit,
-                            Option<RequestClassifier> classifier,
-                            TimeSpan responseTimeout) {
-        this(name,
-             port,
-             tls,
-             maxContentLength,
-             webSocketEndpoints,
-             chunkedWriteEnabled,
-             socketOptions,
-             readTimeout,
-             bodyRateLimit,
-             classifier,
-             responseTimeout,
-             Option.empty());
-    }
-
     /// The shape before request classification existed: every request is aggregated up to `maxContentLength`.
     public HttpServerConfig(String name,
                             int port,

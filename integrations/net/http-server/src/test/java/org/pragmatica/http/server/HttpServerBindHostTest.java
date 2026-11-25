@@ -190,16 +190,16 @@ class HttpServerBindHostTest {
             assertThat(Set.<EventLoopGroup> of(boss, worker)).allMatch(EventLoopGroup::isTerminated);
         }
 
-        /// A blank host would resolve to loopback; it is refused instead, so a stray empty setting never reads as
+        /// A blank host would resolve to loopback (`InetAddress.getByName("")`); it is refused instead, so a stray empty setting never reads as
         /// "loopback only" nor widens to everything.
         @Test
         void blankHost_failsTheStart_typed() {
-            var outcome = HttpServer.httpServer(HttpServerConfig.httpServerConfig("bind-h1-blank", 0).withBindHost("  "),
+            var outcome = HttpServer.httpServer(HttpServerConfig.httpServerConfig("bind-h1-blank", 0).withBindHost(""),
                                                 ANSWER_OK)
                                     .await(timeSpan(10).seconds());
 
             assertThat(outcome.isFailure()).as("the start fails").isTrue();
-            outcome.onFailure(cause -> assertBindHostUnresolved(cause, "  "));
+            outcome.onFailure(cause -> assertBindHostUnresolved(cause, ""));
         }
     }
 
