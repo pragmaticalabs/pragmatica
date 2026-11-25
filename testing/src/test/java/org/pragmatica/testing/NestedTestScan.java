@@ -29,6 +29,7 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -51,7 +52,8 @@ final class NestedTestScan {
     private static final Pattern TEST_ANNOTATION = Pattern.compile("@\\s*(?:\\w+\\s*\\.\\s*)*(?:Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\\b");
     private static final Pattern NESTED_ANNOTATION = Pattern.compile("@\\s*(?:\\w+\\s*\\.\\s*)*Nested\\b");
     private static final Pattern ABSTRACT_MODIFIER = Pattern.compile("\\babstract\\b");
-    private static final Pattern DECLARATION = Pattern.compile("^(?:\\s|@[\\w.]+(?:\\((?:[^()]|\\([^()]*\\))*\\))?|\\b(?:public|protected|private|static|final|abstract|sealed|non-sealed|strictfp)\\b)*\\b(class|interface|enum|record)\\s+(\\w+)");
+    private static final Pattern KEYWORD = Pattern.compile("\\b(class|interface|enum|record)\\s+(\\w+)");
+    private static final Set<String> MODIFIERS = Set.of("public", "protected", "private", "static", "final", "abstract", "sealed", "non-sealed", "strictfp");
     private static final Pattern TYPE_ARGUMENTS = Pattern.compile("<[^<>]*>");
     private static final Pattern EXTENDS = Pattern.compile("\\bextends\\s+([\\w.]+)");
 
@@ -175,8 +177,8 @@ final class NestedTestScan {
                 headStart = i + 1;
             } else if (c == '{') {
                 var head = text.substring(headStart, i);
-                var declaration = parens == 0 ? DECLARATION.matcher(head) : null;
-                var opensType = declaration != null && declaration.find() && (scopes.isEmpty() || scopes.peek().type() != null);
+                var declaration = parens == 0 ? declaration(head) : null;
+                var opensType = declaration != null && (scopes.isEmpty() || scopes.peek().type() != null);
 
                 if (opensType) {
                     var type = declare(file, head, declaration, lineOf(lineStarts, headStart + declaration.start(1)), scopes);
@@ -199,6 +201,79 @@ final class NestedTestScan {
             }
         }
         return found;
+    }
+
+    /// The type keyword and name of `head` when it is a declaration: only annotations and modifiers may precede the keyword.
+    /// Scanned by hand, not by a repeating regex group: a head can hold thousands of blanked characters and a group loop recurses per character.
+    private static Matcher declaration(String head) {
+        var keyword = KEYWORD.matcher(head);
+
+        return keyword.find() && onlyAnnotationsAndModifiers(head.substring(0, keyword.start())) ? keyword : null;
+    }
+
+    private static boolean onlyAnnotationsAndModifiers(String prefix) {
+        var i = 0;
+
+        while (i < prefix.length()) {
+            var c = prefix.charAt(i);
+
+            if (Character.isWhitespace(c)) {
+                i++;
+            } else if (c == '@') {
+                i = afterAnnotation(prefix, i + 1);
+                if (i < 0) {
+                    return false;
+                }
+            } else {
+                var end = wordEnd(prefix, i);
+
+                if (end == i || !MODIFIERS.contains(prefix.substring(i, end))) {
+                    return false;
+                }
+                i = end;
+            }
+        }
+        return true;
+    }
+
+    /// The index after the annotation whose name starts at `from` (and its balanced argument list), or -1 when it is malformed.
+    private static int afterAnnotation(String text, int from) {
+        var i = from;
+
+        while (i < text.length() && (Character.isLetterOrDigit(text.charAt(i)) || text.charAt(i) == '_' || text.charAt(i) == '.')) {
+            i++;
+        }
+        if (i == from) {
+            return -1;
+        }
+
+        var j = i;
+
+        while (j < text.length() && Character.isWhitespace(text.charAt(j))) {
+            j++;
+        }
+        if (j >= text.length() || text.charAt(j) != '(') {
+            return i;
+        }
+
+        var depth = 0;
+
+        for (var k = j; k < text.length(); k++) {
+            depth += text.charAt(k) == '(' ? 1 : text.charAt(k) == ')' ? -1 : 0;
+            if (depth == 0) {
+                return k + 1;
+            }
+        }
+        return -1;
+    }
+
+    private static int wordEnd(String text, int from) {
+        var i = from;
+
+        while (i < text.length() && (Character.isLetterOrDigit(text.charAt(i)) || text.charAt(i) == '_' || text.charAt(i) == '-')) {
+            i++;
+        }
+        return i;
     }
 
     private record Scope(Type type, int headStart, int parens) {}
