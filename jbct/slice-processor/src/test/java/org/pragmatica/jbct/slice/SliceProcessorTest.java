@@ -1221,6 +1221,182 @@ class SliceProcessorTest {
         assertThat(factory).doesNotContain("record orderValidator(MethodHandle<");
     }
 
+    /// #2798: a shared step interface that declares no static factory is not a plain-interface step,
+    /// so the slice-dependency classification took it for a slice and emitted a coordinate naming no
+    /// artifact (`<base>-<kebab(name)>:UNRESOLVED`). Terra then failed at assemble time, Aether at
+    /// deploy time. The only slice evidence a dependency can carry is the `@Slice` annotation or an
+    /// entry in `slice-deps.properties`; with neither it is refused at compile time, naming the parameter.
+    @Test
+    void nonSliceInterfaceWithoutFactory_isRefusedNamingTheParameter() {
+        var compilation = compileSharedStepConsumer("-Aslice.groupId=com.example", "-Aslice.artifactId=app");
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("Dependency parameter 'alerts'");
+        assertCompilation(compilation).hadErrorContaining("com.example.app.steps.Notifier");
+        assertCompilation(compilation).hadErrorContaining("no static factory method 'notifier'");
+        assertCompilation(compilation).hadErrorContaining("is not a slice");
+    }
+
+    /// A refused dependency stops generation: no factory is written for the consumer. A failed compilation exposes
+    /// no generated files through the compile-testing handle, so the output directory is read directly.
+    @Test
+    void nonSliceInterfaceWithoutFactory_generatesNoFactoryForTheConsumer(@TempDir Path classes) throws IOException {
+        var errors = errorsFor(compileWithOutputDir(classes, sharedStepSources("com.example.app.steps")));
+
+        assertThat(errors.stream().anyMatch(message -> message.contains("is not a slice"))).isTrue();
+        try (var written = Files.walk(classes)) {
+            assertThat(written.filter(path -> path.getFileName().toString().contains("OrderServiceFactory")).toList())
+                .isEmpty();
+        }
+    }
+
+    @Test
+    void nonSliceInterfaceWithoutFactory_isRefusedOnTheTerraTargetToo() {
+        var compilation = compileSharedStepConsumer("-Aslice.target=terra",
+                                                    "-Aslice.groupId=com.example",
+                                                    "-Aslice.artifactId=app",
+                                                    "-Aslice.version=1.0.0");
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("Dependency parameter 'alerts'");
+    }
+
+    /// The refusal must not catch a real external slice: `jbct:collect-slice-deps` lists it in
+    /// `slice-deps.properties` even where its interface carries no `@Slice` the consumer can see.
+    @Test
+    void nonSliceInterfaceListedInSliceDeps_isAcceptedAndResolvedToTheListedCoordinate(@TempDir Path classes)
+    throws IOException {
+        Files.writeString(classes.resolve("slice-deps.properties"),
+                          "com.example.app.steps.Notifier=org.example:notifier:2.0.0\n");
+        var errors = errorsFor(compileWithOutputDir(classes, sharedStepSources("com.example.app.steps")));
+        var manifest = loadManifest(classes);
+
+        assertThat(errors).isEmpty();
+        assertThat(manifest.getProperty("dependency.0.artifact")).isEqualTo("org.example:notifier");
+        assertThat(manifest.getProperty("dependency.0.version")).isEqualTo("2.0.0");
+    }
+
+    /// A slice whose interface sits in an `api` subpackage is listed under the key without that segment.
+    @Test
+    void nonSliceInterfaceListedWithoutItsApiSegment_isAcceptedAndResolved(@TempDir Path classes) throws IOException {
+        Files.writeString(classes.resolve("slice-deps.properties"),
+                          "com.example.app.steps.Notifier=org.example:notifier:2.0.0\n");
+        var errors = errorsFor(compileWithOutputDir(classes, sharedStepSources("com.example.app.steps.api")));
+        var manifest = loadManifest(classes);
+
+        assertThat(errors).isEmpty();
+        assertThat(manifest.getProperty("dependency.0.artifact")).isEqualTo("org.example:notifier");
+        assertThat(manifest.getProperty("dependency.0.version")).isEqualTo("2.0.0");
+    }
+
+    private static java.util.Properties loadManifest(Path classes) throws IOException {
+        var props = new java.util.Properties();
+
+        props.load(Files.newBufferedReader(classes.resolve("META-INF/slice/OrderService.manifest")));
+
+        return props;
+    }
+
+    private Compilation compileSharedStepConsumer(String... options) {
+        return javac().withProcessors(new SliceProcessor())
+                      .withOptions(options)
+                      .compile(sharedStepSources("com.example.app.steps"));
+    }
+
+    private List<JavaFileObject> sharedStepSources(String stepPackage) {
+        var sharedStep = JavaFileObjects.forSourceString(stepPackage + ".Notifier",
+                                                         """
+            package %s;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface Notifier {
+                Promise<Boolean> notifyUser(String userId);
+            }
+            """.formatted(stepPackage));
+        var consumer = JavaFileObjects.forSourceString("com.example.app.orders.OrderService",
+                                                       """
+            package com.example.app.orders;
+
+            import %s.Notifier;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(Notifier alerts) {
+                    return null;
+                }
+            }
+            """.formatted(stepPackage));
+        var sources = commonSources();
+
+        sources.add(sharedStep);
+        sources.add(consumer);
+
+        return sources;
+    }
+
+    private static List<javax.tools.Diagnostic<? extends JavaFileObject>> compileWithOutputDir(Path classes,
+                                                                                               List<JavaFileObject> sources)
+    throws IOException {
+        var collector = new javax.tools.DiagnosticCollector<JavaFileObject>();
+
+        compileInto(classes, sources, collector);
+        return List.copyOf(collector.getDiagnostics());
+    }
+
+    /// Full compilation (no `-proc:only`): the processor's generated sources are compiled too, so a generated
+    /// factory that does not compile is an error here, as it is in the compile-testing based tests.
+    private static boolean compileInto(Path classes,
+                                       List<JavaFileObject> sources,
+                                       javax.tools.DiagnosticCollector<JavaFileObject> collector) throws IOException {
+        var compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
+
+        try (var fileManager = compiler.getStandardFileManager(collector, null, null)) {
+            fileManager.setLocationFromPaths(StandardLocation.CLASS_OUTPUT, List.of(classes));
+            fileManager.setLocationFromPaths(StandardLocation.SOURCE_OUTPUT, List.of(classes));
+            var task = compiler.getTask(null,
+                                        fileManager,
+                                        collector,
+                                        List.of("-classpath",
+                                                System.getProperty("java.class.path"),
+                                                "-Aslice.groupId=com.example",
+                                                "-Aslice.artifactId=app"),
+                                        null,
+                                        sources);
+
+            task.setProcessors(List.of(new SliceProcessor()));
+            return task.call();
+        }
+    }
+
+    /// Compiles `sources` with `dependency` declared in `slice-deps.properties` (the production way to name an
+    /// external slice interface) and returns the generated factory source. The declared dependency is an external
+    /// interface here, not a slice of the same compile, so its inherited or nested methods are proxied, not generated.
+    private static String generatedFactoryOfDeclaredDependency(Path classes,
+                                                               String dependency,
+                                                               List<JavaFileObject> sources,
+                                                               String factory) throws IOException {
+        Files.writeString(classes.resolve("slice-deps.properties"), dependency + "=org.example:external:1.0.0\n");
+        var collector = new javax.tools.DiagnosticCollector<JavaFileObject>();
+        var succeeded = compileInto(classes, sources, collector);
+
+        assertThat(errorsFor(collector.getDiagnostics())).isEmpty();
+        assertThat(succeeded).isTrue();
+
+        return Files.readString(classes.resolve(factory.replace('.', '/') + ".java"));
+    }
+
+    private static List<String> errorsFor(List<? extends javax.tools.Diagnostic<? extends JavaFileObject>> diagnostics) {
+        return diagnostics.stream()
+                          .filter(diagnostic -> diagnostic.getKind() == javax.tools.Diagnostic.Kind.ERROR)
+                          .map(diagnostic -> diagnostic.getMessage(null))
+                          .toList();
+    }
+
     /// The narrow case the superseded immediate-parent-package test did handle — provider and
     /// consumer as direct package siblings. Keying on the module must not regress it.
     @Test
@@ -1280,10 +1456,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService {
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1330,8 +1509,10 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService {
                 Promise<Integer> checkStock(String productId);
 
@@ -1340,6 +1521,7 @@ class SliceProcessorTest {
                 default String describe() { return "inventory"; }
 
                 static String version() { return "1"; }
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1383,10 +1565,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Result;
 
+            @Slice
             public interface PricingService {
                 Result<Integer> quote(String productId);
+                static PricingService pricingService() { return null; }
             }
             """);
 
@@ -1426,7 +1611,7 @@ class SliceProcessorTest {
     /// `implements`-ing the interface. The scan must follow Java interface-inheritance
     /// semantics: the two-level chain pins transitivity, not just direct supers.
     @Test
-    void should_generate_proxy_for_dependency_method_inherited_from_super_interface() throws Exception {
+    void should_generate_proxy_for_dependency_method_inherited_from_super_interface(@TempDir Path classes) throws Exception {
         var auditedService = JavaFileObjects.forSourceString("external.AuditedService",
                                                              """
             package external;
@@ -1484,14 +1669,7 @@ class SliceProcessorTest {
         sources.add(externalService);
         sources.add(source);
 
-        Compilation compilation = javac()
-                                       .withProcessors(new SliceProcessor())
-                                       .compile(sources);
-
-        assertCompilation(compilation).succeeded();
-
-        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
-                                        .get().getCharContent(false).toString();
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         // Declared method still proxied
         assertThat(factoryContent).contains("MethodHandle<Integer, String> checkStockHandle");
@@ -1507,7 +1685,7 @@ class SliceProcessorTest {
     /// actual type arguments (`lookup(K)` seen through `extends KeyedQuery<String>` is
     /// `lookup(String)`), not with the raw type variable.
     @Test
-    void should_substitute_type_arguments_for_generic_super_interface_dependency_method() throws Exception {
+    void should_substitute_type_arguments_for_generic_super_interface_dependency_method(@TempDir Path classes) throws Exception {
         var keyedQuery = JavaFileObjects.forSourceString("external.KeyedQuery",
                                                          """
             package external;
@@ -1553,14 +1731,7 @@ class SliceProcessorTest {
         sources.add(externalService);
         sources.add(source);
 
-        Compilation compilation = javac()
-                                       .withProcessors(new SliceProcessor())
-                                       .compile(sources);
-
-        assertCompilation(compilation).succeeded();
-
-        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
-                                        .get().getCharContent(false).toString();
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("MethodHandle<Integer, String> lookupHandle");
         assertThat(factoryContent).contains("public Promise<Integer> lookup(String key)");
@@ -1585,10 +1756,13 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService extends LegacyQuery {
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1646,11 +1820,14 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService extends StockQuery {
                 @Override
                 Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1699,12 +1876,15 @@ class SliceProcessorTest {
                                                               """
             package external;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface InventoryService {
                 Promise<Integer> checkStock(String productId);
 
                 Promise<String> nameOf(String productId);
+                static InventoryService inventoryService() { return null; }
             }
             """);
 
@@ -1749,7 +1929,7 @@ class SliceProcessorTest {
     /// helper then drew a spurious #612 error for an interface that compiled before the
     /// super-interface walk existed. Only ABSTRACT methods are proxy candidates.
     @Test
-    void should_ignore_private_super_interface_helper_method() throws Exception {
+    void should_ignore_private_super_interface_helper_method(@TempDir Path classes) throws Exception {
         var cachedQuery = JavaFileObjects.forSourceString("external.CachedQuery",
                                                           """
             package external;
@@ -1799,14 +1979,7 @@ class SliceProcessorTest {
         sources.add(externalService);
         sources.add(source);
 
-        Compilation compilation = javac()
-                                       .withProcessors(new SliceProcessor())
-                                       .compile(sources);
-
-        assertCompilation(compilation).succeeded();
-
-        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
-                                        .get().getCharContent(false).toString();
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("MethodHandle<Integer, String> cachedLookupHandle");
         assertThat(factoryContent).doesNotContain("cacheKeyHandle");
@@ -1817,7 +1990,7 @@ class SliceProcessorTest {
     /// entry — generated output changed for a previously-compiling slice. Private methods are
     /// implementation detail; they never reach the proxy.
     @Test
-    void should_not_proxy_private_promise_returning_super_interface_method() throws Exception {
+    void should_not_proxy_private_promise_returning_super_interface_method(@TempDir Path classes) throws Exception {
         var cachedQuery = JavaFileObjects.forSourceString("external.CachedQuery",
                                                           """
             package external;
@@ -1867,14 +2040,7 @@ class SliceProcessorTest {
         sources.add(externalService);
         sources.add(source);
 
-        Compilation compilation = javac()
-                                       .withProcessors(new SliceProcessor())
-                                       .compile(sources);
-
-        assertCompilation(compilation).succeeded();
-
-        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
-                                        .get().getCharContent(false).toString();
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("MethodHandle<Integer, String> cachedLookupHandle");
         assertThat(factoryContent).doesNotContain("prefetchHandle");
@@ -1885,7 +2051,7 @@ class SliceProcessorTest {
     /// Object's equals per JLS 9.2, but its parameter's toString carries the annotation and
     /// escaped a string comparison, drawing a spurious #612 error.
     @Test
-    void should_exclude_annotated_object_equals_redeclaration_from_dependency_scan() throws Exception {
+    void should_exclude_annotated_object_equals_redeclaration_from_dependency_scan(@TempDir Path classes) throws Exception {
         var nullable = JavaFileObjects.forSourceString("external.Nullable",
                                                        """
             package external;
@@ -1948,14 +2114,7 @@ class SliceProcessorTest {
         sources.add(externalService);
         sources.add(source);
 
-        Compilation compilation = javac()
-                                       .withProcessors(new SliceProcessor())
-                                       .compile(sources);
-
-        assertCompilation(compilation).succeeded();
-
-        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
-                                        .get().getCharContent(false).toString();
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("MethodHandle<Integer, String> auditHandle");
         assertThat(factoryContent).doesNotContain("equalsHandle");
@@ -1966,7 +2125,7 @@ class SliceProcessorTest {
     /// the FIRST listed super's declaration supplies the proxy method (observable through
     /// its parameter name), and the signature yields exactly one record component.
     @Test
-    void should_pick_first_extends_clause_declaration_for_diamond_dependency_method() throws Exception {
+    void should_pick_first_extends_clause_declaration_for_diamond_dependency_method(@TempDir Path classes) throws Exception {
         var alphaQuery = JavaFileObjects.forSourceString("external.AlphaQuery",
                                                          """
             package external;
@@ -2024,14 +2183,7 @@ class SliceProcessorTest {
         sources.add(externalService);
         sources.add(source);
 
-        Compilation compilation = javac()
-                                       .withProcessors(new SliceProcessor())
-                                       .compile(sources);
-
-        assertCompilation(compilation).succeeded();
-
-        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
-                                        .get().getCharContent(false).toString();
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("public Promise<Integer> lookup(String alphaKey)");
         assertThat(factoryContent).doesNotContain("betaKey");
@@ -2046,7 +2198,7 @@ class SliceProcessorTest {
     /// `putAll(List<String>)`: `asMemberOf` composes the substitution U -> List<K> -> List<String>
     /// across levels, not just a single direct binding.
     @Test
-    void should_compose_substitution_across_generic_super_interface_levels() throws Exception {
+    void should_compose_substitution_across_generic_super_interface_levels(@TempDir Path classes) throws Exception {
         var batchQuery = JavaFileObjects.forSourceString("external.BatchQuery",
                                                          """
             package external;
@@ -2105,14 +2257,7 @@ class SliceProcessorTest {
         sources.add(externalService);
         sources.add(source);
 
-        Compilation compilation = javac()
-                                       .withProcessors(new SliceProcessor())
-                                       .compile(sources);
-
-        assertCompilation(compilation).succeeded();
-
-        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
-                                        .get().getCharContent(false).toString();
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("public Promise<Integer> lookup(String key)");
         assertThat(factoryContent).contains("putAll(List<java.lang.String> items)");
@@ -2124,10 +2269,13 @@ class SliceProcessorTest {
                                                              """
             package payments;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface PaymentService {
                 Promise<Boolean> processPayment(String paymentRequest);
+                static PaymentService paymentService() { return null; }
             }
             """);
 
@@ -2243,13 +2391,16 @@ class SliceProcessorTest {
                                                     """
             package pricing;
 
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
 
+            @Slice
             public interface Quote {
                 Promise<Response> price(Request request);
 
                 record Request(String event) {}
                 record Response(String event, long amountMinor) {}
+                static Quote quote() { return null; }
             }
             """);
 
@@ -2553,9 +2704,12 @@ class SliceProcessorTest {
         var healthService = JavaFileObjects.forSourceString("external.HealthService",
                                                              """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
+            @Slice
             public interface HealthService {
                 Promise<String> check();
+                static HealthService healthService() { return null; }
             }
             """);
         var source = JavaFileObjects.forSourceString("test.MonitorService",
@@ -2588,9 +2742,12 @@ class SliceProcessorTest {
         var searchService = JavaFileObjects.forSourceString("external.SearchService",
                                                              """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
+            @Slice
             public interface SearchService {
                 Promise<String> search(String query, int limit);
+                static SearchService searchService() { return null; }
             }
             """);
         var source = JavaFileObjects.forSourceString("test.AggregatorService",
@@ -2680,9 +2837,12 @@ class SliceProcessorTest {
         var searchService = JavaFileObjects.forSourceString("external.SearchService",
                                                              """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
+            @Slice
             public interface SearchService {
                 Promise<String> search(String query, int limit);
+                static SearchService searchService() { return null; }
             }
             """);
         var source = JavaFileObjects.forSourceString("test.AggregatorService",
@@ -2824,8 +2984,13 @@ class SliceProcessorTest {
         var inventoryService = JavaFileObjects.forSourceString("external.InventoryService",
                                                                """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
-            public interface InventoryService { Promise<Integer> checkStock(String productId); }
+            @Slice
+            public interface InventoryService {
+                Promise<Integer> checkStock(String productId);
+                static InventoryService inventoryService() { return null; }
+            }
             """);
         var source = JavaFileObjects.forSourceString("test.OrderRepository",
                                                      """
@@ -3708,7 +3873,7 @@ class SliceProcessorTest {
     }
 
     @Test
-    void should_generate_correct_references_for_cross_package_inner_interface_dependency() throws Exception {
+    void should_generate_correct_references_for_cross_package_inner_interface_dependency(@TempDir Path classes) throws Exception {
         var outerInterface = JavaFileObjects.forSourceString("external.PaymentGateway",
                                                               """
             package external;
@@ -3742,11 +3907,7 @@ class SliceProcessorTest {
         sources.add(outerInterface);
         sources.add(source);
 
-        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
-        assertCompilation(compilation).succeeded();
-
-        var factoryContent = compilation.generatedSourceFile("test.PaymentServiceFactory")
-                                        .get().getCharContent(false).toString();
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.PaymentGateway.Processor", sources, "test.PaymentServiceFactory");
 
         // Import should be the top-level enclosing class, not the nested type
         assertThat(factoryContent).contains("import external.PaymentGateway;");
@@ -6264,10 +6425,13 @@ class SliceProcessorTest {
         var dependency = JavaFileObjects.forSourceString("external.HeadersService",
                                                          """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
             import org.pragmatica.aether.http.handler.RequestHeaders;
+            @Slice
             public interface HeadersService {
                 %s
+                static HeadersService headersService() { return null; }
             }
             """.formatted(method));
         var caller = JavaFileObjects.forSourceString("test.CallerService",
@@ -6296,7 +6460,9 @@ class SliceProcessorTest {
         var manyOps = JavaFileObjects.forSourceString("external.ManyOps",
                                                       """
             package external;
+            import org.pragmatica.aether.slice.annotation.Slice;
             import org.pragmatica.lang.Promise;
+            @Slice
             public interface ManyOps {
                 Promise<String> op0(String x);
                 Promise<String> op1(String x);
@@ -6314,6 +6480,7 @@ class SliceProcessorTest {
                 Promise<String> op13(String x);
                 Promise<String> op14(String x);
                 Promise<String> op15(String x);
+                static ManyOps manyOps() { return null; }
             }
             """);
         var source = JavaFileObjects.forSourceString("test.OverloadedService",

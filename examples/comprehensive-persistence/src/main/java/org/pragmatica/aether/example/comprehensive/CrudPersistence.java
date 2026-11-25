@@ -22,7 +22,7 @@ public interface CrudPersistence {
                        String email,
                        boolean active,
                        Instant createdAt,
-                       Instant deletedAt,
+                       Option<Instant> deletedAt,
                        String tier,
                        Preferences preferences) {
         static CustomerRow customerRow(long id,
@@ -30,7 +30,7 @@ public interface CrudPersistence {
                                        String email,
                                        boolean active,
                                        Instant createdAt,
-                                       Instant deletedAt,
+                                       Option<Instant> deletedAt,
                                        String tier,
                                        Preferences preferences) {
             return new CustomerRow(id, name, email, active, createdAt, deletedAt, tier, preferences);

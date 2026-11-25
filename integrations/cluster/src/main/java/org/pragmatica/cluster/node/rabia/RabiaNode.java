@@ -170,6 +170,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     @Contract
     default void useOperatorWarningSink(OperatorWarningSink sink) {}
 
+    /// Binds the remedy sentence of the genesis dead-seat warning (#1654) to a supplier read once, when the warning is raised.
+    /// Default no-op for implementations without a Rabia engine.
+    @Contract
+    default void useGenesisSeatRemedy(Supplier<String> remedy) {}
+
     default Result<Unit> configurePassiveClient() {
         return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
     }
@@ -198,7 +203,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     }
 
     default java.util.Set<NodeId> verifiedVoterHistoryIds() {
-        return java.util.Set.of();
+        return Set.of();
     }
 
     default Result<Unit> initializeVoters(VoterConfiguration configuration) {
@@ -251,6 +256,14 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     default Option<VoterConfiguration> voterConfiguration() {
         return Option.none();
+    }
+
+    /// Test seam (#1654 Ember): genesis members whose last two reports this pending node holds as consecutive rounds of its own view.
+    /// Read-only diagnostic for tests: it is not a consensus decision input and nothing in the protocol reads it.
+    /// Empty for a node that never ran a genesis agreement or whose engine is a test double. After genesis is installed the snapshot stays
+    /// frozen at its last value: it does not turn empty.
+    default Set<NodeId> genesisStableReporters() {
+        return Set.of();
     }
 
     default org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {
@@ -815,6 +828,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             }
 
             @Override
+            @Contract
+            public void useGenesisSeatRemedy(Supplier<String> remedy) {
+                consensus().useGenesisSeatRemedy(remedy);
+            }
+
+            @Override
             public Result<Unit> configurePassiveClient() {
                 return consensus().configurePassiveClient();
             }
@@ -900,6 +919,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public Option<VoterConfiguration> voterConfiguration() {
                 return consensus().voterConfiguration();
+            }
+
+            @Override
+            public Set<NodeId> genesisStableReporters() {
+                return consensus().genesisStableReporters();
             }
 
             @Override

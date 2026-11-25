@@ -1662,7 +1662,14 @@ final class FlowPrinter {
     /// chain links AND the first invocation's args don't themselves have complex multi-call
     /// content, the chain stays inline — matches the idiom `Result.all(args).map(Tuple3::new)`.
     /// Statement-position chains that FIT on the line stay inline.
+    /// A chain with a comment between its links never stays inline (#1718).
     private boolean shouldBreakChain(Cursor primary, int chainLinkCount, List<Cursor> postOps) {
+        // #1718: the inline path prints links with printNodeContent, which never emits a link's leading
+        // comments — a commented chain is always laid out vertically, where each link owns its comments.
+        if (postOps.stream().anyMatch(this::hasUnEmittedLeadingComment)) {
+            return true;
+        }
+
         if (chainLinkCount < 2 || alignment.isInInlineExpression()) {
             return false;
         }

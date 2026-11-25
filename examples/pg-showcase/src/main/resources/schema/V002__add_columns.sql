@@ -21,7 +21,7 @@ ALTER TABLE users ADD COLUMN deleted_at TIMESTAMPTZ;
 ALTER TABLE orders ADD COLUMN metadata JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE orders ADD COLUMN correlation_id UUID NOT NULL DEFAULT gen_random_uuid();
 ALTER TABLE orders ADD COLUMN tags TEXT[] NOT NULL DEFAULT '{}';
-ALTER TABLE orders ADD COLUMN total_with_tax NUMERIC(12,2) GENERATED ALWAYS AS (total * 1.08) STORED;
+ALTER TABLE orders ADD COLUMN total_with_tax NUMERIC(12,2) GENERATED ALWAYS AS (total * 1.08) STORED NOT NULL;
 
 -- Domain constraint: total must be positive.
 ALTER TABLE orders ADD CONSTRAINT orders_total_positive CHECK (total > 0);

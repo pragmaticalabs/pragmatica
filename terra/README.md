@@ -1,87 +1,39 @@
 # Pragmatica Terra
 
-Terra compiles the same slice sources as Aether into a single-process application. The implementation provides typed construction, blueprint selection, scoped resources, existing interceptor wrappers, ephemeral in-process pub-sub, and startup database migrations. It starts no Aether node.
+Pragmatica Terra compiles the slice sources you would run on Aether into one ordinary Java application: one JVM process, one executable distribution, no cluster. Licensed under Apache 2.0 (see the [license map](../LICENSE)).
 
-The [specification](SPEC.md) records the implemented compiler, migration, and HTTP hosting contracts. Executable distribution assembly is available through `terra:assemble`; see [the launcher guide](launcher/README.md). The [application examples](example-apps/README.md) build eight further distributions from unchanged ecommerce, URL-shortener, pricing, banking, step-composition, and persistence sources, with live PostgreSQL proofs.
+The same sources run on both runtimes. The blueprint syntax is shared, so a slice written for Aether needs no edits to start on Terra, and moving it to Aether later needs none either. Twenty-one original example slices compile for Terra unchanged, and eight example applications are proven end to end ([the matrix](example-apps/README.md)); the examples that need streams are refused explicitly ([why](../docs/rfc/RFC-0020-terra-streams-and-entities.md)).
 
-## Existing examples
+## What you get
 
-`terra-examples` adds the existing Catalog, ecommerce PricingService and InventoryService, and shared value-type source directories to a separate compilation. Their business code is unchanged. Additional Shop, Counter, Events, and Sink slices demonstrate dependency injection, LOCAL caching, publisher/subscriber generation, and direct, `Option`, `Result`, and `Promise` factory returns.
+- Startup database migrations, shared with Aether: versioned SQL under `schema/`, applied before any slice is constructed.
+- HTTP hosting: HTTP/1.1 with optional TLS, path or header API versioning, API-key or JWT authentication, per-route policies, liveness and readiness probes, and graceful drain on shutdown ([host guide](http/README.md)).
+- An executable distribution built by `terra:assemble`, started with `bin/terra`; `bin/terra --check` validates the slice graph, configuration and migration files without starting anything ([launcher guide](launcher/README.md)).
+- Reflection-free JSON codecs, generated at compile time ([JSON module](../integrations/serialization/json/README.md)).
+- In-process, ephemeral pub-sub between slices.
 
-The [example blueprint](examples/src/main/resources/blueprint.toml) selects six slices. The test invokes Catalog's generated HTTP router and PricingService, then exercises Shop's direct dependencies and delivery to Sink. The runnable demo publishes once and closes the application.
+For AI-assisted development the structure is fixed: slices, resources and routes have one shape, and a mistake in that shape surfaces at compile time (the annotation processor) or in `--check`, not in production.
 
-From the repository root, using Java 25 with preview enabled and the repository's normal Maven bootstrap completed:
+## Which runtime
 
-```sh
-mvn -pl terra/examples -am install -DskipTests
-mvn -pl terra/runtime,terra/examples,jbct/slice-processor test
-mvn -pl terra/examples dependency:build-classpath -Dmdep.outputFile=/tmp/terra-classpath
-java --enable-preview -cp "terra/examples/target/classes:$(cat /tmp/terra-classpath)" org.pragmatica.terra.example.TerraDemo
-```
+| You need | Terra | Aether |
+| --- | --- | --- |
+| One process you start with `bin/terra` | yes | no, a cluster |
+| Slices spread across nodes by a cluster runtime | no | yes |
+| Streams, durable entities, schedules | no, refused when the slice is compiled | yes |
+| Durable topics | no, refused at startup (`durability` other than `ephemeral`) | yes |
+| Pub-sub across processes | no, not refused: a publish with no local subscriber succeeds and reaches no other process | yes |
+| The same slice sources and blueprint syntax | yes | yes |
 
-Follow the repository's isolated Maven repository instructions in `CLAUDE.md`. The demo prints a successful delivery and exits; it does not bind a network port or require a database.
+Terra does not start an Aether node, and distributed collaborators are outside its supported runtime.
 
-## Compilation and embedding
+## Deployment shape
 
-Use `slice-processor` with these javac options and include `terra-runtime` on the compilation/runtime classpath:
+Direction (2026-11-06, not a shipped guarantee): Terra will ship resource clients that work from both runtimes, so the runtime and each resource's backend are chosen independently, and the standard deployment becomes two Terra instances with state in external standard infrastructure. Today the contract is narrower: two instances may start against one database, because the migration engine's database fence (PostgreSQL `pg_try_advisory_lock`, per database) lets one run at a time and a second instance's startup fails with a refusal instead of waiting (guarantee in the reference); pub-sub is in-process, so two instances do not share events. See [the reference](SPEC.md#database-startup).
 
-```text
--Aslice.target=terra
--Aslice.groupId=com.example
--Aslice.artifactId=application
--Aslice.version=1.0.0
-```
+## Run the demo distribution
 
-Terra shares annotation analysis, resource injection, factory return handling, interception, and route generation with the default Aether target. For `OrderService`, it emits `OrderServiceFactory` accepting `TerraContext` and a `TerraFactory` service descriptor identified by `com.example:application-order-service:1.0.0`. Compile the targets into separate output directories. Generated Terra factories omit Aether dispatch proxies, wire codecs, and `Slice` adapters.
-
-`TerraBlueprint.parse(toml)` returns the application selection. `TerraApplication.start(blueprint, configurationForArtifact)` discovers generated descriptors and provisions resources through the existing SPI. The overload accepting descriptors and a `ResourceProviderFacade` supports explicit embedding. Retrieve an entry point with `application.slice(MySlice.class)` and await `application.close()` during shutdown.
-
-Every selected dependency must appear in the blueprint with its exact generated coordinate. Dependencies are constructed first; injected instances retain their interceptor wrappers. This increment accepts blueprint identity and slice selection, including deployment-only scaling fields, and refuses unsupported sections. One instance is created per selected slice. The assembler obtains Terra-built candidate JARs from Maven runtime dependencies and checks this selection.
-
-Configuration is explicit and scoped per slice. Supply resource sections through the configuration provider. The executable launcher reads each owning JAR’s defaults separately; embedding callers supply their own providers. Existing LOCAL cache factories are reused. Other SPI resources require their dependencies and configuration; database startup uses the explicit migration path below, while distributed collaborators remain outside Terra’s supported runtime.
-
-## Pub-sub contract
-
-Existing typed topics, `Publisher<T>` resources, and single-payload subscriber annotations work without source changes. Topic configuration resolves `topic_name`, falling back to the section/typed topic name. Only ephemeral durability is accepted.
-
-A publication invokes every handler in its subscriber snapshot and waits for all results, even if a handler fails. No subscribers is success. Handlers receive the same payload reference and must treat it as immutable. Concurrent publications have no total ordering. There is no persistence, replay, retry, deduplication, or cross-process delivery.
-
-Publication is admitted only after all slices and subscriptions are ready. Closing rejects new publications, drains accepted deliveries, then releases resources in reverse construction order. Callers must stop other entry points before closing; arbitrary direct calls are not automatically drained. Handlers that never complete prevent a graceful drain.
-
-Single-payload subscriptions on injected plain-interface steps bind to the exact instance used by the slice. Streams, schedules, durable entities/topics, context-carrying subscribers, and live configuration callbacks are refused, including unsupported resources nested in steps. [Streams and durable entities](STREAMS-AND-ENTITIES.md) records reusable storage code and a proposed next contract; it does not claim implemented support. The HTTP host below supplies listener lifecycle, authentication, route composition, and draining for the generated typed routers.
-
-## Database startup
-
-Terra reuses [the shared migration engine](../aether/db-migrations/README.md), also called by Aether. It preserves the existing `aether_schema_history`, history metadata, and owner tables. Supply a versioned blueprint identity, for example `id = "com.example:inventory-app:1.0.0"`; the persisted owner is `com.example:inventory-app`, so upgrading the application version retains ownership.
-
-For an exploded application, place SQL under `schema/` next to `blueprint.toml`. `schema/V001__tables.sql` uses the `database` configuration section; `schema/orders/V001__tables.sql` uses `database.orders`. Filenames and UTF-8 CRC32 checksums follow Aether’s blueprint format. Call:
-
-```java
-TerraApplication.start(blueprintPath, configurationForSlice, migrationConfiguration)
-```
-
-This loads and validates the migration inputs, validates slice selection, migrates each datasource, closes the migration connections, then constructs slices. The embedding overload accepting a `TerraMigrations` plan supports application-specific packaging. The original `start(TerraBlueprint, ...)` overload without a migration plan remains for applications with no migrations; it cannot discover files without a path.
-
-Include the desired SQL resource factory, connection pool, and JDBC driver. The example module explicitly includes `resource-db-jdbc` and HikariCP; its PostgreSQL test adds the driver. Supply `database.jdbc_url` through the configuration provider. Migration and slice configuration should point at the same database when they share a schema.
-
-`application.migrations()` reports the applied count, current version, and duration for each datasource. All startup migrations are serialized within the JVM, including datasource aliases. Several application processes may share a database (#2787): the shared migration runner's database fence (a session-scoped database lock, held on a dedicated session outside the connection pool) lets one process run a datasource's migrations at a time. A process that meets the fence held by another waits and re-runs, after 15 s and then every 45 s for as long as the holder's session lives, logging a warning from the third consecutive wait; its re-run finds the migrations applied and applies none [verified: `terra/runtime/src/test/java/org/pragmatica/terra/TerraMigrationsFenceTest.java`, two instances in one JVM against live PostgreSQL, JDBC and pg-async]. That wait has no timeout: to end it, terminate the holder's session (the log names it). Engines without a session-scoped lock carry the per-script lock of the shared runner instead. There is no automatic retry or timeout that advances the migration queue while SQL or connection cleanup remains outstanding, and any other migration failure still fails startup.
-
-On failure, startup returns the cause and creates no slices. Correct the configuration, ownership, or unapplied script and restart after the previous attempt settles. Never edit an already-applied versioned script; publish another migration. A successfully migrated schema remains committed if later slice construction fails. Nontransactional migrations retain the engine’s statement checkpoints and its existing crash-window limitation: a committed statement whose checkpoint was not saved may run again on restart.
-
-Run the PostgreSQL proof against a local test database (the test creates and drops only uniquely named test schemas):
-
-```sh
-mvn -pl terra/examples test -Dterra.test.jdbcUrl='jdbc:postgresql://localhost:5432/test_database?user=test_user'
-```
-
-Without that property, the PostgreSQL test is explicitly skipped. The proof covers InventoryService SQL calls, a schema query during factory construction, restart idempotence, checksum and ownership refusal, and transactional DDL/history rollback. Unit tests separately pin startup failure and queue retention across caller timeouts and cleanup failure.
-
-
-## HTTP hosting
-
-The `terra-http` module hosts the generated routers over HTTP/1.1 or TLS and owns graceful application shutdown. It supports path/header API version selection, API-key and JWT authentication, route policy enforcement, and health probes. See [the host guide](http/README.md) for configuration, ownership, and drain semantics. `TerraCatalogHttpTest` drives the unchanged Catalog source through real listeners in both versioning modes, including JSON, CSV, binary payloads, and typed failures.
-
-## Run the standalone distribution
+From the repository root, with Java 25 and the repository's normal Maven bootstrap done (follow the isolated Maven repository instructions in `CLAUDE.md`):
 
 ```sh
 mvn -pl terra/examples -am install -DskipTests
@@ -91,4 +43,34 @@ sh terra/examples/target/terra-examples-terra/bin/terra
 curl http://localhost:8080/api/catalog/v2/items
 ```
 
-The ZIP at `terra/examples/target/terra-examples-1.0.0-rc5-terra.zip` includes its dependencies and can run outside the repository. The example explicitly uses public default routes; configure API keys or JWT for protected deployments.
+### JVM options (`JAVA_OPTS`)
+
+Both launchers (`bin/terra`, `bin/terra.cmd`) read `JAVA_OPTS` and place it after `--enable-preview` and before `-cp`; unset or empty adds nothing. Use it for heap, GC and system properties without bypassing the launcher; run each instance of a multi-instance deployment with its own value:
+
+```sh
+JAVA_OPTS="-Xms512m -Xmx512m -XX:+UseZGC" sh bin/terra
+```
+
+- `bin/terra` splits the value on whitespace and does no quote parsing or `*` expansion, so one option cannot contain whitespace. For such an option (for example `-Dname="a b"`) use the JVM's own `JAVA_TOOL_OPTIONS`, which the JVM parses itself.
+- `bin/terra.cmd` expands `%JAVA_OPTS%` in place, so cmd quoting applies.
+- There is no `TERRA_OPTS`: the `TERRA_` environment prefix is reserved for slice configuration, where `TERRA_OPTS` would read as a slice property.
+- The check run during assembly (`--check`) does not use `JAVA_OPTS`; it runs the JVM the plugin was given.
+
+[verified: terra/maven-plugin/src/test/java/org/pragmatica/terra/maven/LauncherTest.java] for `bin/terra` (stub `java` argv and a real JVM's `-XX:+PrintFlagsFinal`); `bin/terra.cmd` is pinned by text only, [design intent — unverified] at runtime.
+
+The ZIP `terra/examples/target/terra-examples-<version>-terra.zip` carries its dependencies and runs outside the repository. The demo uses public default routes (`security_mode = "none"`); set API keys or JWT for anything protected, as described in the launcher guide.
+
+## Build your own
+
+1. Compile your slices with `slice-processor` and `-Aslice.target=terra`, in a compilation separate from the Aether one.
+2. Put `blueprint.toml` (and optionally `terra.toml`, `resources.toml`, `schema/`) under `src/main/terra/`.
+3. Bind `terra:assemble` to `package`, add `terra-launcher` and your slice JARs as runtime dependencies.
+
+Details: [launcher guide](launcher/README.md), [example POM](examples/pom.xml). For embedding in your own process (`TerraApplication`, descriptors, the resource SPI, migration entry points), see the [reference in SPEC.md](SPEC.md#embedding-spi-and-descriptor-reference).
+
+## More
+
+- [HTTP host](http/README.md): versioning, authentication, probes, drain.
+- [Example applications](example-apps/README.md): eight applications with live PostgreSQL proofs.
+- [Specification](SPEC.md): contracts, increments, evidence, test counts.
+- [Streams and durable entities](../docs/rfc/RFC-0020-terra-streams-and-entities.md): not supported; investigation and proposed contract.

@@ -15,7 +15,6 @@
  */
 package org.pragmatica.http;
 
-import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -23,9 +22,8 @@ import java.util.stream.Stream;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Tuple.Tuple2;
 
-import static org.pragmatica.lang.Tuple.tuple;
+import static org.pragmatica.lang.Option.option;
 
 
 /// HTTP request methods.
@@ -39,37 +37,34 @@ public enum HttpMethod {
     OPTIONS,
     TRACE,
     CONNECT;
-    private static final Map<String, HttpMethod> FROM_NAME;
-    static {
-        FROM_NAME = Stream.of(HttpMethod.values())
-                          .map(value -> tuple(value.name().toLowerCase(Locale.ROOT),
-                                              value))
-                          .collect(Collectors.toMap(Tuple2::first, Tuple2::last));
-    }
-    /// Parse HTTP method from string, absent for unknown methods.
+    private static final Map<String, HttpMethod> FROM_NAME = Stream.of(HttpMethod.values()).collect(Collectors.toMap(HttpMethod::name,
+                                                                                                                     value -> value));
+    /// Parse HTTP method from string, absent for unknown methods. The same parser as [#httpMethod]: it accepts exactly
+    /// what that one accepts.
     ///
-    /// @param name HTTP method string (case-insensitive)
+    /// @param name HTTP method string (ASCII case-insensitive)
     /// @return Option containing the HttpMethod or empty for unknown methods
     public static Option<HttpMethod> fromString(String name) {
-        return Option.option(FROM_NAME.get(name.toLowerCase(Locale.ROOT)));
+        return httpMethod(name).option();
     }
-    /// Parse HTTP method from string.
+    /// Parse HTTP method from string. The match is case-insensitive over ASCII letters only: a letter outside ASCII that a
+    /// locale-aware fold would turn into a method letter (`ſ` U+017F into `S`, `ı` U+0131 into `I`) does not make a method.
     ///
     /// @param method HTTP method string
     /// @return Result containing the HttpMethod or an error for unknown methods
     public static Result<HttpMethod> httpMethod(String method) {
-        return switch (method.toUpperCase(Locale.ROOT)) {
-            case "GET" -> Result.success(GET);
-            case "POST" -> Result.success(POST);
-            case "PUT" -> Result.success(PUT);
-            case "DELETE" -> Result.success(DELETE);
-            case "PATCH" -> Result.success(PATCH);
-            case "HEAD" -> Result.success(HEAD);
-            case "OPTIONS" -> Result.success(OPTIONS);
-            case "TRACE" -> Result.success(TRACE);
-            case "CONNECT" -> Result.success(CONNECT);
-            default -> new UnknownMethod(method).result();
-        };
+        return option(FROM_NAME.get(asciiUpperCase(method))).toResult(new UnknownMethod(method));
+    }
+    private static String asciiUpperCase(String name) {
+        return name.chars()
+                   .map(HttpMethod::asciiUpper)
+                   .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+                   .toString();
+    }
+    private static int asciiUpper(int codePoint) {
+        return codePoint >= 'a' && codePoint <= 'z'
+               ? codePoint - ('a' - 'A')
+               : codePoint;
     }
     @Deprecated(forRemoval = true)
     public static Result<HttpMethod> from(String method) {
