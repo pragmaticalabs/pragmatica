@@ -13,6 +13,7 @@ import org.pragmatica.lang.utils.CircuitBreaker.StateListener;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
@@ -332,7 +333,7 @@ class CircuitBreakerTest {
     }
 
     @Test
-    void listener_isCalledOnceWhenTwoFailuresTripTheBreakerTogether() {
+    void listener_isCalledOnceWhenTwoFailuresTripTheBreakerTogether() throws InterruptedException {
         var changes = new ArrayList<Change>();
         var breaker = CircuitBreaker.builder()
                                     .failureThreshold(1)
@@ -343,10 +344,17 @@ class CircuitBreakerTest {
         var first = Promise.<String>promise();
         var second = Promise.<String>promise();
 
+        var handled = new CountDownLatch(2);
+
         breaker.execute(() -> first);
         breaker.execute(() -> second);
+        // The breaker's failure handlers are events: they run on one async task per promise, in registration order.
+        // A sentinel registered after them signals that the breaker's handler of that promise has finished.
+        first.onResult(_ -> handled.countDown());
+        second.onResult(_ -> handled.countDown());
         first.fail(TEST_ERROR);
         second.fail(TEST_ERROR);
+        assertThat(handled.await(5, TimeUnit.SECONDS)).as("the failure handlers finished").isTrue();
 
         assertThat(changes).as("the second failure found the breaker already open").containsExactly(new Change(State.CLOSED,
                                                                                                                 State.OPEN));
