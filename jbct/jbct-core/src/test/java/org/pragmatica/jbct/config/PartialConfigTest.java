@@ -204,6 +204,38 @@ class PartialConfigTest {
                                                                  .doesNotContain("JBCT-STY-02"));
     }
 
+    /// C8 (#2526): a `[lint.rules]` key that is no registry ID is refused naming the key and the value, never ignored.
+    @Test
+    void partialConfig_refusesRuleKeyThatIsNoRegistryId_namingKeyAndValue() {
+        layer("""
+              [lint.rules]
+              JBCT-NOPE-99 = "warning"
+              JBCT-STY-02 = "warning"
+              """).onSuccess(layer -> org.junit.jupiter.api.Assertions.fail("must refuse, captured " + layer))
+                  .onFailure(cause -> assertThat(cause.message()).contains("lint.rules.JBCT-NOPE-99", "warning")
+                                                                 .contains("a rule ID of the registry")
+                                                                 .doesNotContain("JBCT-STY-02"));
+    }
+
+    /// C8 (#2526): a retired rule key is refused naming its replacement.
+    @Test
+    void partialConfig_refusesRetiredRuleKey_namingItsReplacement() {
+        layer("""
+              [lint.rules]
+              JBCT-ARCH-04 = "off"
+              """).onSuccess(layer -> org.junit.jupiter.api.Assertions.fail("must refuse, captured " + layer))
+                  .onFailure(cause -> assertThat(cause.message()).contains("lint.rules.JBCT-ARCH-04", "retired", "JBCT-TREE-01"));
+    }
+
+    @Test
+    void partialConfig_loadsEveryRegisteredRuleKey() {
+        layer("""
+              [lint.rules]
+              JBCT-ARCH-01 = "off"
+              JBCT-TREE-01 = "error"
+              """).onFailure(cause -> org.junit.jupiter.api.Assertions.fail("must load, refused " + cause.message()));
+    }
+
     @Test
     void partialConfig_refusesUnknownSchemaMode_namingKeyValueAndAllowed() {
         layer("[blueprint]\nschema = \"requird\"\n")

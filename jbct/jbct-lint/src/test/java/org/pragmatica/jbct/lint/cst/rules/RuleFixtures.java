@@ -633,11 +633,11 @@ final class RuleFixtures {
                 }
                 """),
 
-        // JBCT-ARCH-01: dependency direction — a domain file importing an adapter package.
+        // JBCT-ARCH-01: a domain file importing a framework package.
         fixture("JBCT-ARCH-01", 2,
                 """
                 package com.example.domain.user;
-                import com.example.adapter.persistence.Row;
+                import org.springframework.stereotype.Component;
                 class User {
                 }
                 """,
@@ -679,21 +679,6 @@ final class RuleFixtures {
                         Result<String> apply(String r);
                     }
                     Result<String> execute(String r);
-                }
-                """),
-
-        // JBCT-ARCH-04: importing another slice's internal package (a different slice's non-root).
-        fixture("JBCT-ARCH-04", 2,
-                """
-                package com.example.usecase.registeruser;
-                import com.example.usecase.loginuser.internal.Token;
-                class RegisterUser {
-                }
-                """,
-                """
-                package com.example.usecase.registeruser;
-                import com.example.usecase.registeruser.internal.Token;
-                class RegisterUser {
                 }
                 """),
 

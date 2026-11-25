@@ -130,8 +130,8 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-MIX-01", DiagnosticSeverity.ERROR),
 
     // I/O in domain
-    // Architecture / layering (#452). ARCH-01/04 at design ERROR — corpus clean (2026-07-19);
-    // ARCH-02/03 WARNING by design.
+    // Architecture / layering (#452). ARCH-01 at design ERROR — corpus clean (2026-07-19);
+    // ARCH-02/03 WARNING by design. ARCH-04 retired by #2526 (TREE-01 replaces it).
     Map.entry("JBCT-ARCH-01", DiagnosticSeverity.ERROR),
 
     // Dependency direction — imports point up only
@@ -141,9 +141,6 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-ARCH-03", DiagnosticSeverity.WARNING),
 
     // A use case must not call another use case
-    Map.entry("JBCT-ARCH-04", DiagnosticSeverity.ERROR),
-
-    // A slice must not import another slice's internals
     // Package tree (#2526): WARNING by design.
     Map.entry("JBCT-TREE-01", DiagnosticSeverity.WARNING),
 

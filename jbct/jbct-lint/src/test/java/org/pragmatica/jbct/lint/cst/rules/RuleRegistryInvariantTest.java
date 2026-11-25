@@ -108,7 +108,7 @@ class RuleRegistryInvariantTest {
                                     .map(LintRule::ruleId)
                                     .collect(Collectors.toSet());
 
-        assertEquals(Set.of("JBCT-ARCH-01", "JBCT-ARCH-02", "JBCT-ARCH-03", "JBCT-ARCH-04", "JBCT-MIX-01", "JBCT-NAM-06",
+        assertEquals(Set.of("JBCT-ARCH-01", "JBCT-ARCH-02", "JBCT-ARCH-03", "JBCT-MIX-01", "JBCT-NAM-06",
                             "JBCT-NAM-07", "JBCT-TREE-01", "JBCT-TREE-02"),
                      businessOnly);
     }

@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// JBCT-ARCH-01 dependency-direction rule.
+/// JBCT-ARCH-01 domain-purity rule (framework imports from a domain file).
 class CstArchDirectionRuleTest {
     private static final String RULE_ID = "JBCT-ARCH-01";
 
@@ -27,66 +27,8 @@ class CstArchDirectionRuleTest {
         linter = CstLinter.cstLinter(LintContext.defaultContext());
     }
 
-    /// Ruling: only the top-level `config` package is bootstrap; a `config` nested in a layer is that layer's own settings.
-    @Nested
-    class ConfigPackages {
-        @Test
-        void allows_adapterImportingItsOwnConfigSubpackage() {
-            assertFalse(hasRule("""
-                    package com.example.adapter.persistence;
-                    import com.example.adapter.config.Settings;
-                    class Repo {}
-                    """));
-        }
-
-        @Test
-        void allows_domainImportingItsOwnConfigSubpackage() {
-            assertFalse(hasRule("""
-                    package com.example.domain.user;
-                    import com.example.domain.config.Limits;
-                    class User {}
-                    """));
-        }
-
-        @Test
-        void detects_domainImportingTopLevelConfig() {
-            assertTrue(hasRule("""
-                    package com.example.domain.user;
-                    import com.example.config.Wiring;
-                    class User {}
-                    """));
-        }
-    }
-
     @Nested
     class Violations {
-        @Test
-        void detects_domainImportingAdapter() {
-            assertTrue(hasRule("""
-                    package com.example.domain.user;
-                    import com.example.adapter.persistence.Row;
-                    class User {}
-                    """));
-        }
-
-        @Test
-        void detects_domainImportingApplication() {
-            assertTrue(hasRule("""
-                    package com.example.domain.user;
-                    import com.example.application.register.RegisterService;
-                    class User {}
-                    """));
-        }
-
-        @Test
-        void detects_applicationImportingAdapter() {
-            assertTrue(hasRule("""
-                    package com.example.application.register;
-                    import com.example.adapter.persistence.Row;
-                    class RegisterService {}
-                    """));
-        }
-
         @Test
         void detects_domainImportingFramework() {
             assertTrue(hasRule("""
@@ -97,8 +39,40 @@ class CstArchDirectionRuleTest {
         }
 
         @Test
-        void detects_fullyQualifiedHigherLayerReference() {
+        void detects_fullyQualifiedFrameworkReference() {
             assertTrue(hasRule("""
+                    package com.example.domain.user;
+                    class User {
+                        com.fasterxml.jackson.databind.JsonNode node;
+                    }
+                    """));
+        }
+    }
+
+    /// The layer-rank check is retired (#2526): an upward import is no longer ARCH-01's finding.
+    @Nested
+    class RankCheckRetired {
+        @Test
+        void ignores_domainImportingAdapter() {
+            assertFalse(hasRule("""
+                    package com.example.domain.user;
+                    import com.example.adapter.persistence.Row;
+                    class User {}
+                    """));
+        }
+
+        @Test
+        void ignores_domainImportingTopLevelConfig() {
+            assertFalse(hasRule("""
+                    package com.example.domain.user;
+                    import com.example.config.Wiring;
+                    class User {}
+                    """));
+        }
+
+        @Test
+        void ignores_fullyQualifiedHigherLayerReference() {
+            assertFalse(hasRule("""
                     package com.example.domain.user;
                     class User {
                         com.example.adapter.persistence.Row row;
@@ -110,26 +84,16 @@ class CstArchDirectionRuleTest {
     @Nested
     class NearMisses {
         @Test
-        void allows_applicationImportingDomain() {
+        void allows_applicationImportingFramework() {
             assertFalse(hasRule("""
                     package com.example.application.register;
-                    import com.example.domain.user.User;
+                    import org.springframework.stereotype.Component;
                     class RegisterService {}
                     """));
         }
 
         @Test
-        void allows_adapterImportingDomainAndApplication() {
-            assertFalse(hasRule("""
-                    package com.example.adapter.persistence;
-                    import com.example.domain.user.User;
-                    import com.example.application.register.RegisterService;
-                    class UserRow {}
-                    """));
-        }
-
-        @Test
-        void allows_sameLayerImport() {
+        void allows_domainImportingDomain() {
             assertFalse(hasRule("""
                     package com.example.domain.user;
                     import com.example.domain.order.Order;
@@ -141,26 +105,17 @@ class CstArchDirectionRuleTest {
         void ignores_unclassifiableFilePackage() {
             assertFalse(hasRule("""
                     package com.example.util;
-                    import com.example.adapter.persistence.Row;
+                    import org.springframework.stereotype.Component;
                     class Helper {}
                     """));
         }
 
         @Test
-        void ignores_unclassifiableReferencedPackage() {
+        void ignores_jdkImportFromDomain() {
             assertFalse(hasRule("""
                     package com.example.domain.user;
                     import java.util.List;
                     class User {}
-                    """));
-        }
-
-        @Test
-        void ignores_thirdPartyPackageWithLayerKeyword() {
-            assertFalse(hasRule("""
-                    package com.example.application.register;
-                    import org.springframework.integration.Message;
-                    class RegisterService {}
                     """));
         }
 
@@ -172,15 +127,6 @@ class CstArchDirectionRuleTest {
                     class User {}
                     """));
         }
-
-        @Test
-        void ignores_crossGroupInHouseModule() {
-            assertFalse(hasRule("""
-                    package com.foo.domain.user;
-                    import com.bar.adapter.persistence.Row;
-                    class User {}
-                    """));
-        }
     }
 
     @Test
@@ -188,7 +134,7 @@ class CstArchDirectionRuleTest {
         var excluded = CstLinter.cstLinter(LintContext.lintContext(List.of("com.example.domain.**")));
         var diagnostics = excluded.lint(SourceFile.sourceFile(Path.of("Test.java"), """
                 package com.example.domain.user;
-                import com.example.adapter.persistence.Row;
+                import org.springframework.stereotype.Component;
                 class User {}
                 """))
                                   .onFailure(cause -> fail("Parse failed: " + cause.message()))
@@ -204,15 +150,15 @@ class CstArchDirectionRuleTest {
         assertTrue(hasRule("""
                 package com.example.domain.user;
                 class User {
-                    com.example.adapter.persistence.Row run() { return null; }
+                    org.springframework.stereotype.Component run() { return null; }
                 }
-                """), "baseline fully-qualified higher-layer reference should trigger JBCT-ARCH-01");
+                """), "baseline fully-qualified framework reference should trigger JBCT-ARCH-01");
 
         assertFalse(hasRule("""
                 package com.example.domain.user;
                 class User {
                     @SuppressWarnings("JBCT-ARCH-01")
-                    com.example.adapter.persistence.Row run() { return null; }
+                    org.springframework.stereotype.Component run() { return null; }
                 }
                 """), "@SuppressWarnings(\"JBCT-ARCH-01\") should suppress it");
     }

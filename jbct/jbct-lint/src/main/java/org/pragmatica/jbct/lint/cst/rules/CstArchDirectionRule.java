@@ -1,6 +1,5 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
-import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -16,36 +15,26 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
 
-/// JBCT-ARCH-01: dependency direction — imports point up only.
+/// JBCT-ARCH-01: a `domain` file does not depend on a framework package.
 ///
-/// The book layering rule is `domain <- application <- adapter <- bootstrap`: a file may depend on
-/// its own layer and every lower-ranked layer, never a higher one. This rule classifies the file's
-/// package (see [org.pragmatica.jbct.lint.layer.LayerClassifier]) and each package it references —
-/// through an import or a fully-qualified type node (see [ArchSupport]) — and flags a reference whose
-/// target layer outranks the file's. In addition, a `domain` file may not depend on a framework
-/// package (Spring, Jackson, jOOQ, JPA, ...), because the domain layer must stay pure.
+/// The domain layer stays pure: this rule classifies the file's package (see
+/// [org.pragmatica.jbct.lint.layer.LayerClassifier]) and flags a reference — through an import or a
+/// fully-qualified type node (see [ArchSupport]) — to a framework package (Spring, Jackson, jOOQ, JPA,
+/// ...) from a file in the `domain` layer. Frameworks are third-party by definition, so no root-group
+/// gate applies.
 ///
-/// **Root-group gate (false-positive guard):** the layer-rank check applies only when the referenced
-/// package shares the file's own root group — the first two dotted segments (`com.example`). A
-/// cross-group reference is third-party by definition for layering, so a coincidental layer keyword
-/// in a third-party package (`org.springframework.integration.*`) never rank-flags. The curated
-/// framework check for domain files is exempt from this gate — frameworks are always third-party.
-///
-/// The rule is silent when the file's own package is unclassifiable (never guess-flag) and when a
-/// same-group referenced package is unclassifiable. Severity ships at WARNING pending corpus
-/// validation; the design intent is ERROR.
+/// The layer-rank direction check (`domain <- application <- adapter <- bootstrap`) is retired: the
+/// package tree rule JBCT-TREE-01 judges sideways imports from `[project] basePackage` instead (#2526).
+/// The rule is silent when the file's own package is unclassifiable (never guess-flag).
 ///
 /// Lineage: this rule absorbs the layering concern that [CstDomainIoRule] (JBCT-MIX-01) covers for
 /// JDK I/O. MIX-01 keeps its own ID/severity and its precise `java.io` / `java.nio` / ... catalog;
 /// ARCH-01's framework set is disjoint from it, so the two are complementary, not redundant.
 ///
 /// FP surface: a same-root-group project package whose segment happens to be a layer keyword without
-/// layering intent. FN surface (syntax only, no cross-file resolution): a higher-layer type reached
-/// through a star import or a simple name whose package is not otherwise referenced; a framework not
-/// in the curated prefix set; a cross-group in-house module (different second segment); sideways
-/// same-layer coupling with no slice / use-case signal — that is delegated to JBCT-ARCH-03 and
-/// JBCT-ARCH-04, which carry the signal needed to tell "different workflow" apart. There is no
-/// transitive-dependency analysis.
+/// layering intent. FN surface (syntax only, no cross-file resolution): a framework reached through a
+/// star import or a simple name whose package is not otherwise referenced; a framework not in the
+/// curated prefix set. There is no transitive-dependency analysis.
 public class CstArchDirectionRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ARCH-01";
 
@@ -83,71 +72,28 @@ public class CstArchDirectionRule implements CstLintRule {
 
         return ctx.layers()
                   .layerOf(packageName)
-                  .map(fileLayer -> diagnosticsFor(root, packageName, fileLayer, ctx))
+                  .map(fileLayer -> diagnosticsFor(root, fileLayer, ctx))
                   .or(Stream.<Diagnostic> empty());
     }
 
-    private Stream<Diagnostic> diagnosticsFor(Cursor root, String filePackage, Layer fileLayer, LintContext ctx) {
+    private Stream<Diagnostic> diagnosticsFor(Cursor root, Layer fileLayer, LintContext ctx) {
         var diagnostics = Stream.<Diagnostic> builder();
 
         for (var reference : ArchSupport.collectReferences(root)) {
-            violationReason(filePackage, fileLayer, reference.packageName(), ctx).onPresent(reason -> diagnostics.add(createDiagnostic(reference.node(),
-                                                                                                                                       reason,
-                                                                                                                                       ctx)));
+            violationReason(fileLayer, reference.packageName()).onPresent(reason -> diagnostics.add(createDiagnostic(reference.node(),
+                                                                                                    reason,
+                                                                                                    ctx)));
         }
 
         return diagnostics.build();
     }
 
-    private Option<String> violationReason(String filePackage,
-                                           Layer fileLayer,
-                                           String referencedPackage,
-                                           LintContext ctx) {
-        if (referencedPackage.isEmpty()) {
-            return Option.none();
-        }
-        // Domain purity: frameworks are third-party by definition and always checked.
+    private Option<String> violationReason(Layer fileLayer, String referencedPackage) {
         if (fileLayer == Layer.DOMAIN && isFramework(referencedPackage)) {
             return Option.some("domain must not depend on framework package '" + referencedPackage + "'");
         }
-        // Layer-rank direction applies only within the file's own root group. A cross-group import is
-        // third-party for layering purposes, so a coincidental layer keyword must not rank-flag it.
-        if (!sameRootGroup(filePackage, referencedPackage)) {
-            return Option.none();
-        }
 
-        return ctx.layers()
-                  .layerOf(referencedPackage)
-                  .filter(referencedLayer -> referencedLayer.rank() > fileLayer.rank())
-                  .map(referencedLayer -> layerMessage(fileLayer, referencedLayer, referencedPackage));
-    }
-
-    /// Whether two packages share the same root group — their first two dotted segments
-    /// (e.g. `org.pragmatica`). Cross-group references are third-party for layering.
-    private static boolean sameRootGroup(String filePackage, String referencedPackage) {
-        return rootGroup(filePackage).equals(rootGroup(referencedPackage));
-    }
-
-    private static String rootGroup(String packageName) {
-        var segments = packageName.split("\\.");
-
-        if (segments.length <= 2) {
-            return packageName;
-        }
-
-        return segments[0] + "." + segments[1];
-    }
-
-    private static String layerMessage(Layer fileLayer, Layer referencedLayer, String referencedPackage) {
-        return name(fileLayer)
-             + " must not depend on " + name(referencedLayer)
-             + " layer (package '" + referencedPackage
-             + "')";
-    }
-
-    private static String name(Layer layer) {
-        return layer.name()
-                    .toLowerCase(Locale.ROOT);
+        return Option.none();
     }
 
     private boolean isFramework(String referencedPackage) {
@@ -167,7 +113,6 @@ public class CstArchDirectionRule implements CstLintRule {
                                      startLine(node),
                                      startColumn(node),
                                      "Illegal layer dependency: " + reason,
-                                     "Imports point up only: domain <- application <- adapter <- bootstrap. Depend on "
-                                    + "the same or a lower layer, never a higher one; keep the domain free of frameworks.");
+                                     "Keep the domain free of frameworks: depend on a port the adapter implements.");
     }
 }

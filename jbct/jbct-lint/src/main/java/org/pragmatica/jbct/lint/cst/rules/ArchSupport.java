@@ -17,7 +17,7 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
 
-/// Shared reference extraction for the architecture / layering rules (JBCT-ARCH-01, JBCT-ARCH-04) and the package-tree
+/// Shared reference extraction for the architecture / layering rules (JBCT-ARCH-01) and the package-tree
 /// rule (JBCT-TREE-01, [#collectTargets]).
 ///
 /// A single file couples to another package in two syntactic ways: through an `import` declaration

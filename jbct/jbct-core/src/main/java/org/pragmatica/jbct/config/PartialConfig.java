@@ -15,6 +15,7 @@ import org.pragmatica.jbct.lint.LintConfig;
 import org.pragmatica.jbct.lint.TechnicalWords;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
 import org.pragmatica.jbct.lint.tree.TreeConfig;
+import org.pragmatica.jbct.score.RuleCategoryMapping;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -185,6 +186,11 @@ record PartialConfig(PartialFormatter formatter,
                        Option<List<String>> namingAdd,
                        Option<List<String>> namingRemove) {
         static final PartialLint EMPTY = new PartialLint(none(), Map.of(), none(), none());
+        /// Rules retired from the registry, each with the sentence naming what replaces it (C8).
+        private static final Map<String, String> RETIRED_RULES = Map.of("JBCT-ARCH-04",
+                                                                        "use JBCT-TREE-01, which judges sideways imports from [project] basePackage",
+                                                                        "JBCT-SEAL-02",
+                                                                        "use JBCT-CAUSE-01, which absorbed it");
         private static final String NAMING = "lint.naming";
         private static final Set<String> NAMING_KEYS = Set.of("add", "remove");
         private static final String NAMING_KEYS_EXPECTED = "one of the keys: add, remove";
@@ -255,8 +261,27 @@ record PartialConfig(PartialFormatter formatter,
         private static Map<String, RuleSetting> ruleSettings(TomlDocument toml) {
             return toml.keys("lint.rules")
                        .stream()
+                       .filter(rule -> isRegistered(toml, rule))
                        .flatMap(rule -> parsedSetting(toml, rule))
                        .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
+        }
+
+        /// A `[lint.rules]` key that is no registry ID (#2526, C8) is a typo or a retired rule that would otherwise
+        /// change nothing: the read is recorded so the load refuses it naming the key, the value and either the
+        /// replacement of a retired rule or the registry-ID shape; the key then reaches no setting.
+        private static boolean isRegistered(TomlDocument toml, String rule) {
+            return RuleCategoryMapping.isKnown(rule) || refusedUnregistered(toml, rule);
+        }
+
+        private static boolean refusedUnregistered(TomlDocument toml, String rule) {
+            return toml.getParsed("lint.rules", rule, unregisteredExpectation(rule), _ -> none())
+                       .isPresent();
+        }
+
+        private static String unregisteredExpectation(String rule) {
+            return RETIRED_RULES.containsKey(rule)
+                   ? "no longer a rule (retired); " + RETIRED_RULES.get(rule)
+                   : "a rule ID of the registry, e.g. JBCT-RET-01";
         }
 
         private static Stream<Map.Entry<String, RuleSetting>> parsedSetting(TomlDocument toml, String rule) {
