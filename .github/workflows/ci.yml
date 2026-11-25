@@ -98,12 +98,82 @@ jobs:
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
           echo "skip_tests=$skip_tests" >> "$GITHUB_OUTPUT"
           echo "skip=$skip skip_tests=$skip_tests"
+  # #3745: a dependency the restored cache lacks (cache keys are pom hashes, and only a push to the release branch saves one, so
+  # a change that adds a dependency has no cache holding it) was fetched from Central by every job at once, and one 429 that
+  # outlasted the #3280 retries failed a required check. This job fetches the missing part ONCE, with a longer retry budget, and
+  # hands it to the jobs below as a small artifact (m2-delta). Best effort by construction: the jobs run when it fails
+  # (`!cancelled()`, not `success()`; a skipped required check would count as passing) and then resolve as before. It is not
+  # a required check. Guarantee: Central outages shorter than this job's retry budget no longer reach the shards; a longer
+  # outage still fails the shard that needs the artifact.
+  deps-prime:
+    needs: push-dedupe
+    if: needs.push-dedupe.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'zulu'
+
+      - name: Restore Maven repository (full-set cache, saved by forge-tests)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2-full-v4-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            m2-full-v4-
+            m2-full-v3-
+            m2-full-v2-
+            m2-full-v1-
+            m2-full-
+            setup-java-Linux-x64-maven-
+
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
+
+      - name: Mark the restored repository
+        run: touch "$RUNNER_TEMP/m2-marker"
+
+      # Resolves the dependencies and plugins of every module. Retry budget: 15 attempts, 15 s doubling to 120 s, about 25 min
+      # per request at worst (the step's timeout bounds it). Failures are tolerated: whatever was fetched is still handed on.
+      - name: Resolve every module's dependencies once
+        continue-on-error: true
+        run: >-
+          mvn -B -fae dependency:go-offline
+          -Daether.connector.http.retryHandler.count=15
+          -Daether.connector.http.retryHandler.interval=15000
+          -Daether.connector.http.retryHandler.intervalMax=120000
+        timeout-minutes: 15
+
+      - name: Pack what the cache lacked
+        run: |
+          repo="$HOME/.m2/repository"
+          mkdir -p "$RUNNER_TEMP/m2-delta"
+          ( cd "$repo" && find . -type f -newer "$RUNNER_TEMP/m2-marker" ! -name '*.lastUpdated' ! -name resolver-status.properties | sed 's|^\./||' ) > "$RUNNER_TEMP/m2-delta.list"
+          n=$(wc -l < "$RUNNER_TEMP/m2-delta.list")
+          echo "::notice::deps-prime fetched $n file(s) the restored cache lacked"
+          if [ "$n" -gt 0 ]; then tar -czf "$RUNNER_TEMP/m2-delta/m2-delta.tgz" -C "$repo" -T "$RUNNER_TEMP/m2-delta.list"; fi
+
+      - name: Upload m2-delta
+        uses: actions/upload-artifact@v6
+        with:
+          name: m2-delta
+          path: ${{ runner.temp }}/m2-delta/m2-delta.tgz
+          if-no-files-found: ignore
+          retention-days: 1
+
   # The format/lint gate and the static pins: everything build-and-test checked before it tested. They need no module
   # build, so they run beside the test groups instead of in front of them; build-and-test needs this job, so a red here
   # still fails the required check.
   static-gates:
-    needs: push-dedupe
-    if: needs.push-dedupe.outputs.skip != 'true'
+    needs: [push-dedupe, deps-prime]
+    if: ${{ !cancelled() && needs.push-dedupe.result == 'success' && needs.push-dedupe.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -195,6 +265,9 @@ jobs:
       - name: Drop failed-download markers from the restored repository
         run: .github/scripts/drop-failed-download-markers.sh
 
+      - name: Apply the dependency delta fetched once by deps-prime (#3745)
+        uses: ./.github/actions/apply-m2-delta
+
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
@@ -238,8 +311,8 @@ jobs:
   # module it reads is compiled in the same checkout: dead-surface-gate reads every aether module's target/classes.
   # The groups are tools/ci-test-groups.txt (regenerated from a run's reports); the matrix list must name exactly its groups.
   test-group:
-    needs: push-dedupe
-    if: needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true'
+    needs: [push-dedupe, deps-prime]
+    if: ${{ !cancelled() && needs.push-dedupe.result == 'success' && needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true' }}
     name: test-group-${{ matrix.group }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
@@ -279,6 +352,9 @@ jobs:
       # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
       - name: Drop failed-download markers from the restored repository
         run: .github/scripts/drop-failed-download-markers.sh
+
+      - name: Apply the dependency delta fetched once by deps-prime (#3745)
+        uses: ./.github/actions/apply-m2-delta
 
       # One probe per provider set (#3338): each missing artifact is a Central fetch at test time.
       - name: Report whether the restored cache holds the test-time dependencies
@@ -415,8 +491,8 @@ jobs:
 
   forge-tests:
     name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'forge-tests (duplicate push run, skipped)' || 'forge-tests' }}
-    needs: push-dedupe
-    if: needs.push-dedupe.outputs.skip != 'true'
+    needs: [push-dedupe, deps-prime]
+    if: ${{ !cancelled() && needs.push-dedupe.result == 'success' && needs.push-dedupe.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
@@ -446,6 +522,9 @@ jobs:
       # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
       - name: Drop failed-download markers from the restored repository
         run: .github/scripts/drop-failed-download-markers.sh
+
+      - name: Apply the dependency delta fetched once by deps-prime (#3745)
+        uses: ./.github/actions/apply-m2-delta
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
@@ -539,8 +618,8 @@ jobs:
   # 24.9-25.4 min against the 25 min budget, over capacity, not unbalanced). Many classes are still at the default weight:
   # regenerate the weights from a CI run (tools/regen-shard-weights.py) to plan on measured times.
   ember-shard:
-    needs: push-dedupe
-    if: needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true'
+    needs: [push-dedupe, deps-prime]
+    if: ${{ !cancelled() && needs.push-dedupe.result == 'success' && needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true' }}
     name: ember-shard-${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -579,6 +658,9 @@ jobs:
       - name: Drop failed-download markers from the restored repository
         run: .github/scripts/drop-failed-download-markers.sh
 
+      - name: Apply the dependency delta fetched once by deps-prime (#3745)
+        uses: ./.github/actions/apply-m2-delta
+
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
@@ -615,8 +697,8 @@ jobs:
   # sat on build-and-test's longest dependency chain (~18 of its ~46 min). The shard count is the matrix list's length:
   # add an entry to go from 2 shards to 3. The required check names are consensus-shard-1 .. consensus-shard-N.
   consensus-shard:
-    needs: push-dedupe
-    if: needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true'
+    needs: [push-dedupe, deps-prime]
+    if: ${{ !cancelled() && needs.push-dedupe.result == 'success' && needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true' }}
     name: consensus-shard-${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -654,6 +736,9 @@ jobs:
       # #3338: a failed-download marker (restored from an older entry) would make this job skip the retry of a 429.
       - name: Drop failed-download markers from the restored repository
         run: .github/scripts/drop-failed-download-markers.sh
+
+      - name: Apply the dependency delta fetched once by deps-prime (#3745)
+        uses: ./.github/actions/apply-m2-delta
 
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
