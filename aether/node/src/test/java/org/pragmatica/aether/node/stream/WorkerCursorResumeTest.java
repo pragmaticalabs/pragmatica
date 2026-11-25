@@ -267,6 +267,120 @@ class WorkerCursorResumeTest {
         }
     }
 
+    /// #3283 round 2: the unreadable-cursor episode belongs to the consumer key, not to one consumer. Each read below is a
+    /// pending promise the test answers, so the order of the old consumer's retry and its successor's fetch is fixed.
+    @Nested
+    class WarningEpisode {
+        @Test
+        void successorTakesTheEpisodeOver_oldRetryFailing_closesNothing() {
+            successorTakesTheEpisodeOver(Causes.cause("no core peers available").promise());
+        }
+
+        @Test
+        void successorTakesTheEpisodeOver_oldRetrySucceeding_closesNothing() {
+            successorTakesTheEpisodeOver(found(2L));
+        }
+
+        /// The old consumer is abandoned while its fetch fails and re-subscribed; the successor's first fetch fails too. The
+        /// old consumer's retry then answers: it neither closes the episode nor starts. One raise in total, one close when
+        /// the successor starts.
+        private void successorTakesTheEpisodeOver(Promise<Option<StreamCursorCheckpointValue>> oldRetryAnswer) {
+            var reads = new CopyOnWriteArrayList<Promise<Option<StreamCursorCheckpointValue>>>();
+            var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+            var runtime = runtimeOver(workerStore(pendingRead(reads)));
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            runtime.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+            try {
+                subscribe(runtime, delivered);
+                failRead(reads, 0);
+                awaitReads(reads, 2);
+                runtime.abandon(STREAM, PARTITION, GROUP);
+                subscribe(runtime, delivered);
+                failRead(reads, 2);
+                awaitReads(reads, 4);
+                answerRead(reads, 1, oldRetryAnswer);
+
+                assertThat(codes(warnings)).describedAs("the successor took the episode over: no second raise, and the old "
+                                                        + "consumer's retry does not close it")
+                                           .containsExactly(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE);
+                assertThat(delivered).describedAs("nothing started").isEmpty();
+
+                answerRead(reads, 3, found(2L));
+                awaitSize(delivered, 3);
+                awaitWarning(warnings, OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE);
+
+                assertThat(delivered).containsExactly(2L, 3L, 4L);
+                assertThat(codes(warnings)).describedAs("closed once, by the successor's start")
+                                           .containsExactly(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE,
+                                                            OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE);
+                assertThat(warnings.getLast().message()).contains("started");
+            } finally {
+                runtime.close();
+            }
+        }
+
+        /// The successor's first fetch succeeds while the old consumer's episode is open: its start closes it, once, and the
+        /// old consumer's later retry closes nothing.
+        @Test
+        void successorStartsAtItsFirstAttempt_closesTheOpenEpisodeOnce() {
+            var reads = new CopyOnWriteArrayList<Promise<Option<StreamCursorCheckpointValue>>>();
+            var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+            var runtime = runtimeOver(workerStore(pendingRead(reads)));
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            runtime.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+            try {
+                subscribe(runtime, delivered);
+                failRead(reads, 0);
+                awaitReads(reads, 2);
+                runtime.abandon(STREAM, PARTITION, GROUP);
+                subscribe(runtime, delivered);
+                awaitReads(reads, 3);
+                answerRead(reads, 2, found(3L));
+                awaitSize(delivered, 2);
+                awaitWarning(warnings, OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE);
+                failRead(reads, 1);
+
+                assertThat(delivered).containsExactly(3L, 4L);
+                assertThat(codes(warnings)).describedAs("opened once, closed once by the successor's start")
+                                           .containsExactly(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE,
+                                                            OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE);
+                assertThat(warnings.getLast().message()).contains("started");
+            } finally {
+                runtime.close();
+            }
+        }
+
+        /// No successor: the cancelled consumer's next answer closes its own episode, once, and says it was cancelled.
+        @Test
+        void cancelledWithoutSuccessor_closesItsEpisodeOnce_asCancelled() {
+            var reads = new CopyOnWriteArrayList<Promise<Option<StreamCursorCheckpointValue>>>();
+            var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+            var runtime = runtimeOver(workerStore(pendingRead(reads)));
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            runtime.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+            try {
+                subscribe(runtime, delivered);
+                failRead(reads, 0);
+                awaitReads(reads, 2);
+                runtime.abandon(STREAM, PARTITION, GROUP);
+                failRead(reads, 1);
+                awaitWarning(warnings, OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE);
+
+                assertThat(codes(warnings)).containsExactly(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE,
+                                                            OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE);
+                assertThat(warnings.getLast().message()).contains("cancelled")
+                                                        .doesNotContain("started");
+                assertThat(delivered).isEmpty();
+                assertThat(reads).describedAs("the cancelled consumer stops retrying").hasSize(2);
+            } finally {
+                runtime.close();
+            }
+        }
+    }
+
     @Nested
     class ConsensusRead {
         @Test
@@ -362,6 +476,35 @@ class WorkerCursorResumeTest {
         sent.addAll(commands);
 
         return Promise.success(reply);
+    }
+
+    /// Each read is a pending promise appended in issue order; the test answers it.
+    private static CommittedCursorRead pendingRead(List<Promise<Option<StreamCursorCheckpointValue>>> reads) {
+        return _ -> issuePending(reads);
+    }
+
+    private static Promise<Option<StreamCursorCheckpointValue>> issuePending(List<Promise<Option<StreamCursorCheckpointValue>>> reads) {
+        var pending = Promise.<Option<StreamCursorCheckpointValue>> promise();
+
+        reads.add(pending);
+
+        return pending;
+    }
+
+    private static void failRead(List<Promise<Option<StreamCursorCheckpointValue>>> reads, int index) {
+        answerRead(reads, index, Causes.cause("no core peers available").promise());
+    }
+
+    private static void answerRead(List<Promise<Option<StreamCursorCheckpointValue>>> reads,
+                                   int index,
+                                   Promise<Option<StreamCursorCheckpointValue>> answer) {
+        awaitReads(reads, index + 1);
+        answer.onResult(reads.get(index)::resolve);
+    }
+
+    private static void awaitReads(List<Promise<Option<StreamCursorCheckpointValue>>> reads, int count) {
+        PollUntil.pollUntil(reads::size, size -> size >= count, AWAIT_DEADLINE)
+                 .assertMet(count + " cursor reads issued");
     }
 
     private StreamConsumerRuntime runtimeOver(ConsumerCursorStore store) {
