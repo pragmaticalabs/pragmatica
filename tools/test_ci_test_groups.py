@@ -372,7 +372,10 @@ class RepositoryGroupsTest(unittest.TestCase):
         ci = groups.CI.read_text()
         for name in ("build-and-test", "forge-tests", "stub-suites"):
             job = ci.split(f"\n  {name}:\n", 1)[1].split("\n\n", 1)[0]
-            self.assertIn(f"    name: ${{{{ needs.push-dedupe.outputs.skip == 'true' && '{name} (duplicate push run, skipped)' || '{name}' }}}}\n", job)
+            # forge-tests keeps running on a push the merge queue already tested (#3715: it saves the Maven cache), so it renames only
+            # when it is skipped for another reason
+            queue = " && needs.push-dedupe.outputs.queue_tested != 'true'" if name == "forge-tests" else ""
+            self.assertIn(f"    name: ${{{{ needs.push-dedupe.outputs.skip == 'true'{queue} && '{name} (duplicate push run, skipped)' || '{name}' }}}}\n", job)
         for name in ("test-group", "ember-shard", "consensus-shard"):
             self.assertIn(f"    name: {name}-${{{{ matrix.", ci.split(f"\n  {name}:\n", 1)[1].split("\n\n", 1)[0])
 

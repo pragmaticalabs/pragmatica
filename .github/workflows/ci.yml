@@ -28,17 +28,30 @@ jobs:
   # mergeStateStatus UNSTABLE, not BLOCKED, while the pull_request run's real build-and-test had not started). So every skipped
   # job must post under a name no required context uses: the three single-instance required jobs (build-and-test, forge-tests,
   # stub-suites) rename themselves when skipping; the matrix jobs post their unexpanded `name:` template, which matches nothing.
-  # The base list below must equal `pull_request.branches` above.
+  # The base list in .github/scripts/push-dedupe.sh must equal `pull_request.branches` above.
+  # A push to main or release-* repeats the merge queue's run (#3715): the queue tests the commit it creates and fast-forwards the
+  # branch to that same sha. When a merge_group run of this workflow with that head sha concluded success, every job is skipped
+  # (renamed as above) except forge-tests, which saves the Maven cache on push (caches are scoped by ref) and so runs whole
+  # (output queue_tested). A direct push, a failed or unfinished queue run, a failed lookup: everything runs.
   push-dedupe:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     outputs:
       skip: ${{ steps.lookup.outputs.skip }}
+      queue_tested: ${{ steps.lookup.outputs.queue_tested }}
     steps:
-      - name: Does this pushed branch have an open PR that pull_request CI covers?
+      # Only the decision script (#3715): the lookup lives in a file so tools/test_push_dedupe.py can run it with a stubbed `gh`.
+      - name: Checkout the decision script
+        uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Is this push a duplicate of a run that already gates it?
         id: lookup
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,24 +59,8 @@ jobs:
           BRANCH: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
-        run: |
-          skip=false
-          case "$EVENT:$BRANCH" in
-            push:main|push:release-*) echo "push to a protected branch: its own run is the evidence" ;;
-            push:*)
-              if bases=$(gh api -X GET "repos/$REPO/pulls" -f state=open -f "head=$OWNER:$BRANCH" --paginate --jq '.[] | select(.head.repo.full_name == "'"$REPO"'") | .base.ref'); then
-                echo "open PR base(s) for $BRANCH: ${bases:-none}"
-                for base in $bases; do
-                  case "$base" in
-                    main|release-*|overhaul/*|rewrite/*|feature/*) skip=true ;;
-                  esac
-                done
-              else
-                echo "::warning::PR lookup failed, running CI"
-              fi ;;
-          esac
-          echo "skip=$skip" >> "$GITHUB_OUTPUT"
-          echo "skip=$skip"
+          SHA: ${{ github.sha }}
+        run: .github/scripts/push-dedupe.sh
   # The format/lint gate and the static pins: everything build-and-test checked before it tested. They need no module
   # build, so they run beside the test groups instead of in front of them; build-and-test needs this job, so a red here
   # still fails the required check.
@@ -125,6 +122,11 @@ jobs:
         run: |
           python3 -B -m unittest discover -s tools -p test_check_quarantine.py
           python3 -B tools/check-quarantine.py check
+
+      # push-dedupe's decision (#3715): when a push to main or release-* repeats the merge queue's run. The script runs with a stub
+      # `gh`; the wiring cases pin that forge-tests (the Maven cache save) keeps running on a skipped push and no other job does.
+      - name: Push-dedupe decision
+        run: python3 -B -m unittest discover -s tools -p test_push_dedupe.py
 
       - name: Set up Java 25
         uses: actions/setup-java@v5
@@ -375,9 +377,9 @@ jobs:
           retention-days: 7
 
   forge-tests:
-    name: ${{ needs.push-dedupe.outputs.skip == 'true' && 'forge-tests (duplicate push run, skipped)' || 'forge-tests' }}
+    name: ${{ needs.push-dedupe.outputs.skip == 'true' && needs.push-dedupe.outputs.queue_tested != 'true' && 'forge-tests (duplicate push run, skipped)' || 'forge-tests' }}
     needs: push-dedupe
-    if: needs.push-dedupe.outputs.skip != 'true'
+    if: needs.push-dedupe.outputs.skip != 'true' || needs.push-dedupe.outputs.queue_tested == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
