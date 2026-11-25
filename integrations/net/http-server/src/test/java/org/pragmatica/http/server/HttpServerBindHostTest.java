@@ -125,7 +125,7 @@ class HttpServerBindHostTest {
     }
 
     @Nested
-    class Http1 {
+    class OverHttp1 {
         private HttpServer start(HttpServerConfig config) {
             h1 = HttpServer.httpServer(config, ANSWER_OK)
                            .await(timeSpan(10).seconds())
@@ -204,7 +204,7 @@ class HttpServerBindHostTest {
     }
 
     @Nested
-    class Http3 {
+    class OverHttp3 {
         private Http3Server start(HttpServerConfig config) {
             h3 = Http3Server.create(config,
                                     QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
