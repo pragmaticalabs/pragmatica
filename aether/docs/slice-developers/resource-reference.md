@@ -967,10 +967,12 @@ their store through one selection seam (`CacheBackends`, #3658). `mode` is the t
 | `memory` | `LOCAL` (and the L1 of every `TIERED`) | yes | yes | Per instance: each node, or each Terra process, holds its own entries; nothing is shared and everything is lost on restart `[mechanism: InMemoryCache is a per-factory heap map]` |
 | `dht` | `DISTRIBUTED`, `TIERED` (as L2) | yes | **no** | As the `DISTRIBUTED` row above for a cache. An idempotency store writes the replicated DHT at the committed `[replication]` factors, not the cache namespace (#1777) |
 
-Refusals are typed, terminal, and raised when the resource is provisioned (slice start), naming the section,
-the backend, the store and the runtime: an unknown `backend` (`UnknownBackend`); a `backend` that does not fit
-`mode` (`ModeConflict`: `LOCAL` with `dht`, `DISTRIBUTED`/`TIERED` with `memory`); and `dht` on Terra, which has
-no cluster (`BackendUnavailable`, whether `dht` is named or implied by `DISTRIBUTED`/`TIERED`). The Terra refusal
+Refusals are typed, terminal, and raised when the resource is provisioned (slice start); the provisioning
+wrapper adds the section, and each cause text names: for an unknown `backend` (`UnknownBackend`) the backend and the store;
+for a `backend` that does not fit `mode` (`ModeConflict`: `LOCAL` with `dht`, `DISTRIBUTED`/`TIERED` with `memory`)
+the store, the mode and the backend; for `dht` on Terra, which has no cluster (`BackendUnavailable`, whether `dht`
+is named or implied by `DISTRIBUTED`/`TIERED`) the backend, the store and the runtime. Only `BackendUnavailable`
+names the runtime. The Terra refusal
 at a real application start is `[verified: terra/examples/src/test/java/org/pragmatica/terra/example/TerraExamplesTest.java]`;
 the unknown and conflict refusals are `[mechanism: CacheBackends selects before any backend is built; both factories call only it]`.
 Recovery: set `mode = "LOCAL"` (and `backend = "memory"` or no `backend`) for that section on Terra, or fix the

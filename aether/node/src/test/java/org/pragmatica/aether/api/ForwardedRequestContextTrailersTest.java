@@ -30,7 +30,7 @@ class ForwardedRequestContextTrailersTest {
                                                            Map.of("x-checksum", List.of("abc123")),
                                                            "req-fwd",
                                                            SecurityContext.securityContext());
-        var request = ForwardedRequestContext.forwardedRequestContext(source);
+        var request = ForwardedRequestContext.forwardedRequestContext(source).unwrap();
 
         assertThat(request.trailers().get("x-checksum")).isEqualTo(Option.some("abc123"));
         assertThat(request.headers().get("x-checksum").isEmpty()).isTrue();
@@ -55,7 +55,7 @@ class ForwardedRequestContextTrailersTest {
                                                            "req-fwd",
                                                            SecurityContext.securityContext());
 
-        assertThat(ForwardedRequestContext.forwardedRequestContext(source).trailers().asMap()).containsOnlyKeys("x-ok");
+        assertThat(ForwardedRequestContext.forwardedRequestContext(source).unwrap().trailers().asMap()).containsOnlyKeys("x-ok");
     }
 
     /// #2310: the forwarded method is folded with `Locale.ROOT`; under a `tr-TR` default `options` would fold to
@@ -69,7 +69,7 @@ class ForwardedRequestContextTrailersTest {
 
             var source = HttpRequestContext.httpRequestContext("/api/v1/status", "options", Map.of(), Map.of(), "req-fwd");
 
-            assertThat(ForwardedRequestContext.forwardedRequestContext(source).method()).isEqualTo(HttpMethod.OPTIONS);
+            assertThat(ForwardedRequestContext.forwardedRequestContext(source).unwrap().method()).isEqualTo(HttpMethod.OPTIONS);
         } finally {
             Locale.setDefault(saved);
         }
@@ -83,6 +83,14 @@ class ForwardedRequestContextTrailersTest {
                                                            Map.of("x-client", List.of("probe")),
                                                            "req-fwd");
 
-        assertThat(ForwardedRequestContext.forwardedRequestContext(source).trailers().asMap()).isEmpty();
+        assertThat(ForwardedRequestContext.forwardedRequestContext(source).unwrap().trailers().asMap()).isEmpty();
+    }
+
+    /// #3550: an unknown method builds no context (the receiver replies with an error) instead of throwing.
+    @Test
+    void forwardedRequest_unknownMethod_buildsNoContext() {
+        var source = HttpRequestContext.httpRequestContext("/api/v1/status", "BOGUS", Map.of(), Map.of(), "req-fwd");
+
+        assertThat(ForwardedRequestContext.forwardedRequestContext(source).isEmpty()).isTrue();
     }
 }
