@@ -407,9 +407,11 @@ class DurableProjectionRebuildTest {
         awaitCommittedCursor(6L, 20_000);
         var delivered = attempts.get();
 
-        applyNow(new KVCommand.Remove<>(CHECKPOINT_KEY));
+        applyNow(removeCheckpoint());
         localCursors.forget();
         applyNow(checkpoint(2L, RewindEpoch.NONE));
+        assertThat(committedCursor()).as("control: the checkpoint was deleted and recreated at 2, the applier did not refuse either write")
+                  .isEqualTo(Option.some(2L));
         forwardingEpochs.set(true);
         passUntilEpochReadsSent(1);
         epochReads.getFirst()
@@ -750,6 +752,11 @@ class DurableProjectionRebuildTest {
 
     private void applyNow(KVCommand<AetherKey> command) {
         apply(command).await().onFailure(cause -> fail(cause.message()));
+    }
+
+    /// The applier refuses a witnessless `Remove` of a fenced value, so the delete carries the committed value as its witness.
+    private KVCommand<AetherKey> removeCheckpoint() {
+        return new KVCommand.Remove<>(CHECKPOINT_KEY, Option.<Object> some(committed(CHECKPOINT_KEY).unwrap()));
     }
 
     private Option<StreamCursorCheckpointValue> committed(StreamCursorCheckpointKey key) {
