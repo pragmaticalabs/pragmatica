@@ -158,6 +158,7 @@ jobs:
           ( cd "$repo" && find . -type f -newer "$RUNNER_TEMP/m2-marker" ! -name '*.lastUpdated' ! -name resolver-status.properties | sed 's|^\./||' ) > "$RUNNER_TEMP/m2-delta.list"
           n=$(wc -l < "$RUNNER_TEMP/m2-delta.list")
           echo "::notice::deps-prime fetched $n file(s) the restored cache lacked"
+          head -20 "$RUNNER_TEMP/m2-delta.list"
           if [ "$n" -gt 0 ]; then tar -czf "$RUNNER_TEMP/m2-delta/m2-delta.tgz" -C "$repo" -T "$RUNNER_TEMP/m2-delta.list"; fi
 
       - name: Upload m2-delta
