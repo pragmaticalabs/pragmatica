@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.blueprint.StreamDeclarationError;
 import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.config.source.TomlConfigSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -37,6 +38,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -83,6 +85,15 @@ class StreamSectionBindingTest {
     private static ConfigurationProvider providerOf(String toml) {
         return ConfigurationProvider.builder()
                                     .withSource(TomlConfigSource.tomlConfigSource(toml).unwrap())
+                                    .build();
+    }
+
+    /// The TOML text as the file-backed layer plus `overlay` as a layer that is not file-backed: such a layer is not in
+    /// `staticKeys()`, which is why the section's own key list never names what it supplies.
+    private static ConfigurationProvider overlaidProviderOf(String toml, Map<String, String> overlay) {
+        return ConfigurationProvider.builder()
+                                    .withSource(TomlConfigSource.tomlConfigSource(toml).unwrap())
+                                    .withSource(MapConfigSource.mapConfigSource("overlay", overlay, 100).unwrap())
                                     .build();
     }
 
@@ -192,6 +203,29 @@ class StreamSectionBindingTest {
             assertRefused("[streams.orders]\n[streams.orders.hot]\nmax_count = 100\n", "hot.max_count");
         }
 
+        /// #3520: a `[hot]` or `[retention]` key supplied by a layer that is not a TOML file (environment, system property, KV) is
+        /// refused as the file-backed one is: the gate asks the section view the parser reads, not the static key list. The
+        /// control proves the overlay layer reaches the binder at all.
+        @Test
+        void declarationKeysFromAnOverlayLayer_areRefused_namingThem() {
+            assertRefusedWithOverlay("[streams.orders]\n", Map.of("streams.orders.hot.max_count", "100"), "hot.max_count");
+            assertRefusedWithOverlay("[streams.orders]\n", Map.of("streams.orders.retention.max_bytes", "2GB"), "retention.max_bytes");
+            assertRefusedWithOverlay("[streams.orders]\n[streams.orders.retention]\nmax_age = \"1h\"\n",
+                                     Map.of("streams.orders.retention.max_bytes", "2GB"),
+                                     "retention.max_bytes");
+        }
+
+        @Test
+        void anOverlayKeyThatIsNotInert_bindsThroughTheSameProvider() {
+            var bound = StreamSectionBinding.bindStreamSection(overlaidProviderOf("[streams.orders]\n", Map.of("streams.orders.partitions", "3")),
+                                                               SECTION,
+                                                               BINDING_CONTEXT)
+                                            .onFailure(cause -> fail(cause.message()))
+                                            .unwrap();
+
+            assertThat(bound.partitions()).isEqualTo(3);
+        }
+
         @Disabled("S2a3 wires [retention] and S2b wires [hot]: enable and delete the tripwire above")
         @Test
         void declarationRetentionAndHotKeys_bind_onceWired() {
@@ -216,6 +250,13 @@ class StreamSectionBindingTest {
                     """;
 
             assertThat(StreamSectionBinding.bindStreamSection(providerOf(toml), SECTION, BINDING_CONTEXT).isSuccess()).isTrue();
+        }
+
+        private static void assertRefusedWithOverlay(String toml, Map<String, String> overlay, String key) {
+            StreamSectionBinding.bindStreamSection(overlaidProviderOf(toml, overlay), SECTION, BINDING_CONTEXT)
+                                .onSuccess(config -> fail("`" + key + "` from an overlay layer has no runtime effect and must be refused, yet bound: " + config))
+                                .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.InertKeysRefused.class))
+                                .onFailure(cause -> assertThat(cause.message()).contains(key + " = "));
         }
 
         private static void assertRefused(String toml, String key) {

@@ -6,6 +6,7 @@ package org.pragmatica.aether.pg.parser.transform;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
@@ -60,19 +61,27 @@ public record CstNavigator(CstNode.NonTerminal node) {
     /// literal — `NumericType <- 'integer'i / ...` — bottoms out in a Terminal. Matching only
     /// Tokens made every such lookup return empty, which surfaced as data types extracting as
     /// "unknown".
+    ///
+    /// A multi-word body — `NumericType <- 'double'i 'precision'i / ...` — bottoms out in SEVERAL
+    /// leaves, one per lexeme, with the trivia between them dropped. They are joined by a single
+    /// space, so `DOUBLE\n  PRECISION` reads as `DOUBLE PRECISION`. Taking only the first leaf read
+    /// the type as `DOUBLE` (#3672).
     public Option<String> tokenText(String ruleName) {
-        return node.children()
-                   .stream()
-                   .filter(c -> hasRule(c, ruleName))
-                   .flatMap(c -> switch (c) {
-                                case CstNode.Token tok -> Stream.of(tok.text());
-                                case CstNode.Terminal term -> Stream.of(term.text());
-                                case CstNode.NonTerminal nt -> nt.children().stream().flatMap(CstNavigator::leafText);
-                                default -> Stream.<String> empty();
-                            })
-                   .findFirst()
-                   .map(Option::present)
-                   .orElse(Option.empty());
+        return Option.from(node.children()
+                               .stream()
+                               .filter(c -> hasRule(c, ruleName))
+                               .map(CstNavigator::leavesJoined)
+                               .filter(text -> !text.isEmpty())
+                               .findFirst());
+    }
+
+    private static String leavesJoined(CstNode node) {
+        return switch (node) {
+            case CstNode.Token tok -> tok.text();
+            case CstNode.Terminal term -> term.text();
+            case CstNode.NonTerminal nt -> nt.children().stream().flatMap(CstNavigator::leafText).collect(Collectors.joining(" "));
+            default -> "";
+        };
     }
 
     private static Stream<String> leafText(CstNode node) {

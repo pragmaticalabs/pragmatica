@@ -291,6 +291,30 @@ public interface StreamConfigParser {
                                                               String streamName,
                                                               Map<String, String> roleHints,
                                                               ReplicationFactors defaults) {
+        return refuseTableArrays(doc, section, streamName).flatMap(_ -> parseDeclaredResource(doc,
+                                                                                              section,
+                                                                                              streamName,
+                                                                                              roleHints,
+                                                                                              defaults));
+    }
+
+    /// #3520: a `[[streams.<alias>.<name>]]` table array is read by no part of the stream parser, so it was accepted and
+    /// ignored (a `[[streams.x.retention]]` declared nothing and nothing said so). Refused as malformed, naming the first
+    /// one in sorted order; the [StreamSection] views never see table arrays, so this is the only place that can.
+    private static Result<Unit> refuseTableArrays(TomlDocument doc, String section, String alias) {
+        return Option.from(doc.tableArrayNames()
+                              .stream()
+                              .filter(name -> name.startsWith(section + "."))
+                              .sorted()
+                              .findFirst()).fold(() -> success(unit()),
+                                                 name -> new StreamDeclarationError.TableArrayDeclared(alias, name).result());
+    }
+
+    private static Result<StreamResource> parseDeclaredResource(TomlDocument doc,
+                                                                String section,
+                                                                String streamName,
+                                                                Map<String, String> roleHints,
+                                                                ReplicationFactors defaults) {
         var sourceOpt = doc.getString(section, "source");
         var versionOpt = doc.getString(section, "version");
         var explicitRoleOpt = doc.getString(section, "role");

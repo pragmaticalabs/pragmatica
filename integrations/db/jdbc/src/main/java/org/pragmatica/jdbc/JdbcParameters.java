@@ -31,7 +31,7 @@ import java.util.TimeZone;
 /// column, so the stored value moves with `-Duser.timezone`. With the UTC calendar both a `timestamptz` and a
 /// `timestamp` column receive the same UTC instant on every JVM zone, for instants from 1582-10-15 onward (`Timestamp` is
 /// hybrid Julian/Gregorian, PostgreSQL proleptic Gregorian, so earlier instants shift by days). Reading a `timestamp` column back with the
-/// default-calendar `getTimestamp` is still JVM-zone dependent: read it with a UTC calendar.
+/// default-calendar `getTimestamp` is still JVM-zone dependent: read it with [JdbcResults#getInstant].
 public final class JdbcParameters {
     private static final TimeZone UTC = TimeZone.getTimeZone("UTC");
 

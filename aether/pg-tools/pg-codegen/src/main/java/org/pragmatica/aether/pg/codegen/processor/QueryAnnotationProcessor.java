@@ -673,6 +673,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         }
         var crudSql = sqlOpt.expect("checked with isEmpty above");
         validateRewrittenSql(execElement, methodName, crudSql, schemaOpt);
+        validateNullableColumns(execElement, methodName, resolved, table);
         var scalarColumn = crudScalarColumn(execElement, methodName, crudSql, parsed.operation(), resolved);
         if (needsScalarColumn(resolved, false) && scalarColumn.isEmpty()) {
             return null;
@@ -1657,6 +1658,40 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                            target.startsWith("field")),
                   execElement);
         }
+    }
+
+    /// A nullable table column read into a non-`Option` record field fails the build (#2795): the generated row
+    /// mapper reads the field through a non-nullable accessor, so the first NULL row would fail at runtime. The check
+    /// is on the column, not on the generated statement: one record serves every CRUD method of its table, and a
+    /// `WHERE col IS NOT NULL` condition on one method does not make the column non-null for the others. The opposite
+    /// direction (an `Option` field on a NOT NULL column) is accepted here for the same reason; `@Query` methods prove
+    /// it per output (#2962). A field that names no column is reported by the select-list check, not by this one.
+    private void validateNullableColumns(ExecutableElement execElement,
+                                         String methodName,
+                                         TypeMirrorResolver.ResolvedReturn resolved,
+                                         org.pragmatica.aether.pg.schema.model.Table table) {
+        if (!resolved.needsMapper()) {
+            return;
+        }
+        for (var field : extractReturnFields(execElement, resolved)) {
+            if (!field.typeName().startsWith(OPTION_TYPE + "<")) {
+                reportIfColumnNullable(execElement, methodName, table, field);
+            }
+        }
+    }
+
+    private void reportIfColumnNullable(ExecutableElement execElement,
+                                        String methodName,
+                                        org.pragmatica.aether.pg.schema.model.Table table,
+                                        TypeMirrorResolver.FieldInfo field) {
+        table.column(NamingConvention.toSnakeCase(field.name()))
+             .filter(column -> column.nullable())
+             .onPresent(column -> error(ProcessorError.nullableColumnToNonOption(methodName,
+                                                                                 table.name(),
+                                                                                 column.name(),
+                                                                                 field.name(),
+                                                                                 field.typeName()),
+                                        execElement));
     }
 
     /// Validates that columns referenced in CRUD method name conditions and orderBy exist in the table.

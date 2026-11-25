@@ -330,6 +330,13 @@ class StreamResourceValidatorTest {
     /// equal to the hardcoded default asserts nothing false.
     @Nested
     class InertConfigRejection {
+        /// The whole clause of each table (#3520): `contains("S2b")` could not tell which clause carried the step name.
+        private static final String RETENTION_CLAUSE = "the stream's retention still comes from today's keys (`retention`, `retention_value`, "
+                                                       + "`retention_mode`, `max_age`, `max_count`, `max_bytes`) until release step S2a3 enforces the [retention] "
+                                                       + "declaration (#3334). Remove the [retention] sub-section and declare retention with today's keys until S2a3.";
+        private static final String HOT_CLAUSE = "the ring is still sized from today's retention until release step S2b sizes it from the [hot] "
+                                                 + "window (#3334). Remove the [hot] sub-section until S2b.";
+
         @Test
         void encryptionKeyIdIsRejected() {
             var toml = """
@@ -365,8 +372,8 @@ class StreamResourceValidatorTest {
                                                                .allSatisfy(failure -> assertThat(failure.rule()).isEqualTo(StreamResourceValidator.RULE_INERT_STREAM_CONFIG))
                                                                .allSatisfy(failure -> assertThat(failure.field()).isEqualTo("[streams.orders]"))
                                                                .extracting(StreamValidationFailure::message)
-                                                               .anySatisfy(message -> assertThat(message).contains("retention.max_bytes").contains("S2a3"))
-                                                               .anySatisfy(message -> assertThat(message).contains("hot.max_count").contains("S2b")));
+                                                               .containsExactlyInAnyOrder("retention.max_bytes = '2GB' has no runtime effect yet — " + RETENTION_CLAUSE,
+                                                                                          "hot.max_count = '100' has no runtime effect yet — " + HOT_CLAUSE));
         }
 
         /// Item 1 design assertion, beside the tripwire: accepted once S2a3 / S2b wire the tables.
@@ -383,6 +390,32 @@ class StreamResourceValidatorTest {
                     """;
 
             assertThat(StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT).isSuccess()).isTrue();
+        }
+
+        /// #3520: a table array under a stream section is never read by the parser, so deploy refuses it as malformed instead of
+        /// accepting and ignoring it; the stream beside it still binds.
+        @Test
+        void tableArrayUnderAStreamSection_isRefusedAsMalformed_andTheStreamBesideItStillBinds() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    [streams.billing]
+                    version = "1.0.0"
+                    [[streams.billing.retention]]
+                    max_bytes = "2GB"
+                    """;
+
+            StreamResourceValidator.partition(Option.some(toml), APP_ARTIFACT, Map.of(), ReplicationContext.BUILT_IN)
+                                   .onFailure(cause -> fail(cause.message()))
+                                   .onSuccess(partition -> assertThat(partition.accepted()).containsOnlyKeys("orders"))
+                                   .onSuccess(partition -> assertThat(partition.rejected())
+                                                                   .extracting(StreamValidationFailure::field,
+                                                                               StreamValidationFailure::rule,
+                                                                               StreamValidationFailure::message)
+                                                                   .containsExactly(tuple("[streams.billing]",
+                                                                                          StreamResourceValidator.RULE_STREAM_RESOURCE_INVALID,
+                                                                                          "Stream resource 'billing' declares [[streams.billing.retention]] as an array of tables: "
+                                                                                          + "a stream section holds tables, so write it as [streams.billing.retention]")));
         }
 
         @Test

@@ -12,6 +12,12 @@ import org.pragmatica.lang.Option;
 public sealed interface PgType {
     String name();
 
+    /// A serial type is notation, not a type: PostgreSQL creates an integer column that is NOT NULL and defaults to the
+    /// next value of its own sequence.
+    default boolean isSerial() {
+        return this instanceof BuiltinType builtin && builtin.category() == TypeCategory.SERIAL;
+    }
+
     record BuiltinType(String name, TypeCategory category, List<Integer> modifiers) implements PgType {
         public BuiltinType(String name, TypeCategory category) {
             this(name, category, List.of());
