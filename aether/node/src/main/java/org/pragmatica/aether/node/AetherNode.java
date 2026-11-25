@@ -3129,6 +3129,9 @@ public interface AetherNode extends ManageableNode {
                                                                                               communityDrain,
                                                                                               placementReconciler,
                                                                                               aetherEntries));
+        // #3743: a deposed leader's reconciler never evaluates again, so the loss of leadership itself ends its open stuck-SYNCING episodes.
+        aetherEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                    topologyManagerOut.stuckSyncingVoters()::onLeaderChange));
         DhtAssembly.dhtRoutes(new DhtAssembly.DhtRoutesInputs(config,
                                                               clusterNode,
                                                               dhtNode,

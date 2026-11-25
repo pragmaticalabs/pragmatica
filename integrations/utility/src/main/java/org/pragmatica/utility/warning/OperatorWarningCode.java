@@ -667,9 +667,11 @@ public enum OperatorWarningCode {
     /// episode by the leader; subject is the voter; the message names it and the elapsed time. Closed by [#CORE_VOTER_SYNCING_ENDED].
     /// Recovery action: none needed when a candidate exists (the seat is healed); otherwise restart or replace the voter, or add capacity.
     CORE_VOTER_SYNCING_STUCK("core-voter-syncing-stuck", "consensus", WarningLevel.WARNING),
-    /// The recovery of [#CORE_VOTER_SYNCING_STUCK], same subject (#2136): the voter's SYNCING episode ended (a READY or missing report,
-    /// a leader change, consensus inactivity on the leader, or the voter left the roster, for example by being healed). INFO, published
-    /// only after a published stuck warning for the voter (#752 mechanism).
+    /// The recovery of [#CORE_VOTER_SYNCING_STUCK], same subject (#2136): the voter's SYNCING episode ended (a READY, missing or stale
+    /// report, the raising node lost leadership (#3743: raised by that node on the loss itself) or its own consensus went inactive,
+    /// the voter left the roster, for example by being healed, or the raising node did not evaluate for more than 5 seconds, for example
+    /// during a reconfiguration: then the voter may still be stuck and a new episode starts from zero). Exactly one per stuck warning,
+    /// from the node that raised it. INFO, published only after a published stuck warning for the voter (#752 mechanism).
     CORE_VOTER_SYNCING_ENDED("core-voter-syncing-ended", "consensus", WarningLevel.INFO, CORE_VOTER_SYNCING_STUCK),
     /// Genesis formed with a seat of the agreed roster that was not a connected, authenticated peer when the roster was installed
     /// (#1654): the view agreement counts each member's last two reports with no freshness, so a member that reported the view and

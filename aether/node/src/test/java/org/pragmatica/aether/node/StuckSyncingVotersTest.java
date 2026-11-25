@@ -19,6 +19,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.utility.warning.OperatorWarning;
@@ -26,6 +27,7 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.groups.Tuple.tuple;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.metrics.NodeReportedState.READY;
 import static org.pragmatica.aether.metrics.NodeReportedState.SYNCING;
@@ -218,6 +220,82 @@ class StuckSyncingVotersTest {
     void anEpisodeShorterThanTheBound_raisesNothing() {
         ticks(BOUND_TICKS - 1, Map.of(A, READY, B, SYNCING, C, READY));
         tick(Map.of(A, READY, B, READY, C, READY));
+
+        assertThat(delivered()).isEmpty();
+    }
+
+    /// #3743: a deposed leader's reconciler never evaluates again, so the loss of leadership itself ends the warned episode, once.
+    @Test
+    void aDeposedLeader_raisesTheRecoveryOnTheLossEdge_exactlyOnce() {
+        ticks(BOUND_TICKS + 1, Map.of(A, READY, B, SYNCING, C, READY));
+        stuck.onLeaderChange(LeaderNotification.leaderChange(Option.none(), false));
+        stuck.onLeaderChange(LeaderNotification.leaderChange(Option.some(A), false));
+
+        var warnings = delivered();
+
+        assertThat(warnings).extracting(OperatorWarning::code, OperatorWarning::subject)
+                            .containsExactly(tuple(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK, "b"),
+                                             tuple(OperatorWarningCode.CORE_VOTER_SYNCING_ENDED, "b"));
+        assertThat(warnings.getLast().message()).as("the message names the end causes the docs name, the loss of leadership and the gap")
+                                                .contains("lost leadership", "stale report", "did not evaluate for more than 5 s");
+    }
+
+    /// #3743, the verifier's attack: raise STUCK, depose the leader, regain leadership under a new epoch and keep evaluating: still one
+    /// recovery for the one warning, and the regained tenure counts its episode from zero.
+    @Test
+    void regainingLeadership_afterTheLossEdge_raisesNoSecondRecovery() {
+        var syncing = Map.of(A, READY, B, SYNCING, C, READY);
+
+        ticks(BOUND_TICKS + 1, syncing);
+        stuck.onLeaderChange(LeaderNotification.leaderChange(Option.none(), false));
+        assertThat(delivered()).as("the recovery is raised on the edge, while still deposed")
+                               .extracting(OperatorWarning::code)
+                               .containsExactly(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK,
+                                                OperatorWarningCode.CORE_VOTER_SYNCING_ENDED);
+        epoch.set(Option.some(8L));
+
+        assertThat(ticks(BOUND_TICKS, syncing)).as("the regained tenure starts from zero").isEmpty();
+        assertThat(delivered()).extracting(OperatorWarning::code)
+                               .containsExactly(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK,
+                                                OperatorWarningCode.CORE_VOTER_SYNCING_ENDED);
+        assertThat(tick(syncing)).as("and is stuck again only after its own bound").containsOnlyKeys(B);
+        assertThat(delivered()).extracting(OperatorWarning::code)
+                               .containsExactly(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK,
+                                                OperatorWarningCode.CORE_VOTER_SYNCING_ENDED,
+                                                OperatorWarningCode.CORE_VOTER_SYNCING_STUCK);
+    }
+
+    /// Every warned voter's episode ends on the one edge, each with its own single recovery.
+    @Test
+    void theLossEdge_endsEveryWarnedEpisode_oneRecoveryEach() {
+        ticks(BOUND_TICKS + 1, Map.of(A, SYNCING, B, SYNCING, C, READY));
+        stuck.onLeaderChange(LeaderNotification.leaderChange(Option.none(), false));
+
+        assertThat(delivered()).extracting(OperatorWarning::code, OperatorWarning::subject)
+                               .containsExactlyInAnyOrder(tuple(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK, "a"),
+                                                          tuple(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK, "b"),
+                                                          tuple(OperatorWarningCode.CORE_VOTER_SYNCING_ENDED, "a"),
+                                                          tuple(OperatorWarningCode.CORE_VOTER_SYNCING_ENDED, "b"));
+    }
+
+    /// A change that names this node leader is not a loss: the episode goes on and is not ended by it.
+    @Test
+    void aLeaderChangeNamingThisNode_endsNothing() {
+        var syncing = Map.of(A, READY, B, SYNCING, C, READY);
+
+        ticks(BOUND_TICKS + 1, syncing);
+        stuck.onLeaderChange(LeaderNotification.leaderChange(Option.some(A), true));
+
+        assertThat(tick(syncing)).as("the same episode, still stuck").containsOnlyKeys(B);
+        assertThat(delivered()).extracting(OperatorWarning::code)
+                               .containsExactly(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK);
+    }
+
+    /// The recovery follows only a raised warning, on the edge as everywhere else.
+    @Test
+    void theLossEdge_endsAnUnwarnedEpisodeSilently() {
+        ticks(BOUND_TICKS - 1, Map.of(A, READY, B, SYNCING, C, READY));
+        stuck.onLeaderChange(LeaderNotification.leaderChange(Option.none(), false));
 
         assertThat(delivered()).isEmpty();
     }
