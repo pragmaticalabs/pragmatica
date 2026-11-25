@@ -215,6 +215,9 @@ an enforced gate — expect it to become one before GA, given the dual-license s
   the test, and watch it go red. A test that stays green while the code it covers is gone pins
   nothing, however much it asserts — and this is the most common reason a PR needs a second round.
   Rebuilding the fixture inside the test is the usual way this goes wrong.
+- **Quote test counts as `<testcase>` elements in the surefire and failsafe XML reports**, never as the
+  `tests=` attribute or the `.txt` summaries: those report `@Nested` classes as 0 tests, so they
+  undercount, by 19% when this was measured (#762).
 - **One changelog fragment per PR**, as `changelog.d/<issue-number>-<slug>.md`. Every bullet carries
   its evidence: `[verified: <test path>]` where a live-path test pins the claim, `[mechanism: ...]`
   where it is traced through the code. Format and the CI check are in
