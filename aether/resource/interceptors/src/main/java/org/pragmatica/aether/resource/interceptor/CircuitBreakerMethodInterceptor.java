@@ -8,7 +8,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -24,12 +23,16 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.CircuitBreaker;
 import org.pragmatica.lang.utils.CircuitBreaker.CircuitBreakerError.CircuitBreakerOpenError;
 import org.pragmatica.lang.utils.CircuitBreaker.State;
+import org.pragmatica.lang.utils.CircuitBreaker.StateListener;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 
 /// A circuit breaker around one section's calls, with optional meters (#280 R27).
@@ -39,12 +42,16 @@ import io.micrometer.core.instrument.Tags;
 /// instance is per `(slice, section)` on one node, so each node reports its own breaker.
 public record CircuitBreakerMethodInterceptor(CircuitBreaker breaker, Option<Meters> meters) implements MethodInterceptor {
     public static CircuitBreakerMethodInterceptor circuitBreakerMethodInterceptor(CircuitBreaker breaker) {
-        return new CircuitBreakerMethodInterceptor(breaker, Option.none());
+        return new CircuitBreakerMethodInterceptor(breaker, none());
     }
 
-    public static CircuitBreakerMethodInterceptor circuitBreakerMethodInterceptor(CircuitBreaker breaker,
-                                                                                  ProvisioningContext context) {
-        return new CircuitBreakerMethodInterceptor(breaker, Meters.bind(breaker, context));
+    /// Builds the breaker through `breakerFor`, handing it the listener that counts its transitions, so the counters
+    /// exist before the breaker and the gauge after it: no call can see a half-bound set. Without meters in the context
+    /// `breakerFor` receives a listener that ignores every change.
+    static CircuitBreakerMethodInterceptor circuitBreakerMethodInterceptor(Fn1<CircuitBreaker, StateListener> breakerFor,
+                                                                           ProvisioningContext context) {
+        return Counters.bind(context).fold(() -> circuitBreakerMethodInterceptor(breakerFor.apply(StateListener.none())),
+                                           counters -> counters.interceptor(breakerFor));
     }
 
     @Override
@@ -62,37 +69,28 @@ public record CircuitBreakerMethodInterceptor(CircuitBreaker breaker, Option<Met
     private <R, T> Promise<R> metered(Meters bound, Fn1<Promise<R>, T> method, T request) {
         var executed = new AtomicBoolean();
 
-        bound.observe(breaker);
-
         return breaker.execute(() -> method.apply(bound.executing(executed, request)))
-                      .withResult(result -> bound.settle(breaker,
-                                                         executed.get(),
+                      .withResult(result -> bound.settle(executed.get(),
                                                          result));
     }
 
-    /// The breaker's meters. The state gauge reads the live breaker (0 closed, 1 open, 2 half-open). Transitions are
-    /// counted as OBSERVED at call boundaries, because the core breaker has no transition listener: two transitions
-    /// between consecutive calls (closed to open to half-open) are counted as the one change a caller could see.
-    /// `rejected` counts calls the breaker refused without running the method.
-    record Meters(MeterRegistry registry,
-                  List<Meter> owned,
-                  Counter rejected,
-                  Map<Transition, Counter> transitions,
-                  AtomicReference<State> observed) {
-        private static final String PREFIX = "aether.interceptor.circuit_breaker.";
+    private static final String PREFIX = "aether.interceptor.circuit_breaker.";
 
+    /// The meters that exist before the breaker: the transition counters, which the breaker's own listener increments
+    /// at the moment a transition happens (so each transition is counted once, whichever thread made it, the scheduler's
+    /// open to half-open change included), and the rejection counter.
+    record Counters(MeterRegistry registry, Tags tags, Counter rejected, Map<Transition, Counter> transitions) {
         record Transition(State from, State to) {
             static Transition transition(State from, State to) {
                 return new Transition(from, to);
             }
         }
 
-        static Option<Meters> bind(CircuitBreaker breaker, ProvisioningContext context) {
+        static Option<Counters> bind(ProvisioningContext context) {
             return Result.all(context.extension(MeterRegistry.class),
                               context.extension(String.class),
                               context.extension(ResourceSection.class))
-                         .map((registry, slice, section) -> register(registry,
-                                                                     breaker,
+                         .map((registry, slice, section) -> counters(registry,
                                                                      Tags.of("slice",
                                                                              slice,
                                                                              "section",
@@ -100,20 +98,11 @@ public record CircuitBreakerMethodInterceptor(CircuitBreaker breaker, Option<Met
                          .option();
         }
 
-        private static Meters register(MeterRegistry registry, CircuitBreaker breaker, Tags tags) {
-            var gauge = Gauge.builder(PREFIX + "state", breaker, Meters::stateCode).tags(tags).register(registry);
-            var rejected = registry.counter(PREFIX + "rejected", tags);
-            var transitions = transitionCounters(registry, tags);
-            var owned = new ArrayList<Meter>(transitions.values());
-
-            owned.add(gauge);
-            owned.add(rejected);
-
-            return new Meters(registry,
-                              List.copyOf(owned),
-                              rejected,
-                              transitions,
-                              new AtomicReference<>(breaker.state()));
+        private static Counters counters(MeterRegistry registry, Tags tags) {
+            return new Counters(registry,
+                                tags,
+                                counter(registry, PREFIX + "rejected", tags),
+                                transitionCounters(registry, tags));
         }
 
         private static Map<Transition, Counter> transitionCounters(MeterRegistry registry, Tags tags) {
@@ -131,16 +120,59 @@ public record CircuitBreakerMethodInterceptor(CircuitBreaker breaker, Option<Met
         }
 
         private static Counter transitionCounter(MeterRegistry registry, Tags tags, Transition change) {
-            return registry.counter(PREFIX + "transitions",
-                                    tags.and("from",
-                                             change.from().name(),
-                                             "to",
-                                             change.to().name()));
+            return counter(registry,
+                           PREFIX + "transitions",
+                           tags.and("from",
+                                    change.from().name(),
+                                    "to",
+                                    change.to().name()));
         }
 
-        private static double stateCode(CircuitBreaker breaker) {
-            return breaker.state()
-                          .ordinal();
+        private static Counter counter(MeterRegistry registry, String name, Tags tags) {
+            return MeterClaims.claim(registry, name, tags, () -> registry.counter(name, tags));
+        }
+
+        /// Counts every change the breaker reports. The listener is total: `transitions` holds every `from != to` pair,
+        /// and the breaker reports only changes.
+        StateListener listener() {
+            return (from, to) -> transitions.get(Transition.transition(from, to))
+                                            .increment();
+        }
+
+        CircuitBreakerMethodInterceptor interceptor(Fn1<CircuitBreaker, StateListener> breakerFor) {
+            return bound(breakerFor.apply(listener()));
+        }
+
+        private CircuitBreakerMethodInterceptor bound(CircuitBreaker breaker) {
+            return new CircuitBreakerMethodInterceptor(breaker, some(meters(breaker)));
+        }
+
+        private Meters meters(CircuitBreaker breaker) {
+            var gauge = MeterClaims.claim(registry,
+                                          PREFIX + "state",
+                                          tags,
+                                          () -> Gauge.builder(PREFIX + "state", breaker, Meters::stateCode)
+                                                     .tags(tags)
+                                                     .register(registry));
+            var owned = new ArrayList<Meter>(transitions.values());
+
+            owned.add(gauge);
+            owned.add(rejected);
+
+            return new Meters(registry, List.copyOf(owned), rejected);
+        }
+    }
+
+    /// The breaker's meters. The state gauge reads the live breaker through an explicit mapping, not the enum's ordinal:
+    /// 0 closed, 1 open, 2 half-open stay the published values if the core enum is reordered. `rejected` counts calls
+    /// the breaker refused without running the method.
+    record Meters(MeterRegistry registry, List<Meter> owned, Counter rejected) {
+        static double stateCode(CircuitBreaker breaker) {
+            return switch (breaker.state()) {
+                case CLOSED -> 0;
+                case OPEN -> 1;
+                case HALF_OPEN -> 2;
+            };
         }
 
         /// Marks the call as run by the breaker; evaluated only inside the breaker's supplier.
@@ -150,30 +182,17 @@ public record CircuitBreakerMethodInterceptor(CircuitBreaker breaker, Option<Met
             return request;
         }
 
-        @Contract
-        void observe(CircuitBreaker breaker) {
-            var current = breaker.state();
-            var previous = observed.getAndSet(current);
-
-            if (previous != current) {
-                transitions.get(Transition.transition(previous, current)).increment();
-            }
-        }
-
         /// A rejection is the breaker's own open error on a call whose method never ran: the same cause coming back
         /// from inside the method (a downstream breaker) is not this breaker's rejection.
         @Contract
-        void settle(CircuitBreaker breaker, boolean executed, Result<?> result) {
-            observe(breaker);
+        void settle(boolean executed, Result<?> result) {
             if (!executed && result.fold(cause -> cause instanceof CircuitBreakerOpenError, _ -> false)) {
                 rejected.increment();
             }
         }
 
         Unit release() {
-            owned.forEach(registry::remove);
-
-            return Unit.unit();
+            return MeterClaims.release(registry, owned);
         }
     }
 }

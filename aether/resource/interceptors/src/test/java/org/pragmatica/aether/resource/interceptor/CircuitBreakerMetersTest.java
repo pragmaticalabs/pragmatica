@@ -4,7 +4,10 @@
 package org.pragmatica.aether.resource.interceptor;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.resource.ResourceFactory;
@@ -15,7 +18,10 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.CircuitBreaker;
 import org.pragmatica.lang.utils.CircuitBreaker.CircuitBreakerError.CircuitBreakerOpenError;
+import org.pragmatica.lang.utils.CircuitBreaker.StateListener;
+import org.pragmatica.lang.utils.TimeSource;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -197,6 +203,166 @@ class CircuitBreakerMetersTest {
         call(live, FAILING);
 
         assertThat(gauge(registry, SECTION_A)).as("the gauge follows the live breaker").isEqualTo(1.0);
+    }
+
+    /// A breaker on a test clock: two failures trip it, an hour of test time resets it, two successes close it.
+    private static final class Clock implements TimeSource {
+        private final AtomicLong nanos = new AtomicLong();
+
+        @Override
+        public long nanoTime() {
+            return nanos.get();
+        }
+
+        void advanceHours(long hours) {
+            nanos.addAndGet(TimeUnit.HOURS.toNanos(hours));
+        }
+    }
+
+    private static CircuitBreakerMethodInterceptor provisionOn(Clock clock, ProvisioningContext context) {
+        return CircuitBreakerMethodInterceptor.circuitBreakerMethodInterceptor(listener -> breaker(clock, listener),
+                                                                              context);
+    }
+
+    private static CircuitBreaker breaker(Clock clock, StateListener listener) {
+        return CircuitBreaker.builder()
+                             .failureThreshold(2)
+                             .resetTimeout(timeSpan(1).hours())
+                             .testAttempts(2)
+                             .withDefaultShouldTrip()
+                             .timeSource(clock, listener);
+    }
+
+    private static void trip(CircuitBreakerMethodInterceptor interceptor) {
+        call(interceptor, FAILING);
+        call(interceptor, FAILING);
+    }
+
+    private static CircuitBreaker observing(MeterRegistry registry,
+                                            AtomicReference<List<String>> seen,
+                                            StateListener listener) {
+        seen.set(registry.getMeters().stream().map(meter -> meter.getId().getName()).toList());
+
+        return breaker(new Clock(), listener);
+    }
+
+    @Test
+    void binding_registersTheCountersBeforeTheBreakerExists_andTheGaugeAfter() {
+        var registry = new SimpleMeterRegistry();
+        var seen = new AtomicReference<List<String>>();
+
+        CircuitBreakerMethodInterceptor.circuitBreakerMethodInterceptor(listener -> observing(registry, seen, listener),
+                                                                        context(registry, SECTION_A));
+
+        assertThat(seen.get()).as("when the breaker is built").contains(TRANSITIONS, REJECTED).doesNotContain(STATE);
+        assertThat(registry.find(STATE).gauges()).as("once it is built").hasSize(1);
+    }
+
+    @Test
+    void gauge_pinsHalfOpenAsTwoAndOpenAsOne_byValue() {
+        var registry = new SimpleMeterRegistry();
+        var clock = new Clock();
+        var interceptor = provisionOn(clock, context(registry, SECTION_A));
+
+        assertThat(gauge(registry, SECTION_A)).as("closed").isEqualTo(0.0);
+
+        trip(interceptor);
+        assertThat(gauge(registry, SECTION_A)).as("open").isEqualTo(1.0);
+
+        clock.advanceHours(2);
+        call(interceptor, SUCCEEDING);
+        assertThat(gauge(registry, SECTION_A)).as("half-open: one success of two").isEqualTo(2.0);
+
+        call(interceptor, SUCCEEDING);
+        assertThat(gauge(registry, SECTION_A)).as("closed again").isEqualTo(0.0);
+    }
+
+    @Test
+    void resetAndRecovery_countOpenToHalfOpen_andHalfOpenToClosed_andNeverOpenToClosed() {
+        var registry = new SimpleMeterRegistry();
+        var clock = new Clock();
+        var interceptor = provisionOn(clock, context(registry, SECTION_A));
+
+        trip(interceptor);
+        clock.advanceHours(2);
+        call(interceptor, SUCCEEDING);
+        call(interceptor, SUCCEEDING);
+
+        assertThat(transitions(registry, SECTION_A, "CLOSED", "OPEN")).isEqualTo(1.0);
+        assertThat(transitions(registry, SECTION_A, "OPEN", "HALF_OPEN")).isEqualTo(1.0);
+        assertThat(transitions(registry, SECTION_A, "HALF_OPEN", "CLOSED")).isEqualTo(1.0);
+        assertThat(transitions(registry, SECTION_A, "OPEN", "CLOSED"))
+            .as("a call that crossed two transitions did not make a third")
+            .isEqualTo(0.0);
+        assertThat(transitions(registry, SECTION_A, "CLOSED", "HALF_OPEN")).isEqualTo(0.0);
+    }
+
+    @Test
+    void failureWhileHalfOpen_countsHalfOpenToOpen() {
+        var registry = new SimpleMeterRegistry();
+        var clock = new Clock();
+        var interceptor = provisionOn(clock, context(registry, SECTION_A));
+
+        trip(interceptor);
+        clock.advanceHours(2);
+        call(interceptor, FAILING);
+
+        assertThat(transitions(registry, SECTION_A, "OPEN", "HALF_OPEN")).isEqualTo(1.0);
+        assertThat(transitions(registry, SECTION_A, "HALF_OPEN", "OPEN")).isEqualTo(1.0);
+        assertThat(transitions(registry, SECTION_A, "CLOSED", "OPEN")).isEqualTo(1.0);
+        assertThat(gauge(registry, SECTION_A)).isEqualTo(1.0);
+    }
+
+    @Test
+    void callParkedInsideTheMethod_whileAnotherTripsTheBreaker_causesNoPhantomTransition() {
+        var registry = new SimpleMeterRegistry();
+        var interceptor = provisionOn(new Clock(), context(registry, SECTION_A));
+        var parked = Promise.<String> promise();
+        var inFlight = interceptor.intercept(_ -> parked).apply("x");
+
+        trip(interceptor);
+        parked.succeed("late");
+        inFlight.await();
+
+        assertThat(transitions(registry, SECTION_A, "CLOSED", "OPEN")).as("tripped once").isEqualTo(1.0);
+        assertThat(transitions(registry, SECTION_A, "OPEN", "CLOSED")).as("never closed again").isEqualTo(0.0);
+        assertThat(gauge(registry, SECTION_A)).isEqualTo(1.0);
+    }
+
+    @Test
+    void provisionedBeforeTheOldInstanceIsClosed_theLiveMetersSurviveTheOldClose() {
+        var registry = new SimpleMeterRegistry();
+        var context = context(registry, SECTION_A);
+        var old = provision(context);
+        var live = provision(context);
+
+        old.release();
+
+        assertThat(registry.find(STATE).gauges()).as("the live gauge is still registered").hasSize(1);
+        assertThat(gauge(registry, SECTION_A)).isEqualTo(0.0);
+
+        trip(live);
+
+        assertThat(gauge(registry, SECTION_A)).as("the gauge follows the live breaker, not the closed one").isEqualTo(1.0);
+        assertThat(transitions(registry, SECTION_A, "CLOSED", "OPEN")).as("the live counters count").isEqualTo(1.0);
+
+        live.release();
+
+        assertThat(registry.getMeters()).as("the live instance's own close removes its meters").isEmpty();
+    }
+
+    @Test
+    void provisionedBeforeTheOldInstanceIsClosed_theOldBreakersChangesDoNotReachTheLiveCounters() {
+        var registry = new SimpleMeterRegistry();
+        var context = context(registry, SECTION_A);
+        var old = provision(context);
+
+        provision(context);
+        trip(old);
+
+        assertThat(transitions(registry, SECTION_A, "CLOSED", "OPEN"))
+            .as("the live instance's series is its own")
+            .isEqualTo(0.0);
     }
 
     private static Promise<String> countedRun(AtomicInteger runs, String request) {

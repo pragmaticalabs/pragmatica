@@ -9,7 +9,10 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.CircuitBreaker.CircuitBreakerError.CircuitBreakerOpenError;
 import org.pragmatica.lang.utils.CircuitBreaker.State;
+import org.pragmatica.lang.utils.CircuitBreaker.StateListener;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
@@ -266,5 +269,110 @@ class CircuitBreakerTest {
         circuitBreaker.execute(TEST_ERROR::promise).await();
 
         assertThat(circuitBreaker.state()).isEqualTo(State.OPEN);
+    }
+
+    private record Change(State from, State to) {}
+
+    private CircuitBreaker listened(List<Change> changes) {
+        StateListener listener = (from, to) -> changes.add(new Change(from, to));
+
+        return CircuitBreaker.builder()
+                             .failureThreshold(3)
+                             .resetTimeout(timeSpan(100).millis())
+                             .testAttempts(2)
+                             .shouldTrip(cause -> cause == TEST_ERROR)
+                             .timeSource(timeSource, listener);
+    }
+
+    private static void tripWithThreeFailures(CircuitBreaker breaker) {
+        breaker.execute(TEST_ERROR::promise).await();
+        breaker.execute(TEST_ERROR::promise).await();
+        breaker.execute(TEST_ERROR::promise).await();
+    }
+
+    @Test
+    void listener_isToldEachChangeOnce_inTheOrderTheyHappen() {
+        var changes = new ArrayList<Change>();
+        var breaker = listened(changes);
+
+        tripWithThreeFailures(breaker);
+        timeSource.advanceTime(150);
+        breaker.execute(() -> Promise.success("first")).await();
+        breaker.execute(() -> Promise.success("second")).await();
+
+        assertThat(changes).containsExactly(new Change(State.CLOSED, State.OPEN),
+                                            new Change(State.OPEN, State.HALF_OPEN),
+                                            new Change(State.HALF_OPEN, State.CLOSED));
+    }
+
+    @Test
+    void listener_isToldOfAFailureWhileHalfOpen() {
+        var changes = new ArrayList<Change>();
+        var breaker = listened(changes);
+
+        tripWithThreeFailures(breaker);
+        timeSource.advanceTime(150);
+        breaker.execute(TEST_ERROR::promise).await();
+
+        assertThat(changes).containsExactly(new Change(State.CLOSED, State.OPEN),
+                                            new Change(State.OPEN, State.HALF_OPEN),
+                                            new Change(State.HALF_OPEN, State.OPEN));
+    }
+
+    @Test
+    void listener_isNotCalledWhenTheStateDidNotChange() {
+        var changes = new ArrayList<Change>();
+        var breaker = listened(changes);
+
+        breaker.execute(() -> Promise.success("ok")).await();
+        breaker.execute(TEST_ERROR::promise).await();
+        breaker.execute(IGNORED_ERROR::promise).await();
+
+        assertThat(changes).as("no change, no call").isEmpty();
+    }
+
+    @Test
+    void listener_isCalledOnceWhenTwoFailuresTripTheBreakerTogether() {
+        var changes = new ArrayList<Change>();
+        var breaker = CircuitBreaker.builder()
+                                    .failureThreshold(1)
+                                    .resetTimeout(timeSpan(100).millis())
+                                    .testAttempts(2)
+                                    .withDefaultShouldTrip()
+                                    .timeSource(timeSource, (from, to) -> changes.add(new Change(from, to)));
+        var first = Promise.<String>promise();
+        var second = Promise.<String>promise();
+
+        breaker.execute(() -> first);
+        breaker.execute(() -> second);
+        first.fail(TEST_ERROR);
+        second.fail(TEST_ERROR);
+
+        assertThat(changes).as("the second failure found the breaker already open").containsExactly(new Change(State.CLOSED,
+                                                                                                                State.OPEN));
+    }
+
+    @Test
+    void factoryOverload_withListener_reportsChanges() {
+        var changes = new ArrayList<Change>();
+        var breaker = CircuitBreaker.circuitBreaker(1,
+                                                     timeSpan(100).millis(),
+                                                     1,
+                                                     cause -> true,
+                                                     timeSource,
+                                                     (from, to) -> changes.add(new Change(from, to)));
+
+        breaker.execute(TEST_ERROR::promise).await();
+
+        assertThat(changes).containsExactly(new Change(State.CLOSED, State.OPEN));
+    }
+
+    @Test
+    void factoryOverload_withoutListener_behavesAsBefore() {
+        var breaker = CircuitBreaker.circuitBreaker(1, timeSpan(100).millis(), 1, cause -> true, timeSource);
+
+        breaker.execute(TEST_ERROR::promise).await();
+
+        assertThat(breaker.state()).isEqualTo(State.OPEN);
     }
 }

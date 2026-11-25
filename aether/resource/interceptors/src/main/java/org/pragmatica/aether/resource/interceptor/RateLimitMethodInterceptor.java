@@ -76,10 +76,14 @@ public record RateLimitMethodInterceptor(RateLimiter limiter, Option<Meters> met
         }
 
         private static Meters register(MeterRegistry registry, Tags tags) {
-            var admitted = registry.counter(PREFIX + "admitted", tags);
-            var rejected = registry.counter(PREFIX + "rejected", tags);
+            var admitted = counter(registry, PREFIX + "admitted", tags);
+            var rejected = counter(registry, PREFIX + "rejected", tags);
 
             return new Meters(registry, List.of(admitted, rejected), admitted, rejected);
+        }
+
+        private static Counter counter(MeterRegistry registry, String name, Tags tags) {
+            return MeterClaims.claim(registry, name, tags, () -> registry.counter(name, tags));
         }
 
         /// Counts and marks the call as admitted; evaluated only inside the limiter's supplier.
@@ -100,9 +104,7 @@ public record RateLimitMethodInterceptor(RateLimiter limiter, Option<Meters> met
         }
 
         Unit release() {
-            owned.forEach(registry::remove);
-
-            return Unit.unit();
+            return MeterClaims.release(registry, owned);
         }
     }
 }

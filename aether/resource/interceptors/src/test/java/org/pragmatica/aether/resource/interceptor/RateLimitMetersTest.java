@@ -157,6 +157,26 @@ class RateLimitMetersTest {
         assertThat(count(registry, ADMITTED, SECTION_A)).isEqualTo(1.0);
     }
 
+    @Test
+    void provisionedBeforeTheOldInstanceIsClosed_theLiveCountersSurviveTheOldClose() {
+        var registry = new SimpleMeterRegistry();
+        var context = context(registry, SECTION_A);
+        var old = provision(context);
+        var live = provision(context);
+
+        old.release();
+
+        assertThat(registry.find(ADMITTED).counters()).as("the live counter is still registered").hasSize(1);
+
+        call(live, SUCCEEDING);
+
+        assertThat(count(registry, ADMITTED, SECTION_A)).as("the live limiter's calls are counted").isEqualTo(1.0);
+
+        live.release();
+
+        assertThat(registry.getMeters()).as("the live instance's own close removes its meters").isEmpty();
+    }
+
     private static Promise<String> countedRun(AtomicInteger runs, String request) {
         runs.incrementAndGet();
         return Promise.success(request);

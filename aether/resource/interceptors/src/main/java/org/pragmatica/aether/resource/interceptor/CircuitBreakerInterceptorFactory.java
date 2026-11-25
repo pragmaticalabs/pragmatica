@@ -8,6 +8,8 @@ import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.CircuitBreaker;
+import org.pragmatica.lang.utils.CircuitBreaker.StateListener;
+import org.pragmatica.lang.utils.TimeSource;
 
 import static org.pragmatica.aether.resource.interceptor.CircuitBreakerMethodInterceptor.circuitBreakerMethodInterceptor;
 
@@ -25,7 +27,7 @@ public final class CircuitBreakerInterceptorFactory implements ResourceFactory<C
 
     @Override
     public Promise<CircuitBreakerMethodInterceptor> provision(CircuitBreakerConfig config) {
-        return Promise.success(circuitBreakerMethodInterceptor(breaker(config)));
+        return Promise.success(circuitBreakerMethodInterceptor(breaker(config, StateListener.none())));
     }
 
     /// Meters are bound when the context carries a `MeterRegistry`, the slice id and the section (#280 R27). Any of
@@ -34,7 +36,7 @@ public final class CircuitBreakerInterceptorFactory implements ResourceFactory<C
     @Override
     public Promise<CircuitBreakerMethodInterceptor> provision(CircuitBreakerConfig config,
                                                               ProvisioningContext context) {
-        return Promise.success(circuitBreakerMethodInterceptor(breaker(config), context));
+        return Promise.success(circuitBreakerMethodInterceptor(listener -> breaker(config, listener), context));
     }
 
     /// Unload removes the breaker's meters, so a redeploy leaves one gauge bound to the live breaker.
@@ -43,12 +45,13 @@ public final class CircuitBreakerInterceptorFactory implements ResourceFactory<C
         return Promise.success(resource.release());
     }
 
-    private static CircuitBreaker breaker(CircuitBreakerConfig config) {
+    private static CircuitBreaker breaker(CircuitBreakerConfig config, StateListener listener) {
         return CircuitBreaker.builder()
                              .failureThreshold(config.failureThreshold())
                              .resetTimeout(config.resetTimeout())
                              .testAttempts(config.testAttempts())
                              .withDefaultShouldTrip()
-                             .withDefaultTimeSource();
+                             .timeSource(TimeSource.system(),
+                                         listener);
     }
 }

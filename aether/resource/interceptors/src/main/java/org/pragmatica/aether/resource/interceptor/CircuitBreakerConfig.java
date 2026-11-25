@@ -21,8 +21,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// `section` (a second section of the same slice has its own series; nothing is tagged per method, since one breaker
 /// serves every method naming the section):
 /// - `aether.interceptor.circuit_breaker.state` gauge: 0 closed, 1 open, 2 half-open, read live from the breaker.
-/// - `aether.interceptor.circuit_breaker.transitions` counter tagged `from`, `to`: state changes observed at call
-///   boundaries (the core breaker has no listener, so two changes between consecutive calls count as one).
+/// - `aether.interceptor.circuit_breaker.transitions` counter tagged `from`, `to`: every state change, counted by the
+///   breaker's own listener at the moment it makes the change (a change on the scheduler thread, open to half-open,
+///   included); no change is missed, merged or invented.
 /// - `aether.interceptor.circuit_breaker.rejected` counter: calls refused while open; the method did not run.
 ///
 /// The meters are removed when the slice unloads.
