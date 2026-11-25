@@ -154,36 +154,43 @@ class FlowCommentGapSweepTest {
         int occurrences = out.split(MARK, -1).length - 1;
 
         if (occurrences == 0) {
-            return Optional.of("DROPPED");
+            return Optional.of("DROPPED" + shown(out));
         }
 
         if (occurrences > 1) {
-            return Optional.of("DUPLICATED");
+            return Optional.of("DUPLICATED" + shown(out));
         }
 
         var outTokens = tokens(out);
 
         if (outTokens.isEmpty()) {
-            return Optional.of("OUTPUT-UNPARSEABLE");
+            return Optional.of("OUTPUT-UNPARSEABLE" + shown(out));
         }
 
         var outCode = codeTokens(outTokens.get());
 
         if (!texts(outCode).equals(texts(expectedCode))) {
-            return Optional.of("CODE-TOKENS-CHANGED");
+            return Optional.of("CODE-TOKENS-CHANGED" + shown(out));
         }
 
         int codeBefore = codeTokensBeforeMark(outTokens.get());
 
         if (codeBefore != k + 1) {
-            return Optional.of("MOVED(after code token " + (codeBefore - 1) + ")");
+            return Optional.of("MOVED(after code token " + (codeBefore - 1) + ")" + shown(out));
         }
 
-        if (!format(out).equals(formatted)) {
-            return Optional.of("NOT-IDEMPOTENT");
+        var second = format(out);
+
+        if (!second.equals(formatted)) {
+            return Optional.of("NOT-IDEMPOTENT" + shown(out) + " -> second pass" + shown(second.orElse("<format error>")));
         }
 
         return Optional.empty();
+    }
+
+    /// The formatted text of a failing cell on one line (newlines shown as `⏎`), so the table alone shows the defect.
+    private static String shown(String text) {
+        return " :: " + text.replace("\n", "⏎");
     }
 
     private static String cell(int k, Tok before, Tok after, Form form, String kind) {
