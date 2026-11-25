@@ -65,6 +65,8 @@ import static org.pragmatica.http.server.TlsCertificates.http1Config;
 import static org.pragmatica.http.server.TlsCertificates.http1Server;
 import static org.pragmatica.http.server.TlsCertificates.http3Client;
 import static org.pragmatica.http.server.TlsCertificates.http3Server;
+import static org.pragmatica.http.server.TlsCertificates.http3ServerOffering;
+import static org.pragmatica.http.server.TlsCertificates.http3ServerWithoutH3;
 import static org.pragmatica.http.server.TlsCertificates.nativeRefCnt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.testing.PollUntil.pollUntil;
@@ -222,6 +224,34 @@ class LiveTlsRotationTest {
         }
     }
 
+    /// #3747: a swap to a server context that cannot serve HTTP/3 (no `h3` ALPN) is refused, the old context stays
+    /// installed, and a connection opened afterwards is served with the old certificate.
+    @Test
+    void http3_swapToContextWithoutH3_isRefused_laterConnectionsStillServed() throws Exception {
+        var first = bundle("h3-no-alpn-first");
+        var firstContext = http3Server(first);
+        var holder = LiveTls.liveQuicTls(firstContext).unwrap();
+        var port = http3(holder);
+        var outcome = holder.swap(http3ServerWithoutH3(bundle("h3-no-alpn-bad")));
+
+        assertThat(outcome.isFailure()).as("a context without h3 is refused").isTrue();
+        assertThat(holder.current()).as("the old context stays installed").isSameAs(firstContext);
+        assertThat(h3Probe(port)).isEqualTo(certificate(first));
+    }
+
+    /// #3747b: a swap to a context offering only `h3` (the RFC 9114 setup) is admitted and a connection opened
+    /// afterwards is served with its certificate.
+    @Test
+    void http3_swapToContextOfferingOnlyH3_isAdmitted_newConnectionServed() throws Exception {
+        var first = bundle("h3-only-first");
+        var second = bundle("h3-only-second");
+        var holder = LiveTls.liveQuicTls(http3Server(first)).unwrap();
+        var port = http3(holder);
+
+        assertThat(holder.swap(http3ServerOffering(second, "h3")).isSuccess()).as("an h3-only context is admitted").isTrue();
+        assertThat(h3Probe(port)).isEqualTo(certificate(second));
+    }
+
     @Test
     void http3_twentySwaps_portNeverRefuses() throws Exception {
         var first = bundle("h3-loop-first");
@@ -296,6 +326,8 @@ class LiveTlsRotationTest {
                          .start(() -> connectionLoop(probe, Set.copyOf(certificates), stop, served, failures));
 
         try {
+            pollUntil(served::get, count -> count > 0, Duration.ofSeconds(20))
+                .assertMet("the loop served a connection before the first swap");
             for (var index = 1; index <= LOOP_SWAPS; index++) {
                 assertThat(swap.apply(index)).as("swap %d", index).isTrue();
                 assertThat(probe.connectAndServe()).as("after swap %d", index).isEqualTo(certificates.get(index % 2));
@@ -306,7 +338,6 @@ class LiveTlsRotationTest {
         }
         assertThat(loop.isAlive()).as("the connection loop ended").isFalse();
         assertThat(failures).as("no connection refused, failed or offered a third certificate").isEmpty();
-        assertThat(served.get()).as("the loop connected while the swaps ran").isPositive();
     }
 
     private static void connectionLoop(Probe probe,

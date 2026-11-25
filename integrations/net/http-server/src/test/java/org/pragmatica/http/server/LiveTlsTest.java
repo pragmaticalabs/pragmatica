@@ -33,6 +33,8 @@ import static org.pragmatica.http.server.TlsCertificates.http1Client;
 import static org.pragmatica.http.server.TlsCertificates.http1Server;
 import static org.pragmatica.http.server.TlsCertificates.http3Client;
 import static org.pragmatica.http.server.TlsCertificates.http3Server;
+import static org.pragmatica.http.server.TlsCertificates.http3ServerOffering;
+import static org.pragmatica.http.server.TlsCertificates.http3ServerWithoutH3;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #2032: a [LiveTls] holder admits only a context its protocol can serve, a swap installs the new context, and a
@@ -72,6 +74,62 @@ class LiveTlsTest {
     void liveQuicTls_clientContext_isRefused() {
         assertThat(refusal(LiveTls.liveQuicTls(http3Client())))
             .isEqualTo(HttpServerError.TlsContextRefused.NOT_HTTP3_SERVER);
+    }
+
+    /// #3747: a server QUIC context without the `h3` ALPN token cannot serve HTTP/3, so no holder is built over it.
+    @Test
+    void liveQuicTls_serverContextWithoutH3_isRefused() {
+        assertThat(refusal(LiveTls.liveQuicTls(http3ServerWithoutH3(bundle("unit-no-h3")))))
+            .isEqualTo(HttpServerError.TlsContextRefused.NOT_HTTP3_ALPN);
+    }
+
+    /// Control for the refusal above: the same context built with `h3` is admitted.
+    @Test
+    void liveQuicTls_serverContextWithH3_isCurrent() {
+        var context = http3Server(bundle("unit-with-h3"));
+
+        assertThat(LiveTls.liveQuicTls(context).unwrap().current()).isSameAs(context);
+    }
+
+    /// #3747b: the standard RFC 9114 setup offers only `h3`; Netty's codec serves it, so the context is admitted.
+    @Test
+    void liveQuicTls_serverContextOfferingOnlyH3_isCurrent() {
+        var context = http3ServerOffering(bundle("unit-only-h3"), "h3");
+
+        assertThat(LiveTls.liveQuicTls(context).unwrap().current()).isSameAs(context);
+    }
+
+    /// #3747b: a draft token alone is also served by Netty's codec (`Http3.supportedApplicationProtocols()`).
+    @Test
+    void liveQuicTls_serverContextOfferingOnlyDraftToken_isCurrent() {
+        var context = http3ServerOffering(bundle("unit-only-h3-29"), "h3-29");
+
+        assertThat(LiveTls.liveQuicTls(context).unwrap().current()).isSameAs(context);
+    }
+
+    @Test
+    void liveQuicTls_serverContextOfferingNoProtocol_isRefused() {
+        assertThat(refusal(LiveTls.liveQuicTls(http3ServerOffering(bundle("unit-no-protocol")))))
+            .isEqualTo(HttpServerError.TlsContextRefused.NOT_HTTP3_ALPN);
+    }
+
+    @Test
+    void swap_quicContextOfferingOnlyH3_isInstalled() {
+        var holder = LiveTls.liveQuicTls(http3Server(bundle("unit-swap-first"))).unwrap();
+        var onlyH3 = http3ServerOffering(bundle("unit-swap-only-h3"), "h3");
+
+        assertThat(holder.swap(onlyH3).isSuccess()).isTrue();
+        assertThat(holder.current()).isSameAs(onlyH3);
+    }
+
+    @Test
+    void swap_quicContextWithoutH3_isRefused_keepsCurrent() {
+        var first = http3Server(bundle("unit-quic-alpn-first"));
+        var holder = LiveTls.liveQuicTls(first).unwrap();
+
+        assertThat(refusal(holder.swap(http3ServerWithoutH3(bundle("unit-quic-alpn-bad")))))
+            .isEqualTo(HttpServerError.TlsContextRefused.NOT_HTTP3_ALPN);
+        assertThat(holder.current()).isSameAs(first);
     }
 
     @Test
