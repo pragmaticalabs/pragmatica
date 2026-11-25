@@ -109,6 +109,7 @@ class SwimDeadIdAnsweredByAnotherNodeTest {
         var observations = new RecordingObservationSink();
         var protocol = protocol(transport, observations, () -> false);
 
+        accuseOnFirstSuspect(protocol);
         protocol.addSeedMember(DEAD, DEAD_ADDR);
         protocol.start();
         try {
@@ -117,8 +118,6 @@ class SwimDeadIdAnsweredByAnotherNodeTest {
             var healthyBefore = healthy(observations).size();
 
             transport.answerer.set(IMPOSTOR);
-            awaitSuspect(protocol);
-            confirmSuspicionFromSecondAccuser(protocol);
 
             await().atMost(DEPARTURE_BOUND)
                    .until(() -> !departures(observations).isEmpty());
@@ -166,6 +165,7 @@ class SwimDeadIdAnsweredByAnotherNodeTest {
         var observations = new RecordingObservationSink();
         var protocol = protocol(transport, observations, () -> false);
 
+        accuseOnFirstSuspect(protocol);
         protocol.addSeedMember(DEAD, DEAD_ADDR);
         protocol.start();
         try {
@@ -177,9 +177,9 @@ class SwimDeadIdAnsweredByAnotherNodeTest {
             transport.piggyback.set(List.of(impostorAboutItself));
             transport.answerer.set(IMPOSTOR);
             protocol.onMessage(DEAD_ADDR, Ping.ping(IMPOSTOR, 900_001L, List.of(impostorAboutItself)));
-            awaitSuspect(protocol);
+            await().atMost(DEPARTURE_BOUND)
+                   .until(() -> !suspects(observations).isEmpty());
             protocol.onMessage(DEAD_ADDR, Ping.ping(IMPOSTOR, 900_002L, List.of(impostorAboutItself)));
-            confirmSuspicionFromSecondAccuser(protocol);
 
             await().atMost(DEPARTURE_BOUND)
                    .until(() -> !departures(observations).isEmpty());
@@ -265,19 +265,33 @@ class SwimDeadIdAnsweredByAnotherNodeTest {
         assertThat(healthy(observations)).isEmpty();
     }
 
-    private static void awaitSuspect(SwimProtocol protocol) {
-        await().atMost(DEPARTURE_BOUND)
-               .until(() -> protocol.members().get(DEAD).state() == MemberState.SUSPECT);
+    /// A second, independent accuser: a node whose own probes of A are answered by B too gossips SUSPECT(A). It is
+    /// delivered from the suspect observation itself, so it reaches the protocol in the same drain that moved A to
+    /// SUSPECT and cannot miss the suspicion window however long the test thread stalls (a poll of the live state
+    /// could see the suspicion already expired to FAULTY). The call is serialised behind the current handler by the
+    /// protocol's state executor, so it runs once the SUSPECT transition has settled.
+    private static void accuseOnFirstSuspect(SwimProtocol protocol) {
+        var accused = new AtomicBoolean();
+
+        protocol.addObservationListener(observation -> accuse(protocol, accused, observation));
     }
 
-    /// A second, independent accuser: a node whose own probes of A are answered by B too gossips SUSPECT(A).
-    private static void confirmSuspicionFromSecondAccuser(SwimProtocol protocol) {
-        var incarnation = protocol.members().get(DEAD).incarnation();
+    private static void accuse(SwimProtocol protocol, AtomicBoolean accused, SwimObservation observation) {
+        if (observation instanceof SwimObservation.SuspectObserved suspect
+            && suspect.peer().equals(DEAD)
+            && accused.compareAndSet(false, true)) {
+            protocol.onMessage(ACCUSER_ADDR,
+                               Ping.ping(ACCUSER,
+                                         900_100L,
+                                         List.of(membershipUpdate(DEAD, MemberState.SUSPECT, suspect.incarnation(), DEAD_ADDR))));
+        }
+    }
 
-        protocol.onMessage(ACCUSER_ADDR,
-                           Ping.ping(ACCUSER,
-                                     900_100L,
-                                     List.of(membershipUpdate(DEAD, MemberState.SUSPECT, incarnation, DEAD_ADDR))));
+    private static List<SwimObservation.SuspectObserved> suspects(RecordingObservationSink observations) {
+        return observations.byType(SwimObservation.SuspectObserved.class)
+                           .stream()
+                           .filter(observation -> observation.peer().equals(DEAD))
+                           .toList();
     }
 
     private static List<SwimObservation.HealthyObserved> healthy(RecordingObservationSink observations) {

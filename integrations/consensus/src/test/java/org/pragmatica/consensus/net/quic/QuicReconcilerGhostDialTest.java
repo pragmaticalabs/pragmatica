@@ -60,16 +60,15 @@ import static org.junit.jupiter.api.Assertions.fail;
 ///  - G is in the desired set but no longer reported alive by the raw-SWIM liveness gate: the dial spacing grows
 ///    to the 60 s cap, against one dial per 5 s tick while the gate reports it alive (the control).
 ///
-/// The clock is the network's injected wall clock; a dial is observed as the peer's INIT/EVICTED to CONNECTING
-/// transition. A tick that dials is awaited to its end (the dial's mismatch callback and the return of the peer to
-/// a non-CONNECTING phase) before the next tick, so an in-flight dial never masks the next tick's decision.
+/// The clock is the network's injected wall clock; a dial is DECIDED when the peer's last reconcile attempt equals the
+/// clock (read synchronously after the tick) and COUNTED as its INIT/EVICTED to CONNECTING transition. A decided
+/// tick is awaited to its end (CONNECTING, the dial's mismatch callback and the return to a non-CONNECTING phase) before the next tick, so an in-flight dial never masks the next tick's decision.
 @Timeout(120)
 class QuicReconcilerGhostDialTest {
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(30).seconds();
     private static final TimeSpan PING_INTERVAL = TimeSpan.timeSpan(30).seconds();
     private static final long TICK_MS = 5_000L;
     private static final long CAP_MS = 60_000L;
-    private static final long DIAL_START_WINDOW_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     /// The lower id initiates, so G must sort above A.
     private static final NodeId SELF = new NodeId("gd-a");
     private static final NodeId ANSWERER = new NodeId("gd-b");
@@ -124,6 +123,7 @@ class QuicReconcilerGhostDialTest {
         tick(1);
         assertThat(dialTimes).as("control: put back into the set, G is dialed again, so the counter still sees dials")
                              .hasSize(7);
+        assertEveryDialWasDecided();
     }
 
     @Test
@@ -146,6 +146,7 @@ class QuicReconcilerGhostDialTest {
         assertThat(windowDials.get(windowDials.size() - 1) - windowDials.get(windowDials.size() - 2))
             .as("the last spacing is the capped one (60 s, jittered to at least 48 s)")
             .isGreaterThanOrEqualTo(CAP_MS * 8 / 10);
+        assertEveryDialWasDecided();
     }
 
     private void tick(int ticks) {
@@ -159,11 +160,22 @@ class QuicReconcilerGhostDialTest {
 
         clock.addAndGet(TICK_MS);
         aNet.reconcileMissingPeersTick();
-        if (awaitWithin(() -> connectingCount() > dialsBefore, DIAL_START_WINDOW_NANOS)) {
+        if (decidedToDial()) {
             dialTimes.add(clock.get());
-            awaitTrue(() -> refutations.size() == connectingCount() && !connecting(),
-                      "the dial ended in an identity mismatch and the peer left CONNECTING");
+            awaitTrue(() -> connectingCount() == dialsBefore + 1 && refutations.size() == connectingCount() && !connecting(),
+                      "the dial began CONNECTING, ended in an identity mismatch and the peer left CONNECTING");
         }
+    }
+
+    /// The dial decision is synchronous: the backoff stamps its attempt time with the injected clock on the tick's
+    /// thread, while CONNECTING begins later on the resolver thread. So "decided" is read, never timed.
+    private boolean decidedToDial() {
+        return aNet.reconcileLastAttemptMsForTests(GHOST) == clock.get();
+    }
+
+    private void assertEveryDialWasDecided() {
+        assertThat(connectingCount()).as("CONNECTING count equals the dials the backoff decided (no undecided dial)")
+                                     .isEqualTo(dialTimes.size());
     }
 
     /// Dials started: real transitions into CONNECTING. The dialer's `dialer-hello-REJECTED` record is journaled
