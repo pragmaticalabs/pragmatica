@@ -220,15 +220,25 @@ class CircuitBreakerMetersTest {
     }
 
     private static CircuitBreakerMethodInterceptor provisionOn(Clock clock, ProvisioningContext context) {
-        return CircuitBreakerMethodInterceptor.circuitBreakerMethodInterceptor(listener -> breaker(clock, listener),
+        return provisionOn(clock, 2, context);
+    }
+
+    private static CircuitBreakerMethodInterceptor provisionOn(Clock clock, int testAttempts, ProvisioningContext context) {
+        return CircuitBreakerMethodInterceptor.circuitBreakerMethodInterceptor(listener -> breaker(clock,
+                                                                                                    testAttempts,
+                                                                                                    listener),
                                                                               context);
     }
 
     private static CircuitBreaker breaker(Clock clock, StateListener listener) {
+        return breaker(clock, 2, listener);
+    }
+
+    private static CircuitBreaker breaker(Clock clock, int testAttempts, StateListener listener) {
         return CircuitBreaker.builder()
                              .failureThreshold(2)
                              .resetTimeout(timeSpan(1).hours())
-                             .testAttempts(2)
+                             .testAttempts(testAttempts)
                              .withDefaultShouldTrip()
                              .timeSource(clock, listener);
     }
@@ -297,6 +307,24 @@ class CircuitBreakerMetersTest {
         assertThat(transitions(registry, SECTION_A, "CLOSED", "HALF_OPEN")).isEqualTo(0.0);
     }
 
+    /// Red on the sampling implementation (a call boundary saw OPEN before and CLOSED after, and counted the one
+    /// OPEN->CLOSED that never happened); green once the breaker reports its own transitions.
+    @Test
+    void oneCallCrossingTwoTransitions_countsBoth_andNoPhantomOpenToClosed() {
+        var registry = new SimpleMeterRegistry();
+        var clock = new Clock();
+        var interceptor = provisionOn(clock, 1, context(registry, SECTION_A));
+
+        trip(interceptor);
+        clock.advanceHours(2);
+        call(interceptor, SUCCEEDING);
+
+        assertThat(transitions(registry, SECTION_A, "OPEN", "HALF_OPEN")).isEqualTo(1.0);
+        assertThat(transitions(registry, SECTION_A, "HALF_OPEN", "CLOSED")).isEqualTo(1.0);
+        assertThat(transitions(registry, SECTION_A, "OPEN", "CLOSED")).isEqualTo(0.0);
+        assertThat(gauge(registry, SECTION_A)).isEqualTo(0.0);
+    }
+
     @Test
     void failureWhileHalfOpen_countsHalfOpenToOpen() {
         var registry = new SimpleMeterRegistry();
@@ -313,6 +341,9 @@ class CircuitBreakerMetersTest {
         assertThat(gauge(registry, SECTION_A)).isEqualTo(1.0);
     }
 
+    /// Pins the interleaving (a call parked across a trip). It is green on the sampling implementation too, whose race
+    /// sits between two adjacent statements no test can park inside; the red-on-sampling pin is
+    /// oneCallCrossingTwoTransitions_countsBoth_andNoPhantomOpenToClosed.
     @Test
     void callParkedInsideTheMethod_whileAnotherTripsTheBreaker_causesNoPhantomTransition() {
         var registry = new SimpleMeterRegistry();
