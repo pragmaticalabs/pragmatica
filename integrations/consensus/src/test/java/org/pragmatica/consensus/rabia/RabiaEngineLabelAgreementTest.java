@@ -217,6 +217,7 @@ class RabiaEngineLabelAgreementTest {
 
         waiting.activeEdge();
         assertThat(await(() -> waiting.lookups.get() > 0)).as("the wait is polling").isTrue();
+        assertThat(await(() -> waiting.guard.get() != null)).as("admit has returned, so the guard is published").isTrue();
         var stoppedAt = System.nanoTime();
         waiting.engine.stop().await();
 

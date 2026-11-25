@@ -126,6 +126,28 @@ class RabiaNodeLabelWiringTest {
                .until(() -> warnings.isEmpty() && !engine.isStopRequested());
     }
 
+    /// #3525 round 3 (G1): the node ties the label wait to its own engine. The wait is past its bound and pending (the incomplete
+    /// warning is out), then the node is stopped through its own stop path; a quorum peer handshaking afterwards would complete a live
+    /// wait and raise the recovery, so the recovery staying out, over many poll intervals, shows the wait ended with the stop. Dropping
+    /// the engine's stop flag at the node's assembly, or the end signal in the node's join guard, lets the wait outlive the node.
+    @Test
+    void agreeingLabelsConfigured_theNodeIsStoppedDuringTheWait_theWaitEndsAndRaisesNothing() throws ReflectiveOperationException {
+        var node = assembled(true);
+
+        drive(node);
+        await().atMost(AWAIT).until(() -> count(OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE) == 1);
+        node.stop().await();
+        handshake(node, PEER, Map.of(NodeInfo.LABEL_WIRE_GENERATION,
+                                     Integer.toString(JoinGenerationGuard.WIRE_GENERATION),
+                                     LABEL,
+                                     "on"));
+
+        await().during(Duration.ofMillis(SHORT.millis() * 5))
+               .atMost(AWAIT)
+               .until(() -> warnings.size() == 1 && node.isEngineStopRequested());
+        assertThat(warnings.getFirst().code()).isEqualTo(OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE);
+    }
+
     private long count(OperatorWarningCode code) {
         return warnings.stream().filter(warning -> warning.code() == code).count();
     }
