@@ -261,6 +261,8 @@ class RabiaEngineLabelAgreementTest {
 
         assertThat(await(() -> waiting.count(OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE) == 2)).as("the second episode raises its own warning")
                                                                                                     .isTrue();
+        assertThat(await(() -> waiting.count(OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE) == 1)).as("the first episode's recovery reaches the sink, which hands off on its own thread")
+                                                                                                .isTrue();
         assertThat(waiting.count(OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE)).as("the first episode, and only it, was closed").isEqualTo(1);
     }
 
