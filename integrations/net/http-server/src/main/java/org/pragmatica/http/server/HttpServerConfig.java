@@ -55,7 +55,9 @@ import org.pragmatica.net.tcp.TlsConfig;
 ///                             Zero or negative disables the bound.
 /// @param bindHost             the local host (name or address literal) the listening socket binds to, on both
 ///                             protocols: none binds every interface (the wildcard address), the default. A host that
-///                             does not resolve, or a blank one, fails the start with `HttpServerError.BindHostUnresolved`.
+///                             does not resolve to an address, or a blank one, fails the start with
+///                             `HttpServerError.BindHostUnresolved`; one that resolves to an address this machine does not
+///                             own fails in the bind with `HttpServerError.BindFailed` naming the host.
 public record HttpServerConfig(String name,
                                int port,
                                Option<TlsConfig> tls,

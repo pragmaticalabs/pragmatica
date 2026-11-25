@@ -16,6 +16,7 @@
 package org.pragmatica.http.server;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.ConnectException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -24,11 +25,13 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.PortUnreachableException;
+import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.util.Collections;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.stream.IntStream;
 
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
@@ -62,7 +65,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class HttpServerBindHostTest {
     private static final BiConsumer<HttpRequest, ResponseWriter> ANSWER_OK = (_, writer) -> writer.ok("{}");
     private static final String UNRESOLVABLE = "no-such-host.invalid";
+    /// TEST-NET-1 (RFC 5737): resolves as a literal, so it passes the resolution, but no interface of this machine owns it.
+    private static final String NOT_OURS = "192.0.2.1";
     private static final int CONNECT_TIMEOUT_MS = 5_000;
+    private static final int DATAGRAM_ATTEMPTS = 5;
+    private static final int DATAGRAM_TIMEOUT_MS = 400;
 
     private HttpServer h1;
     private Http3Server h3;
@@ -190,6 +197,27 @@ class HttpServerBindHostTest {
             assertThat(Set.<EventLoopGroup> of(boss, worker)).allMatch(EventLoopGroup::isTerminated);
         }
 
+        /// A host that resolves but that this machine does not own passes the resolution and fails in the bind: the
+        /// failure is `BindFailed` naming the host (not only the port), the owned groups are terminated when it
+        /// reports, and nothing listens on the port. Bind only: no packet leaves the machine.
+        @Test
+        void notOurAddress_failsTheBind_namingTheHost_andNothingListens() throws IOException {
+            var port = freeTcpPort();
+            var boss = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+            var worker = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
+            var outcome = NettyHttpServer.createOwning(HttpServerConfig.httpServerConfig("bind-h1-not-ours", port)
+                                                                       .withBindHost(NOT_OURS),
+                                                       ANSWER_OK,
+                                                       boss,
+                                                       worker)
+                                         .await(timeSpan(10).seconds());
+
+            assertThat(outcome.isFailure()).as("the start fails").isTrue();
+            outcome.onFailure(cause -> assertBindFailedNaming(cause, NOT_OURS, port));
+            assertThat(Set.<EventLoopGroup> of(boss, worker)).allMatch(EventLoopGroup::isTerminated);
+            assertThat(connects(InetAddress.getLoopbackAddress(), port)).as("nothing is listening").isFalse();
+        }
+
         /// A blank host would resolve to loopback (`InetAddress.getByName("")`); it is refused instead, so a stray empty setting never reads as
         /// "loopback only" nor widens to everything.
         @Test
@@ -265,6 +293,27 @@ class HttpServerBindHostTest {
             assertThat(group.isTerminated()).as("the owned group is terminated when the failure is reported").isTrue();
         }
 
+        /// The HTTP/3 counterpart of the HTTP/1.1 test of the same name: BindFailed naming the host, group terminated,
+        /// no listener (a datagram to the port on loopback is refused).
+        @Test
+        void notOurAddress_failsTheBind_namingTheHost_andNothingListens() throws IOException {
+            var port = freeTcpPort();
+            var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+            var outcome = Http3Server.bind(HttpServerConfig.httpServerConfig("bind-h3-not-ours", port)
+                                                           .withBindHost(NOT_OURS),
+                                           quicSsl(),
+                                           ANSWER_OK,
+                                           group,
+                                           true)
+                                     .mapToUnit()
+                                     .await(timeSpan(10).seconds());
+
+            assertThat(outcome.isFailure()).as("the start fails").isTrue();
+            outcome.onFailure(cause -> assertBindFailedNaming(cause, NOT_OURS, port));
+            assertThat(group.isTerminated()).as("the owned group is terminated when the failure is reported").isTrue();
+            assertThat(datagramRefused(InetAddress.getLoopbackAddress(), port)).as("nothing is listening").isTrue();
+        }
+
         private static QuicSslContext quicSsl() {
             return QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
                                         .unwrap();
@@ -275,12 +324,21 @@ class HttpServerBindHostTest {
             Http3TestClient.finishWith(stream, new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[16])));
         }
 
-        /// Whether a datagram sent from a connected socket to `address:port` is refused with ICMP port-unreachable;
-        /// a silent timeout means something received it (or nothing answered either way).
+        /// Whether a datagram sent from a connected socket to `address:port` is refused with ICMP port-unreachable.
+        /// One ICMP reply may be lost, so up to [#DATAGRAM_ATTEMPTS] datagrams are sent and the first refusal ends the
+        /// probe; silence after all of them means something received them (or nothing answered either way).
         private static boolean datagramRefused(InetAddress address, int port) throws IOException {
             try (var socket = new DatagramSocket()) {
                 socket.connect(address, port);
-                socket.setSoTimeout(2_000);
+                socket.setSoTimeout(DATAGRAM_TIMEOUT_MS);
+
+                return IntStream.range(0, DATAGRAM_ATTEMPTS)
+                                .anyMatch(_ -> refusedOnce(socket));
+            }
+        }
+
+        private static boolean refusedOnce(DatagramSocket socket) {
+            try {
                 socket.send(new DatagramPacket(new byte[]{1}, 1));
                 socket.receive(new DatagramPacket(new byte[16], 16));
 
@@ -289,8 +347,23 @@ class HttpServerBindHostTest {
                 return true;
             } catch (SocketTimeoutException _) {
                 return false;
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
             }
         }
+    }
+
+    /// A port that was free a moment ago; the bind under test fails before taking it.
+    private static int freeTcpPort() throws IOException {
+        try (var probe = new ServerSocket(0)) {
+            return probe.getLocalPort();
+        }
+    }
+
+    private static void assertBindFailedNaming(Cause cause, String host, int port) {
+        assertThat(cause).isInstanceOfSatisfying(HttpServerError.BindFailed.class,
+                                                 failure -> assertThat(failure.bindHost().or("none")).isEqualTo(host));
+        assertThat(cause.message()).contains("Failed to bind to " + host + ":" + port);
     }
 
     private static void assertBindHostUnresolved(Cause cause, String host) {

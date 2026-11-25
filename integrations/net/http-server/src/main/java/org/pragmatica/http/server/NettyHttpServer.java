@@ -272,7 +272,7 @@ final class NettyHttpServer implements HttpServer {
             // #1612: the groups this create made are terminated (bounded) BEFORE the failure is reported, so a
             // caller that retries sees no event-loop threads left over from this attempt. The bind failure is
             // what the create reports; a termination failure is only logged.
-            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause());
+            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause(), config.bindHost());
 
             releaseGroupsOnBindFailure(ownsGroups, bossGroup, workerGroup).onResultRun(() -> promise.fail(bindFailed));
         }

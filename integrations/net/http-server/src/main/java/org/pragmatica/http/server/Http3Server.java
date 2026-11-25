@@ -241,7 +241,7 @@ final class Http3Server {
         } else {
             // #1612: the group this create made is terminated (bounded) BEFORE the failure is reported; the bind
             // failure is what the create reports, and a termination failure is only logged.
-            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause());
+            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause(), config.bindHost());
 
             releaseGroupOnBindFailure(ownsGroup, group).onResultRun(() -> promise.fail(bindFailed));
         }
