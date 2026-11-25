@@ -4,8 +4,10 @@
   keeping a cancel handle per task. No schedule call whose first read of the flag follows the flag write enqueues; no
   body runs whose wrapper read follows the write; a task enqueued across the write is cancelled by the sweep or by the
   re-read, unless it has already completed. `end()` is idempotent, never blocks and never interrupts a running body.
-  `Handle.cancel()` returns `true` only when it prevented a run: on a one-shot that has already completed it returns
-  `false` and leaves the handle not cancelled, as `Future.cancel` does.
+  `Handle.cancel()` follows `Future.cancel(false)`: it returns `true` if this call moved the handle from live to
+  cancelled before the task completed, and `false` on a one-shot that has already completed, leaving the handle not
+  cancelled. A body whose wrapper has already started may still run to completion; once cancelled, completion never
+  overwrites the cancelled state.
   The scheduling seam (`OwnerLifetime.Seam`) is public, with a public factory `ownerLifetime(Seam)`: production wiring
   passes the shared default (`ownerLifetime()`) or a scheduler injected by wiring whose production value is that default;
   tests pass a fake.

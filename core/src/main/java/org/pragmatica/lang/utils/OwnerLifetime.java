@@ -74,10 +74,11 @@ public final class OwnerLifetime {
     /// lifetime and cancels the scheduler's future, so a debounce that cancels and re-schedules does not
     /// accumulate entries.
     public interface Handle {
-        /// Cancel the task. Idempotent; never interrupts a running body. Like `Future.cancel`, it returns `false`
-        /// for a one-shot that has already completed and leaves the handle not cancelled.
+        /// Cancel the task, following `Future.cancel(false)`. Idempotent; never interrupts a running body, and a body
+        /// whose wrapper has already started may still run to completion. It returns `false` for a one-shot that has
+        /// already completed and leaves the handle not cancelled. Once cancelled, completion never overwrites that.
         ///
-        /// @return `true` if this call changed the handle from live to cancelled, that is, prevented a run
+        /// @return `true` if this call moved the handle from live to cancelled before the task completed
         boolean cancel();
 
         /// @return `true` once the handle has been cancelled, by its owner, by [OwnerLifetime#end()] or

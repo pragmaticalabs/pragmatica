@@ -353,6 +353,24 @@ class OwnerLifetimeTest {
         assertThat(handle.isCancelled()).isFalse();
     }
 
+    // ---- cancel from inside the running body. Mutant: completion stores COMPLETED instead of compare-and-set -----
+
+    @Test
+    void cancel_calledFromInsideRunningOneShotBody_staysCancelledAndLeavesSet() {
+        var seam = new FakeSeam();
+        var lifetime = OwnerLifetime.ownerLifetime(seam);
+        var handleRef = new AtomicReference<OwnerLifetime.Handle>();
+        var cancelResult = new AtomicReference<Boolean>();
+
+        handleRef.set(lifetime.schedule(_ -> cancelResult.set(handleRef.get().cancel()), LONG));
+
+        seam.wrappers.getFirst().run();
+
+        assertThat(cancelResult.get()).isTrue();
+        assertThat(handleRef.get().isCancelled()).isTrue();
+        assertThat(lifetime.size()).isZero();
+    }
+
     // ---- test 7: register before enqueue. Mutant: register after enqueue ------------------------------------
 
     @Test
@@ -447,6 +465,24 @@ class OwnerLifetimeTest {
             self.end();
             endReturned.countDown();
         }
+    }
+
+    // ---- real scheduler: initial delay and interval reach SharedScheduler in order. Mutant: the two swapped in
+    // enqueueOnShared. Swapped, the first run comes after 10 ms; in order, after 10 s. The wait can only false-pass
+    // (a swapped run delayed past 300 ms), never false-fail.
+
+    @Test
+    void scheduleAtFixedRate_onSharedScheduler_waitsInitialDelayNotInterval() throws InterruptedException {
+        var lifetime = OwnerLifetime.ownerLifetime();
+        var ran = new CountDownLatch(1);
+
+        var handle = lifetime.scheduleAtFixedRate(_ -> ran.countDown(), timeSpan(10).seconds(), timeSpan(10).millis());
+
+        var ranWithin300Millis = ran.await(300, TimeUnit.MILLISECONDS);
+
+        handle.cancel();
+
+        assertThat(ranWithin300Millis).isFalse();
     }
 
     // ---- a24 (real scheduler): a one-shot runs once and leaves the set. Mutant: the one-shot branch made periodic ----
