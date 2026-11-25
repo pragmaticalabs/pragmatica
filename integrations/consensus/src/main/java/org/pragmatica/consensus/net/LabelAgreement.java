@@ -97,13 +97,15 @@ public record LabelAgreement(Map<String, String> own,
     /// Tells `onIncomplete` which members have not handshaken.
     Unit noticeIncomplete(Set<NodeId> members, Fn1<Option<Map<String, String>>, NodeId> labelsOf) {
         return onIncomplete.apply(members.stream()
-                                         .filter(member -> labelsOf.apply(member).isEmpty())
+                                         .filter(member -> labelsOf.apply(member)
+                                                                   .isEmpty())
                                          .collect(Collectors.toCollection(TreeSet::new)));
     }
 
     private long handshaken(Set<NodeId> members, Fn1<Option<Map<String, String>>, NodeId> labelsOf) {
         return members.stream()
-                      .filter(member -> labelsOf.apply(member).isPresent())
+                      .filter(member -> labelsOf.apply(member)
+                                                .isPresent())
                       .count();
     }
 
@@ -112,15 +114,13 @@ public record LabelAgreement(Map<String, String> own,
     }
 
     private Option<ConsensusError> firstDifferingLabel(NodeId member, Map<String, String> memberLabels) {
-        return Option.from(labels.stream()
-                                 .sorted()
-                                 .filter(label -> differs(label, memberLabels))
-                                 .findFirst())
-                     .map(label -> refusal(member, label, memberLabels));
+        return Option.from(labels.stream().sorted().filter(label -> differs(label, memberLabels)).findFirst()).map(label -> refusal(member,
+                                                                                                                                    label,
+                                                                                                                                    memberLabels));
     }
 
     private boolean differs(String label, Map<String, String> memberLabels) {
-        return !Option.option(own.get(label)).equals(Option.option(memberLabels.get(label)));
+        return ! Option.option(own.get(label)).equals(Option.option(memberLabels.get(label)));
     }
 
     private ConsensusError refusal(NodeId member, String label, Map<String, String> memberLabels) {

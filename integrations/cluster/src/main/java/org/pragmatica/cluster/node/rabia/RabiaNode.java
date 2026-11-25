@@ -1102,10 +1102,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// label differs from this node's, and passes only once a quorum of the core has handshaken. `onIncomplete` is told the
     /// peers still missing, once per wait episode, after `wait`.
     static Supplier<Promise<Unit>> joinGuard(TopologyObserver topologyManager,
-                                              ClusterNetwork network,
-                                              TimeSpan wait,
-                                              Set<String> agreeingLabels,
-                                              Fn1<Unit, Set<NodeId>> onIncomplete) {
+                                             ClusterNetwork network,
+                                             TimeSpan wait,
+                                             Set<String> agreeingLabels,
+                                             Fn1<Unit, Set<NodeId>> onIncomplete) {
         return () -> JoinGenerationGuard.admit(joinDecisionSet(topologyManager),
                                                network::peerHelloLabels,
                                                wait,
@@ -1119,7 +1119,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// How many core peers must have handshaken for this node plus them to be a quorum of the core: this node is always a
     /// core member ([TopologyObserver.TopologyError]), so it is one of the quorum.
     static int quorumPeers(TopologyObserver topologyManager) {
-        return topologyManager.coreNodes().size() / 2;
+        return topologyManager.coreNodes()
+                              .size() / 2;
     }
 
     /// The wire-generation join guard decides over the core voters other than this node (#2981 step 6).

@@ -47,8 +47,11 @@ public sealed interface ConsensusError extends Cause {
         @Override
         public String message() {
             return "Refusing to start: member " + member.id()
-                 + " has label '" + label + "' = " + memberValue.map(value -> "'" + value + "'").or("absent")
-                 + ", this node has " + ownValue.map(value -> "'" + value + "'").or("absent")
+                 + " has label '" + label
+                 + "' = " + memberValue.map(value -> "'" + value + "'")
+                                       .or("absent")
+                 + ", this node has " + ownValue.map(value -> "'" + value + "'")
+                                                .or("absent")
                  + "; every core member must run the same setting";
         }
     }

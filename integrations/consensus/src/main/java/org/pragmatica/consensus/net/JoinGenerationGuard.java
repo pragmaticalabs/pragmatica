@@ -130,13 +130,8 @@ public interface JoinGenerationGuard {
                                       LabelAgreement agreement,
                                       Promise<Unit> promise) {
         return firstLower(members, labelsOf, own).orElse(() -> agreement.firstMismatch(members, labelsOf))
-                                                 .fold(() -> settleOrWait(members,
-                                                                          labelsOf,
-                                                                          deadlineNanos,
-                                                                          own,
-                                                                          agreement,
-                                                                          promise),
-                                                       promise::fail);
+                         .fold(() -> settleOrWait(members, labelsOf, deadlineNanos, own, agreement, promise),
+                               promise::fail);
     }
 
     private static Promise<Unit> settleOrWait(Set<NodeId> members,
