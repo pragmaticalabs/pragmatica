@@ -234,13 +234,13 @@ final class NettyHttpServer implements HttpServer {
 
         return config.bindAddress()
                      .fold(cause -> bindHostRefused(config, cause, ownsGroups, bossGroup, workerGroup),
-                           address -> bindTo(address, bootstrap, config, sslContext, bossGroup, workerGroup, ownsGroups));
+                           address -> bindTo(address, bootstrap, config, liveTls, bossGroup, workerGroup, ownsGroups));
     }
 
     private static Promise<HttpServer> bindTo(InetSocketAddress address,
                                               ServerBootstrap bootstrap,
                                               HttpServerConfig config,
-                                              Option<SslContext> sslContext,
+                                              Option<LiveTls<SslContext>> liveTls,
                                               EventLoopGroup bossGroup,
                                               EventLoopGroup workerGroup,
                                               boolean ownsGroups) {
