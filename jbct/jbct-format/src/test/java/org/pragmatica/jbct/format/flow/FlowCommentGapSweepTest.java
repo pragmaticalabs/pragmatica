@@ -85,7 +85,23 @@ class FlowCommentGapSweepTest {
         Construct.member("parameter-list", "void m(int a, String b) {}"),
         Construct.member("record-header", "record R(int a, String b) {}"),
         Construct.member("enum", "enum E {\n        A,\n        B\n    }"),
-        Construct.stmt("try-catch", "try {\n            a();\n        } catch (Exception e) {\n            b();\n        }"));
+        Construct.stmt("try-catch", "try {\n            a();\n        } catch (Exception e) {\n            b();\n        }"),
+        Construct.stmt("binary-plus", "var s = a + b + c;"),
+        Construct.stmt("binary-minus", "var s = a - b;"),
+        Construct.stmt("binary-and", "var t = a && b && c;"),
+        Construct.member("array-field", "int[] arr = {1, 2, 3};"),
+        Construct.member("enum-with-member", "enum E {\n        A,\n        B;\n\n        void m() {}\n    }"),
+        Construct.member("record-with-body", "record R(int a) {\n        void m() {}\n    }"),
+        Construct.stmt("long-args",
+                       "var r = service.process(firstArgumentWithLongName, secondArgumentWithLongName, thirdArgumentWithLongName, fourthArgumentWithLongName);"),
+        Construct.member("long-params",
+                         "void m(String firstParameterWithLongName, String secondParameterWithLongName, String thirdParameterWithLongName, String fourth) {}"),
+        Construct.member("long-record-header",
+                         "record R(String firstComponentWithLongName, String secondComponentWithLongName, String thirdComponentWithLongName, String fourth) {}"),
+        Construct.stmt("long-plus",
+                       "var s = firstOperandWithLongName + secondOperandWithLongName + thirdOperandWithLongName + fourthOperandWithLongName + fifthOperand;"),
+        Construct.stmt("long-and",
+                       "var t = firstOperandWithLongName && secondOperandWithLongName && thirdOperandWithLongName && fourthOperandWithLongName && fifthOne;"));
 
     @Test void everyCommentInEveryGap_survivesOnceInPlace_andFormattingIsIdempotent() throws IOException {
         var failuresByConstruct = new LinkedHashMap<String, List<String>>();

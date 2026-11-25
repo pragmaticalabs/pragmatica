@@ -219,4 +219,24 @@ class FlowContentPreservationTest {
             "class X {\n    void a() {}\n\n    // tail note line one\n    // tail note line two\n}\n",
             "// tail note line one", "// tail note line two");
     }
+
+    // --- Comments at places no node owns (#3698, #3691): among the imports and after the last type ---
+
+    @Test void commentBetweenImports_preservedAheadOfTheSortedImportBlock() {
+        var src = "package p;\n\nimport java.util.Map;\n// why List is imported\nimport java.util.List;\n\nclass X {}\n";
+        var once = format(src);
+
+        assertPreservedAndIdempotent(src, "// why List is imported");
+        assertThat(once.indexOf("// why List is imported")).as("comment printed ahead of the import block")
+                                                           .isLessThan(once.indexOf("import java.util.List;"));
+    }
+
+    @Test void commentAfterTheLastType_preserved() {
+        assertPreservedAndIdempotent("class X {}\n// a trailing comment after the class\n",
+                                     "// a trailing comment after the class");
+    }
+
+    @Test void commentAfterTheLastImport_beforeTheFirstType_preserved() {
+        assertPreservedAndIdempotent("package p;\n\nimport java.util.List;\n// why X\nclass X {}\n", "// why X");
+    }
 }
