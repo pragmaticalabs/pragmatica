@@ -17,6 +17,7 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
@@ -48,10 +49,16 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Anything else ends the episode: a READY (or any non-SYNCING) report, a missing or stale report, a leader change, own consensus
 /// inactivity, the voter leaving the roster, or a gap; the next SYNCING report starts a new episode from zero. A voter is STUCK once
 /// its episode lasted [#STUCK_BOUND]; the first evaluation that finds it stuck raises [OperatorWarningCode#CORE_VOTER_SYNCING_STUCK]
-/// once per episode, and the end of a warned episode raises [OperatorWarningCode#CORE_VOTER_SYNCING_ENDED].
+/// once per episode, and the end of a warned episode raises [OperatorWarningCode#CORE_VOTER_SYNCING_ENDED], exactly once, whatever
+/// ended it (#3743).
+///
+/// Every end but one is found by an evaluation. Losing leadership is the one an evaluation cannot find: the reconciler's leader gate
+/// stops evaluating on a deposed leader, so [#onLeaderChange] is the enforcer there, on the leadership-loss edge itself. Both go
+/// through one step, `observe`: an episode survives only while consecutive observations (an evaluation, or the loss of leadership)
+/// continue it.
 ///
 /// What this does NOT see: consensus is sampled, so an inactivity that begins and ends between two evaluations (shorter than one
-/// reconciler tick, 1 s) does not end an episode. A leader that stops evaluating leaves a raised warning open until it evaluates again.
+/// reconciler tick, 1 s) does not end an episode.
 /// Which stuck voters count as failed (at most one, and only with no other evidence) is [FailedVoterEvidence]'s decision, not this one's.
 public final class StuckSyncingVoters {
     private static final Logger LOG = LoggerFactory.getLogger(StuckSyncingVoters.class);
@@ -116,14 +123,32 @@ public final class StuckSyncingVoters {
                                  .filter(_ -> consensusActive.getAsBoolean())
                                  .map(epoch -> Evaluation.evaluation(epoch, now));
 
+        observe(current);
+
+        return current.map(_ -> advance(voters, reported, now))
+                      .or(Map.of());
+    }
+
+    /// #3743: the leadership-loss edge (`LeaderChange` naming another leader or none). A deposed leader's reconciler never evaluates
+    /// again, so without this its warned episodes would end silently; here they end now, each raising its one ENDED. Losing leadership
+    /// observes nothing, so `last` is dropped too: a later regained tenure starts from an empty record and cannot end an episode twice.
+    @Contract
+    public synchronized void onLeaderChange(LeaderNotification.LeaderChange change) {
+        if (!change.localNodeIsLeader()) {
+            LOG.debug("Leadership lost: ending {} open SYNCING episode(s)", episodes.size());
+            observe(Option.none());
+        }
+    }
+
+    /// The one step every observation goes through: the episodes end unless `current` continues the previous observation.
+    private Unit observe(Option<Evaluation> current) {
         if (current.filter(this::continuesLast).isEmpty()) {
             endEpisodes(Set.of());
         }
 
         last = current;
 
-        return current.map(_ -> advance(voters, reported, now))
-                      .or(Map.of());
+        return unit();
     }
 
     private boolean continuesLast(Evaluation next) {
@@ -209,8 +234,9 @@ public final class StuckSyncingVoters {
                                       sink.get(),
                                       OperatorWarningCode.CORE_VOTER_SYNCING_ENDED,
                                       voter.id(),
-                                      "Core voter {} no longer counts as stuck in SYNCING: its episode ended (a READY or missing report, a leader change, consensus inactivity on this leader, or the voter left the roster)",
-                                      voter.id());
+                                      "Core voter {} no longer counts as stuck in SYNCING: its episode ended (a READY, missing or stale report, this node lost leadership or its consensus went inactive, the voter left the roster, or this node did not evaluate for more than {} s, for example during a reconfiguration, so the voter may still be stuck and a new episode starts from zero)",
+                                      voter.id(),
+                                      TimeUnit.NANOSECONDS.toSeconds(EVALUATION_GAP.nanos()));
     }
 
     /// One voter's SYNCING episode: when this leader first observed it, and whether its stuck warning was raised.

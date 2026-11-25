@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.rabia.ClusterConfig;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Option;
@@ -51,6 +53,7 @@ class StuckSyncingVoterHealTest {
     private static final long BOUND_TICKS = StuckSyncingVoters.STUCK_BOUND.nanos() / TICK;
 
     private final AtomicLong clock = new AtomicLong(1_000_000L);
+    private final AtomicBoolean leading = new AtomicBoolean(true);
     private final AtomicReference<Option<Long>> epoch = new AtomicReference<>(Option.some(3L));
     private final AtomicReference<VoterConfiguration> installed = new AtomicReference<>();
     private final AtomicReference<Option<VoterConfiguration>> settled = new AtomicReference<>(Option.none());
@@ -74,7 +77,7 @@ class StuckSyncingVoterHealTest {
         stuck.operatorWarnings(sink);
 
         return CoreVoterReconciler.coreVoterReconciler(A,
-                                                       () -> true,
+                                                       leading::get,
                                                        () -> Option.some(installed.get()),
                                                        settled::get,
                                                        voters::size,
@@ -177,6 +180,36 @@ class StuckSyncingVoterHealTest {
         assertThat(requested).isEmpty();
         assertThat(delivered()).extracting(OperatorWarning::code)
                                .containsExactly(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK);
+    }
+
+    /// #3743 through the REAL reconciler gate: a deposed leader's `reconcile` returns before the evidence is read, so only the loss edge
+    /// can end the warned episode; and a regained tenure raises no second recovery for the one warning.
+    @Test
+    void aDeposedLeader_raisesTheRecovery_onTheLossEdge_andRegainingRaisesNoSecond() {
+        var reconciler = leaderOf(List.of(A, B, C));
+
+        reported.put(B, SYNCING);
+        ready.set(Set.of(A, C));
+        ticks(reconciler, BOUND_TICKS + 1);
+        leading.set(false);
+        epoch.set(Option.none());
+        ticks(reconciler, 10);
+        assertThat(delivered()).as("the gate stops the evaluations: no recovery without the edge")
+                               .extracting(OperatorWarning::code)
+                               .containsExactly(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK);
+
+        stuck.onLeaderChange(LeaderNotification.leaderChange(Option.some(B), false));
+        assertThat(delivered()).as("the edge raises the recovery while the node is still deposed")
+                               .extracting(OperatorWarning::code)
+                               .containsExactly(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK,
+                                                OperatorWarningCode.CORE_VOTER_SYNCING_ENDED);
+        leading.set(true);
+        epoch.set(Option.some(4L));
+        ticks(reconciler, 30);
+
+        assertThat(delivered()).extracting(OperatorWarning::code)
+                               .containsExactly(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK,
+                                                OperatorWarningCode.CORE_VOTER_SYNCING_ENDED);
     }
 
     /// Addendum B: two stuck voters, two READY candidates: one seat per settled change, never both in one. The first one out is the
