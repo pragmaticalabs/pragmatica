@@ -68,7 +68,8 @@ class RunActionTableTest {
         """;
     private static final String UNFORMATTED = "package com.example;\nclass Plain{int x;   }\n";
     private static final String BROKEN = "class {{{ not java";
-    private static final String BUSINESS = "[lint]\nmode = \"business\"\n";
+    // business mode judges the TREE rules, which read [project] basePackage: the fixtures are declared under com.example (#2526)
+    private static final String BUSINESS = "[lint]\nmode = \"business\"\n\n[project]\nbasePackage = \"com.example\"\n";
     private static final String INFRASTRUCTURE = "[lint]\nmode = \"infrastructure\"\n";
     private static final String FORMAT_ONLY = "[lint]\nmode = \"format-only\"\n";
     private static final String DISABLED = "[lint]\nmode = \"disabled\"\n";

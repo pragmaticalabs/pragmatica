@@ -367,7 +367,7 @@ class RootResolverTest {
 
     @Test
     void perform_errorsFailTheirRootWithoutAnyFlag() throws IOException {
-        var business = module("biz", BUSINESS);
+        var business = module("biz", BUSINESS + "\n[project]\nbasePackage = \"com.example\"\n");
 
         source(business, "A.java", BOTH);
 
