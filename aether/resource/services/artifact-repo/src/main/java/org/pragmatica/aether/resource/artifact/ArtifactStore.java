@@ -715,7 +715,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// that fails part-way leaves the chunks that DID land at refCount 1 behind no artifact: uncollectable for
     /// ever (the same class as #1437). Only THIS deploy's own credits are given back, so a chunk shared with a
     /// stored artifact returns to the count it had. Scoped to the chunk phase on purpose: once the metadata write
-    /// has been attempted it may have landed (`WriteIndeterminate`), and releasing then would free a live
+    /// has been attempted it may have landed (`WriteIndeterminate`, `OwnershipNotApplied`), and releasing then would free a live
     /// artifact's chunks. `boundedFanOut` waits for every put of a batch to settle before failing, so the list is
     /// complete when the failure arrives. The release is awaited before the failure is reported; a release that
     /// itself fails is logged and does not mask the original cause.
