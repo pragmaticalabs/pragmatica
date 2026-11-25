@@ -53,6 +53,7 @@ class RunLinesTest {
     private static final String GAP_LINT = "Parse errors: 1 — 1 file(s) could not be read or parsed and were NOT analysed by JBCT lint. "
                                            + "This is a COVERAGE GAP, not a pass: this run is not evidence about those file(s).";
     private static final String GAP_FORMAT = GAP_LINT.replace("JBCT lint", "JBCT format");
+    private static final String REFUSAL = "Formatter refused A.java: comment lost: `// c` (input line 3); the file was left untouched";
     private static final String GAP_FORMAT_CHECK = GAP_LINT.replace("JBCT lint", "JBCT format-check");
     private static final Verdict CLEAN = Verdict.clean();
     private static final Verdict FINDINGS = Verdict.findings("findings");
@@ -737,6 +738,28 @@ class RunLinesTest {
     }
 
     @Test
+    void refused_isOneErrorLineNamingTheFileAndTheDifference_onEverySurface() {
+        assertEquals(line(Level.ERROR, REFUSAL), firstFileLine(format(Surface.MAVEN, FormatAction.WRITE), fileOf(none(), refused())));
+        assertEquals(line(Level.ERROR, REFUSAL), firstFileLine(Invocation.formatCheck(Surface.MAVEN), fileOf(none(), refused())));
+        assertEquals(line(Level.ERROR, REFUSAL), firstFileLine(Invocation.process(Surface.MAVEN, false), fileOf(linted(), refused())));
+        assertEquals(line(Level.ERROR, "  error: " + REFUSAL), firstFileLine(format(Surface.CLI, FormatAction.WRITE), fileOf(none(), refused())));
+        assertEquals(line(Level.ERROR, "  error: " + REFUSAL), firstFileLine(Invocation.check(Surface.CLI), fileOf(linted(), refused())));
+    }
+
+    @Test
+    void refused_isCountedUnderErrors_andFailsEveryCommandThatFormats() {
+        var files = List.of(file(A, none(), refused()), file(B, none(), unchanged()));
+        var lines = run(format(Surface.CLI, FormatAction.WRITE), Verdict.incomplete("refused"), files);
+
+        assertEquals(List.of(line(Level.INFO, "Formatted: 0, Unchanged: 1, Errors: 1")), bodyAfter(lines));
+        assertEquals("Formatting failed for 1 file(s)", failure(format(Surface.CLI, FormatAction.WRITE), files, 0, false));
+        assertEquals("Formatting failed for 1 file(s)", failure(Invocation.process(Surface.MAVEN, false), files, 0, false));
+        assertEquals("Format check failed for 1 file(s)", failure(Invocation.formatCheck(Surface.CLI), files, 0, false));
+        assertEquals("JBCT check failed: 1 file(s) refused by the formatter's content guard",
+                     failure(Invocation.check(Surface.CLI), files, 0, false));
+    }
+
+    @Test
     void failure_process_namesTheFailingRoot() {
         assertEquals("JBCT process failed: JBCT failed in 1 source root(s): src/main/java: 1 error(s), 0 warning(s)",
                      failure(Invocation.process(Surface.MAVEN, false), List.of(file(A, linted(), unchanged())), 1, true));
@@ -855,6 +878,10 @@ class RunLinesTest {
         return RunOutcome.WouldChange.wouldChange();
     }
 
+    private static FormatOutcome refused() {
+        return RunOutcome.Refused.refused(REFUSAL);
+    }
+
     private static FormatOutcome writeFailed() {
         return RunOutcome.WriteFailed.writeFailed("disk");
     }
@@ -931,7 +958,7 @@ class RunLinesTest {
                                (int) count(files, f -> f.format() instanceof RunOutcome.SkippedByMode),
                                (int) count(files, f -> f.format() instanceof RunOutcome.ReadFailed),
                                (int) count(files, f -> f.format() instanceof RunOutcome.ParseFailed),
-                               (int) count(files, f -> f.format() instanceof RunOutcome.WriteFailed));
+                               (int) count(files, f -> f.format() instanceof RunOutcome.WriteFailed || f.format() instanceof RunOutcome.Refused));
 
         return RootResult.rootResult(path,
                                      mode,
