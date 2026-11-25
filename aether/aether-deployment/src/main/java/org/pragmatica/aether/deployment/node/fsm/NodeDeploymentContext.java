@@ -38,6 +38,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.SliceCodec;
@@ -63,6 +64,7 @@ public final class NodeDeploymentContext {
     private final AtomicReference<Runnable> shutdownCallback;
     private final AtomicReference<Runnable> activeOnEntryCallback;
     private final AtomicReference<OperatorWarningSink> operatorWarnings;
+    private final OwnerLifetime lifetime;
 
     private final java.util.Set<String> unregisteredConsumers = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
@@ -189,13 +191,53 @@ public final class NodeDeploymentContext {
                                  TimeSpan transitionRetryDelay,
                                  LongSupplier clock,
                                  Supplier<Option<Epoch>> currentEpochSupplier) {
+        this(fsm,
+             self,
+             selfAddress,
+             sliceStore,
+             configuration,
+             nodeCodec,
+             cluster,
+             kvStore,
+             invocationHandler,
+             router,
+             httpRoutePublisher,
+             sliceInvokerFacade,
+             activationChainTimeout,
+             transitionRetryDelay,
+             clock,
+             currentEpochSupplier,
+             OwnerLifetime.ownerLifetime());
+    }
+
+    /// `lifetime` is the node deployment manager's one scheduling lifetime (#3754): every timer the node deployment FSM arms goes through it,
+    /// entry into `Stopped` ends it, and every consensus write of the FSM goes through a door that refuses once it has ended. It is per
+    /// context, not per `Active`: `Active` is rebuilt on every quorum cycle, and the bounded park of a refused start is measured across cycles.
+    /// Tests pass `OwnerLifetime.ownerLifetime(seam)` with a hand-driven seam.
+    public NodeDeploymentContext(Fsm<NodeDeploymentState, ClusterFsmEvent> fsm,
+                                 NodeId self,
+                                 NodeAddress selfAddress,
+                                 SliceStore sliceStore,
+                                 SliceActionConfig configuration,
+                                 SliceCodec nodeCodec,
+                                 ClusterNode<KVCommand<AetherKey>> cluster,
+                                 KVStore<AetherKey, AetherValue> kvStore,
+                                 InvocationHandler invocationHandler,
+                                 MessageRouter router,
+                                 Option<HttpRoutePublisher> httpRoutePublisher,
+                                 Option<SliceInvokerFacade> sliceInvokerFacade,
+                                 TimeSpan activationChainTimeout,
+                                 TimeSpan transitionRetryDelay,
+                                 LongSupplier clock,
+                                 Supplier<Option<Epoch>> currentEpochSupplier,
+                                 OwnerLifetime lifetime) {
         this.fsm = fsm;
         this.self = self;
         this.selfAddress = selfAddress;
         this.sliceStore = sliceStore;
         this.configuration = configuration;
         this.nodeCodec = nodeCodec;
-        this.cluster = cluster;
+        this.cluster = LifetimeGatedCluster.lifetimeGatedCluster(self, cluster, lifetime);
         this.kvStore = kvStore;
         this.invocationHandler = invocationHandler;
         this.router = router;
@@ -207,6 +249,7 @@ public final class NodeDeploymentContext {
         this.shutdownCallback = new AtomicReference<>();
         this.activeOnEntryCallback = new AtomicReference<>();
         this.operatorWarnings = new AtomicReference<>(OperatorWarningSink.logOnly());
+        this.lifetime = lifetime;
         this.clock = clock;
         this.currentEpochSupplier = currentEpochSupplier;
         this.dormant = new NodeDeploymentState.Dormant(this, List.of(), Map.of());
@@ -356,8 +399,13 @@ public final class NodeDeploymentContext {
         return nodeCodec;
     }
 
+    /// The FSM's only door to consensus: a write submitted after the lifetime ended is refused ([LifetimeGatedCluster]).
     public ClusterNode<KVCommand<AetherKey>> cluster() {
         return cluster;
+    }
+
+    public OwnerLifetime lifetime() {
+        return lifetime;
     }
 
     public KVStore<AetherKey, AetherValue> kvStore() {

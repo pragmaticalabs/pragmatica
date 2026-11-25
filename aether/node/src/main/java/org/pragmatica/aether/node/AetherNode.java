@@ -3010,7 +3010,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                   .deployment()
                                                                                                   .transitionRetryDelay(),
                                                                                             currentGenerationEpochSupplier,
-                                                                                            deploymentWiring.replayEnd(kvStore));
+                                                                                            deploymentWiring.replayEnd(kvStore),
+                                                                                            deploymentWiring.nodeStop());
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
         configChangeFeed.setOperatorWarningSink(operatorWarningSink);

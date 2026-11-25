@@ -94,6 +94,7 @@ public final class DeploymentWiring {
     private final Fsm2Routes routes;
     private final Map<String, String> bindings = new ConcurrentSkipListMap<>();
     private volatile Option<Fsm2System> system = Option.none();
+    private volatile Option<Runnable> legacyNodeStop = Option.none();
 
     private DeploymentWiring(DeploymentEngine engine,
                              boolean worker,
@@ -581,6 +582,12 @@ public final class DeploymentWiring {
         return target -> legacyBinding("C3.ndm.ReplayEnd", () -> kvStore.onReplayEnd(target));
     }
 
+    /// B13 (#3754): the registrar through which the legacy node manager hands over its stop, run by [#stop()]: bound under LEGACY, a recorded drop under
+    /// FSM2 (the legacy node FSM is unbound there, so it has no timer to end).
+    public Consumer<Runnable> nodeStop() {
+        return target -> legacyBinding("B13.ndm.Stop", () -> legacyNodeStop = Option.some(target));
+    }
+
     /// A one-time legacy registration (B6, the callbacks the NDM is handed): run now under LEGACY, not run under FSM2. Recorded either way; not
     /// an event, so nothing is counted as dropped.
     @Contract
@@ -676,10 +683,13 @@ public final class DeploymentWiring {
         system.onPresent(Fsm2System::start);
     }
 
-    /// The node is stopping: the FSM2 interpreters close (`Close` only, design 7). Idempotent.
+    /// The node is stopping: the FSM2 interpreters close (`Close` only, design 7), and under LEGACY the legacy node FSM is stopped (#3754: its
+    /// `Shutdown` ends the scheduling lifetime of its remediation, park-escalation and FAILED-retry timers and closes its consensus door).
+    /// Idempotent.
     @Contract
     public void stop() {
         system.onPresent(Fsm2System::stop);
+        legacyNodeStop.onPresent(Runnable::run);
     }
 
     /// B13, the first half of the node's stop (design 7, 2a and 2b): the PASSIVE edge is routed, the FSM2 node interpreter drains (the `SUSPEND`s of the

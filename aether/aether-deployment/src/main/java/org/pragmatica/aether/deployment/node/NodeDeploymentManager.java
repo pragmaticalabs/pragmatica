@@ -51,6 +51,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -128,6 +129,12 @@ public interface NodeDeploymentManager {
     void setOperatorWarningSink(OperatorWarningSink sink);
 
     boolean isActive();
+
+    /// The node's stop (#3754): dispatches `Shutdown` to the node FSM from whatever state it is in (a node stop leaves it `Dormant` after
+    /// `leaveQuorum`, or `Active` when quorum was never left), and entry into `Stopped` ends the FSM's scheduling lifetime, so no timer the
+    /// FSM armed fires its body afterwards and no consensus write it submits after that is accepted. Idempotent: `Stopped` ignores every event.
+    @Contract
+    void stop();
 
     /// Level-heal for a silently-dropped `ClusterStateNotification.ACTIVE` edge. The ACTIVE edge is
     /// emitted once and CAS-latched by the emitter; on a cold-start `restart_all_nodes` it can be
@@ -234,6 +241,40 @@ public interface NodeDeploymentManager {
                                                        TimeSpan activationChainTimeout,
                                                        TimeSpan transitionRetryDelay,
                                                        Supplier<Option<Epoch>> currentEpochSupplier) {
+        return nodeDeploymentManager(self,
+                                     selfAddress,
+                                     router,
+                                     sliceStore,
+                                     cluster,
+                                     kvStore,
+                                     invocationHandler,
+                                     configuration,
+                                     nodeCodec,
+                                     httpRoutePublisher,
+                                     sliceInvokerFacade,
+                                     activationChainTimeout,
+                                     transitionRetryDelay,
+                                     currentEpochSupplier,
+                                     OwnerLifetime.ownerLifetime());
+    }
+
+    /// `lifetime` is the one scheduling lifetime of the node's deployment FSM ([NodeDeploymentContext]); production passes a fresh
+    /// `OwnerLifetime.ownerLifetime()`, tests pass one over a hand-driven seam.
+    static NodeDeploymentManager nodeDeploymentManager(NodeId self,
+                                                       NodeAddress selfAddress,
+                                                       MessageRouter router,
+                                                       SliceStore sliceStore,
+                                                       ClusterNode<KVCommand<AetherKey>> cluster,
+                                                       KVStore<AetherKey, AetherValue> kvStore,
+                                                       InvocationHandler invocationHandler,
+                                                       SliceActionConfig configuration,
+                                                       SliceCodec nodeCodec,
+                                                       Option<HttpRoutePublisher> httpRoutePublisher,
+                                                       Option<SliceInvokerFacade> sliceInvokerFacade,
+                                                       TimeSpan activationChainTimeout,
+                                                       TimeSpan transitionRetryDelay,
+                                                       Supplier<Option<Epoch>> currentEpochSupplier,
+                                                       OwnerLifetime lifetime) {
         var ctx = buildContext(self,
                                selfAddress,
                                router,
@@ -247,7 +288,8 @@ public interface NodeDeploymentManager {
                                sliceInvokerFacade,
                                activationChainTimeout,
                                transitionRetryDelay,
-                               currentEpochSupplier);
+                               currentEpochSupplier,
+                               lifetime);
 
         return new DeploymentManagerAdapter(ctx);
     }
@@ -266,22 +308,32 @@ public interface NodeDeploymentManager {
                                                                    TimeSpan activationChainTimeout,
                                                                    TimeSpan transitionRetryDelay,
                                                                    Supplier<Epoch> observedEpochSupplier,
-                                                                   Consumer<LongConsumer> replayEndRegistrar) {
-        return bindReplayEnd(nodeDeploymentManager(self,
-                                                   selfAddress,
-                                                   router,
-                                                   sliceStore,
-                                                   cluster,
-                                                   kvStore,
-                                                   invocationHandler,
-                                                   configuration,
-                                                   nodeCodec,
-                                                   httpRoutePublisher,
-                                                   sliceInvokerFacade,
-                                                   activationChainTimeout,
-                                                   transitionRetryDelay,
-                                                   () -> Option.some(observedEpochSupplier.get())),
-                             replayEndRegistrar);
+                                                                   Consumer<LongConsumer> replayEndRegistrar,
+                                                                   Consumer<Runnable> stopRegistrar) {
+        return bindStop(bindReplayEnd(nodeDeploymentManager(self,
+                                                            selfAddress,
+                                                            router,
+                                                            sliceStore,
+                                                            cluster,
+                                                            kvStore,
+                                                            invocationHandler,
+                                                            configuration,
+                                                            nodeCodec,
+                                                            httpRoutePublisher,
+                                                            sliceInvokerFacade,
+                                                            activationChainTimeout,
+                                                            transitionRetryDelay,
+                                                            () -> Option.some(observedEpochSupplier.get())),
+                                      replayEndRegistrar),
+                        stopRegistrar);
+    }
+
+    /// #3754: hands the manager's [#stop()] to the registrar the wiring supplies (bound only under LEGACY, where the legacy node FSM is driven), so the
+    /// node's stop reaches the FSM through the wiring and no engine-neutral name leaks.
+    private static NodeDeploymentManager bindStop(NodeDeploymentManager manager, Consumer<Runnable> registrar) {
+        registrar.accept(manager::stop);
+
+        return manager;
     }
 
     /// #3028: hands the manager's catch-up sweep trigger to the registrar the wiring supplies (bound only under LEGACY, so no engine-neutral name leaks).
@@ -305,7 +357,8 @@ public interface NodeDeploymentManager {
                                                       Option<SliceInvokerFacade> sliceInvokerFacade,
                                                       TimeSpan activationChainTimeout,
                                                       TimeSpan transitionRetryDelay,
-                                                      Supplier<Option<Epoch>> currentEpochSupplier) {
+                                                      Supplier<Option<Epoch>> currentEpochSupplier,
+                                                      OwnerLifetime lifetime) {
         var ctxHolder = new AtomicReference<NodeDeploymentContext>();
         Function<Fsm<NodeDeploymentState, ClusterFsmEvent>, NodeDeploymentState> initialStateFactory = fsm -> buildContextAndDormant(fsm,
                                                                                                                                      ctxHolder,
@@ -322,7 +375,8 @@ public interface NodeDeploymentManager {
                                                                                                                                      sliceInvokerFacade,
                                                                                                                                      activationChainTimeout,
                                                                                                                                      transitionRetryDelay,
-                                                                                                                                     currentEpochSupplier);
+                                                                                                                                     currentEpochSupplier,
+                                                                                                                                     lifetime);
         var _fsm = Fsm.fsm("node-deployment", self.id(), initialStateFactory);
 
         return ctxHolder.get();
@@ -343,7 +397,8 @@ public interface NodeDeploymentManager {
                                                               Option<SliceInvokerFacade> sliceInvokerFacade,
                                                               TimeSpan activationChainTimeout,
                                                               TimeSpan transitionRetryDelay,
-                                                              Supplier<Option<Epoch>> currentEpochSupplier) {
+                                                              Supplier<Option<Epoch>> currentEpochSupplier,
+                                                              OwnerLifetime lifetime) {
         var ctx = new NodeDeploymentContext(fsm,
                                             self,
                                             selfAddress,
@@ -358,7 +413,9 @@ public interface NodeDeploymentManager {
                                             sliceInvokerFacade,
                                             activationChainTimeout,
                                             transitionRetryDelay,
-                                            currentEpochSupplier);
+                                            System::currentTimeMillis,
+                                            currentEpochSupplier,
+                                            lifetime);
 
         ctxHolder.set(ctx);
 
@@ -482,6 +539,14 @@ public interface NodeDeploymentManager {
         @Override
         public boolean isActive() {
             return ctx.isActive();
+        }
+
+        @Contract
+        @Override
+        public void stop() {
+            log.info("Node {} NodeDeploymentManager stopping",
+                     ctx.self().id());
+            ctx.dispatch(new ClusterFsmEvent.Shutdown());
         }
 
         @Contract
