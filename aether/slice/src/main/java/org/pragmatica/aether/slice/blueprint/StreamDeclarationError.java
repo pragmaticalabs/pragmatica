@@ -226,6 +226,19 @@ public sealed interface StreamDeclarationError extends Cause {
         }
     }
 
+    /// A `[[streams.<alias>.<name>]]` table array under a stream section (#3520): the section holds tables, and no part of the
+    /// parser reads an array of them, so it is refused as malformed instead of accepted and ignored. `name` is the full table
+    /// array name, as the TOML document reports it.
+    record TableArrayDeclared(String alias, String name) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares [[" + name
+                 + "]] as an array of tables: a stream section holds tables, so write it as [" + name
+                 + "]";
+        }
+    }
+
     /// Keys of the section, or of its consumer sections, that have no runtime effect ([InertKeyRules]), refused at activation
     /// as the deploy validator refuses them (#2201 E-02): a declaration that reaches a node without passing the validator
     /// does not bind with a key that silently does nothing.

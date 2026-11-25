@@ -24,7 +24,11 @@ excludes = [
     "**/src/main/java/org/pragmatica/jbct/parser/v6/**",
     # A java.net.http.HttpClient subclass for tests (#3558): the abstract JDK API mandates the Optional,
     # CompletableFuture, void and throws signatures that RET-01, BND-01 and EX-01 refuse.
-    "**/testlogging/RefusingHttpClient.java"
+    "**/testlogging/RefusingHttpClient.java",
+    # The one source walk of the repository scans (#3703): a FileVisitor whose contract is to throw the IOException of a
+    # failed listing, and a test-only API whose callers fail their test by that exception. test-logging cannot depend on
+    # core (core tests depend on test-logging), so a Result return is not available here.
+    "**/testlogging/SourceWalk.java"
 ]
 
 [lint.rules]

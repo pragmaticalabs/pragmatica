@@ -35,6 +35,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,6 +83,37 @@ class GenesisSeatUnreachableTest {
         assertThat(engine.voterConfiguration()).as("formation is not blocked by the dead seat")
                                                .isEqualTo(Option.some(new VoterConfiguration(0, VIEW)));
         assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
+    }
+
+    /// The remedy sentence is the node's binding, read once at the raise: the delivered text carries exactly what the bound supplier
+    /// returned then, and a supplier answering differently later changes nothing (no re-raise, no second warning).
+    @Test
+    void remedyBinding_isReadAtTheRaise_andItsTextIsDelivered() {
+        var remedy = new AtomicReference<>("REMEDY-ARM-ONE");
+
+        engine = pendingB();
+        engine.useGenesisSeatRemedy(remedy::get);
+        formWithYGoneOn(engine);
+
+        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
+        assertThat(unreachableMessages()).singleElement().asString().endsWith("Formation is not blocked. REMEDY-ARM-ONE");
+
+        remedy.set("REMEDY-ARM-TWO");
+        engine.runPhaseStallCheckForTesting();
+        engine.runQuietSlotProbeForTesting();
+        settle();
+
+        assertThat(unreachableMessages()).as("a later change of the bound state raises nothing again").hasSize(1);
+    }
+
+    /// The other arm of the same binding: a supplier answering with the other state's text at the raise is what is delivered.
+    @Test
+    void remedyBinding_otherArm_isDeliveredWhenItIsTheStateAtTheRaise() {
+        engine = pendingB();
+        engine.useGenesisSeatRemedy(() -> "REMEDY-ARM-TWO");
+        formWithYGoneOn(engine);
+
+        assertThat(unreachableMessages()).singleElement().asString().endsWith("Formation is not blocked. REMEDY-ARM-TWO");
     }
 
     /// Control: the same schedule with every seat still connected forms the same roster and raises nothing, so the warning
@@ -179,6 +211,19 @@ class GenesisSeatUnreachableTest {
 
     private void formWithYGone() {
         engine = pendingB();
+        formWithYGoneOn(engine);
+    }
+
+    private List<String> unreachableMessages() {
+        seatWarnings();
+
+        return published.stream()
+                        .filter(warning -> warning.code() == GENESIS_SEAT_UNREACHABLE)
+                        .map(OperatorWarning::message)
+                        .toList();
+    }
+
+    private void formWithYGoneOn(RabiaEngine<TestCommand> engine) {
         engine.runGenesisRoundForTesting();
         engine.runGenesisRoundForTesting();
         settle();

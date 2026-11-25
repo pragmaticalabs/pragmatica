@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import org.pragmatica.aether.resource.BackendRuntime;
 import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.Publisher;
@@ -136,7 +137,8 @@ public final class TerraContext {
             }
 
             var enriched = withMeters(context.withExtension(String.class, artifact)
-                                             .withExtension(ConfigurationProvider.class, configuration),
+                                             .withExtension(ConfigurationProvider.class, configuration)
+                                             .withExtension(BackendRuntime.class, BackendRuntime.TERRA),
                                       context);
             Promise<T> acquisition = Result.lift(Causes::fromThrowable,
                                                  () -> Objects.requireNonNull(delegate.provide(type, section, enriched),

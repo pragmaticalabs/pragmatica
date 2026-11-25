@@ -55,8 +55,8 @@
         <!--
             Runs this repository's operator-facing shell scripts against constructed conditions and
             asserts they cannot report success without having looked (#865, #952). Depends on no
-            module, so its position here is free; it sits before cli-docs-gate to keep that module
-            last.
+            module but test-logging (test scope, #3703), which precedes it here; it sits before
+            cli-docs-gate to keep that module last.
         -->
         <module>script-gate</module>
         <!--
