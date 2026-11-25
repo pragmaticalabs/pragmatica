@@ -4303,7 +4303,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// peer (0 when none). Set synchronously on the tick's thread, before the dial's CONNECTING begins on the resolver
     /// thread, so a test reads the dial DECISION instead of timing the dial.
     long reconcileLastAttemptMsForTests(NodeId peerId) {
-        return Option.option(peers.get(peerId)).map(PeerState::reconcileLastAttemptMs).or(0L);
+        return Option.option(peers.get(peerId))
+                     .map(PeerState::reconcileLastAttemptMs)
+                     .or(0L);
     }
 
     /// Package-private test seam (#3033) — the dial client, so a test can run a dial that is not attached by this network.
