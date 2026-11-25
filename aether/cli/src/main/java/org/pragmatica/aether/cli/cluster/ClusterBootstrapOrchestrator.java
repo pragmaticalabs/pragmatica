@@ -383,7 +383,9 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                           clusterName);
     }
 
-    static Cause decorateAfterCleanup(ClusterName clusterName, Cause cause, boolean keepOnFailure) {
+    static Cause decorateAfterCleanup(ClusterName clusterName, Cause failure, boolean keepOnFailure) {
+        var cause = BootstrapError.VmSurfaceFailure.resolve(failure, keepOnFailure);
+
         if (keepOnFailure) {
             warnKeepOnFailure(clusterName, cause);
 
@@ -797,6 +799,38 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             @Override
             public String message() {
                 return "Runtime deployment failed for node '" + nodeId + "': " + detail;
+            }
+        }
+
+        /// #1030 — a deployment failure whose diagnosis lives on the VMs (`logs` names where). Whether those
+        /// VMs still exist when the operator reads the error is decided AFTER the phase, by
+        /// `decorateAfterCleanup`, so the phase cannot name the logs without risking naming deleted ones. The
+        /// phase raises this carrier; [#resolve] is the one text source, called with the keep-on-failure fact
+        /// by the caller that acts on it. [#message] is the flag-neutral text, for readers upstream of that.
+        record VmSurfaceFailure(DeploymentFailed failure, String logs) implements BootstrapError {
+            @Override
+            public String message() {
+                return failure.message();
+            }
+
+            static Cause resolve(Cause cause, boolean keepOnFailure) {
+                return cause instanceof VmSurfaceFailure surface
+                       ? surface.followUp(keepOnFailure)
+                       : cause;
+            }
+
+            private Cause followUp(boolean keepOnFailure) {
+                return new DeploymentFailed(failure.nodeId(), failure.detail() + " " + vmAdvice(keepOnFailure));
+            }
+
+            private String vmAdvice(boolean keepOnFailure) {
+                return keepOnFailure
+                       ? "The VMs were kept (--keep-on-failure); inspect " + logs
+                        + " on each VM: ssh aether@<vm-ip> (or root@)."
+                       : "The VMs are being removed, so " + logs
+                        + " will not survive; re-run with"
+                        + " --keep-on-failure to keep the VMs and inspect " + logs
+                        + " on each.";
             }
         }
 
