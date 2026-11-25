@@ -777,8 +777,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     /// [#stop()] ends it.
     private Unit scheduleDispatch(String datasourceName, long delayMs) {
         scheduledRetries.put(datasourceName,
-                             lifetime.schedule(_ -> migrateIfNeeded(datasourceName),
-                                               timeSpan(delayMs).millis()));
+                             lifetime.schedule(_ -> migrateIfNeeded(datasourceName), timeSpan(delayMs).millis()));
 
         return unit();
     }
@@ -1035,7 +1034,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private void scheduleRenewal(Lease lease) {
         synchronized (lease) {
             if (!lease.released && !lease.lost) {
-                lease.next = lifetime.schedule(_ -> renew(lease), timeSpan(timing.ttlMs() / 3).millis());
+                lease.next = lifetime.schedule(_ -> renew(lease),
+                                               timeSpan(timing.ttlMs() / 3).millis());
             }
         }
     }
@@ -1076,7 +1076,6 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                          timing.clock().getAsLong() + timing.ttlMs()))
                                .unwrap();
         KVCommand<AetherKey> command = new Put<>(lease.key, renewed);
-
         // #3754 (F, receiver fence already present): other nodes write this key after a lapse, and `SchemaMigrationLockValue`
         // is VersionFenced, so the applier refuses a non-successor write; that fence stays the enforcer. This check only
         // narrows the window left by a tick whose wrapper read preceded [#stop()]: a renewal Put after the node stopped
