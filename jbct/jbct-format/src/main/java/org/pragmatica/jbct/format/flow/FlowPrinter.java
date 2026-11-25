@@ -367,7 +367,9 @@ final class FlowPrinter {
             if (isBlock && sameLine && text.indexOf('\n') < 0) {
                 emit(" " + text + " ");
             } else if (isLine && sameLine) {
-                emit("  " + text);
+                // A trailing line comment ends its line, so the `}` cannot follow it here: the claim before the `}`
+                // prints it and breaks the line (`claimCommentsBefore`, #3698).
+                continue;
             } else {
                 if (currentColumn > 0) {
                     newline();
@@ -2997,7 +2999,11 @@ final class FlowPrinter {
             int kind = tokens.kindAt(tokIdx);
             boolean isLine = kind == 1 || kind == 3;  // LINE_COMMENT or DOC_LINE_COMMENT
             boolean isBlock = kind == 2 || kind == 4;  // BLOCK_COMMENT or DOC_BLOCK_COMMENT
-            if (isLine) {
+            if ((isLine || isBlock) && !measuringMode && currentColumn > 0 && onPaddedBlankLine()) {
+                // The output already stands where the node goes (an aligned continuation): print the comment there
+                // by the claim point's rule, so the node keeps its column and no blank line appears (#3698).
+                emitClaimedComment(tokIdx, false);
+            } else if (isLine) {
                 if (currentColumn > 0) {
                     newline();
                 }
@@ -3178,6 +3184,12 @@ final class FlowPrinter {
         }
 
         printAlignedTo(resume);
+    }
+
+    /// The current output line holds nothing but the padding to the column where the next token goes.
+    private boolean onPaddedBlankLine() {
+        return output.substring(output.lastIndexOf("\n") + 1)
+                     .isBlank();
     }
 
     private int lineIndent(int lineStart) {
