@@ -109,6 +109,14 @@ public class ArrayTypedReadsTest {
 
     @ParameterizedTest
     @EnumSource(Format.class)
+    public void float8ReadsAsFloat(Format format) {
+        dbr.query("INSERT INTO TA_TEST (F8) VALUES ('{1.5, null, -2.25}')");
+
+        assertArrayEquals(new Float[]{1.5f, null, -2.25f}, read(format).getArray("f8", Float[].class));
+    }
+
+    @ParameterizedTest
+    @EnumSource(Format.class)
     public void float4EmptyReadsAsEmptyFloat(Format format) {
         dbr.query("INSERT INTO TA_TEST (F4) VALUES ('{}')");
 
