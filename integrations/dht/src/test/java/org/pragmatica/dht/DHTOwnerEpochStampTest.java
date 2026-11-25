@@ -44,7 +44,7 @@ class DHTOwnerEpochStampTest {
 
     @Test
     void put_floorStampRefusedByAppliedHighWater_failsOwnershipNotApplied_andIsRolledBack() {
-        var cluster = new DurableDeleteCluster(3, RF3, _ -> new Gate(APPLIED), _ -> OwnerEpochSource.zero());
+        var cluster = new DurableDeleteCluster(3, RF3, DHTOwnerEpochStampTest::writerLagsOthersApplied, _ -> OwnerEpochSource.zero());
         var key = bytes("early-writer");
 
         var put = cluster.member(WRITER).client().put(key, bytes("v")).await();
@@ -53,13 +53,25 @@ class DHTOwnerEpochStampTest {
         put.onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.OwnershipNotApplied.class)
                                                 .isInstanceOf(Cause.Transient.class)
                                                 .isNotInstanceOf(DHTError.WriteIndeterminate.class));
-        assertThat(cluster.members()).as("the rollback rule is unchanged: nothing is left on the writer or on a replica")
+        assertThat(cluster.members()).as("the rollback rule is unchanged: the writer's own accept is taken back, nothing is left anywhere")
                                      .allMatch(member -> !cluster.holdsLive(member.id(), key));
+    }
+
+    /// The remove path stamps with the same `freshStamp()` and hands its failure through the same `afterFailedWrite`.
+    @Test
+    void remove_floorStampRefusedByAppliedHighWater_failsOwnershipNotApplied() {
+        var cluster = new DurableDeleteCluster(3, RF3, DHTOwnerEpochStampTest::writerLagsOthersApplied, _ -> OwnerEpochSource.zero());
+
+        var removed = cluster.member(WRITER).client().remove(bytes("early-remove")).await();
+
+        assertThat(removed.isFailure()).as("control: the replicas that applied the record refuse the zero epoch").isTrue();
+        removed.onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.OwnershipNotApplied.class)
+                                                    .isInstanceOf(Cause.Transient.class));
     }
 
     @Test
     void put_olderRealEpochRefusedByAppliedHighWater_staysWriteIndeterminate() {
-        var cluster = new DurableDeleteCluster(3, RF3, _ -> new Gate(APPLIED), _ -> () -> OwnerEpochSource.OwnerEpoch.ownerEpoch(OLDER[0], OLDER[1], OLDER[2]));
+        var cluster = new DurableDeleteCluster(3, RF3, DHTOwnerEpochStampTest::writerLagsOthersApplied, _ -> () -> OwnerEpochSource.OwnerEpoch.ownerEpoch(OLDER[0], OLDER[1], OLDER[2]));
         var key = bytes("deposed-writer");
 
         var put = cluster.member(WRITER).client().put(key, bytes("v")).await();
@@ -76,6 +88,14 @@ class DHTOwnerEpochStampTest {
         var key = bytes("nothing-applied-anywhere");
 
         assertThat(cluster.member(WRITER).client().put(key, bytes("v")).await().isSuccess()).isTrue();
+    }
+
+    /// The writer's own high-water lags (the ownership record is not applied on it), so its OWN store accepts the put; the other
+    /// replicas have applied it and refuse. That accept is what the rollback (#1818) must take back.
+    private static OwnerEpochGate writerLagsOthersApplied(NodeId id) {
+        return WRITER.equals(id)
+               ? OwnerEpochGate.noOp()
+               : new Gate(APPLIED);
     }
 
     /// Epoch `(k, k, k)` for the k-th read: a stamp assembled from several reads cannot have equal components.
