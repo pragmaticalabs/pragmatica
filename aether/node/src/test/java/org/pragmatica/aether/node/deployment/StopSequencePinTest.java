@@ -204,6 +204,17 @@ class StopSequencePinTest {
         assertThat(tail).startsWith(COMPONENTS_END + " }");
     }
 
+    /// #3754: the schema orchestrator's renewal and re-dispatch tasks end with the node, after the quiesce and the FSM2 close like every other
+    /// component, and never at leader deactivation (the lease outlives it: the lock stays held for a running script).
+    @Test
+    void theSchemaOrchestrator_isStoppedOnceInTheComponentsStops_andNotInTheSynchronousStop() {
+        var source = read(NODE_SOURCE);
+
+        assertThat(teardownStatements(source)).containsOnlyOnce("clusterDeploymentManager.schemaOrchestrator().stop();");
+        assertThat(stopMethod(source)).doesNotContain("schemaOrchestrator().stop()");
+        assertThat(count(Pattern.compile("schemaOrchestrator\\(\\)\\s*\\.stop\\(\\)"), source)).as("no other site stops it, in particular not the leader deactivation").isEqualTo(1L);
+    }
+
     @Test
     void aBareQuiesce_plantedInTheStop_isFound() {
         var planted = "router.route(ClusterStateNotification.passive());\n router.quiesce();\n";

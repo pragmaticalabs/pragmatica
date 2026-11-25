@@ -14,6 +14,10 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Delayed;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.LongStream;
 import java.util.zip.ZipEntry;
@@ -56,6 +60,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
@@ -546,6 +551,132 @@ class SchemaOrchestratorLeaseTest {
         }
     }
 
+    /// #3754: the orchestrator's scheduled work (lease renewal, retry re-dispatch) belongs to the node's lifetime, which
+    /// `stop()` ends. Each site is tested twice: a task scheduled before the stop never runs its body after it, and a body
+    /// already past its scheduler read when the stop runs (held here on a read of the KV store) does not produce its side
+    /// effect: the renewal Put, or the lock claim that precedes migration scripts on the database. A lease still ends at
+    /// its release, not at the stop: the lock stays held for a script already running.
+    @Nested
+    class NodeStop {
+        private final Cause held = MigrationError.MigrationFencedInDatabase.migrationFencedInDatabase(DATASOURCE,
+                                                                                                         "pid=7, application_name=aether-mig:node-2");
+
+        @Test
+        void stop_renewalScheduledBeforeStop_neverRunsItsBodyAfter() {
+            var orchestrator = orchestrator(NODE_1, 60_000L);
+
+            orchestrator.migrateIfNeeded(DATASOURCE);
+            var claim = committedLock();
+            var putsBefore = cluster.lockPuts();
+
+            assertThat(time.pending()).as("the lease armed its first renewal tick").isEqualTo(1);
+            orchestrator.stop();
+            time.advance(2 * TICK_MS);
+
+            assertThat(time.pending()).as("stop cancelled the armed tick").isZero();
+            assertThat(cluster.lockPuts()).as("no renewal Put after stop").isEqualTo(putsBefore);
+            assertThat(committedLock()).as("the lock is untouched").isEqualTo(claim);
+        }
+
+        @Test
+        void stop_renewalInFlightAtStop_doesNotWriteTheRenewal() {
+            var orchestrator = orchestrator(NODE_1, 60_000L);
+
+            orchestrator.migrateIfNeeded(DATASOURCE);
+            var claim = committedLock();
+            var putsBefore = cluster.lockPuts();
+
+            kvStore.holdNextReadOf(LOCK_KEY);
+            var tick = fireInBackground(() -> time.advance(TICK_MS));
+
+            kvStore.awaitHeld();
+            orchestrator.stop();
+            kvStore.release();
+            joinOrFail(tick);
+
+            assertThat(cluster.lockPuts()).as("the renewal in flight at stop wrote nothing").isEqualTo(putsBefore);
+            assertThat(committedLock()).as("the lock is untouched").isEqualTo(claim);
+        }
+
+        @Test
+        void stop_retryScheduledBeforeStop_neverRunsItsBodyAfter() {
+            var orchestrator = orchestrator(NODE_1, 60_000L);
+            var putsBefore = failedAttemptAwaitingItsRedispatch(orchestrator);
+
+            orchestrator.stop();
+            time.advance(redispatchDelays().getLast());
+
+            assertThat(time.pending()).as("stop cancelled the re-dispatch").isZero();
+            assertThat(schemaManager.invocations).as("no second attempt ran").hasSize(1);
+            assertThat(cluster.lockPuts()).as("no lock claim after stop").isEqualTo(putsBefore);
+            assertThat(statusOf(DATASOURCE)).isEqualTo(SchemaStatus.PENDING);
+        }
+
+        @Test
+        void stop_dispatchInFlightAtStop_refusesTheLockClaim() {
+            var orchestrator = orchestrator(NODE_1, 60_000L);
+            var putsBefore = failedAttemptAwaitingItsRedispatch(orchestrator);
+
+            kvStore.holdNextReadOf(SchemaVersionKey.schemaVersionKey(DATASOURCE));
+            var dispatch = fireInBackground(() -> time.advance(redispatchDelays().getLast()));
+
+            kvStore.awaitHeld();
+            orchestrator.stop();
+            kvStore.release();
+            joinOrFail(dispatch);
+
+            assertThat(cluster.lockPuts()).as("the dispatch in flight at stop claimed no lock").isEqualTo(putsBefore);
+            assertThat(schemaManager.invocations).as("no migration script ran after stop").hasSize(1);
+            assertThat(statusOf(DATASOURCE)).isEqualTo(SchemaStatus.PENDING);
+        }
+
+        /// The ruling the stop must not break: a lease ends at its release, so a migration already running at stop still
+        /// releases its lock by tombstone when it completes.
+        @Test
+        void stop_migrationAlreadyRunning_stillReleasesItsLockByTombstone() {
+            var orchestrator = orchestrator(NODE_1, 60_000L);
+            var migration = orchestrator.migrateIfNeeded(DATASOURCE);
+
+            orchestrator.stop();
+            schemaManager.completeAll(Result.success(AetherSchemaManager.SchemaResult.schemaResult(1, 4, 1L)));
+            migration.await(timeSpan(5).seconds());
+
+            assertThat(committedLock().expiresAt() <= time.now()).as("the release leaves an expired tombstone").isTrue();
+            assertThat(statusOf(DATASOURCE)).isEqualTo(SchemaStatus.COMPLETED);
+        }
+
+        /// Fails attempt 1 with a fenced-in-the-database outcome, waits until its re-dispatch is scheduled and the attempt
+        /// has let go of its lock; returns the lock Puts submitted so far.
+        private int failedAttemptAwaitingItsRedispatch(SchemaOrchestratorService orchestrator) {
+            orchestrator.migrateIfNeeded(DATASOURCE);
+            awaitEvent("attempt 1 dispatched", () -> schemaManager.invocations.size() == 1);
+            schemaManager.completeAll(held.result());
+            awaitEvent("the re-dispatch scheduled", () -> redispatchDelays().size() == 1);
+            awaitEvent("attempt 1 released its lock", () -> committedLock().expiresAt() <= time.now() && time.pending() == 1);
+
+            return cluster.lockPuts();
+        }
+
+        private Thread fireInBackground(Runnable task) {
+            var thread = new Thread(task, "node-stop-test-fire");
+
+            thread.start();
+
+            return thread;
+        }
+
+        private void joinOrFail(Thread thread) {
+            try {
+                thread.join(10_000L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Assertions.fail("interrupted joining " + thread.getName());
+            }
+
+            assertThat(thread.isAlive()).as("the in-flight body finished").isFalse();
+        }
+    }
+
     /// The warnings delivered through `sink` so far. The hand-off delivers in order on one thread, so once a sentinel
     /// offered now has arrived, every warning raised before it has too.
     private static List<OperatorWarning> delivered(OperatorWarningSink sink, List<OperatorWarning> received) {
@@ -663,7 +794,7 @@ class SchemaOrchestratorLeaseTest {
                                                      stubConnectionProvider(engineOf),
                                                      self,
                                                      Option.<MessageRouter> none(),
-                                                     new LeaseTiming(TTL_MS, renewalTimeoutMs, time::now, time::schedule));
+                                                     new LeaseTiming(TTL_MS, renewalTimeoutMs, time::now, () -> OwnerLifetime.ownerLifetime(time.seam())));
     }
 
     /// A hand-stepped clock and scheduler: `advance` moves time forward one tick at a time and runs each
@@ -682,6 +813,11 @@ class SchemaOrchestratorLeaseTest {
 
         long now() {
             return now.get();
+        }
+
+        /// The seam the node's [OwnerLifetime] schedules through: each enqueue is a task here, and cancelling its future cancels it.
+        OwnerLifetime.Seam seam() {
+            return (wrapper, initialDelay, _) -> new FakeFuture(schedule(wrapper, initialDelay.millis()));
         }
 
         Runnable schedule(Runnable body, long delayMs) {
@@ -716,6 +852,53 @@ class SchemaOrchestratorLeaseTest {
                         t.body().run();
                     }
                 });
+        }
+    }
+
+    private static final class FakeFuture implements ScheduledFuture<Object> {
+        private final Runnable cancelTask;
+        private volatile boolean cancelled;
+
+        FakeFuture(Runnable cancelTask) {
+            this.cancelTask = cancelTask;
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            cancelled = true;
+            cancelTask.run();
+
+            return true;
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return cancelled;
+        }
+
+        @Override
+        public long getDelay(TimeUnit unit) {
+            return 0;
+        }
+
+        @Override
+        public int compareTo(Delayed other) {
+            return 0;
+        }
+
+        @Override
+        public boolean isDone() {
+            return false;
+        }
+
+        @Override
+        public Object get() {
+            return null;
+        }
+
+        @Override
+        public Object get(long timeout, TimeUnit unit) {
+            return null;
         }
     }
 
@@ -862,6 +1045,48 @@ class SchemaOrchestratorLeaseTest {
 
         void apply(List<KVCommand<AetherKey>> batch) {
             process(createBatch(batch));
+        }
+
+        private volatile AetherKey heldKey;
+        private volatile Thread heldFor;
+        private volatile CountDownLatch reached = new CountDownLatch(1);
+        private volatile CountDownLatch released = new CountDownLatch(1);
+
+        /// Holds the next read of `key` made by any thread other than the caller's: that thread is then "in flight" inside the
+        /// orchestrator's body until [#release()].
+        void holdNextReadOf(AetherKey key) {
+            reached = new CountDownLatch(1);
+            released = new CountDownLatch(1);
+            heldFor = Thread.currentThread();
+            heldKey = key;
+        }
+
+        void awaitHeld() {
+            awaitLatch(reached, "a read to be held");
+        }
+
+        void release() {
+            released.countDown();
+        }
+
+        @Override
+        public Option<AetherValue> get(AetherKey key) {
+            if (key.equals(heldKey) && Thread.currentThread() != heldFor) {
+                heldKey = null;
+                reached.countDown();
+                awaitLatch(released, "the held read to be released");
+            }
+
+            return super.get(key);
+        }
+
+        private static void awaitLatch(CountDownLatch latch, String what) {
+            try {
+                assertThat(latch.await(10, TimeUnit.SECONDS)).as("timed out waiting for " + what).isTrue();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Assertions.fail("interrupted waiting for " + what);
+            }
         }
     }
 

@@ -2072,6 +2072,9 @@ public interface AetherNode extends ManageableNode {
                 // expires and then drains — by node id, against the LIVE registry, i.e. this node's NEXT
                 // incarnation.
                 quorumLossDetector.stop();
+                // #3754: the schema orchestrator's lease renewals and retry re-dispatches are on the same shared scheduler.
+                // A lease ends at its release or here, never at leader deactivation: the lock stays held for a running script.
+                clusterDeploymentManager.schemaOrchestrator().stop();
                 // #642 stop-hook audit — the rest of the SharedScheduler-armed, node-scoped work that
                 // had no reachable cancel path. Each of these was still acting on behalf of a stopped
                 // node: re-announcing a governor roster into consensus, pinging as spokesman, sweeping
