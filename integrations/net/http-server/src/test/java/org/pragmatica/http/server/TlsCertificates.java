@@ -68,6 +68,12 @@ final class TlsCertificates {
         return QuicSslContextFactory.createServerFromBundle(bundle, ClientAuthPolicy.NOT_REQUESTED, "not-h3").unwrap();
     }
 
+    /// A server QUIC context offering exactly `applicationProtocols`.
+    static QuicSslContext http3ServerOffering(CertificateBundle bundle, String... applicationProtocols) {
+        return QuicSslContextFactory.createServerFromBundle(bundle, ClientAuthPolicy.NOT_REQUESTED, applicationProtocols)
+                                    .unwrap();
+    }
+
     static SslContext http1Client() throws Exception {
         return SslContextBuilder.forClient().trustManager(InsecureTrustManagerFactory.INSTANCE).build();
     }

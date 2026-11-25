@@ -33,6 +33,7 @@ import static org.pragmatica.http.server.TlsCertificates.http1Client;
 import static org.pragmatica.http.server.TlsCertificates.http1Server;
 import static org.pragmatica.http.server.TlsCertificates.http3Client;
 import static org.pragmatica.http.server.TlsCertificates.http3Server;
+import static org.pragmatica.http.server.TlsCertificates.http3ServerOffering;
 import static org.pragmatica.http.server.TlsCertificates.http3ServerWithoutH3;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -88,6 +89,37 @@ class LiveTlsTest {
         var context = http3Server(bundle("unit-with-h3"));
 
         assertThat(LiveTls.liveQuicTls(context).unwrap().current()).isSameAs(context);
+    }
+
+    /// #3747b: the standard RFC 9114 setup offers only `h3`; Netty's codec serves it, so the context is admitted.
+    @Test
+    void liveQuicTls_serverContextOfferingOnlyH3_isCurrent() {
+        var context = http3ServerOffering(bundle("unit-only-h3"), "h3");
+
+        assertThat(LiveTls.liveQuicTls(context).unwrap().current()).isSameAs(context);
+    }
+
+    /// #3747b: a draft token alone is also served by Netty's codec (`Http3.supportedApplicationProtocols()`).
+    @Test
+    void liveQuicTls_serverContextOfferingOnlyDraftToken_isCurrent() {
+        var context = http3ServerOffering(bundle("unit-only-h3-29"), "h3-29");
+
+        assertThat(LiveTls.liveQuicTls(context).unwrap().current()).isSameAs(context);
+    }
+
+    @Test
+    void liveQuicTls_serverContextOfferingNoProtocol_isRefused() {
+        assertThat(refusal(LiveTls.liveQuicTls(http3ServerOffering(bundle("unit-no-protocol")))))
+            .isEqualTo(HttpServerError.TlsContextRefused.NOT_HTTP3_ALPN);
+    }
+
+    @Test
+    void swap_quicContextOfferingOnlyH3_isInstalled() {
+        var holder = LiveTls.liveQuicTls(http3Server(bundle("unit-swap-first"))).unwrap();
+        var onlyH3 = http3ServerOffering(bundle("unit-swap-only-h3"), "h3");
+
+        assertThat(holder.swap(onlyH3).isSuccess()).isTrue();
+        assertThat(holder.current()).isSameAs(onlyH3);
     }
 
     @Test

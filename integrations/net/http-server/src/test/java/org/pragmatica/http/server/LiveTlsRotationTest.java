@@ -65,6 +65,7 @@ import static org.pragmatica.http.server.TlsCertificates.http1Config;
 import static org.pragmatica.http.server.TlsCertificates.http1Server;
 import static org.pragmatica.http.server.TlsCertificates.http3Client;
 import static org.pragmatica.http.server.TlsCertificates.http3Server;
+import static org.pragmatica.http.server.TlsCertificates.http3ServerOffering;
 import static org.pragmatica.http.server.TlsCertificates.http3ServerWithoutH3;
 import static org.pragmatica.http.server.TlsCertificates.nativeRefCnt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -236,6 +237,19 @@ class LiveTlsRotationTest {
         assertThat(outcome.isFailure()).as("a context without h3 is refused").isTrue();
         assertThat(holder.current()).as("the old context stays installed").isSameAs(firstContext);
         assertThat(h3Probe(port)).isEqualTo(certificate(first));
+    }
+
+    /// #3747b: a swap to a context offering only `h3` (the RFC 9114 setup) is admitted and a connection opened
+    /// afterwards is served with its certificate.
+    @Test
+    void http3_swapToContextOfferingOnlyH3_isAdmitted_newConnectionServed() throws Exception {
+        var first = bundle("h3-only-first");
+        var second = bundle("h3-only-second");
+        var holder = LiveTls.liveQuicTls(http3Server(first)).unwrap();
+        var port = http3(holder);
+
+        assertThat(holder.swap(http3ServerOffering(second, "h3")).isSuccess()).as("an h3-only context is admitted").isTrue();
+        assertThat(h3Probe(port)).isEqualTo(certificate(second));
     }
 
     @Test
