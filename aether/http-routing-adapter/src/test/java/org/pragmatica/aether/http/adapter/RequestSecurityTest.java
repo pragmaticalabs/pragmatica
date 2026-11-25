@@ -13,7 +13,10 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.Principal;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.routing.RequestContext;
+import org.pragmatica.http.routing.Route;
+import org.pragmatica.lang.Promise;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -29,6 +32,15 @@ class RequestSecurityTest {
         var http = HttpRequestContext.httpRequestContext("/p", "GET", Map.of(), Map.of(), new byte[0], "req_1", ALICE);
 
         assertThat(RequestSecurity.securityOf(SliceRequestContext.sliceRequestContext(http, null, null))).isEqualTo(ALICE);
+    }
+
+    /// #3679: the context's method is the matched route's, never a `GET` fallback.
+    @Test
+    void method_isTheMatchedRoutes() {
+        var http = HttpRequestContext.httpRequestContext("/p", "POST", Map.of(), Map.of(), new byte[0], "req_2", ALICE);
+        var route = Route.<String> post("/p").withoutParameters().to(_ -> Promise.success("ok")).asText();
+
+        assertThat(SliceRequestContext.sliceRequestContext(http, route, null).method()).isEqualTo(HttpMethod.POST);
     }
 
     @Test
