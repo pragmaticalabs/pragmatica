@@ -152,7 +152,7 @@ class AiToolsInstallerPinTest {
 
         assertThat(kept).as("target of a link in the cache").hasContent("not the cache's");
         assertThat(Files.isSymbolicLink(cacheSkills)).as("the link itself").isFalse();
-        assertThat(cacheSkills.resolve(FILE)).hasContent("tools at B");
+        assertThat(dir.resolve("cache").resolve(FILE)).hasContent("tools at B");
     }
 
     @Test
