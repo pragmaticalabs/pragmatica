@@ -95,6 +95,8 @@ class SwimDeadIdAnsweredByAnotherNodeTest {
                                         .unwrap();
 
         protocol.addObservationListener(observations);
+        // SwimProtocol.start() does not start the transport, so the test routes the answers back itself.
+        transport.handler.set(protocol);
 
         return protocol;
     }
@@ -249,7 +251,6 @@ class SwimDeadIdAnsweredByAnotherNodeTest {
         var observations = new RecordingObservationSink();
         var protocol = protocol(transport, observations, () -> false);
 
-        transport.handler.set(protocol);
         protocol.putMemberForTest(DEAD, DEAD_ADDR, MemberState.ALIVE);
         protocol.putMemberForTest(IMPOSTOR, DEAD_ADDR, MemberState.SUSPECT);
 

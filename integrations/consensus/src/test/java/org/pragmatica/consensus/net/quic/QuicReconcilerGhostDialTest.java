@@ -166,10 +166,12 @@ class QuicReconcilerGhostDialTest {
         }
     }
 
+    /// Dials started: real transitions into CONNECTING. The dialer's `dialer-hello-REJECTED` record is journaled
+    /// with from == to == CONNECTING, so it is not a dial and must not be counted as one.
     private int connectingCount() {
         return (int) journal.stream()
                             .filter(record -> record.peerId().equals(GHOST))
-                            .filter(record -> record.to() == PeerState.Phase.CONNECTING)
+                            .filter(record -> record.to() == PeerState.Phase.CONNECTING && record.from() != record.to())
                             .count();
     }
 
