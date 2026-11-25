@@ -117,9 +117,9 @@ class LabelAgreementTest {
     void bothAbsent_agree_andTheQuorumDecides() {
         handshaken.put(A, hello(null));
 
-        var result = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement(null, 1)).await(AWAIT);
+        var result = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, agreement(null, 1)).await(AWAIT);
 
-        assertThat(result.isSuccess()).as("one handshaken peer is the quorum, the other is not waited for").isTrue();
+        assertThat(result.isSuccess()).as("one handshaken peer is the quorum; the generation bound passes over the other").isTrue();
     }
 
     @Test

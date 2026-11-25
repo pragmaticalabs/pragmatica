@@ -117,9 +117,8 @@ class RabiaEngineLabelAgreementTest {
         rig.proposeAt(LifecycleRig.FAR);
 
         gate.succeed(Unit.unit());
-        rig.settle();
 
-        assertThat(rig.mode()).isEqualTo("Syncing");
+        assertThat(await(() -> "Syncing".equals(rig.mode()))).as("the check passed, the stored ACTIVE edge syncs").isTrue();
     }
 
     // ---- #3525: label agreement ----
