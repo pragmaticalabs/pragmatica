@@ -1135,6 +1135,242 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// #3754 — the stop of a leader term ends the term's lifetime. Each scheduled task of the reconciler is armed here and the
+    /// real stop path ([`LeaderReconciler#deactivate`]) is driven in production order: (a) a task armed before the stop never runs its
+    /// body after it (the next term is activated before the old task is fired, so a body that ran would find a leader), and (b) a
+    /// body already in flight when the stop lands produces none of the effects that leave the process.
+    @Nested
+    class LifetimeAtStop {
+        private static final TimeSpan FOLLOW_UP_DELAY =
+            timeSpan(EXPECTED_DEBOUNCE_WINDOW.nanos() + DEBOUNCE_DELAY.nanos()).nanos();
+        private static final TimeSpan DRAIN_GRACE_FOLLOW_UP_DELAY =
+            timeSpan(EXPECTED_DRAIN_GRACE.millis() + DEBOUNCE_DELAY.millis()).millis();
+
+        /// Stop, then activate the next term, then fire the task armed before the stop: nothing may come of it.
+        private void assertStopSilencesTask(ManualTask armed) {
+            reconciler.deactivate();
+            assertThat(armed.cancelled()).as("the stop cancels the task armed before it").isTrue();
+
+            reconciler.activate();
+            listener.clear();
+            ctm.clear();
+            var liveAfterRestart = scheduler.liveTasks().size();
+
+            armed.runIfLive();
+
+            assertThat(listener.events()).as("the old body must not run a reconcile pass in the next term").isEmpty();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+            assertThat(scheduler.liveTasks()).as("the old body must not arm a task in the next term").hasSize(liveAfterRestart);
+        }
+
+        private ManualTask liveTaskAt(TimeSpan delay) {
+            return scheduler.tasksByDelay(delay).stream().filter(task -> !task.isDone()).findFirst().orElseThrow();
+        }
+
+        private void seedYoung(NodeId... peers) {
+            for (var peer : peers) {
+                health.markHealthy(peer);
+                observeCoreHealthy(peer);
+            }
+            sampler.sample();
+        }
+
+        /// Five configured cores, SELF plus four peers, one peer dropped: the last reconcile pass dispatches one provision, and
+        /// `inFlightHook` runs when the dispatch reads the replacement ceiling, which turns that dispatch into the body in flight at the stop.
+        private void driveArmedDeficitProvision(Runnable inFlightHook) {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            ctm.runOnNextReplacementCeilingRead(inFlightHook);
+            triggerAndFireReconcile();
+        }
+
+        private void driveSurplusDrain(Runnable inFlightHook) {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            ctm.runOnNextAutoHealRead(inFlightHook);
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        }
+
+        private void driveDurableStall(Runnable inFlightHook, List<String> events) {
+            var durable = Map.of(PEER_C, LeaderReconciler.DurableAllocation.UNCERTAIN, PEER_D, LeaderReconciler.DurableAllocation.UNCERTAIN);
+
+            ctm.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> events.add(warning.code().code())));
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B));
+            reconciler.setDurableProvisioningSupplier(() -> durable);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            timeSource.advanceTimeMillis(DEFAULT_REPLACEMENT_CEILING.millis());
+            ctm.runOnNextAutoHealRead(inFlightHook);
+            triggerAndFireReconcile();
+        }
+
+        @Test
+        void activationTask_armedBeforeStop_neverRunsAfterIt() {
+            configuredCoreCount.set(5);
+            reconciler.activate();
+
+            assertStopSilencesTask(liveTaskAt(EXPECTED_ACTIVATION_DELAY));
+        }
+
+        @Test
+        void debounceTask_armedBeforeStop_neverRunsAfterIt() {
+            configuredCoreCount.set(5);
+            reconciler.activate();
+            reconciler.onTopologyUnhealthy();
+
+            assertStopSilencesTask(liveTaskAt(DEBOUNCE_DELAY));
+        }
+
+        @Test
+        void inFlightSweep_armedBeforeStop_neverRunsAfterIt() {
+            driveArmedDeficitProvision(() -> {});
+            assertThat(reconciler.inFlightProvisioningCount()).as("the pass dispatched one provision: the sweep is armed").isEqualTo(1);
+
+            assertStopSilencesTask(liveTaskAt(EXPECTED_POLL_INTERVAL));
+        }
+
+        @Test
+        void deficitFollowUp_armedBeforeStop_neverRunsAfterIt() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertStopSilencesTask(liveTaskAt(FOLLOW_UP_DELAY));
+        }
+
+        @Test
+        void drainGraceReEval_armedBeforeStop_neverRunsAfterIt() {
+            configuredCoreCount.set(2);
+            seedYoung(NodeId.randomNodeId(), NodeId.randomNodeId());
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertStopSilencesTask(liveTaskAt(DRAIN_GRACE_FOLLOW_UP_DELAY));
+        }
+
+        @Test
+        void surplusFollowUp_armedBeforeStop_neverRunsAfterIt() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertStopSilencesTask(liveTaskAt(FOLLOW_UP_DELAY));
+        }
+
+        @Test
+        void provisionPass_controlWithoutStop_asksTheManagerOnce() {
+            driveArmedDeficitProvision(() -> {});
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        @Test
+        void provisionBody_inFlightAtStop_asksTheManagerForNothing_andLeavesNothingBehind() {
+            driveArmedDeficitProvision(reconciler::deactivate);
+
+            assertThat(reconciler.isLeader()).isFalse();
+            assertThat(ctm.provisionReplacementCalls()).as("a stale leader must not create an instance").isEmpty();
+            assertThat(reconciler.inFlightProvisioningCount()).as("the placeholder is taken back").isZero();
+            assertThat(scheduler.liveTasks()).as("the body re-armed nothing on the ended lifetime").isEmpty();
+        }
+
+        @Test
+        void drainPass_controlWithoutStop_drainsTheSurplus() {
+            driveSurplusDrain(() -> {});
+
+            assertThat(ctm.drainNodeCalls()).hasSize(2);
+        }
+
+        @Test
+        void drainBody_inFlightAtStop_drainsNothing_andLeavesNothingBehind() {
+            driveSurplusDrain(reconciler::deactivate);
+
+            assertThat(reconciler.isLeader()).isFalse();
+            assertThat(ctm.drainNodeCalls()).as("a stale leader must not drain a node").isEmpty();
+            assertThat(scheduler.liveTasks()).as("the body re-armed nothing on the ended lifetime").isEmpty();
+        }
+
+        @Test
+        void durableStallPass_controlWithoutStop_raisesTheOperatorWarning() {
+            var events = new CopyOnWriteArrayList<String>();
+
+            driveDurableStall(() -> {}, events);
+
+            await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !events.isEmpty());
+            assertThat(events).containsExactly("core-capacity-awaiting-durable");
+        }
+
+        /// The stop resets the stall run (anchor and raised flag), so a pass in flight at the stop cannot raise the warning itself: what it
+        /// can do is latch a fresh anchor into the state the stop just cleared. The next term's first pass then finds an old run, and raises
+        /// at once a warning its own run has not earned. The next term's pass is the observation; the later pass is the control, inside
+        /// the same run, that this term's passes do evaluate the stall and raise it once their own run is old enough.
+        @Test
+        void durableStallBody_inFlightAtStop_latchesNoStallRunIntoTheNextTerm() {
+            var events = new CopyOnWriteArrayList<String>();
+
+            driveDurableStall(reconciler::deactivate, events);
+            assertThat(reconciler.isLeader()).isFalse();
+
+            reconciler.activate();
+            timeSource.advanceTimeMillis(DEFAULT_REPLACEMENT_CEILING.millis());
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getLast().runIfLive();
+            triggerAndFireReconcile();
+
+            await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(5))
+                   .alias("the next term's first pass starts its own stall run").until(events::isEmpty);
+
+            timeSource.advanceTimeMillis(DEFAULT_REPLACEMENT_CEILING.millis());
+            triggerAndFireReconcile();
+
+            await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !events.isEmpty());
+            assertThat(events).containsExactly("core-capacity-awaiting-durable");
+        }
+
+        @Test
+        void nextActivation_getsAFreshLifetime_andItsTaskRuns() {
+            configuredCoreCount.set(5);
+            reconciler.activate();
+            reconciler.deactivate();
+            listener.clear();
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getLast().runIfLive();
+
+            assertThat(listener.events()).as("the second term's activation task ran").hasSize(1);
+            assertThat(listener.events().getFirst().trigger()).isEqualTo(ReconcileTrigger.LEADER_ACTIVATION);
+        }
+
+        @Test
+        void stop_resetsTheDebounce_soTheNextTermSchedulesItsOwnPass() {
+            configuredCoreCount.set(5);
+            reconciler.activate();
+            reconciler.onTopologyUnhealthy();
+            reconciler.deactivate();
+            reconciler.activate();
+
+            reconciler.onTopologyUnhealthy();
+
+            assertThat(scheduler.tasksByDelay(DEBOUNCE_DELAY).stream().filter(task -> !task.isDone()).toList())
+                .as("the cancelled debounce of the old term must not leave the flag set: the next term schedules its own pass")
+                .hasSize(1);
+        }
+    }
+
     /// M3 (s29 cloud run 1) — the provisioning snapshot mixes live values with the captured decision;
     /// the captured decision must not outlive the term that produced it, and repeated deficit-time
     /// leadership loss must be visible to the operator.
@@ -5055,6 +5291,7 @@ class LeaderReconcilerTest {
 
         @Override
         public TimeSpan replacementCeiling(NodeRole intendedRole, Option<NodeId> departed) {
+            Option.option(onNextReplacementCeilingRead.getAndSet(null)).onPresent(Runnable::run);
             replacementCeilingDeparted.add(departed);
 
             return replacementCeiling.get();
@@ -5145,9 +5382,35 @@ class LeaderReconcilerTest {
         // rather than a fake that always reports enabled regardless of what was set.
         private final AtomicBoolean autoHealEnabled = new AtomicBoolean(true);
 
+        /// Runs once, inside the next read of the kill switch: that read happens inside a reconcile pass, before any effect of
+        /// the pass, so the hook is how a test makes the pass the body already in flight when the stop lands.
+        private final AtomicReference<Runnable> onNextAutoHealRead = new AtomicReference<>();
+
         @Override
         public boolean isAutoHealEnabled() {
+            var hook = onNextAutoHealRead.getAndSet(null);
+
+            if (hook != null) {
+                hook.run();
+            }
+
             return autoHealEnabled.get();
+        }
+
+        @Contract
+        void runOnNextAutoHealRead(Runnable hook) {
+            onNextAutoHealRead.set(hook);
+        }
+
+        /// Runs once, inside the next read of the replacement ceiling: that read is the first step of a provision dispatch, after the pass
+        /// has decided to provision and before the create call, so the hook makes the dispatch the body already in flight when the stop lands.
+        /// The kill-switch read comes too early for that: the stop resets the deficit anchor the decision reads after it, so the pass would
+        /// decide against provisioning and the dispatch's own check would never be reached.
+        private final AtomicReference<Runnable> onNextReplacementCeilingRead = new AtomicReference<>();
+
+        @Contract
+        void runOnNextReplacementCeilingRead(Runnable hook) {
+            onNextReplacementCeilingRead.set(hook);
         }
 
         @Override
@@ -5582,6 +5845,10 @@ class LeaderReconcilerTest {
             tasks.add(task);
 
             return task;
+        }
+
+        synchronized List<ManualTask> liveTasks() {
+            return tasks.stream().filter(task -> !task.isDone()).toList();
         }
 
         synchronized List<ManualTask> tasksByDelay(TimeSpan delay) {
