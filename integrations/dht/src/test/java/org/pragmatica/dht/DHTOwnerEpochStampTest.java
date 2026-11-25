@@ -43,17 +43,28 @@ class DHTOwnerEpochStampTest {
     }
 
     @Test
-    void put_floorStampRefusedByAppliedHighWater_failsOwnershipNotApplied_andIsRolledBack() {
+    void put_floorStampRefusedByAppliedHighWater_failsOwnershipNotApplied() {
         var cluster = new DurableDeleteCluster(3, RF3, DHTOwnerEpochStampTest::writerLagsOthersApplied, _ -> OwnerEpochSource.zero());
-        var key = bytes("early-writer");
 
-        var put = cluster.member(WRITER).client().put(key, bytes("v")).await();
+        var put = cluster.member(WRITER).client().put(bytes("early-writer"), bytes("v")).await();
 
         assertThat(put.isFailure()).as("control: the replicas that applied the record refuse the zero epoch").isTrue();
         put.onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.OwnershipNotApplied.class)
                                                 .isInstanceOf(Cause.Transient.class)
                                                 .isNotInstanceOf(DHTError.WriteIndeterminate.class));
-        assertThat(cluster.members()).as("the rollback rule is unchanged: the writer's own accept is taken back, nothing is left anywhere")
+    }
+
+    /// #1818 is unchanged for a floor-stamped put: the writer's OWN store accepted it (its high-water lags), so the coordinator
+    /// takes that accept back, whatever cause the caller is handed. Without it, anti-entropy would spread the copy the others refused.
+    @Test
+    void put_floorStampRefusedByAppliedHighWater_isRolledBackOnTheWriter() {
+        var cluster = new DurableDeleteCluster(3, RF3, DHTOwnerEpochStampTest::writerLagsOthersApplied, _ -> OwnerEpochSource.zero());
+        var key = bytes("early-writer-rollback");
+
+        var put = cluster.member(WRITER).client().put(key, bytes("v")).await();
+
+        assertThat(put.isFailure()).as("control: the put was refused, so the writer's own accept is the only copy that could remain").isTrue();
+        assertThat(cluster.members()).as("nothing is left on the writer or on a replica")
                                      .allMatch(member -> !cluster.holdsLive(member.id(), key));
     }
 
