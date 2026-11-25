@@ -750,6 +750,90 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertWarningsStay("auto-heal-scaling-held", "auto-heal-scaling-resumed");
     }
 
+    /// #3358 (round 4): a hold is closed by ANY ask once its subject's committed value left the recorded one, not only by an ask for that
+    /// subject: nobody asks for a subject whose entry was removed. Worker deficit held, the entry removed by a committed config, the core
+    /// asked with false: exactly one resume (the worker's), the core untouched.
+    @Test
+    void scalingHeld_workerEntryRemoved_nextAskForCore_closesTheWorkerHold() {
+        var manager = coreDisabled();
+        var worker = ClusterTopologyManagerRecord.workerSubject("pool", "worker");
+        assertThat(manager.scalingHeld(worker, WORKER_DELTA, true)).isTrue();
+        awaitWarnings(1);
+
+        commitConfigVersion(2L, entry("pool", "core", 3));
+
+        assertThat(manager.scalingHeld(ClusterTopologyManager.coreSubject(), RECONCILER, false)).isFalse();
+        awaitWarnings(2);
+        assertWarningsStay("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+        assertThat(coreWarnings).as("the core subject was never held, so none of its events").isEmpty();
+    }
+
+    /// #3358 (round 4): as above for a community removed from the committed configuration.
+    @Test
+    void scalingHeld_communityRemoved_nextAskForCore_closesTheCommunityHold() {
+        var manager = communityHeldWhileDisabled();
+
+        commitConfigVersion(2L, entry("pool", "core", 3), entry("pool", "worker", 1));
+
+        assertThat(manager.scalingHeld(ClusterTopologyManager.coreSubject(), RECONCILER, false)).isFalse();
+        awaitWarnings(2);
+        assertWarningsStay("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+        assertThat(coreWarnings).isEmpty();
+    }
+
+    /// #3358 (round 4): as above for a community whose target_size changed.
+    @Test
+    void scalingHeld_communityTargetChanged_nextAskForCore_closesTheCommunityHold() {
+        var manager = communityHeldWhileDisabled();
+
+        seedConfig(communityToml(2), entry("pool", "core", 3), entry("pool", "worker", 1));
+
+        assertThat(manager.scalingHeld(ClusterTopologyManager.coreSubject(), RECONCILER, false)).isFalse();
+        awaitWarnings(2);
+        assertWarningsStay("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+        assertThat(coreWarnings).isEmpty();
+    }
+
+    /// #3358 (round 4) control: a commit that changes ANOTHER subject's value (the worker count) releases nothing of the held community.
+    @Test
+    void scalingHeld_unrelatedCommit_releasesNothing() {
+        var manager = communityHeldWhileDisabled();
+
+        seedConfig(communityToml(1), entry("pool", "core", 3), entry("pool", "worker", 2));
+
+        assertThat(manager.scalingHeld(ClusterTopologyManager.coreSubject(), RECONCILER, false)).isFalse();
+        assertThat(manager.scalingHeld("community stable", COMMUNITY, true)).as("still held, its value is the recorded one").isTrue();
+        assertWarningsStay("auto-heal-scaling-held");
+    }
+
+    /// #3358 (round 4): the released subject is not raised again by the next pass of the asker that closed it, nor by another ask.
+    @Test
+    void scalingHeld_releasedByAnotherSubjectsAsk_isNotRaisedAgain() {
+        var manager = coreDisabled();
+        var worker = ClusterTopologyManagerRecord.workerSubject("pool", "worker");
+        manager.scalingHeld(worker, WORKER_DELTA, true);
+        awaitWarnings(1);
+        commitConfigVersion(2L, entry("pool", "core", 3));
+        manager.scalingHeld(ClusterTopologyManager.coreSubject(), RECONCILER, false);
+        awaitWarnings(2);
+
+        manager.scalingHeld(ClusterTopologyManager.coreSubject(), RECONCILER, false);
+        manager.scalingHeld(ClusterTopologyManager.coreSubject(), RETIREMENT, false);
+
+        assertWarningsStay("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+    }
+
+    /// Disabled with the community `stable` (target_size 1) and the worker recorded; the community is held.
+    private ClusterTopologyManagerRecord communityHeldWhileDisabled() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        seedConfig(communityToml(1), entry("pool", "core", 3), entry("pool", "worker", 1));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, ClusterTopologyManagerRecord.scalingOf(configRef.get()))));
+        assertThat(manager.scalingHeld("community stable", COMMUNITY, true)).isTrue();
+        awaitWarnings(1);
+
+        return manager;
+    }
+
     /// v2711 finding 6: a source is declared by the committed configuration's desired topology or by its `[source.*]` tables; any other
     /// name, or no configuration at all, is not.
     @Test

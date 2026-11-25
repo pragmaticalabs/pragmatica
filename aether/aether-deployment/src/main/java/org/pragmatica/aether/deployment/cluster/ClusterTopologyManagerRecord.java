@@ -1034,10 +1034,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// askers' latest answers is non-empty ([#answerScaling]) and its own committed scaling value (count or community `target_size`)
     /// equals the one recorded at disable time ([AutoHealStateValue#disabledAtScaling]); a commit that leaves it unchanged releases
     /// nothing. A value an operator committed after the disable differs: that is explicit intent, every answer for the subject is dropped
-    /// (its hold, if raised, is announced as resumed) and acted on. A subject whose askers all answer "nothing pending" (the surplus went
-    /// away by itself or by an explicit drain, #3358) ends the hold the same way: the warning describes a change being held back, so it
-    /// closes when there is none, and only then, however many askers a subject has. An operator-directed retirement never asks here.
-    /// The returned answer is the asker's own: held only when it has something pending.
+    /// (its hold, if raised, is announced as resumed) and acted on. The same rule runs for EVERY held subject on each ask, not only the
+    /// asked one: a subject whose source, role or community left the committed configuration (nobody asks for it any more) is released by
+    /// the next ask for any subject, and the core subject is asked on every quorum-safe pass of the leader. A subject whose askers all
+    /// answer "nothing pending" (the surplus went away by itself or by an explicit drain, #3358) ends the hold the same way: the warning
+    /// describes a change being held back, so it closes when there is none, and only then, however many askers a subject has. An
+    /// operator-directed retirement never asks here. The returned answer is the asker's own: held only when it has something pending.
     @Override
     public boolean scalingHeld(String subject, ScalingAsker asker, boolean pending) {
         var state = autoHealStateReader.get();
@@ -1048,19 +1050,26 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return false;
         }
 
-        if (state.filter(value -> unchangedSinceDisable(value, subject)).isPresent()) {
+        var recorded = state.map(AutoHealStateValue::disabledAtScaling).or(Map.of());
+        var committed = scalingOf(clusterConfigReader.get());
+
+        heldScaling.keySet()
+                   .stream()
+                   .filter(held -> !unchangedSinceDisable(recorded, committed, held))
+                   .forEach(this::releaseScaling);
+        if (unchangedSinceDisable(recorded, committed, subject)) {
             answerScaling(subject, asker, pending);
 
             return pending;
         }
 
-        releaseScaling(subject);
-
         return false;
     }
 
-    private boolean unchangedSinceDisable(AutoHealStateValue state, String subject) {
-        return Option.option(state.disabledAtScaling().get(subject)).equals(Option.option(scalingOf(clusterConfigReader.get()).get(subject)));
+    private static boolean unchangedSinceDisable(Map<String, Integer> recorded,
+                                                 Map<String, Integer> committed,
+                                                 String subject) {
+        return Option.option(recorded.get(subject)).equals(Option.option(committed.get(subject)));
     }
 
     /// The ONE mutation point of a subject's hold: its askers' latest "pending" answers, changed and judged for an edge inside one atomic

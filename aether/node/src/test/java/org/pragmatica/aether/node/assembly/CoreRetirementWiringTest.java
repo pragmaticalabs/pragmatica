@@ -148,7 +148,7 @@ class CoreRetirementWiringTest {
     }
 
     /// #3358: the production path hands the excluded cores it derived to the hold. With auto-heal disabled (the hold answers held) the
-    /// hold is asked for the subject `core` because there are victims, and nothing is drained. An empty victim list never asks.
+    /// hold is asked for the subject `core` because there are victims, and nothing is drained. The retirement asks on every pass it evaluates, with `pending` = "there is a victim" (an empty victim list asks with false and closes its own answer).
     @Test
     void retireExcludedCores_autoHealDisabled_asksTheCoreHoldForItsVictims_andDrainsNothing() {
         var topology = mock(ClusterTopologyManager.class);

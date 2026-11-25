@@ -771,7 +771,8 @@ public enum OperatorWarningCode {
     /// not held. A hold describes a change being held back: a worker source/role closes too when its deficit is filled or its surplus removed
     /// by an explicit drain, and the core surplus closes when no core member is left to drain, at the next reconcile pass, with auto-heal still
     /// disabled (#3358). The core surplus has two askers (the leader's surplus drain and the voter-excluded core retirement); it closes only
-    /// when both have nothing pending. Subject is the source/role, the community or `core`. Raised once per subject for the run of holds.
+    /// when both have nothing pending. A subject whose committed value changed, or whose entry left the configuration, is released at the next
+    /// ask for any subject (the core is asked on every quorum-safe pass). Subject is the source/role, the community or `core`. Raised once per subject for the run of holds.
     /// Closed by [#AUTO_HEAL_SCALING_RESUMED].
     AUTO_HEAL_SCALING_HELD("auto-heal-scaling-held", "deployment", WarningLevel.WARNING),
     /// The recovery of [#AUTO_HEAL_SCALING_HELD], same subject: auto-heal is enabled again, the subject was released by a new committed value, or

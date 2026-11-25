@@ -138,7 +138,9 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// a community, or the core surplus ([#coreSubject], #3324). `pending` is the asker's answer to "is there a change to this subject
     /// that I would make on the cluster's own initiative" (a deficit, a surplus, a victim). The subject is HELD while the union of its
     /// askers' latest answers is non-empty and its committed scaling value equals the one recorded at disable time; it closes only when
-    /// every asker of it has answered "nothing pending" (#3358), when auto-heal is enabled, or when a value is committed after the disable.
+    /// every asker of it has answered "nothing pending" (#3358), when auto-heal is enabled, or when a value is committed after the disable. The
+    /// last is judged for every held subject on each ask, not only the asked one, so a subject whose source, role or community left the
+    /// configuration (nobody asks for it any more) is released by the next ask for any subject.
     /// A hold is raised once as an operator warning on the closed-to-open edge of that union and announced as resumed on the open-to-closed
     /// edge. The answer returned is the asker's own: held only when it has something pending. Every asker asks on every pass it evaluates,
     /// true or false. Abstract, not defaulted: an implementation that answered "never held" by default would silently lift the gate.
