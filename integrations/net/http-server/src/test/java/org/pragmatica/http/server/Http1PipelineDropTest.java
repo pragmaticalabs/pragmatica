@@ -85,23 +85,21 @@ class Http1PipelineDropTest {
     /// #3679, below the gate: the request handler itself refuses an unknown method (`PROPFIND`) with 501, whichever transport stage precedes it, and never dispatches it.
     @Test
     void unknownMethod_atTheHandler_isRefused501_andNeverDispatched() {
-        for (var name : new String[]{"PROPFIND"}) {
-            var seen = new ArrayList<String>();
-            var channel = new EmbeddedChannel(new NettyHttpServer.HttpRequestHandler((request, writer) -> record(seen, request, writer),
-                                                                                     Map.of()));
-            var unknown = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, new HttpMethod(name), "/resource");
+        var seen = new ArrayList<String>();
+        var channel = new EmbeddedChannel(new NettyHttpServer.HttpRequestHandler((request, writer) -> record(seen, request, writer),
+                                                                                 Map.of()));
+        var unknown = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, new HttpMethod("PROPFIND"), "/resource");
 
-            unknown.headers().set(HttpHeaderNames.HOST, "localhost");
-            channel.writeInbound(unknown);
-            channel.runPendingTasks();
+        unknown.headers().set(HttpHeaderNames.HOST, "localhost");
+        channel.writeInbound(unknown);
+        channel.runPendingTasks();
 
-            Object response = channel.readOutbound();
+        Object response = channel.readOutbound();
 
-            assertThat(seen).as("%s must not be dispatched", name).isEmpty();
-            assertThat(response).as("%s is answered", name).isInstanceOf(HttpResponse.class);
-            assertThat(((HttpResponse) response).status().code()).as("%s status", name).isEqualTo(501);
-            channel.finishAndReleaseAll();
-        }
+        assertThat(seen).as("PROPFIND must not be dispatched").isEmpty();
+        assertThat(response).as("PROPFIND is answered").isInstanceOf(HttpResponse.class);
+        assertThat(((HttpResponse) response).status().code()).as("PROPFIND status").isEqualTo(501);
+        channel.finishAndReleaseAll();
     }
 
     /// The control for the test above: the same handler dispatches a known method.
