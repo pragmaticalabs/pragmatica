@@ -269,6 +269,31 @@ class BasePackageRequiredTest {
         assertTrue(result.verdict().kind() != Kind.INCOMPLETE, () -> "" + result.verdict());
     }
 
+    /// A test root whose module declares the key still gets no tree: the sideways import of its test file is no finding
+    /// and the file counts in N, never in K.
+    @Test
+    void testRoot_withABasePackage_isJudgedByNoTreeRule() throws IOException {
+        var module = module(BUSINESS + "[project]\nbasePackage = \"com.example\"\n");
+
+        source(module, "test", "com.example.order.place", "PlaceOrderTest.java", NULL_RETURN.replace("class PlaceOrder", "class PlaceOrderTest"));
+        var result = linted(module.resolve("src/test/java"));
+
+        assertEquals(Set.of(), treeRuleIds(result));
+        assertTrue(texts(result, Level.INFO).contains(TREE_01 + ": judged 0 of 1 file(s)"), () -> "" + result.before());
+    }
+
+    /// The coverage count K is the files the rule READ: a file the run could not parse is in N and not in K.
+    @Test
+    void unparseableFile_countsInTheTotalButNotAsJudged() throws IOException {
+        var module = module(BUSINESS + "[project]\nbasePackage = \"com.example\"\n");
+
+        source(module, "main", "com.example.order.place", "Broken.java", "package com.example.order.place;\nclass Broken {{{\n");
+        source(module, "main", "com.example.order.cancel", "Refund.java", SIBLING);
+        var result = linted(module.resolve("src/main/java"));
+
+        assertTrue(texts(result, Level.INFO).contains(TREE_01 + ": judged 1 of 2 file(s)"), () -> "" + result.before());
+    }
+
     /// A run that does not lint runs no TREE rule: no refusal fails it and no coverage line is printed.
     @Test
     void formatRun_isNotFailedByTheRefusal() throws IOException {
