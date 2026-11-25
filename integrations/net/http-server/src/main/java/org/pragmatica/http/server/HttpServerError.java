@@ -36,6 +36,18 @@ public sealed interface HttpServerError extends Cause {
         }
     }
 
+    /// The configured bind host is blank or does not resolve to a local address, so there is no socket address to
+    /// listen on; the server refuses to start rather than falling back to every interface, which would widen exposure.
+    record BindHostUnresolved(String serverName, String host, Cause cause) implements HttpServerError {
+        @Override
+        public String message() {
+            return "Bind host '" + host
+                 + "' of HTTP server '" + serverName
+                 + "' could not be resolved: " + cause.message()
+                 + "; refusing to start";
+        }
+    }
+
     /// The TLS configuration could not be turned into a server context; the server refuses to start rather
     /// than listening in plain text.
     record TlsFailed(String serverName, int port, Cause cause) implements HttpServerError {
