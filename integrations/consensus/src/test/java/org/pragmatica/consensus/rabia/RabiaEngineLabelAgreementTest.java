@@ -204,6 +204,8 @@ class RabiaEngineLabelAgreementTest {
             .as("the warning is closed by its recovery, once, before the node syncs")
             .containsExactly(OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE, OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE);
         assertThat(waiting.warnings.getLast().subject()).isEqualTo(waiting.warnings.getFirst().subject());
+        assertThat(waiting.warnings.getLast().message()).as("the recovery names the node it closes the warning for")
+                                                        .contains("Node " + N1 + " has handshaken a quorum");
     }
 
     /// #3525 round 1 (F1): the label wait lives no longer than the engine that consumes it. With a quorum that never handshakes

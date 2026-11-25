@@ -155,6 +155,19 @@ class RabiaNodeJoinGuardTest {
         }
     }
 
+    /// F-A (#3748 round 1): the peers a quorum needs besides this node, per core size: a majority of the core, less this node.
+    /// `size / 2 + 1` and `size` (the mutants that survived) differ from it in every row.
+    @Test
+    void quorumPeers_isAMajorityOfTheCoreLessThisNode() {
+        var fourth = nodeId("node-d").unwrap();
+        var fifth = nodeId("node-e").unwrap();
+
+        assertThat(RabiaNode.quorumPeers(topology(Set.of(SELF, PEER), Map.of()))).as("quorum 2 of 2").isEqualTo(1);
+        assertThat(RabiaNode.quorumPeers(topology(Set.of(SELF, PEER, THIRD), Map.of()))).as("quorum 2 of 3").isEqualTo(1);
+        assertThat(RabiaNode.quorumPeers(topology(Set.of(SELF, PEER, THIRD, fourth), Map.of()))).as("quorum 3 of 4").isEqualTo(2);
+        assertThat(RabiaNode.quorumPeers(topology(Set.of(SELF, PEER, THIRD, fourth, fifth), Map.of()))).as("quorum 3 of 5").isEqualTo(2);
+    }
+
     @Test
     void nodeConfig_joinGenerationWait_defaultsToTheGuardsBound() {
         InvocationHandler defaultsOnly = (proxy, method, args) -> InvocationHandler.invokeDefault(proxy, method, args);
@@ -163,5 +176,16 @@ class RabiaNodeJoinGuardTest {
                                                          defaultsOnly);
 
         assertThat(config.joinGenerationWait()).isEqualTo(JoinGenerationGuard.JOIN_GENERATION_WAIT);
+    }
+
+    /// #3525 round 1 (F-B): an assembly that names no agreeing label requires nothing of its cluster, so the default is empty.
+    @Test
+    void nodeConfig_agreeingLabels_defaultsToNone() {
+        InvocationHandler defaultsOnly = (proxy, method, args) -> InvocationHandler.invokeDefault(proxy, method, args);
+        var config = (NodeConfig) Proxy.newProxyInstance(NodeConfig.class.getClassLoader(),
+                                                         new Class<?>[]{NodeConfig.class},
+                                                         defaultsOnly);
+
+        assertThat(config.agreeingLabels()).isEmpty();
     }
 }

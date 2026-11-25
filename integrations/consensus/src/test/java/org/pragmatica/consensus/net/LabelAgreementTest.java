@@ -16,9 +16,12 @@
 package org.pragmatica.consensus.net;
 
 import java.time.Duration;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -112,7 +115,8 @@ class LabelAgreementTest {
     void differentValues_refusedNamingMemberLabelAndBothValues() {
         assertRefused("on", "off", Option.some("off"), Option.some("on"));
         assertThat(new ConsensusError.LabelAgreementRefused(A, LABEL, Option.some("off"), Option.some("on")).message())
-            .contains("node-a").contains(LABEL).contains("'off'").contains("'on'");
+            .contains("node-a").contains(LABEL).contains("'off'").contains("'on'")
+            .endsWith("; every core member must run the same setting");
     }
 
     /// One direction of the absent-versus-present rule: this node has the label, the handshaken peer lacks it.
@@ -231,6 +235,76 @@ class LabelAgreementTest {
         assertThat(lookups.get()).as("no poll after the wait ended").isEqualTo(pollsAtEnd);
         assertThat(notices).as("no further notice").hasSize(1);
         assertThat(recoveries.get()).as("no recovery for a wait that was cancelled").isZero();
+    }
+
+    /// #3525 round 1 (F-C): the default configuration names no agreeing label, and the node-level quorum count is then still
+    /// positive. The guard must not hold such a cluster: with no label to agree on the quorum is vacuous, so the wait ends at its
+    /// generation bound with nobody handshaken, exactly as before the labels existed.
+    @Test
+    void noAgreeingLabels_quorumCountPositive_nobodyHandshaken_admittedAtTheBound() {
+        var unlabelled = LabelAgreement.labelAgreement(hello(null), Set.of(), 1, missing -> Unit.unit(), Unit::unit);
+
+        assertThat(unlabelled.reached(Set.of(A, B), this::labelsOf)).as("vacuous without labels").isTrue();
+        assertThat(JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, unlabelled, ended::get)
+                                      .await(AWAIT)
+                                      .isSuccess()).as("an unlabelled cluster is never held").isTrue();
+    }
+
+    /// #3525 round 1 (F-D): the notice is raised only once the generation bound has passed. With a long bound and an incomplete
+    /// quorum, however many polls observe the incomplete quorum, nothing is told.
+    @Test
+    void incompleteQuorum_beforeTheBound_noNoticeOverManyPolls() {
+        var pending = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement("on", 1), ended::get);
+
+        awaitMorePolls();
+
+        assertThat(pending.isResolved()).isFalse();
+        assertThat(notices).as("the bound has not passed").isEmpty();
+    }
+
+    /// #3525 round 1 (nit c2): a member below this binary's wire generation is refused as such even when it also differs in a
+    /// label: the wire-generation refusal outranks the label refusal.
+    @Test
+    void lowerGenerationAndDifferentLabel_wireGenerationRefusalWins() {
+        handshaken.put(A, Map.of(NodeInfo.LABEL_WIRE_GENERATION, "1", LABEL, "off"));
+
+        JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement("on", 1), ended::get)
+                           .await(AWAIT)
+                           .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("must be refused"))
+                           .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(A, 1, OWN)));
+    }
+
+    /// #3525 round 1 (nit c12a): with several members differing, the refusal names the first in id order, whatever order the
+    /// decision set iterates in (an insertion-ordered set puts the greater id first).
+    @Test
+    void severalMembersDiffer_theFirstInIdOrderIsNamed() {
+        handshaken.put(A, hello("off"));
+        handshaken.put(B, hello("off"));
+
+        var refusal = agreement("on", 1).firstMismatch(new LinkedHashSet<>(List.of(B, A)), this::labelsOf);
+
+        assertThat(refusal.isPresent()).isTrue();
+        refusal.onPresent(cause -> assertThat(cause).isInstanceOfSatisfying(ConsensusError.LabelAgreementRefused.class,
+                                                                            refused -> assertThat(refused.member()).isEqualTo(A)));
+    }
+
+    /// #3525 round 1 (nit c12b): with several agreeing labels differing, the refusal names the first in label order. Thirty-two
+    /// labels, because the set a record keeps has no iteration order to pin: an unsorted walk happens to name the smallest one
+    /// with probability 1/32 per JVM, so a mutant removing the sort survives this test only that rarely.
+    @Test
+    void severalLabelsDiffer_theFirstInLabelOrderIsNamed() {
+        var names = IntStream.range(0, 32).mapToObj(i -> String.format("label-%02d", i)).toList();
+        var own = names.stream().collect(Collectors.toMap(name -> name, _ -> "on"));
+        var other = names.stream().collect(Collectors.toMap(name -> name, _ -> "off"));
+        var agreement = LabelAgreement.labelAgreement(own, Set.copyOf(names), 1, missing -> Unit.unit(), Unit::unit);
+
+        handshaken.put(A, other);
+
+        var refusal = agreement.firstMismatch(Set.of(A), this::labelsOf);
+
+        assertThat(refusal.isPresent()).isTrue();
+        refusal.onPresent(cause -> assertThat(cause).isInstanceOfSatisfying(ConsensusError.LabelAgreementRefused.class,
+                                                                            refused -> assertThat(refused.label()).isEqualTo("label-00")));
     }
 
     @Test
