@@ -139,241 +139,173 @@ public class CstLinter {
         return List.<LintRule> of(
         // Return kinds (JBCT-RET-*)
         new CstReturnKindRule(),
-
         // JBCT-RET-01
-        new CstNestedWrapperRule(),
-
+                                  new CstNestedWrapperRule(),
         // JBCT-RET-02
-        new CstNullReturnRule(),
-
+                                  new CstNullReturnRule(),
         // JBCT-RET-03
-        new CstVoidTypeRule(),
-
+                                  new CstVoidTypeRule(),
         // JBCT-RET-04
-        new CstAlwaysSuccessResultRule(),
-
+                                  new CstAlwaysSuccessResultRule(),
         // JBCT-RET-05
-        new CstNullableParameterRule(),
-
+                                  new CstNullableParameterRule(),
         // JBCT-RET-06
         // Value objects (JBCT-VO-*)
-        new CstValueObjectFactoryRule(),
-
+                                  new CstValueObjectFactoryRule(),
         // JBCT-VO-01
-        new CstConstructorBypassRule(),
-
+                                  new CstConstructorBypassRule(),
         // JBCT-VO-02
         // Exceptions (JBCT-EX-*)
-        new CstNoBusinessExceptionsRule(),
-
+                                  new CstNoBusinessExceptionsRule(),
         // JBCT-EX-01
-        new CstOrElseThrowRule(),
-
+                                  new CstOrElseThrowRule(),
         // JBCT-EX-02
-        new CstTryCatchRule(),
-
+                                  new CstTryCatchRule(),
         // JBCT-EX-03
         // Naming (JBCT-NAM-*)
-        new CstFactoryNamingRule(),
-
+                                  new CstFactoryNamingRule(),
         // JBCT-NAM-01
-        new CstValidatedNamingRule(),
-
+                                  new CstValidatedNamingRule(),
         // JBCT-NAM-02
         // Lambda/composition (JBCT-LAM-*)
-        new CstLambdaComplexityRule(),
-
+                                  new CstLambdaComplexityRule(),
         // JBCT-LAM-01
-        new CstLambdaBracesRule(),
-
+                                  new CstLambdaBracesRule(),
         // JBCT-LAM-02
-        new CstLambdaTernaryRule(),
-
+                                  new CstLambdaTernaryRule(),
         // JBCT-LAM-03
         // Use case structure (JBCT-UC-*)
-        new CstNestedRecordFactoryRule(),
-
+                                  new CstNestedRecordFactoryRule(),
         // JBCT-UC-01
         // Patterns (JBCT-PAT-*, JBCT-SEQ-*)
-        new CstRawLoopRule(),
-
+                                  new CstRawLoopRule(),
         // JBCT-PAT-01
-        new CstChainLengthRule(),
-
+                                  new CstChainLengthRule(),
         // JBCT-SEQ-01
         // Style (JBCT-STY-*)
-        new CstFluentFailureRule(),
-
+                                  new CstFluentFailureRule(),
         // JBCT-STY-01
-        new CstConstructorReferenceRule(),
-
+                                  new CstConstructorReferenceRule(),
         // JBCT-STY-02
-        new CstFullyQualifiedNameRule(),
-
+                                  new CstFullyQualifiedNameRule(),
         // JBCT-STY-03
-        new CstUtilityClassRule(),
-
+                                  new CstUtilityClassRule(),
         // JBCT-STY-04
-        new CstMethodReferencePreferenceRule(),
-
+                                  new CstMethodReferencePreferenceRule(),
         // JBCT-STY-05
-        new CstImportOrderingRule(),
-
+                                  new CstImportOrderingRule(),
         // JBCT-STY-06
         // Logging (JBCT-LOG-*)
-        new CstConditionalLoggingRule(),
-
+                                  new CstConditionalLoggingRule(),
         // JBCT-LOG-01
-        new CstLoggerParameterRule(),
-
+                                  new CstLoggerParameterRule(),
         // JBCT-LOG-02
         // Architecture (JBCT-MIX-*)
-        new CstDomainIoRule(),
-
+                                  new CstDomainIoRule(),
         // JBCT-MIX-01
         // Architecture / layering (JBCT-ARCH-*, #452)
         // Dependency direction — imports point up only (absorbs MIX-01's layering concern)
-        new CstArchDirectionRule(),
-
+                                  new CstArchDirectionRule(),
         // JBCT-ARCH-01
         // lift(...) confined to the adapter-boundary zone
-        new CstArchLiftZoneRule(),
-
+                                  new CstArchLiftZoneRule(),
         // JBCT-ARCH-02
         // A use case must not call another use case
-        new CstArchUseCaseCouplingRule(),
-
+                                  new CstArchUseCaseCouplingRule(),
         // JBCT-ARCH-03
         // A slice must not import another slice's internals
-        new CstArchSliceInternalRule(),
-
+                                  new CstArchSliceInternalRule(),
         // JBCT-ARCH-04
         // Static imports (JBCT-STATIC-*)
-        new CstStaticImportRule(),
-
+                                  new CstStaticImportRule(),
         // JBCT-STATIC-01
         // Utilities (JBCT-UTIL-*)
-        new CstParsingUtilitiesRule(),
-
+                                  new CstParsingUtilitiesRule(),
         // JBCT-UTIL-01
-        new CstVerifyPredicatesRule(),
-
+                                  new CstVerifyPredicatesRule(),
         // JBCT-UTIL-02
         // Nesting (JBCT-NEST-*)
-        new CstNestedOperationsRule(),
-
+                                  new CstNestedOperationsRule(),
         // JBCT-NEST-01
         // Zones (JBCT-ZONE-*)
-        new CstZoneTwoVerbsRule(),
-
+                                  new CstZoneTwoVerbsRule(),
         // JBCT-ZONE-01
-        new CstZoneThreeVerbsRule(),
-
+                                  new CstZoneThreeVerbsRule(),
         // JBCT-ZONE-02
-        new CstZoneMixingRule(),
-
+                                  new CstZoneMixingRule(),
         // JBCT-ZONE-03
         // Acronym naming (JBCT-ACR-*)
-        new CstAcronymNamingRule(),
-
+                                  new CstAcronymNamingRule(),
         // JBCT-ACR-01
         // Sealed interfaces (JBCT-SEAL-*)
-        new CstSealedErrorRule(),
-
+                                  new CstSealedErrorRule(),
         // JBCT-SEAL-01
         // Pattern mixing (JBCT-PAT-02)
-        new CstPatternMixingRule(),
-
+                                  new CstPatternMixingRule(),
         // Blocking await (JBCT-PAT-03)
-        new CstAwaitRule(),
-
+                                  new CstAwaitRule(),
         // Discarded Result/Promise/Option (JBCT-RET-07)
-        new CstDiscardedResultRule(),
-
+                                  new CstDiscardedResultRule(),
         // Unnecessary var before return (JBCT-STY-07)
-        new CstUnnecessaryVarReturnRule(),
-
+                                  new CstUnnecessaryVarReturnRule(),
         // If/else with return in both branches (JBCT-STY-08)
-        new CstIfElseReturnRule(),
-
+                                  new CstIfElseReturnRule(),
         // Mapper safety / totality (JBCT-TOT-*, #486)
         // Partial op in a mapper lambda (JBCT-TOT-01)
-        new CstPartialOperationMapperRule(),
-
+                                  new CstPartialOperationMapperRule(),
         // Partial method reference in a mapper (JBCT-TOT-02)
-        new CstMapperMethodReferenceRule(),
-
+                                  new CstMapperMethodReferenceRule(),
         // Jackson wire-record accessor dereferences a possibly-null component (JBCT-TOT-03)
-        new CstWireRecordTotalityRule(),
-
+                                  new CstWireRecordTotalityRule(),
         // Easy-tier batch (#451)
         // Forbidden boundary types in business logic (JBCT-BND-01)
-        new CstBoundaryTypeRule(),
-
+                                  new CstBoundaryTypeRule(),
         // JBCT-REC-01
-        new CstAbsorbedFailureRule(),
-
+                                  new CstAbsorbedFailureRule(),
         // Nested ternaries (JBCT-STY-09)
-        new CstNestedTernaryRule(),
-
+                                  new CstNestedTernaryRule(),
         // *State suffix reserved for lifecycle-sum interfaces (JBCT-NAM-03)
-        new CstStateSuffixRule(),
-
+                                  new CstStateSuffixRule(),
         // Local records use lowercase camelCase (JBCT-NAM-04)
-        new CstLocalRecordNamingRule(),
-
+                                  new CstLocalRecordNamingRule(),
         // Test method naming (JBCT-NAM-05)
-        new CstTestMethodNamingRule(),
-
+                                  new CstTestMethodNamingRule(),
         // Technology or pattern word in a type name (JBCT-NAM-06)
-        new CstTechnicalTypeNameRule(),
-
+                                  new CstTechnicalTypeNameRule(),
         // Technology, pattern or layer word in a package segment (JBCT-NAM-07)
-        new CstTechnicalPackageSegmentRule(),
-
+                                  new CstTechnicalPackageSegmentRule(),
         // Parameter reassignment (JBCT-MUT-01)
-        new CstParameterReassignmentRule(),
-
+                                  new CstParameterReassignmentRule(),
         // Null literal argument / defensive null comparison (JBCT-RET-08)
-        new CstNullLiteralRule(),
-
+                                  new CstNullLiteralRule(),
         // Typed-error construction pack (JBCT-CAUSE, typed-error-lint-spec).
         // JBCT-CAUSE-01 absorbs JBCT-SEAL-02; JBCT-CAUSE-06 awaits LintContext source-set awareness.
-        new CstCauseShapeRule(),
+                                  new CstCauseShapeRule(),
                                   new CstCauseMessageBodyRule(),
                                   new CstMessageComponentLastRule(),
                                   new CstCauseFactoryArityRule(),
                                   new CstWrappedCauseRule(),
                                   new CstAnonymousTemplateRule(),
                                   new CstCauseDirectConstructionRule(),
-
         // File-type classifier + structural rules (#453)
         // Use-case interface structure (JBCT-UC-02)
-        new CstUseCaseStructureRule(),
-
+                                  new CstUseCaseStructureRule(),
         // Member ordering per file type (JBCT-ORD-01)
-        new CstMemberOrderingRule(),
-
+                                  new CstMemberOrderingRule(),
         // Constructor/factory injection only (JBCT-INJ-01)
-        new CstInjectionRule(),
-
+                                  new CstInjectionRule(),
         // Boolean validation methods (JBCT-VAL-01)
-        new CstBooleanValidationRule(),
-
+                                  new CstBooleanValidationRule(),
         // Stage-record conventions (JBCT-STAGE-01)
-        new CstStageRecordRule(),
-
+                                  new CstStageRecordRule(),
         // Side effects in transformation lambdas (JBCT-SIDE-01, INFO)
-        new CstSideEffectMapperRule(),
-
+                                  new CstSideEffectMapperRule(),
         // Method-shape classifier census (#448, phase 1, INFO)
         // Method blends two patterns at one altitude (JBCT-SHAPE-01, MIXED)
-        new CstShapeMixedRule(),
-
+                                  new CstShapeMixedRule(),
         // Method has no single pattern (JBCT-SHAPE-02, UNCLASSIFIED)
-        new CstShapeUnclassifiedRule(),
-
+                                  new CstShapeUnclassifiedRule(),
         // Method's shape disagrees with its name-verb's zone (JBCT-SHAPE-03, mis-leveled)
-        new CstShapeZoneRule());
+                                  new CstShapeZoneRule());
     }
 }

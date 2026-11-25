@@ -637,18 +637,16 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                                     topologyManager::handleDiscoveredNodes),
                                                                               route(Hello.class,
                                                                                     _ -> {}),
-
         // HelloRefused answers a refused handshake on the CONTROL stream and is consumed by the
         // dialer's Hello handler, never routed; the route satisfies sealed-hierarchy completeness.
-        route(NetworkMessage.HelloRefused.class,
-              _ -> {}),
-
+                                                                              route(NetworkMessage.HelloRefused.class,
+                                                                                    _ -> {}),
         // Transport-internal liveness beacon (Wave 5): swallowed by the
         // QuicClusterNetwork inbound funnel BEFORE routing (it only refreshes
         // the per-peer receipt clock). This route exists solely to satisfy
         // sealed-hierarchy startup completeness — it must never receive traffic.
-        route(KeepAlive.class,
-              _ -> {}),
+                                                                              route(KeepAlive.class,
+                                                                                    _ -> {}),
                                                                               route(KVSyncRequest.class,
                                                                                     request -> handleKVSyncRequest(stateMachine,
                                                                                                                    delegateRouter,
@@ -670,18 +668,16 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                                                network::disconnect),
                                                                                          route(ListConnectedNodes.class,
                                                                                                network::listNodes),
-
         // R5: transport never mutates topology projection. ConnectionFailed/Established
         // are forwarded to SWIM via QuicClusterNetwork's peer-state listener
         // (MembershipAssembly.attachQuicPeerStateListener -> swimDetector.recordTransportHint).
         // The router routes are retained only to satisfy sealed-hierarchy coverage.
-        route(ConnectionFailed.class,
-              _ -> {}),
-
+                                                                                         route(ConnectionFailed.class,
+                                                                                               _ -> {}),
         // #1996: a dropped-frame notification is an operator event, delivered by the node's own route to its event
         // aggregator; here the route only satisfies sealed-hierarchy coverage.
-        route(OfflineFramesExpired.class,
-              _ -> {}),
+                                                                                         route(OfflineFramesExpired.class,
+                                                                                               _ -> {}),
                                                                                          route(ConnectionEstablished.class,
                                                                                                _ -> {}),
                                                                                          route(Send.class,

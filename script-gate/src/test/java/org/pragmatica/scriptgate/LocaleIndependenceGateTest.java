@@ -79,12 +79,10 @@ class LocaleIndependenceGateTest {
                                                          "jbct/jbct-format/src/main/java/org/pragmatica/jbct/format/FormattingError.java",
                                                          "jbct/jbct-parser/src/main/java/org/pragmatica/jbct/parser/Java25Parser.java",
                                                          "jbct/slice-processor/src/main/java/org/pragmatica/jbct/slice/generator/FactoryClassGenerator.java",
-
     // console report of the jbct CLI (human text); the CLI's JSON writers are gated, see HUMAN_ONLY_METHODS
-    "jbct/jbct-lint/src/main/java/org/pragmatica/jbct/lint/cst/shape/ShapeCensus.java",
-
+                                                         "jbct/jbct-lint/src/main/java/org/pragmatica/jbct/lint/cst/shape/ShapeCensus.java",
     // benchmark console table; example slice's tax description shown to a person
-    "integrations/serialization/benchmark/src/main/java/org/pragmatica/serialization/benchmark/SliceCodecBenchmark.java",
+                                                         "integrations/serialization/benchmark/src/main/java/org/pragmatica/serialization/benchmark/SliceCodecBenchmark.java",
                                                          "examples/ecommerce/pricing/src/main/java/org/pragmatica/aether/example/pricing/PricingService.java");
 
     /// File -> console-only methods (#3640 review): the rest of such a file is gated. These commands also write JSON, where a

@@ -54,9 +54,10 @@ public class CstParsingUtilitiesRule implements CstLintRule {
                                                                  new ParsingPattern("new BigDecimal\\s*\\(",
                                                                                     "Number.parseBigDecimal",
                                                                                     "org.pragmatica.lang.utils.Number"),
-
     // Text/Pattern parsing
-    new ParsingPattern("Enum\\.valueOf", "Text.parseEnum", "org.pragmatica.lang.utils.Text"),
+                                                                 new ParsingPattern("Enum\\.valueOf",
+                                                                                    "Text.parseEnum",
+                                                                                    "org.pragmatica.lang.utils.Text"),
                                                                  new ParsingPattern("Pattern\\.compile",
                                                                                     "Text.compilePattern",
                                                                                     "org.pragmatica.lang.utils.Text"),
@@ -69,9 +70,10 @@ public class CstParsingUtilitiesRule implements CstLintRule {
                                                                  new ParsingPattern("Base64\\.getMimeDecoder\\(\\)\\.decode",
                                                                                     "Text.decodeBase64MIME",
                                                                                     "org.pragmatica.lang.utils.Text"),
-
     // DateTime parsing
-    new ParsingPattern("LocalDate\\.parse", "DateTime.parseLocalDate", "org.pragmatica.lang.utils.DateTime"),
+                                                                 new ParsingPattern("LocalDate\\.parse",
+                                                                                    "DateTime.parseLocalDate",
+                                                                                    "org.pragmatica.lang.utils.DateTime"),
                                                                  new ParsingPattern("LocalTime\\.parse",
                                                                                     "DateTime.parseLocalTime",
                                                                                     "org.pragmatica.lang.utils.DateTime"),
@@ -96,9 +98,10 @@ public class CstParsingUtilitiesRule implements CstLintRule {
                                                                  new ParsingPattern("Period\\.parse",
                                                                                     "DateTime.parsePeriod",
                                                                                     "org.pragmatica.lang.utils.DateTime"),
-
     // Network/Identifier parsing
-    new ParsingPattern("new URL\\s*\\(", "Network.parseURL", "org.pragmatica.lang.utils.Network"),
+                                                                 new ParsingPattern("new URL\\s*\\(",
+                                                                                    "Network.parseURL",
+                                                                                    "org.pragmatica.lang.utils.Network"),
                                                                  new ParsingPattern("URI\\.create",
                                                                                     "Network.parseURI",
                                                                                     "org.pragmatica.lang.utils.Network"),
@@ -111,9 +114,10 @@ public class CstParsingUtilitiesRule implements CstLintRule {
                                                                  new ParsingPattern("InetAddress\\.getByName",
                                                                                     "Network.parseInetAddress",
                                                                                     "org.pragmatica.lang.utils.Network"),
-
     // I18n parsing
-    new ParsingPattern("Currency\\.getInstance", "I18n.parseCurrency", "org.pragmatica.lang.utils.I18n"),
+                                                                 new ParsingPattern("Currency\\.getInstance",
+                                                                                    "I18n.parseCurrency",
+                                                                                    "org.pragmatica.lang.utils.I18n"),
                                                                  new ParsingPattern("Locale\\.forLanguageTag",
                                                                                     "I18n.parseLocale",
                                                                                     "org.pragmatica.lang.utils.I18n"),

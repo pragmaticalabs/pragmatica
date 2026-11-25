@@ -213,19 +213,17 @@ public final class StatusRoutes implements RouteSource {
                                   metrics,
                                   node.self().id(),
                                   "running",
-
         // runtimeState — JVM/process-level state from the in-memory lifecycle
         // state machine (NodeState: STARTING/JOINING/ACTIVE/DRAINING/STOPPED).
         // Describes "is the process up and serving"; orthogonal to the FSM intent
         // captured in `lifecycleState` below.
-        node.nodeLifecycle().currentState().name(),
-
+                                  node.nodeLifecycle().currentState().name(),
         // lifecycleState — node-reported work-state from the metrics pong
         // (NodeReportedState: SYNCING/READY/DRAINING). Membership-v2 finale: the synthetic
         // per-node lifecycle KV atom was removed; this surfaces the real, node-authoritative state.
         // Empty string when no pong has been observed yet (cold-start transient window).
         // Mirrors `cluster.nodes[selfId].kvState` for top-level ergonomic access.
-        kvStateMap.getOrDefault(selfId, ""),
+                                  kvStateMap.getOrDefault(selfId, ""),
                                   readClusterPhase(node),
                                   node.isLeader(),
                                   leaderId,

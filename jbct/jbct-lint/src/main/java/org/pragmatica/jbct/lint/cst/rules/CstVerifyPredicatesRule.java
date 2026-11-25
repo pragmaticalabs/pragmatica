@@ -32,14 +32,14 @@ public class CstVerifyPredicatesRule implements CstLintRule {
                                                                     new ValidationPattern("\\b\\w+\\s*<=\\s*0\\b",
                                                                                           "Verify.Is::nonPositive",
                                                                                           "Use Verify.ensure(value, Verify.Is::nonPositive)"),
-
     // Null checks in conditions
-    new ValidationPattern("\\b\\w+\\s*!=\\s*null\\b",
-                          "Verify.Is::notNull",
-                          "Use Verify.ensure(value, Verify.Is::notNull)"),
-
+                                                                    new ValidationPattern("\\b\\w+\\s*!=\\s*null\\b",
+                                                                                          "Verify.Is::notNull",
+                                                                                          "Use Verify.ensure(value, Verify.Is::notNull)"),
     // String checks
-    new ValidationPattern("\\.isEmpty\\s*\\(\\s*\\)", "Verify.Is::empty", "Use Verify.ensure(value, Verify.Is::empty)"),
+                                                                    new ValidationPattern("\\.isEmpty\\s*\\(\\s*\\)",
+                                                                                          "Verify.Is::empty",
+                                                                                          "Use Verify.ensure(value, Verify.Is::empty)"),
                                                                     new ValidationPattern("!\\.isEmpty\\s*\\(\\s*\\)",
                                                                                           "Verify.Is::notEmpty",
                                                                                           "Use Verify.ensure(value, Verify.Is::notEmpty)"),
@@ -49,27 +49,25 @@ public class CstVerifyPredicatesRule implements CstLintRule {
                                                                     new ValidationPattern("!\\.isBlank\\s*\\(\\s*\\)",
                                                                                           "Verify.Is::notBlank",
                                                                                           "Use Verify.ensure(value, Verify.Is::notBlank)"),
-
     // Option checks
-    new ValidationPattern("\\.isPresent\\s*\\(\\s*\\)", "Verify.Is::some", "Use Verify.ensure(option, Verify.Is::some)"),
+                                                                    new ValidationPattern("\\.isPresent\\s*\\(\\s*\\)",
+                                                                                          "Verify.Is::some",
+                                                                                          "Use Verify.ensure(option, Verify.Is::some)"),
                                                                     new ValidationPattern("\\.isEmpty\\s*\\(\\s*\\).*Option",
                                                                                           "Verify.Is::none",
                                                                                           "Use Verify.ensure(option, Verify.Is::none)"),
-
     // Range/bound checks
-    new ValidationPattern("\\b\\w+\\s*>=\\s*\\w+\\s*&&\\s*\\w+\\s*<=\\s*\\w+\\b",
-                          "Verify.Is::between",
-                          "Use Verify.ensure(value, Verify.Is::between, min, max)"),
-
+                                                                    new ValidationPattern("\\b\\w+\\s*>=\\s*\\w+\\s*&&\\s*\\w+\\s*<=\\s*\\w+\\b",
+                                                                                          "Verify.Is::between",
+                                                                                          "Use Verify.ensure(value, Verify.Is::between, min, max)"),
     // String contains
-    new ValidationPattern("\\.contains\\s*\\([^)]+\\)",
-                          "Verify.Is::contains",
-                          "Use Verify.ensure(str, Verify.Is::contains, substring)"),
-
+                                                                    new ValidationPattern("\\.contains\\s*\\([^)]+\\)",
+                                                                                          "Verify.Is::contains",
+                                                                                          "Use Verify.ensure(str, Verify.Is::contains, substring)"),
     // Regex matching
-    new ValidationPattern("\\.matches\\s*\\([^)]+\\)",
-                          "Verify.Is::matches",
-                          "Use Verify.ensure(str, Verify.Is::matches, pattern)"));
+                                                                    new ValidationPattern("\\.matches\\s*\\([^)]+\\)",
+                                                                                          "Verify.Is::matches",
+                                                                                          "Use Verify.ensure(str, Verify.Is::matches, pattern)"));
 
     @Override
     public String ruleId() {

@@ -458,12 +458,11 @@ public sealed interface StreamAssembly {
                                                                                                                                         partition))
                                                                                                  .or(-1L),
                                                                 config.streaming(),
-
         // #263: the replication send budget is the stream memory
         // budget's heap cap for un-landed event copies, the sealer's
         // pending cap below (a GUESS at the share; each has its own
         // counter, so the two together may hold twice the cap).
-        in.streamMemoryBudget().sealPendingCapBytes());
+                                                                in.streamMemoryBudget().sealPendingCapBytes());
         var streamSegmentIndex = new SegmentIndex();
         // A3b restore-at-boot: the streams MetadataStore was already restored from its latest disk
         // snapshot when `streamStorageSetup` was assembled (StorageFactory.restoreAndSignalReady), so

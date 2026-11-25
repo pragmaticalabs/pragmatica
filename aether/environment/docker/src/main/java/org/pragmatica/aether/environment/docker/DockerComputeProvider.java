@@ -380,12 +380,11 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         var command = new ArrayList<>(List.of("docker",
                                               "run",
                                               "-d",
-
         // Explicit `--restart no` so a host running with a daemon-level
         // `--default-restart-policy` (Docker 28+) cannot silently auto-restart a
         // CTM-launched replacement — that would resurrect a terminally-removed
         // NodeId and violate the terminal-removal invariant.
-        "--restart",
+                                              "--restart",
                                               "no",
                                               "--name",
                                               containerName,
@@ -410,7 +409,6 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                               "-e",
                                               "AETHER_NODE_ID=" + nodeId,
                                               "-e",
-
         // Authoritative cluster name: emitted from the SAME source as the
         // `aether.cluster` label above (clusterLabelValue(ctx) →
         // ProvisionContext.clusterName, the KV-bootstrapped name) — NOT
@@ -422,7 +420,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         // exited(1) → CTM retried forever → auto-heal storm. Mirrors
         // AETHER_NODE_ID above; the IDENTITY_VARS loop below dedupes via
         // alreadyEmitted().
-        "AETHER_CLUSTER_NAME=" + cluster,
+                                              "AETHER_CLUSTER_NAME=" + cluster,
                                               "-e",
                                               "CLUSTER_PORT=" + config.clusterPort(),
                                               "-e",

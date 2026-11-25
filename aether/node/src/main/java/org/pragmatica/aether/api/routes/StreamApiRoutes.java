@@ -279,7 +279,6 @@ public final class StreamApiRoutes implements RouteSource {
                                                    PathParameter.aString())
                                          .toResult(this::streamMetadata)
                                          .asJson(),
-
         // #742 fold: registration must reproduce every trailing token
         // ManagementRoute.STREAM_GET/PARTITION/REPLICAS declare via the
         // interleaved-tokens constructor (ManagementRoute.java:400-480), not just
@@ -288,13 +287,13 @@ public final class StreamApiRoutes implements RouteSource {
         // rejects a withPath() that's short one slot. The earlier 4-arg form here
         // omitted the interior literal, making these routes unreachable via the
         // CLI-assembled URL (silent 404, not a dispatch to the wrong handler).
-        ManagementRoutes.<StreamRoutes.StreamInfoResponse> route(ManagementRoute.STREAM_GET)
-                        .withPath(PathParameter.aString(),
-                                  PathParameter.aString(),
-                                  PathParameter.aString(),
-                                  PathParameter.spacer("info"))
-                        .to(this::streamInfo)
-                        .asJson(),
+                         ManagementRoutes.<StreamRoutes.StreamInfoResponse> route(ManagementRoute.STREAM_GET)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("info"))
+                                         .to(this::streamInfo)
+                                         .asJson(),
                          ManagementRoutes.<PartitionDetail> route(ManagementRoute.STREAM_PARTITION)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
@@ -311,7 +310,6 @@ public final class StreamApiRoutes implements RouteSource {
                                                    PathParameter.aInteger())
                                          .toResult(this::replicaDetail)
                                          .asJson(),
-
         // rc4 FLAG 2 ruling: `from`/`max`/`readPreference` are three independent query
         // params, not the earlier composite `readOptions=from,max,readPreference` string.
         // Raising `Route.PathBuilder4`'s query-arity ceiling (1 -> 3, `PathQueryBuilder4_3`)
@@ -328,17 +326,17 @@ public final class StreamApiRoutes implements RouteSource {
         // comment above already describes. `readLiteral` binds the trailing `spacer("read")`
         // segment — see partitionDetail's `partitionsLiteral` javadoc for why an unused
         // literal parameter is required rather than filtered out.
-        ManagementRoutes.<ReadEventsResponse> route(ManagementRoute.STREAM_READ)
-                        .withPath(PathParameter.aString(),
-                                  PathParameter.aString(),
-                                  PathParameter.aString(),
-                                  PathParameter.spacer("read"),
-                                  PathParameter.aInteger())
-                        .withQuery(QueryParameter.aLong("from"),
-                                   QueryParameter.aInteger("max"),
-                                   QueryParameter.aString("readPreference"))
-                        .to(this::readEvents)
-                        .asJson(),
+                         ManagementRoutes.<ReadEventsResponse> route(ManagementRoute.STREAM_READ)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("read"),
+                                                   PathParameter.aInteger())
+                                         .withQuery(QueryParameter.aLong("from"),
+                                                    QueryParameter.aInteger("max"),
+                                                    QueryParameter.aString("readPreference"))
+                                         .to(this::readEvents)
+                                         .asJson(),
                          ManagementRoutes.<GroupListResponse> route(ManagementRoute.STREAMS_GROUPS_LIST)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
@@ -346,47 +344,43 @@ public final class StreamApiRoutes implements RouteSource {
                                                    PathParameter.spacer("groups"))
                                          .toResult(this::listGroups)
                                          .asJson(),
-
         // ---------- Tail subscription (Wave 6B: SSE/WebSocket deferred to issue #212) ----------
-        ManagementRoutes.<StreamMetadataResponse> route(ManagementRoute.STREAMS_TAIL)
-                        .withPath(PathParameter.aString(),
-                                  PathParameter.aString(),
-                                  PathParameter.aString(),
-                                  PathParameter.spacer("tail"))
-                        .toResult(this::tailDeferred)
-                        .asJson(),
-
+                         ManagementRoutes.<StreamMetadataResponse> route(ManagementRoute.STREAMS_TAIL)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("tail"))
+                                         .toResult(this::tailDeferred)
+                                         .asJson(),
         // ---------- Polling-based paginated event read (Wave 6B; RC1) ----------
-        ManagementRoutes.<StreamEventsResponse> route(ManagementRoute.STREAMS_EVENTS)
-                        .withPath(PathParameter.aString(),
-                                  PathParameter.aString(),
-                                  PathParameter.aString(),
-                                  PathParameter.spacer("events"))
-                        .withQuery(QueryParameter.aLong("fromOffset"),
-                                   QueryParameter.aInteger("maxEvents"))
-                        .to(this::streamEvents)
-                        .asJson(),
-
+                         ManagementRoutes.<StreamEventsResponse> route(ManagementRoute.STREAMS_EVENTS)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("events"))
+                                         .withQuery(QueryParameter.aLong("fromOffset"),
+                                                    QueryParameter.aInteger("maxEvents"))
+                                         .to(this::streamEvents)
+                                         .asJson(),
         // ---------- Write routes (OPERATOR_AND_ABOVE for /api/streams) ----------
         // #968: the legacy body-carried create, moved here from StreamRoutes so it shares the
         // catalog-registering chain below (createAtAddress) instead of minting rings under a name no
         // catalog read could ever find. Same 0-path-param POST bucket it always had.
-        ManagementRoutes.<StreamCreateResponse> route(ManagementRoute.STREAM_CREATE)
-                        .withBody(StreamCreateRequest.class)
-                        .toResult(this::createStream)
-                        .asJson(),
-
+                         ManagementRoutes.<StreamCreateResponse> route(ManagementRoute.STREAM_CREATE)
+                                         .withBody(StreamCreateRequest.class)
+                                         .toResult(this::createStream)
+                                         .asJson(),
         // #1224: catalog-addressed create — registers the catalog entry AND materializes the rings,
         // the two writes the old body-carried STREAM_CREATE only did the second of (never appeared in
         // `streams list`, which reads the registry). Same bare 3-path-param shape as STREAMS_DELETE;
         // the POST method alone disambiguates it from STREAMS_METADATA's GET on the same bucket.
-        ManagementRoutes.<CreateResponse> route(ManagementRoute.STREAMS_CREATE)
-                        .withPath(PathParameter.aString(),
-                                  PathParameter.aString(),
-                                  PathParameter.aString())
-                        .withBody(CreateRequest.class)
-                        .toResult(this::createStream)
-                        .asJson(),
+                         ManagementRoutes.<CreateResponse> route(ManagementRoute.STREAMS_CREATE)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString())
+                                         .withBody(CreateRequest.class)
+                                         .toResult(this::createStream)
+                                         .asJson(),
                          ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAMS_PUBLISH)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
@@ -422,14 +416,13 @@ public final class StreamApiRoutes implements RouteSource {
                                                    PathParameter.aString())
                                          .toResult(this::deleteGroup)
                                          .asJson(),
-
         // ---------- Destructive (ADMIN_ONLY via override) ----------
-        ManagementRoutes.<DeleteResponse> route(ManagementRoute.STREAMS_DELETE)
-                        .withPath(PathParameter.aString(),
-                                  PathParameter.aString(),
-                                  PathParameter.aString())
-                        .to(this::deleteStream)
-                        .asJson());
+                         ManagementRoutes.<DeleteResponse> route(ManagementRoute.STREAMS_DELETE)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString())
+                                         .to(this::deleteStream)
+                                         .asJson());
     }
 
     // ============================ Handlers ============================

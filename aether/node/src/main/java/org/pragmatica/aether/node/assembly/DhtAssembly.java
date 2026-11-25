@@ -231,9 +231,8 @@ public sealed interface DhtAssembly {
                                                                                                                   delegateRouter::route,
                                                                                                                   System::currentTimeMillis,
                                                                                                                   () -> !clusterNode.isPendingCatchUp(),
-
         // #2553: a worker reads its own report from its replica only while the replica is ready
-        clusterNode::isPassiveClientReady
+                                                                                                                  clusterNode::isPassiveClientReady
                                                                                                                   // v1882 r5: a replica accepts writes only once consensus has applied its log tail
                                                                                                                  ));
 

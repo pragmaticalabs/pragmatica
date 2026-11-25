@@ -1768,14 +1768,13 @@ class ManagementServerImpl implements ManagementServer {
                                               node.taskGroupOwnerResolver(),
                                               () -> nodeSupplier.get()
                                                                 .leader(),
-
         // Method reference, not a captured node: this forwarder is
         // built once and cached, so the owner must be re-read from
         // the CURRENT node on every dispatch. A captured `node`
         // would pin a membership view from forwarder-construction
         // time, which on this endpoint is the view least likely to
         // still be right (it is queried during failover).
-        this::resolvePartitionOwner);
+                                              this::resolvePartitionOwner);
         var wrapped = Option.<HttpForwarder> some(fwd);
 
         return mgmtForwarderRef.compareAndSet(existing, wrapped)
