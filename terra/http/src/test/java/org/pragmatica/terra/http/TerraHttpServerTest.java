@@ -673,6 +673,25 @@ class TerraHttpServerTest {
         }
     }
 
+    /// The base path keys a mount's transport: two mounts under one base path, in any mix of shared and own listeners,
+    /// are refused before anything binds, so no server is left running with no way to stop it.
+    @Test void mount_duplicateBasePath_refusedAcrossSharedAndOwnListeners_beforeBinding() {
+        var own = Option.some(HttpServerConfig.httpServerConfig("terra-mount", 0));
+        var cases = List.of(List.of(mount("/m", own, SecurityPolicy.publicRoute()), mount("/m", own, SecurityPolicy.publicRoute())),
+                            List.of(mount("/m", own, SecurityPolicy.publicRoute()), mount("/m", Option.none(), SecurityPolicy.publicRoute())),
+                            List.of(mount("/m", Option.none(), SecurityPolicy.publicRoute()), mount("/m", own, SecurityPolicy.publicRoute())));
+
+        for (var mounts : cases) {
+            var released = new AtomicInteger();
+            var result = TerraHttpServer.start(application(released), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
+                List.of(), JsonMapper.defaultJsonMapper(), mounts).await(timeSpan(10).seconds());
+            String message = result.<String>fold(cause -> cause.message(), _ -> "started");
+
+            assertThat(message).contains("Duplicate mount base path: /m");
+            assertThat(released).hasValue(1);
+        }
+    }
+
     @Test void mount_invalidBasePaths_refused() {
         for (var path : List.of("m", "/m/", "/m//n", "/m n", "/__terra", "/__terra/x", "")) {
             assertThat(TerraHttpMount.terraHttpMount(path, Option.none(), _ -> SecurityPolicy.publicRoute(), (_, _) -> Promise.success(HttpResponseData.httpResponseData(200))).isFailure())

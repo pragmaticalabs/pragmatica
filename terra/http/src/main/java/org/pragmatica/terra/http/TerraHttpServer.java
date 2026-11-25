@@ -5,6 +5,7 @@ package org.pragmatica.terra.http;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -129,8 +130,18 @@ public final class TerraHttpServer {
                                                                     .async());
     }
 
-    /// The reserved prefixes of the shared listener: `/__terra/` and each shared mount's base path.
+    /// The reserved prefixes of the shared listener: `/__terra/` and each shared mount's base path. A base path is
+    /// unique across all mounts, shared or listening of their own: it keys the mount's transport, so a second mount
+    /// under one base path would replace the first server and leave it unstoppable.
     private static Result<List<String>> checkMounts(List<TerraHttpMount> mounts) {
+        var paths = new HashSet<String>();
+
+        for (var mount : mounts) {
+            if (!paths.add(mount.basePath())) {
+                return new TerraHttpError.InvalidConfiguration("Duplicate mount base path: " + mount.basePath()).result();
+            }
+        }
+
         var reserved = new ArrayList<>(List.of("/__terra/"));
 
         for (var mount : mounts.stream().filter(TerraHttpMount::shared).toList()) {
