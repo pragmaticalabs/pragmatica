@@ -450,7 +450,18 @@ aether events
 
 # Events since a specific time
 aether events --since 2024-01-15T10:30:00Z
+
+# One operator-warning class, by its details.code (exact match; an unknown code lists nothing)
+aether events --code swim-kill-gate-held
+
+# WARNING and CRITICAL events only (a minimum level; INFO, WARNING or CRITICAL, any case)
+aether events --severity warning
+
+# Both: the code AND at least this severity
+aether events --code core-absence-fence --severity CRITICAL
 ```
+
+`--code` and `--severity` map to the `code` and `severity` query parameters of [`GET /api/v1/events`](management-api.md#get-apiv1events). A `--severity` value other than `INFO`, `WARNING` or `CRITICAL` is refused by the node with a 400.
 
 Output:
 ```
@@ -1739,7 +1750,7 @@ commands are LOCAL: they describe, and act on, the node the CLI is pointed at.
 Show every consumer group over a durable topic — one per durable subscriber method, identified as the
 runtime identifies it (`artifactBase#method`) — and, per partition, which node consumes it and which
 owns it, the consensus-committed cursor with its rewind epoch, the live cursor where this node runs the
-consumer, and the projection state (`LIVE` / `REBUILDING`) where this node hosts the group's projection.
+consumer, and the projection state (`LIVE` / `REBUILDING`) where this node hosts the group's projection (on a node other than the consumer, `LIVE` only means the group's cursor passed the captured head, not that the local model is complete; #3736).
 
 ```bash
 aether topics groups com.example:projection-events:1.0.0
@@ -1764,7 +1775,7 @@ aether topics rebuild com.example:projection-events:1.0.0 'com.example:orders-sl
 
 The answer carries the new generation, the rewind token and the captured range per partition. Follow
 progress with `aether topics groups`: the partition reads `REBUILDING` with `nextReplayOffset` advancing,
-then `LIVE`; `committedEpoch` equals the returned token once the rewound consumer has checkpointed. A
+then `LIVE` (which off the consumer node says only that the group's cursor passed the captured head; read the model on the consumer, #3736); `committedEpoch` equals the returned token once the rewound consumer has checkpointed. A
 replay event that dead-letters is skipped and stays out of the rebuilt model until redriven.
 
 See [Management API — Rebuild Projection](management-api.md#rebuild-projection).

@@ -41,19 +41,25 @@ final class FeedFixtures {
         static final IncKey INSTANCE = new IncKey();
     }
 
-    record IncValue(long incarnation, String id) {}
+    /// The committed incarnation as the fixtures store it; the two-part form counts in [#LINEAGE].
+    record IncValue(long incarnation, String id, String lineage) {
+        IncValue(long incarnation, String id) {
+            this(incarnation, id, LINEAGE);
+        }
+    }
 
     static final NodeId CORE = NodeId.nodeId("core-1").unwrap();
     static final NodeId PEER = NodeId.nodeId("peer-1").unwrap();
     static final NodeId OTHER = NodeId.nodeId("peer-2").unwrap();
     static final NodeId THIRD = NodeId.nodeId("peer-3").unwrap();
-    static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "A");
+    static final String LINEAGE = "L";
+    static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "A", LINEAGE);
 
     static final IncarnationSource SOURCE = new IncarnationSource() {
         @Override
         public IncarnationTag read(Function<StructuredKey, Object> lookup) {
             return lookup.apply(IncKey.INSTANCE) instanceof IncValue value
-                   ? IncarnationTag.incarnationTag(value.incarnation(), value.id())
+                   ? IncarnationTag.incarnationTag(value.incarnation(), value.id(), value.lineage())
                    : IncarnationTag.NONE;
         }
 

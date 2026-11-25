@@ -1517,19 +1517,17 @@ public final class LeaderReconciler {
                                             int effectiveWithSurge) {
         var surge = surgeReplacements.get().get().size();
         var effective = effectiveWithSurge - surge;
-
-        if (effective <= configuredCoreCount) {
-            surplusHoldNoted.set(false);
-
-            return Set.of();
-        }
-
         var nominalExcess = effective - configuredCoreCount;
         var floorHeadroom = Math.max(0, currentMembers.size() - configuredCoreCount);
-        var drainCount = Math.min(nominalExcess, floorHeadroom);
-        // #3324: with auto-heal disabled a surplus core member is not drained on the cluster's own initiative. Asked only when there is a
-        // surplus to drain, through the accessor the worker and community gates use, so the hold is raised as the same operator warning.
-        var held = drainCount > 0 && ctm.scalingHeld(ClusterTopologyManager.coreSubject());
+        var drainCount = Math.max(0, Math.min(nominalExcess, floorHeadroom));
+        // #3324: with auto-heal disabled a surplus core member is not drained on the cluster's own initiative. Asked through the accessor
+        // the worker and community gates use, so the hold is raised as the same operator warning. #3358: asked on every quorum-safe pass,
+        // with or without a surplus. This is the reconciler's own answer (drain room, surge replacements counted): the voter-excluded
+        // retirement answers for its own victims, and `core` closes only when both say nothing is pending. A quorum-unsafe pass does
+        // not reach here: it cannot judge a surplus, so its last answer stands until the next quorum-safe pass answers.
+        var held = ctm.scalingHeld(ClusterTopologyManager.coreSubject(),
+                                   ClusterTopologyManager.ScalingAsker.RECONCILER,
+                                   drainCount > 0);
 
         surplusHoldNoted.set(held);
         if (drainCount == 0 || held) {

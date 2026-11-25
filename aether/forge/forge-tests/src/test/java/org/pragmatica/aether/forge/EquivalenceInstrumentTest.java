@@ -43,6 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// quiescent point) is validated inside each round by `Fsm2EquivalenceRoundTest`.
 class EquivalenceInstrumentTest {
     private static final Artifact SLICE = Artifact.artifact("org.f4.test:slice:1.0.0").unwrap();
+    private static final String LINEAGE = "f4-lineage";
     private static final BlueprintId BLUEPRINT = BlueprintId.blueprintId("org.f4.test:blueprint:1.0.0").unwrap();
     private static final List<NodeId> CORES = List.of(node("n1"), node("n2"), node("n3"));
     private static final EquivalenceMonitor MONITOR = new EquivalenceMonitor(5_000L, 10_000L);
@@ -1467,7 +1468,7 @@ class EquivalenceInstrumentTest {
             var key = AetherKey.SliceTargetKey.sliceTargetKey(SLICE.base());
             var other = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BLUEPRINT);
             var target = AetherValue.SliceTargetValue.sliceTargetValue(SLICE.version(), 3);
-            var tag = IncarnationTag.incarnationTag(1, "f4");
+            var tag = IncarnationTag.incarnationTag(1, "f4", LINEAGE);
 
             ring.invalidate(tag, 0);
             ring.append(tag, 0, "put", List.of(new KVCommand.Put<>(key, target)), 1);
@@ -1559,7 +1560,7 @@ class EquivalenceInstrumentTest {
     /// that jumps past the read position is a gap, and a gap on every node read is an instrument error (round ERROR), never an O4 value (#2763).
     @Nested
     class RingReader {
-        private static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "f4");
+        private static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "f4", LINEAGE);
 
         private static CommitRing ring(long floor) {
             var ring = CommitRing.commitRing(CommitRing.DEFAULT_BUDGET_BYTES, _ -> 16, Runnable::run);

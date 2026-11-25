@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The two ring calls the replica feed server needs (W-OBS W2): a subscription at the frontier with no position (`LIVE_ONLY`) and the owner's
 /// release of a subscription whose peer went away.
 class CommitRingFeedSeamsTest {
-    private static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "A");
+    private static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "A", RingFixtures.LINEAGE);
 
     private static List<KVCommand<?>> effect(String key) {
         return List.of(new KVCommand.Put<>(new RingFixtures.Key(key), "v"));
@@ -62,7 +62,7 @@ class CommitRingFeedSeamsTest {
     @Test
     void subscribeLive_isRefusedIncarnationMismatch_forAReplicaOfAnotherLife_andNothingIsRegistered() {
         var ring = ring();
-        var otherLife = IncarnationTag.incarnationTag(1, "B");
+        var otherLife = IncarnationTag.incarnationTag(1, "B", RingFixtures.LINEAGE);
 
         assertThat(ring.subscribeLive(otherLife, CommitRing.subscription(_ -> {}))).isInstanceOfSatisfying(Refused.class, refused -> {
             assertThat(refused.reason()).isEqualTo(RefusalReason.INCARNATION_MISMATCH);

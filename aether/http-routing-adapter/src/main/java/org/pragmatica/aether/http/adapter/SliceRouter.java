@@ -3,7 +3,6 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.http.adapter;
 
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -122,10 +121,9 @@ public interface SliceRouter {
                            String sliceName,
                            VersioningMetricsSink metricsSink,
                            List<Route<?>> composedRoutes) implements SliceRouter {
-            private static final Map<String, String> JSON_HEADERS = Map.of("Content-Type",
-                                                                           "application/json; charset=UTF-8");
+            /// #2791: every error answer of a slice route is an RFC 9457 problem document.
+            private static final Map<String, String> PROBLEM_HEADERS = Map.of("Content-Type", "application/problem+json");
 
-            private static final Map<String, String> TEXT_HEADERS = Map.of("Content-Type", "text/plain; charset=UTF-8");
             private static final byte[] NO_BODY = new byte[0];
 
             private static final Fn1<Cause, String> NULL_SUCCESS = Causes.forOneValue("Route %s completed with a null success value, a JBCT violation: return Unit for no body or Option for an absent value");
@@ -351,8 +349,8 @@ public interface SliceRouter {
                     case null -> errorToResponse(HttpStatus.INTERNAL_SERVER_ERROR.with(NULL_SUCCESS.apply(routeLabel(route))),
                                                  request);
                     case Option.None<?>_ -> errorToResponse(HttpStatus.NOT_FOUND.with(EMPTY_OPTION), request);
-                    case Option.Some<?> some -> presentToResponse(some.value(), route, jsonCodec);
-                    default -> presentToResponse(value, route, jsonCodec);
+                    case Option.Some<?> some -> presentToResponse(some.value(), route, request, jsonCodec);
+                    default -> presentToResponse(value, route, request, jsonCodec);
                 };
             }
 
@@ -363,7 +361,10 @@ public interface SliceRouter {
                        : "'" + route.name() + "' (" + route.method() + " " + route.path() + ")";
             }
 
-            private HttpResponseData presentToResponse(Object value, Route<?> route, JsonCodec jsonCodec) {
+            private HttpResponseData presentToResponse(Object value,
+                                                       Route<?> route,
+                                                       HttpRequestContext request,
+                                                       JsonCodec jsonCodec) {
                 var success = route.successSpec();
                 var location = locationHeader(success, value);
 
@@ -375,6 +376,7 @@ public interface SliceRouter {
                                           route.contentType(),
                                           success.status().or(200),
                                           location,
+                                          request,
                                           jsonCodec);
             }
 
@@ -389,11 +391,13 @@ public interface SliceRouter {
                                                       ContentType contentType,
                                                       int status,
                                                       Map<String, String> location,
+                                                      HttpRequestContext request,
                                                       JsonCodec jsonCodec) {
                 var headers = mergeHeaders(headersForContentType(contentType), location);
 
-                return ResponseSerializer.serialize(value, contentType, jsonCodec).fold(_ -> HttpResponseData.httpResponseData(500,
-                                                                                                                               "Serialization failed"),
+                return ResponseSerializer.serialize(value, contentType, jsonCodec).fold(_ -> problemResponse(HttpStatus.INTERNAL_SERVER_ERROR,
+                                                                                                             "Serialization failed",
+                                                                                                             request),
                                                                                         body -> HttpResponseData.httpResponseData(status,
                                                                                                                                   headers,
                                                                                                                                   body));
@@ -406,7 +410,7 @@ public interface SliceRouter {
                 var problemDetail = ProblemDetail.fromHttpError(httpError, request.path(), request.requestId());
 
                 return HttpResponseData.httpResponseData(httpError.status().code(),
-                                                         mergeHeaders(JSON_HEADERS, httpError.responseHeaders()),
+                                                         mergeHeaders(PROBLEM_HEADERS, httpError.responseHeaders()),
                                                          encodeProblem(problemDetail));
             }
 
@@ -519,19 +523,13 @@ public interface SliceRouter {
             private HttpResponseData problemResponse(HttpStatus status, String detail, HttpRequestContext request) {
                 var problemDetail = ProblemDetail.problemDetail(status, detail, request.path(), request.requestId());
 
-                return HttpResponseData.httpResponseData(status.code(), JSON_HEADERS, encodeProblem(problemDetail));
+                return HttpResponseData.httpResponseData(status.code(), PROBLEM_HEADERS, encodeProblem(problemDetail));
             }
 
             // Generated, reflection-free; byte-identical to what Jackson wrote here before (pinned by
             // SliceRouterGeneratedCodecTest). Generated encoding cannot fail, so no plain-text fallback.
             private static byte[] encodeProblem(ProblemDetail problemDetail) {
                 return ProblemDetailJson.CODEC.encode(problemDetail);
-            }
-
-            private HttpResponseData plainErrorResponse(HttpStatus status, String message) {
-                return HttpResponseData.httpResponseData(status.code(),
-                                                         TEXT_HEADERS,
-                                                         message.getBytes(StandardCharsets.UTF_8));
             }
 
             private static Option<HttpMethod> parseMethod(String method) {

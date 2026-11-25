@@ -92,6 +92,11 @@ final class ClientFixtures {
         return new KVCommand.Put<>(IncKey.INSTANCE, new IncValue(incarnation, id));
     }
 
+    /// An incarnation of another lineage (a fresh re-genesis): its number counts from 1 again and orders nothing against [FeedFixtures#LINEAGE].
+    static KVCommand<StructuredKey> incarnation(long incarnation, String id, String lineage) {
+        return new KVCommand.Put<>(IncKey.INSTANCE, new IncValue(incarnation, id, lineage));
+    }
+
     static KVCommand<StructuredKey> remove(String key) {
         return new KVCommand.Remove<>(new Key(key));
     }
@@ -116,6 +121,10 @@ final class ClientFixtures {
         final AtomicLong nanos = new AtomicLong(1_000_000_000L);
         final List<Core> cores = new ArrayList<>();
         final List<Out> outbox = new ArrayList<>();
+        /// The clock reading at each client send, index for index with [#outbox].
+        final List<Long> sentAtNanos = new ArrayList<>();
+        /// Everything every core sent, to whichever peer.
+        final List<Out> fromCores = new ArrayList<>();
         final List<ReplicaSnapshotChunk> heldChunks = new ArrayList<>();
         final AtomicBoolean holdChunks = new AtomicBoolean();
         final AtomicBoolean workerRole = new AtomicBoolean(true);
@@ -140,7 +149,7 @@ final class ClientFixtures {
                 core.server = ReplicaFeedServer.replicaFeedServer(core.id,
                                                                   core.store,
                                                                   ReplicaKeyFilter.includeAll(),
-                                                                  (peer, message) -> fromCore(core, message),
+                                                                  (peer, message) -> fromCore(core, peer, message),
                                                                   core.serving::get,
                                                                   peer -> true,
                                                                   peer -> true,
@@ -175,6 +184,7 @@ final class ClientFixtures {
 
         private void fromClient(NodeId target, ProtocolMessage message) {
             outbox.add(new Out(target, message));
+            sentAtNanos.add(nanos.get());
             cores.stream()
                  .filter(core -> core.id.equals(target) && core.up.get())
                  .findFirst()
@@ -189,8 +199,13 @@ final class ClientFixtures {
             }
         }
 
-        private void fromCore(Core core, ProtocolMessage message) {
+        private void fromCore(Core core, NodeId peer, ProtocolMessage message) {
             if (!core.up.get()) {
+                return;
+            }
+
+            fromCores.add(new Out(peer, message));
+            if (!peer.equals(CLIENT)) {
                 return;
             }
 
@@ -246,6 +261,12 @@ final class ClientFixtures {
             var batch = cores.get(0).store.createBatch(List.of(commands));
 
             cores.forEach(core -> commitOn(core, batch, slot));
+        }
+
+        /// Commits one batch on ONE core only: the others lag behind it until they commit the same batch (`commitAll` at the same slot would repeat it).
+        @SafeVarargs
+        final void commitOnlyOn(int index, long slot, KVCommand<StructuredKey>... commands) {
+            commitOn(cores.get(index), cores.get(index).store.createBatch(List.of(commands)), slot);
         }
 
         private static void commitOn(Core core, org.pragmatica.consensus.StateMachine.Batch<KVCommand<StructuredKey>> batch, long slot) {

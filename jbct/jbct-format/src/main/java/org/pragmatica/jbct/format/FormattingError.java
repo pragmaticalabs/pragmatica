@@ -42,6 +42,19 @@ public sealed interface FormattingError extends Cause {
         }
     }
 
+    /// The formatted text would lose or change content (#3691): the file is left untouched.
+    record ContentChanged(String file, int line, String details) implements FormattingError {
+        @Override
+        public String message() {
+            return "Formatter refused %s: %s (input line %d); the file was left untouched".formatted(file, details, line);
+        }
+
+        @Override
+        public Option<Cause> source() {
+            return Option.none();
+        }
+    }
+
     // Factory methods
     static FormattingError parseFailed(String file, int line, int column, String details) {
         return new ParseFailed(file, line, column, details);
@@ -49,6 +62,10 @@ public sealed interface FormattingError extends Cause {
 
     static FormattingError ioFailed(String file, Throwable exception) {
         return new IoFailed(file, exception);
+    }
+
+    static FormattingError contentChanged(String file, int line, String details) {
+        return new ContentChanged(file, line, details);
     }
 
     static FormattingError formatterError(String details) {

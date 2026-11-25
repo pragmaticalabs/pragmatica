@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.projection;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -71,6 +72,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -83,6 +85,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.testing.PollUntil;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
@@ -123,7 +126,12 @@ import static org.mockito.Mockito.mock;
 /// - applier fence dropped (`StreamCursorCheckpointValue` no longer `EpochBearing`):
 ///   `zombieCheckpoint_…` red — the zombie's put replaces the rewound cursor;
 /// - resume by offset only (`Cursor.later` on offset): `resume_…` red;
-/// - rewind restart removed (`StreamConsumerManager.restartRewound`): `rebuild_…` red, REBUILDING forever.
+/// - rewind restart removed (`StreamConsumerManager.restartRewound`): `rebuild_…` red, REBUILDING forever;
+/// - #1400, route removed (the fixture's `hook::onCheckpointPut` line, the twin of the assembly's own, which
+///   `ProjectionCheckpointRouteWiringTest` pins by source): `assignmentMovedAwayMidRebuild_…` red, the old store stays
+///   REBUILDING at offset 0 under the new assignee's checkpoints;
+/// - #1400, the report stamped with a different epoch than the record's (`RewindEpoch.NONE`):
+///   `assignmentMovedAwayMidRebuild_…` red the same way, the stamp no longer matches the store's rewind token.
 class DurableProjectionRebuildTest {
     /// #2654: the life's committed incarnation the cursor mints in; at `ClusterIncarnation.NONE` no rewind is minted.
     private static final long INCARNATION = 1L;
@@ -147,6 +155,8 @@ class DurableProjectionRebuildTest {
     private static final String MODEL_KEY = "model";
     private static final int PARTITION = 0;
     private static final ConsumerAssignmentKey ASSIGNMENT_KEY = ConsumerAssignmentKey.consumerAssignmentKey(TOPIC_STREAM, PARTITION, GROUP);
+    /// #1400: the node the partition's assignment moves to; it does not exist in the harness, its checkpoints are puts.
+    private static final NodeId OTHER = NodeId.nodeId("node-2").unwrap();
 
     private final SliceCodec nodeCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(),
                                                                TopicCodecsStream.CODECS);
@@ -164,6 +174,7 @@ class DurableProjectionRebuildTest {
     private StreamPartitionManager partitions;
     private DeadLetterHandler deadLetters;
     private ConsumerCursorStore cursorStore;
+    private ProjectionAwareCursorStore hook;
     private ProjectionRegistry registry;
     private ProjectionNodeSupport support;
     private StreamConsumerRuntime runtime;
@@ -193,7 +204,7 @@ class DurableProjectionRebuildTest {
                                                             this::committedAssignment,
                                                             this::applyAll,
                                                             () -> false);
-        var hook = ProjectionAwareCursorStore.projectionAwareCursorStore(cluster, registry);
+        hook = ProjectionAwareCursorStore.projectionAwareCursorStore(cluster, registry);
         var witness = CommitWitness.commitWitness();
 
         cursorStore = hook;
@@ -218,6 +229,9 @@ class DurableProjectionRebuildTest {
         runtime = StreamConsumerRuntime.streamConsumerRuntime(partitions, deadLetters, cursorStore);
         manager = wireManager(topics);
         router.addRoute(ValuePut.class, (ValuePut<?, ?> put) -> manager.onCheckpointPut(put));
+        // #1400: the twin of StreamAssembly's route, pinned there by source: every accepted checkpoint reaches the
+        // projection hosted here, whichever node committed it.
+        router.addRoute(ValuePut.class, (ValuePut<?, ?> put) -> hook.onCheckpointPut(put));
         router.addRoute(ValuePut.class, witness::onPut);
         // #1271: the first pass computes and PUTS the assignment (fire-and-forget through consensus) and
         // admits nothing; the consumer attaches on the pass after the record is committed.
@@ -371,6 +385,89 @@ class DurableProjectionRebuildTest {
                   .isEqualTo(Option.some(epoch));
         awaitLive(20_000);
         assertThat(model()).isEqualTo(Option.some(123456L));
+    }
+
+    /// #1400 (the RED pin, red at the base: the old store stays REBUILDING at offset 0). A rebuild requested here whose
+    /// partition then moves to another assignee: this node's consumer is gone (detached first, like the zombie test, so
+    /// nothing local commits), the committed assignment names another node, and that node's consumer resumes under the
+    /// rewind's epoch. Its accepted checkpoints are the group's committed cursor, and the store hosted here follows it:
+    /// partway through it stays REBUILDING at that cursor, and past the captured head it goes LIVE. LIVE is not a complete
+    /// model (#3736): the model here is still empty, pinned below.
+    @Test
+    void assignmentMovedAwayMidRebuild_oldStoreLeavesRebuilding_whenTheGroupsCommittedCursorPassesTheHead() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        manager.stop();
+        runtime.close();
+        projection.rebuild().await().onFailure(cause -> fail("rebuild refused: " + cause.message()));
+        var rewound = NodeReplayCursor.epochOf(replayStatus().currentRewind().unwrap());
+
+        assertThat(replayStatus().rebuilding()).as("control: REBUILDING over [0, 5], and nothing local consumes").containsOnlyKeys(PARTITION);
+        assertThat(nextOffset()).as("control: no replay write, no local commit").isEqualTo(Option.some(0L));
+        var oldToken = selfToken();
+
+        applyNow(assignmentTo(OTHER));
+        applyNow(checkpoint(3L, rewound));
+        awaitNextOffset(3L, 10_000);
+        assertThat(replayStatus().isLive()).as("the cursor is still inside the captured range").isFalse();
+        // Only an ACCEPTED put is the group's committed cursor: the deposed assignee's late checkpoint, under its old token,
+        // is refused by the applier, emits no notification, and so cannot carry the store past the head.
+        applyNow(ClusterCursorStore.checkpointCommand(GROUP, TOPIC_STREAM, PARTITION, 6L, oldToken, rewound));
+        assertThat(committedCursor()).as("control: the deposed assignee's put was refused").isEqualTo(Option.some(3L));
+        assertThat(nextOffset()).as("a refused put does not move the store").isEqualTo(Option.some(3L));
+        applyNow(checkpoint(6L, rewound));
+        awaitLive(10_000);
+        assertThat(model()).as("#3736 tripwire on the CURRENT behaviour: LIVE means the rebuild is over for the group, not that this"
+                               + " node's model is complete; the old store went LIVE over the model the rebuild's reset cleared."
+                               + " When #3736 lands, flip this to the rebuilt model")
+                  .isEqualTo(Option.none());
+    }
+
+    /// #1400: a store that already finished its rebuild, on a node whose assignment then moved, is not disturbed by the
+    /// new assignee's checkpoints: LIVE stays LIVE and the model stands.
+    @Test
+    void assignmentMovedAwayAfterTheRebuildWentLive_oldStoreStaysLiveAndKeepsItsModel() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        projection.rebuild().await().onFailure(cause -> fail("rebuild refused: " + cause.message()));
+        awaitLive(20_000);
+        awaitModel(123456L, 15_000);
+        awaitCommittedCursor(6L, 20_000);
+        var rewound = committedEpoch().unwrap();
+
+        manager.stop();
+        runtime.close();
+        applyNow(assignmentTo(OTHER));
+        applyNow(checkpoint(7L, rewound));
+        awaitCommittedCursor(7L, 10_000);
+        assertThat(replayStatus().isLive()).isTrue();
+        assertThat(model()).isEqualTo(Option.some(123456L));
+    }
+
+    /// #1400 STATED LIMIT, an enabled tripwire on the current behaviour: the old store follows the group's cursor only
+    /// under its OWN rewind token. A LATER rebuild requested on another node voids that token (a strictly newer epoch is
+    /// committed), so the new assignee's checkpoints under it no longer move this store, which stays REBUILDING, truthfully:
+    /// it holds a generation nobody completes. Fixing that needs the store to learn of its own supersession (an SPI change,
+    /// not made here); when it lands, flip the final assertion to LIVE or to a retired state and delete this note.
+    @Test
+    void assignmentMovedAway_thenALaterRebuildElsewhere_leavesTheOldStoreRebuildingUnderTheVoidedToken() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        manager.stop();
+        runtime.close();
+        projection.rebuild().await().onFailure(cause -> fail("rebuild refused: " + cause.message()));
+        var rewound = NodeReplayCursor.epochOf(replayStatus().currentRewind().unwrap());
+        var later = RewindEpoch.rewindEpoch(INCARNATION, 2L, 1L);
+
+        applyNow(assignmentTo(OTHER));
+        applyNow(checkpoint(3L, rewound));
+        awaitNextOffset(3L, 10_000);
+        applyNow(checkpoint(0L, later));
+        applyNow(checkpoint(6L, later));
+        assertThat(committedEpoch()).as("control: the later rewind epoch is the committed one").isEqualTo(Option.some(later));
+        assertThat(committedCursor()).as("control: the group's cursor is past the captured head").isEqualTo(Option.some(6L));
+        assertThat(nextOffset()).as("LIMIT (see the javadoc): the checkpoints under the voided token are not followed; the store stays REBUILDING at 3")
+                  .isEqualTo(Option.some(3L));
     }
 
     private List<StreamConsumerRuntime.SubscriptionSnapshot> subscriptionsForGroup() {
@@ -674,6 +771,26 @@ class DurableProjectionRebuildTest {
 
     private Option<StreamCursorCheckpointValue> committed(StreamCursorCheckpointKey key) {
         return kv.getTyped(key, StreamCursorCheckpointValue.class);
+    }
+
+    /// #1400: the assignment record moved to `assignee` at a strictly newer epoch, so every checkpoint under the old token
+    /// is refused and the committed token (`selfToken()`, the committed record's) is the new assignee's.
+    private static KVCommand<AetherKey> assignmentTo(NodeId assignee) {
+        return new KVCommand.Put<AetherKey, AetherValue>(ASSIGNMENT_KEY,
+                                                         ConsumerAssignmentValue.consumerAssignmentValue(assignee,
+                                                                                                         Epoch.epoch(1L, 1L, 1L),
+                                                                                                         2L,
+                                                                                                         HlcTimestamp.ZERO,
+                                                                                                         Option.none()));
+    }
+
+    private Option<Long> nextOffset() {
+        return Option.option(replayStatus().rebuilding().get(PARTITION)).map(replay -> replay.nextOffset());
+    }
+
+    private void awaitNextOffset(long expected, long maxMs) {
+        PollUntil.pollUntil(this::nextOffset, offset -> offset.filter(value -> value == expected).isPresent(), Duration.ofMillis(maxMs))
+                 .assertMet("next replay offset " + expected + "; status " + replayStatus());
     }
 
     private Option<Long> committedCursor() {

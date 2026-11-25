@@ -1470,6 +1470,7 @@ class LeaderReconcilerTest {
 
             assertThat(ctm.drainNodeCalls()).as("a held surplus core member must not be drained").isEmpty();
             assertThat(ctm.scalingHeldAsked()).as("the hold is asked through the worker/community accessor").contains(ClusterTopologyManager.coreSubject());
+            assertThat(ctm.scalingHeldAskers()).as("the reconciler asks as itself").containsOnly(ClusterTopologyManager.ScalingAsker.RECONCILER);
         }
 
         @Test
@@ -1523,15 +1524,66 @@ class LeaderReconcilerTest {
             fireDebouncedReconcile();
         }
 
+        /// #3358: asked on every pass, with nothing pending when there is no surplus, so the answer is "not held" and no hold is left open.
         @Test
-        void noSurplus_autoHealDisabled_neverAsksTheHold() {
+        void noSurplus_autoHealDisabled_asksWithNothingPending_andRaisesNoHold() {
             configuredCoreCount.set(4);
             ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
 
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            assertThat(ctm.scalingHeldAsked()).as("no surplus: no hold is raised").doesNotContain(ClusterTopologyManager.coreSubject());
+            assertThat(ctm.scalingHeldAsked()).as("asked on the pass even with no surplus").contains(ClusterTopologyManager.coreSubject());
+            assertThat(ctm.scalingHeldPending()).as("nothing was pending").containsOnly(false);
+            assertThat(ctm.heldNow()).as("no surplus: no hold is raised").isEmpty();
+        }
+
+        /// #3358: the surplus goes away by itself (the committed core count rises to the member count): the next pass asks with nothing
+        /// pending and the open hold closes. Positive control: the same pass before the change left it open.
+        @Test
+        void heldSurplus_surplusGoneByItself_closesTheHold() {
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(ctm.heldNow()).as("control: the surplus is held").containsExactly(ClusterTopologyManager.coreSubject());
+
+            configuredCoreCount.set(4);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.heldNow()).as("no surplus any more: the hold is closed").isEmpty();
+            assertThat(ctm.drainNodeCalls()).as("nothing was drained either way").isEmpty();
+        }
+
+        /// #3358: the exit the warning itself names: the operator drains the surplus member by hand, so the member count falls to the
+        /// configured one and the hold closes on the next pass, with auto-heal still disabled.
+        @Test
+        void heldSurplus_surplusDrainedByHand_closesTheHold() {
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            assertThat(ctm.heldNow()).as("control: the surplus is held").containsExactly(ClusterTopologyManager.coreSubject());
+
+            removePeers(PEER_C);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.heldNow()).as("the surplus member is gone: the hold is closed").isEmpty();
+            assertThat(ctm.scalingHeldPending().getLast()).as("the closing ask had nothing pending").isFalse();
+        }
+
+        /// #3358: a surplus that returns is held again: the close is not a latch.
+        @Test
+        void heldSurplus_closedThenSurplusReturns_isHeldAgain() {
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            configuredCoreCount.set(4);
+            triggerAndFireReconcile();
+            assertThat(ctm.heldNow()).as("closed").isEmpty();
+
+            configuredCoreCount.set(3);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.heldNow()).as("a surplus again: held again").containsExactly(ClusterTopologyManager.coreSubject());
         }
     }
 
@@ -5104,21 +5156,49 @@ class LeaderReconcilerTest {
         }
 
         private final List<String> scalingHeldAsked = new CopyOnWriteArrayList<>();
+        private final List<Boolean> scalingHeldPending = new CopyOnWriteArrayList<>();
+        private final List<ScalingAsker> scalingHeldAskers = new CopyOnWriteArrayList<>();
+
+        /// The subjects whose hold is open: raised by an ask that is held, closed by an ask that is not (the real hold's warning set).
+        private final Set<String> heldNow = ConcurrentHashMap.newKeySet();
 
         /// Stands for an operator's value committed after the disable, which releases the hold as the real one does.
         private final AtomicBoolean scalingReleased = new AtomicBoolean(false);
 
-        /// #3324: answers as the real hold does: held while auto-heal is disabled, unless a value committed after the disable released
-        /// it. Records each subject asked, so a test can see the reconciler asked through this accessor.
+        /// #3324: answers as the real hold does: held while auto-heal is disabled and a change is pending, unless a value committed after
+        /// the disable released it (#3358: nothing pending closes it too). Records each subject asked, with the pending flag it was asked
+        /// with, and which holds are open, so a test can see the reconciler asked through this accessor and what it left open.
         @Override
-        public boolean scalingHeld(String subject) {
+        public boolean scalingHeld(String subject, ScalingAsker asker, boolean pending) {
             scalingHeldAsked.add(subject);
+            scalingHeldAskers.add(asker);
+            scalingHeldPending.add(pending);
 
-            return !autoHealEnabled.get() && !scalingReleased.get();
+            var held = !autoHealEnabled.get() && !scalingReleased.get() && pending;
+
+            if (held) {
+                heldNow.add(subject);
+            } else {
+                heldNow.remove(subject);
+            }
+
+            return held;
+        }
+
+        Set<String> heldNow() {
+            return Set.copyOf(heldNow);
+        }
+
+        List<Boolean> scalingHeldPending() {
+            return List.copyOf(scalingHeldPending);
         }
 
         void releaseScaling() {
             scalingReleased.set(true);
+        }
+
+        List<ScalingAsker> scalingHeldAskers() {
+            return List.copyOf(scalingHeldAskers);
         }
 
         List<String> scalingHeldAsked() {

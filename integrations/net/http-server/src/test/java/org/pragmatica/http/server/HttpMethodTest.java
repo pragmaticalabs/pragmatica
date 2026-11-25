@@ -38,10 +38,34 @@ class HttpMethodTest {
         });
     }
 
+    /// Every method parses from its lower-case spelling too, so the ASCII fold covers each letter a method uses.
+    @Test
+    void all_methods_are_parseable_in_lower_case() {
+        for (HttpMethod method : HttpMethod.values()) {
+            assertEquals(method, HttpMethod.httpMethod(method.name().toLowerCase(java.util.Locale.ROOT)).fold(_ -> null, v -> v));
+        }
+    }
+
     @Test
     void all_methods_are_parseable() {
         for (HttpMethod method : HttpMethod.values()) {
             assertEquals(method, HttpMethod.httpMethod(method.name()).fold(_ -> null, v -> v));
+        }
+    }
+
+    /// #3679: the fold is ASCII only, so a letter that upper-cases into a method letter is not that method
+    /// (`ſ` U+017F upper-cases to `S`, `ı` U+0131 to `I`).
+    @Test
+    void from_refuses_a_non_ascii_letter_that_case_folds_into_a_method() {
+        assertTrue(HttpMethod.httpMethod("PO\u017fT").isFailure());
+        assertTrue(HttpMethod.httpMethod("OPT\u0131ONS").isFailure());
+    }
+
+    /// #3679: one parser: the `Option` form accepts exactly what the `Result` form accepts.
+    @Test
+    void fromString_agrees_with_httpMethod() {
+        for (var name : new String[]{"GET", "get", "PoSt", "PROPFIND", "PO\u017fT", "OPT\u0131ONS", ""}) {
+            assertEquals(HttpMethod.httpMethod(name).isSuccess(), HttpMethod.fromString(name).isPresent(), name);
         }
     }
 }

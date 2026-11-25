@@ -14,7 +14,7 @@ import org.pragmatica.cluster.state.kvstore.StructuredKey;
 
 
 /// The production reader of the cluster incarnation for the worker replica feed's commit ring (W-OBS section 2.1 R-02): the tag is the
-/// committed [ClusterIncarnationValue]'s `(incarnation, incarnationId)`, read from storage before and after every batch, and
+/// committed [ClusterIncarnationValue]'s `(incarnation, incarnationId, lineageId)`, read from storage before and after every batch, and
 /// [IncarnationTag#NONE] while no incarnation is committed (before genesis, or a declare-genesis whose second transaction was refused). A
 /// `NONE` tag matches nothing, so a node without an incarnation serves no ring.
 public sealed interface ReplicaIncarnationSource {
@@ -23,7 +23,9 @@ public sealed interface ReplicaIncarnationSource {
             @Override
             public IncarnationTag read(Function<StructuredKey, Object> lookup) {
                 return lookup.apply(ClusterIncarnationKey.clusterIncarnationKey()) instanceof ClusterIncarnationValue committed
-                       ? IncarnationTag.incarnationTag(committed.incarnation(), committed.incarnationId())
+                       ? IncarnationTag.incarnationTag(committed.incarnation(),
+                                                       committed.incarnationId(),
+                                                       committed.lineageId())
                        : IncarnationTag.NONE;
             }
 
