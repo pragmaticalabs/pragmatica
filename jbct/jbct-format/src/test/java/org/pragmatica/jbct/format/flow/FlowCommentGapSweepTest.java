@@ -18,7 +18,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Comment-preservation sweep (#3698, #1718). For EVERY gap between two tokens of each construct, it inserts each
-/// comment form (own-line `//`, trailing `//`, `/* */`), formats, and checks the invariant the formatter owes:
+/// comment form (own-line `//`, trailing `//`, `/* */`, own-line `///`, `/** */`), formats, and checks the invariant the formatter owes:
 /// the comment appears in the output exactly once, between the same two non-comment tokens, the non-comment tokens
 /// are unchanged, and formatting the output again changes nothing. A failing (construct, gap, form) is a cell of the
 /// table printed to stdout and written to `target/comment-gap-sweep.txt`.
@@ -41,7 +41,9 @@ class FlowCommentGapSweepTest {
     private enum Form {
         OWN_LINE("\n// " + MARK + "\n"),
         TRAILING(" // " + MARK + "\n"),
-        BLOCK(" /* " + MARK + " */ ");
+        BLOCK(" /* " + MARK + " */ "),
+        DOC_OWN_LINE("\n/// " + MARK + "\n"),
+        DOC_BLOCK(" /** " + MARK + " */ ");
 
         private final String text;
 

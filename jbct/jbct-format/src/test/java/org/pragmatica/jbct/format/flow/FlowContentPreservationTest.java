@@ -237,6 +237,11 @@ class FlowContentPreservationTest {
     }
 
     @Test void commentAfterTheLastImport_beforeTheFirstType_preserved() {
+        var once = format("package p;\n\nimport java.util.List;\n// why X\nclass X {}\n");
+
         assertPreservedAndIdempotent("package p;\n\nimport java.util.List;\n// why X\nclass X {}\n", "// why X");
+        assertThat(once.indexOf("// why X")).as("comment stays after the import block")
+                                            .isGreaterThan(once.indexOf("import java.util.List;"))
+                                            .isLessThan(once.indexOf("class X"));
     }
 }
