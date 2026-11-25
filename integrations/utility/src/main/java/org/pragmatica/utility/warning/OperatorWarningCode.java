@@ -1268,6 +1268,13 @@ public enum OperatorWarningCode {
     /// (#3174, H3b): the removal's cluster write may still land late and delete the fresh routes. Raised once per unsettled removal, on the
     /// transition, however many publishes wait on it. Subject is the node and the artifact. Closed by [#ROUTE_UNPUBLISH_AWAIT_SETTLED].
     ROUTE_UNPUBLISH_AWAIT_EXPIRED("route-unpublish-await-expired", "deployment", WarningLevel.WARNING),
+    /// A node waits to start consensus because fewer core peers than a quorum have completed their handshake with it (#3525): the join
+    /// guard casts no ballot until a quorum has handshaken and agrees on every label the cluster requires to agree, and it waits
+    /// without a deadline, because without a quorum there is no election to delay. Raised once per wait episode, when the join wait
+    /// bound has passed with the quorum still incomplete. Subject is the waiting node; the message names the core peers not yet
+    /// handshaken. A peer whose label differs is not waited for: the node refuses to start and says so. No recovery code: the episode
+    /// ends in the node starting, or refusing, and either is on the log.
+    CONSENSUS_QUORUM_INCOMPLETE("consensus-quorum-incomplete", "consensus", WarningLevel.WARNING),
     /// The recovery of [#ROUTE_UNPUBLISH_AWAIT_EXPIRED], same subject: the removal that outlived the bound has settled (success or failure).
     /// Published by the node that raised the warning, only after its published warning.
     ROUTE_UNPUBLISH_AWAIT_SETTLED("route-unpublish-await-settled",
