@@ -8,6 +8,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.http.server.HttpServerConfig.httpServerConfig;
+import static org.pragmatica.http.websocket.WebSocketEndpoint.webSocketEndpoint;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class HttpServerConfigTest {
@@ -77,6 +78,7 @@ class HttpServerConfigTest {
         var config = httpServerConfig("test", 8080).withBindHost("127.0.0.1")
                                                     .withMaxContentLength(2048)
                                                     .withTls(TlsConfig.selfSigned())
+                                                    .withWebSocket(webSocketEndpoint("/ws", () -> (_, _) -> {}))
                                                     .withChunkedWrite()
                                                     .withReadTimeout(timeSpan(5).seconds())
                                                     .withResponseTimeout(timeSpan(5).seconds())
