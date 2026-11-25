@@ -53,6 +53,7 @@ class Http3ResponseConnectionFieldsTest {
     void start() {
         server = Http3Server.create(HttpServerConfig.httpServerConfig("h3-connection-fields", 0),
                                     QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
+                                                         .flatMap(LiveTls::liveQuicTls)
                                                          .unwrap(),
                                     (request, writer) -> writer.header(request.headers().get("x-set").or("x-none"), "v")
                                                                .header("X-Ordinary", "kept")

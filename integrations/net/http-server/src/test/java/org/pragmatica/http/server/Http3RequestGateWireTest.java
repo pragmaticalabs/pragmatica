@@ -83,6 +83,7 @@ class Http3RequestGateWireTest {
 
         server = Http3Server.create(config,
                                     QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
+                                                         .flatMap(LiveTls::liveQuicTls)
                                                          .unwrap(),
                                     (request, writer) -> {
                                         invocations.incrementAndGet();

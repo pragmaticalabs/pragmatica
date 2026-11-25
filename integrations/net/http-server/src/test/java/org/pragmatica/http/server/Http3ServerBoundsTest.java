@@ -76,6 +76,7 @@ class Http3ServerBoundsTest {
     private void start(HttpServerConfig config) {
         server = Http3Server.create(config,
                                     QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
+                                                         .flatMap(LiveTls::liveQuicTls)
                                                          .unwrap(),
                                     (_, writer) -> writer.ok("{}"))
                             .await(timeSpan(10).seconds())

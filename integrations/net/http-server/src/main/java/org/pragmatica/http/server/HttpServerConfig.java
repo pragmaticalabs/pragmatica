@@ -24,6 +24,8 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.SocketOptions;
 import org.pragmatica.net.tcp.TlsConfig;
 
+import io.netty.handler.ssl.SslContext;
+
 
 /// Configuration for HTTP server.
 ///
@@ -48,6 +50,10 @@ import org.pragmatica.net.tcp.TlsConfig;
 ///                             (see `ResponseSequence`), and the connection is closed once the earlier responses are
 ///                             written; without a bound one stuck handler stalls every response pipelined behind it.
 ///                             Zero or negative disables the bound.
+/// @param liveTls              #2032: an HTTP/1.1 TLS context holder the server reads once per new connection, so a
+///                             [LiveTls#swap] changes the certificate without a listener gap (see [LiveTls]). Set
+///                             through [#withLiveTls]; [#withTls] and [#withLiveTls] each clear the other. Should both be
+///                             present, the holder is used and `tls` is ignored.
 public record HttpServerConfig(String name,
                                int port,
                                Option<TlsConfig> tls,
@@ -58,7 +64,8 @@ public record HttpServerConfig(String name,
                                TimeSpan readTimeout,
                                BodyRateLimit bodyRateLimit,
                                Option<RequestClassifier> classifier,
-                               TimeSpan responseTimeout) {
+                               TimeSpan responseTimeout,
+                               Option<LiveTls<SslContext>> liveTls) {
     private static final int DEFAULT_MAX_CONTENT_LENGTH = 65536;
     /// 60 s mirrors nginx's `client_body_timeout` default. It is a guess, not a measurement: long enough for a
     /// client on a slow link to send a 10 MiB body over HTTP/3 (about 1.4 Mbit/s), short enough that a stalled
@@ -93,7 +100,8 @@ public record HttpServerConfig(String name,
              readTimeout,
              bodyRateLimit,
              Option.empty(),
-             DEFAULT_RESPONSE_TIMEOUT);
+             DEFAULT_RESPONSE_TIMEOUT,
+             Option.empty());
     }
 
     public static HttpServerConfig httpServerConfig(String name, int port) {
@@ -107,9 +115,13 @@ public record HttpServerConfig(String name,
                                     DEFAULT_READ_TIMEOUT,
                                     BodyRateLimit.DEFAULT,
                                     Option.empty(),
-                                    DEFAULT_RESPONSE_TIMEOUT);
+                                    DEFAULT_RESPONSE_TIMEOUT,
+                                    Option.empty());
     }
 
+    /// TLS built from `tls` when the server binds; a configuration that does not build refuses startup. The server
+    /// wraps the built context in a [LiveTls] of its own, so the listener behaves as one given [#withLiveTls], but
+    /// nothing outside the server can swap it.
     public HttpServerConfig withTls(TlsConfig tls) {
         return new HttpServerConfig(name,
                                     port,
@@ -121,7 +133,25 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    Option.empty());
+    }
+
+    /// #2032: TLS from `liveTls`, read once per new connection; the caller keeps the holder and swaps the certificate
+    /// through it (see [LiveTls]).
+    public HttpServerConfig withLiveTls(LiveTls<SslContext> liveTls) {
+        return new HttpServerConfig(name,
+                                    port,
+                                    Option.empty(),
+                                    maxContentLength,
+                                    webSocketEndpoints,
+                                    chunkedWriteEnabled,
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit,
+                                    classifier,
+                                    responseTimeout,
+                                    Option.some(liveTls));
     }
 
     public HttpServerConfig withMaxContentLength(int maxContentLength) {
@@ -135,7 +165,8 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    liveTls);
     }
 
     public HttpServerConfig withWebSocket(WebSocketEndpoint endpoint) {
@@ -153,7 +184,8 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    liveTls);
     }
 
     public HttpServerConfig withChunkedWrite() {
@@ -167,7 +199,8 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    liveTls);
     }
 
     public HttpServerConfig withBodyRateLimit(BodyRateLimit bodyRateLimit) {
@@ -181,7 +214,8 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    liveTls);
     }
 
     public HttpServerConfig withReadTimeout(TimeSpan readTimeout) {
@@ -195,7 +229,8 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    liveTls);
     }
 
     /// How long a dispatched HTTP/1.1 request may wait for its response before it is answered 504 (see
@@ -211,7 +246,8 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    liveTls);
     }
 
     /// Classify every request on its HEADERS (see [RequestClassifier]).
@@ -226,7 +262,8 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     Option.some(classifier),
-                                    responseTimeout);
+                                    responseTimeout,
+                                    liveTls);
     }
 
     /// The classifier in force: the configured one, else one that aggregates every request up to `maxContentLength`.

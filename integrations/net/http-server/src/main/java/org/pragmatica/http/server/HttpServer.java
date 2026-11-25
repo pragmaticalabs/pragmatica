@@ -87,11 +87,28 @@ public interface HttpServer {
     /// @param config         server configuration
     /// @param quicSslContext QUIC-specific SSL context (TLS 1.3 required for HTTP/3)
     /// @param handler        request handler (shared with HTTP/1.1 pipeline)
-    /// @return promise of the running HTTP/3 server
+    /// @return promise of the running HTTP/3 server; a failure with [HttpServerError.TlsContextRefused] when the
+    ///         context is not a server-side one
     static Promise<HttpServer> http3Server(HttpServerConfig config,
                                            QuicSslContext quicSslContext,
                                            BiConsumer<HttpRequest, ResponseWriter> handler) {
-        return Http3Server.create(config, quicSslContext, handler).map(Http3ServerAdapter::new);
+        return LiveTls.liveQuicTls(quicSslContext)
+                      .async()
+                      .flatMap(liveTls -> http3Server(config, liveTls, handler));
+    }
+
+    /// Create and start an HTTP/3 server over QUIC whose TLS context is the live input `liveTls`: each new connection
+    /// handshakes with the holder's current context, so a [LiveTls#swap] changes the certificate without a listener
+    /// gap (#2032).
+    ///
+    /// @param config  server configuration
+    /// @param liveTls QUIC TLS context holder (TLS 1.3 required for HTTP/3; the context must offer `h3`, see #2310)
+    /// @param handler request handler (shared with HTTP/1.1 pipeline)
+    /// @return promise of the running HTTP/3 server
+    static Promise<HttpServer> http3Server(HttpServerConfig config,
+                                           LiveTls<QuicSslContext> liveTls,
+                                           BiConsumer<HttpRequest, ResponseWriter> handler) {
+        return Http3Server.create(config, liveTls, handler).map(Http3ServerAdapter::new);
     }
 
     /// [#http3Server(HttpServerConfig, QuicSslContext, BiConsumer)] that classifies every request on its HEADERS frame,
@@ -119,11 +136,28 @@ public interface HttpServer {
     /// @param quicSslContext QUIC-specific SSL context (TLS 1.3 required for HTTP/3)
     /// @param handler        request handler (shared with HTTP/1.1 pipeline)
     /// @param workerGroup    external event loop group
-    /// @return promise of the running HTTP/3 server
+    /// @return promise of the running HTTP/3 server; a failure with [HttpServerError.TlsContextRefused] when the
+    ///         context is not a server-side one
     static Promise<HttpServer> http3Server(HttpServerConfig config,
                                            QuicSslContext quicSslContext,
                                            BiConsumer<HttpRequest, ResponseWriter> handler,
                                            EventLoopGroup workerGroup) {
-        return Http3Server.createShared(config, quicSslContext, handler, workerGroup).map(Http3ServerAdapter::new);
+        return LiveTls.liveQuicTls(quicSslContext)
+                      .async()
+                      .flatMap(liveTls -> http3Server(config, liveTls, handler, workerGroup));
+    }
+
+    /// [#http3Server(HttpServerConfig, LiveTls, BiConsumer)] on an externally managed event loop group.
+    ///
+    /// @param config      server configuration
+    /// @param liveTls     QUIC TLS context holder, read once per new connection
+    /// @param handler     request handler (shared with HTTP/1.1 pipeline)
+    /// @param workerGroup external event loop group
+    /// @return promise of the running HTTP/3 server
+    static Promise<HttpServer> http3Server(HttpServerConfig config,
+                                           LiveTls<QuicSslContext> liveTls,
+                                           BiConsumer<HttpRequest, ResponseWriter> handler,
+                                           EventLoopGroup workerGroup) {
+        return Http3Server.createShared(config, liveTls, handler, workerGroup).map(Http3ServerAdapter::new);
     }
 }
