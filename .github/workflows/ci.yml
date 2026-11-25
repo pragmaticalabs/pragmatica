@@ -13,7 +13,8 @@ on:
   workflow_dispatch:
 
 # A newer run on the same PR supersedes the in-progress one. Pushes get a per-commit group and are never
-# cancelled: each merged commit's own run is evidence. A merge_group run takes the sha group and is likewise never cancelled.
+# cancelled: a directly pushed commit's own run is its evidence; a queue-merged commit's evidence is the merge_group run of the same
+# sha (#3715), which takes the same group and is likewise never cancelled.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -22,7 +23,8 @@ jobs:
   # Duplicate push CI (T18): a feature branch with an open PR runs CI on `push` AND on `pull_request` for every head (#2648: 26 runs
   # for about 8 heads). On a push whose branch has an open PR into a base the pull_request trigger covers, every job below is
   # skipped, because the pull_request run of the same head is the one that gates. A branch with no such PR (a stacked feature
-  # branch whose PR targets another feature branch, a branch with no PR yet) and every push to main or release-* still run.
+  # branch whose PR targets another feature branch, a branch with no PR yet) still run, and so does a push to main or release-* unless the
+  # merge queue just tested that sha (below).
   # If the lookup fails the run proceeds: a duplicate run is cheaper than a missing one.
   # A skipped job still posts a check run, and a skipped check run named like a required context SATISFIES it (observed on #2657:
   # mergeStateStatus UNSTABLE, not BLOCKED, while the pull_request run's real build-and-test had not started). So every skipped
