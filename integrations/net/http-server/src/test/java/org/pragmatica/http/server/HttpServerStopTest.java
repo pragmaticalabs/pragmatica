@@ -42,6 +42,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 
+import static io.netty.handler.codec.http3.Http3.supportedApplicationProtocols;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -280,7 +281,7 @@ class HttpServerStopTest {
         }
 
         private static LiveTls<QuicSslContext> quicSsl() {
-            return QuicSslContextFactory.createSelfSignedServer()
+            return QuicSslContextFactory.createSelfSignedServer(supportedApplicationProtocols())
                                         .flatMap(LiveTls::liveQuicTls)
                                         .unwrap();
         }

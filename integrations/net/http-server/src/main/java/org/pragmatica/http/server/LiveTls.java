@@ -15,6 +15,7 @@
  */
 package org.pragmatica.http.server;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Functions.Fn1;
@@ -24,6 +25,7 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.net.tcp.TlsContextFactory;
 
+import io.netty.handler.codec.http3.Http3;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.ssl.SslContext;
 
@@ -34,20 +36,28 @@ import io.netty.handler.ssl.SslContext;
 /// they handshook with: their engine was created from it and keeps it.
 ///
 /// A holder is built only from a context its protocol can serve: [#liveTls(SslContext)] admits a server-side, non-QUIC
-/// context (HTTP/1.1); [#liveQuicTls(QuicSslContext)] admits a server-side QUIC context (HTTP/3). [#swap] applies the
-/// same admission, and a refused context leaves the current one installed.
+/// context (HTTP/1.1); [#liveQuicTls(QuicSslContext)] admits a server-side QUIC context that offers the `h3` ALPN
+/// token (HTTP/3). [#swap] applies the same admission, and a refused context leaves the current one installed: a
+/// context [#swap] admits serves a new connection of its protocol.
 ///
 /// Reference counts. The holder never retains or releases a context: a reference-counted context stays owned by
-/// whoever built it. The caller keeps the current context alive while it is installed and may release it once it is
-/// swapped out, because every connection holds its own count for as long as it lives: an OpenSSL engine retains its
-/// parent context when created and releases it when the engine is freed (Netty 4.2.18 `ReferenceCountedOpenSslEngine`
-/// lines 319 and 185), and a QUIC connection retains the native context of its `QuicSslContext` (`QuicheQuicSslContext`
-/// line 346) until the connection is freed (`QuicheQuicConnection.free`). The contexts this module's factories build
-/// carry no count a caller must release: `TlsContextFactory` uses Netty's default provider, the JDK one here (OpenSSL
-/// only with netty-tcnative present, and then the finalizer-released `OpenSslContext`, never `OPENSSL_REFCNT`), and a
-/// `QuicheQuicSslContext` frees its native context in its finalizer once no connection holds it. Releasing a context
-/// at swap would therefore free one the holder does not own: a later swap back to it, or the caller's own release,
-/// would then act on a released context.
+/// whoever built it. The caller keeps the current context alive while it is installed. Once it is swapped out, an
+/// open connection is safe, because every connection holds its own count for as long as it lives: an OpenSSL engine
+/// retains its parent context when created and releases it when the engine is freed (Netty 4.2.18
+/// `ReferenceCountedOpenSslEngine` lines 319 and 185), and a QUIC connection retains the native context of its
+/// `QuicSslContext` (`QuicheQuicSslContext` line 346) until the connection is freed (`QuicheQuicConnection.free`). A
+/// connection being set up is not covered: the server reads [#current()] and only then creates the engine that
+/// retains it (`NettyHttpServer.initChannel` calls `newHandler` on the value it read, `Http3Server`'s engine provider
+/// `newEngine`), so a context released between those two steps is released under that connection. For a context
+/// carrying a count the caller must release (an `OPENSSL_REFCNT` one built by the caller) the safe rule is therefore:
+/// release it after the last connection that may have read it is past its setup, or not at all; no moment right after
+/// [#swap] guarantees that. This is not tested: the repository carries no netty-tcnative, so no such context can be
+/// built here. The contexts this module's factories build carry no count a caller must release:
+/// `TlsContextFactory` uses Netty's default provider, the JDK one here (OpenSSL only with netty-tcnative present, and
+/// then the finalizer-released `OpenSslContext`, never `OPENSSL_REFCNT`), and a `QuicheQuicSslContext` frees its
+/// native context in its finalizer once no connection holds it. Releasing a context at swap would therefore free one
+/// the holder does not own: a later swap back to it, or the caller's own release, would then act on a released
+/// context.
 ///
 /// @param <C> the context type: `SslContext` for HTTP/1.1, `QuicSslContext` for HTTP/3
 public final class LiveTls<C extends SslContext> {
@@ -69,10 +79,8 @@ public final class LiveTls<C extends SslContext> {
         return admitHttp1(context).map(admitted -> new LiveTls<>(admitted, LiveTls::admitHttp1));
     }
 
-    /// An HTTP/3 holder over `context`; refused unless it is a server-side QUIC context.
-    ///
-    /// #2310: the context must also offer the `h3` ALPN token (`Http3.supportedApplicationProtocols()`); that is not
-    /// checked here, as the server never checked it, and a context without it completes no handshake.
+    /// An HTTP/3 holder over `context`; refused unless it is a server-side QUIC context that offers the `h3` ALPN token
+    /// (`Http3.supportedApplicationProtocols()`, #2310): a context without it completes no HTTP/3 handshake.
     public static Result<LiveTls<QuicSslContext>> liveQuicTls(QuicSslContext context) {
         return admitHttp3(context).map(admitted -> new LiveTls<>(admitted, LiveTls::admitHttp3));
     }
@@ -95,7 +103,17 @@ public final class LiveTls<C extends SslContext> {
     }
 
     private static Result<QuicSslContext> admitHttp3(QuicSslContext context) {
-        return Verify.ensure(context, SslContext::isServer, HttpServerError.TlsContextRefused.NOT_HTTP3_SERVER);
+        return Verify.ensure(context, SslContext::isServer, HttpServerError.TlsContextRefused.NOT_HTTP3_SERVER).flatMap(LiveTls::requireH3);
+    }
+
+    private static Result<QuicSslContext> requireH3(QuicSslContext context) {
+        return Verify.ensure(context, LiveTls::offersH3, HttpServerError.TlsContextRefused.NOT_HTTP3_ALPN);
+    }
+
+    private static boolean offersH3(QuicSslContext context) {
+        return context.applicationProtocolNegotiator()
+                      .protocols()
+                      .containsAll(List.of(Http3.supportedApplicationProtocols()));
     }
 
     /// A QUIC context builds no `SslHandler` (`QuicheQuicSslContext.newHandler` throws), so it cannot serve HTTP/1.1.

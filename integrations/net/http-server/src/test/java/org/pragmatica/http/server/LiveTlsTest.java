@@ -79,7 +79,25 @@ class LiveTlsTest {
     @Test
     void liveQuicTls_serverContextWithoutH3_isRefused() {
         assertThat(refusal(LiveTls.liveQuicTls(http3ServerWithoutH3(bundle("unit-no-h3")))))
-            .isInstanceOf(HttpServerError.TlsContextRefused.class);
+            .isEqualTo(HttpServerError.TlsContextRefused.NOT_HTTP3_ALPN);
+    }
+
+    /// Control for the refusal above: the same context built with `h3` is admitted.
+    @Test
+    void liveQuicTls_serverContextWithH3_isCurrent() {
+        var context = http3Server(bundle("unit-with-h3"));
+
+        assertThat(LiveTls.liveQuicTls(context).unwrap().current()).isSameAs(context);
+    }
+
+    @Test
+    void swap_quicContextWithoutH3_isRefused_keepsCurrent() {
+        var first = http3Server(bundle("unit-quic-alpn-first"));
+        var holder = LiveTls.liveQuicTls(first).unwrap();
+
+        assertThat(refusal(holder.swap(http3ServerWithoutH3(bundle("unit-quic-alpn-bad")))))
+            .isEqualTo(HttpServerError.TlsContextRefused.NOT_HTTP3_ALPN);
+        assertThat(holder.current()).isSameAs(first);
     }
 
     @Test

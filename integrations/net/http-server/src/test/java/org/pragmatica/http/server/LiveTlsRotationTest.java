@@ -228,11 +228,13 @@ class LiveTlsRotationTest {
     @Test
     void http3_swapToContextWithoutH3_isRefused_laterConnectionsStillServed() throws Exception {
         var first = bundle("h3-no-alpn-first");
-        var holder = LiveTls.liveQuicTls(http3Server(first)).unwrap();
+        var firstContext = http3Server(first);
+        var holder = LiveTls.liveQuicTls(firstContext).unwrap();
         var port = http3(holder);
         var outcome = holder.swap(http3ServerWithoutH3(bundle("h3-no-alpn-bad")));
 
         assertThat(outcome.isFailure()).as("a context without h3 is refused").isTrue();
+        assertThat(holder.current()).as("the old context stays installed").isSameAs(firstContext);
         assertThat(h3Probe(port)).isEqualTo(certificate(first));
     }
 
@@ -310,6 +312,8 @@ class LiveTlsRotationTest {
                          .start(() -> connectionLoop(probe, Set.copyOf(certificates), stop, served, failures));
 
         try {
+            pollUntil(served::get, count -> count > 0, Duration.ofSeconds(20))
+                .assertMet("the loop served a connection before the first swap");
             for (var index = 1; index <= LOOP_SWAPS; index++) {
                 assertThat(swap.apply(index)).as("swap %d", index).isTrue();
                 assertThat(probe.connectAndServe()).as("after swap %d", index).isEqualTo(certificates.get(index % 2));
@@ -320,7 +324,6 @@ class LiveTlsRotationTest {
         }
         assertThat(loop.isAlive()).as("the connection loop ended").isFalse();
         assertThat(failures).as("no connection refused, failed or offered a third certificate").isEmpty();
-        assertThat(served.get()).as("the loop connected while the swaps ran").isPositive();
     }
 
     private static void connectionLoop(Probe probe,

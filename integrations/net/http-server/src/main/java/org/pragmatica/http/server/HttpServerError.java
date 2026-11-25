@@ -78,7 +78,8 @@ public sealed interface HttpServerError extends Cause {
     /// #2032: a [LiveTls] holder was offered a context its protocol cannot serve; a refused swap keeps the current one.
     enum TlsContextRefused implements HttpServerError {
         NOT_HTTP1_SERVER("An HTTP/1.1 listener needs a server-side, non-QUIC TLS context"),
-        NOT_HTTP3_SERVER("An HTTP/3 listener needs a server-side QUIC TLS context");
+        NOT_HTTP3_SERVER("An HTTP/3 listener needs a server-side QUIC TLS context"),
+        NOT_HTTP3_ALPN("An HTTP/3 listener needs a QUIC TLS context that offers the h3 ALPN protocol");
         private final String message;
         TlsContextRefused(String message) {
             this.message = message;
