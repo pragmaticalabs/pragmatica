@@ -19,6 +19,7 @@ import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.shared.FileCollector;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -138,13 +139,17 @@ public sealed interface RootResolver permits RootResolver.unused {
     }
 
     /// One source root with everything the run needs about it.
+    ///
+    /// `treeRefusal` is why the TREE rules cannot judge this root against its `[project] basePackage` ([TreeRoot]); a
+    /// refused root's context holds no tree, and so does a test root's: test roots are judged by no TREE rule (#2526).
     record ResolvedRoot(Path path,
                         JbctConfig config,
                         LintContext context,
                         JbctMode mode,
                         ModeSource modeSource,
                         boolean testRoot,
-                        List<Path> files) {
+                        List<Path> files,
+                        Option<Cause> treeRefusal) {
         public ResolvedRoot {
             files = List.copyOf(files);
         }
@@ -154,13 +159,30 @@ public sealed interface RootResolver permits RootResolver.unused {
                                                 ModeSource modeSource,
                                                 boolean testRoot,
                                                 List<Path> files) {
+            var context = LintContext.fromConfig(config);
+
             return new ResolvedRoot(path,
                                     config,
-                                    LintContext.fromConfig(config),
+                                    testRoot
+                                    ? context.withTree(Option.none())
+                                    : context,
                                     config.mode(),
                                     modeSource,
                                     testRoot,
-                                    files);
+                                    files,
+                                    Option.none());
+        }
+
+        /// This root refused by `cause`: its TREE rules lose the tree, its code rules keep running.
+        public ResolvedRoot refused(Cause cause) {
+            return new ResolvedRoot(path,
+                                    config,
+                                    context.withTree(Option.none()),
+                                    mode,
+                                    modeSource,
+                                    testRoot,
+                                    files,
+                                    Option.some(cause));
         }
     }
 
@@ -378,7 +400,8 @@ public sealed interface RootResolver permits RootResolver.unused {
                                                                                                                 source,
                                                                                                                 isTestRoot(request,
                                                                                                                            root),
-                                                                                                                files)));
+                                                                                                                files)))
+                           .map(TreeRoot::judged);
     }
 
     private static Result<ModeSource> modeSource(Request request, Path root) {

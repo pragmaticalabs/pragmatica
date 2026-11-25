@@ -144,6 +144,13 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-ARCH-04", DiagnosticSeverity.ERROR),
 
     // A slice must not import another slice's internals
+    // Package tree (#2526): WARNING by design.
+    Map.entry("JBCT-TREE-01", DiagnosticSeverity.WARNING),
+
+    // No sideways import inside the package tree
+    Map.entry("JBCT-TREE-02", DiagnosticSeverity.WARNING),
+
+    // A main file is declared under [project] basePackage
     // Static imports
     Map.entry("JBCT-STATIC-01", DiagnosticSeverity.WARNING),
 

@@ -36,7 +36,7 @@ public sealed interface ConfigError extends Cause {
     }
 
     /// A source root whose root-reading structure rules are enabled but whose configuration names no
-    /// `[project] basePackage`. Declared here; raised by the structure rules' run (#2526).
+    /// `[project] basePackage`. Raised by the structure rules' run (#2526), per source root.
     ///
     /// @param sourceRoot the refused source root
     /// @param suggestion the common package prefix of the root's main files, advice only
@@ -50,6 +50,54 @@ public sealed interface ConfigError extends Cause {
                                           + ": add basePackage = \"" + suggestion
                                           + "\" to the [project] table of " + toml
                                           + ", or set [lint] mode = \"infrastructure\"");
+        }
+    }
+
+    /// A source root whose `[project] basePackage` has an `io` or `shared` segment after its first: such a root would
+    /// itself be an I/O or shared package of its own tree, so the structure rules cannot judge against it (#2526).
+    ///
+    /// @param sourceRoot  the refused source root
+    /// @param basePackage the configured root package
+    /// @param suggestion  the common package prefix of the root's main files, advice only
+    /// @param toml        the `jbct.toml` the key belongs in
+    record BasePackageHasRole(Path sourceRoot, String basePackage, String suggestion, Path toml, String message) implements ConfigError {
+        public static BasePackageHasRole basePackageHasRole(Path sourceRoot,
+                                                            String basePackage,
+                                                            String suggestion,
+                                                            Path toml) {
+            return new BasePackageHasRole(sourceRoot,
+                                          basePackage,
+                                          suggestion,
+                                          toml,
+                                          "structure rules cannot judge " + sourceRoot
+                                         + " against [project] basePackage \"" + basePackage
+                                         + "\": a root package has no io or shared segment after its first; set basePackage = \"" + suggestion
+                                         + "\" in the [project] table of " + toml
+                                         + ", or set [lint] mode = \"infrastructure\"");
+        }
+    }
+
+    /// A source root none of whose main files is declared in `[project] basePackage` or below it: the configured root
+    /// names no part of this source root, so the structure rules cannot judge it (#2526).
+    ///
+    /// @param sourceRoot  the refused source root
+    /// @param basePackage the configured root package
+    /// @param suggestion  the common package prefix of the root's main files, advice only
+    /// @param toml        the `jbct.toml` the key belongs in
+    record BasePackageCoversNoFile(Path sourceRoot, String basePackage, String suggestion, Path toml, String message) implements ConfigError {
+        public static BasePackageCoversNoFile basePackageCoversNoFile(Path sourceRoot,
+                                                                      String basePackage,
+                                                                      String suggestion,
+                                                                      Path toml) {
+            return new BasePackageCoversNoFile(sourceRoot,
+                                               basePackage,
+                                               suggestion,
+                                               toml,
+                                               "structure rules cannot judge " + sourceRoot
+                                              + ": no main file is under [project] basePackage \"" + basePackage
+                                              + "\"; set basePackage = \"" + suggestion
+                                              + "\" in the [project] table of " + toml
+                                              + ", or set [lint] mode = \"infrastructure\"");
         }
     }
 }

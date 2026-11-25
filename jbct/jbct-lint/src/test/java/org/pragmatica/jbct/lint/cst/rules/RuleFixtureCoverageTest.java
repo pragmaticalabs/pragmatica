@@ -9,7 +9,10 @@ import org.pragmatica.jbct.lint.LintConfig;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLinter;
 import org.pragmatica.jbct.lint.cst.rules.RuleFixtures.RuleFixture;
+import org.pragmatica.jbct.lint.tree.PackageTree;
+import org.pragmatica.jbct.lint.tree.TreeConfig;
 import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -37,11 +40,14 @@ class RuleFixtureCoverageTest {
         linter = CstLinter.cstLinter(allRulesEnabled());
     }
 
+    /// The harness tree is rooted at `com.example` so the TREE rules (#2526), silent without a tree, run on their
+    /// fixtures; every assertion filters by rule ID, so their findings on other rules' snippets are not read.
     private static LintContext allRulesEnabled() {
         return LintContext.defaultContext()
                           .withConfig(LintConfig.lintConfig(LintConfig.DEFAULT.ruleSeverities(),
                                                             Set.of(),
-                                                            LintConfig.DEFAULT.failOnWarning()));
+                                                            LintConfig.DEFAULT.failOnWarning()))
+                          .withTree(Option.some(PackageTree.packageTree("com.example", TreeConfig.DEFAULT)));
     }
 
     static List<RuleFixture> fixtures() {

@@ -1,17 +1,24 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import org.pragmatica.jbct.lint.tree.PackageTree;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
+import org.pragmatica.lang.Option;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
 
-/// Shared reference extraction for the architecture / layering rules (JBCT-ARCH-01, JBCT-ARCH-04).
+/// Shared reference extraction for the architecture / layering rules (JBCT-ARCH-01, JBCT-ARCH-04) and the package-tree
+/// rule (JBCT-TREE-01, [#collectTargets]).
 ///
 /// A single file couples to another package in two syntactic ways: through an `import` declaration
 /// and through a fully-qualified type reference in code (`com.example.adapter.Row field;`). Both are
@@ -32,7 +39,11 @@ sealed interface ArchSupport permits ArchSupport.unused {
     record unused() implements ArchSupport {}
 
     /// A package reference sourced from an import declaration or a fully-qualified type node.
-    record Reference(Cursor node, String packageName) {}
+    record Reference(Cursor node, String packageName) {
+        static Reference qualified(Cursor node, String packageName) {
+            return new Reference(node, packageName);
+        }
+    }
 
     /// All package references in a compilation unit: every import, plus every fully-qualified type
     /// node (deduplicated by source position, mirroring [CstBoundaryTypeRule]).
@@ -60,6 +71,47 @@ sealed interface ArchSupport permits ArchSupport.unused {
         }
 
         return references;
+    }
+
+    /// The package every reference of a compilation unit points at (#2526): each import and each fully-qualified type
+    /// node, its written name cut by [PackageTree#target] at the first segment that starts with an upper-case letter,
+    /// so `import a.b.HoldSeat.LoadSeat;` and `import static a.b.C.m;` both point at `a.b`. A reference that leaves no
+    /// package segment (a simple or nested simple name, a default-package type) is dropped; type nodes are
+    /// deduplicated by source position, as in [#collectReferences].
+    static List<Reference> collectTargets(Cursor root) {
+        var imports = findAll(root, RuleKind.IMPORT_DECL).stream()
+                             .flatMap(node -> targetOf(node,
+                                                       importBody(text(node))).stream());
+        var types = distinctByPosition(typeNodes(root)).stream().flatMap(node -> qualifiedTargetOf(node).stream());
+
+        return Stream.concat(imports, types).toList();
+    }
+
+    /// A type node's target, only when its written name is qualified: a simple name is resolved through an import,
+    /// which is counted already, and a primitive has no package.
+    private static Option<Reference> qualifiedTargetOf(Cursor node) {
+        var head = typeHead(text(node));
+
+        return head.contains(".")
+               ? targetOf(node, head)
+               : Option.none();
+    }
+
+    private static Option<Reference> targetOf(Cursor node, String qualifiedName) {
+        return PackageTree.target(qualifiedName).map(target -> Reference.qualified(node, target));
+    }
+
+    private static Collection<Cursor> distinctByPosition(List<Cursor> nodes) {
+        return nodes.stream()
+                    .collect(Collectors.toMap(ArchSupport::position,
+                                              node -> node,
+                                              (first, _) -> first,
+                                              LinkedHashMap::new))
+                    .values();
+    }
+
+    private static long position(Cursor node) {
+        return ((long) startLine(node) << 20) | startColumn(node);
     }
 
     private static List<Cursor> typeNodes(Cursor root) {

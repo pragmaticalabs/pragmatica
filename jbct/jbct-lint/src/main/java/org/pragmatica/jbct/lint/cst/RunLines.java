@@ -95,6 +95,17 @@ record RunLines(Invocation invocation,
         return runLines(invocation, files, roots, Verdict.clean(), List.of(), 0, score).failure();
     }
 
+    /// The line of a source root the TREE rules refused (#2526): the refusal's own text, which the failure carries too.
+    static Line refusalLine(String refusal) {
+        return error(refusal);
+    }
+
+    /// The per-run coverage line of a TREE rule (#2526, owner 8aa96ab0a7): of the run's `total` files, the `judged` ones
+    /// the rule read. Printed whenever the run lints, `0 of N` included, so a run the rule never judged says so.
+    static Line treeCoverageLine(String ruleId, int judged, int total) {
+        return line(Level.INFO, ruleId + ": judged " + judged + " of " + total + " file(s)");
+    }
+
     Lines lines() {
         return files.isEmpty()
                ? Lines.lines(nothingCollected(), List.of())

@@ -41,6 +41,7 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.WriteFailed;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.Java25Parser;
 import org.pragmatica.jbct.score.ScoreResult;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -107,8 +108,15 @@ public final class LintRun {
         var files = fileResults(activities);
         var roots = groups.stream().map(group -> group.rootResult(activities, files)).toList();
         var score = RunScore.scoreOf(invocation, files);
-        var verdict = verdict(invocation, activities, files, roots, score);
-        var lines = RunLines.runLines(invocation, files, roots, verdict, layerLines(files), uncollectedTestFiles, score).lines();
+        var refusals = refusals(activities);
+        var verdict = verdict(invocation, activities, files, roots, score, refusals);
+        var lines = RunLines.runLines(invocation,
+                                      files,
+                                      roots,
+                                      verdict,
+                                      structureLines(activities, files, refusals),
+                                      uncollectedTestFiles,
+                                      score).lines();
 
         return RunResult.runResult(files,
                                    roots,
@@ -133,12 +141,46 @@ public final class LintRun {
                                                    Rewritten.class)));
     }
 
-    /// The layer-coverage line of each root that linted a file, from the packages `perform` read.
-    private List<Line> layerLines(List<FileResult> files) {
-        return groups.stream()
-                     .flatMap(group -> group.layerLine(files)
-                                            .stream())
+    /// The structure lines of the run, printed before the per-file lines: the layer-coverage line of each root that
+    /// linted a file, from the packages `perform` read; then, when the run linted, one ERROR line per refused root and
+    /// the per-run coverage line of each TREE rule (#2526), printed even when it judged no file.
+    private List<Line> structureLines(Activities activities, List<FileResult> files, List<Cause> refusals) {
+        return Stream.of(groups.stream().flatMap(group -> group.layerLine(files)
+                                                               .stream()),
+                         refusals.stream().map(refusal -> RunLines.refusalLine(refusal.message())),
+                         activities.lint()
+                         ? TreeRoot.RULES.stream().map(ruleId -> RunLines.treeCoverageLine(ruleId,
+                                                                                           judgedBy(ruleId, files),
+                                                                                           files.size()))
+                         : Stream.<Line> empty())
+                     .flatMap(lines -> lines)
                      .toList();
+    }
+
+    /// The refusal of every root that reads its base package and cannot use it; none when the run does not lint, since
+    /// no TREE rule runs then.
+    private List<Cause> refusals(Activities activities) {
+        return activities.lint()
+               ? groups.stream()
+                       .flatMap(group -> group.detail()
+                                              .root()
+                                              .treeRefusal()
+                                              .stream())
+                       .toList()
+               : List.of();
+    }
+
+    /// The files of the run a TREE rule judged: linted, in a root whose mode runs the rule, which `[lint.rules]` leaves
+    /// on and which has a tree, and in a package `[lint] excludePackages` leaves in.
+    private int judgedBy(String ruleId, List<FileResult> files) {
+        return (int) groups.stream()
+                           .filter(group -> group.judges(ruleId))
+                           .flatMap(group -> group.mine(files)
+                                                  .stream()
+                                                  .filter(file -> file.lint() instanceof Linted)
+                                                  .filter(file -> group.context()
+                                                                       .shouldLint(file.packageName())))
+                           .count();
     }
 
     /// One [FileResult] per distinct path of the plan: a path two roots both hold is acted on once, in the first root
@@ -186,14 +228,15 @@ public final class LintRun {
                : Stream.empty();
     }
 
-    /// NOTHING_COLLECTED when the plan holds no file; INCOMPLETE when a file was not read, not parsed or not written;
-    /// FINDINGS when a root fails (a score is failed by its density gate alone) or, under a format check (not a dry
+    /// NOTHING_COLLECTED when the plan holds no file; INCOMPLETE when a file was not read, not parsed or not written, or
+    /// a root's TREE rules were refused (the refusal texts lead the failure, #2526); FINDINGS when a root fails (a score is failed by its density gate alone) or, under a format check (not a dry
     /// run), a file would change; CLEAN otherwise.
     private static Verdict verdict(Invocation invocation,
                                    Activities activities,
                                    List<FileResult> files,
                                    List<RootResult> roots,
-                                   Option<ScoreResult> score) {
+                                   Option<ScoreResult> score,
+                                   List<Cause> refusals) {
         var incomplete = files.stream().filter(LintRun::unfinished).count();
         var failing = invocation.command() == Command.SCORE
                       ? RunScore.breachOf(score, invocation.maxDensity()).isPresent()
@@ -204,11 +247,24 @@ public final class LintRun {
 
         return files.isEmpty()
                ? Verdict.nothingCollected()
-               : incomplete > 0
-                 ? Verdict.incomplete(RunLines.failureOf(invocation, files, roots, score))
+               : incomplete > 0 || !refusals.isEmpty()
+                 ? Verdict.incomplete(incompleteFailure(invocation, files, roots, score, refusals, incomplete))
                  : !failing && wouldChange == 0
                    ? Verdict.clean()
                    : Verdict.findings(RunLines.failureOf(invocation, files, roots, score));
+    }
+
+    private static String incompleteFailure(Invocation invocation,
+                                            List<FileResult> files,
+                                            List<RootResult> roots,
+                                            Option<ScoreResult> score,
+                                            List<Cause> refusals,
+                                            long incomplete) {
+        return Stream.concat(refusals.stream().map(Cause::message),
+                             incomplete > 0
+                             ? Stream.of(RunLines.failureOf(invocation, files, roots, score))
+                             : Stream.<String> empty())
+                     .collect(Collectors.joining("; "));
     }
 
     private static boolean unfinished(FileResult file) {
@@ -263,6 +319,18 @@ public final class LintRun {
                              detail);
         }
 
+        /// Whether this root's files are judged by the TREE rule `ruleId`: its mode runs the rule, `[lint.rules]` leaves it
+        /// on, and the run gave the root a tree.
+        boolean judges(String ruleId) {
+            return context.tree()
+                          .isPresent()
+                   && context.isRuleEnabled(ruleId)
+                   && CstLinter.rulesFor(context.mode())
+                               .stream()
+                               .anyMatch(rule -> rule.ruleId()
+                                                     .equals(ruleId));
+        }
+
         private static List<RunRule> runRulesIn(List<LintRule> rules) {
             return rules.stream()
                         .filter(RunRule.class::isInstance)
@@ -299,7 +367,7 @@ public final class LintRun {
             return rootResultOf(detail, activities, mine(all));
         }
 
-        private List<FileResult> mine(List<FileResult> all) {
+        List<FileResult> mine(List<FileResult> all) {
             return all.stream()
                       .filter(file -> file.root()
                                           .equals(path))

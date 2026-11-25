@@ -697,6 +697,34 @@ final class RuleFixtures {
                 }
                 """),
 
+        // JBCT-TREE-01: a workflow importing its sibling workflow (the harness tree is rooted at com.example).
+        fixture("JBCT-TREE-01", 2,
+                """
+                package com.example.login;
+                import com.example.register.Account;
+                class Login {
+                }
+                """,
+                """
+                package com.example.login;
+                import com.example.shared.Money;
+                class Login {
+                }
+                """),
+
+        // JBCT-TREE-02: a file declared outside the harness tree's root com.example.
+        fixture("JBCT-TREE-02", 1,
+                """
+                package org.other;
+                class Stray {
+                }
+                """,
+                """
+                package com.example.login;
+                class Login {
+                }
+                """),
+
         // JBCT-STATIC-01: prefer static import for Pragmatica factory calls.
         fixture("JBCT-STATIC-01", 3,
                 """

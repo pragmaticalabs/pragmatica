@@ -248,6 +248,15 @@ public class CstLinter {
         new CstArchSliceInternalRule(),
 
         // JBCT-ARCH-04
+        // Package tree (JBCT-TREE-*, #2526)
+        // No sideways import inside the package tree
+        new CstTreeImportRule(),
+
+        // JBCT-TREE-01
+        // A main file is declared under [project] basePackage
+        new CstTreeOutsideRootRule(),
+
+        // JBCT-TREE-02
         // Static imports (JBCT-STATIC-*)
         new CstStaticImportRule(),
 

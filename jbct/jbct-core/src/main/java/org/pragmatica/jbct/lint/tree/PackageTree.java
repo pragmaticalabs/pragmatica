@@ -76,7 +76,15 @@ public record PackageTree(String root, List<Pattern> excludes) {
 
     /// The package belongs to the project tree.
     public boolean own(String candidate) {
-        return anc(root, candidate) && !isExcluded(candidate);
+        return anc(root, candidate) && !excluded(candidate);
+    }
+
+    /// An exclude glob matches the package, wherever it lies: the package is outside the tree, and a file declared in
+    /// it escapes the root check.
+    public boolean excluded(String candidate) {
+        return excludes.stream()
+                       .anyMatch(glob -> glob.matcher(candidate)
+                                             .matches());
     }
 
     /// The role of a package of the tree, none for a plain package and for a package outside the root.
@@ -95,12 +103,6 @@ public record PackageTree(String root, List<Pattern> excludes) {
         return role(target).map(_ -> anc(prefixBeforeFirstRoleSegment(target),
                                          importer))
                    .or(false);
-    }
-
-    private boolean isExcluded(String candidate) {
-        return excludes.stream()
-                       .anyMatch(glob -> glob.matcher(candidate)
-                                             .matches());
     }
 
     private static boolean isPackageSegment(String segment) {
