@@ -17,6 +17,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
@@ -57,6 +58,25 @@ final class LossAccountingFixtures {
     /// `attempts` attempts, `interval` apart: a retry that is never released stays in flight for about `attempts * interval`.
     static QuicClusterNetwork network(int attempts, TimeSpan interval) {
         return network(LaneProbe.codec(), attempts, interval);
+    }
+
+    /// The held-frame budget of [#networkWithoutGiveUp], far past every test's `@Timeout`.
+    static final TimeSpan NO_GIVE_UP_BUDGET = TimeSpan.timeSpan(1).hours();
+
+    /// A network whose held frame is never given up inside a test (#3686): the budget (attempts x `interval`) is an hour.
+    /// For every test whose subject is not the give-up; a test whose subject is the give-up names its own short budget.
+    static QuicClusterNetwork networkWithoutGiveUp(TimeSpan interval) {
+        return network((int) (NO_GIVE_UP_BUDGET.nanos() / interval.nanos()), interval);
+    }
+
+    /// The race of #3686 made certain: the calling thread stalls for `stall` (a scheduler stall; pass a multiple of the
+    /// fixture's budget). A test whose assertion a give-up can undo fails here on a fixture that gives up, on any host.
+    static void stallFor(TimeSpan stall) {
+        var until = System.nanoTime() + stall.nanos();
+
+        for (var left = until - System.nanoTime(); left > 0; left = until - System.nanoTime()) {
+            LockSupport.parkNanos(left);
+        }
     }
 
     static QuicClusterNetwork network(Serializer serializer, TimeSpan interval) {

@@ -902,26 +902,34 @@ public sealed interface TopologyAssembly {
     }
 
     /// #3324: the production wiring of the voter-excluded core retirement: the hold asked is `topology`'s own, for the subject `core`,
-    /// and every victim leaves as an `OVERPROVISION_SCALE_DOWN` drain (the reason that keeps the retirement refusal and the grace re-check).
+    /// as the [ClusterTopologyManager.ScalingAsker#RETIREMENT] asker, and every victim leaves as an `OVERPROVISION_SCALE_DOWN` drain (the
+    /// reason that keeps the retirement refusal and the grace re-check).
     static Promise<Unit> retireSurplusCores(List<NodeId> victims,
                                             ClusterTopologyManager topology,
                                             SurplusRefusals refusals) {
         return drainSurplusCores(victims,
-                                 () -> topology.scalingHeld(ClusterTopologyManager.coreSubject()),
+                                 pending -> topology.scalingHeld(ClusterTopologyManager.coreSubject(),
+                                                                 ClusterTopologyManager.ScalingAsker.RETIREMENT,
+                                                                 pending),
                                  node -> topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN),
                                  refusals);
     }
 
     /// #3324: a core excluded from the voter set is core surplus; with auto-heal disabled it is not drained on the cluster's own
-    /// initiative. `coreHeld` is asked only when there is a victim, so it is the worker and community gates' accessor
-    /// ([ClusterTopologyManager#scalingHeld]) and raises the same operator warning only for a surplus that is really held back.
+    /// initiative. `coreHeld` is the worker and community gates' accessor ([ClusterTopologyManager#scalingHeld]) and raises the same
+    /// operator warning only for a surplus that is really held back. #3358: it is asked on EVERY evaluated pass, with `pending` =
+    /// "there is a victim", so this asker's answer is true only while it names a victim; the `core` subject closes when this answer and
+    /// the reconciler's are both false. Not evaluated, so not asked: a non-leader pass ([#retireExcludedCores]) and a pass whose voter
+    /// reconcile failed ([#retirementPass]); a leader change drops every answer, and the next evaluated pass answers for itself.
     /// #3626: a refused victim (the leader's own id among them) skips only itself; every victim after it is still tried, and the
     /// refusal is warned once per transition through `refusals`.
     static Promise<Unit> drainSurplusCores(List<NodeId> victims,
-                                           BooleanSupplier coreHeld,
+                                           Predicate<Boolean> coreHeld,
                                            Function<NodeId, Promise<Unit>> drain,
                                            SurplusRefusals refusals) {
-        if (victims.isEmpty() || coreHeld.getAsBoolean()) {
+        var held = coreHeld.test(!victims.isEmpty());
+
+        if (victims.isEmpty() || held) {
             refusals.retainOnly(List.of());
 
             return Promise.unitPromise();

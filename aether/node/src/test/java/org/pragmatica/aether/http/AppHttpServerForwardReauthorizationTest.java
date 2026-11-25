@@ -37,6 +37,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.http.ProblemDetailJson;
 import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.VersioningMetricsSink;
 import org.pragmatica.lang.Option;
@@ -248,6 +249,10 @@ class AppHttpServerForwardReauthorizationTest {
             assertThat(relayed.statusCode()).as(label + " forwarded status").isEqualTo(status);
             assertThat(direct.headers().firstValue("WWW-Authenticate").orElse(null)).as(label + " direct challenge").isEqualTo(challenge);
             assertThat(relayed.headers().get("WWW-Authenticate")).as(label + " forwarded challenge").isEqualTo(challenge);
+            // #2791: both refusals are problem documents, the forwarded one built by the host that refused it.
+            assertThat(direct.headers().firstValue("Content-Type").orElse("")).as(label + " direct content type").startsWith("application/problem+json");
+            assertThat(relayed.headers().get("Content-Type")).as(label + " forwarded content type").startsWith("application/problem+json");
+            assertThat(ProblemDetailJson.CODEC.decode(relayed.body()).unwrap().status()).as(label + " forwarded body").isEqualTo(status);
             assertThat(router.handleCount()).as(label + " never dispatched").isZero();
         } finally {
             host.stop().await();

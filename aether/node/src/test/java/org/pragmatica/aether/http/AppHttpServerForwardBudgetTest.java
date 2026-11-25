@@ -38,6 +38,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.http.ProblemDetailJson;
 import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.VersioningMetricsSink;
 import org.pragmatica.lang.Option;
@@ -158,6 +159,9 @@ class AppHttpServerForwardBudgetTest {
         var answered = StubSerializer.lastEncoded;
         assertThat(answered.statusCode()).isEqualTo(502);
         assertThat(new String(answered.body())).contains(AppHttpServerAdapter.RESPONSE_TOO_LARGE_DETAIL);
+        // #2791: the 502 is a problem document.
+        assertThat(answered.headers().get("Content-Type")).startsWith("application/problem+json");
+        assertThat(ProblemDetailJson.CODEC.decode(answered.body()).unwrap().status()).isEqualTo(502);
     }
 
     @Test

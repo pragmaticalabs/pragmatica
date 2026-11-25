@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import java.util.concurrent.locks.LockSupport;
 
 import io.netty.buffer.ByteBuf;
@@ -69,6 +70,8 @@ class QuicLaneBacklogTest {
     private static final long POLL_NANOS = TimeSpan.timeSpan(5).millis().nanos();
     /// Quiet window after a wait, long enough for a duplicate asynchronous effect (a second resend) to show.
     private static final long SETTLE_NANOS = TimeSpan.timeSpan(200).millis().nanos();
+    /// Five times the budget of a fixture that gives up ([#networkThatGivesUp]: 5 attempts x 10 ms).
+    private static final long STALL_NANOS = TimeSpan.timeSpan(250).millis().nanos();
 
     /// A stream whose writability, liveness and write behaviour the test drives. `written` holds the first byte of
     /// every frame handed to the stream, in hand-off order.
@@ -151,7 +154,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void writeInOrder_writableStreams_neverCreateABacklogEntry() {
-        var network = LossAccountingFixtures.network(10, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lanes = List.of(writableLane(), writableLane(), writableLane());
 
         for (int i = 0; i < 5; i++) {
@@ -169,7 +172,7 @@ class QuicLaneBacklogTest {
     /// far inside the head-age budget, and every discarded frame is counted once.
     @Test
     void writeInOrder_streamClosesWithFramesHeld_entryGoesAndEveryFrameIsCountedLost() {
-        var network = LossAccountingFixtures.network(100, TimeSpan.timeSpan(100).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(100).millis());
         var lane = new Lane(succeeded(), -1);
 
         holdFrames(network, lane, StreamType.CONSENSUS, 1, 2, 3);
@@ -178,7 +181,7 @@ class QuicLaneBacklogTest {
 
         lane.active.set(false);
 
-        awaitWithin("the closed stream's entry is removed within a few passes, not after the 10 s budget",
+        awaitWithin("the closed stream's entry is removed within a few passes, never by the budget (the fixture has none)",
                     TimeSpan.timeSpan(2).seconds(),
                     () -> network.laneBacklogCountForTests() == 0);
         awaitDropped(network, StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP, 3L);
@@ -243,7 +246,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void pressureCount_directWrite_isNeverCounted() {
-        var network = LossAccountingFixtures.network(10, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = writableLane();
 
         network.writeIfWritableForTest(lane.ch, new byte[]{1}, PEER, StreamType.CONSENSUS);
@@ -253,7 +256,7 @@ class QuicLaneBacklogTest {
     }
 
     private static void assertPressureCountOfMixedBacklog(StreamType firstLane, StreamType secondLane) {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         network.writeIfWritableForTest(lane.ch, new byte[]{1}, PEER, firstLane);
@@ -275,7 +278,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void heldFrame_writeFailsOnARetiredStream_isResentOnceOnTheKeptStream() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var connection = LossAccountingFixtures.connection(PEER, QuicPeerConnection.LaneOpener.noop());
         var kept = LossAccountingFixtures.stream(true);
         var lane = new Lane(failed(), -1);
@@ -302,7 +305,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void heldFrame_writeFailsWithNoResendTarget_isCountedAsAFailedWrite() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(failed(), -1);
 
         network.writeIfWritableForTest(lane.ch, new byte[]{1}, PEER, StreamType.CONSENSUS);
@@ -318,7 +321,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void drain_heldWriteThrows_frameIsCountedLost_andTheDrainWritesTheRest() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), 1);
 
         holdFrames(network, lane, StreamType.CONSENSUS, 1, 2, 3);
@@ -341,7 +344,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void drain_passThrows_backlogIsAbandoned_framesCountedLost_andNothingStaysInFlight() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         holdFrames(network, lane, StreamType.CONSENSUS, 1, 2);
@@ -365,7 +368,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void episode_frameHeldBehindOnAWritableStream_isNotCountedAsBackpressured() {
-        var network = LossAccountingFixtures.network(50, TimeSpan.timeSpan(300).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(300).millis());
         var lane = new Lane(succeeded(), -1);
 
         try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
@@ -391,7 +394,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void removedPeer_writableStream_isWritten_unwritableStream_isDroppedNotHeld() {
-        var network = LossAccountingFixtures.network(10, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var dead = new NodeId("dead-peer");
         var state = PeerState.peerState(dead, System.nanoTime());
         var _ = state.authoritativeRemove(System.nanoTime());
@@ -416,7 +419,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void drain_writesEveryHeldFrame_countsNoGiveUp_warnsNothing_andTheEntryGoes() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         try (var capture = LogCapture.capture(LOGGER, Level.WARN, false)) {
@@ -440,7 +443,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void drain_everyHeldFrameExpires_entryGoes_andEachFrameIsCountedLostOnce() {
-        var network = LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+        var network = networkThatGivesUp();
         var lane = new Lane(succeeded(), -1);
 
         holdFrames(network, lane, StreamType.CONSENSUS, 1, 2, 3);
@@ -460,7 +463,7 @@ class QuicLaneBacklogTest {
     /// at most window/interval + 1 of them; a drainer started per held frame (here 8) runs about eight times that.
     @Test
     void drain_framesHeldBehindStartNoDrainOfTheirOwn_onePassPerIntervalPerBacklog() {
-        var network = LossAccountingFixtures.network(100, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         holdFrames(network, lane, StreamType.CONSENSUS, 1, 2, 3, 4, 5, 6, 7, 8);
@@ -489,7 +492,7 @@ class QuicLaneBacklogTest {
     /// `isActive()` guard keeps the frames off the dead stream, and the next pass gives them up.
     @Test
     void drain_streamClosesBetweenTheLivenessCheckAndTheWrites_framesAreNotWritten_butGivenUp() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
         var activeAnswers = new AtomicInteger(1);
 
@@ -508,7 +511,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void heldWrite_endsTheBackpressureEpisode_theUnwritableFrameOpened() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         holdFrames(network, lane, StreamType.CONSENSUS, 1);
@@ -529,7 +532,7 @@ class QuicLaneBacklogTest {
     /// event, delivered through a production-built data handler, is the only closer run after the holds.
     @Test
     void episode_everyHeldFrameGivenUp_endsWhenTheStreamTurnsWritable_withoutALaterWrite() throws Exception {
-        var network = LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+        var network = networkThatGivesUp();
         var lane = new Lane(succeeded(), -1);
 
         try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
@@ -558,14 +561,17 @@ class QuicLaneBacklogTest {
     /// not written, the backlog retires with it (no later pass), and no writability event, close or later write follows.
     @Test
     void episode_lastHeldFrameGivenUp_endsTheEpisode_withNoEventOrLaterWrite() {
-        var network = LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+        var network = networkThatGivesUp();
         var lane = new Lane(succeeded(), -1);
 
         try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
             lane.writableOnceThis.set(() -> network.quicMetrics()
                                                    .droppedAfterSentCount(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP) > 0L);
             holdFrames(network, lane, StreamType.CONSENSUS, 1);
-            assertThat(network.openBackpressureEpisodesForTests()).as("the held frame opened an episode").isEqualTo(1);
+            // The give-up ends this episode (the stream reads writable from the moment it is counted), so the open count
+            // is not asserted after the hold: the entry WARN is the record that the episode opened.
+            stallPastTheGiveUpBudget();
+            assertThat(entered(capture)).as("the held frame opened an episode").hasSize(1);
 
             awaitWithin("the held frame is given up",
                         AWAIT,
@@ -584,7 +590,7 @@ class QuicLaneBacklogTest {
     /// on a writable stream, so it ends the episode itself.
     @Test
     void episode_backlogAbandonedOnAnOpenWritableStream_endsWithoutALaterWrite() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
@@ -612,7 +618,7 @@ class QuicLaneBacklogTest {
     /// (a DHT frame can share the CONSENSUS stream). The stream's writability event alone ends it.
     @Test
     void episode_dhtFrameGivenUp_endsTheEpisodeOfItsOwnLane() throws Exception {
-        var network = LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+        var network = networkThatGivesUp();
         var lane = new Lane(succeeded(), -1);
 
         try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
@@ -639,7 +645,7 @@ class QuicLaneBacklogTest {
     /// close: each episode ends by its own lane's frame leaving the backlog, and by nothing else.
     @Test
     void episode_framesOfTwoLanesHeldOnOneStream_eachLanesLastFrameLeavingEndsOnlyItsOwnEpisode() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
@@ -676,7 +682,7 @@ class QuicLaneBacklogTest {
     /// both frames, no episode may stay open: the opening and the closer exclude each other.
     @Test
     void episode_drainWritesTheFrameBetweenItsHoldAndItsEpisodeOpening_noEpisodeStaysOpen() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
         var holder = Thread.currentThread();
 
@@ -699,7 +705,7 @@ class QuicLaneBacklogTest {
     /// ends it.
     @Test
     void episode_backlogAbandonedOnAnUnwritableStream_staysOpen_untilTheWritabilityEvent() throws Exception {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
@@ -732,7 +738,7 @@ class QuicLaneBacklogTest {
     /// ends the episode at once: a closed stream is gone, so no writability event is waited for.
     @Test
     void episode_backlogAbandonedOnAClosedStream_endsAtOnce() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
@@ -763,7 +769,7 @@ class QuicLaneBacklogTest {
     /// line. Only when A's frames are written does the episode end, with one line.
     @Test
     void episode_framesHeldOnAnOldStream_keepTheLanesEpisodeOpen_acrossACountedWriteOnTheNewOne() throws Exception {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var old = new Lane(succeeded(), -1);
         var replacement = new Lane(succeeded(), -1);
 
@@ -797,7 +803,7 @@ class QuicLaneBacklogTest {
     /// episode, so no drain runs the closer behind the test's back.
     @Test
     void episode_writabilityCheckThrowsInTheCloser_staysOpen_oneWarn_andTheNextRunEndsIt() throws Exception {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
@@ -828,7 +834,7 @@ class QuicLaneBacklogTest {
     /// ended, whichever of the two the run reaches first; the KV episode stays open with exactly one WARN.
     @Test
     void episode_writabilityCheckThrowsForOneEpisode_thePeersOtherEpisodeIsStillEnded_oneWarn() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var throwing = new Lane(succeeded(), -1);
         var other = new Lane(succeeded(), -1);
 
@@ -859,7 +865,7 @@ class QuicLaneBacklogTest {
     /// follow, and no later write is made.
     @Test
     void episode_streamTurnsWritableBetweenTheRefusalAndItsCount_theRefusedWriteEndsIt() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         try (var capture = LogCapture.capture(LOGGER, Level.INFO, false)) {
@@ -885,7 +891,7 @@ class QuicLaneBacklogTest {
     /// no later write is made and nothing closes: a count with no closer leaves the episode open for good.
     @Test
     void episode_streamTurnsWritableBetweenThePreEncodeRefusalAndItsCount_theRefusedSendEndsIt() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
         var connection = LossAccountingFixtures.connection(PEER, QuicPeerConnection.LaneOpener.noop());
 
@@ -913,7 +919,7 @@ class QuicLaneBacklogTest {
     /// slot). A slot read that takes the backlog lock deadlocks the two: the drain never writes the next frame.
     @Test
     void episode_inlineWritabilityEventsInADrain_raceRefusedWritesOfThePeer_withoutDeadlock() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(2).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(2).millis());
         var lane = new Lane(succeeded(), -1);
         var refusing = new Lane(succeeded(), -1);
         var stop = new AtomicBoolean(false);
@@ -954,7 +960,7 @@ class QuicLaneBacklogTest {
         doThrow(new IllegalStateException("drop metric fault")).doCallRealMethod()
                                                                 .when(metrics)
                                                                 .onDroppedAfterSent(StreamType.CONSENSUS, DropSite.RETRY_GAVE_UP, 1L);
-        var network = networkWith(metrics);
+        var network = networkWith(metrics, QuicLaneBacklogTest::networkThatGivesUp);
 
         assertEpisodeSurvivesAGiveUpFault(network, metrics, new LogFault(""));
     }
@@ -963,7 +969,7 @@ class QuicLaneBacklogTest {
     @Test
     void episode_giveUpWarnThrows_theEpisodeStillEnds_andTheLaneOpensANewOne() throws Exception {
         var metrics = spy(QuicTransportMetrics.quicTransportMetrics());
-        var network = networkWith(metrics);
+        var network = networkWith(metrics, QuicLaneBacklogTest::networkThatGivesUp);
 
         assertEpisodeSurvivesAGiveUpFault(network, metrics, new LogFault("gave up after retries"));
     }
@@ -975,7 +981,7 @@ class QuicLaneBacklogTest {
     @Test
     void episode_entryWarnThrowsOnTheFirstHeldFrame_theFrameIsStillDrained_andNoEpisodeStaysOpen() {
         var metrics = spy(QuicTransportMetrics.quicTransportMetrics());
-        var network = networkWith(metrics);
+        var network = networkWith(metrics, QuicLaneBacklogTest::networkThatNeverGivesUp);
 
         assertFirstHeldFrameSurvivesACountFault(network, new LogFault("entered"));
     }
@@ -989,7 +995,7 @@ class QuicLaneBacklogTest {
         doThrow(new IllegalStateException("retry metric fault")).doCallRealMethod()
                                                                  .when(metrics)
                                                                  .onBackpressureRetry();
-        var network = networkWith(metrics);
+        var network = networkWith(metrics, QuicLaneBacklogTest::networkThatNeverGivesUp);
 
         assertFirstHeldFrameSurvivesACountFault(network, new LogFault(""));
         verify(metrics).onBackpressureRetry();
@@ -1000,7 +1006,7 @@ class QuicLaneBacklogTest {
     /// writability event, no later write, no close.
     @Test
     void episode_clearedInfoThrows_theEpisodeIsStillRemoved() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
         var faulting = new LogFault("lane CONSENSUS cleared");
 
@@ -1055,6 +1061,7 @@ class QuicLaneBacklogTest {
         try (var _ = faulting.capture()) {
             var escaped = catchThrowable(() -> holdFrames(network, lane, StreamType.CONSENSUS, 1));
 
+            stallPastTheGiveUpBudget();
             assertThat(network.heldFrameCountForTests(lane.ch)).as("control: the frame is held").isEqualTo(1);
             assertThat(faulting.faults()).as("control: the armed fault fired, if one was armed").isEqualTo(faulting.armed());
 
@@ -1075,11 +1082,12 @@ class QuicLaneBacklogTest {
     /// refused, loudly where assertions are enabled, and never joins the backlog.
     @Test
     void hold_aFrameOfAnotherPeerReachesTheStreamsBacklog_isRefusedLoudly_andNotHeld() {
-        var network = LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+        var network = networkThatNeverGivesUp();
         var lane = new Lane(succeeded(), -1);
         var other = NodeId.randomNodeId("zzz-other");
 
         holdFrames(network, lane, StreamType.CONSENSUS, 1);
+        stallPastTheGiveUpBudget();
         assertThat(network.heldFrameCountForTests(lane.ch)).as("control: PEER's frame is held").isEqualTo(1);
 
         var refused = catchThrowable(() -> network.writeIfWritableForTest(lane.ch, new byte[]{2}, other, StreamType.CONSENSUS));
@@ -1090,11 +1098,32 @@ class QuicLaneBacklogTest {
 
     /// A network whose transport metrics are `metrics`: the network builds its own through
     /// [QuicTransportMetrics#quicTransportMetrics], which answers `metrics` while the network is constructed.
-    private static QuicClusterNetwork networkWith(QuicTransportMetrics metrics) {
+    private static QuicClusterNetwork networkWith(QuicTransportMetrics metrics, Supplier<QuicClusterNetwork> fixture) {
         try (var factory = mockStatic(QuicTransportMetrics.class, CALLS_REAL_METHODS)) {
             factory.when(QuicTransportMetrics::quicTransportMetrics).thenReturn(metrics);
 
-            return LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+            return fixture.get();
+        }
+    }
+
+    /// The fixture of a test whose subject is the give-up: a held frame is given up about 50 ms after it is held, so such a
+    /// test asserts nothing the give-up can undo and waits on conditions.
+    private static QuicClusterNetwork networkThatGivesUp() {
+        return LossAccountingFixtures.network(5, TimeSpan.timeSpan(10).millis());
+    }
+
+    /// The fixture of every other test (#3686): a held frame stays held until the test releases it.
+    private static QuicClusterNetwork networkThatNeverGivesUp() {
+        return LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(10).millis());
+    }
+
+    /// The race of #3686 made certain: the holding thread stalls for five times the budget of [#networkThatGivesUp]
+    /// before it asserts the frame is held. A fixture that can give up fails the assertion; one that cannot passes it.
+    private static void stallPastTheGiveUpBudget() {
+        var until = System.nanoTime() + STALL_NANOS;
+
+        for (var left = until - System.nanoTime(); left > 0; left = until - System.nanoTime()) {
+            LockSupport.parkNanos(left);
         }
     }
 
@@ -1141,7 +1170,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void sentCounters_directWrite_countsOneMessageAndItsBytes() {
-        var network = LossAccountingFixtures.network(10, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = writableLane();
 
         network.writeIfWritableForTest(lane.ch, new byte[3], PEER, StreamType.CONSENSUS);
@@ -1152,7 +1181,7 @@ class QuicLaneBacklogTest {
 
     @Test
     void sentCounters_heldWrite_countsEachMessageAndItsBytes_onceTheDrainWroteIt() {
-        var network = LossAccountingFixtures.network(500, TimeSpan.timeSpan(20).millis());
+        var network = LossAccountingFixtures.networkWithoutGiveUp(TimeSpan.timeSpan(20).millis());
         var lane = new Lane(succeeded(), -1);
 
         network.writeIfWritableForTest(lane.ch, new byte[5], PEER, StreamType.CONSENSUS);

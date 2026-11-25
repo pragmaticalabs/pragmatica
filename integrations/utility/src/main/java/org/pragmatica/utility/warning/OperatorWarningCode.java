@@ -34,7 +34,7 @@ import org.pragmatica.lang.Option;
 /// conflict with any other PR adding a code (this file merges with `merge=union`, see `.gitattributes`).
 ///
 /// Never rename the string of a shipped code, because anything
-/// that matches on it (alert rules, scripts, a future server-side filter) depends on it.
+/// that matches on it (alert rules, scripts, the `code` filter of `GET /api/v1/events`, #1631) depends on it.
 public enum OperatorWarningCode {
     /// SWIM's #336 co-confirmation kill-gate is holding the death of a long-healthy peer. This node
     /// alone judged the peer FAULTY, with no transport corroboration.
@@ -768,10 +768,16 @@ public enum OperatorWarningCode {
     /// committed value still equals it, the subject is held, and so is the autonomous correction of a loss. A configuration commit that leaves the
     /// value unchanged (another subject's, or an unrelated setting) releases nothing. A value an operator commits WHILE auto-heal is disabled differs:
     /// that is explicit intent, the subject is released and acted on from then on, its loss correction included. An operator-directed retirement is
-    /// not held. Subject is the source/role or the community. Raised once per subject for the run of holds. Closed by [#AUTO_HEAL_SCALING_RESUMED].
+    /// not held. A hold describes a change being held back: a worker source/role closes too when its deficit is filled or its surplus removed
+    /// by an explicit drain, and the core surplus closes when no core member is left to drain, at the next reconcile pass, with auto-heal still
+    /// disabled (#3358). The core surplus has two askers (the leader's surplus drain and the voter-excluded core retirement); it closes only
+    /// when both have nothing pending. A subject whose committed value changed, or whose entry left the configuration, is released at the next
+    /// ask for any subject (the core is asked on every quorum-safe pass). Subject is the source/role, the community or `core`. Raised once per subject for the run of holds.
+    /// Closed by [#AUTO_HEAL_SCALING_RESUMED].
     AUTO_HEAL_SCALING_HELD("auto-heal-scaling-held", "deployment", WarningLevel.WARNING),
-    /// The recovery of [#AUTO_HEAL_SCALING_HELD], same subject: auto-heal is enabled again, or the subject was released by a new committed value, and
-    /// the worker or community path acts on it again. INFO, published only after a published held event for the subject (#752 mechanism). Raised by
+    /// The recovery of [#AUTO_HEAL_SCALING_HELD], same subject: auto-heal is enabled again, the subject was released by a new committed value, or
+    /// nothing is waiting to change any more (#3358: every asker of the subject has nothing pending); the worker, community or core path acts on
+    /// it again when there is something to do. INFO, published only after a published held event for the subject (#752 mechanism). Raised by
     /// the leader that held it.
     AUTO_HEAL_SCALING_RESUMED("auto-heal-scaling-resumed", "deployment", WarningLevel.INFO, AUTO_HEAL_SCALING_HELD),
     /// An upload was refused 429 because this node's `[app-http.upload] max_concurrent` was reached (#2410): the node is holding

@@ -18,6 +18,7 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Linted;
 import org.pragmatica.jbct.lint.cst.RunOutcome.ParseFailed;
 import org.pragmatica.jbct.lint.cst.RunOutcome.ReadFailed;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Refused;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Rewritten;
 import org.pragmatica.jbct.lint.cst.RunOutcome.RootResult;
 import org.pragmatica.jbct.lint.cst.RunOutcome.SkippedByMode;
@@ -366,6 +367,7 @@ record RunLines(Invocation invocation,
             case ReadFailed(var message) -> Option.some(error(readText(file, message)));
             case ParseFailed(var message) -> Option.some(error(formatParseText(file, message)));
             case WriteFailed(var message) -> Option.some(error(writeText(file, message)));
+            case Refused(var message) -> Option.some(error(refusedText(message)));
             default -> Option.none();
         };
     }
@@ -409,6 +411,13 @@ record RunLines(Invocation invocation,
     private static String positioned(FileResult file, String message) {
         return "Parse error at " + file.file()
                                        .getFileName() + ":1:1 - " + message;
+    }
+
+    /// The refusal's own text names the file and the first difference; the CLI marks it as an error line.
+    private String refusedText(String message) {
+        return invocation.surface() == Surface.MAVEN
+               ? message
+               : "  error: " + message;
     }
 
     private String writeText(FileResult file, String message) {
@@ -729,7 +738,7 @@ record RunLines(Invocation invocation,
                                             "Format (checked " + activity(this::formatAttempted, this::formatUnreadable)
                                            + "): " + count(file -> file.format() instanceof Rewritten)
                                            + " formatted, " + count(file -> file.format() instanceof Unchanged)
-                                           + " unchanged, " + count(file -> file.format() instanceof WriteFailed)
+                                           + " unchanged, " + count(this::notWritten)
                                            + " errors"))
                          : Option.<Line> none(),
                          count(this::lintAttempted) > 0
@@ -769,9 +778,9 @@ record RunLines(Invocation invocation,
     String failure() {
         return switch (invocation.command()) {
             case LINT -> reasoned("lint", gapReason(), failingRoots());
-            case CHECK -> reasoned("check", notFormattedReason(), gapReason(), failingRoots());
-            case PROCESS -> count(file -> file.format() instanceof WriteFailed) > 0
-                            ? "Formatting failed for " + count(file -> file.format() instanceof WriteFailed) + " file(s)"
+            case CHECK -> reasoned("check", notFormattedReason(), refusedReason(), gapReason(), failingRoots());
+            case PROCESS -> count(this::notWritten) > 0
+                            ? "Formatting failed for " + count(this::notWritten) + " file(s)"
                             : reasoned("process", gapReason(), failingRoots());
             case FORMAT -> formatFailure();
             case FORMAT_CHECK -> formatCheckFailure();
@@ -802,8 +811,8 @@ record RunLines(Invocation invocation,
                 + " file(s) are not properly formatted:" + wouldChangeList() + (invocation.surface() == Surface.MAVEN
                                                                                 ? "\nRun 'mvn jbct:format' to fix."
                                                                                 : "")
-               : count(this::formatUnreadable) > 0
-                 ? "Format check failed for " + count(this::formatUnreadable) + " file(s)"
+               : count(this::formatErrored) > 0
+                 ? "Format check failed for " + count(this::formatErrored) + " file(s)"
                  : "JBCT format-check failed";
     }
 
@@ -815,6 +824,12 @@ record RunLines(Invocation invocation,
     private Option<String> notFormattedReason() {
         return count(this::wouldChange) > 0
                ? Option.some(count(this::wouldChange) + " file(s) need formatting:" + wouldChangeList())
+               : Option.none();
+    }
+
+    private Option<String> refusedReason() {
+        return count(this::notWritten) > 0
+               ? Option.some(count(this::notWritten) + " file(s) refused by the formatter's content guard")
                : Option.none();
     }
 
@@ -894,7 +909,12 @@ record RunLines(Invocation invocation,
     }
 
     private boolean formatErrored(FileResult file) {
-        return formatUnreadable(file) || file.format() instanceof WriteFailed;
+        return formatUnreadable(file) || notWritten(file);
+    }
+
+    /// The format ran on a parsed tree and the file stays as it was: the write failed or the content guard refused it.
+    private boolean notWritten(FileResult file) {
+        return file.format() instanceof WriteFailed || file.format() instanceof Refused;
     }
 
     /// What the run was able to analyse: files on which some asked activity was attempted, and those among them that

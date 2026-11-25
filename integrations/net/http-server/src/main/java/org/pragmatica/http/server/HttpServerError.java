@@ -16,15 +16,19 @@
 package org.pragmatica.http.server;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 
 /// Error types for HTTP server operations.
 public sealed interface HttpServerError extends Cause {
-    /// Failed to bind to the specified port.
-    record BindFailed(int port, Throwable cause) implements HttpServerError {
+    /// Failed to bind to the specified port, on `bindHost` when the config named one (so an address this machine does
+    /// not own reads as such, not as a bare port).
+    record BindFailed(int port, Throwable cause, Option<String> bindHost) implements HttpServerError {
         @Override
         public String message() {
-            return "Failed to bind to port " + port + ": " + cause.getMessage();
+            return "Failed to bind to " + bindHost.map(host -> host + ":" + port)
+                                                  .or("port " + port)
+                 + ": " + cause.getMessage();
         }
     }
 
@@ -33,6 +37,19 @@ public sealed interface HttpServerError extends Cause {
         @Override
         public String message() {
             return "Failed to start HTTP server: " + reason;
+        }
+    }
+
+    /// The configured bind host is blank or does not resolve to an address at all, so there is no socket address to
+    /// listen on (a host that resolves to an address this machine does not own passes here and fails in the bind, as
+    /// [BindFailed]); the server refuses to start rather than falling back to every interface, which would widen exposure.
+    record BindHostUnresolved(String serverName, String host, Cause cause) implements HttpServerError {
+        @Override
+        public String message() {
+            return "Bind host '" + host
+                 + "' of HTTP server '" + serverName
+                 + "' could not be resolved: " + cause.message()
+                 + "; refusing to start";
         }
     }
 
