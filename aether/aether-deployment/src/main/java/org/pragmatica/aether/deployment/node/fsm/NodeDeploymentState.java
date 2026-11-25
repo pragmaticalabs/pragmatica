@@ -106,7 +106,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
 import org.pragmatica.utility.warning.OperatorWarningCode;
@@ -140,6 +139,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
     record Stopped(NodeDeploymentContext ctx) implements NodeDeploymentState {
         @Override
         public void onEntry() {
+            // #3754: the one end of the node's scheduling lifetime; every timer the FSM armed is cancelled here, from any state that reached Stopped.
+            ctx.lifetime().end();
             LOG.debug("NodeDeploymentManager stopped");
         }
 
@@ -631,9 +632,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// ROUTING, and an ack that lands first clears the tracker and transitions to ACTIVE, so the
         /// later timeout no-ops.
         @Contract
-        private void scheduleRoutingRemediation(SliceNodeKey sliceKey) {
-            SliceState.ROUTING.timeout().onPresent(timeout -> SharedScheduler.schedule(() -> remediateStuckRouting(sliceKey),
-                                                                                       timeout));
+        void scheduleRoutingRemediation(SliceNodeKey sliceKey) {
+            SliceState.ROUTING.timeout().onPresent(timeout -> ctx.lifetime()
+                                                                 .schedule(_ -> remediateStuckRouting(sliceKey),
+                                                                           timeout));
         }
 
         /// ROUTING-timeout fire: if the slice is still ROUTING (no ack-driven transition happened),
@@ -790,8 +792,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// on positive local proof that the slice can actually serve.
         @Contract
         private void scheduleActivationRemediation(SliceNodeKey sliceKey) {
-            SliceState.ACTIVATING.timeout().onPresent(timeout -> SharedScheduler.schedule(() -> remediateStuckActivating(sliceKey),
-                                                                                          timeout));
+            SliceState.ACTIVATING.timeout().onPresent(timeout -> ctx.lifetime()
+                                                                    .schedule(_ -> remediateStuckActivating(sliceKey),
+                                                                              timeout));
         }
 
         /// ACTIVATING-timeout fire. No-op when the slice has already left ACTIVATING.
@@ -1005,7 +1008,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             deferredStarts.put(sliceKey, refusedState);
             if (ctx.parkStart(sliceKey, refusedState)) {
-                SharedScheduler.schedule(() -> escalateParkedStart(sliceKey), ctx.parkedStartBound());
+                ctx.lifetime().schedule(_ -> escalateParkedStart(sliceKey), ctx.parkedStartBound());
             }
 
             log.warn("Node {} defers {} of {}: no committed SliceTarget names this version (#1068) — "
@@ -1064,6 +1067,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                     .millis())
                .filter(parked -> !deferralIsStale(Map.entry(sliceKey,
                                                             parked.state())))
+               // #3754 (N): a body already past the lifetime's wrapper read when the node stopped raises nothing; this node is the
+               // sole writer of the park mark, and the warning is in-memory/event only.
+               .filter(_ -> !ctx.lifetime()
+                                .isEnded())
                .filter(_ -> ctx.markParkWarned(sliceKey))
                .onPresent(parked -> OperatorWarnings.raise(log,
                                                            ctx.operatorWarnings(),
@@ -2522,10 +2529,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return transitionToFailedWithRetry(sliceKey, cause, unrecognised, 0);
         }
 
-        private Promise<SliceNodeKey> transitionToFailedWithRetry(SliceNodeKey sliceKey,
-                                                                  Cause originalCause,
-                                                                  Unrecognised unrecognised,
-                                                                  int attempt) {
+        Promise<SliceNodeKey> transitionToFailedWithRetry(SliceNodeKey sliceKey,
+                                                          Cause originalCause,
+                                                          Unrecognised unrecognised,
+                                                          int attempt) {
             return updateSliceState(sliceKey, SliceNodeValue.failedSliceNodeValue(originalCause, unrecognised)).onFailure(writeCause -> handleFailedTransitionRetry(sliceKey,
                                                                                                                                                                     originalCause,
                                                                                                                                                                     unrecognised,
@@ -2533,11 +2540,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                                                                                                                     attempt));
         }
 
-        private void handleFailedTransitionRetry(SliceNodeKey sliceKey,
-                                                 Cause originalCause,
-                                                 Unrecognised unrecognised,
-                                                 Cause writeCause,
-                                                 int attempt) {
+        void handleFailedTransitionRetry(SliceNodeKey sliceKey,
+                                         Cause originalCause,
+                                         Unrecognised unrecognised,
+                                         Cause writeCause,
+                                         int attempt) {
             if (attempt < MAX_TRANSITION_RETRIES) {
                 log.warn("Failed to write FAILED state for {} (attempt {}/{}), retrying in {}ms: {}",
                          sliceKey.artifact(),
@@ -2545,11 +2552,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                          MAX_TRANSITION_RETRIES,
                          ctx.transitionRetryDelay().millis(),
                          writeCause.message());
-                SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey,
-                                                                           originalCause,
-                                                                           unrecognised,
-                                                                           attempt + 1),
-                                         ctx.transitionRetryDelay());
+                ctx.lifetime()
+                   .schedule(_ -> transitionToFailedWithRetry(sliceKey, originalCause, unrecognised, attempt + 1),
+                             ctx.transitionRetryDelay());
             } else {
                 log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",
                           sliceKey.artifact(),
