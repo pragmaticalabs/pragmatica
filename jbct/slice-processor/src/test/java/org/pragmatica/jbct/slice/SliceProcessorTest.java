@@ -1342,8 +1342,18 @@ class SliceProcessorTest {
     private static List<javax.tools.Diagnostic<? extends JavaFileObject>> compileWithOutputDir(Path classes,
                                                                                                List<JavaFileObject> sources)
     throws IOException {
-        var compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
         var collector = new javax.tools.DiagnosticCollector<JavaFileObject>();
+
+        compileInto(classes, sources, collector);
+        return List.copyOf(collector.getDiagnostics());
+    }
+
+    /// Full compilation (no `-proc:only`): the processor's generated sources are compiled too, so a generated
+    /// factory that does not compile is an error here, as it is in the compile-testing based tests.
+    private static boolean compileInto(Path classes,
+                                       List<JavaFileObject> sources,
+                                       javax.tools.DiagnosticCollector<JavaFileObject> collector) throws IOException {
+        var compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
 
         try (var fileManager = compiler.getStandardFileManager(collector, null, null)) {
             fileManager.setLocationFromPaths(StandardLocation.CLASS_OUTPUT, List.of(classes));
@@ -1351,8 +1361,7 @@ class SliceProcessorTest {
             var task = compiler.getTask(null,
                                         fileManager,
                                         collector,
-                                        List.of("-proc:only",
-                                                "-classpath",
+                                        List.of("-classpath",
                                                 System.getProperty("java.class.path"),
                                                 "-Aslice.groupId=com.example",
                                                 "-Aslice.artifactId=app"),
@@ -1360,10 +1369,8 @@ class SliceProcessorTest {
                                         sources);
 
             task.setProcessors(List.of(new SliceProcessor()));
-            task.call();
+            return task.call();
         }
-
-        return List.copyOf(collector.getDiagnostics());
     }
 
     /// Compiles `sources` with `dependency` declared in `slice-deps.properties` (the production way to name an
@@ -1374,14 +1381,16 @@ class SliceProcessorTest {
                                                                List<JavaFileObject> sources,
                                                                String factory) throws IOException {
         Files.writeString(classes.resolve("slice-deps.properties"), dependency + "=org.example:external:1.0.0\n");
-        var errors = errorsFor(compileWithOutputDir(classes, sources));
+        var collector = new javax.tools.DiagnosticCollector<JavaFileObject>();
+        var succeeded = compileInto(classes, sources, collector);
 
-        assertThat(errors).isEmpty();
+        assertThat(errorsFor(collector.getDiagnostics())).isEmpty();
+        assertThat(succeeded).isTrue();
 
         return Files.readString(classes.resolve(factory.replace('.', '/') + ".java"));
     }
 
-    private static List<String> errorsFor(List<javax.tools.Diagnostic<? extends JavaFileObject>> diagnostics) {
+    private static List<String> errorsFor(List<? extends javax.tools.Diagnostic<? extends JavaFileObject>> diagnostics) {
         return diagnostics.stream()
                           .filter(diagnostic -> diagnostic.getKind() == javax.tools.Diagnostic.Kind.ERROR)
                           .map(diagnostic -> diagnostic.getMessage(null))
@@ -1660,7 +1669,7 @@ class SliceProcessorTest {
         sources.add(externalService);
         sources.add(source);
 
-var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         // Declared method still proxied
         assertThat(factoryContent).contains("MethodHandle<Integer, String> checkStockHandle");
@@ -1722,7 +1731,7 @@ var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.Inv
         sources.add(externalService);
         sources.add(source);
 
-var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("MethodHandle<Integer, String> lookupHandle");
         assertThat(factoryContent).contains("public Promise<Integer> lookup(String key)");
@@ -1970,7 +1979,7 @@ var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.Inv
         sources.add(externalService);
         sources.add(source);
 
-var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("MethodHandle<Integer, String> cachedLookupHandle");
         assertThat(factoryContent).doesNotContain("cacheKeyHandle");
@@ -2031,7 +2040,7 @@ var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.Inv
         sources.add(externalService);
         sources.add(source);
 
-var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("MethodHandle<Integer, String> cachedLookupHandle");
         assertThat(factoryContent).doesNotContain("prefetchHandle");
@@ -2105,7 +2114,7 @@ var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.Inv
         sources.add(externalService);
         sources.add(source);
 
-var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("MethodHandle<Integer, String> auditHandle");
         assertThat(factoryContent).doesNotContain("equalsHandle");
@@ -2174,7 +2183,7 @@ var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.Inv
         sources.add(externalService);
         sources.add(source);
 
-var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("public Promise<Integer> lookup(String alphaKey)");
         assertThat(factoryContent).doesNotContain("betaKey");
@@ -2248,7 +2257,7 @@ var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.Inv
         sources.add(externalService);
         sources.add(source);
 
-var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.InventoryService", sources, "test.OrderServiceFactory");
 
         assertThat(factoryContent).contains("public Promise<Integer> lookup(String key)");
         assertThat(factoryContent).contains("putAll(List<java.lang.String> items)");
@@ -3898,7 +3907,7 @@ var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.Inv
         sources.add(outerInterface);
         sources.add(source);
 
-var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.PaymentGateway.Processor", sources, "test.PaymentServiceFactory");
+        var factoryContent = generatedFactoryOfDeclaredDependency(classes, "external.PaymentGateway.Processor", sources, "test.PaymentServiceFactory");
 
         // Import should be the top-level enclosing class, not the nested type
         assertThat(factoryContent).contains("import external.PaymentGateway;");
