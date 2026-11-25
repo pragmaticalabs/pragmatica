@@ -8,8 +8,10 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Stream;
 
 import com.sun.net.httpserver.HttpServer;
+import org.pragmatica.http.JdkHttpOperations;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -68,19 +70,32 @@ class EventsFilterCommandTest {
     }
 
     @Test
-    void events_withCodeAndSeverity_sendsBothQueryParametersToTheNode() {
-        var exit = new CommandLine(new AetherCli()).execute("--connect", endpoint(), "events", "--code", "core-absence-fence", "--severity", "critical");
+    void events_withCodeAndSeverity_sendsBothQueryParametersToTheNode() throws Exception {
+        var exit = executeAgainstNode("events", "--code", "core-absence-fence", "--severity", "critical");
 
         assertThat(exit).isZero();
         assertThat(rawQueries).containsExactly("code=core-absence-fence&severity=critical");
     }
 
     @Test
-    void events_withNoFilter_sendsNoQueryString() {
-        var exit = new CommandLine(new AetherCli()).execute("--connect", endpoint(), "events");
+    void events_withNoFilter_sendsNoQueryString() throws Exception {
+        var exit = executeAgainstNode("events");
 
         assertThat(exit).isZero();
         assertThat(rawQueries).containsExactly("null");
+    }
+
+    /// `main` builds the HTTP client before it executes; a test that drives `execute` directly must do the same.
+    private int executeAgainstNode(String... args) throws Exception {
+        var cli = new AetherCli();
+        var httpOps = AetherCli.class.getDeclaredField("httpOps");
+
+        httpOps.setAccessible(true);
+        httpOps.set(cli, JdkHttpOperations.jdkHttpOperations());
+
+        var line = Stream.concat(Stream.of("--connect", endpoint()), Stream.of(args)).toArray(String[]::new);
+
+        return new CommandLine(cli).execute(line);
     }
 
     private String endpoint() {
