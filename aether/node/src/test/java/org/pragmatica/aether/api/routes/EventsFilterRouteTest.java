@@ -141,7 +141,7 @@ class EventsFilterRouteTest {
         var holder = new AtomicReference<List<ClusterEventView>>();
         var failure = new AtomicReference<Cause>();
 
-        handler(nodeServing(aggregator)).handle(new StubRequestContext(List.of(), query, null, INSTANCE))
+        handler(nodeServing(aggregator)).handler().handle(new StubRequestContext(List.of(), query, null, INSTANCE))
                                         .await()
                                         .onSuccess(value -> holder.set(viewsFrom(value)))
                                         .onFailure(failure::set);
@@ -158,7 +158,7 @@ class EventsFilterRouteTest {
     private static Cause failureOf(ManageableNode node, Map<String, List<String>> query) {
         var holder = new AtomicReference<Cause>();
 
-        handler(node).handle(new StubRequestContext(List.of(), query, null, INSTANCE))
+        handler(node).handler().handle(new StubRequestContext(List.of(), query, null, INSTANCE))
                      .await()
                      .onSuccess(value -> Assertions.fail("must fail, got: " + value))
                      .onFailure(holder::set);
