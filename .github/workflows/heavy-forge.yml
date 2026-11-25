@@ -53,7 +53,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: 'zulu'
+          distribution: 'temurin'
 
       # #3338: restore-only, the full-set cache saved by CI's forge-tests (setup-java's own cache is saved by whichever job
       # finishes first and may lack plugin dependencies such as plexus-utils for the jbct plugin).
@@ -149,7 +149,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: 'zulu'
+          distribution: 'temurin'
 
       # #3338: restore-only, the full-set cache saved by CI's forge-tests (setup-java's own cache is saved by whichever job
       # finishes first and may lack plugin dependencies such as plexus-utils for the jbct plugin).

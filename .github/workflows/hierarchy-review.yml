@@ -42,7 +42,7 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: zulu
+          distribution: temurin
           cache: maven
       - name: Bootstrap processors
         run: env -u HCLOUD_TOKEN mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
