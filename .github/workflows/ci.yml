@@ -169,7 +169,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: 'zulu'
+          distribution: 'temurin'
 
       # #3297: restore-only. setup-java's own maven cache is saved by whichever job finishes first under one key shared by
       # jobs that resolve different artifacts, so a hit could still lack what this job needs and send it to Central (429).
@@ -261,7 +261,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: 'zulu'
+          distribution: 'temurin'
 
       - name: Restore Maven repository (full-set cache, saved by forge-tests)
         uses: actions/cache/restore@v4
@@ -428,7 +428,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: 'zulu'
+          distribution: 'temurin'
 
       - name: Restore Maven repository (full-set cache, saved by forge-tests)
         uses: actions/cache/restore@v4
@@ -560,7 +560,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: 'zulu'
+          distribution: 'temurin'
 
       - name: Restore Maven repository (full-set cache, saved by forge-tests)
         uses: actions/cache/restore@v4
@@ -636,7 +636,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: 'zulu'
+          distribution: 'temurin'
 
       - name: Restore Maven repository (full-set cache, saved by forge-tests)
         uses: actions/cache/restore@v4
@@ -715,7 +715,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: 'zulu'
+          distribution: 'temurin'
 
       - name: Restore Maven repository (full-set cache, saved by forge-tests)
         if: steps.plan.outputs.modules != ''

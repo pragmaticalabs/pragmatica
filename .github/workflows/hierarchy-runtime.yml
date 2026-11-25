@@ -55,7 +55,7 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: zulu
+          distribution: temurin
           cache: maven
       - name: Record tested merge and PR revisions
         env:
