@@ -1037,6 +1037,23 @@ reset_timeout = "60s"
 test_attempts = 5
 ```
 
+**Scope.** The breaker is **per node and per provision**: each node hosting the slice keeps its own failure count and
+state, and nodes open and close independently. `failure_threshold` is therefore a per-node threshold: a cluster of N
+nodes hosting the slice trips after up to `failure_threshold x N` failures cluster-wide.
+
+**Metrics** (#280 R27). Registered when the node has a metrics registry (`management_port > 0`) and the slice is
+attributed; otherwise the breaker runs unmetered and provisioning still succeeds. Tags: `slice`, `section`. Nothing is
+tagged per method, because one breaker serves every method that names the section; two sections of one slice have
+separate series. The meters are removed when the slice unloads.
+
+| Meter | Type | Tags | Meaning |
+|-------|------|------|---------|
+| `aether.interceptor.circuit_breaker.state` | gauge | `slice`, `section` | `0` closed, `1` open, `2` half-open; read live from the breaker |
+| `aether.interceptor.circuit_breaker.transitions` | counter | `slice`, `section`, `from`, `to` | State changes **observed at call boundaries**: the core breaker has no transition listener, so two changes between consecutive calls (closed, open, half-open) count as the one change a caller could see. The gauge never misses one |
+| `aether.interceptor.circuit_breaker.rejected` | counter | `slice`, `section` | Calls refused while open; the method did not run |
+
+[verified: `CircuitBreakerMetersTest`, #280]
+
 ### Rate Limit
 
 **Resource type:** `RateLimitMethodInterceptor`
@@ -1057,6 +1074,21 @@ max_requests = 200
 window = "1m"
 burst = 50
 ```
+
+**Scope.** The limiter is **per node and per provision**: each node hosting the slice keeps its own token bucket. A
+cluster of N nodes hosting the slice admits up to `max_requests x N` calls per window cluster-wide (`burst x N` of burst
+capacity). The distributed limiter is #144.
+
+**Metrics** (#280 R27). Registered when the node has a metrics registry (`management_port > 0`) and the slice is
+attributed; otherwise the limiter runs unmetered and provisioning still succeeds. Tags: `slice`, `section` (nothing per
+method: one bucket serves every method naming the section). The meters are removed when the slice unloads.
+
+| Meter | Type | Tags | Meaning |
+|-------|------|------|---------|
+| `aether.interceptor.rate_limit.admitted` | counter | `slice`, `section` | Calls the limiter let through |
+| `aether.interceptor.rate_limit.rejected` | counter | `slice`, `section` | Calls the limiter refused; the method did not run |
+
+[verified: `RateLimitMetersTest`, #280]
 
 ### Rate Guard (author-invoked SPI)
 
