@@ -937,6 +937,7 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 | `ttl_seconds` | `int` | `300` | Time-to-live for cached entries — honoured by the local store (`LOCAL`, and the L1 of `TIERED`) only. The DHT has no expiry primitive, so `DISTRIBUTED` entries (and `TIERED`'s L2) do not expire; tracked in #279 |
 | `max_entries` | `int` | `10000` | Maximum number of entries in the local store — a hard cap with least-recently-used eviction (#279); `DISTRIBUTED` storage is bounded by the DHT, not by this field |
 | `mode` | `CacheMode` | `LOCAL` | Cache storage mode |
+| `backend` | `String` | follows `mode` | The store behind the mode: `memory` or `dht` (see Cache Backends). Absent, `LOCAL` uses `memory` and `DISTRIBUTED`/`TIERED` use `dht`, so a section without the key behaves as before. `[guess: key name and values, #3658]` |
 
 ### Cache Strategies
 
@@ -955,6 +956,27 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 | `LOCAL` | In-memory on local node | Fastest, no network overhead |
 | `DISTRIBUTED` | DHT across the cluster | Shared cache, survives node loss. A backend failure reads as a miss and the method runs — the cache is fail-open, so a DHT outage slows the slice rather than failing it (#279) |
 | `TIERED` | Local L1 + distributed L2 | Best of both: fast local reads, falls back to the distributed L2 on a local miss [gap: no cross-node invalidation yet, so a write on one node can leave a stale L1 entry on another — tracked in #279; don't rely on cross-node consistency] |
+
+### Cache Backends
+
+The cache and the idempotency store (`[idempotency.*]` sections take the same `mode` and `backend` keys) obtain
+their store through one selection seam (`CacheBackends`, #3658). `mode` is the topology; `backend` is the store.
+
+| Backend | Fits mode | Aether | Terra | What it promises |
+|---------|-----------|--------|-------|------------------|
+| `memory` | `LOCAL` (and the L1 of every `TIERED`) | yes | yes | Per instance: each node, or each Terra process, holds its own entries; nothing is shared and everything is lost on restart `[mechanism: InMemoryCache is a per-factory heap map]` |
+| `dht` | `DISTRIBUTED`, `TIERED` (as L2) | yes | **no** | As the `DISTRIBUTED` row above for a cache. An idempotency store writes the replicated DHT at the committed `[replication]` factors, not the cache namespace (#1777) |
+
+Refusals are typed, terminal, and raised when the resource is provisioned (slice start); the provisioning
+wrapper adds the section, and each cause text names: for an unknown `backend` (`UnknownBackend`) the backend and the store;
+for a `backend` that does not fit `mode` (`ModeConflict`: `LOCAL` with `dht`, `DISTRIBUTED`/`TIERED` with `memory`)
+the store, the mode and the backend; for `dht` on Terra, which has no cluster (`BackendUnavailable`, whether `dht`
+is named or implied by `DISTRIBUTED`/`TIERED`) the backend, the store and the runtime. Only `BackendUnavailable`
+names the runtime. The Terra refusal
+at a real application start is `[verified: terra/examples/src/test/java/org/pragmatica/terra/example/TerraExamplesTest.java]`;
+the unknown and conflict refusals are `[mechanism: CacheBackends selects before any backend is built; both factories call only it]`.
+Recovery: set `mode = "LOCAL"` (and `backend = "memory"` or no `backend`) for that section on Terra, or fix the
+named key. `terra:assemble --check` does not yet report these; the refusal is at slice start.
 
 ### TOML Example
 
