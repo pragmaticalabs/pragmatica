@@ -17,7 +17,8 @@ import org.pragmatica.lang.Result;
 
 
 /// Management settings under Spring Boot's keys and defaults (#3651). Recognised keys:
-/// `management.endpoints.web.exposure.include` / `.exclude` (comma lists, `*` for all; default include `health`),
+/// `management.endpoints.web.exposure.include` / `.exclude` (a comma list or a TOML array of endpoint ids, `*` for all;
+/// default include `health`),
 /// `management.endpoints.web.base-path` (default `/actuator`), `management.endpoints.web.discovery.enabled` (default
 /// true), `management.endpoints.enabled-by-default` (default true), `management.endpoint.<id>.enabled`,
 /// `management.endpoint.health.show-details` / `.show-components` (`never` | `when-authorized` | `always`; details
@@ -56,9 +57,12 @@ public record ManagementConfig(Set<String> include,
     public record InvalidManagementConfig(String message) implements Cause {}
 
     private static final String ENDPOINT = "management.endpoint.";
+    private static final String ENDPOINT_ID = "[a-z][a-zA-Z0-9]*";
+    private static final String INCLUDE = "management.endpoints.web.exposure.include";
+    private static final String EXCLUDE = "management.endpoints.web.exposure.exclude";
 
-    private static final Set<String> FIXED = Set.of("management.endpoints.web.exposure.include",
-                                                    "management.endpoints.web.exposure.exclude",
+    private static final Set<String> FIXED = Set.of(INCLUDE,
+                                                    EXCLUDE,
                                                     "management.endpoints.web.base-path",
                                                     "management.endpoints.web.discovery.enabled",
                                                     "management.endpoints.enabled-by-default",
@@ -88,21 +92,19 @@ public record ManagementConfig(Set<String> include,
                           flag(keys, "management.endpoints.enabled-by-default", true),
                           enabled(keys),
                           port(keys),
-                          info(keys))
-                     .map((showDetails, showComponents, discovery, enabledByDefault, enabled, port, info) -> new ManagementConfig(list(keys,
-                                                                                                                                       "management.endpoints.web.exposure.include",
-                                                                                                                                       "health"),
-                                                                                                                                  list(keys,
-                                                                                                                                       "management.endpoints.web.exposure.exclude",
-                                                                                                                                       ""),
-                                                                                                                                  basePath(keys),
-                                                                                                                                  discovery,
-                                                                                                                                  enabledByDefault,
-                                                                                                                                  enabled,
-                                                                                                                                  showDetails,
-                                                                                                                                  showComponents,
-                                                                                                                                  port,
-                                                                                                                                  info));
+                          info(keys),
+                          list(keys, INCLUDE, "health"),
+                          list(keys, EXCLUDE, ""))
+                     .map((showDetails, showComponents, discovery, enabledByDefault, enabled, port, info, include, exclude) -> new ManagementConfig(include,
+                                                                                                                                                    exclude,
+                                                                                                                                                    basePath(keys),
+                                                                                                                                                    discovery,
+                                                                                                                                                    enabledByDefault,
+                                                                                                                                                    enabled,
+                                                                                                                                                    showDetails,
+                                                                                                                                                    showComponents,
+                                                                                                                                                    port,
+                                                                                                                                                    info));
     }
 
     /// Exposed over HTTP: included (by id or `*`) and not excluded (by id or `*`).
@@ -120,14 +122,35 @@ public record ManagementConfig(Set<String> include,
                && key.length() > ENDPOINT.length() + ".enabled".length()
                && key.substring(ENDPOINT.length(),
                                 key.length() - ".enabled".length())
-                     .matches("[a-z][a-zA-Z0-9]*");
+                     .matches(ENDPOINT_ID);
     }
 
-    private static Set<String> list(Map<String, String> keys, String key, String fallback) {
-        return Arrays.stream(Option.option(keys.get(key)).or(fallback).split(","))
-                     .map(String::trim)
-                     .filter(item -> !item.isEmpty())
-                     .collect(Collectors.toUnmodifiableSet());
+    // A comma list ("health,info"), or the TOML array the source flattens to "[health, info]" (Spring accepts a list
+    // too). Every item must be an endpoint id or `*`: a mistyped list would otherwise silently expose nothing.
+    private static Result<Set<String>> list(Map<String, String> keys, String key, String fallback) {
+        var text = Option.option(keys.get(key)).or(fallback).trim();
+        var array = text.startsWith("[") || text.endsWith("]");
+
+        if (array && !(text.startsWith("[") && text.endsWith("]"))) {
+            return invalid(key + " has an unbalanced bracket: " + text);
+        }
+
+        var items = Arrays.stream((array
+                                   ? text.substring(1,
+                                                    text.length() - 1)
+                                   : text).split(","))
+                          .map(String::trim)
+                          .filter(item -> !item.isEmpty())
+                          .toList();
+
+        return items.stream()
+                    .allMatch(ManagementConfig::isExposureItem)
+               ? Result.success(Set.copyOf(items))
+               : invalid(key + " must list endpoint ids or *: " + text);
+    }
+
+    private static boolean isExposureItem(String item) {
+        return item.equals("*") || item.matches(ENDPOINT_ID);
     }
 
     // Spring strips a trailing slash and reads an empty base path as the root.

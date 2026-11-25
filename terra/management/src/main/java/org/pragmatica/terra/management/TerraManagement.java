@@ -80,22 +80,36 @@ public final class TerraManagement {
         return InfoEndpoint.buildInfo(loader);
     }
 
-    /// The host mount, or none when `management.server.port` is `-1`. A management port equal to a non-zero
-    /// `applicationPort` shares the application listener, as Spring does.
-    public Result<Option<TerraHttpMount>> mount(int applicationPort) {
+    /// The host mount, or none when `management.server.port` is `-1`. A management port equal to a non-zero port of
+    /// the `application` listener shares it, as Spring does. A separate management listener inherits the application
+    /// transport's TLS and maximum content length (Spring does the same while `management.server.ssl` is unset), so
+    /// the credentials a management request carries are never sent in the clear beside an encrypted application.
+    public Result<Option<TerraHttpMount>> mount(HttpServerConfig application) {
+        var secure = application.tls().isPresent();
+
         return switch (config.port()) {
             case Port.Disabled() -> Result.success(Option.empty());
-            case Port.Shared() -> mount(Option.empty());
-            case Port.Separate(var port) when port == applicationPort && port != 0 -> mount(Option.empty());
-            case Port.Separate(var port) -> mount(Option.some(HttpServerConfig.httpServerConfig("terra-management", port)));
+            case Port.Shared() -> mount(Option.empty(), secure);
+            case Port.Separate(var port) when port == application.port() && port != 0 -> mount(Option.empty(), secure);
+            case Port.Separate(var port) -> mount(Option.some(listener(application, port)), secure);
         };
     }
 
-    private Result<Option<TerraHttpMount>> mount(Option<HttpServerConfig> listener) {
+    private static HttpServerConfig listener(HttpServerConfig application, int port) {
+        var plain = HttpServerConfig.httpServerConfig(application.name() + "-management",
+                                                      port)
+                                    .withMaxContentLength(application.maxContentLength());
+
+        return application.tls()
+                          .map(plain::withTls)
+                          .or(plain);
+    }
+
+    private Result<Option<TerraHttpMount>> mount(Option<HttpServerConfig> listener, boolean secure) {
         return TerraHttpMount.terraHttpMount(config.basePath(),
                                              listener,
                                              this::policy,
-                                             this::handle)
+                                             (request, status) -> handle(request, status, secure))
                              .map(Option::some);
     }
 
@@ -118,18 +132,21 @@ public final class TerraManagement {
         return config.showDetails() == ManagementConfig.Show.WHEN_AUTHORIZED || config.showComponents() == ManagementConfig.Show.WHEN_AUTHORIZED;
     }
 
-    Promise<HttpResponseData> handle(HttpRequestContext request, TerraHttpServer.Status status) {
+    Promise<HttpResponseData> handle(HttpRequestContext request, TerraHttpServer.Status status, boolean secure) {
         return target(request.path()).fold(() -> Promise.success(HttpResponseData.httpResponseData(404)),
-                                           target -> answer(target, request, status));
+                                           target -> answer(target, request, status, secure));
     }
 
-    private Promise<HttpResponseData> answer(Target target, HttpRequestContext request, TerraHttpServer.Status status) {
+    private Promise<HttpResponseData> answer(Target target,
+                                             HttpRequestContext request,
+                                             TerraHttpServer.Status status,
+                                             boolean secure) {
         if (!request.method().equalsIgnoreCase("GET")) {
             return Promise.success(HttpResponseData.httpResponseData(405, Map.of("Allow", "GET"), new byte[0]));
         }
 
         return switch (target) {
-            case Target.Discovery() -> Promise.success(render(Reply.json(200, discovery(request)), request));
+            case Target.Discovery() -> Promise.success(render(Reply.json(200, discovery(request, secure)), request));
             case Target.Endpoint(var endpoint, var selectors) -> endpoint.handler().apply(Call.call(selectors,
                                                                                                     request.queryParams(),
                                                                                                     request.security().isAuthenticated(),
@@ -177,9 +194,13 @@ public final class TerraManagement {
                                             .equals(ROOT_BASE);
     }
 
-    private Map<String, Object> discovery(HttpRequestContext request) {
-        var base = header(request, "Host").map(host -> header(request, "X-Forwarded-Proto").or("http") + "://" + host)
-                         .or("") + config.basePath();
+    // The scheme is https when the serving listener has TLS; only a plain listener falls back to the proxy's
+    // X-Forwarded-Proto, then http.
+    private Map<String, Object> discovery(HttpRequestContext request, boolean secure) {
+        var scheme = secure
+                     ? "https"
+                     : header(request, "X-Forwarded-Proto").or("http");
+        var base = header(request, "Host").map(host -> scheme + "://" + host).or("") + config.basePath();
         var links = new LinkedHashMap<String, Object>();
 
         links.put("self", link(base, false));

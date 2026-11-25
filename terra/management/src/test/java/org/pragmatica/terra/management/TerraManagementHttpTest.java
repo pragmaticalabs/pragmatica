@@ -23,6 +23,8 @@ import org.pragmatica.aether.http.security.HttpAuthenticator;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.json.JsonMapper;
@@ -104,6 +106,63 @@ class TerraManagementHttpTest {
             assertThat(json(db).get("status").asString()).isEqualTo("OUT_OF_SERVICE");
             assertThat(host.get("/actuator/health/nope").statusCode()).isEqualTo(404);
         }
+    }
+
+    /// A failing indicator's `error` detail is the client-facing text of its cause (`HttpError.clientMessage`), not the
+    /// cause's `message()`, which may carry the origin chain; a throwing indicator still reads DOWN with a detail.
+    @Test
+    void healthIndicatorFailure_errorDetailIsTheClientMessage_neverTheRawMessage() throws Exception {
+        var settings = Map.of("management.endpoint.health.show-details", "always");
+        Map<String, HealthIndicator> indicators = Map.of("leaky", () -> new Leaky(HttpStatus.INTERNAL_SERVER_ERROR).promise(),
+                                                         "thrower", () -> {
+                                                             throw new IllegalStateException("boom");
+                                                         });
+
+        try (var host = Host.start(settings, indicators)) {
+            var components = json(host.get("/actuator/health")).get("components");
+
+            assertThat(components.at("/leaky/details/error").asString()).isEqualTo("safe text");
+            assertThat(components.at("/thrower/status").asString()).isEqualTo("DOWN");
+            assertThat(components.at("/thrower/details/error").asString()).isNotEmpty();
+        }
+    }
+
+    record Leaky(HttpStatus status) implements HttpError {
+        @Override
+        public String message() {
+            return "origin chain: secret internals";
+        }
+
+        @Override
+        public String clientMessage() {
+            return "safe text";
+        }
+    }
+
+    /// `include` / `exclude` take a comma list or a TOML array (which the source flattens to `[a, b]`); anything that
+    /// is not an endpoint id or `*` is refused naming the key, never read as an empty exposure.
+    @Test
+    void exposure_arrayAndCommaForms_agree_andMalformedListsAreRefusedNamingTheKey() {
+        var key = "management.endpoints.web.exposure.include";
+
+        for (var form : List.of("health,info", "[health, info]", " [ health ,info ] ")) {
+            var config = ManagementConfig.managementConfig(Map.of(key, form)).unwrap();
+
+            assertThat(config.include()).as(form).containsExactlyInAnyOrder("health", "info");
+        }
+
+        assertThat(ManagementConfig.managementConfig(Map.of(key, "[]")).unwrap().include()).isEmpty();
+        assertThat(ManagementConfig.managementConfig(Map.of(key, "[*]")).unwrap().exposed("metrics")).isTrue();
+
+        for (var bad : List.of("[health", "health]", "[health, in fo]", "\"health\"", "[1, 2]")) {
+            var refusal = ManagementConfig.managementConfig(Map.of(key, bad)).<String>fold(cause -> cause.message(), _ -> "accepted");
+
+            assertThat(refusal).as(bad).contains(key);
+        }
+
+        var exclude = ManagementConfig.managementConfig(Map.of("management.endpoints.web.exposure.exclude", "[info]")).unwrap();
+
+        assertThat(exclude.exclude()).containsExactly("info");
     }
 
     @Test
@@ -264,9 +323,9 @@ class TerraManagementHttpTest {
             var metrics = ManagementMetrics.managementMetrics(registry, () -> Option.some("requests_total 3.0\n"));
             var config = ManagementConfig.managementConfig(settings).unwrap();
             var management = TerraManagement.terraManagement(config, indicators, Map.of(), Option.some(metrics)).unwrap();
-            var mounts = management.mount(-2).unwrap().stream().toList();
-            var http = TerraHttpConfig.terraHttpConfig(HttpServerConfig.httpServerConfig("terra-test", 0),
-                                                       RouteMountMode.pathMode(), SecurityPolicy.apiKeyRequired()).unwrap();
+            var transport = HttpServerConfig.httpServerConfig("terra-test", 0);
+            var mounts = management.mount(transport).unwrap().stream().toList();
+            var http = TerraHttpConfig.terraHttpConfig(transport, RouteMountMode.pathMode(), SecurityPolicy.apiKeyRequired()).unwrap();
             var server = TerraHttpServer.start(application(), http, HttpAuthenticator.apiKeyValidator(Set.of(KEY)), List.of(),
                                                JsonMapper.defaultJsonMapper(), mounts)
                                         .await(timeSpan(10).seconds()).unwrap();

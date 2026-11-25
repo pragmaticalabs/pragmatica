@@ -1,1 +1,3 @@
 org.pragmatica.terra.launcher.ConfigFactoryFixture
+org.pragmatica.terra.launcher.OkSliceFixture
+org.pragmatica.terra.launcher.ActuatorSliceFixture

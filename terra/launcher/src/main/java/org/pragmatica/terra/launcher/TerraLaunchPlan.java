@@ -127,16 +127,33 @@ public final class TerraLaunchPlan {
     }
 
     // #3651: the management.* and info.* settings of terra.toml, read and checked at load like the HTTP settings.
+    // Spring's `management.*` keys carry dashes (`base-path`), which an environment name cannot (`_` is its only
+    // separator inside a segment), so `_` reads as `-` in a management key. A setting given in both forms with
+    // different values is refused: neither would be the one the operator meant.
     private static Result<ManagementConfig> managementSettings(ConfigurationProvider settings) {
+        return managementKeys(settings).flatMap(ManagementConfig::managementConfig);
+    }
+
+    static Result<Map<String, String>> managementKeys(ConfigurationProvider settings) {
         var keys = new LinkedHashMap<String, String>();
 
-        settings.keys()
-                .stream()
-                .filter(key -> key.startsWith("management.") || key.startsWith("info."))
-                .forEach(key -> settings.getString(key)
-                                        .onPresent(value -> keys.put(key, value)));
+        for (var key : settings.keys()) {
+            var value = settings.getString(key);
 
-        return ManagementConfig.managementConfig(keys);
+            if (value.isPresent() && (key.startsWith("management.") || key.startsWith("info."))) {
+                var name = key.startsWith("management.")
+                           ? key.replace('_', '-')
+                           : key;
+                var previous = Option.option(keys.put(name, value.unwrap()));
+
+                if (previous.filter(earlier -> !earlier.equals(value.unwrap())).isPresent()) {
+                    return new TerraLaunchError("Management setting " + name
+                                               + " is given in two forms with different values").result();
+                }
+            }
+        }
+
+        return Result.success(keys);
     }
 
     // The management endpoints mount beside the slice routes; a default configuration exposes only health at
@@ -147,7 +164,7 @@ public final class TerraLaunchPlan {
                                                                                 Map.of(),
                                                                                 build,
                                                                                 Option.empty()))
-                              .flatMap(management -> management.mount(http.config().transport().port()))
+                              .flatMap(management -> management.mount(http.config().transport()))
                               .map(mount -> mount.stream()
                                                  .toList());
     }

@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+import org.pragmatica.http.HttpError;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -137,13 +138,14 @@ final class HealthEndpoint {
     }
 
     // FER: a failed or throwing indicator degrades to its component reading DOWN with Spring's `error` detail, so one
-    // broken check answers 503 instead of failing the whole health request.
+    // broken check answers 503 instead of failing the whole health request. The detail is the client-facing text of
+    // the cause, never its message(): a thrown indicator's message is the whole stack trace.
     private static Promise<Health> invoke(HealthIndicator indicator) {
         return Promise.lift(Causes::fromThrowable, indicator::health)
                       .flatMap(promise -> promise)
                       .recover(cause -> Health.health(Status.DOWN,
                                                       Map.of("error",
-                                                             cause.message())));
+                                                             HttpError.clientMessage(cause))));
     }
 
     private static Reply composite(Map<String, Health> checked, boolean components, boolean details, boolean root) {
