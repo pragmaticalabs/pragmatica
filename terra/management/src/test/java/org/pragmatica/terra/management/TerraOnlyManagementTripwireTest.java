@@ -8,10 +8,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -54,25 +54,23 @@ class TerraOnlyManagementTripwireTest {
     }
 
     static List<Path> actuatorHits(Path aether) throws IOException {
-        try (var files = sources(aether)) {
-            return files.filter(path -> path.toString().contains("/src/main/"))
-                        .filter(path -> MARKERS.stream().anyMatch(read(path)::contains))
-                        .toList();
-        }
+        return sources(aether).stream()
+                              .filter(path -> path.toString().contains("/src/main/"))
+                              .filter(path -> MARKERS.stream().anyMatch(read(path)::contains))
+                              .toList();
     }
 
     static List<Path> terraDependents(Path aether) throws IOException {
-        try (var files = sources(aether)) {
-            return files.filter(path -> path.getFileName().toString().equals("pom.xml"))
-                        .filter(path -> read(path).matches("(?s).*<artifactId>\\s*terra[^<]*</artifactId>.*"))
-                        .toList();
-        }
+        return sources(aether).stream()
+                              .filter(path -> path.getFileName().toString().equals("pom.xml"))
+                              .filter(path -> read(path).matches("(?s).*<artifactId>\\s*terra[^<]*</artifactId>.*"))
+                              .toList();
     }
 
-    private static Stream<Path> sources(Path aether) throws IOException {
-        return Files.walk(aether)
-                    .filter(Files::isRegularFile)
-                    .filter(path -> !path.toString().contains("/target/") && !path.toString().contains("/node_modules/"));
+    // #3703: `aether/` is a multi-module root, so the walk is SourceWalk's (it prunes target/ and node_modules/, which a
+    // parallel build creates and deletes mid-walk) and never a raw Files.walk.
+    private static List<Path> sources(Path aether) throws IOException {
+        return SourceWalk.files(aether);
     }
 
     private static String read(Path path) {
