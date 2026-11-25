@@ -12,6 +12,7 @@ import org.pragmatica.jbct.init.AiToolsRef;
 import org.pragmatica.jbct.shared.GitHubContentFetcher;
 import org.pragmatica.jbct.shared.HttpClients;
 import org.pragmatica.jbct.shared.PathValidation;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -26,6 +27,9 @@ import org.slf4j.LoggerFactory;
 /// Uses GitHub Tree API to dynamically discover files under ai-tools/.
 /// The installed ref is recorded in `.claude/.ai-tools-version` as `<tag>@<commit sha>`.
 /// Files already present in the user's global ~/.claude/ are skipped (resolved globally).
+/// Limit: files a previous ref installed and the new ref no longer carries are NOT deleted from `.claude/`, which also
+/// holds the user's own skills and agents; only the init cache is cleared (`AiToolsInstaller`). A failed update
+/// removes `.ai-tools-version` before the first file is written, so it never leaves an old stamp over mixed content.
 public final class AiToolsUpdater {
     private static final Logger log = LoggerFactory.getLogger(AiToolsUpdater.class);
     private static final Path GLOBAL_CLAUDE_DIR = Path.of(System.getProperty("user.home"), ".claude");
@@ -104,10 +108,14 @@ public final class AiToolsUpdater {
         return downloadFiles(pinned, latestSha);
     }
 
-    // Fetched at the commit the tag resolved to, so the content is exactly what the recorded ref names.
+    // Fetched at the commit the tag resolved to, so the content is exactly what the recorded ref names. The stamp goes
+    // before the first file is written (after the files were listed: a ref that cannot be resolved or listed changes
+    // nothing), so a download that dies half-way leaves no stamp for an older build to call "up to date".
     private Result<AiToolsOutcome> downloadFiles(AiToolsRef pinned, String commitSha) {
         return GitHubContentFetcher.discoverFiles(http, AiToolsRef.REPO, commitSha, AI_TOOLS_PREFIX)
-                                   .flatMap(remotePaths -> downloadAllFiles(pinned, commitSha, remotePaths))
+                                   .flatMap(remotePaths -> clearVersion().flatMap(_ -> downloadAllFiles(pinned,
+                                                                                                        commitSha,
+                                                                                                        remotePaths)))
                                    .flatMap(outcome -> saveCurrentVersion(pinned.stamp(commitSha)).map(_ -> outcome));
     }
 
@@ -159,6 +167,17 @@ public final class AiToolsUpdater {
 
             return Option.none();
         }
+    }
+
+    private Result<Unit> clearVersion() {
+        return Result.lift(AiToolsUpdater::clearFailure,
+                           () -> Files.deleteIfExists(claudeDir.resolve(VERSION_FILE)))
+                     .mapToUnit();
+    }
+
+    private static Cause clearFailure(Throwable throwable) {
+        return Causes.cause("Failed to clear the version file: " + throwable.getMessage(),
+                            Option.some(Causes.fromThrowable(throwable)));
     }
 
     private Result<Path> saveCurrentVersion(String stamp) {

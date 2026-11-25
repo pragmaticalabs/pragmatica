@@ -26,6 +26,8 @@ import static org.pragmatica.jbct.init.ResultViews.refOf;
 class AiToolsUpdaterPinTest {
     // A file name no real ~/.claude carries, so the global-skip rule never hides it.
     private static final String FILE = "skills/zz-pin-2363/SKILL.md";
+    // Present at ref B only: the file whose download the failure tests break.
+    private static final String ONLY_B = "skills/zz-pin-2363-only-b/SKILL.md";
     private static final String TAG_A = "ai-tools-v7.8.9";
     private static final String TAG_B = "ai-tools-v7.8.10";
 
@@ -107,6 +109,61 @@ class AiToolsUpdaterPinTest {
         var cause = causeOf(check(dir, FakeGitHub.fakeGitHub(), "7.8.9"));
 
         assertThat(cause).isInstanceOf(AiToolsRefError.TagNotFound.class);
+    }
+
+    @Test
+    void update_failedDownload_leavesNoStamp_soTheOldBuildDoesNotCallItselfUpToDate(@TempDir Path dir) throws Exception {
+        update(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A")), "7.8.9", false);
+        var failing = FakeGitHub.fakeGitHub()
+                                .withRef(TAG_B, "sha-b", Map.of(FILE, "tools at B", ONLY_B, "only at B"))
+                                .withFailure("sha-b/ai-tools/" + ONLY_B);
+
+        var failed = update(dir, failing, "7.8.10", false);
+        var mixed = Files.readString(dir.resolve(".claude").resolve(FILE));
+        var oldBuild = update(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A")), "7.8.9", false);
+
+        assertThat(causeOf(failed)).as("the update fails").isNotNull();
+        assertThat(mixed).as("the tree is mixed now").isEqualTo("tools at B");
+        assertThat(isEmptyOutcome(oldBuild)).as("old build must not say up to date").isFalse();
+        assertThat(installedCount(oldBuild)).isEqualTo(1);
+        assertThat(Files.readString(dir.resolve(".claude").resolve(FILE))).as("old build repaired the tree").isEqualTo("tools at A");
+    }
+
+    @Test
+    void update_failedDownload_removesTheStampBeforeAnyRetry(@TempDir Path dir) {
+        update(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A")), "7.8.9", false);
+        var failing = FakeGitHub.fakeGitHub()
+                                .withRef(TAG_B, "sha-b", Map.of(FILE, "tools at B", ONLY_B, "only at B"))
+                                .withFailure("sha-b/ai-tools/" + ONLY_B);
+
+        update(dir, failing, "7.8.10", false);
+
+        assertThat(dir.resolve(".claude/.ai-tools-version")).as("no stamp over half-done content").doesNotExist();
+    }
+
+    @Test
+    void update_refThatCannotBeResolved_orListed_changesNothing(@TempDir Path dir) throws Exception {
+        update(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A")), "7.8.9", false);
+        var unlistable = FakeGitHub.fakeGitHub()
+                                   .withRef(TAG_B, "sha-b", Map.of(FILE, "tools at B"))
+                                   .withFailure("git/trees/sha-b");
+
+        var missingTag = update(dir, FakeGitHub.fakeGitHub(), "7.8.10", false);
+        var cannotList = update(dir, unlistable, "7.8.10", false);
+
+        assertThat(causeOf(missingTag)).isInstanceOf(AiToolsRefError.TagNotFound.class);
+        assertThat(causeOf(cannotList)).isNotNull();
+        assertThat(Files.readString(dir.resolve(".claude/.ai-tools-version"))).isEqualTo(TAG_A + "@sha-a");
+        assertThat(Files.readString(dir.resolve(".claude").resolve(FILE))).isEqualTo("tools at A");
+    }
+
+    @Test
+    void update_doesNotDeleteWhatTheNewRefDropped_becauseClaudeHoldsTheUsersOwnFiles(@TempDir Path dir) throws Exception {
+        update(dir, FakeGitHub.fakeGitHub().withRef(TAG_A, "sha-a", Map.of(FILE, "tools at A", ONLY_B, "only at A")), "7.8.9", false);
+
+        update(dir, FakeGitHub.fakeGitHub().withRef(TAG_B, "sha-b", Map.of(FILE, "tools at B")), "7.8.10", false);
+
+        assertThat(Files.readString(dir.resolve(".claude").resolve(ONLY_B))).as("documented limit").isEqualTo("only at A");
     }
 
     private static Result<AiToolsOutcome> update(Path dir, FakeGitHub github, String version, boolean force) {

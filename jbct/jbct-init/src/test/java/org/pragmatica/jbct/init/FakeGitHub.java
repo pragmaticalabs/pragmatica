@@ -21,6 +21,7 @@ public final class FakeGitHub implements HttpOperations {
 
     private final Map<String, HttpResult<String>> answers = new TreeMap<>();
     private final List<String> requests = new ArrayList<>();
+    private final List<String> failingUrlParts = new ArrayList<>();
     private final boolean offline;
 
     private FakeGitHub(boolean offline) {
@@ -50,6 +51,12 @@ public final class FakeGitHub implements HttpOperations {
         return this;
     }
 
+    /// Every request whose URL contains `urlPart` answers 500, whatever was served for it before (a half-done download).
+    public FakeGitHub withFailure(String urlPart) {
+        failingUrlParts.add(urlPart);
+        return this;
+    }
+
     public List<String> requests() {
         return List.copyOf(requests);
     }
@@ -65,12 +72,18 @@ public final class FakeGitHub implements HttpOperations {
         requests.add(url);
         return offline
                ? HttpClientError.ConnectionFailed.connectionFailed("offline (test stub)").<HttpResult<String>>promise()
-               : Promise.success(answers.getOrDefault(url, status(404)));
+               : Promise.success(answerFor(url));
     }
 
     @Override
     public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
         return HttpClientError.ConnectionFailed.connectionFailed("only sendString is served (test stub)").promise();
+    }
+
+    private HttpResult<String> answerFor(String url) {
+        return failingUrlParts.stream().anyMatch(url::contains)
+               ? status(500)
+               : answers.getOrDefault(url, status(404));
     }
 
     private static HttpResult<String> ok(String body) {

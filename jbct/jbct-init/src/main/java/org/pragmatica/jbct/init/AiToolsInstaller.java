@@ -3,6 +3,7 @@ package org.pragmatica.jbct.init;
 import java.io.IOException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
@@ -26,7 +27,8 @@ import org.pragmatica.lang.utils.Causes;
 /// The tools are fetched at the tag `ai-tools-v<jbct version>` of the running build (#2363), never `main`
 /// ([AiToolsRef]). Uses an offline cache at ~/.jbct/cache/ai-tools/ for faster installs, refreshing it
 /// whenever the commit the tag points at, or the tag itself, differs from the cached one; the cache records the
-/// ref it holds in `.ref` and is reused offline only when it holds this build's ref.
+/// ref it holds in `.ref` and is reused offline only when it holds this build's ref. A refresh removes the stamp,
+/// then the cached `skills/` and `agents/`, before the first file is written, so the cache never mixes refs.
 /// Files already present in the user's global ~/.claude/ are skipped (resolved globally).
 public final class AiToolsInstaller {
     private static final Path CACHE_DIR = Path.of(System.getProperty("user.home"), ".jbct", "cache", "ai-tools");
@@ -132,11 +134,36 @@ public final class AiToolsInstaller {
         }
     }
 
-    // Fetched at the commit the tag resolved to, so the content is exactly what the recorded ref names.
+    // Fetched at the commit the tag resolved to, so the content is exactly what the recorded ref names. The files are
+    // listed first (a ref that cannot be listed leaves the cache untouched); then the stamp goes FIRST, so a refresh
+    // that dies half-way leaves a cache no ref claims, and skills/ and agents/ are emptied, so a file the ref does
+    // not carry (left by another ref, or by main) cannot survive under this ref's stamp.
     private Result<Unit> downloadToCache(AiToolsRef pinned, String sha) {
         return GitHubContentFetcher.discoverFiles(http, AiToolsRef.REPO, sha, AI_TOOLS_PREFIX)
-                                   .flatMap(files -> downloadAllFiles(sha, files))
+                                   .flatMap(files -> clearCache().flatMap(_ -> downloadAllFiles(sha, files)))
                                    .flatMap(_ -> saveVersion(pinned.stamp(sha)));
+    }
+
+    private Result<Unit> clearCache() {
+        return Result.lift(AiToolsInstaller::clearFailure,
+                           () -> Files.deleteIfExists(cacheDir.resolve(VERSION_FILE)))
+                     .flatMap(_ -> deleteTree(cacheDir.resolve("skills")))
+                     .flatMap(_ -> deleteTree(cacheDir.resolve("agents")));
+    }
+
+    // A symbolic link is deleted itself, never followed: walkFileTree does not follow links unless asked to.
+    private static Result<Unit> deleteTree(Path root) {
+        return Files.exists(root, LinkOption.NOFOLLOW_LINKS)
+               ? Result.lift(AiToolsInstaller::clearFailure,
+                             () -> Files.walkFileTree(root,
+                                                      new DeleteTreeVisitor()))
+                       .mapToUnit()
+               : Result.unitResult();
+    }
+
+    private static Cause clearFailure(Throwable throwable) {
+        return Causes.cause("Failed to clear the AI tools cache: " + throwable.getMessage(),
+                            Option.some(Causes.fromThrowable(throwable)));
     }
 
     private Result<List<Path>> downloadAllFiles(String sha, List<String> remotePaths) {
@@ -243,6 +270,26 @@ public final class AiToolsInstaller {
 
             Files.copy(file, targetFile, StandardCopyOption.REPLACE_EXISTING);
             installed.add(targetFile);
+
+            return FileVisitResult.CONTINUE;
+        }
+    }
+
+    /// Deletes a directory tree bottom-up. The `throws IOException` signatures are dictated by [java.nio.file.FileVisitor];
+    /// [#deleteTree] lifts them.
+    private static final class DeleteTreeVisitor extends SimpleFileVisitor<Path> {
+        @Contract
+        @Override
+        public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+            Files.delete(file);
+
+            return FileVisitResult.CONTINUE;
+        }
+
+        @Contract
+        @Override
+        public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+            Files.delete(dir);
 
             return FileVisitResult.CONTINUE;
         }
