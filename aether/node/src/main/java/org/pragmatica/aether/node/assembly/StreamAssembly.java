@@ -1460,6 +1460,10 @@ public sealed interface StreamAssembly {
         // that consumer on the next pass, now rather than on the 5s tick. The manager filters the key type.
         allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                                  streamConsumerManager::onCheckpointPut));
+        // #1400: every ACCEPTED checkpoint, whichever node committed it, reaches the group's projection hosted here,
+        // so a node whose assignment moved away mid-rebuild leaves REBUILDING on the new assignee's committed cursor.
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                                 streamClusterCursorStore::onCheckpointPut));
         // A rebuild's rewind record counts as committed once its accepted-put notification is seen here; a
         // read-back alone is overtaken by the restarted consumer's first checkpoint at the same epoch.
         var rewindWitness = CommitWitness.commitWitness();
