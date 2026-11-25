@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.stream;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -37,6 +37,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testing.PollUntil;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -66,6 +67,7 @@ class WorkerCursorResumeTest {
     private static final Epoch EPOCH = Epoch.epoch(0L, 1L, 1L);
     private static final StreamCursorCheckpointKey KEY = StreamCursorCheckpointKey.streamCursorCheckpointKey(STREAM, PARTITION, GROUP);
     private static final RewindEpoch REWOUND = RewindEpoch.rewindEpoch(0L, 1L, 1L);
+    private static final Duration AWAIT_DEADLINE = Duration.ofSeconds(5);
 
     private static final ConsumerFence ADMITTED = new ConsumerFence() {
         @Override
@@ -101,7 +103,7 @@ class WorkerCursorResumeTest {
     @Nested
     class Resume {
         @Test
-        void workerSuccessor_committedCursorFound_resumesFromIt() throws InterruptedException {
+        void workerSuccessor_committedCursorFound_resumesFromIt() {
             var reads = new AtomicInteger();
             var runtime = runtimeOver(workerStore(countingRead(reads, () -> found(3L))));
             var delivered = new CopyOnWriteArrayList<Long>();
@@ -109,7 +111,6 @@ class WorkerCursorResumeTest {
             try {
                 subscribe(runtime, delivered);
                 awaitSize(delivered, 2);
-                Thread.sleep(100);
 
                 assertThat(reads.get()).describedAs("the worker asked a core, not its own mirror").isGreaterThanOrEqualTo(1);
                 assertThat(delivered).describedAs("resumes at the committed cursor: no redelivery of 0..2").containsExactly(3L, 4L);
@@ -119,7 +120,7 @@ class WorkerCursorResumeTest {
         }
 
         @Test
-        void freshGroupOnWorker_readProvesAbsent_startsAtTheResetPoint() throws InterruptedException {
+        void freshGroupOnWorker_readProvesAbsent_startsAtTheResetPoint() {
             var runtime = runtimeOver(workerStore(_ -> Promise.success(Option.none())));
             var delivered = new CopyOnWriteArrayList<Long>();
 
@@ -137,7 +138,7 @@ class WorkerCursorResumeTest {
         /// The partition is held while the read cannot answer, the read is retried, and once it answers the consumer starts
         /// at the committed cursor: no redelivery below it and no skip past it. The warning opens once and closes once.
         @Test
-        void unreadableRead_doesNotStart_retriesAndWarnsOnce_thenResumesFromTheCommittedCursor() throws InterruptedException {
+        void unreadableRead_doesNotStart_retriesAndWarnsOnce_thenResumesFromTheCommittedCursor() {
             var unreadable = new AtomicBoolean(true);
             var reads = new AtomicInteger();
             var warnings = new CopyOnWriteArrayList<OperatorWarning>();
@@ -162,7 +163,6 @@ class WorkerCursorResumeTest {
                 unreadable.set(false);
                 awaitSize(delivered, 3);
                 awaitWarning(warnings, OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE);
-                Thread.sleep(100);
 
                 assertThat(delivered).describedAs("starts at the committed cursor once the core answers").containsExactly(2L, 3L, 4L);
                 assertThat(codes(warnings)).describedAs("the episode is closed exactly once")
@@ -176,7 +176,7 @@ class WorkerCursorResumeTest {
         /// A worker that owns the partition, loses it and owns it again resolves the committed cursor again at the second
         /// start: it resumes where the interim owner committed, never from what it read or held at its first tenure.
         @Test
-        void workerBecomesOwnerTwice_secondTenureReadsTheCommittedCursorAgain() throws InterruptedException {
+        void workerBecomesOwnerTwice_secondTenureReadsTheCommittedCursorAgain() {
             var committed = new AtomicReference<Option<StreamCursorCheckpointValue>>(found(1L).await().unwrap());
             var reads = new AtomicInteger();
             var runtime = runtimeOver(workerStore(countingRead(reads, () -> Promise.success(committed.get()))));
@@ -192,7 +192,6 @@ class WorkerCursorResumeTest {
 
                 subscribe(runtime, second);
                 awaitSize(second, 2);
-                Thread.sleep(100);
 
                 assertThat(first).containsExactly(1L, 2L, 3L, 4L);
                 assertThat(second).describedAs("the second tenure starts at the interim owner's committed cursor")
@@ -206,7 +205,7 @@ class WorkerCursorResumeTest {
         /// A worker's local mirror is never the cluster half of its resume, even when it does show a checkpoint (a mirror
         /// lagging behind the core): the read answer wins.
         @Test
-        void workerMirrorShowsAnOlderCheckpoint_readAnswerIsUsed() throws InterruptedException {
+        void workerMirrorShowsAnOlderCheckpoint_readAnswerIsUsed() {
             var store = ClusterCursorStore.clusterCursorStore(emptyLocal(),
                                                               SELF,
                                                               _ -> Option.some(checkpoint(0L)),
@@ -448,35 +447,23 @@ class WorkerCursorResumeTest {
                        .toList();
     }
 
-    private static void awaitSize(List<Long> delivered, int size) throws InterruptedException {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-
-        while (delivered.size() < size && System.nanoTime() < deadline) {
-            Thread.sleep(10);
-        }
+    private static void awaitSize(List<Long> delivered, int size) {
+        PollUntil.pollUntil(delivered::size, count -> count >= size, AWAIT_DEADLINE)
+                 .assertMet(size + " deliveries");
     }
 
-    private static void awaitAtLeast(AtomicInteger counter, int count) throws InterruptedException {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-
-        while (counter.get() < count && System.nanoTime() < deadline) {
-            Thread.sleep(10);
-        }
+    private static void awaitAtLeast(AtomicInteger counter, int count) {
+        PollUntil.pollUntil(counter::get, value -> value >= count, AWAIT_DEADLINE)
+                 .assertMet(count + " cursor reads");
     }
 
-    private static void awaitWarning(List<OperatorWarning> warnings, OperatorWarningCode code) throws InterruptedException {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-
-        while (warnings.stream().noneMatch(warning -> warning.code() == code) && System.nanoTime() < deadline) {
-            Thread.sleep(10);
-        }
+    private static void awaitWarning(List<OperatorWarning> warnings, OperatorWarningCode code) {
+        PollUntil.pollUntil(() -> codes(warnings), raised -> raised.contains(code), AWAIT_DEADLINE)
+                 .assertMet("warning " + code);
     }
 
-    private static void awaitGone(StreamConsumerRuntime runtime) throws InterruptedException {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-
-        while (!runtime.subscriptions().isEmpty() && System.nanoTime() < deadline) {
-            Thread.sleep(10);
-        }
+    private static void awaitGone(StreamConsumerRuntime runtime) {
+        PollUntil.pollUntil(runtime::subscriptions, List::isEmpty, AWAIT_DEADLINE)
+                 .assertMet("the subscription to be gone");
     }
 }
