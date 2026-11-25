@@ -965,11 +965,15 @@ public interface StreamConfigParser {
                                                                 declared.hot(),
                                                                 maxEventSize))
                                .fold(() -> success(declared),
-                                     cause -> cause.result());
+                                     Cause::result);
     }
 
     private static Option<Cause> hotWindowRefusal(String alias, Option<HotWindowDeclaration> hot, long maxEventSize) {
-        return hot.flatMap(window -> belowSealRuns(alias, window).orElse(() -> belowMaxEvent(alias, window, maxEventSize)));
+        return hot.flatMap(window -> hotFloors(alias, window, maxEventSize));
+    }
+
+    private static Option<Cause> hotFloors(String alias, HotWindowDeclaration window, long maxEventSize) {
+        return belowSealRuns(alias, window).orElse(() -> belowMaxEvent(alias, window, maxEventSize));
     }
 
     private static Option<Cause> belowSealRuns(String alias, HotWindowDeclaration window) {
@@ -1009,9 +1013,13 @@ public interface StreamConfigParser {
     /// Only `hot.max_count` is checked, against the capacity of the first region of `hot.max_bytes`: a `[retention]`
     /// `max_count` no longer sizes the ring, and `StreamPartitionManager` keeps its own check as the second line.
     private static Option<Cause> unindexableRefusal(String alias, Option<HotWindowDeclaration> hot, long maxEventSize) {
-        return hot.flatMap(window -> Option.all(window.maxBytes(),
-                                                window.maxCount())
-                                           .flatMap((bytes, count) -> unindexable(alias, bytes, count, maxEventSize)));
+        return hot.flatMap(window -> unindexableIn(alias, window, maxEventSize));
+    }
+
+    private static Option<Cause> unindexableIn(String alias, HotWindowDeclaration window, long maxEventSize) {
+        return Option.all(window.maxBytes(),
+                          window.maxCount())
+                     .flatMap((bytes, count) -> unindexable(alias, bytes, count, maxEventSize));
     }
 
     private static Option<Cause> unindexable(String alias, long hotBytes, long hotCount, long maxEventSize) {
