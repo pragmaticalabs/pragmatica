@@ -729,6 +729,29 @@ class StreamResourceValidatorTest {
             assertRuleFor("[streams.orders.truncation]\npolicy = \"until_consumed\"\n", StreamResourceValidator.RULE_NOT_YET_AVAILABLE);
         }
 
+        @Test
+        void hotWindowBelowSealRuns_reportsItsOwnRule() {
+            assertRuleFor("[streams.orders.hot]\nmax_bytes = \"1MB\"\n", StreamResourceValidator.RULE_HOT_WINDOW_BELOW_SEAL_RUNS);
+        }
+
+        @Test
+        void hotWindowBelowMaxEvent_reportsItsOwnRule() {
+            assertRuleFor("max_event_size = \"8MB\"\n\n[streams.orders.hot]\nmax_bytes = \"4MB\"\n",
+                          StreamResourceValidator.RULE_HOT_WINDOW_BELOW_MAX_EVENT);
+        }
+
+        @Test
+        void retentionShareTooSmall_reportsItsOwnRule() {
+            assertRuleFor("partitions = 1024\n\n[streams.orders.retention]\nmax_bytes = \"1GB\"\n",
+                          StreamResourceValidator.RULE_RETENTION_SHARE_TOO_SMALL);
+        }
+
+        @Test
+        void retentionCountUnindexable_reportsItsOwnRule() {
+            assertRuleFor("max_event_size = \"1MB\"\n\n[streams.orders.hot]\nmax_count = 9000000000000000000\n",
+                          StreamResourceValidator.RULE_RETENTION_COUNT_UNINDEXABLE);
+        }
+
         private void assertRuleFor(String sections, String rule) {
             var toml = "[streams.orders]\nversion = \"1.0.0\"\n\n" + sections;
 
