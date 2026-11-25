@@ -281,14 +281,98 @@ class AsyncJooqConnectorLiveQueryTest {
         assertThat(three.get(ua)).isEmpty();
     }
 
-    @Test
-    void fetchOne_untypedColumnTheDriverCannotConvert_failsWithAMessageNamingTheColumnTypeAndTarget() {
-        freshUuidTable();
+    private static void freshRichTable() {
+        success(connector.execute(connector.dsl().query("DROP TABLE IF EXISTS live_rich")));
+        success(connector.execute(connector.dsl().query("CREATE TABLE live_rich(id INT PRIMARY KEY, doc JSONB, span INTERVAL, addr INET, docs JSONB[], rng INT4RANGE, x XML, m MONEY, b BIT(3))")));
+        success(connector.execute(connector.dsl().query("INSERT INTO live_rich(id, doc, span, addr, docs, rng, x, m, b) VALUES (1, '{\"a\":1}', '1 day 2 hours', '10.0.0.1', ARRAY['{\"a\":1}']::jsonb[], int4range(1, 5), '<a/>', '1.5', B'101')")));
+    }
 
-        var cause = failure(connector.fetchOne(connector.dsl().select(DSL.field("doc")).from(DSL.table("live_uuids")).where(DSL.field("id", Integer.class).eq(1))));
+    private static org.jooq.Record richRow(org.jooq.Field<?>... fields) {
+        return success(connector.fetchOne(connector.dsl().select(fields).from(DSL.table("live_rich")).where(DSL.field("id", Integer.class).eq(1))));
+    }
+
+    /// #2501: a column the driver has no Java type for (jsonb, interval, inet, jsonb[], range, xml, money, bit) is read untyped as
+    /// the server's text rendering; it was refused with a conversion error.
+    @Test
+    void fetchOne_untypedJsonbIntervalAndInet_returnTheServersText() {
+        freshRichTable();
+
+        var record = richRow(DSL.field("doc"), DSL.field("span"), DSL.field("addr"));
+
+        assertThat(record.get(0)).isEqualTo("{\"a\": 1}");
+        assertThat(record.get(1)).isEqualTo("1 day 02:00:00");
+        assertThat(record.get(2)).isEqualTo("10.0.0.1");
+    }
+
+    @Test
+    void fetchOne_untypedJsonbArrayRangeXmlMoneyAndBit_returnTheServersText() {
+        freshRichTable();
+
+        var record = richRow(DSL.field("docs"), DSL.field("rng"), DSL.field("x"), DSL.field("m"), DSL.field("b"));
+
+        assertThat(record.get(0)).isEqualTo("{\"{\\\"a\\\": 1}\"}");
+        assertThat(record.get(1)).isEqualTo("[1,5)");
+        assertThat(record.get(2)).isEqualTo("<a/>");
+        assertThat(record.get(3)).isEqualTo("$1.50");
+        assertThat(record.get(4)).isEqualTo("101");
+    }
+
+    @Test
+    void fetchOne_untypedNullJsonbIntervalAndInet_areNull() {
+        freshRichTable();
+        success(connector.execute(connector.dsl().query("INSERT INTO live_rich(id) VALUES (2)")));
+
+        var record = success(connector.fetchOne(connector.dsl().select(DSL.field("doc"), DSL.field("span"), DSL.field("addr")).from(DSL.table("live_rich")).where(DSL.field("id", Integer.class).eq(2))));
+
+        assertThat(record.get(0)).isNull();
+        assertThat(record.get(1)).isNull();
+        assertThat(record.get(2)).isNull();
+    }
+
+    @Test
+    void fetchOne_typedJsonbAndInterval_areReadByTheirJooqTypes() {
+        freshRichTable();
+
+        var doc = DSL.field("doc", SQLDataType.JSONB);
+        var span = DSL.field("span", SQLDataType.INTERVAL);
+        var record = richRow(doc, span);
+
+        assertThat(record.get(doc)).isEqualTo(org.jooq.JSONB.valueOf("{\"a\": 1}"));
+        assertThat(record.get(span)).isEqualTo(org.jooq.types.YearToSecond.valueOf(java.time.Duration.ofHours(26)));
+    }
+
+    @Test
+    void fetchOne_typedInetAsAString_isReadByItsJooqType() {
+        freshRichTable();
+
+        var addr = DSL.field("addr::text", SQLDataType.VARCHAR);
+        var record = richRow(addr);
+
+        assertThat(record.get(addr)).isEqualTo("10.0.0.1");
+    }
+
+    @Test
+    void jsonbIntervalAndInet_roundTripThroughBoundParameters() {
+        freshRichTable();
+        success(connector.execute(connector.dsl().query("INSERT INTO live_rich(id, doc, span, addr) VALUES (2, ?::jsonb, ?::interval, ?::inet)", "{\"b\":2}", "3 hours", "192.168.0.1")));
+
+        var record = success(connector.fetchOne(connector.dsl().select(DSL.field("doc"), DSL.field("span"), DSL.field("addr")).from(DSL.table("live_rich")).where(DSL.field("id", Integer.class).eq(2))));
+
+        assertThat(record.get(0)).isEqualTo("{\"b\": 2}");
+        assertThat(record.get(1)).isEqualTo("03:00:00");
+        assertThat(record.get(2)).isEqualTo("192.168.0.1");
+    }
+
+    /// The conversion error of #2481 still names the column, the PostgreSQL type and the target when the target is one the driver
+    /// has no conversion to.
+    @Test
+    void fetchOne_aTargetTheDriverCannotConvert_failsWithAMessageNamingTheColumnTypeAndTarget() {
+        freshRichTable();
+
+        var cause = failure(connector.fetchOne(connector.dsl().select(DSL.field("doc", java.util.Map.class)).from(DSL.table("live_rich")).where(DSL.field("id", Integer.class).eq(1))));
 
         assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
-        assertThat(cause.message()).contains("'doc'").contains("JSONB").contains("java.lang.Object").doesNotContain("null");
+        assertThat(cause.message()).contains("'doc'").contains("JSONB").contains("java.util.Map").doesNotContain("null");
     }
 
     @Test
