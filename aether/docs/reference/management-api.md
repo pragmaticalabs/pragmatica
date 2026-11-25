@@ -432,6 +432,11 @@ Get cluster events from the event aggregator. Returns structured events includin
 
 Both parameters must be used together to form a cursor. Clients should persist the `originEpoch` and `originSeq` fields from the last received event and pass them on the next request.
 
+- `code` (optional) -- keep only the events whose `details.code` equals this value. The match is exact and case-sensitive: a code is the stable kebab-case identifier of an operator warning (for example `swim-kill-gate-held`, see `OPERATOR_WARNING` under Event Types below), and `OPERATOR_WARNING` events are the ones that carry one. A code no event carries answers `200` with an empty list, not an error.
+- `severity` (optional) -- a minimum level: keep the events at this severity or above, in the order `INFO` < `WARNING` < `CRITICAL`. `severity=WARNING` keeps `WARNING` and `CRITICAL` events. The value is case-insensitive; anything other than `INFO`, `WARNING` or `CRITICAL` (including `UNKNOWN`, which only marks a level the answering node cannot name) is refused with `400` and no events are read. An event whose own severity is `UNKNOWN` passes every `severity` filter, because the node cannot rank it below the minimum.
+
+`code` and `severity` combine with AND, and apply to the events the cursor selected. They filter the answering node's view of the feed; the staleness and de-duplication rules below are unchanged.
+
 **Examples:**
 ```bash
 # All events
@@ -439,7 +444,21 @@ curl http://localhost:8080/api/v1/events
 
 # Events after a known cursor position
 curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
+
+# One warning class
+curl "http://localhost:8080/api/v1/events?code=swim-kill-gate-held"
+
+# WARNING and CRITICAL events only
+curl "http://localhost:8080/api/v1/events?severity=warning"
+
+# Both: that warning class, only when it is CRITICAL
+curl "http://localhost:8080/api/v1/events?code=core-absence-fence&severity=CRITICAL"
+
+# 400: not a severity
+curl "http://localhost:8080/api/v1/events?severity=loud"
 ```
+
+CLI: `aether events [--code <code>] [--severity <level>]`.
 
 **Response:**
 ```json
@@ -534,7 +553,7 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 
 `DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
 
-`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Neither this endpoint nor `aether events` can filter on it (or on severity) yet, so fetch the feed and match `details.code` yourself. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node, except an INFO recovery code, which follows the warning it closes (see `stream-consumer-state-repaired`); `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes:
+`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Filter on it with `GET /api/v1/events?code=<code>` or `aether events --code <code>` (#1631), and select a minimum severity with `severity=` / `--severity`. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node, except an INFO recovery code, which follows the warning it closes (see `stream-consumer-state-repaired`); `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes:
 
 - `swim-kill-gate-held` (WARNING — SWIM is holding the death of a long-healthy peer that only this node accused)
 - `core-absence-fence` (CRITICAL — a worker lost the core and is dissolving locally)

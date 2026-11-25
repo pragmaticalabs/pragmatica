@@ -450,7 +450,18 @@ aether events
 
 # Events since a specific time
 aether events --since 2024-01-15T10:30:00Z
+
+# One operator-warning class, by its details.code (exact match; an unknown code lists nothing)
+aether events --code swim-kill-gate-held
+
+# WARNING and CRITICAL events only (a minimum level; INFO, WARNING or CRITICAL, any case)
+aether events --severity warning
+
+# Both: the code AND at least this severity
+aether events --code core-absence-fence --severity CRITICAL
 ```
+
+`--code` and `--severity` map to the `code` and `severity` query parameters of [`GET /api/v1/events`](management-api.md#get-apiv1events). A `--severity` value other than `INFO`, `WARNING` or `CRITICAL` is refused by the node with a 400.
 
 Output:
 ```
