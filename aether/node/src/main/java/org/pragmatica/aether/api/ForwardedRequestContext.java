@@ -4,13 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import java.util.Locale;
-
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.QueryParams;
 import org.pragmatica.http.HttpRequest;
+import org.pragmatica.lang.Option;
 
 
 record ForwardedRequestContext(HttpRequestContext source,
@@ -18,9 +17,15 @@ record ForwardedRequestContext(HttpRequestContext source,
                                Headers headers,
                                QueryParams queryParams,
                                Headers trailers) implements HttpRequest {
-    static ForwardedRequestContext forwardedRequestContext(HttpRequestContext source) {
+    /// Empty when the forwarded method names no [HttpMethod] (a mixed-version peer or a malformed frame): the receiver
+    /// refuses it with an error reply instead of throwing out of the dispatch (#3550).
+    static Option<ForwardedRequestContext> forwardedRequestContext(HttpRequestContext source) {
+        return HttpMethod.fromString(source.method()).map(method -> forwardedRequestContext(source, method));
+    }
+
+    private static ForwardedRequestContext forwardedRequestContext(HttpRequestContext source, HttpMethod method) {
         return new ForwardedRequestContext(source,
-                                           HttpMethod.valueOf(source.method().toUpperCase(Locale.ROOT)),
+                                           method,
                                            Headers.headers(source.headers()),
                                            QueryParams.queryParams(source.queryParams()),
                                            Headers.trailers(source.trailers()));

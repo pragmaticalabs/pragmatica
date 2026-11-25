@@ -18,7 +18,7 @@ graph TB
     subgraph Invocation["Invocation Layer"]
         SI["SliceInvoker"]
         IH["InvocationHandler"]
-        DAI["DynamicAspectInterceptor"]
+        OSC["ObservabilityStrategyCell"]
         IC["InvocationContext<br/>(ScopedValue)"]
     end
 
@@ -43,7 +43,7 @@ graph TB
     ER --> Local
     ER --> RemotePath
 
-    Local --> DAI --> SS --> Slice
+    Local --> OSC --> SS --> Slice
     RemotePath -->|"Netty TCP"| IH
 ```
 
@@ -187,18 +187,20 @@ v1 weight: 3, v2 weight: 1
 
 Weights are adjusted via `aether deploy promote <id>` (or the `/api/v1/deploy/promote/{id}` endpoint).
 
-## DynamicAspectInterceptor
+## ObservabilityStrategyCell
 
-Runtime-configurable per-method instrumentation:
+Each dispatch seam (`SliceInvoker`, `AdmittedSliceBridge`, `HttpRoutePublisher`) carries an `ObservabilityStrategyCell` per `artifactBase/methodName`. The cell holds one swappable strategy; the invocation passes through it.
 
-| Mode | Effect |
-|------|--------|
-| `LOG` | Log entry/exit with timing |
-| `METRICS` | Collect invocation metrics (count, latency, success/failure) |
-| `LOG_AND_METRICS` | Both |
-| `NONE` | No interception |
+| Facet | Effect |
+|-------|--------|
+| Logging | Depth-leveled entry/exit logging with timing |
+| Metrics | Invocation metrics (count, latency, success/failure) |
+| Tracing | Sampled invocation traces |
+| Spans | Span creation |
 
-Toggled at runtime via REST API (`/api/v1/observability/depth`, `/api/v1/observability/config`) without redeployment. Configuration persisted in KV-Store via `AspectConfigKey`.
+An unconfigured method runs the baseline (depth-leveled logging, sampled tracing, counting; spans off). A configured method runs only the facets its toggles select; an explicit all-off config is identity.
+
+Reconfigured at runtime via REST (`/api/v1/observability/depth`, `/api/v1/observability/config`) or `aether observability config-set` without redeployment. Configuration is persisted in the KV-Store under `ObservabilityConfigKey` and resolved by scope (method, then artifact `*`, then global `*/*`, then baseline).
 
 ## Generated Proxies
 
@@ -298,4 +300,4 @@ sequenceDiagram
 
 - [06-http-routing.md](06-http-routing.md) - HTTP request routing and forwarding
 - [02-deployment.md](02-deployment.md) - Endpoint registration during deployment
-- [07-observability.md](07-observability.md) - Invocation metrics and aspect configuration
+- [07-observability.md](07-observability.md) - Invocation metrics and observability configuration

@@ -399,4 +399,92 @@ class DdlTest extends GrammarTestBase {
         @Test void grantOnSchema() { assertParses("GRANT USAGE ON SCHEMA public TO app_user"); }
         @Test void revoke() { assertParses("REVOKE INSERT, UPDATE ON users FROM readonly"); }
     }
+
+    /// Multi-word type names (#3672). The words are separate lexemes with trivia between them, so a
+    /// grammar alternative must name them as consecutive keywords: a character class between them
+    /// is tested against the NEXT token's first character, never against the skipped whitespace,
+    /// and silently never matches. The rule-level LexicalTest cases cannot see this -- they do not
+    /// require the whole input to be consumed -- so each case here parses a whole statement.
+    @Nested
+    class MultiWordTypes {
+        @Test void doublePrecisionInCreateTable() {
+            assertParses("CREATE TABLE t (id BIGINT PRIMARY KEY, ratio DOUBLE PRECISION)");
+        }
+
+        @Test void doublePrecisionLowerCase() {
+            assertParses("CREATE TABLE t (id bigint, ratio double precision NOT NULL)");
+        }
+
+        @Test void doublePrecisionMixedCase() {
+            assertParses("CREATE TABLE t (id bigint, ratio DoUbLe PrEcIsIoN)");
+        }
+
+        @Test void doublePrecisionAcrossNewline() {
+            assertParses("CREATE TABLE t (id bigint, ratio DOUBLE\n    PRECISION)");
+        }
+
+        @Test void doublePrecisionWithManySpacesAndTab() {
+            assertParses("CREATE TABLE t (id bigint, ratio DOUBLE  \t  PRECISION DEFAULT 0)");
+        }
+
+        @Test void doublePrecisionArray() {
+            assertParses("CREATE TABLE t (id bigint, ratios DOUBLE PRECISION[])");
+        }
+
+        @Test void doublePrecisionInAlterAddColumn() {
+            assertParses("ALTER TABLE t ADD COLUMN ratio DOUBLE PRECISION");
+        }
+
+        @Test void doublePrecisionInAlterAddColumnAcrossNewline() {
+            assertParses("ALTER TABLE t ADD COLUMN ratio double\nprecision DEFAULT 1.5");
+        }
+
+        @Test void doublePrecisionInAlterColumnType() {
+            assertParses("ALTER TABLE t ALTER COLUMN ratio TYPE DOUBLE PRECISION");
+        }
+
+        @Test void doublePrecisionInCast() {
+            assertParses("SELECT amount::DOUBLE PRECISION, CAST(amount AS double precision) FROM t");
+        }
+
+        @Test void characterVaryingInCreateTable() {
+            assertParses("CREATE TABLE t (id bigint, name CHARACTER VARYING(100) NOT NULL)");
+        }
+
+        @Test void characterVaryingWithoutLength() {
+            assertParses("CREATE TABLE t (id bigint, name character\nvarying)");
+        }
+
+        @Test void characterVaryingInAlterAddColumn() {
+            assertParses("ALTER TABLE t ADD COLUMN name CHARACTER VARYING(20)");
+        }
+
+        @Test void characterVaryingInCast() {
+            assertParses("SELECT CAST(id AS character varying) FROM t");
+        }
+
+        @Test void bitVaryingInCreateTable() {
+            assertParses("CREATE TABLE t (id bigint, flags BIT VARYING(8))");
+        }
+
+        @Test void bitVaryingAcrossNewline() {
+            assertParses("ALTER TABLE t ADD COLUMN flags bit\n  varying(16)");
+        }
+
+        @Test void timestampWithTimeZoneAcrossNewline() {
+            assertParses("CREATE TABLE t (id bigint, at TIMESTAMP WITH\n  TIME ZONE)");
+        }
+
+        @Test void timeWithoutTimeZoneInAlterAddColumn() {
+            assertParses("ALTER TABLE t ADD COLUMN at TIME WITHOUT TIME ZONE");
+        }
+
+        @Test void groupingSetsAcrossWhitespace() {
+            assertParses("SELECT a, count(*) FROM t GROUP BY GROUPING\n  SETS ((a), ())");
+        }
+
+        @Test void securityLabelAcrossWhitespace() {
+            assertParses("SECURITY  LABEL ON TABLE t IS 'x'");
+        }
+    }
 }

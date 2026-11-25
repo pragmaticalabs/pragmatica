@@ -9,6 +9,8 @@ Updated: 2026-02-20
 Affects: [aether-invoke, aether-node, forge-core, slice-processor, resource-api]
 ---
 
+> **Superseded (aspect removal, #3649).** References below to `DynamicAspectInterceptor` and `DynamicAspectRegistry` describe the system this RFC replaced. That system is **removed** from the code; the replacement is `ObservabilityStrategyCell` at the dispatch seams with `ObservabilityConfigRegistry` as the write side.
+
 ## Summary
 
 Single invocation tree structure that captures timing, input/output, and call depth at every dependency boundary. Three views from one data source:
