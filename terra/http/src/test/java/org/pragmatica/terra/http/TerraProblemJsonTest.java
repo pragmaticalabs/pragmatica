@@ -62,6 +62,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// draining). The `type` member is part 2 and stays `about:blank`.
 class TerraProblemJsonTest {
     private static final String SECRET = "disk-secret-do-not-leak";
+    private static final Cause UNEXPECTED = Causes.fromThrowable(new IllegalStateException(SECRET));
     private static final Map<String, ApiKeyEntry> KEYS = Map.of("reader-secret", ApiKeyEntry.apiKeyEntry("reader", Set.of("viewer"), "VIEWER"));
 
     record Sample() {}
@@ -121,7 +122,7 @@ class TerraProblemJsonTest {
             failing("/invalid", new Invalid("name must not be blank")),
             failing("/plain", Causes.cause(SECRET)),
             failing("/conflict", new Conflicting("order already exists")),
-            failing("/unexpected", Causes.fromThrowable(new IllegalStateException(SECRET))),
+            failing("/unexpected", UNEXPECTED),
             Route.<String>get("/boom").withoutParameters().to(_ -> Promise.success("never")).withSecurity(SecurityPolicy.publicRoute()).asJson(),
             Route.<String>get("/private").withoutParameters().to(_ -> Promise.success("ok")).withSecurity(SecurityPolicy.unspecified()).asJson());
     }
@@ -145,11 +146,11 @@ class TerraProblemJsonTest {
         assertProblem(get("/conflict"), 409, "/conflict");
     }
 
-    @Test void unexpectedException_is500ProblemJson_withoutTheExceptionText() throws Exception {
+    @Test void unexpectedException_is500ProblemJson_withTodaysClientText() throws Exception {
         var response = get("/unexpected");
 
         assertProblem(response, 500, "/unexpected");
-        assertThat(response.body()).doesNotContain("IllegalStateException");
+        assertThat(problem(response).detail().or("")).isEqualTo(HttpError.clientMessage(UNEXPECTED));
     }
 
     @Test void authRefusal_is401ProblemJson_andKeepsTheChallenge() throws Exception {
