@@ -3104,21 +3104,31 @@ final class FlowPrinter {
             return;
         }
 
-        int at = sourceCursor;
+        findCodeToken(sourceTokens, sourceCursor, token).onPresent(at -> claimThrough(at, token));
+    }
+
+    private void claimThrough(int at, String token) {
+        claimComments(at - 1, isCloser(token));
+        sourceCursor = at + 1;
+    }
+
+    /// Index of the first code token of `tokens` at or after `from` whose text is `token`, looking past at most
+    /// `CATCH_UP_WINDOW` other code tokens (trivia does not count); empty when there is none in that window.
+    static Option<Integer> findCodeToken(TokenArray tokens, int from, String token) {
+        int at = from;
         int skipped = 0;
 
-        while (at < sourceTokens.count() && skipped <= CATCH_UP_WINDOW && (sourceTokens.isTrivia(at) || !token.contentEquals(sourceTokens.textAt(at)))) {
-            if (!sourceTokens.isTrivia(at)) {
+        while (at < tokens.count() && skipped <= CATCH_UP_WINDOW && (tokens.isTrivia(at) || !token.contentEquals(tokens.textAt(at)))) {
+            if (!tokens.isTrivia(at)) {
                 skipped++;
             }
 
             at++;
         }
 
-        if (at < sourceTokens.count() && skipped <= CATCH_UP_WINDOW) {
-            claimComments(at - 1, isCloser(token));
-            sourceCursor = at + 1;
-        }
+        return at < tokens.count() && skipped <= CATCH_UP_WINDOW
+               ? Option.some(at)
+               : Option.none();
     }
 
     /// Print every not yet printed comment up to the token `last` (inclusive) and move the source cursor past it: for
