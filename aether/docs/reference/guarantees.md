@@ -178,7 +178,7 @@ Consensus runs in memory on every node; the old per-node consensus snapshot (`Gi
 
 - **`dht.write` (artifact repository)** — stronger: **quorum LWW by HLC version** (W = CF and R = RF − CF + 1 from the cluster's committed `[replication]` section, #1777 track 1; W=R=2 at the default RF 3/CF 2). Still eventual (HLC is a logical clock; concurrent writes are LWW-dropped), not linearizable.
 - **`dht.remove` (#1777 track 3)** — a remove stores a **tombstone** on CF replicas, stamped like a put (owner
-  epoch, then HLC version) and fenced like one; a quorum lost to fences is `WriteIndeterminate`
+  epoch, then HLC version) and fenced like one; a quorum lost to fences is `WriteIndeterminate` (`OwnershipNotApplied` when this node's stamp was the floor)
   [mechanism: fenced tombstone write through `QuorumCollector`]. After a remove acknowledged at CF and no later put,
   a read or `exists` returns absent or a retryable refusal — never the removed value — against a replica that missed
   the remove, anti-entropy, migration, the departure hand-off, the #428 fallback probe, a stray copy a ring change

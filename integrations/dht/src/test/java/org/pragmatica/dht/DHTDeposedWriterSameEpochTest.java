@@ -117,18 +117,8 @@ class DHTDeposedWriterSameEpochTest {
 
     private record Epoch(long[] epoch) implements OwnerEpochSource {
         @Override
-        public long currentEpochIncarnation() {
-            return epoch[0];
-        }
-
-        @Override
-        public long currentEpochTerm() {
-            return epoch[1];
-        }
-
-        @Override
-        public long currentEpochCounter() {
-            return epoch[2];
+        public OwnerEpoch currentEpoch() {
+            return OwnerEpoch.ownerEpoch(epoch[0], epoch[1], epoch[2]);
         }
     }
 

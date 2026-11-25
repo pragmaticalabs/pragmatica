@@ -715,7 +715,7 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// that fails part-way leaves the chunks that DID land at refCount 1 behind no artifact: uncollectable for
     /// ever (the same class as #1437). Only THIS deploy's own credits are given back, so a chunk shared with a
     /// stored artifact returns to the count it had. Scoped to the chunk phase on purpose: once the metadata write
-    /// has been attempted it may have landed (`WriteIndeterminate`), and releasing then would free a live
+    /// has been attempted it may have landed (`WriteIndeterminate`, `OwnershipNotApplied`), and releasing then would free a live
     /// artifact's chunks. `boundedFanOut` waits for every put of a batch to settle before failing, so the list is
     /// complete when the failure arrives. The release is awaited before the failure is reported; a release that
     /// itself fails is logged and does not mask the original cause.
@@ -1159,10 +1159,11 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// `NotCaughtUp` (#1777 track 2) is a read that met replicas still filling after a ring change: retried like
     /// an unreachable quorum, and never mistaken for an answer about the artifact. `WriteIndeterminate` (#1818,
     /// the owner's fence ruling) is a put that lost its quorum to owner-epoch fences and may have been applied:
-    /// retried like an unreachable quorum, stamped with the owner epoch current by then. `ReplicationUnresolved`
+    /// retried like an unreachable quorum, stamped with the owner epoch current by then; `OwnershipNotApplied` (#3720) is the
+    /// same put when this node stamped it before applying the ownership record, retried the same way. `ReplicationUnresolved`
     /// (#1777 track 1) is a node that has not yet read the committed replication factors: retried the same way.
     private static boolean isTransientDhtFailure(Cause cause) {
-        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached || cause instanceof DHTError.NotCaughtUp || cause instanceof DHTError.WriteIndeterminate || cause instanceof DHTError.ReplicationUnresolved;
+        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached || cause instanceof DHTError.NotCaughtUp || cause instanceof DHTError.WriteIndeterminate || cause instanceof DHTError.OwnershipNotApplied || cause instanceof DHTError.ReplicationUnresolved;
     }
 
     /// Bounded retry for the DHT READ/resolve path. Mirrors `dhtPutWithRetry` but guards
