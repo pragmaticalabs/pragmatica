@@ -102,7 +102,7 @@ class EmberWorkerCursorResumeTest {
         var successorEpoch = leader().currentGenerationEpoch().withCounter(2L);
 
         assign(predecessor, predecessorEpoch);
-        commitFromWorker(predecessor, cursorKey, AssignmentToken.assignmentToken(predecessor, predecessorEpoch));
+        commitFromWorker(predecessor, cursorKey, AssignmentToken.assignmentToken(predecessor, predecessorEpoch, Option.none()));
         awaitUntil(() -> committedOffset(leader(), cursorKey).equals(Option.some(COMMITTED_OFFSET)),
                    WAIT_BOUND_MS,
                    "the predecessor's forwarded checkpoint is committed at " + COMMITTED_OFFSET + ", leader reads " + committedOffset(leader(), cursorKey));
@@ -152,7 +152,7 @@ class EmberWorkerCursorResumeTest {
     private void assign(NodeId assignee, Epoch epoch) {
         var clock = StreamTripwireSupport.component(leader(), "hlcClock", HlcClock.class);
         var key = AetherKey.ConsumerAssignmentKey.consumerAssignmentKey(ENGINE_KEY, PARTITION, GROUP);
-        var record = ConsumerAssignmentValue.consumerAssignmentValue(assignee, epoch, 1L, clock.now());
+        var record = ConsumerAssignmentValue.consumerAssignmentValue(assignee, epoch, 1L, clock.now(), Option.none());
         var written = leader().<Object> apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(key, record)))
                               .await(COMMIT_BOUND);
 

@@ -411,16 +411,22 @@ class WorkerCursorResumeTest {
 
     private static StreamCursorCheckpointValue checkpoint(long offset) {
         return StreamCursorCheckpointValue.streamCursorCheckpointValue(offset,
-                                                                       AssignmentToken.assignmentToken(SELF, EPOCH),
+                                                                       AssignmentToken.assignmentToken(SELF, EPOCH, Option.none()),
                                                                        RewindEpoch.NONE);
     }
 
     private static StreamCursorCheckpointValue rewound(RewindEpoch epoch) {
-        return StreamCursorCheckpointValue.streamCursorCheckpointValue(0L, AssignmentToken.assignmentToken(SELF, EPOCH), epoch);
+        return StreamCursorCheckpointValue.streamCursorCheckpointValue(0L,
+                                                                       AssignmentToken.assignmentToken(SELF, EPOCH, Option.none()),
+                                                                       epoch);
     }
 
     private static ConsumerAssignmentWriter.CommittedAssignments assignedToSelf() {
-        return (_, _, _) -> Option.some(ConsumerAssignmentValue.consumerAssignmentValue(SELF, EPOCH, 1L, HlcTimestamp.ZERO));
+        return (_, _, _) -> Option.some(ConsumerAssignmentValue.consumerAssignmentValue(SELF,
+                                                                                        EPOCH,
+                                                                                        1L,
+                                                                                        HlcTimestamp.ZERO,
+                                                                                        Option.none()));
     }
 
     private static ConsumerCursorStore emptyLocal() {

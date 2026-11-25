@@ -3001,6 +3001,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
                 OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED,
                 OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_SETTLED,
+                OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE,
                 OperatorWarningCode.STREAM_RETENTION_RESUMED,
                 OperatorWarningCode.STREAM_SEGMENT_UNREADABLE_RECLAIMED,
                 OperatorWarningCode.STREAM_SEGMENT_DELETE_RECOVERED,
