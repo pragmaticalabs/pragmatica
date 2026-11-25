@@ -13,5 +13,7 @@ public sealed interface TerraError extends Cause {
 
     record UnsupportedCapability(String message) implements TerraError {}
 
+    record InvalidConfiguration(String message) implements TerraError {}
+
     record NotRunning(String message) implements TerraError {}
 }
