@@ -676,7 +676,7 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     ///
     /// This is one generic event rather than a variant per condition. `details.code` is the stable
     /// identifier of the condition, taken from the `OperatorWarningCode` catalogue, so adding a condition
-    /// does not add a wire type. Neither `GET /api/events` nor `aether events` can filter on it yet. Every one of these is a per-node fact, reported by the node that saw it, so it goes
+    /// does not add a wire type. `GET /api/events?code=` and `aether events --code` filter on it (#1631), and `severity=`/`--severity` select a minimum level. Every one of these is a per-node fact, reported by the node that saw it, so it goes
     /// through the aggregator's ungated `emitLocal` path, like [SelfDrainInitiated]. The emit is throttled
     /// to one per `(code, subject)` per minute. The log line at the call site is never throttled.
     ///

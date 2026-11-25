@@ -6390,11 +6390,21 @@ public final class StreamPartitionManager implements AutoCloseable {
         var domain = OwnershipDomain.streamPartition(streamName, partition);
 
         return highWater.isStale(domain, ownerEpoch)
-               ? new StreamError.StaleEpochAppend(streamName,
-                                                  partition,
-                                                  ownerEpoch,
-                                                  highWater.highWater(domain).or(ownerEpoch)).result()
+               ? staleRefusal(streamName,
+                              partition,
+                              ownerEpoch,
+                              highWater.highWater(domain).or(ownerEpoch))
                : success(unit());
+    }
+
+    /// #2755: a presented [Epoch#ZERO] is no epoch of any owner (committed ownership epochs are above the floor): it is what
+    /// the source answers while this node's store holds no ownership record for the arc. That writer is not deposed, it has
+    /// not applied its record yet, so it is refused with the transient [StreamError.OwnershipNotApplied], never
+    /// [StreamError.StaleEpochAppend]. A real older epoch is a deposed owner, as before.
+    private static Result<Unit> staleRefusal(String streamName, int partition, Epoch presented, Epoch current) {
+        return presented.equals(Epoch.ZERO)
+               ? new StreamError.OwnershipNotApplied(streamName, partition, current).result()
+               : new StreamError.StaleEpochAppend(streamName, partition, presented, current).result();
     }
 
     public Option<OffHeapRingBuffer> partitionBuffer(String streamName, int partition) {

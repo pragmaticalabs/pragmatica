@@ -200,12 +200,33 @@ final class Http3Server {
                          .build();
         var bootstrap = new Bootstrap().group(group).channel(NioDatagramChannel.class).handler(codec);
 
-        return Promise.promise(promise -> bootstrap.bind(new InetSocketAddress(config.port()))
+        return config.bindAddress()
+                     .fold(cause -> bindHostRefused(config, cause, group, ownsGroup),
+                           address -> bindTo(address, bootstrap, config, group, ownsGroup));
+    }
+
+    private static Promise<Http3Server> bindTo(InetSocketAddress address,
+                                               Bootstrap bootstrap,
+                                               HttpServerConfig config,
+                                               EventLoopGroup group,
+                                               boolean ownsGroup) {
+        return Promise.promise(promise -> bootstrap.bind(address)
                                                    .addListener(future -> onBind(config,
                                                                                  promise,
                                                                                  future,
                                                                                  group,
                                                                                  ownsGroup)));
+    }
+
+    /// #2180: see [NettyHttpServer]: a bind host that does not resolve refuses startup, the owned group is released
+    /// before the failure is reported.
+    private static Promise<Http3Server> bindHostRefused(HttpServerConfig config,
+                                                        Cause cause,
+                                                        EventLoopGroup group,
+                                                        boolean ownsGroup) {
+        log.error("HTTP/3 server '{}' will not start: {}", config.name(), cause.message());
+
+        return releaseGroupOnBindFailure(ownsGroup, group).fold(_ -> cause.promise());
     }
 
     @SuppressWarnings("JBCT-PAT-01")  // Netty future callback
@@ -224,7 +245,7 @@ final class Http3Server {
         } else {
             // #1612: the group this create made is terminated (bounded) BEFORE the failure is reported; the bind
             // failure is what the create reports, and a termination failure is only logged.
-            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause());
+            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause(), config.bindHost());
 
             releaseGroupOnBindFailure(ownsGroup, group).onResultRun(() -> promise.fail(bindFailed));
         }

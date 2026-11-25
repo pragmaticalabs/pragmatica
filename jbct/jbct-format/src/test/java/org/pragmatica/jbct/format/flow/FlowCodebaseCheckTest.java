@@ -3,6 +3,7 @@ package org.pragmatica.jbct.format.flow;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.jbct.format.ContentGuard;
 import org.pragmatica.jbct.format.FormatterConfig;
 
 import java.io.IOException;
@@ -38,6 +39,7 @@ class FlowCodebaseCheckTest {
                          .toList();
 
         int total = 0, unchanged = 0, formatted = 0, errors = 0, nonIdempotent = 0;
+        long formatNanos = 0, guardNanos = 0;
         var errorFiles = new ArrayList<String>();
         var changedFiles = new ArrayList<String>();
         var nonIdempotentFiles = new ArrayList<String>();
@@ -46,13 +48,18 @@ class FlowCodebaseCheckTest {
             total++;
             try {
                 var source = SourceFile.sourceFile(file).unwrap();
+                var started = System.nanoTime();
                 var result = formatter.format(source);
+                formatNanos += System.nanoTime() - started;
                 if (result.isFailure()) {
                     errors++;
-                    errorFiles.add(projectRoot.relativize(file) + ": format failed");
+                    errorFiles.add(projectRoot.relativize(file) + ": " + result.fold(cause -> cause.message(), ok -> "format failed"));
                     continue;
                 }
                 var formattedSource = result.unwrap();
+                var guardStarted = System.nanoTime();
+                ContentGuard.verify(source.fileName(), source.content(), formattedSource.content());
+                guardNanos += System.nanoTime() - guardStarted;
                 if (formattedSource.content().equals(source.content())) {
                     unchanged++;
                 } else {
@@ -80,10 +87,12 @@ class FlowCodebaseCheckTest {
         System.out.println("Would reformat:   " + formatted);
         System.out.println("Errors:           " + errors);
         System.out.println("Non-idempotent:   " + nonIdempotent);
+        System.out.println("Format ms (parse + print + guard, successful and refused files): " + formatNanos / 1_000_000);
+        System.out.println("Guard ms (one more verify per successful file, measured alone):  " + guardNanos / 1_000_000);
 
         if (!errorFiles.isEmpty()) {
-            System.out.println("\n--- ERRORS (first 30) ---");
-            errorFiles.stream().limit(30).forEach(System.out::println);
+            System.out.println("\n--- ERRORS (all; a content-guard refusal names the first lost or changed item, #3691) ---");
+            errorFiles.forEach(System.out::println);
         }
         if (!changedFiles.isEmpty()) {
             System.out.println("\n--- WOULD REFORMAT (first 50) ---");

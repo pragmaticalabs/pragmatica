@@ -232,7 +232,19 @@ final class NettyHttpServer implements HttpServer {
                                              .childOption(ChannelOption.SO_KEEPALIVE,
                                                           socketOptions.soKeepalive());
 
-        return Promise.promise(promise -> bootstrap.bind(config.port())
+        return config.bindAddress()
+                     .fold(cause -> bindHostRefused(config, cause, ownsGroups, bossGroup, workerGroup),
+                           address -> bindTo(address, bootstrap, config, sslContext, bossGroup, workerGroup, ownsGroups));
+    }
+
+    private static Promise<HttpServer> bindTo(InetSocketAddress address,
+                                              ServerBootstrap bootstrap,
+                                              HttpServerConfig config,
+                                              Option<SslContext> sslContext,
+                                              EventLoopGroup bossGroup,
+                                              EventLoopGroup workerGroup,
+                                              boolean ownsGroups) {
+        return Promise.promise(promise -> bootstrap.bind(address)
                                                    .addListener((ChannelFuture future) -> onBind(config,
                                                                                                  promise,
                                                                                                  future,
@@ -240,6 +252,18 @@ final class NettyHttpServer implements HttpServer {
                                                                                                  bossGroup,
                                                                                                  workerGroup,
                                                                                                  ownsGroups)));
+    }
+
+    /// #2180: a bind host that does not resolve refuses startup: falling back to every interface would widen the
+    /// exposure the operator narrowed. Like a failed bind, the groups this create made are released first.
+    private static Promise<HttpServer> bindHostRefused(HttpServerConfig config,
+                                                       Cause cause,
+                                                       boolean ownsGroups,
+                                                       EventLoopGroup bossGroup,
+                                                       EventLoopGroup workerGroup) {
+        log.error("HTTP server '{}' will not start: {}", config.name(), cause.message());
+
+        return releaseGroupsOnBindFailure(ownsGroups, bossGroup, workerGroup).fold(_ -> cause.promise());
     }
 
     private static void onBind(HttpServerConfig config,
@@ -263,7 +287,7 @@ final class NettyHttpServer implements HttpServer {
             // #1612: the groups this create made are terminated (bounded) BEFORE the failure is reported, so a
             // caller that retries sees no event-loop threads left over from this attempt. The bind failure is
             // what the create reports; a termination failure is only logged.
-            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause());
+            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause(), config.bindHost());
 
             releaseGroupsOnBindFailure(ownsGroups, bossGroup, workerGroup).onResultRun(() -> promise.fail(bindFailed));
         }

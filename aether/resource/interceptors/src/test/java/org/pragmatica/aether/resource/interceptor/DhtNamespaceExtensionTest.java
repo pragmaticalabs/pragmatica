@@ -198,7 +198,7 @@ class DhtNamespaceExtensionTest {
         return DHTCacheBackend.expiryMillis(client.storage.values().iterator().next());
     }
 
-    private static final class RecordingDhtClient implements DHTClient {
+    static final class RecordingDhtClient implements DHTClient {
         final ConcurrentHashMap<String, byte[]> storage = new ConcurrentHashMap<>();
         Runnable afterGet = () -> {};
         Runnable beforeRemove = () -> {};
@@ -241,7 +241,7 @@ class DhtNamespaceExtensionTest {
         }
     }
 
-    private static final class StringSerializer implements Serializer {
+    static final class StringSerializer implements Serializer {
         @Override
         public <T> byte[] encode(T object) {
             return object.toString().getBytes(UTF_8);
@@ -253,7 +253,7 @@ class DhtNamespaceExtensionTest {
         }
     }
 
-    private static final class StringDeserializer implements Deserializer {
+    static final class StringDeserializer implements Deserializer {
         @Override
         @SuppressWarnings("unchecked")
         public <T> T decode(byte[] bytes) {

@@ -102,7 +102,8 @@ class OptionBindingSupportGateTest {
                                                                "org.pragmatica.storage.ContentStoreConfig");
 
     /// Every `Option<X>` component the walk finds, as `Record.component : Option<X>`.
-    private static final Set<String> EXPECTED_OPTION_COMPONENTS = Set.of("DatabaseConnectorConfig.asyncUrl : org.pragmatica.lang.Option<java.lang.String>",
+    private static final Set<String> EXPECTED_OPTION_COMPONENTS = Set.of("CacheConfig.backend : org.pragmatica.lang.Option<java.lang.String>",
+                                                                         "DatabaseConnectorConfig.asyncUrl : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.applicationName : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.database : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.host : org.pragmatica.lang.Option<java.lang.String>",
@@ -123,6 +124,7 @@ class OptionBindingSupportGateTest {
                                                                          "HotWindowDeclaration.maxCount : org.pragmatica.lang.Option<java.lang.Long>",
                                                                          "HttpEmailConfig.endpoint : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "HttpEmailConfig.fromAddress : org.pragmatica.lang.Option<java.lang.String>",
+                                                                         "IdempotencyConfig.backend : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "NotificationConfig.httpConfig : org.pragmatica.lang.Option<org.pragmatica.email.http.HttpEmailConfig>",
                                                                          "NotificationConfig.retryConfig : org.pragmatica.lang.Option<org.pragmatica.aether.resource.notification.RetryConfig>",
                                                                          "NotificationConfig.smtpConfig : org.pragmatica.lang.Option<org.pragmatica.net.smtp.SmtpConfig>",
