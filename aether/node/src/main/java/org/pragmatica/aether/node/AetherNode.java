@@ -2850,6 +2850,8 @@ public interface AetherNode extends ManageableNode {
 
         dhtCapacityWarnings.operatorWarnings(operatorWarningSink);
         dhtNode.storage().capacityListener(dhtCapacityWarnings);
+        // #2136: the stuck-SYNCING voter warnings, raised by the core voter reconciler's evidence (built before this sink)
+        topologyManagerOut.stuckSyncingVoters().operatorWarnings(operatorWarningSink);
         // Phase-3 design 8: the deployment engine this node runs. ONE boot-token registry per process (shared below by SWIM and the QUIC
         // transport), read by the FSM2 routes at delivery; the engine marker guard; and the one place every engine-dependent hook is bound.
         var bootTokens = BootTokens.bootTokens(bootToken);

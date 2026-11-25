@@ -58,6 +58,7 @@ import org.pragmatica.aether.node.CoreAdmission;
 import org.pragmatica.aether.node.FailedVoterEvidence;
 import org.pragmatica.aether.node.LeaderTerm;
 import org.pragmatica.aether.node.NodeReplacementWiring;
+import org.pragmatica.aether.node.StuckSyncingVoters;
 import org.pragmatica.aether.node.UpgradeRunWiring;
 import org.pragmatica.aether.node.assembly.DrainAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
@@ -208,7 +209,8 @@ public sealed interface TopologyAssembly {
                                   AtomicReference<LeaderReconciler> leaderReconcilerRef,
                                   IntSupplier configuredCoreCountSupplier,
                                   ClusterTopologyManager clusterTopologyManager,
-                                  CoreAdmission coreAdmission) {}
+                                  CoreAdmission coreAdmission,
+                                  StuckSyncingVoters stuckSyncingVoters) {}
 
     /// The cluster phase view, the topology manager with its setters, core admission, the core voter reconciler and the phase watcher, all deferred until start.
     static TopologyManagerOutputs topologyManager(TopologyManagerInputs in) {
@@ -312,6 +314,13 @@ public sealed interface TopologyAssembly {
                                                         node -> config.environment()
                                                                       .map(environment -> environment.isLocalCoreAdmissionAuthorized(node.id()))
                                                                       .or(false));
+        // #2136: the leader's SYNCING episodes per voter; its warnings reach the node's sink once the event layer exists (AetherNode binds it).
+        var stuckSyncingVoters = StuckSyncingVoters.stuckSyncingVoters(() -> clusterNode.leaderManager()
+                                                                                        .currentLeaderEpoch(),
+                                                                       clusterNode::isActive,
+                                                                       metricsCollector::sinceLastPong,
+                                                                       config.timeouts().cluster().pingInterval(),
+                                                                       System::nanoTime);
         var coreVoterReconciler = CoreVoterReconciler.coreVoterReconciler(config.self(),
                                                                           isLeaderSupplier,
                                                                           clusterNode::voterConfiguration,
@@ -323,7 +332,11 @@ public sealed interface TopologyAssembly {
                                                                                                    .collect(Collectors.toUnmodifiableSet()),
                                                                           nodeReplacements::voterSwaps,
                                                                           FailedVoterEvidence.forNode(metricsCollector,
-                                                                                                      membershipFsmRef::get),
+                                                                                                      membershipFsmRef::get,
+                                                                                                      () -> clusterNode.voterConfiguration()
+                                                                                                                       .map(installed -> Set.copyOf(installed.members()))
+                                                                                                                       .or(Set.of()),
+                                                                                                      stuckSyncingVoters),
                                                                           clusterNode::reconfigure);
         var surplusRefusals = SurplusRefusals.surplusRefusals((node, cause) -> LOG.warn("Core voter reconciliation: surplus core {} not drained: {}",
                                                                                         node,
@@ -361,7 +374,8 @@ public sealed interface TopologyAssembly {
                                           leaderReconcilerRef,
                                           configuredCoreCountSupplier,
                                           clusterTopologyManager,
-                                          coreAdmission);
+                                          coreAdmission,
+                                          stuckSyncingVoters);
     }
 
     /// What `placementReconciler` reads from the assembly built so far.
