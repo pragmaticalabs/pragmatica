@@ -45,6 +45,7 @@ class PartitionBackfillStopTest {
     private static final NodeId SOURCE = NodeId.randomNodeId();
     private static final TimeSpan HOUR = TimeSpan.timeSpan(1).hours();
     private static final TimeSpan IDLE_BOUND = TimeSpan.timeSpan(50).millis();
+    private static final TimeSpan AWAIT = TimeSpan.timeSpan(10).seconds();
 
     private ReplicaRegistry registry;
     private AlignedRecovery recovery;
@@ -93,11 +94,14 @@ class PartitionBackfillStopTest {
     }
 
     /// A flight with a joined call, then its refusal: it lands failed and keeps the slot until the hold timer releases it.
+    /// The landing runs on the run's own chain, not before `fail` returns; the flight's result resolves after the hold is armed,
+    /// so waiting for it makes the hold's timer visible to the caller.
     private Promise<Long> refuseJoinedFlight(PartitionBackfill backfill) {
         var first = backfill.backfill(STREAM, PARTITION);
 
         backfill.backfill(STREAM, PARTITION);
         pulls.getFirst().fail(refusal());
+        assertThat(first.await(AWAIT).isFailure()).as("the refused flight landed, its hold is armed").isTrue();
 
         return first;
     }

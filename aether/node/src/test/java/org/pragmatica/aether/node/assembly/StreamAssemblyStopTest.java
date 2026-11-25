@@ -24,6 +24,7 @@ import org.pragmatica.aether.stream.replication.StreamCatalog;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,6 +41,7 @@ class StreamAssemblyStopTest {
     private static final StreamCatalog CATALOG = List::of;
     /// Several times the first hold's upper bound (300 ms).
     private static final long PAST_THE_HOLD_MS = 1500L;
+    private static final TimeSpan AWAIT = TimeSpan.timeSpan(10).seconds();
 
     private final CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>> pulls = new CopyOnWriteArrayList<>();
     private final ExecutorService backfillExecutor = Executors.newSingleThreadExecutor();
@@ -56,9 +58,13 @@ class StreamAssemblyStopTest {
 
         var backfill = PartitionBackfill.partitionBackfill(registry, manager.alignedRecovery(), this::gated, SELF);
 
-        backfill.backfill(STREAM, PARTITION);
+        var first = backfill.backfill(STREAM, PARTITION);
+
         backfill.backfill(STREAM, PARTITION);
         pulls.getFirst().fail(StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(SOURCE)));
+        // The landing runs on the run's own chain and resolves the flight's result after the hold is armed: wait for it, so
+        // the stop under test always lands on an armed hold timer and never races the arming.
+        assertThat(first.await(AWAIT).isFailure()).as("the refused flight landed, its hold is armed").isTrue();
 
         return backfill;
     }
