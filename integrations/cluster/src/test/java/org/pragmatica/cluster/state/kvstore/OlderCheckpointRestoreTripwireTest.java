@@ -121,7 +121,7 @@ class OlderCheckpointRestoreTripwireTest {
                                                                      new IncarnationSource() {
                                                                          @Override
                                                                          public IncarnationTag read(java.util.function.Function<StructuredKey, Object> lookup) {
-                                                                             return IncarnationTag.incarnationTag(1, "one-identity");
+                                                                             return IncarnationTag.incarnationTag(1, "one-identity", RingFixtures.LINEAGE);
                                                                          }
 
                                                                          @Override
