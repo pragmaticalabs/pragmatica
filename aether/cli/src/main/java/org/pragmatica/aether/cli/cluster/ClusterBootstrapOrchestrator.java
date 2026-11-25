@@ -384,19 +384,23 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
     }
 
     static Cause decorateAfterCleanup(ClusterName clusterName, Cause failure, boolean keepOnFailure) {
-        var cause = BootstrapError.VmSurfaceFailure.resolve(failure, keepOnFailure);
-
         if (keepOnFailure) {
-            warnKeepOnFailure(clusterName, cause);
+            var kept = BootstrapError.VmSurfaceFailure.resolve(failure, BootstrapError.VmFate.KEPT);
 
-            return cause;
+            warnKeepOnFailure(clusterName, kept);
+
+            return kept;
         }
 
-        return cleanupOnFailure(clusterName).fold(cleanupCause -> wrapWithOrphans(cause, cleanupCause), _ -> cause);
+        return cleanupOnFailure(clusterName).fold(cleanupCause -> wrapWithOrphans(failure, cleanupCause),
+                                                  _ -> BootstrapError.VmSurfaceFailure.resolve(failure,
+                                                                                               BootstrapError.VmFate.REMOVED));
     }
 
     private static Cause wrapWithOrphans(Cause originalCause, Cause cleanupCause) {
-        return new BootstrapError.BootstrapFailedWithOrphans(originalCause, cleanupCause.message());
+        return new BootstrapError.BootstrapFailedWithOrphans(BootstrapError.VmSurfaceFailure.resolve(originalCause,
+                                                                                                     BootstrapError.VmFate.CLEANUP_FAILED),
+                                                             cleanupCause.message());
     }
 
     /// #994 verification finding SF-1 — reads through [BootstrapStatePersistence#read] so an UNPARSEABLE
@@ -802,35 +806,42 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             }
         }
 
-        /// #1030 — a deployment failure whose diagnosis lives on the VMs (`logs` names where). Whether those
-        /// VMs still exist when the operator reads the error is decided AFTER the phase, by
-        /// `decorateAfterCleanup`, so the phase cannot name the logs without risking naming deleted ones. The
-        /// phase raises this carrier; [#resolve] is the one text source, called with the keep-on-failure fact
-        /// by the caller that acts on it. [#message] is the flag-neutral text, for readers upstream of that.
+        /// What became of the VMs, known only AFTER the cleanup ran: the advice states this outcome, never the
+        /// intent (a cleanup that was meant to remove the VMs and failed leaves them running).
+        enum VmFate {
+            KEPT,
+            REMOVED,
+            CLEANUP_FAILED
+        }
+
+        /// #1030 — a deployment failure whose diagnosis lives on the VMs (`logs` names where). What became of
+        /// those VMs when the operator reads the error is decided AFTER the phase, by `decorateAfterCleanup`,
+        /// so the phase cannot name the logs without risking naming deleted ones. The phase raises this
+        /// carrier; [#resolve] is the one text source, called with the [VmFate] the caller observed (kept by
+        /// flag, removed by a succeeded cleanup, or left running by a failed one). [#message] is the
+        /// outcome-neutral text, for readers upstream of that.
         record VmSurfaceFailure(DeploymentFailed failure, String logs) implements BootstrapError {
             @Override
             public String message() {
                 return failure.message();
             }
 
-            static Cause resolve(Cause cause, boolean keepOnFailure) {
+            static Cause resolve(Cause cause, VmFate fate) {
                 return cause instanceof VmSurfaceFailure surface
-                       ? surface.followUp(keepOnFailure)
+                       ? surface.followUp(fate)
                        : cause;
             }
 
-            private Cause followUp(boolean keepOnFailure) {
-                return new DeploymentFailed(failure.nodeId(), failure.detail() + " " + vmAdvice(keepOnFailure));
+            private Cause followUp(VmFate fate) {
+                return new DeploymentFailed(failure.nodeId(), failure.detail() + " " + vmAdvice(fate));
             }
 
-            private String vmAdvice(boolean keepOnFailure) {
-                return keepOnFailure
-                       ? "The VMs were kept (--keep-on-failure); inspect " + logs
-                        + " on each VM: ssh aether@<vm-ip> (or root@)."
-                       : "The VMs are being removed, so " + logs
-                        + " will not survive; re-run with"
-                        + " --keep-on-failure to keep the VMs and inspect " + logs
-                        + " on each.";
+            private String vmAdvice(VmFate fate) {
+                return switch (fate) {
+                    case KEPT -> "The VMs were kept (--keep-on-failure); inspect " + logs + " on each VM: ssh aether@<vm-ip> (or root@).";
+                    case REMOVED -> "The VMs this run recorded were removed, so " + logs + " did not survive; re-run with --keep-on-failure to keep the VMs and inspect " + logs + " on each.";
+                    case CLEANUP_FAILED -> "The cleanup failed, so VMs may still be running; on any that is, inspect " + logs + ": ssh aether@<vm-ip> (or root@).";
+                };
             }
         }
 
