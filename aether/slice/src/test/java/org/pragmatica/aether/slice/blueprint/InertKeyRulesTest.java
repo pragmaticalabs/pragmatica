@@ -45,6 +45,25 @@ class InertKeyRulesTest {
         assertThat(InertKeyRules.inertConsumerKeys(ConsumerConfig.consumerConfig("billing"))).isEmpty();
     }
 
+    /// The stream-level reset key is refused in this release only: its message points at the per-group key and no longer
+    /// calls the refusal permanent, which the per-group `latest` of a later step contradicts.
+    @Test
+    void inertOffsetReset_pointsAtThePerGroupKey_andIsNotCalledPermanent() {
+        var config = StreamConfig.streamConfig("orders",
+                                               1,
+                                               RetentionPolicy.retentionPolicy(),
+                                               "latest",
+                                               StreamConfig.DEFAULT.maxEventSizeBytes(),
+                                               ConsistencyMode.EVENTUAL,
+                                               StreamConfig.DEFAULT.replicationFactor(),
+                                               StreamConfig.DEFAULT.confirmationFactor(),
+                                               StreamCompression.NONE,
+                                               Option.none());
+        var message = InertKeyRules.inertStreamKeys(config).getFirst().message();
+
+        assertThat(message).contains("[streams.X.consumers.<group>] auto_offset_reset").doesNotContain("permanent");
+    }
+
     @Test
     void everyInertStreamKey_isNamed_andItsMessageStartsWithIt() {
         var config = StreamConfig.streamConfig("orders",

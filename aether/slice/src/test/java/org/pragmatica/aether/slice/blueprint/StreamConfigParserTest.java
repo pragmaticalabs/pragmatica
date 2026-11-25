@@ -708,7 +708,8 @@ class StreamConfigParserTest {
                                                                        "on_failure", "\"skip\"",
                                                                        "max_retries", "7",
                                                                        "dead_letter", "\"orders-dlq\"",
-                                                                       "read_preference", "\"governor\"");
+                                                                       "read_preference", "\"governor\"",
+                                                                       "auto_offset_reset", "\"earliest\"");
 
         @Test
         void everyConsumerKeyHasACase() {

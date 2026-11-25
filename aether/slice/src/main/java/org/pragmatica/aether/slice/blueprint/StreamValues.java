@@ -27,10 +27,25 @@ public sealed interface StreamValues {
 
     Map<String, Long> DURATION_UNITS = Map.of("", 1L, "s", 1_000L, "m", 60_000L, "h", 3_600_000L, "d", 86_400_000L);
 
-    Map<String, Long> SIZE_UNITS = Map.of("", 1L, "B", 1L, "KB", 1024L, "MB", 1024L * 1024, "GB", 1024L * 1024 * 1024);
+    Map<String, Long> SIZE_UNITS = Map.of("",
+                                          1L,
+                                          "B",
+                                          1L,
+                                          "KB",
+                                          1024L,
+                                          "MB",
+                                          1024L * 1024,
+                                          "GB",
+                                          1024L * 1024 * 1024,
+                                          "KIB",
+                                          1024L,
+                                          "MIB",
+                                          1024L * 1024,
+                                          "GIB",
+                                          1024L * 1024 * 1024);
 
     String DURATION_FORM = "a whole number of milliseconds or of s/m/h/d, e.g. 5m";
-    String SIZE_FORM = "a whole number of bytes or of KB/MB/GB, e.g. 64KB";
+    String SIZE_FORM = "a whole number of bytes or of KB/MB/GB (KiB/MiB/GiB spell the same sizes), e.g. 64KB";
     String COUNT_FORM = "a whole number";
 
     /// A duration in milliseconds, at least 1.

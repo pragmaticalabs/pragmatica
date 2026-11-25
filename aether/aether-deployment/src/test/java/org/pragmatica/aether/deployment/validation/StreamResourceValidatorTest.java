@@ -9,6 +9,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.lang.Option;
 
@@ -228,6 +230,80 @@ class StreamResourceValidatorTest {
 
             result.onFailure(cause -> fail("Expected success: " + cause.message()))
                   .onSuccess(validated -> assertThat(validated.warnings()).isEmpty());
+        }
+    }
+
+    /// S2a1-6c: the warnings of a storage declaration (the hot-window clamp, `all` with `max_count`) are mapped to deploy-response
+    /// warnings whose rule is the warning's code.
+    @Nested
+    class DeclarationWarnings {
+        private static final String CLAMPING = """
+                [streams.orders]
+                version = "1.0.0"
+                partitions = 1
+                [streams.orders.hot]
+                max_bytes = "16MiB"
+                [streams.orders.retention]
+                max_bytes = "1GiB"
+                max_count = 10000
+                mode = "all"
+                """;
+
+        @Test
+        void eachDeclarationWarning_becomesAResponseWarning_withItsCodeAsTheRule() {
+            var accepted = StreamConfigParser.parseResources(CLAMPING, ReplicationFactors.BUILT_IN).unwrap();
+
+            assertThat(StreamResourceValidator.declarationWarnings(accepted, CLAMPING, ReplicationFactors.BUILT_IN))
+                    .extracting(StreamValidationWarning::field, StreamValidationWarning::rule)
+                    .containsExactly(tuple("[streams.orders]", "retention-all-count-sized-by-max-event"));
+            assertThat(StreamResourceValidator.declarationWarnings(accepted, CLAMPING, ReplicationFactors.BUILT_IN))
+                    .extracting(StreamValidationWarning::message)
+                    .allSatisfy(message -> assertThat(message).contains("stream 'orders'").contains("max_count"));
+        }
+
+        @Test
+        void warningsOfSeveralStreams_areReportedInAliasOrder() {
+            var toml = CLAMPING.replace("orders", "zeta") + CLAMPING.replace("orders", "alpha");
+            var accepted = StreamConfigParser.parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
+
+            assertThat(StreamResourceValidator.declarationWarnings(accepted, toml, ReplicationFactors.BUILT_IN))
+                    .extracting(StreamValidationWarning::field)
+                    .containsExactly("[streams.alpha]", "[streams.zeta]");
+        }
+
+        @Test
+        void aStreamAcceptedAsExternal_reportsNoWarning() {
+            var external = "[streams.orders]\nsource = \"acme:orders:1.0.0\"\n";
+            var accepted = StreamConfigParser.parseResources(external, ReplicationFactors.BUILT_IN).unwrap();
+
+            assertThat(StreamResourceValidator.declarationWarnings(accepted, CLAMPING, ReplicationFactors.BUILT_IN)).isEmpty();
+        }
+
+        @Test
+        void aClampingDeclaration_mapsItsClampWarning() {
+            var toml = CLAMPING.replace("max_bytes = \"16MiB\"", "max_bytes = \"16GiB\"");
+            var accepted = StreamConfigParser.parseResources(toml, ReplicationFactors.BUILT_IN).unwrap();
+
+            assertThat(StreamResourceValidator.declarationWarnings(accepted, toml, ReplicationFactors.BUILT_IN))
+                    .extracting(StreamValidationWarning::rule)
+                    .containsExactly("hot-window-clamped", "retention-all-count-sized-by-max-event");
+        }
+
+        @Test
+        void aSectionThatIsNotAccepted_reportsNoWarning() {
+            assertThat(StreamResourceValidator.declarationWarnings(Map.of(), CLAMPING, ReplicationFactors.BUILT_IN)).isEmpty();
+        }
+
+        /// Tripwire (ENABLED, current behaviour): a declaration that can raise a warning needs `[retention]` or `[hot]`, which
+        /// deploy refuses as inert until S2a3 / S2b wire them, so no declaration warning reaches a deploy response yet. Failure
+        /// message: "S2a3/S2b landed: add the end-to-end test that `validate` and `partition` carry the warning".
+        @Test
+        void aWarningDeclaration_isRefusedAsInert_soNoWarningReachesAResponseYet() {
+            StreamResourceValidator.validate(Option.some(CLAMPING), APP_ARTIFACT)
+                                   .onSuccessRun(() -> fail("S2a3/S2b landed: add the end-to-end test that `validate` and `partition` carry the warning"))
+                                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                                               .extracting(StreamValidationFailure::rule)
+                                                               .containsOnly(StreamResourceValidator.RULE_INERT_STREAM_CONFIG));
         }
     }
 

@@ -146,7 +146,8 @@ public sealed interface InertKeyRules {
                                           config.autoOffsetReset(),
                                           "auto_offset_reset '" + config.autoOffsetReset()
                                          + "' has no runtime effect — a never-committed consumer always starts at offset 0 "
-                                         + "(earliest) per the #478 ruling, permanently, not as a gap to be closed later. "
+                                         + "(earliest) per the #478 ruling in this release; a reset policy is declared per consumer group, as "
+                                         + "[streams.X.consumers.<group>] auto_offset_reset ('earliest' now). "
                                          + "Remove the key or set it to 'earliest', its only honest value."));
     }
 
