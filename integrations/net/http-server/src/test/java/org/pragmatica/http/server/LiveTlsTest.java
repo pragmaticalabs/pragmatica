@@ -16,14 +16,18 @@
 package org.pragmatica.http.server;
 
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.function.UnaryOperator;
 
 import io.netty.handler.ssl.SslContext;
+import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.net.tcp.TlsConfig;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.http.websocket.WebSocketEndpoint.webSocketEndpoint;
 import static org.pragmatica.http.server.TlsCertificates.bundle;
 import static org.pragmatica.http.server.TlsCertificates.http1Client;
 import static org.pragmatica.http.server.TlsCertificates.http1Server;
@@ -125,7 +129,33 @@ class LiveTlsTest {
         assertThat(live.liveTls().or(() -> null)).isSameAs(holder);
         assertThat(fixed.liveTls().isEmpty()).isTrue();
         assertThat(fixed.tls().isPresent()).isTrue();
-        assertThat(live.withReadTimeout(timeSpan(1).seconds()).liveTls().or(() -> null)).isSameAs(holder);
+    }
+
+    /// Every other `with...` keeps the holder: a dropped one would turn a TLS listener into a plain-HTTP one.
+    @Test
+    void config_otherWithers_keepTheHolder() {
+        var holder = LiveTls.liveTls(FIRST).unwrap();
+        var live = HttpServerConfig.httpServerConfig("tls-kept", 0).withLiveTls(holder);
+        var withers = Map.<String, UnaryOperator<HttpServerConfig>> of("withMaxContentLength",
+                                                                       config -> config.withMaxContentLength(1024),
+                                                                       "withWebSocket",
+                                                                       config -> config.withWebSocket(webSocketEndpoint("/ws", () -> null)),
+                                                                       "withChunkedWrite",
+                                                                       HttpServerConfig::withChunkedWrite,
+                                                                       "withBodyRateLimit",
+                                                                       config -> config.withBodyRateLimit(BodyRateLimit.DEFAULT),
+                                                                       "withReadTimeout",
+                                                                       config -> config.withReadTimeout(timeSpan(1).seconds()),
+                                                                       "withResponseTimeout",
+                                                                       config -> config.withResponseTimeout(timeSpan(1).seconds()),
+                                                                       "withClassifier",
+                                                                       config -> config.withClassifier(RequestClassifier.aggregateAll(1024)));
+        var softly = new SoftAssertions();
+
+        withers.forEach((name, wither) -> softly.assertThat(wither.apply(live).liveTls().or(() -> null))
+                                                .as(name)
+                                                .isSameAs(holder));
+        softly.assertAll();
     }
 
     /// The cause a refused result carries, or `null` when it succeeded (the assertion then names the missing refusal).
