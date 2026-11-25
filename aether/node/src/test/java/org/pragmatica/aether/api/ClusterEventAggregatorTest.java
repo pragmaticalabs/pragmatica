@@ -3116,6 +3116,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
                 OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
                 OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_EXCEEDED,
+                OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE,
                 OperatorWarningCode.STREAM_RETENTION_WITHHELD,
                 OperatorWarningCode.STREAM_SEGMENT_UNREADABLE,
                 OperatorWarningCode.STREAM_SEGMENT_DELETE_FAILING,
