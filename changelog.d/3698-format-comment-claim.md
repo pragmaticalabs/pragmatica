@@ -1,0 +1,3 @@
+### Fixed (2026-11-25 — #3698, #3691: jbct formatter drops a comment before the `;` of a chain, and in other token gaps)
+- **`jbct:format` deleted comments in token gaps that no placement rule covered**: before the `;` of a chained statement, between a local's name and `=`, inside a ternary, an argument or parameter list, an array initialiser, between imports and after the last type of a file.
+- The printer now holds one rule at one place: before each code token is printed, every comment of the source that precedes it and is not printed yet is printed there, in source order. Files without comments format exactly as before. [verified: `jbct/jbct-format/src/test/java/org/pragmatica/jbct/format/flow/FlowCommentGapSweepTest.java`]
