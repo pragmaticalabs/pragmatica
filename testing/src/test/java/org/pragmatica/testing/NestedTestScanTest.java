@@ -18,11 +18,8 @@ package org.pragmatica.testing;
 
 import java.io.IOException;
 import java.io.StringReader;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -30,6 +27,7 @@ import javax.xml.parsers.ParserConfigurationException;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.testlogging.SourceWalk;
 import org.w3c.dom.Element;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
@@ -309,25 +307,11 @@ class NestedTestScanTest {
     }
 
     private static List<String> poms(Path root) throws IOException {
-        var found = new ArrayList<String>();
-
-        Files.walkFileTree(root, new SimpleFileVisitor<>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                return !dir.equals(root) && FlakeScan.SKIPPED_DIRECTORIES.contains(dir.getFileName().toString())
-                       ? FileVisitResult.SKIP_SUBTREE
-                       : FileVisitResult.CONTINUE;
-            }
-
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                if (file.getFileName().toString().equals("pom.xml")) {
-                    found.add(root.relativize(file).toString().replace('\\', '/'));
-                }
-                return FileVisitResult.CONTINUE;
-            }
-        });
-        return found;
+        return SourceWalk.files(root)
+                         .stream()
+                         .filter(file -> file.getFileName().toString().equals("pom.xml"))
+                         .map(file -> root.relativize(file).toString().replace('\\', '/'))
+                         .toList();
     }
 
     private static final String LAUNCHER = "import org.junit.platform.launcher.core.LauncherFactory;";

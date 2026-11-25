@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -66,12 +67,12 @@ class HostEntryPointsInstallFatalEscapeTest {
     }
 
     private static Set<Path> mainFiles() throws Exception {
-        try (var files = Files.walk(repositoryRoot().resolve("aether"))) {
-            return files.filter(path -> path.toString().contains("/src/main/java/"))
-                        .filter(path -> path.toString().endsWith(".java"))
-                        .filter(HostEntryPointsInstallFatalEscapeTest::declaresMain)
-                        .collect(Collectors.toSet());
-        }
+        return SourceWalk.files(repositoryRoot().resolve("aether"))
+                         .stream()
+                         .filter(path -> path.toString().contains("/src/main/java/"))
+                         .filter(path -> path.toString().endsWith(".java"))
+                         .filter(HostEntryPointsInstallFatalEscapeTest::declaresMain)
+                         .collect(Collectors.toSet());
     }
 
     private static boolean declaresMain(Path path) {

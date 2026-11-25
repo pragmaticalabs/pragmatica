@@ -18,11 +18,8 @@ package org.pragmatica.testing;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -35,6 +32,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.pragmatica.testlogging.SourceWalk;
 
 /// The source scanner behind `NestedTestScanTest`: finds a nested class that holds test methods and that nothing runs.
 ///
@@ -125,25 +124,14 @@ final class NestedTestScan {
         var types = new ArrayList<Type>();
         var examined = new ArrayList<String>();
 
-        Files.walkFileTree(root, new SimpleFileVisitor<>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                return !dir.equals(root) && FlakeScan.SKIPPED_DIRECTORIES.contains(dir.getFileName().toString())
-                       ? FileVisitResult.SKIP_SUBTREE
-                       : FileVisitResult.CONTINUE;
-            }
+        for (var file : SourceWalk.files(root)) {
+            var relative = root.relativize(file).toString().replace('\\', '/');
 
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                var relative = root.relativize(file).toString().replace('\\', '/');
-
-                if (relative.endsWith(".java") && FlakeScan.isScanned("/" + relative)) {
-                    examined.add(relative);
-                    types.addAll(typesOf(relative, new String(Files.readAllBytes(file), StandardCharsets.UTF_8)));
-                }
-                return FileVisitResult.CONTINUE;
+            if (relative.endsWith(".java") && FlakeScan.isScanned("/" + relative)) {
+                examined.add(relative);
+                types.addAll(typesOf(relative, new String(Files.readAllBytes(file), StandardCharsets.UTF_8)));
             }
-        });
+        }
         examined.sort(Comparator.naturalOrder());
         return verdict(types, examined);
     }

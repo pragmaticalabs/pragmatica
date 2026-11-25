@@ -13,6 +13,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -43,17 +44,18 @@ class CapacityKeyUsersScanTest {
     }
 
     private static List<Path> mainSources() {
-        try (var walk = Stream.of("aether", "integrations").map(root()::resolve).filter(Files::isDirectory).flatMap(CapacityKeyUsersScanTest::walk)) {
-            return walk.filter(path -> path.toString().endsWith(".java"))
-                       .filter(path -> path.toString().contains("/src/main/java/"))
-                       .filter(path -> !path.toString().contains("/target/") && !path.toString().contains("/.m2-local/"))
-                       .toList();
-        }
+        return Stream.of("aether", "integrations")
+                     .map(root()::resolve)
+                     .filter(Files::isDirectory)
+                     .flatMap(CapacityKeyUsersScanTest::walk)
+                     .filter(path -> path.toString().endsWith(".java"))
+                     .filter(path -> path.toString().contains("/src/main/java/"))
+                     .toList();
     }
 
     private static Stream<Path> walk(Path directory) {
         try {
-            return Files.walk(directory);
+            return SourceWalk.files(directory).stream();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

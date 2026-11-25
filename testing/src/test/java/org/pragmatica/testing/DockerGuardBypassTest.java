@@ -18,18 +18,15 @@
 package org.pragmatica.testing;
 
 import java.io.IOException;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -38,7 +35,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `-Daether.requireDocker=true`.
 class DockerGuardBypassTest {
     private static final Pattern BYPASS = Pattern.compile("isDockerAvailable|disabledWithoutDocker");
-    private static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules");
     private static final List<Path> ALLOWED_FILES = List.of(Path.of("org/pragmatica/testing/DockerRequirement.java"),
                                                             Path.of("org/pragmatica/testing/DockerGuardBypassTest.java"));
 
@@ -94,22 +90,11 @@ class DockerGuardBypassTest {
     private static List<Path> bypasses(Path root) throws IOException {
         var found = new ArrayList<Path>();
 
-        Files.walkFileTree(root, new SimpleFileVisitor<>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                return !dir.equals(root) && SKIPPED_DIRECTORIES.contains(dir.getFileName().toString())
-                       ? FileVisitResult.SKIP_SUBTREE
-                       : FileVisitResult.CONTINUE;
+        for (var file : SourceWalk.files(root)) {
+            if (isGuardedSource(file) && BYPASS.matcher(Files.readString(file)).find()) {
+                found.add(file);
             }
-
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                if (isGuardedSource(file) && BYPASS.matcher(Files.readString(file)).find()) {
-                    found.add(file);
-                }
-                return FileVisitResult.CONTINUE;
-            }
-        });
+        }
         return found;
     }
 

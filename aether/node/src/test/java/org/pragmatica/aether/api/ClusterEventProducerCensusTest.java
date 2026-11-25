@@ -15,6 +15,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -132,20 +133,22 @@ class ClusterEventProducerCensusTest {
 
         assertThat(aetherRoot.resolve("node/src/main/java")).isDirectory();
 
-        try (var paths = Files.walk(aetherRoot)) {
-            return paths.filter(path -> path.toString()
-                                            .endsWith(".java"))
-                        .filter(path -> path.toString()
-                                            .contains("/src/main/java/"))
-                        .filter(path -> !path.toString()
-                                             .contains("/src/test/") && !path.toString()
-                                                                             .contains("/target/"))
-                        .filter(path -> !path.getFileName()
-                                             .toString()
-                                             .equals("ClusterEvent.java"))
-                        .map(ClusterEventProducerCensusTest::readFile)
-                        .map(ClusterEventProducerCensusTest::withoutComments)
-                        .collect(Collectors.toList());
+        try {
+            return SourceWalk.files(aetherRoot)
+                             .stream()
+                             .filter(path -> path.toString()
+                                                 .endsWith(".java"))
+                             .filter(path -> path.toString()
+                                                 .contains("/src/main/java/"))
+                             .filter(path -> !path.toString()
+                                                  .contains("/src/test/") && !path.toString()
+                                                                                  .contains("/target/"))
+                             .filter(path -> !path.getFileName()
+                                                  .toString()
+                                                  .equals("ClusterEvent.java"))
+                             .map(ClusterEventProducerCensusTest::readFile)
+                             .map(ClusterEventProducerCensusTest::withoutComments)
+                             .collect(Collectors.toList());
         } catch (IOException e) {
             throw new AssertionError("Cannot walk production sources under " + aetherRoot, e);
         }

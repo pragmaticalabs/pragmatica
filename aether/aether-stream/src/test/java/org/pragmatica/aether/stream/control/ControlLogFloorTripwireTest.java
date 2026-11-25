@@ -13,6 +13,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -151,11 +152,13 @@ class ControlLogFloorTripwireTest {
 
     /// Filters on the path relative to `root`, so a fixture root that itself lives under `src/test/` is scanned like a repository.
     private static List<Path> productionSources(Path root) {
-        try (var paths = Files.walk(root)) {
-            return paths.filter(path -> path.toString()
-                                            .endsWith(".java"))
-                        .filter(path -> isProduction("/" + root.relativize(path)))
-                        .toList();
+        try {
+            return SourceWalk.files(root)
+                             .stream()
+                             .filter(path -> path.toString()
+                                                 .endsWith(".java"))
+                             .filter(path -> isProduction("/" + root.relativize(path)))
+                             .toList();
         } catch (IOException e) {
             throw new AssertionError("Cannot walk sources under " + root, e);
         }

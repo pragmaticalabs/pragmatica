@@ -10,8 +10,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #3274: `Warnings.raise` (with rule O's hold and release) is the one writer of the family state; the family sites call it and never
@@ -37,17 +37,21 @@ class WarningsFamilyStateWritersTest {
                                                          .matches());
     }
 
+    private static List<Path> sources(Path root) throws IOException {
+        return SourceWalk.files(root)
+                         .stream()
+                         .filter(path -> path.toString()
+                                             .endsWith(".java"))
+                         .toList();
+    }
+
     private static List<String> offenders(Path root) throws IOException {
         var hits = new ArrayList<String>();
 
-        try (Stream<Path> files = Files.walk(root)) {
-            for (var source : files.filter(path -> path.toString()
-                                                       .endsWith(".java"))
-                                   .toList()) {
-                for (var line : Files.readAllLines(source)) {
-                    if (offending(source, line)) {
-                        hits.add(source.getFileName() + ": " + line.trim());
-                    }
+        for (var source : sources(root)) {
+            for (var line : Files.readAllLines(source)) {
+                if (offending(source, line)) {
+                    hits.add(source.getFileName() + ": " + line.trim());
                 }
             }
         }
@@ -61,7 +65,10 @@ class WarningsFamilyStateWritersTest {
         var root = Tripwire.repositoryRoot()
                            .resolve("aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/fsm2");
 
-        assertThat(Files.isRegularFile(root.resolve("Warnings.java"))).as("precondition: the scan reaches the fsm2 sources").isTrue();
+        assertThat(sources(root)).as("precondition: the scan reaches the fsm2 sources")
+                                 .anyMatch(path -> path.getFileName()
+                                                       .toString()
+                                                       .equals("Warnings.java"));
         assertThat(offenders(root)).isEmpty();
     }
 

@@ -11,6 +11,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -81,11 +82,11 @@ class MessageOnlyWrappingGuardTest {
     }
 
     private static Stream<Path> productionSources(Path tree) {
-        try (var walk = Files.walk(tree)) {
-            return walk.filter(path -> path.toString().endsWith(".java"))
-                       .filter(path -> path.toString().contains("/src/main/java/"))
-                       .toList()
-                       .stream();
+        try {
+            return SourceWalk.files(tree)
+                             .stream()
+                             .filter(path -> path.toString().endsWith(".java"))
+                             .filter(path -> path.toString().contains("/src/main/java/"));
         } catch (IOException e) {
             throw new IllegalStateException("cannot scan " + tree, e);
         }

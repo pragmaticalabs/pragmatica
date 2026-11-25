@@ -74,6 +74,13 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- SourceWalk: the corpus walk prunes build output instead of walking it (#3703). -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>test-logging</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- === Test harness === -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
