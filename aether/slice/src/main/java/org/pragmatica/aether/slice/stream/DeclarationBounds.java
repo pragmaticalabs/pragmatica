@@ -87,7 +87,7 @@ public sealed interface DeclarationBounds {
         var setting = settingBound(retention, partitions, maxEventSize);
 
         return byteArm(setting).orElse(() -> countArm(retention, partitions))
-                               .orElse(() -> eventArm(setting, maxEventSize));
+                      .orElse(() -> eventArm(setting, maxEventSize));
     }
 
     private static Option<ShareRefusal> byteArm(Option<Bound> setting) {
@@ -104,14 +104,13 @@ public sealed interface DeclarationBounds {
                                                                 "retention.max_count",
                                                                 perPartition(count, partitions),
                                                                 minShareCount(),
-                                                                saturatingMultiply(partitions, minShareCount())));
+                                                                saturatingMultiply(partitions,
+                                                                                   minShareCount())));
     }
 
     private static Option<ShareRefusal> eventArm(Option<Bound> setting, long maxEventSize) {
         return setting.filter(bound -> bound.share() < maxEventSize)
-                      .map(bound -> refusedAt(Arm.EVENT,
-                                              bound,
-                                              maxEventSize));
+                      .map(bound -> refusedAt(Arm.EVENT, bound, maxEventSize));
     }
 
     private static ShareRefusal refusedAt(Arm arm, Bound bound, long minimum) {
@@ -119,19 +118,15 @@ public sealed interface DeclarationBounds {
                                          bound.key(),
                                          bound.share(),
                                          minimum,
-                                         bound.smallestFor()
-                                              .applyAsLong(minimum));
+                                         bound.smallestFor().applyAsLong(minimum));
     }
 
     /// The bound that sets `s(p)`: the smallest computable one under `any`, the largest under `all`, none when `all` has an
     /// age bound (not computable) or no byte or count bound is declared. A tie goes to `max_bytes`.
     private static Option<Bound> settingBound(RetentionDeclaration retention, int partitions, long maxEventSize) {
-        var largest = retention.mode()
-                               .or(DeclarationDefaults.DEFAULT_MODE) == RetentionMode.ALL;
-        var bytes = retention.maxBytes()
-                             .map(total -> byteBound(total, partitions));
-        var count = retention.maxCount()
-                             .map(total -> countBound(total, partitions, maxEventSize));
+        var largest = retention.mode().or(DeclarationDefaults.DEFAULT_MODE) == RetentionMode.ALL;
+        var bytes = retention.maxBytes().map(total -> byteBound(total, partitions));
+        var count = retention.maxCount().map(total -> countBound(total, partitions, maxEventSize));
 
         return largest && retention.maxAgeMs()
                                    .isPresent()
@@ -162,8 +157,7 @@ public sealed interface DeclarationBounds {
 
         return Bound.bound("retention.max_count",
                            saturatingMultiply(perPartition(maxCount, partitions), eventBytes),
-                           target -> saturatingMultiply(partitions,
-                                                        Math.ceilDiv(target, eventBytes)));
+                           target -> saturatingMultiply(partitions, Math.ceilDiv(target, eventBytes)));
     }
 
     private static long perPartition(long whole, int partitions) {

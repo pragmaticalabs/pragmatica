@@ -742,8 +742,9 @@ public interface StreamConfigParser {
         var consistency = optionalEnum(section, "consistency", List.of("eventual", "strong"), "eventual");
         var compression = optionalEnum(section, "compression", List.of("none", "lz4", "zstd"), "none");
         var retention = parseRetention(section);
-        var storageDeclaration = Result.all(partitions, maxEventSize)
-                                       .flatMap((count, size) -> parseCheckedDeclaration(section, count, size));
+        var storageDeclaration = Result.all(partitions, maxEventSize).flatMap((count, size) -> parseCheckedDeclaration(section,
+                                                                                                                       count,
+                                                                                                                       size));
 
         return firstFailure(List.of(partitions,
                                     factor,
@@ -940,7 +941,7 @@ public interface StreamConfigParser {
                                                                      int partitions,
                                                                      long maxEventSize) {
         return parseDeclaration(section, partitions, maxEventSize).flatMap(declared -> refuseTruncationShape(section.alias(),
-                                                                                                            declared))
+                                                                                                             declared))
                                .flatMap(declared -> refuseBelowBounds(section.alias(),
                                                                       partitions,
                                                                       maxEventSize,
@@ -960,15 +961,15 @@ public interface StreamConfigParser {
                                                                                  declared.retention(),
                                                                                  partitions,
                                                                                  maxEventSize))
-                                             .orElse(() -> unindexableRefusal(alias, declared.hot(), maxEventSize))
-                                             .fold(() -> success(declared),
-                                                   cause -> cause.result());
+                               .orElse(() -> unindexableRefusal(alias,
+                                                                declared.hot(),
+                                                                maxEventSize))
+                               .fold(() -> success(declared),
+                                     cause -> cause.result());
     }
 
     private static Option<Cause> hotWindowRefusal(String alias, Option<HotWindowDeclaration> hot, long maxEventSize) {
-        return hot.flatMap(window -> belowSealRuns(alias, window).orElse(() -> belowMaxEvent(alias,
-                                                                                            window,
-                                                                                            maxEventSize)));
+        return hot.flatMap(window -> belowSealRuns(alias, window).orElse(() -> belowMaxEvent(alias, window, maxEventSize)));
     }
 
     private static Option<Cause> belowSealRuns(String alias, HotWindowDeclaration window) {
@@ -998,11 +999,11 @@ public interface StreamConfigParser {
                                                        long maxEventSize) {
         return retention.flatMap(declared -> DeclarationBounds.shareRefusal(declared, partitions, maxEventSize))
                         .map(refusal -> new StreamDeclarationError.RetentionShareTooSmall(alias,
-                                                                                           refusal.arm(),
-                                                                                           refusal.setBy(),
-                                                                                           refusal.share(),
-                                                                                           refusal.minimum(),
-                                                                                           refusal.smallestValid()));
+                                                                                          refusal.arm(),
+                                                                                          refusal.setBy(),
+                                                                                          refusal.share(),
+                                                                                          refusal.minimum(),
+                                                                                          refusal.smallestValid()));
     }
 
     /// Only `hot.max_count` is checked, against the capacity of the first region of `hot.max_bytes`: a `[retention]`

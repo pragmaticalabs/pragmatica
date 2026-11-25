@@ -166,8 +166,10 @@ public sealed interface StreamDeclarationError extends Cause {
         @Override
         public String message() {
             return "Stream resource '" + alias
-                 + "' declares " + dimension + " = " + declared
-                 + ", below two seal runs: the smallest valid " + dimension + " is " + minimum;
+                 + "' declares " + dimension
+                 + " = " + declared
+                 + ", below two seal runs: the smallest valid " + dimension
+                 + " is " + minimum;
         }
     }
 
@@ -199,8 +201,10 @@ public sealed interface StreamDeclarationError extends Cause {
             return "Stream resource '" + alias
                  + "' declares " + setBy
                  + " so small that the per-partition share is " + share + unitOf(arm)
-                 + ", below " + floorOf(arm) + " (" + minimum + unitOf(arm)
-                 + "): the smallest valid " + setBy + " is " + smallestValid;
+                 + ", below " + floorOf(arm)
+                 + " (" + minimum + unitOf(arm)
+                 + "): the smallest valid " + setBy
+                 + " is " + smallestValid;
         }
 
         private static String unitOf(DeclarationBounds.Arm arm) {
