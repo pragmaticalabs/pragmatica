@@ -1194,9 +1194,8 @@ final class FlowPrinter {
         if (text.indexOf('\n') >= 0) {
             return;
         }
-
-        emit(" " + text);
-        emittedTriviaTokens.add(t);
+        // Printed by the claim point's rule: on an aligned continuation it starts at the column, not one past it (#3698).
+        emitClaimedComment(t, false);
     }
 
     /// Emit any unclaimed single-line block comments living INSIDE `node`'s token span, inline at
