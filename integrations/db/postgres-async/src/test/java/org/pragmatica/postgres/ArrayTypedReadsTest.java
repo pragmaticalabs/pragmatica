@@ -55,9 +55,18 @@ public class ArrayTypedReadsTest {
 
     private static Row read(Format format) {
         return switch (format) {
-            case BINARY -> dbr.query("SELECT * FROM TA_TEST").index(0);
+            case BINARY -> binaryRow();
             case TEXT -> dbr.script("SELECT * FROM TA_TEST").iterator().next().index(0);
         };
+    }
+
+    /// The first run of a prepared statement on a connection answers text (its columns are not described yet); the
+    /// cached statement's later runs answer binary. The first run is discarded, so the BINARY arm reads binary
+    /// whatever test the class happens to start with (the connection is single, `defaultConfiguration`).
+    private static Row binaryRow() {
+        dbr.query("SELECT * FROM TA_TEST");
+
+        return dbr.query("SELECT * FROM TA_TEST").index(0);
     }
 
     @ParameterizedTest
