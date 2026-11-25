@@ -16,6 +16,7 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.mockito.stubbing.Answer;
+import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
@@ -73,6 +74,8 @@ class CoreRetirementCallSiteTest {
         when(config.self()).thenReturn(SELF);
         when(config.workerConfig()).thenReturn(Option.none());
         when(config.environment()).thenReturn(Option.none());
+        // #2136: the stuck-SYNCING voter episodes read the cluster ping interval when the assembly is built.
+        when(config.timeouts()).thenReturn(TimeoutsConfig.timeoutsConfig());
         when(config.autoHeal()).thenReturn(org.pragmatica.aether.environment.AutoHealConfig.DEFAULT);
         when(config.topology()).thenReturn(new TopologyConfig(SELF,
                                                               5,
