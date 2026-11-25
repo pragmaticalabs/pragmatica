@@ -29,8 +29,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 
-/// Scheduling bound to the lifetime of its owner: once the owner calls [#end()], nothing scheduled
-/// through this lifetime starts a body, and nothing scheduled afterwards is enqueued.
+/// Scheduling bound to the lifetime of its owner: once [#end()] has written the flag, no body runs whose
+/// wrapper read of the flag follows that write, and no schedule call whose first read of the flag follows it
+/// enqueues. A body whose read preceded the write may still run after [#end()] returns.
 ///
 /// The owner no longer keeps one cancel handle per task; it creates a lifetime, schedules through it,
 /// and ends it once when it stops. Scheduling mirrors [SharedScheduler] (one-shot, fixed-rate, and
@@ -73,9 +74,10 @@ public final class OwnerLifetime {
     /// lifetime and cancels the scheduler's future, so a debounce that cancels and re-schedules does not
     /// accumulate entries.
     public interface Handle {
-        /// Cancel the task. Idempotent; never interrupts a running body.
+        /// Cancel the task. Idempotent; never interrupts a running body. Like `Future.cancel`, it returns `false`
+        /// for a one-shot that has already completed and leaves the handle not cancelled.
         ///
-        /// @return `true` if this call changed the handle from live to cancelled
+        /// @return `true` if this call changed the handle from live to cancelled, that is, prevented a run
         boolean cancel();
 
         /// @return `true` once the handle has been cancelled, by its owner, by [OwnerLifetime#end()] or
@@ -84,7 +86,18 @@ public final class OwnerLifetime {
     }
 
     /// The scheduling seam. One method carries all three scheduling forms; a present `period` means periodic.
-    interface Seam {
+    ///
+    /// Production wiring passes the shared default ([#ownerLifetime()]) or a scheduler injected by wiring whose
+    /// production value is that default. Tests pass a fake that records what it receives and fires wrappers by hand.
+    @FunctionalInterface
+    public interface Seam {
+        /// Enqueue the wrapper; the lifetime cancels the returned future (without interrupt) to cancel the task.
+        ///
+        /// @param wrapper the lifetime's wrapper; run it once for a one-shot, once per period for a periodic task
+        /// @param initialDelay delay before the first run
+        /// @param period interval between runs; present only for a periodic task
+        ///
+        /// @return the future that cancels the enqueued task
         ScheduledFuture<?> enqueue(Runnable wrapper, TimeSpan initialDelay, Option<TimeSpan> period);
     }
 
@@ -104,7 +117,9 @@ public final class OwnerLifetime {
         return new OwnerLifetime(SHARED);
     }
 
-    static OwnerLifetime ownerLifetime(Seam seam) {
+    /// Create a live lifetime that schedules through the given seam. Production wiring passes the shared default
+    /// or a scheduler injected by wiring whose production value is that default; tests pass a fake.
+    public static OwnerLifetime ownerLifetime(Seam seam) {
         return new OwnerLifetime(seam);
     }
 
@@ -176,7 +191,7 @@ public final class OwnerLifetime {
         var enqueued = false;
 
         try {
-            var scheduled = seam.enqueue(entry, initialDelay, period);
+            var scheduled = seam.enqueue(entry::run, initialDelay, period);
 
             enqueued = true;
 
@@ -203,17 +218,26 @@ public final class OwnerLifetime {
                            interval -> SharedScheduler.scheduleAtFixedRate(wrapper, initialDelay, interval));
     }
 
+    // The entry's life: a one-shot that ran to completion is COMPLETED, which a later cancel does not change.
+    private enum State {
+        LIVE,
+        CANCELLED,
+        COMPLETED
+    }
+
     /// Queue element AND returned handle. Identity equality: two entries are never equal.
     private final class Entry implements Runnable, Handle {
         private final Consumer<OwnerLifetime> body;
         private final boolean periodic;
-        private final AtomicBoolean cancelled;
+        private final AtomicReference<State> state;
         private final AtomicReference<ScheduledFuture<?>> future = new AtomicReference<>();
 
         private Entry(Consumer<OwnerLifetime> body, boolean periodic, boolean cancelled) {
             this.body = body;
             this.periodic = periodic;
-            this.cancelled = new AtomicBoolean(cancelled);
+            this.state = new AtomicReference<>(cancelled
+                                               ? State.CANCELLED
+                                               : State.LIVE);
         }
 
         // The wrapper consults the lifetime flag and nothing else. A one-shot leaves the set even when the body throws.
@@ -237,6 +261,7 @@ public final class OwnerLifetime {
         @Contract
         private void completeOneShot() {
             if (!periodic) {
+                state.compareAndSet(State.LIVE, State.COMPLETED);
                 entries.remove(this);
             }
         }
@@ -256,7 +281,7 @@ public final class OwnerLifetime {
         @Override
         public boolean cancel() {
             entries.remove(this);
-            var changed = cancelled.compareAndSet(false, true);
+            var changed = state.compareAndSet(State.LIVE, State.CANCELLED);
 
             cancelScheduled();
 
@@ -270,7 +295,7 @@ public final class OwnerLifetime {
 
         @Override
         public boolean isCancelled() {
-            return cancelled.get();
+            return state.get() == State.CANCELLED;
         }
     }
 }

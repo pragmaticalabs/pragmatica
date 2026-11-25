@@ -45,6 +45,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// [SharedScheduler]. Each test names the one mutant it exists to turn red.
 class OwnerLifetimeTest {
     private static final TimeSpan LONG = timeSpan(1).hours();
+    private static final long CEILING_SECONDS = 5;
 
     private enum Form {
         ONE_SHOT,
@@ -52,10 +53,24 @@ class OwnerLifetimeTest {
         DELAYED_FIXED_RATE;
 
         OwnerLifetime.Handle schedule(OwnerLifetime lifetime, Consumer<OwnerLifetime> body) {
+            return schedule(lifetime, body, LONG, LONG);
+        }
+
+        // `first` is the one-shot delay, the fixed-rate interval or the initial delay; `second` is the interval
+        // of the initial-delay form and ignored by the other two.
+        OwnerLifetime.Handle schedule(OwnerLifetime lifetime, Consumer<OwnerLifetime> body, TimeSpan first, TimeSpan second) {
             return switch (this) {
-                case ONE_SHOT -> lifetime.schedule(body, LONG);
-                case FIXED_RATE -> lifetime.scheduleAtFixedRate(body, LONG);
-                case DELAYED_FIXED_RATE -> lifetime.scheduleAtFixedRate(body, LONG, LONG);
+                case ONE_SHOT -> lifetime.schedule(body, first);
+                case FIXED_RATE -> lifetime.scheduleAtFixedRate(body, first);
+                case DELAYED_FIXED_RATE -> lifetime.scheduleAtFixedRate(body, first, second);
+            };
+        }
+
+        Option<TimeSpan> expectedPeriod(TimeSpan first, TimeSpan second) {
+            return switch (this) {
+                case ONE_SHOT -> Option.none();
+                case FIXED_RATE -> Option.some(first);
+                case DELAYED_FIXED_RATE -> Option.some(second);
             };
         }
     }
@@ -112,6 +127,7 @@ class OwnerLifetimeTest {
     private static final class FakeSeam implements OwnerLifetime.Seam {
         private final List<Runnable> wrappers = new ArrayList<>();
         private final List<FakeFuture> futures = new ArrayList<>();
+        private final List<TimeSpan> initialDelays = new ArrayList<>();
         private final List<Option<TimeSpan>> periods = new ArrayList<>();
         private final AtomicInteger totalCancels = new AtomicInteger();
         private Consumer<Runnable> onEnqueue = _ -> {};
@@ -128,6 +144,7 @@ class OwnerLifetimeTest {
 
             wrappers.add(wrapper);
             futures.add(future);
+            initialDelays.add(initialDelay);
             periods.add(period);
             onEnqueue.accept(wrapper);
             return future;
@@ -164,6 +181,34 @@ class OwnerLifetimeTest {
         assertThat(handle.isCancelled()).isFalse();
         assertThat(seen.get()).isSameAs(lifetime);
         assertThat(seam.periods.getFirst().isPresent()).isEqualTo(form != Form.ONE_SHOT);
+    }
+
+    // ---- the delays reach the seam as given. Mutant: initial delay and interval swapped ---------------------
+
+    @ParameterizedTest
+    @EnumSource(Form.class)
+    void schedule_anyForm_handsSeamTheCallersInitialDelayAndPeriod(Form form) {
+        var seam = new FakeSeam();
+        var lifetime = OwnerLifetime.ownerLifetime(seam);
+        var first = timeSpan(2).hours();
+        var second = timeSpan(3).hours();
+
+        form.schedule(lifetime, new Counter(), first, second);
+
+        assertThat(seam.initialDelays).containsExactly(first);
+        assertThat(seam.periods).containsExactly(form.expectedPeriod(first, second));
+    }
+
+    // ---- the seam gets a plain wrapper, never the handle. Mutant: the entry itself is handed to the seam ------
+
+    @Test
+    void schedule_seamWrapper_isNotTheHandle() {
+        var seam = new FakeSeam();
+        var lifetime = OwnerLifetime.ownerLifetime(seam);
+
+        lifetime.schedule(new Counter(), LONG);
+
+        assertThat(seam.wrappers.getFirst()).isNotInstanceOf(OwnerLifetime.Handle.class);
     }
 
     @Test
@@ -294,6 +339,20 @@ class OwnerLifetimeTest {
         handles.forEach(handle -> assertThat(handle.cancel()).isFalse());
     }
 
+    // ---- cancel after completion. Mutant: a completed one-shot is not marked completed ---------------------
+
+    @Test
+    void cancel_afterOneShotCompleted_returnsFalseAndLeavesHandleNotCancelled() {
+        var seam = new FakeSeam();
+        var lifetime = OwnerLifetime.ownerLifetime(seam);
+        var handle = lifetime.schedule(new Counter(), LONG);
+
+        seam.wrappers.getFirst().run();
+
+        assertThat(handle.cancel()).isFalse();
+        assertThat(handle.isCancelled()).isFalse();
+    }
+
     // ---- test 7: register before enqueue. Mutant: register after enqueue ------------------------------------
 
     @Test
@@ -378,7 +437,7 @@ class OwnerLifetimeTest {
         var handle = lifetime.scheduleAtFixedRate(self -> endOnThirdRun(self, runs, endReturned),
                                                   timeSpan(5).millis());
 
-        assertThat(endReturned.await(30, TimeUnit.SECONDS)).isTrue();
+        assertThat(endReturned.await(CEILING_SECONDS, TimeUnit.SECONDS)).isTrue();
         assertThat(handle.isCancelled()).isTrue();
         assertThat(lifetime.size()).isZero();
     }
@@ -388,6 +447,41 @@ class OwnerLifetimeTest {
             self.end();
             endReturned.countDown();
         }
+    }
+
+    // ---- a24 (real scheduler): a one-shot runs once and leaves the set. Mutant: the one-shot branch made periodic ----
+
+    @Test
+    void schedule_oneShotOnSharedScheduler_runsOnceAndLeavesSet() throws InterruptedException {
+        var lifetime = OwnerLifetime.ownerLifetime();
+        var runs = new AtomicInteger();
+        var ran = new CountDownLatch(1);
+        var laterOneShotRan = new CountDownLatch(1);
+
+        lifetime.schedule(_ -> countRun(runs, ran), timeSpan(5).millis());
+        lifetime.schedule(_ -> laterOneShotRan.countDown(), timeSpan(150).millis());
+
+        assertThat(ran.await(CEILING_SECONDS, TimeUnit.SECONDS)).isTrue();
+        assertThat(laterOneShotRan.await(CEILING_SECONDS, TimeUnit.SECONDS)).isTrue();
+        assertThat(awaitEmpty(lifetime)).isTrue();
+        assertThat(runs.get()).isEqualTo(1);
+    }
+
+    private static void countRun(AtomicInteger runs, CountDownLatch ran) {
+        runs.incrementAndGet();
+        ran.countDown();
+    }
+
+    // A one-shot leaves the set right after its body returns, on the scheduler thread: spin (core tests cannot use
+    // the testing module's PollUntil) with the same ceiling as the latches.
+    private static boolean awaitEmpty(OwnerLifetime lifetime) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(CEILING_SECONDS);
+
+        while (lifetime.size() != 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        return lifetime.size() == 0;
     }
 
     // ---- test 9 (real scheduler): a schedule call racing end() -------------------------------------------------
