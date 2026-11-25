@@ -1135,16 +1135,28 @@ public sealed interface StreamAssembly {
         // #932: one thread each per node, both daemon and neither closed on stop — nine of each survived a
         // nine-node stop. The controller's close() is shutdownNow on the executor it owns; the backfill
         // executor is this method's own. Controller first: its reconcile is what submits to the backfill.
-        Runnable streamReplicationShutdown = () -> {
-            streamReplicaSetController.close();
-            streamBackfillExecutor.shutdownNow();
-        };
+        Runnable streamReplicationShutdown = () -> stopStreamReplication(streamReplicaSetController,
+                                                                         streamPartitionBackfill,
+                                                                         streamBackfillExecutor);
 
         return new StreamOwnershipOutputs(streamOwnershipViews,
                                           streamPartitionBackfill,
                                           streamBackfillExecutor,
                                           streamReplicaSetController,
                                           streamReplicationShutdown);
+    }
+
+    /// The node stop's end of the stream replication: the controller (its reconcile is what submits to the backfill), then the
+    /// backfill's own timers (#3754: the refusal hold and the idle watch must not start a re-run after the stop), then the
+    /// backfill executor.
+    static Unit stopStreamReplication(ReplicaSetController streamReplicaSetController,
+                                      PartitionBackfill streamPartitionBackfill,
+                                      ExecutorService streamBackfillExecutor) {
+        streamReplicaSetController.close();
+        streamPartitionBackfill.close();
+        streamBackfillExecutor.shutdownNow();
+
+        return Unit.unit();
     }
 
     /// What `streamBackfillTick` reads from the assembly built so far.

@@ -34,7 +34,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.utils.OwnerLifetime;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -269,6 +269,9 @@ public final class PartitionBackfill {
     private volatile BackfillAckSink backfillAckSink = this::ackOnTransport;
     /// #2574 F1: the per-partition hold a refused flight keeps its slot for ([RefusalBackoff]); shared by every run.
     private final RefusalBackoff<PartitionKey> refusalBackoff;
+    /// #3754: the lifetime of every timer this backfill arms (the refusal hold, the flight's idle watch), shared by every run.
+    /// [#close] ends it, so a timer armed before the stop never starts a re-run after it (the re-run itself re-checks, see [#rerun]).
+    private final OwnerLifetime lifetime;
 
     private PartitionBackfill(ReplicaRegistry registry,
                               AlignedRecovery partitionRecovery,
@@ -283,7 +286,8 @@ public final class PartitionBackfill {
                               CommittedStreamOwnerSource committedOwnerSource,
                               ReplicationReceiveHandler.ReplicaDurability durability,
                               QuarantineView quarantine,
-                              Option<TimeSpan> flightBound) {
+                              Option<TimeSpan> flightBound,
+                              OwnerLifetime lifetime) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
         this.transport = transport;
@@ -310,6 +314,7 @@ public final class PartitionBackfill {
         this.oversizedOrder = new Object();
         this.current = () -> true;
         this.refusalBackoff = RefusalBackoff.refusalBackoff();
+        this.lifetime = lifetime;
     }
 
     /// A per-run view of `shared` (#1638 late side effects): the same collaborators and the same cross-call state,
@@ -347,6 +352,7 @@ public final class PartitionBackfill {
         this.oversizedOrder = shared.oversizedOrder;
         this.current = current;
         this.refusalBackoff = shared.refusalBackoff;
+        this.lifetime = shared.lifetime;
         this.verifyWindowHook = shared.verifyWindowHook;
         this.backfillAckSink = shared.backfillAckSink;
     }
@@ -371,7 +377,8 @@ public final class PartitionBackfill {
                                      CommittedStreamOwnerSource.none(),
                                      ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
                                      QuarantineView.NONE,
-                                     Option.none());
+                                     Option.none(),
+                                     OwnerLifetime.ownerLifetime());
     }
 
     /// The backward-compatible factory with a single-flight idle `flightBound` (#1638 N1, B2), for tests of the bound.
@@ -391,6 +398,24 @@ public final class PartitionBackfill {
                                                ReplicationTransport replicationTransport,
                                                NodeId self,
                                                TimeSpan flightBound) {
+        return partitionBackfill(registry,
+                                 partitionRecovery,
+                                 transport,
+                                 replicationTransport,
+                                 self,
+                                 flightBound,
+                                 OwnerLifetime.ownerLifetime());
+    }
+
+    /// The bounded test factory above on a given `lifetime` (#3754): a test builds it through [OwnerLifetime#ownerLifetime(OwnerLifetime.Seam)]
+    /// with a scheduler it fires by hand, so the refusal hold and the idle watch run when the test says.
+    static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
+                                               AlignedRecovery partitionRecovery,
+                                               CatchupTransport transport,
+                                               ReplicationTransport replicationTransport,
+                                               NodeId self,
+                                               TimeSpan flightBound,
+                                               OwnerLifetime lifetime) {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
@@ -404,7 +429,8 @@ public final class PartitionBackfill {
                                      CommittedStreamOwnerSource.none(),
                                      ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
                                      QuarantineView.NONE,
-                                     Option.some(flightBound));
+                                     Option.some(flightBound),
+                                     lifetime);
     }
 
     /// Cold-start-aware factory: after `sourceWaitBound` elapses with no caught-up source, the
@@ -499,7 +525,8 @@ public final class PartitionBackfill {
                                      committedOwnerSource,
                                      durability,
                                      quarantine,
-                                     flightBound);
+                                     flightBound,
+                                     OwnerLifetime.ownerLifetime());
     }
 
     /// Test factory: injects a deterministic clock so the bounded wait can be exercised without sleeping.
@@ -574,7 +601,8 @@ public final class PartitionBackfill {
                                      committedOwnerSource,
                                      ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
                                      QuarantineView.NONE,
-                                     Option.none());
+                                     Option.none(),
+                                     OwnerLifetime.ownerLifetime());
     }
 
     /// Backfill `(streamName, partition)` onto self. Resolves with the number of events applied on
@@ -653,7 +681,7 @@ public final class PartitionBackfill {
     /// again until `bound` after its last progress.
     @Contract
     private void watch(PartitionKey key, Flight flight, TimeSpan bound, TimeSpan delay) {
-        Promise.<Unit> promise(delay, Result::unitResult).onResult(_ -> checkIdle(key, flight, bound));
+        lifetime.schedule(_ -> checkIdle(key, flight, bound), delay);
     }
 
     @Contract
@@ -746,7 +774,15 @@ public final class PartitionBackfill {
                   key.streamName(),
                   key.partition(),
                   hold);
-        SharedScheduler.schedule(() -> release(key, flight), hold);
+        lifetime.schedule(_ -> release(key, flight), hold);
+    }
+
+    /// #3754: the stop. Ends the lifetime of the refusal hold and the idle watch, so a timer armed before the stop never runs
+    /// its body after it and none is armed after it. A timer body that was already past the lifetime's read when this runs may
+    /// still reach [#rerun], which re-checks the lifetime before it starts a pull; the run in flight on the backfill executor is
+    /// not interrupted (the executor's own shutdown owns it). Idempotent; never waits.
+    public Unit close() {
+        return lifetime.end();
     }
 
     @Contract
@@ -769,8 +805,9 @@ public final class PartitionBackfill {
     @Contract
     private void rerun(PartitionKey key) {
         var flight = Flight.flight();
-
-        if (inFlight.putIfAbsent(key, flight) == null) {
+        // #3754 (N): a timer body that passed the lifetime's read before close() ran reaches here; the pull it would start (a wire
+        // read, in-memory replica rows and the local WAL, no write another node also makes) must not start after the stop.
+        if (!lifetime.isEnded() && inFlight.putIfAbsent(key, flight) == null) {
             log.debug("Backfill of {}[{}] re-runs once: a call joined the flight that landed",
                       key.streamName(),
                       key.partition());
