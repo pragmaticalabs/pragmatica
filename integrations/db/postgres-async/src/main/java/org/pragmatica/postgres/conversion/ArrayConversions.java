@@ -104,7 +104,9 @@ final class ArrayConversions {
     /// (`BigDecimal` for float arrays, `Instant` for timestamp arrays) that an untyped read and a `BigDecimal[]` or
     /// `Instant[]` read keep; a leaf that is the natural Java type of the column is parsed directly, so it never
     /// passes through a type it cannot be stored into (`Double.valueOf` also reads `NaN` and `Infinity`, which
-    /// `BigDecimal` rejects). Binary counterpart: `leafValue`.
+    /// `BigDecimal` rejects). `Double` reads either float column, `Float` reads `float4` only: a `float8` element
+    /// does not narrow into `Float`, as the scalar path refuses it, so that read keeps the canonical element and
+    /// fails as before. Binary counterpart: `leafValue`.
     private static BiFunction<Oid, String, Object> elementParser(Class<?> leaf,
                                                                  Oid arrayOid,
                                                                  BiFunction<Oid, String, Object> canonical) {
@@ -112,7 +114,7 @@ final class ArrayConversions {
             return (_, text) -> Double.valueOf(text);
         }
 
-        if (leaf == Float.class && isFloatArray(arrayOid)) {
+        if (leaf == Float.class && arrayOid == Oid.FLOAT4_ARRAY) {
             return (_, text) -> Float.valueOf(text);
         }
 
@@ -324,7 +326,8 @@ final class ArrayConversions {
 
     /// The element for the requested leaf type, from a codec-decoded value. Text counterpart: `elementParser`.
     /// A leaf that is the natural Java type of the column keeps the decoded value (a `Float` widens to `Double`
-    /// by its decimal text, as the text path reads it); every other leaf takes the canonical element.
+    /// by its decimal text, as the text path reads it); every other leaf takes the canonical element, so
+    /// `float8[]` into `Float[]` fails as before (no narrowing, as in the text path).
     private static Object leafValue(Oid arrayOid, Class<?> leaf, Object decoded) {
         if (leaf == Double.class && isFloatArray(arrayOid)) {
             return decoded instanceof Float f
@@ -332,10 +335,8 @@ final class ArrayConversions {
                    : decoded;
         }
 
-        if (leaf == Float.class && isFloatArray(arrayOid)) {
-            return decoded instanceof Double d
-                   ? Float.valueOf(d.floatValue())
-                   : decoded;
+        if (leaf == Float.class && arrayOid == Oid.FLOAT4_ARRAY) {
+            return decoded;
         }
 
         if (leaf == LocalDateTime.class && arrayOid == Oid.TIMESTAMP_ARRAY) {

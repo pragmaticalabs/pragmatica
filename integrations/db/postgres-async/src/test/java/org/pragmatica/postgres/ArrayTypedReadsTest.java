@@ -14,12 +14,14 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Typed reads of `float8[]`, `float4[]`, `uuid[]` and `timestamp[]` into `Double[]`, `Float[]`, `UUID[]` and
 /// `LocalDateTime[]` (#2035), in both result formats, each with a NULL element, an empty array and a NULL array.
 ///
 /// Primitive targets (`double[]`, `float[]`) stay rejected: an element may be NULL (`ArrayConversionsTest`
-/// pins the rejection).
+/// pins the rejection). `float8[]` into `Float[]` stays refused too: the scalar path refuses `float8` into `Float`,
+/// and a narrowing array read would turn `1e300` into `Infinity` without an error.
 @Tag("Slow")
 public class ArrayTypedReadsTest {
     @RegisterExtension
@@ -109,10 +111,18 @@ public class ArrayTypedReadsTest {
 
     @ParameterizedTest
     @EnumSource(Format.class)
-    public void float8ReadsAsFloat(Format format) {
+    public void float8StaysRefusedAsFloat(Format format) {
         dbr.query("INSERT INTO TA_TEST (F8) VALUES ('{1.5, null, -2.25}')");
 
-        assertArrayEquals(new Float[]{1.5f, null, -2.25f}, read(format).getArray("f8", Float[].class));
+        assertThrows(ArrayStoreException.class, () -> read(format).getArray("f8", Float[].class));
+    }
+
+    @ParameterizedTest
+    @EnumSource(Format.class)
+    public void float8OutOfFloatRangeStaysRefusedAsFloat(Format format) {
+        dbr.query("INSERT INTO TA_TEST (F8) VALUES ('{1e300}')");
+
+        assertThrows(ArrayStoreException.class, () -> read(format).getArray("f8", Float[].class));
     }
 
     @ParameterizedTest
