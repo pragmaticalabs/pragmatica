@@ -644,6 +644,17 @@ class TerraHttpServerTest {
         }
     }
 
+    @Test void mount_sliceRouteAtAncestorOfSharedBasePath_failsAndReleasesApplication() {
+        var released = new AtomicInteger();
+        var route = Route.<String>get("/m").withoutParameters().to(_ -> Promise.success("one")).withSecurity(SecurityPolicy.publicRoute()).asText();
+        var result = TerraHttpServer.start(application(released), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
+            List.of(new Routes<>(Sample.class, List.of(route), SliceVersionRegistry.UNVERSIONED)), JsonMapper.defaultJsonMapper(),
+            List.of(mount("/m/n", Option.none(), SecurityPolicy.publicRoute()))).await(timeSpan(10).seconds());
+        String message = result.<String>fold(cause -> cause.message(), _ -> "started");
+        assertThat(message).contains("overlaps reserved /m/n/ namespace: /m");
+        assertThat(released).hasValue(1);
+    }
+
     @Test void mount_ownListener_servesOnItsOwnPortOnly_andStopsWithTheHost() throws Exception {
         var own = Option.some(HttpServerConfig.httpServerConfig("terra-mount", 0));
         var host = TerraHttpServer.start(application(new AtomicInteger()), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
