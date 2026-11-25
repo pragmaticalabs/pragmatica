@@ -27,7 +27,8 @@ public sealed interface HttpServerError extends Cause {
         @Override
         public String message() {
             return "Failed to bind to " + bindHost.map(host -> host + ":" + port)
-                                                 .or("port " + port) + ": " + cause.getMessage();
+                                                  .or("port " + port)
+                 + ": " + cause.getMessage();
         }
     }
 
