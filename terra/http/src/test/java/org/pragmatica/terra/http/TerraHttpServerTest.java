@@ -638,7 +638,8 @@ class TerraHttpServerTest {
                 List.of(new Routes<>(Sample.class, List.of(route), SliceVersionRegistry.UNVERSIONED)), JsonMapper.defaultJsonMapper(),
                 List.of(mount("/m", Option.none(), SecurityPolicy.publicRoute()))).await(timeSpan(10).seconds());
             assertThat(result.isFailure()).as(path).isTrue();
-            assertThat(result.fold(cause -> cause.message(), _ -> "started")).as(path).contains("overlaps reserved /m/ namespace: " + path);
+            String message = result.<String>fold(cause -> cause.message(), _ -> "started");
+            assertThat(message).as(path).contains("overlaps reserved /m/ namespace: " + path);
             assertThat(released).as(path).hasValue(1);
         }
     }
