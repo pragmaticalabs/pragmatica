@@ -1,0 +1,2 @@
+### Changed (2026-11-25 — #3752: bump peglib 0.7.3 to 0.7.5)
+- **peglib 0.7.3 → 0.7.5** in `jbct/jbct-parser` and `aether/pg-tools`. The committed JBCT Java 25 parser (`Java25Lexer`, `Java25ParserV6`, `Java25Visitor`) is regenerated with 0.7.5: the lexer gains a resumable `lex(input, from, stop)` and per-token scan reach, and diagnostics follow the furthest-failure rule (peglib #47, #49). The pg-tools PostgreSQL parser is generated into `target/` on every build and needs no committed change.

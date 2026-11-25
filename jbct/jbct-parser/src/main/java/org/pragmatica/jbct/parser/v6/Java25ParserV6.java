@@ -1,4 +1,4 @@
-// peglib-generator: 0.7.3 (build:60f0704043b2)
+// peglib-generator: 0.7.5 (build:4ce6b3bc7b1e)
 package org.pragmatica.jbct.parser.v6;
 
 import java.util.ArrayList;
@@ -289,9 +289,12 @@ public final class Java25ParserV6 {
     private final CstArrayBuilder cst;
     private final List<Diagnostic> diagnostics;
     private int pos;
-    private int errorPos;
+    private int errorTok;
     private String expected;
-    private int found;
+    private int lastReportedTok;
+    private int memoErrorTok = -1;
+    private String memoExpected;
+    private int memoFailedRuleKind = -1;
     private int lastFailedRuleKind;
     private final java.util.Map<String, long[]> captures = new java.util.HashMap<>();
     private final java.util.ArrayDeque<java.util.Map<String, long[]>> captureScopeStack = new java.util.ArrayDeque<>();
@@ -302,9 +305,9 @@ public final class Java25ParserV6 {
         this.cst = new CstArrayBuilder(tokens.input(), tokens, RULE_TABLE);
         this.diagnostics = new ArrayList<>();
         this.pos = tokens.nextNonTrivia(0);
-        this.errorPos = -1;
+        this.errorTok = -1;
         this.expected = null;
-        this.found = -1;
+        this.lastReportedTok = -1;
         this.lastFailedRuleKind = -1;
         this.maxDiagnostics = maxDiagnostics < 0 ? Integer.MAX_VALUE : maxDiagnostics;
     }
@@ -327,18 +330,7 @@ public final class Java25ParserV6 {
         int rootIdx = p.cst.beginNode(RULE_ROOT_KIND, rootFirstTok, -1);
         boolean ok = parseByKind(p, ruleKind, rootIdx);
         if (!ok) {
-            // Mirror the full-parse recovery contract: emit an Error node
-            // covering the failing token plus a diagnostic.
-            int failedTok = p.pos < tokens.count() ? p.pos : tokens.count() - 1;
-            int diagOffset = failedTok >= 0 && failedTok < tokens.count()
-                ? tokens.startAt(failedTok) : tokens.input().length();
-            int diagLen = failedTok >= 0 && failedTok < tokens.count()
-                ? Math.max(1, tokens.endAt(failedTok) - tokens.startAt(failedTok)) : 1;
-            String foundText = failedTok >= 0 && failedTok < tokens.count()
-                ? String.valueOf(tokens.textAt(failedTok)) : "<end-of-input>";
-            String expectedText = p.expected != null ? p.expected : "valid input";
-            p.diagnostics.add(Diagnostic.error(diagOffset, diagLen,
-                "syntax error", expectedText, foundText));
+            p.reportFailure(true, p.pos);
         }
         int rootLastTok;
         if (tokens.count() == 0) {
@@ -662,9 +654,8 @@ public final class Java25ParserV6 {
                 // a nullable start rule that consumes nothing must not be retried.
                 if (firstAttempt) {
                     int beforeNodesEmpty = cst.currentNodeCount();
-                    errorPos = -1;
+                    errorTok = -1;
                     expected = null;
-                    found = -1;
                     lastFailedRuleKind = -1;
                     if (!parseCompilationUnit(root)) {
                         cst.truncate(beforeNodesEmpty);
@@ -682,9 +673,8 @@ public final class Java25ParserV6 {
             int beforePos = pos;
             // Phase 0.6.0-perf — reset furthest-failure tracker before each
             // attempt so the recorded diagnostic reflects this iteration.
-            errorPos = -1;
+            errorTok = -1;
             expected = null;
-            found = -1;
             lastFailedRuleKind = -1;
             boolean parsedOk = parseCompilationUnit(root);
             if (!parsedOk) {
@@ -710,15 +700,7 @@ public final class Java25ParserV6 {
                 // source from the tree depend on full coverage.
                 int trailTok = pos;
                 while (trailTok < tokens.count() && tokens.isTrivia(trailTok)) trailTok++;
-                if (trailTok < tokens.count() && diagnostics.size() < maxDiagnostics) {
-                    int tStart = tokens.startAt(trailTok);
-                    int tEnd = tokens.endAt(trailTok);
-                    int tLen = tEnd - tStart;
-                    if (tLen < 1) tLen = 1;
-                    diagnostics.add(Diagnostic.error(tStart, tLen,
-                        "trailing input not consumed", "end of input",
-                        tokens.input().substring(tStart, tEnd)));
-                }
+                if (trailTok < tokens.count()) reportFailure(false, trailTok);
             }
             if (!parsedOk && pos == beforePos) {
                 // Recovery couldn't move past the failing token (no sync, no EOF
@@ -766,32 +748,7 @@ public final class Java25ParserV6 {
             cst.endNode(errIdx, skipLast);
             cst.setFlag(errIdx, CstArray.FLAG_ERROR);
         }
-        int diagOffset;
-        if (errorPos >= 0) {
-            diagOffset = errorPos;
-        } else if (failedTok >= 0 && failedTok < tokens.count()) {
-            diagOffset = tokens.startAt(failedTok);
-        } else {
-            diagOffset = tokens.input().length();
-        }
-        int diagLen;
-        if (skipFirst >= 0 && skipFirst < tokens.count() && skipLast < tokens.count()) {
-            diagLen = tokens.endAt(skipLast) - tokens.startAt(skipFirst);
-            if (diagLen < 1) diagLen = 1;
-        } else {
-            diagLen = 1;
-        }
-        String foundText;
-        if (failedTok >= 0 && failedTok < tokens.count()) {
-            foundText = String.valueOf(tokens.textAt(failedTok));
-        } else {
-            foundText = "<end-of-input>";
-        }
-        String expectedText = expected != null ? expected : "valid input";
-        if (diagnostics.size() < maxDiagnostics) {
-            diagnostics.add(Diagnostic.error(diagOffset, diagLen,
-                "syntax error", expectedText, foundText));
-        }
+        reportFailure(true, failedTok);
         pos = newPos;
     }
 
@@ -800,15 +757,26 @@ public final class Java25ParserV6 {
         int errIdx = cst.beginNode(RULE_ERROR_KIND, atPos, parent);
         cst.endNode(errIdx, atPos);
         cst.setFlag(errIdx, CstArray.FLAG_ERROR);
-        int diagOffset = tokens.startAt(atPos);
-        int diagLen = tokens.endAt(atPos) - tokens.startAt(atPos);
-        if (diagLen < 1) diagLen = 1;
-        String foundText = String.valueOf(tokens.textAt(atPos));
-        if (diagnostics.size() < maxDiagnostics) {
-            diagnostics.add(Diagnostic.error(diagOffset, diagLen,
+        reportFailure(false, atPos);
+        pos = tokens.nextNonTrivia(atPos + 1);
+    }
+
+    private void reportFailure(boolean startFailed, int reached) {
+        boolean beyond = errorTok > reached;
+        int tok = beyond ? errorTok : reached;
+        if (tok <= lastReportedTok || diagnostics.size() >= maxDiagnostics) return;
+        lastReportedTok = tok;
+        boolean atEnd = tok >= tokens.count();
+        int offset = atEnd ? tokens.input().length() : tokens.startAt(tok);
+        int length = atEnd ? 1 : Math.max(1, tokens.endAt(tok) - offset);
+        String foundText = atEnd ? "<end-of-input>" : String.valueOf(tokens.textAt(tok));
+        if (startFailed || beyond) {
+            diagnostics.add(Diagnostic.error(offset, length, "syntax error",
+                expected != null ? expected : "valid input", foundText));
+        } else {
+            diagnostics.add(Diagnostic.error(offset, length,
                 "trailing input not consumed", "end of input", foundText));
         }
-        pos = tokens.nextNonTrivia(atPos + 1);
     }
 
     private int nextSyncToken(int from) {
@@ -838,11 +806,9 @@ public final class Java25ParserV6 {
     }
 
     private boolean fail(String expectedText, int ruleKind) {
-        int offset = pos < tokens.count() ? tokens.startAt(pos) : tokens.input().length();
-        if (offset >= errorPos) {
-            errorPos = offset;
+        if (pos >= errorTok) {
+            errorTok = pos;
             expected = expectedText;
-            found = peek();
             lastFailedRuleKind = ruleKind;
         }
         return false;
@@ -1186,6 +1152,9 @@ public final class Java25ParserV6 {
         {
             int savedPos_not_5 = pos;
             int savedNodes_not_5 = cst.currentNodeCount();
+            int savedErrorTok_not_5 = errorTok;
+            String savedExpected_not_5 = expected;
+            int savedFailedKind_not_5 = lastFailedRuleKind;
             boolean notMatched_not_5 = false;
             do {
                 { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_TopLevelMember_KIND); break; } }
@@ -1194,6 +1163,9 @@ public final class Java25ParserV6 {
             } while (false);
             pos = savedPos_not_5;
             cst.truncate(savedNodes_not_5);
+            errorTok = savedErrorTok_not_5;
+            expected = savedExpected_not_5;
+            lastFailedRuleKind = savedFailedKind_not_5;
             if (notMatched_not_5) { fail("!<predicate>", RULE_TopLevelMember_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         // choice: alt_6
@@ -2052,6 +2024,9 @@ public final class Java25ParserV6 {
         {
             int savedPos_not_0 = pos;
             int savedNodes_not_0 = cst.currentNodeCount();
+            int savedErrorTok_not_0 = errorTok;
+            String savedExpected_not_0 = expected;
+            int savedFailedKind_not_0 = lastFailedRuleKind;
             boolean notMatched_not_0 = false;
             do {
                 { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_ClassDecl_KIND); break; } }
@@ -2060,6 +2035,9 @@ public final class Java25ParserV6 {
             } while (false);
             pos = savedPos_not_0;
             cst.truncate(savedNodes_not_0);
+            errorTok = savedErrorTok_not_0;
+            expected = savedExpected_not_0;
+            lastFailedRuleKind = savedFailedKind_not_0;
             if (notMatched_not_0) { fail("!<predicate>", RULE_ClassDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         if (java.util.Arrays.binarySearch(IDFALL_IDENTIFIER, peek()) < 0) { fail("Identifier", RULE_ClassDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -2142,6 +2120,9 @@ public final class Java25ParserV6 {
         {
             int savedPos_not_0 = pos;
             int savedNodes_not_0 = cst.currentNodeCount();
+            int savedErrorTok_not_0 = errorTok;
+            String savedExpected_not_0 = expected;
+            int savedFailedKind_not_0 = lastFailedRuleKind;
             boolean notMatched_not_0 = false;
             do {
                 { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_InterfaceDecl_KIND); break; } }
@@ -2150,6 +2131,9 @@ public final class Java25ParserV6 {
             } while (false);
             pos = savedPos_not_0;
             cst.truncate(savedNodes_not_0);
+            errorTok = savedErrorTok_not_0;
+            expected = savedExpected_not_0;
+            lastFailedRuleKind = savedFailedKind_not_0;
             if (notMatched_not_0) { fail("!<predicate>", RULE_InterfaceDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         if (java.util.Arrays.binarySearch(IDFALL_IDENTIFIER, peek()) < 0) { fail("Identifier", RULE_InterfaceDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -2221,6 +2205,9 @@ public final class Java25ParserV6 {
         {
             int savedPos_not_0 = pos;
             int savedNodes_not_0 = cst.currentNodeCount();
+            int savedErrorTok_not_0 = errorTok;
+            String savedExpected_not_0 = expected;
+            int savedFailedKind_not_0 = lastFailedRuleKind;
             boolean notMatched_not_0 = false;
             do {
                 { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_AnnotationDecl_KIND); break; } }
@@ -2229,6 +2216,9 @@ public final class Java25ParserV6 {
             } while (false);
             pos = savedPos_not_0;
             cst.truncate(savedNodes_not_0);
+            errorTok = savedErrorTok_not_0;
+            expected = savedExpected_not_0;
+            lastFailedRuleKind = savedFailedKind_not_0;
             if (notMatched_not_0) { fail("!<predicate>", RULE_AnnotationDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         if (java.util.Arrays.binarySearch(IDFALL_IDENTIFIER, peek()) < 0) { fail("Identifier", RULE_AnnotationDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -2675,6 +2665,9 @@ public final class Java25ParserV6 {
         {
             int savedPos_not_0 = pos;
             int savedNodes_not_0 = cst.currentNodeCount();
+            int savedErrorTok_not_0 = errorTok;
+            String savedExpected_not_0 = expected;
+            int savedFailedKind_not_0 = lastFailedRuleKind;
             boolean notMatched_not_0 = false;
             do {
                 { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_EnumDecl_KIND); break; } }
@@ -2683,6 +2676,9 @@ public final class Java25ParserV6 {
             } while (false);
             pos = savedPos_not_0;
             cst.truncate(savedNodes_not_0);
+            errorTok = savedErrorTok_not_0;
+            expected = savedExpected_not_0;
+            lastFailedRuleKind = savedFailedKind_not_0;
             if (notMatched_not_0) { fail("!<predicate>", RULE_EnumDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         if (java.util.Arrays.binarySearch(IDFALL_IDENTIFIER, peek()) < 0) { fail("Identifier", RULE_EnumDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -2750,6 +2746,9 @@ public final class Java25ParserV6 {
         {
             int savedPos_not_2 = pos;
             int savedNodes_not_2 = cst.currentNodeCount();
+            int savedErrorTok_not_2 = errorTok;
+            String savedExpected_not_2 = expected;
+            int savedFailedKind_not_2 = lastFailedRuleKind;
             boolean notMatched_not_2 = false;
             do {
                 { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_RecordDecl_KIND); break; } }
@@ -2758,6 +2757,9 @@ public final class Java25ParserV6 {
             } while (false);
             pos = savedPos_not_2;
             cst.truncate(savedNodes_not_2);
+            errorTok = savedErrorTok_not_2;
+            expected = savedExpected_not_2;
+            lastFailedRuleKind = savedFailedKind_not_2;
             if (notMatched_not_2) { fail("!<predicate>", RULE_RecordDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         if (java.util.Arrays.binarySearch(IDFALL_IDENTIFIER, peek()) < 0) { fail("Identifier", RULE_RecordDecl_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -3601,6 +3603,9 @@ public final class Java25ParserV6 {
                     {
                         int savedPos_not_1 = pos;
                         int savedNodes_not_1 = cst.currentNodeCount();
+                        int savedErrorTok_not_1 = errorTok;
+                        String savedExpected_not_1 = expected;
+                        int savedFailedKind_not_1 = lastFailedRuleKind;
                         boolean notMatched_not_1 = false;
                         do {
                             { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_Member_KIND); break; } }
@@ -3609,6 +3614,9 @@ public final class Java25ParserV6 {
                         } while (false);
                         pos = savedPos_not_1;
                         cst.truncate(savedNodes_not_1);
+                        errorTok = savedErrorTok_not_1;
+                        expected = savedExpected_not_1;
+                        lastFailedRuleKind = savedFailedKind_not_1;
                         if (notMatched_not_1) { fail("!<predicate>", RULE_Member_KIND); break; }
                     }
                     // choice: alt_2
@@ -4322,6 +4330,9 @@ public final class Java25ParserV6 {
                 {
                     int savedPos_not_1 = pos;
                     int savedNodes_not_1 = cst.currentNodeCount();
+                    int savedErrorTok_not_1 = errorTok;
+                    String savedExpected_not_1 = expected;
+                    int savedFailedKind_not_1 = lastFailedRuleKind;
                     boolean notMatched_not_1 = false;
                     do {
                         { int __k = peek(); if (__k != KIND_STATICKW) { fail("StaticKW", RULE_RecordStaticField_KIND); break; } }
@@ -4330,6 +4341,9 @@ public final class Java25ParserV6 {
                     } while (false);
                     pos = savedPos_not_1;
                     cst.truncate(savedNodes_not_1);
+                    errorTok = savedErrorTok_not_1;
+                    expected = savedExpected_not_1;
+                    lastFailedRuleKind = savedFailedKind_not_1;
                     if (notMatched_not_1) { fail("!<predicate>", RULE_RecordStaticField_KIND); break; }
                 }
                 // choice: alt_2
@@ -5513,6 +5527,9 @@ public final class Java25ParserV6 {
                             {
                                 int savedPos_not_3 = pos;
                                 int savedNodes_not_3 = cst.currentNodeCount();
+                                int savedErrorTok_not_3 = errorTok;
+                                String savedExpected_not_3 = expected;
+                                int savedFailedKind_not_3 = lastFailedRuleKind;
                                 boolean notMatched_not_3 = false;
                                 do {
                                     { int __k = peek(); if (__k != KIND_STATICKW && __k != KIND_INLINE_SEALED && __k != KIND_INLINE_NON_MINUSSEALED) { fail("IllegalLocalClassMod", RULE_LocalTypeDecl_KIND); break; } }
@@ -5521,6 +5538,9 @@ public final class Java25ParserV6 {
                                 } while (false);
                                 pos = savedPos_not_3;
                                 cst.truncate(savedNodes_not_3);
+                                errorTok = savedErrorTok_not_3;
+                                expected = savedExpected_not_3;
+                                lastFailedRuleKind = savedFailedKind_not_3;
                                 if (notMatched_not_3) { fail("!<predicate>", RULE_LocalTypeDecl_KIND); break; }
                             }
                             if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_LocalTypeDecl_KIND); break; }
@@ -5631,6 +5651,9 @@ public final class Java25ParserV6 {
                                     {
                                         int savedPos_not_9 = pos;
                                         int savedNodes_not_9 = cst.currentNodeCount();
+                                        int savedErrorTok_not_9 = errorTok;
+                                        String savedExpected_not_9 = expected;
+                                        int savedFailedKind_not_9 = lastFailedRuleKind;
                                         boolean notMatched_not_9 = false;
                                         do {
                                             { int __k = peek(); if (__k != KIND_STATICKW && __k != KIND_INLINE_SEALED && __k != KIND_INLINE_NON_MINUSSEALED) { fail("IllegalLocalClassMod", RULE_LocalTypeDecl_KIND); break; } }
@@ -5639,6 +5662,9 @@ public final class Java25ParserV6 {
                                         } while (false);
                                         pos = savedPos_not_9;
                                         cst.truncate(savedNodes_not_9);
+                                        errorTok = savedErrorTok_not_9;
+                                        expected = savedExpected_not_9;
+                                        lastFailedRuleKind = savedFailedKind_not_9;
                                         if (notMatched_not_9) { fail("!<predicate>", RULE_LocalTypeDecl_KIND); break; }
                                     }
                                     if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_LocalTypeDecl_KIND); break; }
@@ -8138,6 +8164,9 @@ public final class Java25ParserV6 {
                 {
                     int savedPos_not_1 = pos;
                     int savedNodes_not_1 = cst.currentNodeCount();
+                    int savedErrorTok_not_1 = errorTok;
+                    String savedExpected_not_1 = expected;
+                    int savedFailedKind_not_1 = lastFailedRuleKind;
                     boolean notMatched_not_1 = false;
                     do {
                         if (peek() != KIND_INLINE__PIPE_PIPE) { fail("'||'", RULE_BitOr_KIND); break; }
@@ -8146,12 +8175,18 @@ public final class Java25ParserV6 {
                     } while (false);
                     pos = savedPos_not_1;
                     cst.truncate(savedNodes_not_1);
+                    errorTok = savedErrorTok_not_1;
+                    expected = savedExpected_not_1;
+                    lastFailedRuleKind = savedFailedKind_not_1;
                     if (notMatched_not_1) { fail("!<predicate>", RULE_BitOr_KIND); break; }
                 }
                 // not-predicate: not_2
                 {
                     int savedPos_not_2 = pos;
                     int savedNodes_not_2 = cst.currentNodeCount();
+                    int savedErrorTok_not_2 = errorTok;
+                    String savedExpected_not_2 = expected;
+                    int savedFailedKind_not_2 = lastFailedRuleKind;
                     boolean notMatched_not_2 = false;
                     do {
                         if (peek() != KIND_INLINE__PIPE_EQ) { fail("'|='", RULE_BitOr_KIND); break; }
@@ -8160,6 +8195,9 @@ public final class Java25ParserV6 {
                     } while (false);
                     pos = savedPos_not_2;
                     cst.truncate(savedNodes_not_2);
+                    errorTok = savedErrorTok_not_2;
+                    expected = savedExpected_not_2;
+                    lastFailedRuleKind = savedFailedKind_not_2;
                     if (notMatched_not_2) { fail("!<predicate>", RULE_BitOr_KIND); break; }
                 }
                 if (peek() != KIND_INLINE__PIPE) { fail("'|'", RULE_BitOr_KIND); break; }
@@ -8197,6 +8235,9 @@ public final class Java25ParserV6 {
                 {
                     int savedPos_not_1 = pos;
                     int savedNodes_not_1 = cst.currentNodeCount();
+                    int savedErrorTok_not_1 = errorTok;
+                    String savedExpected_not_1 = expected;
+                    int savedFailedKind_not_1 = lastFailedRuleKind;
                     boolean notMatched_not_1 = false;
                     do {
                         if (peek() != KIND_INLINE__CARET_EQ) { fail("'^='", RULE_BitXor_KIND); break; }
@@ -8205,6 +8246,9 @@ public final class Java25ParserV6 {
                     } while (false);
                     pos = savedPos_not_1;
                     cst.truncate(savedNodes_not_1);
+                    errorTok = savedErrorTok_not_1;
+                    expected = savedExpected_not_1;
+                    lastFailedRuleKind = savedFailedKind_not_1;
                     if (notMatched_not_1) { fail("!<predicate>", RULE_BitXor_KIND); break; }
                 }
                 if (peek() != KIND_INLINE__CARET) { fail("'^'", RULE_BitXor_KIND); break; }
@@ -8242,6 +8286,9 @@ public final class Java25ParserV6 {
                 {
                     int savedPos_not_1 = pos;
                     int savedNodes_not_1 = cst.currentNodeCount();
+                    int savedErrorTok_not_1 = errorTok;
+                    String savedExpected_not_1 = expected;
+                    int savedFailedKind_not_1 = lastFailedRuleKind;
                     boolean notMatched_not_1 = false;
                     do {
                         if (peek() != KIND_INLINE__AMP_AMP) { fail("'&&'", RULE_BitAnd_KIND); break; }
@@ -8250,12 +8297,18 @@ public final class Java25ParserV6 {
                     } while (false);
                     pos = savedPos_not_1;
                     cst.truncate(savedNodes_not_1);
+                    errorTok = savedErrorTok_not_1;
+                    expected = savedExpected_not_1;
+                    lastFailedRuleKind = savedFailedKind_not_1;
                     if (notMatched_not_1) { fail("!<predicate>", RULE_BitAnd_KIND); break; }
                 }
                 // not-predicate: not_2
                 {
                     int savedPos_not_2 = pos;
                     int savedNodes_not_2 = cst.currentNodeCount();
+                    int savedErrorTok_not_2 = errorTok;
+                    String savedExpected_not_2 = expected;
+                    int savedFailedKind_not_2 = lastFailedRuleKind;
                     boolean notMatched_not_2 = false;
                     do {
                         if (peek() != KIND_INLINE__AMP_EQ) { fail("'&='", RULE_BitAnd_KIND); break; }
@@ -8264,6 +8317,9 @@ public final class Java25ParserV6 {
                     } while (false);
                     pos = savedPos_not_2;
                     cst.truncate(savedNodes_not_2);
+                    errorTok = savedErrorTok_not_2;
+                    expected = savedExpected_not_2;
+                    lastFailedRuleKind = savedFailedKind_not_2;
                     if (notMatched_not_2) { fail("!<predicate>", RULE_BitAnd_KIND); break; }
                 }
                 if (peek() != KIND_INLINE__AMP) { fail("'&'", RULE_BitAnd_KIND); break; }
@@ -8595,6 +8651,9 @@ public final class Java25ParserV6 {
                             {
                                 int savedPos_not_2 = pos;
                                 int savedNodes_not_2 = cst.currentNodeCount();
+                                int savedErrorTok_not_2 = errorTok;
+                                String savedExpected_not_2 = expected;
+                                int savedFailedKind_not_2 = lastFailedRuleKind;
                                 boolean notMatched_not_2 = false;
                                 do {
                                     if (peek() != KIND_INLINE__PLUS_EQ) { fail("'+='", RULE_Additive_KIND); break; }
@@ -8603,6 +8662,9 @@ public final class Java25ParserV6 {
                                 } while (false);
                                 pos = savedPos_not_2;
                                 cst.truncate(savedNodes_not_2);
+                                errorTok = savedErrorTok_not_2;
+                                expected = savedExpected_not_2;
+                                lastFailedRuleKind = savedFailedKind_not_2;
                                 if (notMatched_not_2) { fail("!<predicate>", RULE_Additive_KIND); break; }
                             }
                             if (peek() != KIND_INLINE__PLUS) { fail("'+'", RULE_Additive_KIND); break; }
@@ -8620,6 +8682,9 @@ public final class Java25ParserV6 {
                             {
                                 int savedPos_not_3 = pos;
                                 int savedNodes_not_3 = cst.currentNodeCount();
+                                int savedErrorTok_not_3 = errorTok;
+                                String savedExpected_not_3 = expected;
+                                int savedFailedKind_not_3 = lastFailedRuleKind;
                                 boolean notMatched_not_3 = false;
                                 do {
                                     if (peek() != KIND_INLINE__MINUS_EQ) { fail("'-='", RULE_Additive_KIND); break; }
@@ -8628,12 +8693,18 @@ public final class Java25ParserV6 {
                                 } while (false);
                                 pos = savedPos_not_3;
                                 cst.truncate(savedNodes_not_3);
+                                errorTok = savedErrorTok_not_3;
+                                expected = savedExpected_not_3;
+                                lastFailedRuleKind = savedFailedKind_not_3;
                                 if (notMatched_not_3) { fail("!<predicate>", RULE_Additive_KIND); break; }
                             }
                             // not-predicate: not_4
                             {
                                 int savedPos_not_4 = pos;
                                 int savedNodes_not_4 = cst.currentNodeCount();
+                                int savedErrorTok_not_4 = errorTok;
+                                String savedExpected_not_4 = expected;
+                                int savedFailedKind_not_4 = lastFailedRuleKind;
                                 boolean notMatched_not_4 = false;
                                 do {
                                     if (peek() != KIND_INLINE__MINUS_GT) { fail("'->'", RULE_Additive_KIND); break; }
@@ -8642,6 +8713,9 @@ public final class Java25ParserV6 {
                                 } while (false);
                                 pos = savedPos_not_4;
                                 cst.truncate(savedNodes_not_4);
+                                errorTok = savedErrorTok_not_4;
+                                expected = savedExpected_not_4;
+                                lastFailedRuleKind = savedFailedKind_not_4;
                                 if (notMatched_not_4) { fail("!<predicate>", RULE_Additive_KIND); break; }
                             }
                             if (peek() != KIND_INLINE__MINUS) { fail("'-'", RULE_Additive_KIND); break; }
@@ -8696,6 +8770,9 @@ public final class Java25ParserV6 {
                             {
                                 int savedPos_not_2 = pos;
                                 int savedNodes_not_2 = cst.currentNodeCount();
+                                int savedErrorTok_not_2 = errorTok;
+                                String savedExpected_not_2 = expected;
+                                int savedFailedKind_not_2 = lastFailedRuleKind;
                                 boolean notMatched_not_2 = false;
                                 do {
                                     if (peek() != KIND_INLINE__STAR_EQ) { fail("'*='", RULE_Multiplicative_KIND); break; }
@@ -8704,6 +8781,9 @@ public final class Java25ParserV6 {
                                 } while (false);
                                 pos = savedPos_not_2;
                                 cst.truncate(savedNodes_not_2);
+                                errorTok = savedErrorTok_not_2;
+                                expected = savedExpected_not_2;
+                                lastFailedRuleKind = savedFailedKind_not_2;
                                 if (notMatched_not_2) { fail("!<predicate>", RULE_Multiplicative_KIND); break; }
                             }
                             if (peek() != KIND_INLINE__STAR) { fail("'*'", RULE_Multiplicative_KIND); break; }
@@ -8721,6 +8801,9 @@ public final class Java25ParserV6 {
                             {
                                 int savedPos_not_3 = pos;
                                 int savedNodes_not_3 = cst.currentNodeCount();
+                                int savedErrorTok_not_3 = errorTok;
+                                String savedExpected_not_3 = expected;
+                                int savedFailedKind_not_3 = lastFailedRuleKind;
                                 boolean notMatched_not_3 = false;
                                 do {
                                     if (peek() != KIND_INLINE__SLASH_EQ) { fail("'/='", RULE_Multiplicative_KIND); break; }
@@ -8729,6 +8812,9 @@ public final class Java25ParserV6 {
                                 } while (false);
                                 pos = savedPos_not_3;
                                 cst.truncate(savedNodes_not_3);
+                                errorTok = savedErrorTok_not_3;
+                                expected = savedExpected_not_3;
+                                lastFailedRuleKind = savedFailedKind_not_3;
                                 if (notMatched_not_3) { fail("!<predicate>", RULE_Multiplicative_KIND); break; }
                             }
                             if (peek() != KIND_INLINE__SLASH) { fail("'/'", RULE_Multiplicative_KIND); break; }
@@ -8746,6 +8832,9 @@ public final class Java25ParserV6 {
                             {
                                 int savedPos_not_4 = pos;
                                 int savedNodes_not_4 = cst.currentNodeCount();
+                                int savedErrorTok_not_4 = errorTok;
+                                String savedExpected_not_4 = expected;
+                                int savedFailedKind_not_4 = lastFailedRuleKind;
                                 boolean notMatched_not_4 = false;
                                 do {
                                     if (peek() != KIND_INLINE__PERCENT_EQ) { fail("'%='", RULE_Multiplicative_KIND); break; }
@@ -8754,6 +8843,9 @@ public final class Java25ParserV6 {
                                 } while (false);
                                 pos = savedPos_not_4;
                                 cst.truncate(savedNodes_not_4);
+                                errorTok = savedErrorTok_not_4;
+                                expected = savedExpected_not_4;
+                                lastFailedRuleKind = savedFailedKind_not_4;
                                 if (notMatched_not_4) { fail("!<predicate>", RULE_Multiplicative_KIND); break; }
                             }
                             if (peek() != KIND_INLINE__PERCENT) { fail("'%'", RULE_Multiplicative_KIND); break; }
@@ -9806,6 +9898,9 @@ public final class Java25ParserV6 {
         {
             int savedPos_not_0 = pos;
             int savedNodes_not_0 = cst.currentNodeCount();
+            int savedErrorTok_not_0 = errorTok;
+            String savedExpected_not_0 = expected;
+            int savedFailedKind_not_0 = lastFailedRuleKind;
             boolean notMatched_not_0 = false;
             do {
                 { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_PlainTypeName_KIND); break; } }
@@ -9814,6 +9909,9 @@ public final class Java25ParserV6 {
             } while (false);
             pos = savedPos_not_0;
             cst.truncate(savedNodes_not_0);
+            errorTok = savedErrorTok_not_0;
+            expected = savedExpected_not_0;
+            lastFailedRuleKind = savedFailedKind_not_0;
             if (notMatched_not_0) { fail("!<predicate>", RULE_PlainTypeName_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         if (java.util.Arrays.binarySearch(IDFALL_IDENTIFIER, peek()) < 0) { fail("Identifier", RULE_PlainTypeName_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -10616,6 +10714,9 @@ public final class Java25ParserV6 {
                     {
                         int savedPos_not_6 = pos;
                         int savedNodes_not_6 = cst.currentNodeCount();
+                        int savedErrorTok_not_6 = errorTok;
+                        String savedExpected_not_6 = expected;
+                        int savedFailedKind_not_6 = lastFailedRuleKind;
                         boolean notMatched_not_6 = false;
                         do {
                             { int __k = peek(); if (__k != KIND_YIELDKW) { fail("YieldKW", RULE_StmtExpr_KIND); break; } }
@@ -10624,6 +10725,9 @@ public final class Java25ParserV6 {
                         } while (false);
                         pos = savedPos_not_6;
                         cst.truncate(savedNodes_not_6);
+                        errorTok = savedErrorTok_not_6;
+                        expected = savedExpected_not_6;
+                        lastFailedRuleKind = savedFailedKind_not_6;
                         if (notMatched_not_6) { fail("!<predicate>", RULE_StmtExpr_KIND); break; }
                     }
                     if (!parsePrimary(self)) { break; }
@@ -11099,7 +11203,36 @@ public final class Java25ParserV6 {
 
     private boolean parseArgs(int parent) {
         int memoEnd = cst.memoTryReplay(RULE_Args_KIND, pos, parent);
-        if (memoEnd >= 0) { pos = memoEnd; return true; }
+        if (memoEnd >= 0) {
+            pos = memoEnd;
+            if (memoErrorTok >= 0 && memoErrorTok >= errorTok) {
+                errorTok = memoErrorTok;
+                expected = memoExpected;
+                lastFailedRuleKind = memoFailedRuleKind;
+            }
+            return true;
+        }
+        int memoPos = pos;
+        int memoNodes = cst.currentNodeCount();
+        int outerErrorTok = errorTok;
+        String outerExpected = expected;
+        int outerFailedRuleKind = lastFailedRuleKind;
+        errorTok = -1;
+        boolean matched = parseArgs$body(parent);
+        if (matched) {
+            cst.memoArm(RULE_Args_KIND, memoPos, pos, memoNodes);
+            memoErrorTok = errorTok;
+            memoExpected = expected;
+            memoFailedRuleKind = lastFailedRuleKind;
+        }
+        if (errorTok < outerErrorTok) {
+            errorTok = outerErrorTok;
+            expected = outerExpected;
+            lastFailedRuleKind = outerFailedRuleKind;
+        }
+        return matched;
+    }
+    private boolean parseArgs$body(int parent) {
         int firstTok = pos;
         int savedPos = pos;
         int savedNodes = cst.currentNodeCount();
@@ -11127,7 +11260,6 @@ public final class Java25ParserV6 {
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
         if (lastTok < firstTok) lastTok = firstTok;
         cst.endNode(self, lastTok);
-        cst.memoArm(RULE_Args_KIND, savedPos, pos, savedNodes);
         return true;
     }
 
@@ -11361,6 +11493,9 @@ public final class Java25ParserV6 {
         {
             int savedPos_not_1 = pos;
             int savedNodes_not_1 = cst.currentNodeCount();
+            int savedErrorTok_not_1 = errorTok;
+            String savedExpected_not_1 = expected;
+            int savedFailedKind_not_1 = lastFailedRuleKind;
             boolean notMatched_not_1 = false;
             do {
                 { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_AnnotatedTypeName_KIND); break; } }
@@ -11369,6 +11504,9 @@ public final class Java25ParserV6 {
                 {
                     int savedPos_not_2 = pos;
                     int savedNodes_not_2 = cst.currentNodeCount();
+                    int savedErrorTok_not_2 = errorTok;
+                    String savedExpected_not_2 = expected;
+                    int savedFailedKind_not_2 = lastFailedRuleKind;
                     boolean notMatched_not_2 = false;
                     do {
                         if (peek() != KIND_INLINE__DOT) { fail("'.'", RULE_AnnotatedTypeName_KIND); break; }
@@ -11377,12 +11515,18 @@ public final class Java25ParserV6 {
                     } while (false);
                     pos = savedPos_not_2;
                     cst.truncate(savedNodes_not_2);
+                    errorTok = savedErrorTok_not_2;
+                    expected = savedExpected_not_2;
+                    lastFailedRuleKind = savedFailedKind_not_2;
                     if (notMatched_not_2) { fail("!<predicate>", RULE_AnnotatedTypeName_KIND); break; }
                 }
                 notMatched_not_1 = true;
             } while (false);
             pos = savedPos_not_1;
             cst.truncate(savedNodes_not_1);
+            errorTok = savedErrorTok_not_1;
+            expected = savedExpected_not_1;
+            lastFailedRuleKind = savedFailedKind_not_1;
             if (notMatched_not_1) { fail("!<predicate>", RULE_AnnotatedTypeName_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         if (java.util.Arrays.binarySearch(IDFALL_IDENTIFIER, peek()) < 0) { fail("Identifier", RULE_AnnotatedTypeName_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -11676,6 +11820,9 @@ public final class Java25ParserV6 {
         {
             int savedPos_not_1 = pos;
             int savedNodes_not_1 = cst.currentNodeCount();
+            int savedErrorTok_not_1 = errorTok;
+            String savedExpected_not_1 = expected;
+            int savedFailedKind_not_1 = lastFailedRuleKind;
             boolean notMatched_not_1 = false;
             do {
                 { int __k = peek(); if (__k != KIND_YIELDKW && __k != KIND_INLINE_VAR) { fail("RestrictedTypeName", RULE_RawTypeName_KIND); break; } }
@@ -11684,6 +11831,9 @@ public final class Java25ParserV6 {
             } while (false);
             pos = savedPos_not_1;
             cst.truncate(savedNodes_not_1);
+            errorTok = savedErrorTok_not_1;
+            expected = savedExpected_not_1;
+            lastFailedRuleKind = savedFailedKind_not_1;
             if (notMatched_not_1) { fail("!<predicate>", RULE_RawTypeName_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         if (java.util.Arrays.binarySearch(IDFALL_IDENTIFIER, peek()) < 0) { fail("Identifier", RULE_RawTypeName_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -11812,6 +11962,9 @@ public final class Java25ParserV6 {
                 {
                     int savedPos_not_2 = pos;
                     int savedNodes_not_2 = cst.currentNodeCount();
+                    int savedErrorTok_not_2 = errorTok;
+                    String savedExpected_not_2 = expected;
+                    int savedFailedKind_not_2 = lastFailedRuleKind;
                     boolean notMatched_not_2 = false;
                     do {
                         if (peek() != KIND_INLINE__RBRACK) { fail("']'", RULE_DimExprs_KIND); break; }
@@ -11820,6 +11973,9 @@ public final class Java25ParserV6 {
                     } while (false);
                     pos = savedPos_not_2;
                     cst.truncate(savedNodes_not_2);
+                    errorTok = savedErrorTok_not_2;
+                    expected = savedExpected_not_2;
+                    lastFailedRuleKind = savedFailedKind_not_2;
                     if (notMatched_not_2) { fail("!<predicate>", RULE_DimExprs_KIND); break; }
                 }
                 andOk_and_1 = true;
@@ -11867,6 +12023,9 @@ public final class Java25ParserV6 {
                         {
                             int savedPos_not_6 = pos;
                             int savedNodes_not_6 = cst.currentNodeCount();
+                            int savedErrorTok_not_6 = errorTok;
+                            String savedExpected_not_6 = expected;
+                            int savedFailedKind_not_6 = lastFailedRuleKind;
                             boolean notMatched_not_6 = false;
                             do {
                                 if (peek() != KIND_INLINE__RBRACK) { fail("']'", RULE_DimExprs_KIND); break; }
@@ -11875,6 +12034,9 @@ public final class Java25ParserV6 {
                             } while (false);
                             pos = savedPos_not_6;
                             cst.truncate(savedNodes_not_6);
+                            errorTok = savedErrorTok_not_6;
+                            expected = savedExpected_not_6;
+                            lastFailedRuleKind = savedFailedKind_not_6;
                             if (notMatched_not_6) { fail("!<predicate>", RULE_DimExprs_KIND); break; }
                         }
                         andOk_and_5 = true;
@@ -12148,6 +12310,9 @@ public final class Java25ParserV6 {
         {
             int savedPos_not_0 = pos;
             int savedNodes_not_0 = cst.currentNodeCount();
+            int savedErrorTok_not_0 = errorTok;
+            String savedExpected_not_0 = expected;
+            int savedFailedKind_not_0 = lastFailedRuleKind;
             boolean notMatched_not_0 = false;
             do {
                 if (peek() != KIND_INTERFACEKW) { fail("'interface'", RULE_Annotation_KIND); break; }
@@ -12156,6 +12321,9 @@ public final class Java25ParserV6 {
             } while (false);
             pos = savedPos_not_0;
             cst.truncate(savedNodes_not_0);
+            errorTok = savedErrorTok_not_0;
+            expected = savedExpected_not_0;
+            lastFailedRuleKind = savedFailedKind_not_0;
             if (notMatched_not_0) { fail("!<predicate>", RULE_Annotation_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         if (!parseQualifiedName(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
