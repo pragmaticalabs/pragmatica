@@ -81,8 +81,8 @@ public class CstArchDirectionRule implements CstLintRule {
 
         for (var reference : ArchSupport.collectReferences(root)) {
             violationReason(fileLayer, reference.packageName()).onPresent(reason -> diagnostics.add(createDiagnostic(reference.node(),
-                                                                                                    reason,
-                                                                                                    ctx)));
+                                                                                                                     reason,
+                                                                                                                     ctx)));
         }
 
         return diagnostics.build();

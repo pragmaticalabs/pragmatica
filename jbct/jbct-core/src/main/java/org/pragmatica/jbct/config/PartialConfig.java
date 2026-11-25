@@ -186,11 +186,13 @@ record PartialConfig(PartialFormatter formatter,
                        Option<List<String>> namingAdd,
                        Option<List<String>> namingRemove) {
         static final PartialLint EMPTY = new PartialLint(none(), Map.of(), none(), none());
+
         /// Rules retired from the registry, each with the sentence naming what replaces it (C8).
         private static final Map<String, String> RETIRED_RULES = Map.of("JBCT-ARCH-04",
                                                                         "use JBCT-TREE-01, which judges sideways imports from [project] basePackage",
                                                                         "JBCT-SEAL-02",
                                                                         "use JBCT-CAUSE-01, which absorbed it");
+
         private static final String NAMING = "lint.naming";
         private static final Set<String> NAMING_KEYS = Set.of("add", "remove");
         private static final String NAMING_KEYS_EXPECTED = "one of the keys: add, remove";
@@ -274,7 +276,10 @@ record PartialConfig(PartialFormatter formatter,
         }
 
         private static boolean refusedUnregistered(TomlDocument toml, String rule) {
-            return toml.getParsed("lint.rules", rule, unregisteredExpectation(rule), _ -> none())
+            return toml.getParsed("lint.rules",
+                                  rule,
+                                  unregisteredExpectation(rule),
+                                  _ -> none())
                        .isPresent();
         }
 
