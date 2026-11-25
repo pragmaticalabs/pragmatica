@@ -594,8 +594,13 @@
                         <systemPropertyVariables>
                             <aether.state.dir>${project.build.directory}/aether-state</aether.state.dir>
                         </systemPropertyVariables>
+                        <!-- #3688: setting <excludes> REPLACES surefire's default `**/*$*`, so `Outer$Inner` (every @Nested class) was
+                             scanned as a test class of its own and, with forkCount > 1, ran twice (#3664). A child that needs more
+                             excludes writes combine.children="append"; one that writes a plain list drops this one again. The cost of
+                             `**/*$*` is a static nested class with @Test methods that nothing runs: NestedTestScanTest fails the build on one. -->
                         <excludes>
                             <exclude>**/*IT.java</exclude>
+                            <exclude>**/*$*</exclude>
                         </excludes>
                     </configuration>
                 </plugin>
