@@ -15,7 +15,7 @@
  */
 package org.pragmatica.http.server;
 
-import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Functions.Fn1;
@@ -36,9 +36,9 @@ import io.netty.handler.ssl.SslContext;
 /// they handshook with: their engine was created from it and keeps it.
 ///
 /// A holder is built only from a context its protocol can serve: [#liveTls(SslContext)] admits a server-side, non-QUIC
-/// context (HTTP/1.1); [#liveQuicTls(QuicSslContext)] admits a server-side QUIC context that offers the `h3` ALPN
-/// token (HTTP/3). [#swap] applies the same admission, and a refused context leaves the current one installed: a
-/// context [#swap] admits serves a new connection of its protocol.
+/// context (HTTP/1.1); [#liveQuicTls(QuicSslContext)] admits a server-side QUIC context that offers at least one
+/// ALPN token Netty's HTTP/3 codec serves (HTTP/3). [#swap] applies the same admission, and a refused context leaves
+/// the current one installed: a context [#swap] admits serves a new connection of its protocol.
 ///
 /// Reference counts. The holder never retains or releases a context: a reference-counted context stays owned by
 /// whoever built it. The caller keeps the current context alive while it is installed. Once it is swapped out, an
@@ -61,6 +61,8 @@ import io.netty.handler.ssl.SslContext;
 ///
 /// @param <C> the context type: `SslContext` for HTTP/1.1, `QuicSslContext` for HTTP/3
 public final class LiveTls<C extends SslContext> {
+    private static final Set<String> HTTP3_TOKENS = Set.of(Http3.supportedApplicationProtocols());
+
     private final AtomicReference<C> current;
     private final Fn1<Result<C>, C> admission;
 
@@ -79,8 +81,9 @@ public final class LiveTls<C extends SslContext> {
         return admitHttp1(context).map(admitted -> new LiveTls<>(admitted, LiveTls::admitHttp1));
     }
 
-    /// An HTTP/3 holder over `context`; refused unless it is a server-side QUIC context that offers the `h3` ALPN token
-    /// (`Http3.supportedApplicationProtocols()`, #2310): a context without it completes no HTTP/3 handshake.
+    /// An HTTP/3 holder over `context`; refused unless it is a server-side QUIC context that offers at least one of the
+    /// ALPN tokens in `Http3.supportedApplicationProtocols()` (`h3` and the draft tokens `h3-29` to `h3-32`, #2310): a
+    /// context offering none completes no HTTP/3 handshake. Offering only `h3` (RFC 9114) is enough.
     public static Result<LiveTls<QuicSslContext>> liveQuicTls(QuicSslContext context) {
         return admitHttp3(context).map(admitted -> new LiveTls<>(admitted, LiveTls::admitHttp3));
     }
@@ -113,7 +116,8 @@ public final class LiveTls<C extends SslContext> {
     private static boolean offersH3(QuicSslContext context) {
         return context.applicationProtocolNegotiator()
                       .protocols()
-                      .containsAll(List.of(Http3.supportedApplicationProtocols()));
+                      .stream()
+                      .anyMatch(HTTP3_TOKENS::contains);
     }
 
     /// A QUIC context builds no `SslHandler` (`QuicheQuicSslContext.newHandler` throws), so it cannot serve HTTP/1.1.
