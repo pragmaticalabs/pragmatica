@@ -73,7 +73,7 @@ public final class SliceRequestContext implements RequestContext {
 
     @Override
     public HttpMethod method() {
-        return HttpMethod.httpMethod(httpContext.method()).or(HttpMethod.GET);
+        return route.method();
     }
 
     @Override
