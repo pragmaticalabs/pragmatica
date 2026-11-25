@@ -403,10 +403,17 @@ class DurableProjectionRebuildTest {
 
         assertThat(replayStatus().rebuilding()).as("control: REBUILDING over [0, 5], and nothing local consumes").containsOnlyKeys(PARTITION);
         assertThat(nextOffset()).as("control: no replay write, no local commit").isEqualTo(Option.some(0L));
+        var oldToken = selfToken();
+
         applyNow(assignmentTo(OTHER));
         applyNow(checkpoint(3L, rewound));
         awaitNextOffset(3L, 10_000);
         assertThat(replayStatus().isLive()).as("the cursor is still inside the captured range").isFalse();
+        // Only an ACCEPTED put is the group's committed cursor: the deposed assignee's late checkpoint, under its old token,
+        // is refused by the applier, emits no notification, and so cannot carry the store past the head.
+        applyNow(ClusterCursorStore.checkpointCommand(GROUP, TOPIC_STREAM, PARTITION, 6L, oldToken, rewound));
+        assertThat(committedCursor()).as("control: the deposed assignee's put was refused").isEqualTo(Option.some(3L));
+        assertThat(nextOffset()).as("a refused put does not move the store").isEqualTo(Option.some(3L));
         applyNow(checkpoint(6L, rewound));
         awaitLive(10_000);
     }
