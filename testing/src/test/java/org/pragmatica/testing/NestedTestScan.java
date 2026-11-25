@@ -25,10 +25,13 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
-import java.util.HashSet;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -37,9 +40,14 @@ import java.util.regex.Pattern;
 ///
 /// The surefire exclude `**/*$*` (#3688) keeps `Outer$Inner` from being scanned as a test class of its own, which is what
 /// stops a `@Nested` class running twice under more than one fork. The same exclude drops a **static** nested class with
-/// `@Test` methods: JUnit never discovers it from `Outer`, so it runs nowhere and nothing reports it. Legal are
-/// - a nested class annotated `@Nested` (JUnit runs it through its outer class), and
-/// - an abstract nested base that a top-level class or a `@Nested` class extends (the subclass is what runs).
+/// `@Test` methods: JUnit never discovers it from `Outer`, so it runs nowhere and nothing reports it.
+///
+/// One invariant: a nested test holder is legal iff something RUNS it. A type is RUN when
+/// 1. it is top-level; or
+/// 2. it is `@Nested` and its enclosing type is RUN (recursively up to the top-level type); or
+/// 3. its own file imports `org.junit.platform.launcher.` or `org.junit.platform.testkit.` and mentions `Type.class` in code, so
+///    the mention is the list that launches it (a fixture deleted from that list stops being legal); or
+/// 4. it is abstract and a RUN type extends it (the subclass is what runs).
 ///
 /// Scope: every `src/test/java` and `src/it/java` tree under a root, the trees `FlakeScan` reads. A test method is one
 /// annotated `@Test`, `@ParameterizedTest`, `@RepeatedTest`, `@TestFactory` or `@TestTemplate` directly in the class body.
@@ -55,10 +63,13 @@ final class NestedTestScan {
     private static final Pattern KEYWORD = Pattern.compile("\\b(class|interface|enum|record)\\s+(\\w+)");
     private static final Set<String> MODIFIERS = Set.of("public", "protected", "private", "static", "final", "abstract", "sealed", "non-sealed", "strictfp");
     private static final Pattern TYPE_ARGUMENTS = Pattern.compile("<[^<>]*>");
+    private static final Pattern LAUNCHER_IMPORT = Pattern.compile("\\bimport\\s+(?:static\\s+)?org\\s*\\.\\s*junit\\s*\\.\\s*platform\\s*\\.\\s*(?:launcher|testkit)\\s*\\.");
     private static final Pattern EXTENDS = Pattern.compile("\\bextends\\s+([\\w.]+)");
 
     /// One type declaration. `member` is true for a type declared directly inside another type (at any depth, never through a
-    /// method body); `topLevel` for a type with no enclosing scope. `hasTests` is filled while the file is read.
+    /// method body); `topLevel` for a type with no enclosing scope; `parent` is the enclosing type of a member (null otherwise).
+    /// `launched` is true when the file imports the JUnit launcher or test kit and mentions `Name.class` in code.
+    /// `hasTests` is filled while the file is read.
     static final class Type {
         final String file;
         final String name;
@@ -69,9 +80,12 @@ final class NestedTestScan {
         final boolean isAbstract;
         final boolean nestedAnnotated;
         final String extendsName;
+        final Type parent;
+        final boolean launched;
         boolean hasTests = false;
 
-        Type(String file, String name, int line, String kind, boolean topLevel, boolean member, boolean isAbstract, boolean nestedAnnotated, String extendsName) {
+        Type(String file, String name, int line, String kind, boolean topLevel, boolean member, boolean isAbstract, boolean nestedAnnotated, String extendsName,
+             Type parent, boolean launched) {
             this.file = file;
             this.name = name;
             this.line = line;
@@ -81,6 +95,8 @@ final class NestedTestScan {
             this.isAbstract = isAbstract;
             this.nestedAnnotated = nestedAnnotated;
             this.extendsName = extendsName;
+            this.parent = parent;
+            this.launched = launched;
         }
 
         boolean isTestHolder() {
@@ -89,16 +105,18 @@ final class NestedTestScan {
     }
 
     /// A nested test class that nothing runs, with the line of its `class` keyword.
-    record Violation(String file, int line, String name) {
+    /// `reason` names the clause that failed.
+    record Violation(String file, int line, String name, String reason) {
         String message() {
-            return file + ":" + line + " nested class " + name + " holds test methods but is not @Nested: surefire's `**/*$*` exclude drops it and nothing runs it;"
-                   + " make it a `@Nested` inner class or a top-level class (an abstract base must be extended by a top-level or `@Nested` class)";
+            return file + ":" + line + " nested class " + name + " holds test methods but nothing runs it (" + reason + "): surefire's `**/*$*` exclude drops it;"
+                   + " make it a `@Nested` inner class of a run type, a top-level class, or list `" + name + ".class` in a file that imports the JUnit launcher";
         }
     }
 
     /// The verdict over a tree, with the evidence that the scan reached what it claims to cover.
-    /// `nestedTestClasses` counts the legal `@Nested` test holders seen and `abstractBases` the legal abstract ones.
-    record Scan(List<Violation> violations, List<String> examinedFiles, int nestedTestClasses, int abstractBases) {}
+    /// `nestedTestClasses` counts the legal `@Nested` test holders (clause 2), `abstractBases` the legal abstract ones (clause 4) and
+    /// `launched` the member types a launcher-importing file lists by `Name.class` (clause 3).
+    record Scan(List<Violation> violations, List<String> examinedFiles, int nestedTestClasses, int abstractBases, int launched) {}
 
     private NestedTestScan() {}
 
@@ -131,29 +149,78 @@ final class NestedTestScan {
     }
 
     static Scan verdict(List<Type> types, List<String> examined) {
-        var extended = new HashSet<String>();
-
-        for (var type : types) {
-            if ((type.topLevel || type.nestedAnnotated) && type.extendsName != null) {
-                extended.add(type.extendsName);
-            }
-        }
-
+        var run = new RunSet(types);
         var violations = new ArrayList<Violation>();
         var nestedTestClasses = 0;
         var abstractBases = 0;
+        var launched = 0;
 
         for (var type : types) {
-            if (type.isTestHolder() && type.nestedAnnotated) {
-                nestedTestClasses++;
-            } else if (type.isTestHolder() && type.isAbstract && extended.contains(type.name)) {
-                abstractBases++;
+            var clause = run.clauseOf(type);
+
+            launched += type.member && clause == 3 ? 1 : 0;
+            if (type.isTestHolder() && clause == 0) {
+                violations.add(new Violation(type.file, type.line, type.name, run.reasonFor(type)));
             } else if (type.isTestHolder()) {
-                violations.add(new Violation(type.file, type.line, type.name));
+                nestedTestClasses += clause == 2 ? 1 : 0;
+                abstractBases += clause == 4 ? 1 : 0;
             }
         }
         violations.sort(Comparator.comparing(Violation::file).thenComparingInt(Violation::line));
-        return new Scan(violations, examined, nestedTestClasses, abstractBases);
+        return new Scan(violations, examined, nestedTestClasses, abstractBases, launched);
+    }
+
+    /// RUN(T) over the types of the tree, as the clause number that made T run (1 top-level, 2 `@Nested` in a run type, 3 launched
+    /// by its own file, 4 abstract base of a run type) or 0 when nothing runs it.
+    private static final class RunSet {
+        private final Map<String, List<Type>> extenders = new HashMap<>();
+        private final Map<Type, Integer> clauses = new IdentityHashMap<>();
+        private final Set<Type> inProgress = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        RunSet(List<Type> types) {
+            for (var type : types) {
+                if (type.extendsName != null) {
+                    extenders.computeIfAbsent(type.extendsName, k -> new ArrayList<>()).add(type);
+                }
+            }
+        }
+
+        int clauseOf(Type type) {
+            var known = clauses.get(type);
+
+            if (known != null) {
+                return known;
+            }
+            if (!inProgress.add(type)) {
+                return 0;
+            }
+
+            var clause = compute(type);
+
+            inProgress.remove(type);
+            clauses.put(type, clause);
+            return clause;
+        }
+
+        private int compute(Type type) {
+            if (type.topLevel) {
+                return 1;
+            }
+            if (type.launched) {
+                return 3;
+            }
+            if (type.nestedAnnotated && type.parent != null && clauseOf(type.parent) != 0) {
+                return 2;
+            }
+            return type.isAbstract && extenders.getOrDefault(type.name, List.of()).stream().anyMatch(sub -> clauseOf(sub) != 0) ? 4 : 0;
+        }
+
+        String reasonFor(Type type) {
+            if (type.nestedAnnotated && type.parent != null) {
+                return "@Nested but enclosing " + type.parent.name + " is not run";
+            }
+            return type.isAbstract ? "abstract base that no run class extends" : "not @Nested";
+        }
     }
 
     /// The type declarations of one source text, tests attributed to the type whose body holds them.
@@ -162,6 +229,7 @@ final class NestedTestScan {
         var lineStarts = lineStarts(text);
         var found = new ArrayList<Type>();
         var scopes = new ArrayDeque<Scope>();
+        var launcherFile = LAUNCHER_IMPORT.matcher(text).find();
         var headStart = 0;
         var parens = 0;
 
@@ -181,7 +249,7 @@ final class NestedTestScan {
                 var opensType = declaration != null && (scopes.isEmpty() || scopes.peek().type() != null);
 
                 if (opensType) {
-                    var type = declare(file, head, declaration, lineOf(lineStarts, headStart + declaration.start(1)), scopes);
+                    var type = declare(file, head, declaration, lineOf(lineStarts, headStart + declaration.start(1)), scopes, launcherFile ? text : null);
 
                     found.add(type);
                     scopes.push(new Scope(type, headStart, parens));
@@ -278,23 +346,29 @@ final class NestedTestScan {
 
     private record Scope(Type type, int headStart, int parens) {}
 
-    private static Type declare(String file, String head, Matcher declaration, int line, Deque<Scope> scopes) {
+    /// `launchedText` is the blanked source when the file imports the JUnit launcher or test kit, null otherwise.
+    private static Type declare(String file, String head, Matcher declaration, int line, Deque<Scope> scopes, String launchedText) {
         var topLevel = scopes.isEmpty();
         var isMember = !topLevel && scopes.stream().allMatch(scope -> scope.type() != null);
         var afterName = head.substring(declaration.end());
         var withoutArguments = stripTypeArguments(afterName);
         var extended = EXTENDS.matcher(withoutArguments);
         var extendsName = extended.find() ? simpleName(extended.group(1)) : null;
+        var name = declaration.group(2);
+        var parent = isMember ? scopes.peek().type() : null;
+        var launched = launchedText != null && Pattern.compile("\\b" + Pattern.quote(name) + "\\s*\\.\\s*class\\b").matcher(launchedText).find();
 
         return new Type(file,
-                        declaration.group(2),
+                        name,
                         line,
                         declaration.group(1),
                         topLevel,
                         isMember,
                         ABSTRACT_MODIFIER.matcher(head.substring(0, declaration.end())).find(),
                         NESTED_ANNOTATION.matcher(head.substring(0, declaration.end())).find(),
-                        extendsName);
+                        extendsName,
+                        parent,
+                        launched);
     }
 
     private static void attributeTests(Deque<Scope> scopes, String head) {

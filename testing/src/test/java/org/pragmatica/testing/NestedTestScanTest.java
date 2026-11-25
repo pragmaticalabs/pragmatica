@@ -56,9 +56,10 @@ class NestedTestScanTest {
                                         .hasSizeGreaterThan(MINIMUM_EXAMINED_FILES)
                                         .contains("testing/src/test/java/org/pragmatica/testing/NestedTestScanTest.java");
         assertThat(scan.nestedTestClasses()).as("positive control: the scan sees the legal @Nested test classes of %d examined files", scan.examinedFiles().size()).isPositive();
-        assertThat(scan.abstractBases()).as("positive control: the scan sees the legal abstract bases that a @Nested or top-level class extends").isPositive();
+        assertThat(scan.abstractBases()).as("positive control: the scan sees the legal abstract bases that a run class extends").isPositive();
+        assertThat(scan.launched()).as("positive control: the scan sees the fixtures a launcher-importing file lists by Name.class").isPositive();
         assertThat(scan.violations().stream().map(NestedTestScan.Violation::message).toList())
-            .as("nested classes with test methods that are neither @Nested nor an extended abstract base (%d files scanned)", scan.examinedFiles().size())
+            .as("nested classes with test methods that nothing runs (%d files scanned)", scan.examinedFiles().size())
             .isEmpty();
     }
 
@@ -327,6 +328,81 @@ class NestedTestScanTest {
             }
         });
         return found;
+    }
+
+    private static final String LAUNCHER = "import org.junit.platform.launcher.core.LauncherFactory;";
+
+    @Test
+    void run_aNestedClassInAStaticHolderNothingRuns_isReported_withTheEnclosingTypeNamed() throws IOException {
+        var scan = NestedTestScan.scan(plant("A.java", "class A { static class Holder { @Nested class Inner { @Test void t() {} } } }"));
+
+        assertThat(scan.violations()).extracting(NestedTestScan.Violation::name, NestedTestScan.Violation::reason)
+                                     .containsExactly(tuple("Inner", "@Nested but enclosing Holder is not run"));
+    }
+
+    @Test
+    void run_aTwoLevelNestedChain_isLegal_andAStaticLinkInTheMiddleIsReported() throws IOException {
+        var chain = NestedTestScan.scan(plant("A.java", "class A { @Nested class B { @Nested class C { @Test void t() {} } } }"));
+        var broken = NestedTestScan.scan(plant("Z.java", "class Z { @Nested class B { static class M { @Nested class C { @Test void t() {} } } } }"));
+
+        assertThat(chain.violations()).isEmpty();
+        assertThat(chain.nestedTestClasses()).isEqualTo(1);
+        assertThat(broken.violations()).extracting(NestedTestScan.Violation::name, NestedTestScan.Violation::reason)
+                                       .containsExactly(tuple("C", "@Nested but enclosing M is not run"));
+    }
+
+    @Test
+    void run_aLauncherImportAndTheClassMentionInCode_makeAStaticFixtureLegal_andEitherAloneDoesNot() throws IOException {
+        var fixture = "static class S { @Test void t() {} }";
+        var both = NestedTestScan.scan(plant("A.java", LAUNCHER + "\nclass A { " + fixture + " void run() { launch(S.class); } }"));
+        var testkit = NestedTestScan.scan(plant("A.java", "import org.junit.platform.testkit.engine.EngineTestKit;\nclass A { " + fixture + " Object o = S . class; }"));
+        var importOnly = NestedTestScan.scan(plant("A.java", LAUNCHER + "\nclass A { " + fixture + " }"));
+        var mentionOnly = NestedTestScan.scan(plant("A.java", "class A { " + fixture + " void run() { launch(S.class); } }"));
+
+        assertThat(both.violations()).isEmpty();
+        assertThat(both.launched()).isEqualTo(1);
+        assertThat(testkit.violations()).isEmpty();
+        assertThat(importOnly.violations()).extracting(NestedTestScan.Violation::name).containsExactly("S");
+        assertThat(mentionOnly.violations()).extracting(NestedTestScan.Violation::name).containsExactly("S");
+    }
+
+    @Test
+    void run_theClassMentionOnlyInACommentOrAString_doesNotLaunch() throws IOException {
+        var source = String.join("\n",
+                                 LAUNCHER,
+                                 "class A {",
+                                 "    static class S { @Test void t() {} }",
+                                 "    // S.class is listed here",
+                                 "    String s = \"S.class\";",
+                                 "    String block = \"\"\"",
+                                 "        S.class",
+                                 "        \"\"\";",
+                                 "}");
+
+        assertThat(NestedTestScan.scan(plant("A.java", source)).violations()).extracting(NestedTestScan.Violation::name).containsExactly("S");
+    }
+
+    @Test
+    void run_aNestedInnerOfALaunchedHolder_isLegalByTheEnclosingClause() throws IOException {
+        var source = String.join("\n",
+                                 LAUNCHER,
+                                 "class A {",
+                                 "    static class Holder { @Nested class Inner { @Test void t() {} } }",
+                                 "    Class<?>[] fixtures = {Holder.class};",
+                                 "}");
+        var scan = NestedTestScan.scan(plant("A.java", source));
+
+        assertThat(scan.violations()).isEmpty();
+        assertThat(scan.launched()).isEqualTo(1);
+        assertThat(scan.nestedTestClasses()).isEqualTo(1);
+    }
+
+    @Test
+    void run_anAbstractBaseWhoseOnlySubclassIsNotRun_isReported() throws IOException {
+        var scan = NestedTestScan.scan(plant("A.java", "class A { abstract static class Base { @Test void t() {} } static class Sub extends Base {} }"));
+
+        assertThat(scan.violations()).extracting(NestedTestScan.Violation::name, NestedTestScan.Violation::reason)
+                                     .containsExactly(tuple("Base", "abstract base that no run class extends"));
     }
 
     private static Path repositoryRoot() {
