@@ -34,6 +34,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -423,50 +424,150 @@ class WorkerCursorResumeTest {
         }
     }
 
+    /// #3283 round 2: the worker's rewind check reads every key a pass holds in ONE cluster apply, with at most one read
+    /// outstanding, and acts on what earlier reads answered. Every apply below is a pending promise the test answers.
     @Nested
     class RewindEpochSource {
-        /// The rewind epoch takes the same path as the cursor: a worker's reconcile pass acts on the epoch the read found,
-        /// never on its mirror. The pass is synchronous, so it acts on the previous pass's answer.
+        private static final StreamConsumerManager.SubscriptionKey FIRST = new StreamConsumerManager.SubscriptionKey(STREAM, 0, GROUP);
+        private static final StreamConsumerManager.SubscriptionKey SECOND = new StreamConsumerManager.SubscriptionKey(STREAM, 1, GROUP);
+        private static final StreamConsumerManager.SubscriptionKey THIRD = new StreamConsumerManager.SubscriptionKey(STREAM, 2, GROUP);
+        private static final RewindEpoch LATER = RewindEpoch.rewindEpoch(0L, 2L, 1L);
+
+        private final List<List<KVCommand<AetherKey>>> applies = new CopyOnWriteArrayList<>();
+        private final List<Promise<List<Object>>> replies = new CopyOnWriteArrayList<>();
+        private final StreamConsumerManager.CommittedEpochSource source = CommittedCursorRead.committedEpochs(() -> true,
+                                                                                                             _ -> Option.none(),
+                                                                                                             CommittedCursorRead.consensusReads(this::pendingApply));
+
         @Test
-        void worker_epochComesFromTheRead_oneAnswerBehind() {
-            var answer = new AtomicReference<Promise<Option<StreamCursorCheckpointValue>>>(Promise.success(Option.some(rewound(REWOUND))));
-            var source = CommittedCursorRead.committedEpochs(() -> true, _ -> Option.none(), _ -> answer.get());
+        void pass_nKeys_sendsOneApplyWithOneGetPerKey() {
+            source.forPass(List.of(FIRST, SECOND, THIRD));
 
-            assertThat(source.committedEpoch(STREAM, PARTITION, GROUP)).describedAs("nothing read yet").isEqualTo(Option.none());
-            assertThat(source.committedEpoch(STREAM, PARTITION, GROUP)).describedAs("the previous read's FOUND")
-                                                                     .isEqualTo(Option.some(REWOUND));
+            assertThat(applies).singleElement()
+                               .isEqualTo(List.of(get(FIRST), get(SECOND), get(THIRD)));
+        }
 
-            answer.set(Causes.cause("forward timed out").promise());
-            assertThat(source.committedEpoch(STREAM, PARTITION, GROUP)).isEqualTo(Option.some(REWOUND));
-            assertThat(source.committedEpoch(STREAM, PARTITION, GROUP)).describedAs("UNREADABLE keeps the last FOUND, claims nothing new")
-                                                                     .isEqualTo(Option.some(REWOUND));
+        @Test
+        void pass_whileAReadIsOutstanding_sendsNothing() {
+            source.forPass(List.of(FIRST, SECOND));
+            source.forPass(List.of(FIRST, SECOND));
 
-            answer.set(Promise.success(Option.none()));
-            assertThat(source.committedEpoch(STREAM, PARTITION, GROUP)).isEqualTo(Option.some(REWOUND));
-            assertThat(source.committedEpoch(STREAM, PARTITION, GROUP)).describedAs("ABSENT forgets the key")
-                                                                     .isEqualTo(Option.none());
+            assertThat(applies).describedAs("one read outstanding per node").hasSize(1);
+        }
+
+        @Test
+        void failedRead_freesTheSlot() {
+            source.forPass(List.of(FIRST));
+            replies.getFirst().fail(Causes.cause("no core peers available"));
+
+            passUntilSent(List.of(FIRST), 2);
+        }
+
+        /// Answers are positional, one per key. UNREADABLE (here a short reply) keeps what was found, ABSENT clears it.
+        @Test
+        void answers_arePositional_shortReplyChangesNothing_absentClears() {
+            source.forPass(List.of(FIRST, SECOND));
+            replies.getFirst().succeed(List.of(Option.some(rewound(REWOUND)), Option.some(rewound(LATER))));
+            var found = passUntilSent(List.of(FIRST, SECOND), 2);
+
+            assertThat(found.apply(FIRST)).isEqualTo(Option.some(REWOUND));
+            assertThat(found.apply(SECOND)).isEqualTo(Option.some(LATER));
+
+            replies.get(1).succeed(List.of(Option.some(rewound(LATER))));
+            var afterShort = passUntilSent(List.of(FIRST, SECOND), 3);
+
+            assertThat(afterShort.apply(FIRST)).describedAs("a short reply is UNREADABLE for the whole batch").isEqualTo(Option.some(REWOUND));
+            assertThat(afterShort.apply(SECOND)).isEqualTo(Option.some(LATER));
+
+            replies.get(2).succeed(List.of(Option.none(), Option.some("not a checkpoint")));
+            var afterForeign = passUntilSent(List.of(FIRST, SECOND), 4);
+
+            assertThat(afterForeign.apply(FIRST)).describedAs("a foreign entry is UNREADABLE for the whole batch").isEqualTo(Option.some(REWOUND));
+
+            replies.get(3).succeed(List.of(Option.none(), Option.none()));
+            var afterAbsent = passUntilSent(List.of(FIRST, SECOND), 5);
+
+            assertThat(afterAbsent.apply(FIRST)).describedAs("ABSENT forgets the key").isEqualTo(Option.none());
+            assertThat(afterAbsent.apply(SECOND)).isEqualTo(Option.none());
+        }
+
+        /// Only the latest pass's keys are kept, and an answer counts only for a key held since its read was sent: a
+        /// subscription that left and came back never acts on a read from before it left.
+        @Test
+        void keyThatLeftAndCameBack_ignoresTheAnswerOfAReadSentBeforeItLeft() {
+            source.forPass(List.of(FIRST));
+            source.forPass(List.of());
+            source.forPass(List.of(FIRST));
+            replies.getFirst().succeed(List.of(Option.some(rewound(REWOUND))));
+
+            assertThat(passUntilSent(List.of(FIRST), 2).apply(FIRST)).isEqualTo(Option.none());
+        }
+
+        @Test
+        void keyNoLongerHeld_isForgotten() {
+            source.forPass(List.of(FIRST));
+            replies.getFirst().succeed(List.of(Option.some(rewound(REWOUND))));
+            passUntilSent(List.of(SECOND), 2);
+
+            assertThat(source.forPass(List.of(FIRST)).apply(FIRST)).isEqualTo(Option.none());
         }
 
         @Test
         void worker_mirrorEpochIsIgnored() {
-            var source = CommittedCursorRead.committedEpochs(() -> true,
-                                                             _ -> Option.some(rewound(REWOUND)),
-                                                             _ -> Promise.success(Option.none()));
+            var mirrored = CommittedCursorRead.committedEpochs(() -> true,
+                                                               _ -> Option.some(rewound(REWOUND)),
+                                                               CommittedCursorRead.consensusReads(this::pendingApply));
 
-            source.committedEpoch(STREAM, PARTITION, GROUP);
-
-            assertThat(source.committedEpoch(STREAM, PARTITION, GROUP)).isEqualTo(Option.none());
+            assertThat(mirrored.forPass(List.of(FIRST)).apply(FIRST)).isEqualTo(Option.none());
         }
 
         @Test
         void core_epochComesFromItsOwnCommittedState_andTheReadIsNotUsed() {
-            var reads = new AtomicInteger();
-            var source = CommittedCursorRead.committedEpochs(() -> false,
-                                                             _ -> Option.some(rewound(REWOUND)),
-                                                             countingRead(reads, () -> Promise.success(Option.none())));
+            var core = CommittedCursorRead.committedEpochs(() -> false,
+                                                           _ -> Option.some(rewound(REWOUND)),
+                                                           CommittedCursorRead.consensusReads(this::pendingApply));
 
-            assertThat(source.committedEpoch(STREAM, PARTITION, GROUP)).isEqualTo(Option.some(REWOUND));
-            assertThat(reads.get()).isZero();
+            assertThat(core.forPass(List.of(FIRST)).apply(FIRST)).isEqualTo(Option.some(REWOUND));
+            assertThat(applies).isEmpty();
+        }
+
+        private Promise<List<Object>> pendingApply(List<KVCommand<AetherKey>> commands) {
+            var reply = Promise.<List<Object>> promise();
+
+            applies.add(commands);
+            replies.add(reply);
+
+            return reply;
+        }
+
+        /// Runs passes until the `count`-th read is sent. The slot frees only after the previous answer has landed, so the
+        /// lookup of the pass that sent it reflects that answer.
+        private Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey> passUntilSent(List<StreamConsumerManager.SubscriptionKey> keys,
+                                                                                                                                int count) {
+            var lookup = new AtomicReference<Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey>>();
+
+            PollUntil.pollUntil(() -> passAndCount(keys, lookup), sent -> sent >= count, AWAIT_DEADLINE)
+                     .assertMet(count + " reads sent");
+
+            return lookup.get();
+        }
+
+        private int passAndCount(List<StreamConsumerManager.SubscriptionKey> keys,
+                                 AtomicReference<Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey>> lookup) {
+            var before = applies.size();
+            var pass = source.forPass(keys);
+
+            if (applies.size() > before) {
+                lookup.set(pass);
+            }
+
+            return applies.size();
+        }
+
+        private static KVCommand<AetherKey> get(StreamConsumerManager.SubscriptionKey key) {
+            return new KVCommand.Get<>(StreamCursorCheckpointKey.streamCursorCheckpointKey(key.streamName(),
+                                                                                          key.partition(),
+                                                                                          key.consumerGroup()));
         }
     }
 

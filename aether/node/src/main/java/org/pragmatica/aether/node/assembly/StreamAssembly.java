@@ -1378,6 +1378,7 @@ public sealed interface StreamAssembly {
         // #3283: a worker's replica excludes cursor checkpoints, so its resume and its rewind check read them through
         // consensus (a KVCommand.Get forwarded to a core), never from its own mirror. A core node keeps its local read.
         BooleanSupplier forwardingCluster = () -> switchableCluster.current() instanceof ForwardingClusterNode;
+        var committedCursorReads = CommittedCursorRead.consensusReads(commands -> switchableCluster.<Object> apply(commands));
         var committedCursorRead = CommittedCursorRead.consensusRead(commands -> switchableCluster.<Object> apply(commands));
         var streamClusterCursorStore = ProjectionAwareCursorStore.projectionAwareCursorStore(ClusterCursorStore.clusterCursorStore(streamCursorStore,
                                                                                                                                    config.self(),
@@ -1448,7 +1449,7 @@ public sealed interface StreamAssembly {
                                                                                 consumerAssignmentAuthority,
                                                                                 CommittedCursorRead.committedEpochs(forwardingCluster,
                                                                                                                     committedCursorReader,
-                                                                                                                    committedCursorRead));
+                                                                                                                    committedCursorReads));
 
         streamConsumerManager.setOperatorWarningSink(operatorWarningSink);
         // #1271: a node that loses quorum stops delivering at the self-fence's DETECTION, not at the drain's

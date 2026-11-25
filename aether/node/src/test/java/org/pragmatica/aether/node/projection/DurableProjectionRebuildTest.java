@@ -566,9 +566,9 @@ class DurableProjectionRebuildTest {
                                                            TopicGroupDeclarationSource.topicGroupDeclarationSource(topics,
                                                                                                                    _ -> true),
                                                            authority(),
-                                                           (stream, partition, group) -> committed(StreamCursorCheckpointKey.streamCursorCheckpointKey(stream,
-                                                                                                                                                       partition,
-                                                                                                                                                       group)).map(StreamCursorCheckpointValue::rewindEpoch));
+                                                           _ -> key -> committed(StreamCursorCheckpointKey.streamCursorCheckpointKey(key.streamName(),
+                                                                                                                                     key.partition(),
+                                                                                                                                     key.consumerGroup())).map(StreamCursorCheckpointValue::rewindEpoch));
     }
 
     /// #1271: this node is the leader, so the manager's own writer commits the assignment through the

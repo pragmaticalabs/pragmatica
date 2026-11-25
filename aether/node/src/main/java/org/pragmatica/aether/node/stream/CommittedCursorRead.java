@@ -6,10 +6,15 @@ package org.pragmatica.aether.node.stream;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.node.stream.StreamConsumerManager.CommittedEpochSource;
+import org.pragmatica.aether.node.stream.StreamConsumerManager.SubscriptionKey;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
@@ -52,8 +57,26 @@ public interface CommittedCursorRead {
 
     /// The consensus-ordered read: one [KVCommand.Get] through `cluster` (the node's cluster `apply`).
     static CommittedCursorRead consensusRead(Fn1<Promise<List<Object>>, List<KVCommand<AetherKey>>> cluster) {
-        return key -> cluster.apply(List.of(new KVCommand.Get<AetherKey>(key)))
-                             .flatMap(results -> getAnswer(key, results).async());
+        var reads = consensusReads(cluster);
+
+        return key -> reads.read(List.of(key))
+                           .map(List::getFirst);
+    }
+
+    /// The batch form: one command list through `cluster`, one [KVCommand.Get] per key, decoded positionally
+    /// ([#getAnswers]). The reconcile pass reads every key it holds in one apply ([#lastReadEpochs]).
+    static Batch consensusReads(Fn1<Promise<List<Object>>, List<KVCommand<AetherKey>>> cluster) {
+        return keys -> cluster.apply(keys.stream()
+                                         .<KVCommand<AetherKey>> map(key -> new KVCommand.Get<AetherKey>(key))
+                                         .toList())
+                              .flatMap(results -> getAnswers(keys, results).async());
+    }
+
+    /// Reads several keys at once. Answers one entry per key, in the order of `keys`, or fails as a whole: no
+    /// partial answer is ever returned.
+    @FunctionalInterface
+    interface Batch {
+        Promise<List<Option<StreamCursorCheckpointValue>>> read(List<StreamCursorCheckpointKey> keys);
     }
 
     /// A read that is never wired: every answer is UNREADABLE, so a node built without the read never starts a worker
@@ -62,12 +85,22 @@ public interface CommittedCursorRead {
         return _ -> NOT_WIRED.promise();
     }
 
-    /// The Get's answer is exactly one `Option` holding a checkpoint or nothing. Anything else did not come from a Get
-    /// applied to this key and is UNREADABLE, not ABSENT.
-    static Result<Option<StreamCursorCheckpointValue>> getAnswer(StreamCursorCheckpointKey key, List<?> results) {
-        return results.size() == 1 && results.getFirst() instanceof Option<?> answer
+    /// The Gets' answers are exactly one `Option` per key, holding a checkpoint or nothing, in the order the Gets were
+    /// sent. Anything else (a list of another size, or any entry of another type) did not come from these Gets applied to
+    /// these keys, and the whole batch is UNREADABLE, never ABSENT.
+    static Result<List<Option<StreamCursorCheckpointValue>>> getAnswers(List<StreamCursorCheckpointKey> keys,
+                                                                       List<?> results) {
+        return results.size() == keys.size()
+               ? Result.allOf(IntStream.range(0, keys.size())
+                                       .mapToObj(index -> getAnswer(keys.get(index), results.get(index)))
+                                       .toList())
+               : malformed(keys, results).result();
+    }
+
+    private static Result<Option<StreamCursorCheckpointValue>> getAnswer(StreamCursorCheckpointKey key, Object result) {
+        return result instanceof Option<?> answer
                ? checkpointOf(key, answer)
-               : malformed(key, results).result();
+               : malformed(List.of(key), List.of(result)).result();
     }
 
     private static Result<Option<StreamCursorCheckpointValue>> checkpointOf(StreamCursorCheckpointKey key,
@@ -75,69 +108,110 @@ public interface CommittedCursorRead {
         return answer.fold(() -> Result.success(Option.none()),
                            value -> value instanceof StreamCursorCheckpointValue checkpoint
                                     ? Result.success(Option.some(checkpoint))
-                                    : malformed(key, List.of(value)).result());
+                                    : malformed(List.of(key), List.of(value)).result());
     }
 
-    private static Cause malformed(StreamCursorCheckpointKey key, List<?> results) {
-        return Causes.cause("cursor read for " + key + " returned " + results + " instead of one checkpoint answer");
+    private static Cause malformed(List<StreamCursorCheckpointKey> keys, List<?> results) {
+        return Causes.cause("cursor read for " + keys + " returned " + results + " instead of one checkpoint answer per key");
     }
 
-    /// The rewind epoch for [StreamConsumerManager]'s reconcile pass, chosen per call by the node's current role: a
-    /// forwarding node takes [#lastReadEpochs] over `read`, a core node its own committed state through `localReader`.
+    /// The rewind epochs for [StreamConsumerManager]'s reconcile pass, chosen per pass by the node's current role: a
+    /// forwarding node takes [#lastReadEpochs] over `reads`, a core node its own committed state through `localReader`.
     static CommittedEpochSource committedEpochs(BooleanSupplier forwarding,
                                                 Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> localReader,
-                                                CommittedCursorRead read) {
-        var remote = lastReadEpochs(read);
+                                                Batch reads) {
+        var remote = lastReadEpochs(reads);
 
-        return (streamName, partition, consumerGroup) -> forwarding.getAsBoolean()
-                                                         ? remote.committedEpoch(streamName, partition, consumerGroup)
-                                                         : localReader.apply(StreamCursorCheckpointKey.streamCursorCheckpointKey(streamName,
-                                                                                                                                 partition,
-                                                                                                                                 consumerGroup))
-                                                                      .map(StreamCursorCheckpointValue::rewindEpoch);
+        return keys -> forwarding.getAsBoolean()
+                       ? remote.forPass(keys)
+                       : key -> localReader.apply(checkpointKey(key))
+                                           .map(StreamCursorCheckpointValue::rewindEpoch);
     }
 
-    /// The rewind epoch for [StreamConsumerManager]'s reconcile pass on a node whose mirror does not hold checkpoints. The
-    /// pass is synchronous, so each call answers with the epoch the PREVIOUS authoritative read found for the key and
-    /// starts the next read. The answer is at most one pass old, never invented: it comes only from a FOUND read, an ABSENT
-    /// read forgets the key, and an UNREADABLE read keeps the last FOUND. A one-pass-old FOUND is safe to act on because the
-    /// applier's rewind fence never lets the committed epoch go back, so "committed is newer than the consumer's" stays
-    /// true; it only restarts a rewound consumer one pass later than a core node's put notification does.
-    static CommittedEpochSource lastReadEpochs(CommittedCursorRead read) {
-        var lastFound = new ConcurrentHashMap<StreamCursorCheckpointKey, RewindEpoch>();
+    /// The rewind epochs for [StreamConsumerManager]'s reconcile pass on a node whose mirror does not hold checkpoints.
+    ///
+    /// Cost: one cluster apply per pass at most, carrying one Get per key the pass holds, and at most one such read
+    /// outstanding per node: a pass that finds the previous read unanswered sends none, so answers never arrive out of
+    /// order. The read is freed when it settles, answered or failed (the cluster apply's own timeout bounds it).
+    ///
+    /// The pass is synchronous, so it acts on what EARLIER reads answered, never on its own read. Only the keys of the
+    /// latest pass are kept (a core pass keeps none): a key the pass no longer holds is forgotten, and an answer is taken
+    /// only for a key held continuously since its read was sent. So an epoch acted on is as old as the last ANSWERED read
+    /// for that key among the reads sent while it has been held, and no older: an UNREADABLE read keeps it (FER: no
+    /// restart is claimed from a read that did not answer), an ABSENT one clears it, a FOUND one replaces it.
+    ///
+    /// It can be stale: a slow answer, a failing read, or a checkpoint deleted and recreated at a lower epoch since, which
+    /// the applier's rewind fence does not cover. A stale FOUND newer than the consumer's epoch is harmless to the
+    /// position: the restart abandons the consumer without a flush, the new one re-fetches its cursor through the
+    /// authoritative read, and the pass skips it while that fetch is pending ([StreamConsumerManager]'s `rewoundBehind`).
+    /// Its cost is at most one restart per pass, and none after the next read for the key that answers. A core node acts
+    /// on its own committed state at once, through its put notification.
+    static CommittedEpochSource lastReadEpochs(Batch reads) {
+        /// A key the latest pass holds: the pass that first held it in its current run, and what the reads answered.
+        record Held(long since, Option<RewindEpoch> found) {
+            /// The answer of a read sent at `readPass`, taken only if the key was held when it was sent.
+            Held answered(long readPass, Option<StreamCursorCheckpointValue> answer) {
+                return since <= readPass
+                       ? new Held(since, answer.map(StreamCursorCheckpointValue::rewindEpoch))
+                       : this;
+            }
+        }
 
-        return (streamName, partition, consumerGroup) -> lastFoundThenRefresh(read,
-                                                                              lastFound,
-                                                                              StreamCursorCheckpointKey.streamCursorCheckpointKey(streamName,
-                                                                                                                                  partition,
-                                                                                                                                  consumerGroup));
+        /// One node's pass state: the held keys and the slot of the one outstanding read.
+        record LastReadEpochs(Batch reads,
+                              AtomicLong passes,
+                              AtomicBoolean outstanding,
+                              ConcurrentHashMap<StreamCursorCheckpointKey, Held> held) implements CommittedEpochSource {
+            @Override
+            public Fn1<Option<RewindEpoch>, SubscriptionKey> forPass(List<SubscriptionKey> keys) {
+                var pass = passes.incrementAndGet();
+                var passKeys = keys.stream()
+                                   .map(CommittedCursorRead::checkpointKey)
+                                   .toList();
+
+                held.keySet()
+                    .retainAll(Set.copyOf(passKeys));
+                passKeys.forEach(key -> held.putIfAbsent(key, new Held(pass, Option.none())));
+                var known = Map.copyOf(held);
+
+                sendIfFree(passKeys, pass);
+
+                return key -> Option.option(known.get(checkpointKey(key)))
+                                    .flatMap(Held::found);
+            }
+
+            @Contract
+            private void sendIfFree(List<StreamCursorCheckpointKey> passKeys, long pass) {
+                if (!passKeys.isEmpty() && outstanding.compareAndSet(false, true)) {
+                    reads.read(passKeys)
+                         .onResult(result -> settle(passKeys, pass, result));
+                }
+            }
+
+            /// Fire-and-forget: the answers land for a later pass; the slot is freed after they land, either way.
+            @Contract
+            private void settle(List<StreamCursorCheckpointKey> passKeys,
+                                long pass,
+                                Result<List<Option<StreamCursorCheckpointValue>>> result) {
+                result.onSuccess(answers -> remember(passKeys, pass, answers));
+                outstanding.set(false);
+            }
+
+            @Contract
+            private void remember(List<StreamCursorCheckpointKey> passKeys,
+                                  long pass,
+                                  List<Option<StreamCursorCheckpointValue>> answers) {
+                IntStream.range(0, passKeys.size())
+                         .forEach(index -> held.computeIfPresent(passKeys.get(index),
+                                                                 (_, current) -> current.answered(pass,
+                                                                                                  answers.get(index))));
+            }
+        }
+
+        return new LastReadEpochs(reads, new AtomicLong(), new AtomicBoolean(), new ConcurrentHashMap<>());
     }
 
-    private static Option<RewindEpoch> lastFoundThenRefresh(CommittedCursorRead read,
-                                                            Map<StreamCursorCheckpointKey, RewindEpoch> lastFound,
-                                                            StreamCursorCheckpointKey key) {
-        var known = Option.option(lastFound.get(key));
-
-        refresh(read, lastFound, key);
-
-        return known;
-    }
-
-    /// Fire-and-forget: the answer lands for the next pass. FER on UNREADABLE — the last FOUND stays, so a rewind already
-    /// seen is still acted on, and no restart is claimed from a read that did not answer.
-    @Contract
-    private static void refresh(CommittedCursorRead read,
-                                Map<StreamCursorCheckpointKey, RewindEpoch> lastFound,
-                                StreamCursorCheckpointKey key) {
-        read.read(key).onSuccess(answer -> remember(lastFound, key, answer));
-    }
-
-    @Contract
-    private static void remember(Map<StreamCursorCheckpointKey, RewindEpoch> lastFound,
-                                 StreamCursorCheckpointKey key,
-                                 Option<StreamCursorCheckpointValue> answer) {
-        answer.map(StreamCursorCheckpointValue::rewindEpoch)
-              .onPresent(epoch -> lastFound.put(key, epoch))
-              .onEmpty(() -> lastFound.remove(key));
+    private static StreamCursorCheckpointKey checkpointKey(SubscriptionKey key) {
+        return StreamCursorCheckpointKey.streamCursorCheckpointKey(key.streamName(), key.partition(), key.consumerGroup());
     }
 }

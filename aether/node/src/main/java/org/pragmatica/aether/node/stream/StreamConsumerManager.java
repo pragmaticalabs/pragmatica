@@ -287,16 +287,17 @@ public interface StreamConsumerManager {
         Map<NodeId, SliceState> placement(Artifact artifact);
     }
 
-    /// The rewind epoch committed in KV for one `(stream, partition, group)` (#1333), or none when no
-    /// checkpoint is committed. Read on every reconcile pass for every held subscription: a committed
-    /// epoch STRICTLY newer than the one the consumer runs under means a projection rebuild rewound
-    /// the group, and the consumer is restarted so it resumes at the rewound position under that epoch.
+    /// The rewind epoch committed in KV for each `(stream, partition, group)` (#1333), or none when no
+    /// checkpoint is committed. Asked once per reconcile pass with every subscription the pass holds; the
+    /// answer is that pass's lookup. A committed epoch STRICTLY newer than the one the consumer runs under
+    /// means a projection rebuild rewound the group, and the consumer is restarted so it resumes at the
+    /// rewound position under that epoch.
     @FunctionalInterface
     interface CommittedEpochSource {
-        Option<RewindEpoch> committedEpoch(String streamName, int partition, String consumerGroup);
+        Fn1<Option<RewindEpoch>, SubscriptionKey> forPass(List<SubscriptionKey> keys);
 
         static CommittedEpochSource none() {
-            return (_, _, _) -> Option.none();
+            return _ -> _ -> Option.none();
         }
     }
 
@@ -647,22 +648,20 @@ public interface StreamConsumerManager {
         /// the committed one when the fetch lands.
         private void restartRewound(Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
             var snapshots = snapshotsByKey();
+            var held = List.copyOf(active.keySet());
+            var epochs = committedEpochs.forPass(held);
 
-            active.keySet()
-                  .stream()
-                  .filter(key -> rewoundBehind(key,
-                                               Option.option(snapshots.get(key))))
-                  .toList()
-                  .forEach(key -> restartForRewind(key, byGroup));
+            held.stream()
+                .filter(key -> rewoundBehind(Option.option(snapshots.get(key)),
+                                             epochs.apply(key)))
+                .toList()
+                .forEach(key -> restartForRewind(key, byGroup));
         }
 
-        private boolean rewoundBehind(SubscriptionKey key, Option<SubscriptionSnapshot> snapshot) {
+        private static boolean rewoundBehind(Option<SubscriptionSnapshot> snapshot, Option<RewindEpoch> committedEpoch) {
             return snapshot.filter(live -> !live.awaitingCursorFetch())
-                           .map(live -> committedEpochs.committedEpoch(key.streamName(),
-                                                                       key.partition(),
-                                                                       key.consumerGroup())
-                                                       .map(committed -> committed.isStrictlyAfter(live.rewindEpoch()))
-                                                       .or(false))
+                           .map(live -> committedEpoch.map(committed -> committed.isStrictlyAfter(live.rewindEpoch()))
+                                                      .or(false))
                            .or(false);
         }
 
