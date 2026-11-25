@@ -149,7 +149,9 @@ class LiveTlsTest {
                                                                        "withResponseTimeout",
                                                                        config -> config.withResponseTimeout(timeSpan(1).seconds()),
                                                                        "withClassifier",
-                                                                       config -> config.withClassifier(RequestClassifier.aggregateAll(1024)));
+                                                                       config -> config.withClassifier(RequestClassifier.aggregateAll(1024)),
+                                                                       "withBindHost",
+                                                                       config -> config.withBindHost("127.0.0.1"));
         var softly = new SoftAssertions();
 
         withers.forEach((name, wither) -> softly.assertThat(wither.apply(live).liveTls().or(() -> null))
