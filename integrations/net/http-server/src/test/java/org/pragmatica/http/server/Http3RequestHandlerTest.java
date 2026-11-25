@@ -15,6 +15,7 @@
  */
 package org.pragmatica.http.server;
 
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -423,6 +424,92 @@ class Http3RequestHandlerTest {
 
         assertThat(dispatched).isEmpty();
         assertThat(handler.holdsBodyBuffer()).isFalse();
+    }
+
+    /// #3679: an unknown method is answered 501 before the classifier and the handler, as on HTTP/1.1. It used to be
+    /// folded to `GET`. The control asserts the classifier is reached for a known method, so the emptiness is meaningful.
+    @Test
+    void knownMethod_reachesClassifierAndHandler() {
+        var channel = classifyingChannel();
+
+        channel.writeInbound(headersWith("DELETE", "/resource"));
+        endInput(channel);
+
+        assertThat(classified).hasSize(1);
+        assertThat(classified.getFirst().method()).as("the classifier sees the method sent").isEqualTo(HttpMethod.DELETE);
+        assertThat(dispatched).hasSize(1);
+        assertThat(dispatched.getFirst().method()).as("the handler gets the method sent").isEqualTo(HttpMethod.DELETE);
+        assertThat(responseStatus(channel)).isEqualTo("200");
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void propfind_isAnswered501_beforeClassifierAndHandler() {
+        var channel = classifyingChannel();
+
+        channel.writeInbound(headersWith("PROPFIND", "/resource"));
+        endInput(channel);
+
+        assertThat(responseStatus(channel)).isEqualTo("501");
+        assertThat(classified).as("an unknown method must not reach routing or authorization").isEmpty();
+        assertThat(dispatched).as("an unknown method must not reach a handler").isEmpty();
+        channel.finishAndReleaseAll();
+    }
+
+    /// `ſ` (U+017F) upper-cases to `S`: a locale-aware case fold would read `POſT` as `POST`.
+    @Test
+    void caseFoldingLetter_isNotFoldedIntoAMethod() {
+        var channel = classifyingChannel();
+
+        channel.writeInbound(headersWith("PO\u017fT", "/resource"));
+        endInput(channel);
+
+        assertThat(responseStatus(channel)).isEqualTo("501");
+        assertThat(classified).isEmpty();
+        assertThat(dispatched).isEmpty();
+        channel.finishAndReleaseAll();
+    }
+
+    /// A request with no `:method` pseudo-header is malformed (RFC 9114 §4.3.1), answered 400; it used to become `GET`.
+    @Test
+    void absentMethodPseudoHeader_isAnswered400_andNeverDispatched() {
+        var channel = classifyingChannel();
+        var headers = new DefaultHttp3Headers();
+
+        headers.path("/resource");
+        channel.writeInbound(new DefaultHttp3HeadersFrame(headers));
+        endInput(channel);
+
+        assertThat(responseStatus(channel)).isEqualTo("400");
+        assertThat(classified).isEmpty();
+        assertThat(dispatched).isEmpty();
+        channel.finishAndReleaseAll();
+    }
+
+    private final List<HttpRequest> classified = new CopyOnWriteArrayList<>();
+
+    private EmbeddedChannel classifyingChannel() {
+        RequestClassifier classifier = head -> {
+            classified.add(head);
+
+            return Disposition.aggregate(LIMIT);
+        };
+
+        return new EmbeddedChannel(new Http3Server.Http3RequestHandler(this::handle,
+                                                                       classifier,
+                                                                       timeSpan(60).seconds(),
+                                                                       BodyRateLimit.bodyRateLimit(0,
+                                                                                                   timeSpan(1).seconds(),
+                                                                                                   timeSpan(1).seconds())));
+    }
+
+    private static DefaultHttp3HeadersFrame headersWith(String method, String path) {
+        var headers = new DefaultHttp3Headers();
+
+        headers.method(method);
+        headers.path(path);
+
+        return new DefaultHttp3HeadersFrame(headers);
     }
 
     /// The input ending as the QUIC transport ends it on a `FIN`: the input-shutdown event, then read-complete, on
