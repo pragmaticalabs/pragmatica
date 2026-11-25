@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api;
 
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.time.Duration;
 
@@ -15,11 +16,12 @@ import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.AsyncCloseable;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.JitterUtil;
-import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.messaging.MessageReceiver;
 
 import org.slf4j.Logger;
@@ -28,6 +30,12 @@ import org.slf4j.LoggerFactory;
 
 /// Implements [AsyncCloseable] because, when webhooks are enabled, it owns a JDK `HttpClient` whose selector
 /// thread otherwise outlives the node (#1097's class).
+///
+/// Retries are scheduled on an [OwnerLifetime] that [#close()] ends (#3754), so a retry armed before the close never
+/// runs after it. A send already in flight at the close finishes without a WARN, a retry or a further POST: its
+/// continuation re-reads the lifetime (the second check, class N: this node is the only sender of its webhooks and an
+/// alert POST after close is harmless). A `forward` promise whose retry the close cancelled stays unresolved: its callers
+/// ([AlertManager] and the message receivers) drop it.
 @SuppressWarnings("JBCT-RET-01")
 public class AlertForwarder implements AsyncCloseable {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
@@ -37,29 +45,52 @@ public class AlertForwarder implements AsyncCloseable {
     private final WebhookConfig config;
     private final Option<HttpOperations> httpOps;
     private final boolean enabled;
+    private final OwnerLifetime lifetime;
 
-    private AlertForwarder(AlertConfig alertConfig) {
+    private AlertForwarder(AlertConfig alertConfig, OwnerLifetime lifetime, Option<HttpOperations> httpOps) {
         this.config = alertConfig.webhook();
         this.enabled = alertConfig.enabled() && config.enabled();
+        this.lifetime = lifetime;
+        this.httpOps = httpOps;
         if (enabled && !config.urls().isEmpty()) {
-            this.httpOps = Option.some(JdkHttpOperations.jdkHttpOperations(Duration.ofMillis(config.timeout().millis()),
-                                                                           java.net.http.HttpClient.Redirect.NORMAL,
-                                                                           Option.none()));
             log.info("AlertForwarder initialized with {} webhook URLs",
                      config.urls().size());
         } else {
-            this.httpOps = Option.none();
             log.info("AlertForwarder disabled");
         }
     }
 
     public static AlertForwarder alertForwarder(AlertConfig config) {
-        return new AlertForwarder(config);
+        return alertForwarder(config, OwnerLifetime.ownerLifetime());
     }
 
-    /// Releases the webhook client, when there is one. Idempotent: the client's shutdown is.
+    /// The forwarder with its retries scheduled on `lifetime`; a test passes a lifetime over a fake seam.
+    static AlertForwarder alertForwarder(AlertConfig config, OwnerLifetime lifetime) {
+        return alertForwarder(config, lifetime, webhookClient(config));
+    }
+
+    /// The forwarder with its retries on `lifetime` and its sends through `httpOps` (empty: nothing is sent).
+    static AlertForwarder alertForwarder(AlertConfig config, OwnerLifetime lifetime, Option<HttpOperations> httpOps) {
+        return new AlertForwarder(config, lifetime, httpOps);
+    }
+
+    private static Option<HttpOperations> webhookClient(AlertConfig alertConfig) {
+        var webhook = alertConfig.webhook();
+
+        return alertConfig.enabled() && webhook.enabled() && !webhook.urls()
+                                                                     .isEmpty()
+               ? Option.some(JdkHttpOperations.jdkHttpOperations(Duration.ofMillis(webhook.timeout().millis()),
+                                                                 HttpClient.Redirect.NORMAL,
+                                                                 Option.none()))
+               : Option.none();
+    }
+
+    /// Ends the retry lifetime, then releases the webhook client, when there is one. Idempotent: the lifetime's end and the
+    /// client's shutdown are.
     @Override
     public Promise<Unit> close() {
+        lifetime.end();
+
         return httpOps.filter(AsyncCloseable.class::isInstance)
                       .map(AsyncCloseable.class::cast)
                       .map(AsyncCloseable::close)
@@ -96,16 +127,16 @@ public class AlertForwarder implements AsyncCloseable {
     }
 
     private Promise<Unit> sendWithRetry(HttpOperations ops, String url, String payload, int attempt) {
-        return doSend(ops, url, payload).fold(result -> result.fold(cause -> handleTransportFailure(ops,
-                                                                                                    url,
-                                                                                                    payload,
-                                                                                                    attempt,
-                                                                                                    cause),
-                                                                    statusCode -> handleStatusCode(ops,
-                                                                                                   url,
-                                                                                                   payload,
-                                                                                                   attempt,
-                                                                                                   statusCode)));
+        return doSend(ops, url, payload).fold(result -> settle(ops, url, payload, attempt, result));
+    }
+
+    /// The second check (#3754, class N): a send that was in flight when [#close()] ended the lifetime ends here, before any
+    /// WARN or retry, instead of reporting on a forwarder that has stopped.
+    private Promise<Unit> settle(HttpOperations ops, String url, String payload, int attempt, Result<Integer> result) {
+        return lifetime.isEnded()
+               ? AlertForwarderError.Stopped.stopped(url).promise()
+               : result.fold(cause -> handleTransportFailure(ops, url, payload, attempt, cause),
+                             statusCode -> handleStatusCode(ops, url, payload, attempt, statusCode));
     }
 
     /// A send that failed before any status was read (connection refused or reset, DNS failure, timeout) is retried
@@ -156,8 +187,8 @@ public class AlertForwarder implements AsyncCloseable {
             log.debug("Retrying webhook {} (attempt {}/{}) after {}ms", url, attempt + 1, config.retryCount(), delayMs);
             var promise = Promise.<Unit> promise();
 
-            SharedScheduler.schedule(() -> sendWithRetry(ops, url, payload, attempt + 1).onResult(promise::resolve),
-                                     TimeSpan.timeSpan(delayMs).millis());
+            lifetime.schedule(_ -> sendWithRetry(ops, url, payload, attempt + 1).onResult(promise::resolve),
+                              TimeSpan.timeSpan(delayMs).millis());
 
             return promise;
         }
@@ -249,6 +280,18 @@ public class AlertForwarder implements AsyncCloseable {
     }
 
     public sealed interface AlertForwarderError extends Cause {
+        /// The forwarder was closed while this send was in flight.
+        record Stopped(String url) implements AlertForwarderError {
+            public static Stopped stopped(String url) {
+                return new Stopped(url);
+            }
+
+            @Override
+            public String message() {
+                return "Webhook " + url + " not sent: forwarder closed";
+            }
+        }
+
         record WebhookError(String url, String error) implements AlertForwarderError {
             public static WebhookError webhookError(String url, String error) {
                 return new WebhookError(url, error);

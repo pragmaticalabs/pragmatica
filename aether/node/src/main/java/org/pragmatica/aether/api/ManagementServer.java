@@ -649,6 +649,11 @@ class ManagementServerImpl implements ManagementServer {
         beforePublish = hook;
     }
 
+    /// #3754 test seam: the resender [#stop()] must end.
+    ForwardReplyResender replyResenderForTest() {
+        return replyResender;
+    }
+
     private Promise<Unit> activateH1Server(HttpServer server) {
         onServerStarted(server);
 
@@ -681,6 +686,8 @@ class ManagementServerImpl implements ManagementServer {
 
     @Override
     public Promise<Unit> stop() {
+        // #3754: ends the lifetime of the reply re-sends, so none armed before this runs after it.
+        replyResender.stop();
         thresholdEvaluator.stop();
         statusWsPublisher.stop();
         eventWsPublisher.stop();
