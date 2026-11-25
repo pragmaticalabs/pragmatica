@@ -49,11 +49,12 @@ class ClusterTestPortsTest {
     private final List<int[]> reservations = new ArrayList<>();
     /// TCP-only holders: the first holds a management port for an HTTP/1 server; the three TLS fail-closed tests (#3321) hold the
     /// app or management HTTP port so that a bind attempt by the subject would surface as a bind error, never as the TLS refusal.
-    /// No node binds UDP on any of those ports.
+    /// `AlertForwarderTransportRetryTest` (#3536) holds a plain TCP socket as the webhook receiver. No node binds UDP on any of those ports.
     private static final java.util.Set<String> TCP_ONLY_TESTS = java.util.Set.of("ManagementServerDhtCatchUpGaugeTest.java",
                                                                                  "AetherNodeBrokenTlsBootTest.java",
                                                                                  "ManagementServerTlsFailClosedTest.java",
-                                                                                 "AppHttpServerTlsFailClosedTest.java");
+                                                                                 "AppHttpServerTlsFailClosedTest.java",
+                                                                                 "AlertForwarderTransportRetryTest.java");
 
     @AfterEach
     void dropLeftoverReservations() {
