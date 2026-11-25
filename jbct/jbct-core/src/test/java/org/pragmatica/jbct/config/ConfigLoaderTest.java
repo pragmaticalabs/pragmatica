@@ -251,6 +251,21 @@ class ConfigLoaderTest {
         }
 
         @Test
+        void load_mergesTreeExcludePerKey_nearestWins_acrossLevels() throws Exception {
+            var root = repositoryRoot("repo", """
+                                              [lint.tree]
+                                              exclude = ["com.far.**"]
+                                              """);
+            var module = writeConfig(root.resolve("module"), """
+                                                             [lint.tree]
+                                                             exclude = ["com.near.**"]
+                                                             """);
+
+            assertThat(load(module).tree()
+                                   .excludeGlobs()).containsExactly("com.near.**");
+        }
+
+        @Test
         void load_reEnablesRule_whenNearerLayerOverridesOffSetting() throws Exception {
             var root = repositoryRoot("repo", """
                                               [lint.rules]

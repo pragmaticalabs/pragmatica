@@ -14,6 +14,7 @@ import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintConfig;
 import org.pragmatica.jbct.lint.TechnicalWords;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
+import org.pragmatica.jbct.lint.tree.TreeConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -44,6 +45,7 @@ record PartialConfig(PartialFormatter formatter,
                      Option<List<String>> sourceDirectories,
                      Option<List<String>> excludePackages,
                      PartialLayers layers,
+                     PartialTree tree,
                      Option<JbctMode> mode,
                      Option<String> basePackage) {
     private static final String BASE_PACKAGE_EXPECTED = "a Java package name, e.g. \"com.example.orders\"";
@@ -56,6 +58,7 @@ record PartialConfig(PartialFormatter formatter,
                                                          none(),
                                                          none(),
                                                          PartialLayers.EMPTY,
+                                                         PartialTree.EMPTY,
                                                          none(),
                                                          none());
 
@@ -74,6 +77,7 @@ record PartialConfig(PartialFormatter formatter,
                                       toml.getStringList("project", "sourceDirectories"),
                                       toml.getStringList("lint", "excludePackages"),
                                       PartialLayers.partialLayers(toml),
+                                      PartialTree.partialTree(toml),
                                       toml.getParsed("lint", "mode", JbctMode.ALLOWED, JbctMode::fromToken),
                                       basePackage(toml));
 
@@ -90,6 +94,7 @@ record PartialConfig(PartialFormatter formatter,
                                  none(),
                                  none(),
                                  PartialLayers.EMPTY,
+                                 PartialTree.EMPTY,
                                  some(mode),
                                  none());
     }
@@ -118,6 +123,7 @@ record PartialConfig(PartialFormatter formatter,
                                  nearer.sourceDirectories.orElse(sourceDirectories),
                                  nearer.excludePackages.orElse(excludePackages),
                                  layers.mergeWith(nearer.layers),
+                                 tree.mergeWith(nearer.tree),
                                  nearer.mode.orElse(mode),
                                  nearer.basePackage.orElse(basePackage));
     }
@@ -131,6 +137,7 @@ record PartialConfig(PartialFormatter formatter,
                                      sourceDirectories.or(JbctConfig.DEFAULT.sourceDirectories()),
                                      excludePackages.or(JbctConfig.DEFAULT.excludePackages()),
                                      layers.materialize(),
+                                     tree.materialize(),
                                      mode.or(JbctConfig.DEFAULT.mode()),
                                      basePackage);
     }
@@ -369,6 +376,23 @@ record PartialConfig(PartialFormatter formatter,
                                            adapterGlobs.or(LayerConfig.DEFAULT.adapterGlobs()),
                                            bootstrapGlobs.or(LayerConfig.DEFAULT.bootstrapGlobs()),
                                            sliceGlobs.or(LayerConfig.DEFAULT.sliceGlobs()));
+        }
+    }
+
+    /// `[lint.tree]` section of one layer (#2526).
+    record PartialTree(Option<List<String>> excludeGlobs) {
+        static final PartialTree EMPTY = new PartialTree(none());
+
+        static PartialTree partialTree(TomlDocument toml) {
+            return new PartialTree(toml.getStringList("lint.tree", "exclude"));
+        }
+
+        PartialTree mergeWith(PartialTree nearer) {
+            return new PartialTree(nearer.excludeGlobs.orElse(excludeGlobs));
+        }
+
+        TreeConfig materialize() {
+            return TreeConfig.treeConfig(excludeGlobs.or(TreeConfig.DEFAULT.excludeGlobs()));
         }
     }
 
