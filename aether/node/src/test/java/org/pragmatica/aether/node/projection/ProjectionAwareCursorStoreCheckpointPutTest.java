@@ -109,7 +109,7 @@ class ProjectionAwareCursorStoreCheckpointPutTest {
     private static ValuePut<StreamCursorCheckpointKey, StreamCursorCheckpointValue> checkpointPut(int partition,
                                                                                                   long offset,
                                                                                                   RewindEpoch epoch) {
-        var token = AssignmentToken.assignmentToken(OTHER, Epoch.epoch(1L, 1L, 1L));
+        var token = AssignmentToken.assignmentToken(OTHER, Epoch.epoch(1L, 1L, 1L), Option.none());
 
         return new ValuePut<>(new KVCommand.Put<>(StreamCursorCheckpointKey.streamCursorCheckpointKey(STREAM, partition, GROUP),
                                                   StreamCursorCheckpointValue.streamCursorCheckpointValue(offset,

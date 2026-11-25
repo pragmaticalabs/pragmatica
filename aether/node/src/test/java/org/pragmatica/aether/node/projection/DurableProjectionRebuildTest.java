@@ -775,7 +775,8 @@ class DurableProjectionRebuildTest {
                                                          ConsumerAssignmentValue.consumerAssignmentValue(assignee,
                                                                                                          Epoch.epoch(1L, 1L, 1L),
                                                                                                          2L,
-                                                                                                         HlcTimestamp.ZERO));
+                                                                                                         HlcTimestamp.ZERO,
+                                                                                                         Option.none()));
     }
 
     private Option<Long> nextOffset() {
