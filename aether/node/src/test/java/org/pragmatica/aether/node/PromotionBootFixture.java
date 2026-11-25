@@ -86,6 +86,8 @@ final class PromotionBootFixture {
     static void awaitActive(AetherNode node) {
         LoneNodeGenesis.mintAsTheLeader(node);
         await(() -> node.nodeLifecycle().currentState() == NodeState.ACTIVE, "a single-node boot reaches ACTIVE");
+        // #3720: ACTIVE does not wait for the ownership record; the fill writes after it are stamped with its epoch
+        OwnerEpochApplied.await(node);
     }
 
     /// Polls `condition` until it holds or [#BOUND_MS] passes, then asserts it.

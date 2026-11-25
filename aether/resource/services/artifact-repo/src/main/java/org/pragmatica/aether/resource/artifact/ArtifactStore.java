@@ -1159,10 +1159,11 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// `NotCaughtUp` (#1777 track 2) is a read that met replicas still filling after a ring change: retried like
     /// an unreachable quorum, and never mistaken for an answer about the artifact. `WriteIndeterminate` (#1818,
     /// the owner's fence ruling) is a put that lost its quorum to owner-epoch fences and may have been applied:
-    /// retried like an unreachable quorum, stamped with the owner epoch current by then. `ReplicationUnresolved`
+    /// retried like an unreachable quorum, stamped with the owner epoch current by then; `OwnershipNotApplied` (#3720) is the
+    /// same put when this node stamped it before applying the ownership record, retried the same way. `ReplicationUnresolved`
     /// (#1777 track 1) is a node that has not yet read the committed replication factors: retried the same way.
     private static boolean isTransientDhtFailure(Cause cause) {
-        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached || cause instanceof DHTError.NotCaughtUp || cause instanceof DHTError.WriteIndeterminate || cause instanceof DHTError.ReplicationUnresolved;
+        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached || cause instanceof DHTError.NotCaughtUp || cause instanceof DHTError.WriteIndeterminate || cause instanceof DHTError.OwnershipNotApplied || cause instanceof DHTError.ReplicationUnresolved;
     }
 
     /// Bounded retry for the DHT READ/resolve path. Mirrors `dhtPutWithRetry` but guards

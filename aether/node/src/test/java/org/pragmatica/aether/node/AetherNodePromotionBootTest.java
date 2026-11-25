@@ -136,6 +136,8 @@ class AetherNodePromotionBootTest {
         }
 
         assertThat(node.nodeLifecycle().currentState()).as("a single-node boot reaches ACTIVE").isEqualTo(NodeState.ACTIVE);
+        // #3720: ACTIVE does not wait for the ownership record; the writes below are stamped with its epoch
+        OwnerEpochApplied.await(node);
     }
 
     private void awaitMemoryBelow(StorageFactory.StorageSetup setup, int blocks) throws InterruptedException {

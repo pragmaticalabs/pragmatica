@@ -142,12 +142,14 @@ final class FencedDurableEntity<K, S, C extends Mutator<S>> implements DurableEn
     /// translated to [EntityError.StaleOwnerEpoch]; any other backing failure becomes
     /// [EntityError.StorageFailed].
     private Promise<S> commit(K key, S next) {
+        var epoch = ownerEpoch.currentEpoch();
+
         return storage.putVersioned(dhtKey(key),
                                     serializer.encode(next),
                                     versionSequencer.incrementAndGet(),
-                                    ownerEpoch.currentEpochIncarnation(),
-                                    ownerEpoch.currentEpochTerm(),
-                                    ownerEpoch.currentEpochCounter())
+                                    epoch.incarnation(),
+                                    epoch.rabiaTerm(),
+                                    epoch.localCounter())
                       .map(_ -> next)
                       .mapError(cause -> translateCommitFailure(key, cause));
     }
