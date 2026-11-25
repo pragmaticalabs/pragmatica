@@ -47,6 +47,7 @@ class LabelAgreementTest {
 
     private final Map<NodeId, Map<String, String>> handshaken = new ConcurrentHashMap<>();
     private final List<Set<NodeId>> notices = new CopyOnWriteArrayList<>();
+    private final AtomicInteger recoveries = new AtomicInteger();
 
     private final AtomicInteger lookups = new AtomicInteger();
 
@@ -78,6 +79,10 @@ class LabelAgreementTest {
                                              peersNeeded,
                                              missing -> {
                                                  notices.add(missing);
+                                                 return Unit.unit();
+                                             },
+                                             () -> {
+                                                 recoveries.incrementAndGet();
                                                  return Unit.unit();
                                              });
     }
@@ -160,6 +165,34 @@ class LabelAgreementTest {
 
         assertThat(pending.isResolved()).isFalse();
         assertThat(notices).containsExactly(Set.of(B));
+    }
+
+    /// The recovery closes the notice: told once when the episode that noticed ends with the quorum, never otherwise.
+    @Test
+    void episodeThatNoticed_endsWithTheQuorum_tellsTheRecoveryOnce() {
+        handshaken.put(A, hello("on"));
+
+        var pending = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, agreement("on", 2));
+
+        PollUntil.pollUntil(notices::size, count -> count >= 1, Duration.ofSeconds(5)).assertMet("the notice");
+        assertThat(recoveries.get()).as("no recovery while the quorum is incomplete").isZero();
+
+        handshaken.put(B, hello("on"));
+
+        assertThat(pending.await(AWAIT).isSuccess()).isTrue();
+        assertThat(recoveries.get()).as("one recovery, after the notice").isEqualTo(1);
+        assertThat(notices).hasSize(1);
+    }
+
+    /// No notice, no recovery: a quorum seen at the first poll closes nothing.
+    @Test
+    void episodeThatNeverNoticed_tellsNoRecovery() {
+        handshaken.put(A, hello("on"));
+        handshaken.put(B, hello("on"));
+
+        assertThat(JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement("on", 2)).await(AWAIT).isSuccess()).isTrue();
+        assertThat(notices).isEmpty();
+        assertThat(recoveries.get()).isZero();
     }
 
     /// A refusal outranks waiting: a mismatch is reported at once even while the quorum is incomplete.

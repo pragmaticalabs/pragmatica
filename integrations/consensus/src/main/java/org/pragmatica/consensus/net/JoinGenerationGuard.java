@@ -146,8 +146,14 @@ public interface JoinGenerationGuard {
         var quorumSeen = agreement.reached(members, labelsOf);
 
         return (allHandshaken || pastDeadline) && quorumSeen
-               ? promise.succeed(Unit.unit())
+               ? settle(agreement, promise)
                : reschedule(members, labelsOf, deadlineNanos, own, agreement, promise, pastDeadline);
+    }
+
+    private static Promise<Unit> settle(LabelAgreement agreement, Promise<Unit> promise) {
+        var _ = agreement.noticeComplete();
+
+        return promise.succeed(Unit.unit());
     }
 
     private static Promise<Unit> reschedule(Set<NodeId> members,

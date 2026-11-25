@@ -1272,9 +1272,13 @@ public enum OperatorWarningCode {
     /// guard casts no ballot until a quorum has handshaken and agrees on every label the cluster requires to agree, and it waits
     /// without a deadline, because without a quorum there is no election to delay. Raised once per wait episode, when the join wait
     /// bound has passed with the quorum still incomplete. Subject is the waiting node; the message names the core peers not yet
-    /// handshaken. A peer whose label differs is not waited for: the node refuses to start and says so. No recovery code: the episode
-    /// ends in the node starting, or refusing, and either is on the log.
+    /// handshaken. A peer whose label differs is not waited for: the node refuses to start and says so. Closed by
+    /// [#CONSENSUS_QUORUM_COMPLETE].
     CONSENSUS_QUORUM_INCOMPLETE("consensus-quorum-incomplete", "consensus", WarningLevel.WARNING),
+    /// The recovery of [#CONSENSUS_QUORUM_INCOMPLETE], same subject (#3525): the wait that raised the warning ended because a quorum of
+    /// the core has now handshaken and agrees on every label the cluster requires to agree, so the node goes on to sync. Raised only
+    /// after the warning was, once per wait episode.
+    CONSENSUS_QUORUM_COMPLETE("consensus-quorum-complete", "consensus", WarningLevel.INFO, CONSENSUS_QUORUM_INCOMPLETE),
     /// The recovery of [#ROUTE_UNPUBLISH_AWAIT_EXPIRED], same subject: the removal that outlived the bound has settled (success or failure).
     /// Published by the node that raised the warning, only after its published warning.
     ROUTE_UNPUBLISH_AWAIT_SETTLED("route-unpublish-await-settled",

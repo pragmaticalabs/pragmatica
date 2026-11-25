@@ -658,6 +658,18 @@ public class RabiaEngine<C extends Command> {
                                       missing.stream().map(NodeId::id).toList());
     }
 
+    /// Raises [OperatorWarningCode#CONSENSUS_QUORUM_COMPLETE], the recovery of [#raiseJoinQuorumIncomplete] (#3525): the wait that
+    /// raised the warning has ended with a quorum handshaken and agreeing. The guard calls this only after the warning was raised.
+    public Unit raiseJoinQuorumComplete() {
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE,
+                                      self.id(),
+                                      "Node {} has handshaken a quorum of the core that agrees on the labels every core member must "
+                                     + "share; the wait for core peers is over (#3525).",
+                                      self);
+    }
+
     /// Binds this engine's operator warnings to its node's event log (#1654). Until called, they are logged only.
     @Contract
     public void useOperatorWarningSink(OperatorWarningSink sink) {

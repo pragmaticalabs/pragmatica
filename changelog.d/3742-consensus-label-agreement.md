@@ -8,4 +8,4 @@
   names no label.
 - **No ballot before a handshaken quorum that agrees.** With agreeing labels set, the join guard has no deadline pass-through for
   agreement: it waits until a quorum of the core has handshaken, and raises the operator warning `consensus-quorum-incomplete`
-  once per wait episode, naming the core peers not yet handshaken. The wire-generation cold-start pass is unchanged.
+  once per wait episode, naming the core peers not yet handshaken, and its recovery `consensus-quorum-complete` when that wait ends with the quorum. The wire-generation cold-start pass is unchanged.

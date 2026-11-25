@@ -23,6 +23,7 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
@@ -37,18 +38,21 @@ import org.pragmatica.lang.Unit;
 /// - Not yet handshaken: unknown, never a mismatch. Unlike the wire-generation wait there is no deadline pass-through: the guard
 ///   admits only once `peersNeeded` core peers (a quorum, this node counted) have handshaken, because a node that has not seen a
 ///   quorum cannot know it agrees with one. Without a quorum there is no election, so waiting costs no availability; once the
-///   wait bound has passed with the quorum incomplete, `onIncomplete` is told which peers are still missing, once per wait episode.
+///   wait bound has passed with the quorum incomplete, `onIncomplete` is told which peers are still missing, once per wait episode,
+///   and `onComplete` is told when that same episode ends with the quorum seen (its recovery; never without the notice).
 /// - No agreeing labels: nothing to agree on, so nothing to wait for ([#none]).
 ///
 /// @param own          this node's labels
 /// @param labels       the labels every core member must share
 /// @param peersNeeded  how many other core peers must have handshaken (a quorum of the core, less this node)
 /// @param onIncomplete told the core peers not yet handshaken; the engine's operator warning
+/// @param onComplete   told that an episode that raised `onIncomplete` has seen its quorum; the engine's operator recovery
 public record LabelAgreement(Map<String, String> own,
                              Set<String> labels,
                              int peersNeeded,
-                             Fn1<Unit, Set<NodeId>> onIncomplete) {
-    private static final LabelAgreement NONE = new LabelAgreement(Map.of(), Set.of(), 0, _ -> Unit.unit());
+                             Fn1<Unit, Set<NodeId>> onIncomplete,
+                             Fn0<Unit> onComplete) {
+    private static final LabelAgreement NONE = new LabelAgreement(Map.of(), Set.of(), 0, _ -> Unit.unit(), Unit::unit);
 
     public LabelAgreement {
         own = Map.copyOf(own);
@@ -58,8 +62,9 @@ public record LabelAgreement(Map<String, String> own,
     public static LabelAgreement labelAgreement(Map<String, String> own,
                                                 Set<String> labels,
                                                 int peersNeeded,
-                                                Fn1<Unit, Set<NodeId>> onIncomplete) {
-        return new LabelAgreement(own, labels, peersNeeded, onIncomplete);
+                                                Fn1<Unit, Set<NodeId>> onIncomplete,
+                                                Fn0<Unit> onComplete) {
+        return new LabelAgreement(own, labels, peersNeeded, onIncomplete, onComplete);
     }
 
     /// Nothing to agree on: no label is compared and no quorum is awaited.
@@ -67,11 +72,22 @@ public record LabelAgreement(Map<String, String> own,
         return NONE;
     }
 
-    /// This agreement bound to one wait episode: `onIncomplete` fires at most once, however many polls find the quorum incomplete.
+    /// This agreement bound to one wait episode: `onIncomplete` fires at most once, however many polls find the quorum incomplete,
+    /// and `onComplete` fires at most once, and only if `onIncomplete` did.
     LabelAgreement episode() {
         var noticed = new AtomicBoolean();
 
-        return new LabelAgreement(own, labels, peersNeeded, missing -> noticeOnce(noticed, onIncomplete, missing));
+        return new LabelAgreement(own,
+                                  labels,
+                                  peersNeeded,
+                                  missing -> noticeOnce(noticed, onIncomplete, missing),
+                                  () -> closeNotice(noticed, onComplete));
+    }
+
+    private static Unit closeNotice(AtomicBoolean noticed, Fn0<Unit> recovery) {
+        return noticed.compareAndSet(true, false)
+               ? recovery.apply()
+               : Unit.unit();
     }
 
     private static Unit noticeOnce(AtomicBoolean noticed, Fn1<Unit, Set<NodeId>> notice, Set<NodeId> missing) {
@@ -92,6 +108,11 @@ public record LabelAgreement(Map<String, String> own,
     /// Whether enough core peers have handshaken for this node to know it agrees with a quorum. Vacuous without agreeing labels.
     boolean reached(Set<NodeId> members, Fn1<Option<Map<String, String>>, NodeId> labelsOf) {
         return labels.isEmpty() || handshaken(members, labelsOf) >= peersNeeded;
+    }
+
+    /// Tells `onComplete` that the wait is over with the quorum seen.
+    Unit noticeComplete() {
+        return onComplete.apply();
     }
 
     /// Tells `onIncomplete` which members have not handshaken.

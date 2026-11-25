@@ -196,7 +196,10 @@ class RabiaEngineLabelAgreementTest {
         waiting.handshaken(peer);
 
         assertThat(await(waiting::syncStarted)).as("the quorum agrees, so the node syncs").isTrue();
-        assertThat(waiting.warnings).hasSize(1);
+        assertThat(waiting.warnings.stream().map(OperatorWarning::code))
+            .as("the warning is closed by its recovery, once, before the node syncs")
+            .containsExactly(OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE, OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE);
+        assertThat(waiting.warnings.getLast().subject()).isEqualTo(waiting.warnings.getFirst().subject());
     }
 
     /// A new wait episode warns again: the first episode ends with the quorum, a later one (a fresh guard run) waits again
@@ -211,9 +214,11 @@ class RabiaEngineLabelAgreementTest {
                                               id -> Option.option(view.get(id)),
                                               SHORT_WAIT,
                                               JoinGenerationGuard.WIRE_GENERATION,
-                                              LabelAgreement.labelAgreement(own, Set.of(LABEL), 1, waiting.engine::raiseJoinQuorumIncomplete));
+                                              LabelAgreement.labelAgreement(own, Set.of(LABEL), 1,
+                                                                         waiting.engine::raiseJoinQuorumIncomplete,
+                                                                         waiting.engine::raiseJoinQuorumComplete));
 
-        assertThat(await(() -> waiting.warnings.size() == 1)).isTrue();
+        assertThat(await(() -> waiting.count(OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE) == 1)).isTrue();
         view.put(N2, helloLabels("a"));
         assertThat(first.await(TimeSpan.timeSpan(5).seconds()).isSuccess()).isTrue();
         view.clear();
@@ -222,9 +227,13 @@ class RabiaEngineLabelAgreementTest {
                                   id -> Option.option(view.get(id)),
                                   SHORT_WAIT,
                                   JoinGenerationGuard.WIRE_GENERATION,
-                                  LabelAgreement.labelAgreement(own, Set.of(LABEL), 1, waiting.engine::raiseJoinQuorumIncomplete));
+                                  LabelAgreement.labelAgreement(own, Set.of(LABEL), 1,
+                                                                         waiting.engine::raiseJoinQuorumIncomplete,
+                                                                         waiting.engine::raiseJoinQuorumComplete));
 
-        assertThat(await(() -> waiting.warnings.size() == 2)).as("the second episode raises its own warning").isTrue();
+        assertThat(await(() -> waiting.count(OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE) == 2)).as("the second episode raises its own warning")
+                                                                                                    .isTrue();
+        assertThat(waiting.count(OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE)).as("the first episode, and only it, was closed").isEqualTo(1);
     }
 
     /// Agreeing labels equal everywhere: startup proceeds exactly as without the labels.
@@ -293,7 +302,8 @@ class RabiaEngineLabelAgreementTest {
             var agreement = LabelAgreement.labelAgreement(helloLabels(labelValue),
                                                           Set.of(LABEL),
                                                           1,
-                                                          engine::raiseJoinQuorumIncomplete);
+                                                          engine::raiseJoinQuorumIncomplete,
+                                                          engine::raiseJoinQuorumComplete);
             var others = Set.of(N1, N2, N3);
 
             engine.preSyncCheck(() -> JoinGenerationGuard.admit(without(others, self),
@@ -302,6 +312,10 @@ class RabiaEngineLabelAgreementTest {
                                                                 JoinGenerationGuard.WIRE_GENERATION,
                                                                 agreement));
             this.started = engine.start();
+        }
+
+        long count(OperatorWarningCode code) {
+            return warnings.stream().filter(warning -> warning.code() == code).count();
         }
 
         private static Set<NodeId> without(Set<NodeId> all, NodeId self) {
