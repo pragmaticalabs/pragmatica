@@ -974,7 +974,11 @@ public class DataConverter {
                                                                                                                                                                                                                                                                               oid,
                                                                                                                                                                                                                                                                               value,
                                                                                                                                                                                                                                                                               binary);
-            default -> throw new IllegalArgumentException("Unknown conversion target: " + oid);
+            // #2501: every other type is read as the server's own text: no Java type models an interval (months and days),
+            // a range (bounds and inclusivity) or an inet without loss. The types that reach this branch are exactly the ones
+            // the server sends in text format (`Oid.supportsBinary` lists the binary ones, all handled above), and
+            // `UNSPECIFIED` stands for every type the driver has no `Oid` for (inet, cidr, ranges, jsonb[], enums, ...).
+            default -> toString(oid, value, binary);
         };
     }
 
