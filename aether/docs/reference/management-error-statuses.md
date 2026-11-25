@@ -18,7 +18,7 @@ A publish is not idempotent. On the stream publish route a raw stream engine ref
 
 ## Statuses that changed
 
-95 causes are listed: 85 answered 500 and now answer the status shown, and 10 are new, with Before = n/a (new): they did not exist when this table was written (2026-10-26), so they never answered 500 on a management route. Everything not listed answers 500, as before: a cause the code maps to any other status has a row, which `ManagementErrorStatusesDocTest` checks against `StreamErrorStatus`.
+96 causes are listed: 85 answered 500 and now answer the status shown, and 11 are new, with Before = n/a (new): they did not exist when this table was written (2026-10-26), so they never answered 500 on a management route. Everything not listed answers 500, as before: a cause the code maps to any other status has a row, which `ManagementErrorStatusesDocTest` checks against `StreamErrorStatus`.
 
 ### Plain causes (42)
 
@@ -73,7 +73,7 @@ A publish is not idempotent. On the stream publish route a raw stream engine ref
 |---|---|---|
 | `ConsumerGroupCoordinator$CoordinatorError#NOT_LEADER` | Internal Server Error | Conflict |
 
-### Raw stream engine errors (52), every route except publish
+### Raw stream engine errors (53), every route except publish
 
 | Cause | Before | After |
 |---|---|---|
@@ -108,6 +108,7 @@ A publish is not idempotent. On the stream publish route a raw stream engine ref
 | `org.pragmatica.aether.stream.StreamError$OwnerLeaseLapsedBeforeAck` | n/a (new) | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$OwnerNotActivated` | Internal Server Error | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$OwnershipMovedBeforeAck` | n/a (new) | Service Unavailable |
+| `org.pragmatica.aether.stream.StreamError$OwnershipNotApplied` | n/a (new) | Service Unavailable |
 | `org.pragmatica.aether.stream.StreamError$PartitionCapExceeded` | Internal Server Error | Bad Request |
 | `org.pragmatica.aether.stream.StreamError$PartitionCeilingExceeded` | Internal Server Error | Bad Request |
 | `org.pragmatica.aether.stream.StreamError$PartitionFailStopped` | n/a (new) | Service Unavailable |
