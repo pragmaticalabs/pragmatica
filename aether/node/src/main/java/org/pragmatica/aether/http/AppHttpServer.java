@@ -75,6 +75,7 @@ import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.ProblemDetail;
+import org.pragmatica.http.ProblemDetailJson;
 import org.pragmatica.http.routing.MultipartError;
 import org.pragmatica.http.routing.MultipartParser;
 import org.pragmatica.http.routing.UploadSpec;
@@ -86,7 +87,6 @@ import org.pragmatica.http.server.BodyRateLimit;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
-import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
@@ -1390,7 +1390,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                local);
 
         if (needsPartCheck(request, uploadSpecOf(local, routeTable, method, normalizedPath))) {
-            partLimitExecutor.submit(() -> runGuarded(scoped, response, requestId))
+            partLimitExecutor.submit(() -> runGuarded(scoped, response, path, requestId))
                              .onFailure(cause -> refuseBusy(cause, response, path, requestId));
         } else {
             scoped.run();
@@ -1413,12 +1413,16 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// The executor boundary: what a worker throws is answered 500 here, because nothing above it would answer.
     @Contract
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})  // executor boundary: an exception must be answered, not lost with the worker
-    private void runGuarded(Runnable task, ResponseWriter response, String requestId) {
+    private void runGuarded(Runnable task, ResponseWriter response, String path, String requestId) {
         try {
             task.run();
         } catch (Exception e) {
             log.error("[{}] Error dispatching a multipart request", requestId, e);
-            sendPlainError(response, HttpStatus.INTERNAL_SERVER_ERROR, requestId);
+            sendProblem(response,
+                        HttpStatus.INTERNAL_SERVER_ERROR,
+                        HttpStatus.INTERNAL_SERVER_ERROR.message(),
+                        path,
+                        requestId);
         }
     }
 
@@ -2293,16 +2297,12 @@ class AppHttpServerAdapter implements AppHttpServer {
                  httpCtx.path(),
                  cause.message());
         recordSecurityDenial(cause, httpCtx.path(), request.requestId(), method);
-        JSON_MAPPER.writeAsString(problem)
-                   .onSuccess(json -> sendForwardSuccess(network,
-                                                         request,
-                                                         ser,
-                                                         HttpResponseData.httpResponseData(status.code(),
-                                                                                           refusalHeaders(status, cause),
-                                                                                           json.getBytes(StandardCharsets.UTF_8))))
-                   .onFailure(serializationFailure -> sendForwardError(network,
-                                                                       request,
-                                                                       "Forwarded request refused: " + statusAndMessage.clientMessage()));
+        sendForwardSuccess(network,
+                           request,
+                           ser,
+                           HttpResponseData.httpResponseData(status.code(),
+                                                             refusalHeaders(status, cause),
+                                                             ProblemDetailJson.CODEC.encode(problem)));
     }
 
     private Map<String, String> refusalHeaders(HttpStatus status, Cause cause) {
@@ -2433,17 +2433,16 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                   RESPONSE_TOO_LARGE_DETAIL,
                                                   "",
                                                   request.requestId());
+        var response = HttpResponseData.httpResponseData(HttpStatus.BAD_GATEWAY.code(),
+                                                         Map.of("Content-Type", "application/problem+json"),
+                                                         ProblemDetailJson.CODEC.encode(problem));
 
-        JSON_MAPPER.writeAsString(problem)
-                   .map(json -> HttpResponseData.httpResponseData(HttpStatus.BAD_GATEWAY.code(),
-                                                                  Map.of("Content-Type", "application/problem+json"),
-                                                                  json.getBytes(StandardCharsets.UTF_8)))
-                   .flatMap(response -> Result.lift1(serializer.unwrap()::encode,
-                                                     response))
-                   .onSuccess(encoded -> sendForwardResponse(network,
-                                                             request,
-                                                             forwardSuccess(request, encoded)))
-                   .onFailure(cause -> sendForwardError(network, request, RESPONSE_TOO_LARGE_DETAIL));
+        Result.lift1(serializer.unwrap()::encode,
+                     response)
+              .onSuccess(encoded -> sendForwardResponse(network,
+                                                        request,
+                                                        forwardSuccess(request, encoded)))
+              .onFailure(cause -> sendForwardError(network, request, RESPONSE_TOO_LARGE_DETAIL));
     }
 
     static final String RESPONSE_TOO_LARGE_DETAIL = "Response too large to forward from the node that served it";
@@ -2515,8 +2514,6 @@ class AppHttpServerAdapter implements AppHttpServer {
         httpForwarder.onPresent(fwd -> fwd.onSelfShutdown(selfShutdown));
     }
 
-    private static final JsonMapper JSON_MAPPER = JsonMapper.defaultJsonMapper();
-
     private static final org.pragmatica.http.ContentType CONTENT_TYPE_PROBLEM = org.pragmatica.http.ContentType.contentType("application/problem+json",
                                                                                                                             org.pragmatica.http.ContentCategory.JSON);
 
@@ -2574,22 +2571,12 @@ class AppHttpServerAdapter implements AppHttpServer {
                              String requestId) {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
 
-        JSON_MAPPER.writeAsString(problem)
-                   .onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                                              .header("X-Node-Id",
-                                                      selfNodeId.id())
-                                              .write(toServerStatus(status.code()),
-                                                     json.getBytes(StandardCharsets.UTF_8),
-                                                     CONTENT_TYPE_PROBLEM))
-                   .onFailure(cause -> handleProblemSerializationFailure(response, status, requestId, cause));
-    }
-
-    private void handleProblemSerializationFailure(ResponseWriter response,
-                                                   HttpStatus status,
-                                                   String requestId,
-                                                   Cause cause) {
-        log.error("[{}] Failed to serialize ProblemDetail: {}", requestId, cause.message());
-        sendPlainError(response, status, requestId);
+        response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                .header("X-Node-Id",
+                        selfNodeId.id())
+                .write(toServerStatus(status.code()),
+                       ProblemDetailJson.CODEC.encode(problem),
+                       CONTENT_TYPE_PROBLEM);
     }
 
     private static final int MAX_WARN_BODY_LENGTH = 200;
@@ -2671,17 +2658,6 @@ class AppHttpServerAdapter implements AppHttpServer {
         }
 
         return org.pragmatica.http.ContentCategory.BINARY;
-    }
-
-    private void sendPlainError(ResponseWriter response, HttpStatus status, String requestId) {
-        var content = "{\"error\":\"" + status.message() + "\"}";
-
-        response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                .header("X-Node-Id",
-                        selfNodeId.id())
-                .write(toServerStatus(status.code()),
-                       content.getBytes(StandardCharsets.UTF_8),
-                       CommonContentType.APPLICATION_JSON);
     }
 
     private static org.pragmatica.http.HttpStatus toServerStatus(int code) {
