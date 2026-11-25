@@ -1739,7 +1739,7 @@ commands are LOCAL: they describe, and act on, the node the CLI is pointed at.
 Show every consumer group over a durable topic — one per durable subscriber method, identified as the
 runtime identifies it (`artifactBase#method`) — and, per partition, which node consumes it and which
 owns it, the consensus-committed cursor with its rewind epoch, the live cursor where this node runs the
-consumer, and the projection state (`LIVE` / `REBUILDING`) where this node hosts the group's projection.
+consumer, and the projection state (`LIVE` / `REBUILDING`) where this node hosts the group's projection (on a node other than the consumer, `LIVE` only means the group's cursor passed the captured head, not that the local model is complete; #3736).
 
 ```bash
 aether topics groups com.example:projection-events:1.0.0
@@ -1764,7 +1764,7 @@ aether topics rebuild com.example:projection-events:1.0.0 'com.example:orders-sl
 
 The answer carries the new generation, the rewind token and the captured range per partition. Follow
 progress with `aether topics groups`: the partition reads `REBUILDING` with `nextReplayOffset` advancing,
-then `LIVE`; `committedEpoch` equals the returned token once the rewound consumer has checkpointed. A
+then `LIVE` (which off the consumer node says only that the group's cursor passed the captured head; read the model on the consumer, #3736); `committedEpoch` equals the returned token once the rewound consumer has checkpointed. A
 replay event that dead-letters is skipped and stays out of the rebuilt model until redriven.
 
 See [Management API — Rebuild Projection](management-api.md#rebuild-projection).

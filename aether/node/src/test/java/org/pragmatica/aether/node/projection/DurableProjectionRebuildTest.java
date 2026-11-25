@@ -391,7 +391,8 @@ class DurableProjectionRebuildTest {
     /// partition then moves to another assignee: this node's consumer is gone (detached first, like the zombie test, so
     /// nothing local commits), the committed assignment names another node, and that node's consumer resumes under the
     /// rewind's epoch. Its accepted checkpoints are the group's committed cursor, and the store hosted here follows it:
-    /// partway through it stays REBUILDING at that cursor, and past the captured head it goes LIVE.
+    /// partway through it stays REBUILDING at that cursor, and past the captured head it goes LIVE. LIVE is not a complete
+    /// model (#3736): the model here is still empty, pinned below.
     @Test
     void assignmentMovedAwayMidRebuild_oldStoreLeavesRebuilding_whenTheGroupsCommittedCursorPassesTheHead() throws InterruptedException {
         publishAll(1, 6);
@@ -416,6 +417,10 @@ class DurableProjectionRebuildTest {
         assertThat(nextOffset()).as("a refused put does not move the store").isEqualTo(Option.some(3L));
         applyNow(checkpoint(6L, rewound));
         awaitLive(10_000);
+        assertThat(model()).as("#3736 tripwire on the CURRENT behaviour: LIVE means the rebuild is over for the group, not that this"
+                               + " node's model is complete; the old store went LIVE over the model the rebuild's reset cleared."
+                               + " When #3736 lands, flip this to the rebuilt model")
+                  .isEqualTo(Option.none());
     }
 
     /// #1400: a store that already finished its rebuild, on a node whose assignment then moved, is not disturbed by the

@@ -41,6 +41,10 @@ import org.slf4j.LoggerFactory;
 /// old store leaves REBUILDING once the group's committed cursor passes the captured head. A refused put (a stale
 /// token, an older epoch) emits no notification, so a zombie is never reported this way.
 ///
+/// **Limit (#3736):** LIVE here means the rebuild is over for the group, not that this node's model is complete. The old
+/// store goes LIVE over a model the rebuild's reset cleared, and leaving REBUILDING is not model completeness (`read()`
+/// never gates); nothing in this change fixes that, #3736 tracks it.
+///
 /// The hook never fails, delays or reorders the commit: the report hangs off the commit's own promise,
 /// its failure is absorbed — logged once per `(group, partition)`, counted on [#reportFailures] — and the
 /// commit's outcome is returned unchanged. A projection that throws does not break its group's cursor.
@@ -146,8 +150,8 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
 
     /// #1400: routed every `ValuePut`; anything that is not a cursor checkpoint is ignored. The applier emits a
     /// `ValuePut` only for a put it accepted, so what is reported here is the group's COMMITTED cursor. The rewind
-    /// record itself is reported too and moves nothing: it sits at the replay's `fromOffset`, which no partition's
-    /// next offset is below. Total, like [#reportGuarded]: a throwing report would break the apply that observes it.
+    /// record itself is reported too and moves nothing: its offset equals the replay's `fromOffset`, and
+    /// `cursorCommitted` moves a store only on a cursor ABOVE the partition's next offset. Total, like [#reportGuarded]: a throwing report would break the apply that observes it.
     @Contract
     public void onCheckpointPut(ValuePut<?, ?> put) {
         if (put.cause().key() instanceof StreamCursorCheckpointKey key && put.cause().value() instanceof StreamCursorCheckpointValue value) {
