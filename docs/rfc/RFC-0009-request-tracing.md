@@ -9,6 +9,8 @@ Updated: 2026-02-20
 Affects: [aether-invoke, aether-node, forge-core]
 ---
 
+> **Superseded (aspect removal, #3649).** References below to `DynamicAspectInterceptor` and `DynamicAspectRegistry` are **superseded**: the `DynamicAspect` system was removed. Instrumentation now runs through `ObservabilityStrategyCell` at the dispatch seams (see RFC-0010).
+
 > **Note:** This RFC has been superseded by [RFC-0010: Unified Invocation Observability](RFC-0010-unified-invocation-observability.md), which unifies request tracing with depth-based automatic logging into a single invocation tree system.
 
 ## Summary

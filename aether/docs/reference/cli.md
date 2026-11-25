@@ -923,23 +923,6 @@ aether thresholds set cpu -w 0.7 -c 0.9
 aether thresholds remove cpu
 ```
 
-#### aspects
-
-Manage dynamic aspects on slice methods:
-
-```bash
-# List all configured aspects
-aether aspects list
-
-# Set aspect mode on a method
-aether aspects set org.example:my-slice:1.0.0#processOrder LOG_AND_METRICS
-
-# Remove aspect configuration
-aether aspects remove org.example:my-slice:1.0.0#processOrder
-```
-
-Available modes: `NONE`, `LOG`, `METRICS`, `LOG_AND_METRICS`
-
 #### traces
 
 View distributed invocation traces:

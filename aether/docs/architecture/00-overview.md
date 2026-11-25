@@ -72,7 +72,7 @@ Every node runs the same components. Leader-only components activate when a node
 |----------|-----------|-------------|
 | **State** | KVStore (Rabia), LeaderManager, KVNotificationRouter | - |
 | **Deployment** | NodeDeploymentManager, RollingUpdateManager, RollbackManager | ClusterDeploymentManager |
-| **Invocation** | SliceInvoker, InvocationHandler, DynamicAspectInterceptor | - |
+| **Invocation** | SliceInvoker, InvocationHandler, ObservabilityStrategyCell | - |
 | **HTTP** | AppHttpServer, HttpRouteRegistry, ManagementServer | - |
 | **Slices** | SliceStore, SliceRegistry, per-slice ClassLoaders | - |
 | **Network** | ClusterNetwork (Netty), TopologyManager, MessageRouter | - |
@@ -179,7 +179,7 @@ See [05-worker-pools.md](05-worker-pools.md) for details.
 | [04-networking.md](04-networking.md) | Cluster transport, mTLS, gossip encryption, SWIM |
 | [05-worker-pools.md](05-worker-pools.md) | Two-layer topology, governors, SWIM protocol, scaling |
 | [06-http-routing.md](06-http-routing.md) | HTTP request routing, forwarding, route self-registration |
-| [07-observability.md](07-observability.md) | Metrics pipeline, alerting, dynamic aspects, Prometheus |
+| [07-observability.md](07-observability.md) | Metrics pipeline, alerting, runtime-switchable observability, Prometheus |
 | [08-scaling.md](08-scaling.md) | Decision tree controller, control loop |
 | [09-storage.md](09-storage.md) | DHT, artifact repository, consistent hashing, anti-entropy |
 | [10-security.md](10-security.md) | mTLS, gossip encryption, RBAC, API keys |

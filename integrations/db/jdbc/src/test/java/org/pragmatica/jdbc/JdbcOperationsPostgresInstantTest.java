@@ -26,6 +26,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.postgresql.ds.PGSimpleDataSource;
+import org.pragmatica.lang.Option;
 import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.containers.PostgreSQLContainer;
 
@@ -36,7 +37,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /// natively and cannot see the defect). pgjdbc refuses `setObject(Instant)` outright ("Can't infer the SQL type"); the
 /// binding that replaces it must also not depend on the JVM time zone, for a `timestamptz` column AND a `timestamp`
 /// (without time zone) column, so the JVM default zone is forced to Asia/Tokyo (UTC+9, no DST) for the whole class.
-/// Self-skips when no Docker daemon is reachable.
+/// The read side ([JdbcResults#getInstant]) is pinned the same way: a bound `Instant` reads back equal from both column
+/// types, and a column stored by plain SQL (not by `bind`) reads as the same instant, so the read does not borrow its
+/// correctness from the write. Self-skips when no Docker daemon is reachable.
 class JdbcOperationsPostgresInstantTest {
     private static final Instant INSTANT = Instant.parse("2026-01-02T03:04:05.123456Z");
     private static final String UTC_WALL = "2026-01-02 03:04:05.123456";
@@ -105,6 +108,68 @@ class JdbcOperationsPostgresInstantTest {
                           .unwrap();
 
         assertThat(matches).isEqualTo(1L);
+    }
+
+    @Test
+    void getInstant_afterBind_roundTripsTheSameInstantFromBothColumnTypesUnderTokyoJvm() {
+        jdbc.update("INSERT INTO instants VALUES (?, ?)", INSTANT, INSTANT).await().unwrap();
+
+        var read = jdbc.queryOne("SELECT tz, ts FROM instants", InstantPair::fromColumnIndexes).await().unwrap();
+
+        assertThat(read).isEqualTo(new InstantPair(Option.option(INSTANT), Option.option(INSTANT)));
+    }
+
+    @Test
+    void getInstant_ofSqlWrittenColumns_readsTheUtcInstantNotTheJvmWallClock() {
+        jdbc.update("INSERT INTO instants VALUES ('2026-01-02 03:04:05.123456+00', '2026-01-02 03:04:05.123456')")
+            .await()
+            .unwrap();
+
+        var read = jdbc.queryOne("SELECT tz, ts FROM instants", InstantPair::fromColumnIndexes).await().unwrap();
+
+        assertThat(read).isEqualTo(new InstantPair(Option.option(INSTANT), Option.option(INSTANT)));
+    }
+
+    @Test
+    void getInstant_byColumnLabel_readsTheSameInstants() {
+        jdbc.update("INSERT INTO instants VALUES (?, ?)", INSTANT, INSTANT).await().unwrap();
+
+        var read = jdbc.queryOne("SELECT tz, ts FROM instants", InstantPair::fromColumnLabels).await().unwrap();
+
+        assertThat(read).isEqualTo(new InstantPair(Option.option(INSTANT), Option.option(INSTANT)));
+    }
+
+    @Test
+    void getInstant_ofSqlNull_isNone() {
+        jdbc.update("INSERT INTO instants VALUES (NULL, NULL)").await().unwrap();
+
+        var byIndex = jdbc.queryOne("SELECT tz, ts FROM instants", InstantPair::fromColumnIndexes).await().unwrap();
+        var byLabel = jdbc.queryOne("SELECT tz, ts FROM instants", InstantPair::fromColumnLabels).await().unwrap();
+
+        assertThat(byIndex).isEqualTo(new InstantPair(Option.none(), Option.none()));
+        assertThat(byLabel).isEqualTo(new InstantPair(Option.none(), Option.none()));
+    }
+
+    @Test
+    void premise_pgjdbcGetObjectInstant_isUnsupported() {
+        jdbc.update("INSERT INTO instants VALUES (?, ?)", INSTANT, INSTANT).await().unwrap();
+
+        var outcome = jdbc.queryOne("SELECT tz FROM instants", rows -> rows.getObject(1, Instant.class))
+                          .await()
+                          .fold(cause -> cause.message(), _ -> "succeeded");
+
+        assertThat(outcome).as("tripwire for the #2040 premise: if pgjdbc starts supporting it, revisit JdbcResults")
+                           .contains("Instant");
+    }
+
+    private record InstantPair(Option<Instant> tz, Option<Instant> ts) {
+        static InstantPair fromColumnIndexes(java.sql.ResultSet rows) throws SQLException {
+            return new InstantPair(JdbcResults.getInstant(rows, 1), JdbcResults.getInstant(rows, 2));
+        }
+
+        static InstantPair fromColumnLabels(java.sql.ResultSet rows) throws SQLException {
+            return new InstantPair(JdbcResults.getInstant(rows, "tz"), JdbcResults.getInstant(rows, "ts"));
+        }
     }
 
     private static void assertStoredAsUtc() {
