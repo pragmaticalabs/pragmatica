@@ -251,12 +251,12 @@ class PartialConfigTest {
     void partialConfig_acceptsEveryDocumentedSeverityToken() {
         layer("""
               [lint.rules]
-              A = "error"
-              B = "WARN"
-              C = "warning"
-              D = "info"
-              E = "off"
-              F = "Disabled"
+              JBCT-RET-01 = "error"
+              JBCT-RET-02 = "WARN"
+              JBCT-RET-04 = "warning"
+              JBCT-RET-05 = "info"
+              JBCT-RET-07 = "off"
+              JBCT-BND-01 = "Disabled"
               """).onFailure(PartialConfigTest::fail)
                   .onSuccess(layer -> assertThat(layer.lint().rules()).hasSize(6));
     }

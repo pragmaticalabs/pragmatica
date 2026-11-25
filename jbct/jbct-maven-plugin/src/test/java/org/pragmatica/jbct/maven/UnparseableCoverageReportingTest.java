@@ -93,6 +93,9 @@ class UnparseableCoverageReportingTest {
         var project = new MavenProject();
 
         Files.writeString(base.resolve("pom.xml"), "<project/>");
+        // The fixture files sit in the default package, which no basePackage covers: an infrastructure module never
+        // reads the key (#2526), so these tests keep judging the code rules only.
+        Files.writeString(base.resolve("jbct.toml"), "[lint]\nmode = \"infrastructure\"\n");
         project.setArtifactId("fixture");
         project.setFile(base.resolve("pom.xml")
                             .toFile());

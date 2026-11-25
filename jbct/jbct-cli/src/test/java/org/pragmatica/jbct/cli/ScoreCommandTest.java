@@ -54,6 +54,7 @@ class ScoreCommandTest {
         originalErr = System.err;
         System.setOut(new PrintStream(out, true, UTF_8));
         System.setErr(new PrintStream(err, true, UTF_8));
+        Files.writeString(sources.resolve("jbct.toml"), "[project]\nbasePackage = \"sample\"\n");
         Files.writeString(sources.resolve("Sample.java"),
                           """
                           package sample;

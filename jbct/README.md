@@ -168,12 +168,31 @@ failOnWarning = false
 # excludePackages = ["some.generated.**"]
 ```
 
-An optional `[lint.layers]` section maps packages to layers and slice roots for the architecture
-rules; omit it to rely on the naming conventions described below.
+An optional `[lint.layers]` section maps packages to layers and slice roots for the layering rules; omit it to
+rely on the naming conventions described below. An optional `[lint.tree]` section holds `exclude` globs of
+packages the package-tree rules do not judge (see below).
+
+A `[lint.rules]` key must be the ID of a rule of the registry: an unknown key (a typo) refuses the load naming the
+key, and a retired rule (`JBCT-ARCH-04`, `JBCT-SEAL-02`) names the rule that replaced it. `generate-blueprint`
+reads the same configuration and stops on such a key too.
+
+### Package tree rules
+
+`[project] basePackage` is the root `R` of the package tree of a source root. In `business` mode, while a rule that
+reads it is enabled, the key is required: a source root without it, with an `io` or `shared` segment after its first
+segment, or with no file under it is refused (`jbct lint` exits 2, the Maven goal fails) while the code rules still
+run and report. `infrastructure`, `format-only` and `disabled` roots never read the key.
+
+- `JBCT-TREE-01` (WARNING): no sideways import inside the tree. A file in package `P` may import from `Q` when `Q` is
+  outside `R`, an ancestor of `P`, a descendant of `P`, or sits under an `io` or `shared` segment whose parent is an
+  ancestor of `P`. A workflow importing its sibling workflow is sideways.
+- `JBCT-TREE-02` (WARNING): a main file is declared under `R`. Test roots are judged by no tree rule.
+
+Both rules print a coverage line per run, `JBCT-TREE-01: judged K of N file(s)` (`0 of N` included).
 
 ### Architecture / layering rules
 
-The layering rules (`JBCT-ARCH-*`, `JBCT-MIX-01`) classify each file's package into a **layer**
+The layering rules (`JBCT-ARCH-01` to `JBCT-ARCH-03`, `JBCT-MIX-01`) classify each file's package into a **layer**
 (`domain` / `application` / `adapter` / `bootstrap`) and a **zone** (`business` / `adapter-boundary`)
 from single-file facts — the file's own `package` declaration and its imports. Classification is
 **convention-first**: with no `[lint.layers]` config, a package is classified by the layer keyword
