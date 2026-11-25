@@ -51,7 +51,7 @@ import java.util.regex.Pattern;
 /// file is accepted. A pattern the regex does not describe (`assertThat(elapsed).as("x").isLessThan(`) is invisible to both
 /// passes; wrapping is the only blind spot this closes.
 final class FlakeScan {
-    private static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules");
+    static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules");
     private static final List<String> SCANNED_SOURCES = List.of("/src/test/java/", "/src/it/java/");
 
     /// A pattern with a fixed flake behind it, and the fix the failure message points at.
@@ -253,7 +253,7 @@ final class FlakeScan {
         }
     }
 
-    private static boolean isScanned(String path) {
+    static boolean isScanned(String path) {
         return SCANNED_SOURCES.stream().anyMatch(path::contains);
     }
 
