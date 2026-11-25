@@ -57,7 +57,6 @@ import org.pragmatica.testlogging.SourceWalk;
 /// entries. It does not see a walk through another API (`File.listFiles` recursion, `Files.newDirectoryStream`, a library walker), a
 /// walk in `src/main`, or a declared root that is later changed; those are left to review. The fix it asks for is `SourceWalk`.
 final class FlakeScan {
-    static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules");
     private static final List<String> SCANNED_SOURCES = List.of("/src/test/java/", "/src/it/java/");
 
     /// A pattern with a fixed flake behind it, and the fix the failure message points at.

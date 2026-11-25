@@ -85,7 +85,9 @@ final class RepoWalkExceptions {
         "integrations/storage/src/test/java/org/pragmatica/storage/LargeObjectProbe.java",
         "integrations/storage/src/test/java/org/pragmatica/storage/LocalDiskTierScanVanishTest.java",
         "jbct/jbct-init/src/test/java/org/pragmatica/jbct/init/AiToolsInstallerCopyTest.java",
+        "jbct/jbct-init/src/test/java/org/pragmatica/jbct/init/AiToolsInstallerPinTest.java",
         "jbct/jbct-lint/src/test/java/org/pragmatica/jbct/lint/cst/RootResolverPathFormTest.java",
+        "jbct/slice-processor/src/test/java/org/pragmatica/jbct/slice/SliceProcessorTest.java",
         "test-logging/src/test/java/org/pragmatica/testlogging/SourceWalkTest.java",
         "test-logging/src/test/java/org/pragmatica/testlogging/SourceWalkTest.java"
     );
