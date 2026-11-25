@@ -180,6 +180,12 @@ public class RabiaEngine<C extends Command> {
     /// Seats this node raised [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for and has not closed yet (#1654).
     private final Set<NodeId> unreachableGenesisSeats = ConcurrentHashMap.newKeySet();
 
+    /// The remedy sentence of the seat warning (#1654), read once at the raise and never again: the warning is true in the auto-heal
+    /// state it was raised in. The node binds it to its live auto-heal state ([#useGenesisSeatRemedy]); until then it names no state.
+    private final AtomicReference<Supplier<String>> genesisSeatRemedy = new AtomicReference<>(() -> UNBOUND_SEAT_REMEDY);
+
+    private static final String UNBOUND_SEAT_REMEDY = "Operator action: if the seat neither returns nor is replaced, check that node (#1654).";
+
     private final AtomicReference<OperatorWarningSink> operatorWarningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
 
     /// Genesis round interval: starts here and doubles while the view is unchanged, up to the sync retry
@@ -594,10 +600,10 @@ public class RabiaEngine<C extends Command> {
                                       OperatorWarningCode.GENESIS_SEAT_UNREACHABLE,
                                       seat.id(),
                                       "Node {} installs genesis with seat {} not connected: the seat reported the agreed view earlier and is "
-                                     + "unreachable now. Formation is not blocked; auto-heal is expected to replace the seat. Operator "
-                                     + "action: if the seat neither returns nor is replaced, check that node (#1654).",
+                                     + "unreachable now. Formation is not blocked. {}",
                                       self,
-                                      seat);
+                                      seat,
+                                      genesisSeatRemedy.get().get());
     }
 
     /// Closes [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for every seat this node raised it for that is a connected peer again
@@ -642,6 +648,12 @@ public class RabiaEngine<C extends Command> {
     @Contract
     public void useOperatorWarningSink(OperatorWarningSink sink) {
         operatorWarningSink.set(sink);
+    }
+
+    /// Binds the remedy sentence of the genesis seat warning (#1654) to the node's live auto-heal state; read once, when the warning is raised.
+    @Contract
+    public void useGenesisSeatRemedy(Supplier<String> remedy) {
+        genesisSeatRemedy.set(remedy);
     }
 
     /// Test hook: one idle slot probe tick on the apply executor, which also runs the unreachable-genesis-seat check.
@@ -848,6 +860,14 @@ public class RabiaEngine<C extends Command> {
 
     public Option<VoterConfiguration> voterConfiguration() {
         return voters;
+    }
+
+    /// Test seam (#1654 Ember): the genesis members whose last two reports this pending node holds as consecutive rounds of its own view.
+    /// Empty for a node that never ran one. The agreement is never cleared: after genesis is installed the snapshot stays frozen at its last
+    /// value, so it says nothing about a node that is no longer genesis-pending. Read-only snapshot, safe from any thread.
+    public Set<NodeId> genesisStableReporters() {
+        return genesisAgreement.map(GenesisViewAgreement::stableReporters)
+                               .or(Set.of());
     }
 
     public org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {

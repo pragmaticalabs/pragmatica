@@ -8,6 +8,8 @@ Updated: 2026-02-19
 Affects: [jbct-cli, aether]
 ---
 
+> **Superseded (aspect removal, #3649).** The `Aspect<T>` factory parameter, `Aspect.identity()` and the generated `aspect.apply(...)` calls described in this RFC are **superseded**: they were removed from the runtime and the slice processor. The generated factory is `xxx(SliceCreationContext ctx)` (plus the `xxxSlice(ctx)` adapter), with no aspect argument. Observability is attached at the dispatch seams through `ObservabilityStrategyCell` (see RFC-0010 and `aether/docs/architecture/07-observability.md`). The passages below are kept as history.
+
 ## Summary
 
 Defines the core contract between jbct-cli slice-processor (code generator) and aether runtime (slice consumer). Covers factory method conventions, aspect-based decoration, SliceMethod metadata, and manifest format.

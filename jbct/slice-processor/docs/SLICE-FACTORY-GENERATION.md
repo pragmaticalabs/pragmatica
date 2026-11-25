@@ -26,10 +26,10 @@ From a `@Slice`-annotated interface, the processor generates:
 
 | User factory returns | Generated wrapping (sync path) | Generated wrapping (async path) |
 |---|---|---|
-| `T` (direct) | `Promise.success(aspect.apply(instance))` | `.map((...) -> { return aspect.apply(factory(...)); })` |
-| `Result<T>` | `factory(...).map(aspect::apply).async()` | `.flatMap((...) -> { return factory(...).map(aspect::apply).async(); })` |
-| `Option<T>` | `factory(...).toResult(cause("...")).map(aspect::apply).async()` | `.flatMap((...) -> { return factory(...).toResult(cause("...")).map(aspect::apply).async(); })` |
-| `Promise<T>` | `factory(...).map(aspect::apply)` | `.flatMap((...) -> { return factory(...).map(aspect::apply); })` |
+| `T` (direct) | `Promise.success(instance)` | `.map((...) -> { return factory(...); })` |
+| `Result<T>` | `factory(...).async()` | `.flatMap((...) -> { return factory(...).async(); })` |
+| `Option<T>` | `factory(...).toResult().async()` | `.flatMap((...) -> { return factory(...).toResult().async(); })` |
+| `Promise<T>` | `factory(...)` | `.flatMap((...) -> { return factory(...); })` |
 
 The type argument of `Result<T>`, `Option<T>`, or `Promise<T>` must match the slice interface type; a mismatch is a compile error.
 
@@ -46,21 +46,16 @@ public static Promise<Result<MySlice>> mySlice(...)
 
 **Async path note**: For non-direct return types, the `Promise.all(...).map(...)` chain switches to `.flatMap(...)` because the lambda body returns `Promise<T>` instead of `T`.
 
-### D2: Aspect Parameter
+### D2: Factory Signature
 
-**Decision**: First parameter is always `Aspect<SliceType> aspect`. Use `Aspect.identity()` when no decoration needed.
+**Decision**: The generated factory takes a single parameter, `SliceCreationContext ctx`. There is no decoration parameter: the factory returns the slice instance as constructed.
 
 **Rationale**:
-- Eliminates conditional logic in factory
-- Single vtable indirect call (JVM optimizes this well)
-- Identity aspect costs nothing at runtime
+- Observability is not applied around a slice's construction. It is attached at the dispatch seams (`SliceInvoker`, `AdmittedSliceBridge`, `HttpRoutePublisher`) through `ObservabilityStrategyCell`, configured at runtime through the observability commands (`aether observability config-set`, `/api/v1/observability/config`). See [07-observability.md](../../../aether/docs/architecture/07-observability.md).
+- Cross-cutting behaviour declared on the slice (cache, retry, circuit breaker, rate limit) is composed by the generated wrapper, not by a caller-supplied argument.
 
 ```java
-// No aspect needed
-var slice = SliceFactory.sliceName(Aspect.identity(), ctx);
-
-// With logging aspect
-var slice = SliceFactory.sliceName(LoggingAspect.create(), ctx);
+var slice = SliceFactory.sliceName(ctx);
 ```
 
 ### D3: Dependency Classification
@@ -93,8 +88,7 @@ static OrderProcessor orderProcessor(
 - `MethodHandle` fields provide type-safe invocation
 
 ```java
-public static Promise<OrderService> orderService(Aspect<OrderService> aspect,
-                                                   SliceCreationContext ctx) {
+public static Promise<OrderService> orderService(SliceCreationContext ctx) {
     // Local proxy record with MethodHandle fields
     record inventoryService(MethodHandle<Integer, String> checkStockHandle) implements InventoryService {
         @Override
@@ -110,7 +104,7 @@ public static Promise<OrderService> orderService(Aspect<OrderService> aspect,
         .map((inventory_checkStock) -> {
             var inventory = new inventoryService(inventory_checkStock);
             var instance = OrderService.orderService(inventory);
-            return aspect.apply(instance);
+            return instance;
         });
 }
 ```
@@ -122,8 +116,7 @@ public static Promise<OrderService> orderService(Aspect<OrderService> aspect,
 **Rationale**: Aether runtime needs a generic `Slice` interface to invoke methods by name with type tokens.
 
 ```java
-public static Promise<Slice> orderServiceSlice(Aspect<OrderService> aspect,
-                                               SliceCreationContext ctx) {
+public static Promise<Slice> orderServiceSlice(SliceCreationContext ctx) {
     record orderServiceSlice(OrderService delegate) implements Slice, OrderService {
         @Override
         public List<SliceMethod<?, ?>> methods() {
@@ -143,7 +136,7 @@ public static Promise<Slice> orderServiceSlice(Aspect<OrderService> aspect,
         }
     }
 
-    return orderService(aspect, ctx).map(orderServiceSlice::new);
+    return orderService(ctx).map(orderServiceSlice::new);
 }
 ```
 
@@ -242,7 +235,6 @@ public interface OrderProcessor {
 ```java
 package org.example.order;
 
-import org.pragmatica.aether.slice.Aspect;
 import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
@@ -264,8 +256,7 @@ import inventory.InventoryService;
 public final class OrderProcessorFactory {
     private OrderProcessorFactory() {}
 
-    public static Promise<OrderProcessor> orderProcessor(Aspect<OrderProcessor> aspect,
-                                                          SliceCreationContext ctx) {
+    public static Promise<OrderProcessor> orderProcessor(SliceCreationContext ctx) {
         // Local proxy for slice dependency with MethodHandle fields
         record inventoryService(MethodHandle<Stock, StockRequest> checkStockHandle)
                 implements InventoryService {
@@ -285,13 +276,11 @@ public final class OrderProcessorFactory {
                 var pricing = PricingEngine.pricingEngine();
                 // Slice deps - instantiate proxy
                 var inventory = new inventoryService(inventory_checkStock);
-                return aspect.apply(
-                    OrderProcessor.orderProcessor(validator, pricing, inventory));
+                return OrderProcessor.orderProcessor(validator, pricing, inventory);
             });
     }
 
-    public static Promise<Slice> orderProcessorSlice(Aspect<OrderProcessor> aspect,
-                                                      SliceCreationContext ctx) {
+    public static Promise<Slice> orderProcessorSlice(SliceCreationContext ctx) {
         record orderProcessorSlice(OrderProcessor delegate) implements Slice, OrderProcessor {
             @Override
             public List<SliceMethod<?, ?>> methods() {
@@ -311,7 +300,7 @@ public final class OrderProcessorFactory {
             }
         }
 
-        return orderProcessor(aspect, ctx)
+        return orderProcessor(ctx)
                    .map(orderProcessorSlice::new);
     }
 }
@@ -472,12 +461,11 @@ public interface OrderRepository {
 }
 
 // Generated factory:
-public static Promise<OrderRepository> orderRepository(Aspect<OrderRepository> aspect,
-                                                         SliceCreationContext ctx) {
+public static Promise<OrderRepository> orderRepository(SliceCreationContext ctx) {
     return Promise.all(
             ctx.resources().provide(DatabaseConnector.class, "database.primary"))
         .map((db) -> {
-            return aspect.apply(OrderRepository.orderRepository(db));
+            return OrderRepository.orderRepository(db);
         });
 }
 ```
@@ -507,13 +495,12 @@ public interface LoanService {
 }
 
 // Generated factory:
-public static Promise<LoanService> loanService(Aspect<LoanService> aspect,
-                                                 SliceCreationContext ctx) {
+public static Promise<LoanService> loanService(SliceCreationContext ctx) {
     return Promise.all(
             ctx.resources().provide(HttpClient.class, "http.kyc"))
         .map((kycStep_httpClient) -> {
             var kycStep = KycStep.kycStep(kycStep_httpClient);
-            return aspect.apply(LoanService.loanService(kycStep));
+            return LoanService.loanService(kycStep);
         });
 }
 ```
@@ -545,18 +532,6 @@ slice-processor/
 ## Aether Runtime Types
 
 The following types are provided by `slice-api` module:
-
-### Aspect<T>
-```java
-@FunctionalInterface
-public interface Aspect<T> {
-    T apply(T instance);
-
-    static <T> Aspect<T> identity() {
-        return instance -> instance;
-    }
-}
-```
 
 ### Slice
 ```java

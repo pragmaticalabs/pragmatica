@@ -49,7 +49,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
-import picocli.AutoComplete.GenerateCompletion;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
@@ -60,10 +59,21 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.TopicsCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.backup.BackupCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.warnings.WarningsCommand.class, GenerateCompletion.class})
+@Command(name = "aether", versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.TopicsCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.backup.BackupCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.warnings.WarningsCommand.class, GenerateCompletionCommand.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
+
+    /// #2261 — declared here with `scope = INHERIT` instead of `mixinStandardHelpOptions = true`, which
+    /// puts `-h`/`--help` on the root command only. A subcommand with a required parameter (e.g.
+    /// `cluster apply <configFile>`) then read `--help` as an unknown option and exited 2 on the missing
+    /// parameter; an inherited usage-help option short-circuits required-parameter validation on every
+    /// command in the tree. `-V`/`--version` stays root-only (several subcommands own `-v`/`--version`).
+    @CommandLine.Option(names = {"-h", "--help"}, usageHelp = true, scope = CommandLine.ScopeType.INHERIT, description = "Show this help message and exit.")
+    private boolean helpRequested;
+
+    @CommandLine.Option(names = {"-V", "--version"}, versionHelp = true, description = "Print version information and exit.")
+    private boolean versionRequested;
 
     @CommandLine.Option(names = {"-c", "--connect", "--endpoint"}, description = "Node address to connect to (host:port)")
     private String nodeAddress;

@@ -2,7 +2,7 @@
 
 **Status:** Current
 
-This document describes the metrics pipeline, alerting, dynamic aspects, and monitoring interfaces.
+This document describes the metrics pipeline, alerting, runtime-switchable observability, and monitoring interfaces.
 
 ## Metrics Architecture
 
@@ -102,25 +102,26 @@ Configurable threshold strategies:
 | Per-method | Different threshold per method |
 | Composite | Combination of strategies |
 
-## Dynamic Aspects
+## Runtime-Switchable Observability
 
-Runtime-configurable per-method instrumentation via `DynamicAspectInterceptor`:
+Per-method instrumentation through the `ObservabilityStrategyCell` carried by each dispatch seam:
 
 ```mermaid
 graph LR
-    API["/api/v1/observability/config"] -->|"POST"| KV["KV-Store<br/>AspectConfigKey"]
-    KV -->|"Notification"| DAI["DynamicAspectInterceptor"]
-    DAI --> Slice["Slice Method"]
+    API["/api/v1/observability/config"] -->|"POST"| KV["KV-Store<br/>ObservabilityConfigKey"]
+    KV -->|"Notification"| REG["ObservabilityConfigRegistry"]
+    REG -->|"swap strategy"| OSC["ObservabilityStrategyCell"]
+    OSC --> Slice["Slice Method"]
 
-    subgraph Modes["Aspect Modes"]
-        NONE["NONE - no interception"]
-        LOG["LOG - entry/exit logging"]
-        METRICS["METRICS - latency, count"]
-        BOTH["LOG_AND_METRICS"]
+    subgraph Facets["Facets (per config)"]
+        LOG["logging"]
+        MET["metrics"]
+        TR["tracing"]
+        SP["spans"]
     end
 ```
 
-Toggle at runtime without redeployment or restart. Configuration persisted in KV-Store.
+Toggle at runtime without redeployment or restart. Configuration is persisted in the KV-Store and resolved by scope: method, then artifact (`*`), then global (`*/*`), then the baseline posture for unconfigured methods. CLI: `aether observability config-set`; see the [CLI reference](../reference/cli.md#observability).
 
 ## Alerting
 
@@ -185,5 +186,5 @@ The built-in web dashboard that used to consume `/ws/dashboard` was removed in 1
 ## Related Documents
 
 - [08-scaling.md](08-scaling.md) - How metrics drive scaling decisions
-- [03-invocation.md](03-invocation.md) - DynamicAspectInterceptor in invocation chain
+- [03-invocation.md](03-invocation.md) - ObservabilityStrategyCell in invocation chain
 - [12-management.md](12-management.md) - Management API endpoints
