@@ -983,12 +983,16 @@ public interface StreamConfigParser {
                                                                                              "hot.max_bytes",
                                                                                              bytes,
                                                                                              DeclarationBounds.minHotBytes()))
-                     .orElse(() -> window.maxCount()
-                                         .filter(count -> count < DeclarationBounds.minHotCount())
-                                         .<Cause> map(count -> new StreamDeclarationError.HotWindowBelowSealRuns(alias,
-                                                                                                                 "hot.max_count",
-                                                                                                                 count,
-                                                                                                                 DeclarationBounds.minHotCount())));
+                     .orElse(() -> countBelowSealRuns(alias, window));
+    }
+
+    private static Option<Cause> countBelowSealRuns(String alias, HotWindowDeclaration window) {
+        return window.maxCount()
+                     .filter(count -> count < DeclarationBounds.minHotCount())
+                     .<Cause> map(count -> new StreamDeclarationError.HotWindowBelowSealRuns(alias,
+                                                                                             "hot.max_count",
+                                                                                             count,
+                                                                                             DeclarationBounds.minHotCount()));
     }
 
     private static Option<Cause> belowMaxEvent(String alias, HotWindowDeclaration window, long maxEventSize) {
