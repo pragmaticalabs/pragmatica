@@ -37,14 +37,18 @@ class WarningsFamilyStateWritersTest {
                                                          .matches());
     }
 
+    private static List<Path> sources(Path root) throws IOException {
+        return SourceWalk.files(root)
+                         .stream()
+                         .filter(path -> path.toString()
+                                             .endsWith(".java"))
+                         .toList();
+    }
+
     private static List<String> offenders(Path root) throws IOException {
         var hits = new ArrayList<String>();
 
-        for (var source : SourceWalk.files(root)
-                                    .stream()
-                                    .filter(path -> path.toString()
-                                                        .endsWith(".java"))
-                                    .toList()) {
+        for (var source : sources(root)) {
             for (var line : Files.readAllLines(source)) {
                 if (offending(source, line)) {
                     hits.add(source.getFileName() + ": " + line.trim());
@@ -61,7 +65,10 @@ class WarningsFamilyStateWritersTest {
         var root = Tripwire.repositoryRoot()
                            .resolve("aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/fsm2");
 
-        assertThat(Files.isRegularFile(root.resolve("Warnings.java"))).as("precondition: the scan reaches the fsm2 sources").isTrue();
+        assertThat(sources(root)).as("precondition: the scan reaches the fsm2 sources")
+                                 .anyMatch(path -> path.getFileName()
+                                                       .toString()
+                                                       .equals("Warnings.java"));
         assertThat(offenders(root)).isEmpty();
     }
 
