@@ -167,6 +167,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// this node fetches its cursor only after the last of them settles ([#loadCursorAndStart]), so an old flush can
     /// never land after the successor's own commits and move the group's cursor backwards.
     private final ConcurrentHashMap<ConsumerKey, PendingDetaches> pendingDetachFlushes = new ConcurrentHashMap<>();
+
     /// #3283: the consumer state holding each key's open `stream-consumer-cursor-unreadable` episode. The episode belongs to
     /// the key, not to one consumer: a successor re-subscribed during the same outage (a new assignment epoch, a restart for
     /// a rewind) takes it over without a second raise. Only a live state that starts closes it, or a cancelled or closed
@@ -785,6 +786,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                      int attempt) {
         if (closed.get() || state.isCancelled()) {
             endCursorFetchEpisodeOnCancel(key, state);
+
             return;
         }
 
@@ -824,7 +826,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// #3283: a failed fetch of a live state makes it the key's holder. Raised only when no state held the episode: a
     /// successor whose fetch fails while its predecessor's episode is open takes that episode over.
     @Contract
-    private void openCursorFetchEpisode(ConsumerKey key, ConsumerState state, Cause cause) {
+    void openCursorFetchEpisode(ConsumerKey key, ConsumerState state, Cause cause) {
         if (cursorFetchEpisodes.put(key, state) == null) {
             reportCursorUnreadable(key, cause);
         }
@@ -832,8 +834,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     /// #3283: a state that started closes the key's episode, whichever state opened it. One cancelled between its fetch and
     /// its start did not start, so it closes the episode as a cancelled state does.
+    /// Package-private with [#openCursorFetchEpisode]: that window lies between two cancel checks, so only
+    /// `ConsumerCursorFetchEpisodeTest` can force it.
     @Contract
-    private void endCursorFetchEpisode(ConsumerKey key, ConsumerState state) {
+    void endCursorFetchEpisode(ConsumerKey key, ConsumerState state) {
         if (!state.cursorInitialized()) {
             endCursorFetchEpisodeOnCancel(key, state);
         } else if (cursorFetchEpisodes.remove(key) != null) {
@@ -846,7 +850,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     @Contract
     private void endCursorFetchEpisodeOnCancel(ConsumerKey key, ConsumerState state) {
         if (cursorFetchEpisodes.remove(key, state)) {
-            reportCursorReadable(key, "the consumer was cancelled while its fetch was failing; it no longer retries here");
+            reportCursorReadable(key,
+                                 "the consumer was cancelled while its fetch was failing; it no longer retries here");
         }
     }
 
