@@ -7,8 +7,10 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyManagementException;
@@ -3708,6 +3710,12 @@ public class AetherCli implements Runnable {
         @CommandLine.Option(names = {"--since"}, description = "Show events since ISO-8601 timestamp (e.g. 2024-01-15T10:30:00Z)")
         private String since;
 
+        @CommandLine.Option(names = {"--code"}, description = "Show only events whose details.code equals this operator-warning code (exact match, e.g. swim-kill-gate-held); an unknown code lists nothing")
+        private String code;
+
+        @CommandLine.Option(names = {"--severity"}, description = "Show only events at this severity or above: INFO, WARNING or CRITICAL (case-insensitive); anything else is refused")
+        private String severity;
+
         @Override
         public Integer call() {
             var response = parent.fetch(EVENTS, List.of(), buildEventsQuery());
@@ -3716,8 +3724,15 @@ public class AetherCli implements Runnable {
         }
 
         private String buildEventsQuery() {
-            return option(since).map(s -> "since=" + s)
-                         .or("");
+            return Stream.of(option(since).map(v -> "since=" + v),
+                             option(code).map(v -> "code=" + encode(v)),
+                             option(severity).map(v -> "severity=" + encode(v)))
+                         .flatMap(Option::stream)
+                         .collect(Collectors.joining("&"));
+        }
+
+        private static String encode(String value) {
+            return URLEncoder.encode(value, StandardCharsets.UTF_8);
         }
     }
 
