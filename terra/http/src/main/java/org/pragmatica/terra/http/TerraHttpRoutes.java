@@ -274,6 +274,9 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                                             request.path()))
                          .flatMap(route -> Option.option(owners.get(route)))
                          .map(router -> router.handle(request))
-                         .or(() -> Promise.success(HttpResponseData.httpResponseData(404, "No route found")));
+                         .or(() -> Promise.success(TerraProblem.response(HttpStatus.NOT_FOUND,
+                                                                         "No route found",
+                                                                         request.path(),
+                                                                         request.requestId())));
     }
 }

@@ -432,6 +432,11 @@ Get cluster events from the event aggregator. Returns structured events includin
 
 Both parameters must be used together to form a cursor. Clients should persist the `originEpoch` and `originSeq` fields from the last received event and pass them on the next request.
 
+- `code` (optional) -- keep only the events whose `details.code` equals this value. The match is exact and case-sensitive: a code is the stable kebab-case identifier of an operator warning (for example `swim-kill-gate-held`, see `OPERATOR_WARNING` under Event Types below), and `OPERATOR_WARNING` events are the ones that carry one. A code no event carries answers `200` with an empty list, not an error.
+- `severity` (optional) -- a minimum level: keep the events at this severity or above, in the order `INFO` < `WARNING` < `CRITICAL`. `severity=WARNING` keeps `WARNING` and `CRITICAL` events. The value is case-insensitive; anything other than `INFO`, `WARNING` or `CRITICAL` (including `UNKNOWN`, which only marks a level the answering node cannot name) is refused with `400` and no events are read. An event whose own severity is `UNKNOWN` passes every `severity` filter, because the node cannot rank it below the minimum.
+
+`code` and `severity` combine with AND, and apply to the events the cursor selected. They filter the answering node's view of the feed; the staleness and de-duplication rules below are unchanged.
+
 **Examples:**
 ```bash
 # All events
@@ -439,7 +444,21 @@ curl http://localhost:8080/api/v1/events
 
 # Events after a known cursor position
 curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
+
+# One warning class
+curl "http://localhost:8080/api/v1/events?code=swim-kill-gate-held"
+
+# WARNING and CRITICAL events only
+curl "http://localhost:8080/api/v1/events?severity=warning"
+
+# Both: that warning class, only when it is CRITICAL
+curl "http://localhost:8080/api/v1/events?code=core-absence-fence&severity=CRITICAL"
+
+# 400: not a severity
+curl "http://localhost:8080/api/v1/events?severity=loud"
 ```
+
+CLI: `aether events [--code <code>] [--severity <level>]`.
 
 **Response:**
 ```json
@@ -534,7 +553,7 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 
 `DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
 
-`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Neither this endpoint nor `aether events` can filter on it (or on severity) yet, so fetch the feed and match `details.code` yourself. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node, except an INFO recovery code, which follows the warning it closes (see `stream-consumer-state-repaired`); `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes:
+`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Filter on it with `GET /api/v1/events?code=<code>` or `aether events --code <code>` (#1631), and select a minimum severity with `severity=` / `--severity`. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node, except an INFO recovery code, which follows the warning it closes (see `stream-consumer-state-repaired`); `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes:
 
 - `swim-kill-gate-held` (WARNING — SWIM is holding the death of a long-healthy peer that only this node accused)
 - `core-absence-fence` (CRITICAL — a worker lost the core and is dissolving locally)
@@ -597,8 +616,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `json-config-rejected` (CRITICAL — a committed `[json]` change was refused for a slice and its HTTP routes keep the JSON codec selection they had; `subject` is `<slice artifact>/json`, the message names each refused key, its value and why, and the selection kept; raised once per node on the transition into refusal; the same configuration fails the slice's next provisioning, issue #2378)
 - `json-config-applied` (INFO — the recovery: a valid `[json]` configuration was adopted after a refusal; published only after a published `json-config-rejected` for the same `subject`)
 - `instance-reap-held` (WARNING — auto-heal is disabled, so the cluster did not delete the instance of a node it would otherwise have reaped: a departed node, an orphan the sweep found, a surplus trim, the reap of a never-joined zombie, or the retry or re-check of any of them; `subject` is the node, the message names which. The instance is kept for diagnosis and keeps billing. Raised once per node by the leader that held the reap; enable auto-heal to have it reaped, or terminate it at the provider yourself)
-- `auto-heal-scaling-held` (WARNING — auto-heal is disabled, so the cluster did not provision or terminate workers, begin a community placement operation, or drain a surplus core member on its own initiative; `subject` is `worker <source>/<role>`, `community <id>` or `core` (#3324); raised once per subject for the run of holds. A count or `target_size` changed while disabled, and an operator-directed retirement, are not held)
-- `auto-heal-scaling-resumed` (INFO — the recovery: auto-heal is enabled again and the paths act on their own again; published only after a published `auto-heal-scaling-held` for the same `subject`)
+- `auto-heal-scaling-held` (WARNING — auto-heal is disabled, so the cluster did not provision or terminate workers, begin a community placement operation, or drain a surplus core member on its own initiative; `subject` is `worker <source>/<role>`, `community <id>` or `core` (#3324); raised once per subject for the run of holds. A count or `target_size` changed while disabled, and an operator-directed retirement, are not held; a `worker` subject closes with `auto-heal-scaling-resumed` when its deficit or surplus is gone, and `core` when no surplus core member is left to drain (both the leader's surplus drain and the voter-excluded core retirement must have nothing pending), even while auto-heal stays disabled (#3358); a `community` hold closes only by the exits above, and a subject whose source, role or community was removed from the committed configuration, or whose count or `target_size` was changed, is released at the next core ask, i.e. the next quorum-safe pass of the leader)
+- `auto-heal-scaling-resumed` (INFO — the recovery: auto-heal is enabled again and the paths act on their own again, or nothing is left to change for the subject (#3358); published only after a published `auto-heal-scaling-held` for the same `subject`)
 - `instance-reap-released` (INFO — the recovery: auto-heal is enabled again and the reap is no longer held (it is then subject to the usual liveness and refusal checks), or the instance was deleted by a directed retirement after the reap was held, or the node joined the cluster again; published only after a published `instance-reap-held` for the same `subject`. Raised by the leader that held the reap, so a leader change in between leaves the held event open)
 - `upload-node-cap-saturated` (WARNING — an upload was refused `429` because the node holds `[app-http.upload] max_concurrent` uploads; `subject` is the node; raised once per episode on the first refusal, not once per refused request; a per-principal refusal raises nothing; issue #2410)
 - `upload-node-cap-restored` (INFO — the recovery: an upload finished and the node accepts uploads again; published only after a published `upload-node-cap-saturated` for the same `subject`)
@@ -6109,9 +6128,9 @@ Three kinds of fact sit in one row, with three different scopes, so read each co
 
 - **Cluster facts, identical from every node:** `consumerNode` / `ownerNode` (the #535 assignment, computed locally and identically everywhere), and `committedCursor` / `committedEpoch` — the group's consensus-committed checkpoint read from KV. `committedEpoch` is the rewind epoch the checkpoint was committed under, `0/0` for a group never rewound; after a rebuild it equals the token the rebuild answered with.
 - **This node's facts:** `heldHere`, `liveCursor`, `liveEpoch`, `lastCursorCommitFailure` — the consumer THIS node runs for the partition. Present only where `heldHere` is `true`. `committedCursor` can LAG `liveCursor`, or be ABSENT while `liveCursor` is not: checkpoints are requested from an ack on the 500 ms / 1000-event cadence, so a partition that goes quiet keeps its committed cursor at the last cadence-triggered commit — or has none, when every event landed within 500 ms of the attach — until the next event or a graceful detach `[verified: DurableProjectionRebuildForgeTest measured 3 committed against 7 live, and none against 7, on a quiet single-partition topic]`. The lag bounds redelivery after an ungraceful move; it is not a stall.
-- **The hosted projection's facts:** `projection` (its name) and, per partition, `replayState` with `nextReplayOffset` / `replayThroughOffset` while `REBUILDING`. `replayState` is `UNKNOWN` on a node that hosts no projection for the group — the store's status lives inside the slice, and a node that does not run the slice cannot see it. Ask the node named in `consumerNode`.
+- **The hosted projection's facts:** `projection` (its name) and, per partition, `replayState` with `nextReplayOffset` / `replayThroughOffset` while `REBUILDING`. `replayState` is `UNKNOWN` on a node that hosts no projection for the group — the store's status lives inside the slice, and a node that does not run the slice cannot see it. Ask the node named in `consumerNode`. On a node other than `consumerNode`, `LIVE` says only that the group's committed cursor passed the captured head; it does not say this node's model is complete. Read the model on `consumerNode`, and after a partition move even there it may be incomplete (#3736).
 
-`cursorReportFailures` counts, node-wide since boot, the committed-cursor reports a hosted projection refused or threw on; a non-zero value with a projection stuck `REBUILDING` is the first thing to look at.
+`cursorReportFailures` counts, node-wide since boot, the committed-cursor reports a hosted projection refused or threw on; a non-zero value with a projection stuck `REBUILDING` is the first thing to look at. Reports come from local commits AND from accepted checkpoints of any node, so a refusal on the assignee can be counted twice.
 
 **Response:**
 ```json
@@ -6143,7 +6162,7 @@ Three kinds of fact sit in one row, with three different scopes, so read each co
 | `groups[].projection` | Name of the projection attached for this group ON THIS NODE; empty when this node hosts none |
 | `groups[].partitions[].committedCursor` / `committedEpoch` | Consensus-committed checkpoint (next offset to read) and the rewind epoch it carries. Absent / `""` before the first checkpoint |
 | `groups[].partitions[].heldHere`, `liveCursor`, `liveEpoch`, `lastCursorCommitFailure` | This node's consumer for the partition, when it runs one; `lastCursorCommitFailure` as on [Declarative Stream Consumers](#declarative-stream-consumers) |
-| `groups[].partitions[].replayState` | `LIVE`, `REBUILDING`, or `UNKNOWN` (no projection for the group hosted here). While `REBUILDING`: `nextReplayOffset` (the next offset the store will admit) and `replayThroughOffset` (the captured head it goes LIVE past) |
+| `groups[].partitions[].replayState` | `LIVE`, `REBUILDING`, or `UNKNOWN` (no projection for the group hosted here). While `REBUILDING`: `nextReplayOffset` (the next offset the store will admit) and `replayThroughOffset` (the captured head it goes LIVE past). Off `consumerNode`, `LIVE` means only that the group's cursor passed the captured head, not that this node's model is complete; read the model on `consumerNode`, where after a move it may still be incomplete (#3736) |
 | `groups[].unassignedPartitions`, `diagnostic` | As on Declarative Stream Consumers |
 
 ### Rebuild Projection

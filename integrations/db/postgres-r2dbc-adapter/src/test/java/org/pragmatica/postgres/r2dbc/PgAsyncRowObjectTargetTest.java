@@ -97,12 +97,96 @@ class PgAsyncRowObjectTargetTest {
         assertThat((Object[]) objectOf("SELECT '{}'::uuid[]")).isEmpty();
     }
 
+    /// #2501: a column type the driver has no Java type for is read untyped as the server's own text rendering, never refused.
+    /// Interval, jsonb, xml, money and bit are mapped by the driver; inet, ranges and jsonb[] are not (no `Oid` constant), and
+    /// every unmapped type is read the same way.
     @Test
-    void get_aTypeTheDriverCannotConvert_failsWithAMessageThatNamesTheColumnTheTypeAndTheTarget() {
-        assertThatThrownBy(() -> objectOf("SELECT '{}'::jsonb AS doc")).isInstanceOf(io.r2dbc.spi.R2dbcException.class)
-                                                                         .hasMessageContaining("'doc'")
-                                                                         .hasMessageContaining("JSONB")
-                                                                         .hasMessageContaining("java.lang.Object");
+    void get_objectTarget_ofJsonb_isItsText() {
+        assertThat(objectOf("SELECT '{\"a\":1}'::jsonb")).isEqualTo("{\"a\": 1}");
+    }
+
+    @Test
+    void get_objectTarget_ofJson_isItsText() {
+        assertThat(objectOf("SELECT '{\"a\":1}'::json")).isEqualTo("{\"a\":1}");
+    }
+
+    @Test
+    void get_objectTarget_ofInterval_isItsText() {
+        assertThat(objectOf("SELECT '1 day 2 hours'::interval")).isEqualTo("1 day 02:00:00");
+    }
+
+    @Test
+    void get_objectTarget_ofInet_isItsText() {
+        assertThat(objectOf("SELECT '10.0.0.1'::inet")).isEqualTo("10.0.0.1");
+        assertThat(objectOf("SELECT '10.0.0.0/8'::cidr")).isEqualTo("10.0.0.0/8");
+    }
+
+    @Test
+    void get_objectTarget_ofJsonbArray_isItsArrayLiteral() {
+        assertThat(objectOf("SELECT ARRAY['{\"a\":1}']::jsonb[]")).isEqualTo("{\"{\\\"a\\\": 1}\"}");
+    }
+
+    @Test
+    void get_objectTarget_ofRange_isItsText() {
+        assertThat(objectOf("SELECT int4range(1, 5)")).isEqualTo("[1,5)");
+    }
+
+    @Test
+    void get_objectTarget_ofXml_isItsText() {
+        assertThat(objectOf("SELECT '<a/>'::xml")).isEqualTo("<a/>");
+    }
+
+    @Test
+    void get_objectTarget_ofMoney_isItsText() {
+        assertThat(objectOf("SELECT '1.5'::money")).isEqualTo("$1.50");
+    }
+
+    @Test
+    void get_objectTarget_ofBitAndVarbit_isTheirBits() {
+        assertThat(objectOf("SELECT B'101'")).isEqualTo("101");
+        assertThat(objectOf("SELECT '1010'::varbit")).isEqualTo("1010");
+    }
+
+    @Test
+    void get_objectTarget_ofOtherMappedTextTypes_isTheirText() {
+        assertThat(objectOf("SELECT ARRAY['1 day']::interval[]")).isEqualTo("{\"1 day\"}");
+        assertThat(objectOf("SELECT point(1, 2)")).isEqualTo("(1,2)");
+        assertThat(objectOf("SELECT 'a'::name")).isEqualTo("a");
+    }
+
+    @Test
+    void get_objectTarget_ofTheseTypes_whenNull_isNull() {
+        assertThat(objectOf("SELECT NULL::jsonb")).isNull();
+        assertThat(objectOf("SELECT NULL::interval")).isNull();
+        assertThat(objectOf("SELECT NULL::inet")).isNull();
+    }
+
+    @Test
+    void get_byName_objectTarget_isTheDriversNativeValue() {
+        assertThat(namedObjectOf("SELECT '10.0.0.1'::inet AS addr", "addr")).isEqualTo("10.0.0.1");
+        assertThat(namedObjectOf("SELECT 7::int AS n", "n")).isEqualTo(7);
+        assertThat(namedObjectOf("SELECT '{\"a\":1}'::jsonb AS doc", "doc")).isEqualTo("{\"a\": 1}");
+    }
+
+    @Test
+    void get_byName_asString_ofTheseTypes_isTheirText() {
+        assertThat(namedOf("SELECT '1 day'::interval AS span", "span", String.class)).isEqualTo("1 day");
+    }
+
+    @Test
+    void get_aTargetTheDriverCannotConvert_failsWithAMessageThatNamesTheColumnTheTypeAndTheTarget() {
+        assertThatThrownBy(() -> readWith("SELECT '{}'::jsonb AS doc", row -> row.get(0, java.util.Map.class))).isInstanceOf(io.r2dbc.spi.R2dbcException.class)
+                                                                                                                .hasMessageContaining("'doc'")
+                                                                                                                .hasMessageContaining("JSONB")
+                                                                                                                .hasMessageContaining("java.util.Map");
+    }
+
+    @Test
+    void get_byName_aTargetTheDriverCannotConvert_failsWithAMessageThatNamesTheColumnTheTypeAndTheTarget() {
+        assertThatThrownBy(() -> namedOf("SELECT '1 day'::interval AS span", "span", java.util.Map.class)).isInstanceOf(io.r2dbc.spi.R2dbcException.class)
+                                                                                                          .hasMessageContaining("'span'")
+                                                                                                          .hasMessageContaining("INTERVAL")
+                                                                                                          .hasMessageContaining("java.util.Map");
     }
 
     @Test
@@ -111,8 +195,20 @@ class PgAsyncRowObjectTargetTest {
     }
 
     private static Object objectOf(String sql) {
+        return readWith(sql, row -> row.get(0, Object.class));
+    }
+
+    private static Object namedObjectOf(String sql, String column) {
+        return namedOf(sql, column, Object.class);
+    }
+
+    private static Object namedOf(String sql, String column, Class<?> target) {
+        return readWith(sql, row -> row.get(column, target));
+    }
+
+    private static Object readWith(String sql, java.util.function.Function<io.r2dbc.spi.Row, Object> read) {
         return Mono.from(connection.createStatement(sql).execute())
-                   .flatMapMany(result -> result.map((row, meta) -> java.util.Optional.ofNullable(row.get(0, Object.class))))
+                   .flatMapMany(result -> result.map((row, meta) -> java.util.Optional.ofNullable(read.apply(row))))
                    .blockFirst()
                    .orElse(null);
     }

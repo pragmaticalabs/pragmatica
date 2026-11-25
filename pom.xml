@@ -55,8 +55,8 @@
         <!--
             Runs this repository's operator-facing shell scripts against constructed conditions and
             asserts they cannot report success without having looked (#865, #952). Depends on no
-            module, so its position here is free; it sits before cli-docs-gate to keep that module
-            last.
+            module but test-logging (test scope, #3703), which precedes it here; it sits before
+            cli-docs-gate to keep that module last.
         -->
         <module>script-gate</module>
         <!--
@@ -547,6 +547,11 @@
                 <version>${micrometer.version}</version>
             </dependency>
             <dependency>
+                <groupId>io.micrometer</groupId>
+                <artifactId>micrometer-registry-otlp</artifactId>
+                <version>${micrometer.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>jakarta.persistence</groupId>
                 <artifactId>jakarta.persistence-api</artifactId>
                 <version>${jakarta.persistence.version}</version>
@@ -594,8 +599,13 @@
                         <systemPropertyVariables>
                             <aether.state.dir>${project.build.directory}/aether-state</aether.state.dir>
                         </systemPropertyVariables>
+                        <!-- #3688: setting <excludes> REPLACES surefire's default `**/*$*`, so `Outer$Inner` (every @Nested class) was
+                             scanned as a test class of its own and, with forkCount > 1, ran twice (#3664). A child that needs more
+                             excludes writes combine.children="append"; one that writes a plain list drops this one again. The cost of
+                             `**/*$*` is a static nested class with @Test methods that nothing runs: NestedTestScanTest fails the build on one. -->
                         <excludes>
                             <exclude>**/*IT.java</exclude>
+                            <exclude>**/*$*</exclude>
                         </excludes>
                     </configuration>
                 </plugin>

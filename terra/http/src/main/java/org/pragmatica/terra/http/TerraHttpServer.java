@@ -240,11 +240,18 @@ public final class TerraHttpServer {
         } else if (mount.isPresent()) {
             mount.onPresent(owner -> serveMount(owner, request, writer));
         } else if (admission.admit()) {
-            dispatch(request).recover(_ -> HttpResponseData.httpResponseData(500, "Internal server error"))
+            dispatch(request).recover(_ -> TerraProblem.response(HttpStatus.INTERNAL_SERVER_ERROR,
+                                                                 "Internal server error",
+                                                                 request.path(),
+                                                                 request.requestId()))
                     .flatMap(response -> write(writer, response))
                     .withResult(admission::complete);
         } else {
-            writer.error(HttpStatus.SERVICE_UNAVAILABLE, "Terra is not accepting requests");
+            TerraProblem.write(writer,
+                               HttpStatus.SERVICE_UNAVAILABLE,
+                               "Terra is not accepting requests",
+                               request.path(),
+                               request.requestId());
         }
     }
 

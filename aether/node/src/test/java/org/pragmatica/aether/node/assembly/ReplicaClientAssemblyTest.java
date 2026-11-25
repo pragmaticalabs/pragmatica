@@ -269,7 +269,8 @@ class ReplicaClientAssemblyTest {
         assertThat(ReplicaClientAssembly.uplinks(self, cores)).isEqualTo(uplinks);
     }
 
-    private static final org.pragmatica.cluster.state.kvstore.IncarnationTag TAG = org.pragmatica.cluster.state.kvstore.IncarnationTag.incarnationTag(1, "A");
+    private static final String LINEAGE = "lineage-1";
+    private static final org.pragmatica.cluster.state.kvstore.IncarnationTag TAG = org.pragmatica.cluster.state.kvstore.IncarnationTag.incarnationTag(1, "A", LINEAGE);
 
     /// A replica that is current against its source (readiness `servable`), or one that never heard a heartbeat.
     private static org.pragmatica.cluster.replica.ReplicaReadiness readiness(boolean current) {

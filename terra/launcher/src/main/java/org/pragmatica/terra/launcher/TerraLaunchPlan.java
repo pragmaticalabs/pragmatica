@@ -19,6 +19,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.terra.TerraApplication;
 import org.pragmatica.terra.TerraBlueprint;
 import org.pragmatica.terra.TerraFactory;
+import org.pragmatica.terra.TerraMetrics;
 import org.pragmatica.terra.TerraMigrations;
 import org.pragmatica.terra.http.TerraHttpMount;
 import org.pragmatica.terra.http.TerraHttpServer;
@@ -35,6 +36,7 @@ public final class TerraLaunchPlan {
     private final Map<String, ConfigurationProvider> configuration;
     private final ConfigurationProvider deployment;
     private final LaunchHttp http;
+    private final TerraMetrics.Settings metrics;
     private final List<TerraHttpMount> mounts;
 
     private TerraLaunchPlan(Path directory,
@@ -43,6 +45,7 @@ public final class TerraLaunchPlan {
                             Map<String, ConfigurationProvider> configuration,
                             ConfigurationProvider deployment,
                             LaunchHttp http,
+                            TerraMetrics.Settings metrics,
                             List<TerraHttpMount> mounts) {
         this.directory = directory;
         this.blueprint = blueprint;
@@ -50,6 +53,7 @@ public final class TerraLaunchPlan {
         this.configuration = Map.copyOf(configuration);
         this.deployment = deployment;
         this.http = http;
+        this.metrics = metrics;
         this.mounts = List.copyOf(mounts);
     }
 
@@ -105,13 +109,15 @@ public final class TerraLaunchPlan {
                                                          ConfigurationProvider settings,
                                                          LaunchHttp.RuntimeInputs inputs) {
         return Result.all(LaunchHttp.launchHttp(directory, settings, inputs),
+                          TerraMetrics.Settings.settings(settings),
                           managementSettings(settings))
-                     .flatMap((http, management) -> management(http, management).flatMap(mounts -> configureSlices(directory,
-                                                                                                                   blueprint,
-                                                                                                                   factories,
-                                                                                                                   deployment,
-                                                                                                                   http,
-                                                                                                                   mounts)));
+                     .flatMap((http, metrics, management) -> management(http, management).flatMap(mounts -> configureSlices(directory,
+                                                                                                                             blueprint,
+                                                                                                                             factories,
+                                                                                                                             deployment,
+                                                                                                                             http,
+                                                                                                                             metrics,
+                                                                                                                             mounts)));
     }
 
     private static Result<TerraLaunchPlan> configureSlices(Path directory,
@@ -119,6 +125,7 @@ public final class TerraLaunchPlan {
                                                            List<TerraFactory<?>> factories,
                                                            TerraConfiguration.Deployment deployment,
                                                            LaunchHttp http,
+                                                           TerraMetrics.Settings metrics,
                                                            List<TerraHttpMount> mounts) {
         var configurations = new LinkedHashMap<String, ConfigurationProvider>();
 
@@ -138,6 +145,7 @@ public final class TerraLaunchPlan {
                                                   configurations,
                                                   deployment.provider(),
                                                   http,
+                                                  metrics,
                                                   mounts));
     }
 
@@ -214,7 +222,8 @@ public final class TerraLaunchPlan {
                                                                                                                             factories,
                                                                                                                             configuration::get,
                                                                                                                             resources.facade(),
-                                                                                                                            migrations));
+                                                                                                                            migrations,
+                                                                                                                            metrics));
     }
 
     private Promise<TerraHttpServer> host(TerraApplication application) {

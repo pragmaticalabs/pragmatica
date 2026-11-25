@@ -75,9 +75,9 @@ class BatchPublishPreAppendGuardsTest {
     }
 
     /// Epoch fence (rev1287 mutation C5: dropping `ensureNotStale` from the batch's admission turns this red): the
-    /// partition's ownership high-water is 1:3 and this node stamps ZERO — a deposed writer. The run is fenced
-    /// before the section (`StaleEpochAppend`, permanent): every outcome unknown with that cause, nothing
-    /// appended, so a deposed owner can never land a torn group.
+    /// partition's ownership high-water is 1:3 and this node stamps ZERO — it has not applied its ownership record
+    /// (#2755). The run is fenced before the section (`OwnershipNotApplied`, transient): every outcome unknown with that
+    /// cause, nothing appended, so a writer without an applied record can never land a torn group.
     @Test
     void staleEpoch_fencesTheWholeRunBeforeAppend() {
         var highWater = OwnershipEpochHighWater.ownershipEpochHighWater(new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(),
@@ -103,7 +103,7 @@ class BatchPublishPreAppendGuardsTest {
 
         assertThat(outcomes).hasSize(3);
         outcomes.forEach(outcome -> assertThat(outcome).isInstanceOf(PublishOutcome.OutcomeUnknown.class));
-        outcomes.forEach(outcome -> assertThat(((PublishOutcome.OutcomeUnknown) outcome).cause()).isInstanceOf(StreamError.StaleEpochAppend.class));
+        outcomes.forEach(outcome -> assertThat(((PublishOutcome.OutcomeUnknown) outcome).cause()).isInstanceOf(StreamError.OwnershipNotApplied.class));
         assertThat(manager.nextExpectedOffset(STREAM, P)).as("a fenced run leaves nothing in the ring").isZero();
     }
 

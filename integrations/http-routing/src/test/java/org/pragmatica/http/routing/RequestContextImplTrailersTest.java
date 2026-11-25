@@ -37,6 +37,15 @@ class RequestContextImplTrailersTest {
         assertThat(context.headers().get("x-checksum").isEmpty()).isTrue();
     }
 
+    /// #3679: the context's method is the matched route's, never a `GET` fallback.
+    @Test
+    void method_isTheMatchedRoutes() {
+        var request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, "/upload", Unpooled.EMPTY_BUFFER);
+        var context = RequestContext.RequestContextImpl.requestContext(request, ROUTE, JsonCodecAdapter.defaultCodec(), "req-4");
+
+        assertThat(context.method()).isEqualTo(org.pragmatica.http.HttpMethod.POST);
+    }
+
     /// Names that differ only in case are one field: every value survives, in arrival order.
     @Test
     void trailers_namesDifferingOnlyInCase_mergeEveryValue_inArrivalOrder() {

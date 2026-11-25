@@ -38,8 +38,9 @@ public class JbctFormatter {
     }
 
     /// Format an already-parsed CST. For single-pass orchestrators that have already
-    /// produced a parse tree and want to avoid re-parsing.
-    public SourceFile formatParsed(Cursor tree, SourceFile source) {
+    /// produced a parse tree and want to avoid re-parsing. A text that would lose content is a
+    /// [FormattingError.ContentChanged] failure, never a returned text.
+    public Result<SourceFile> formatParsed(Cursor tree, SourceFile source) {
         return delegate.formatParsed(tree, source);
     }
 

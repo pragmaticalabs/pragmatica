@@ -2,7 +2,7 @@
 
 Pragmatica Terra compiles the slice sources you would run on Aether into one ordinary Java application: one JVM process, one executable distribution, no cluster. Licensed under Apache 2.0 (see the [license map](../LICENSE)).
 
-The same sources run on both runtimes. The blueprint syntax is shared, so a slice written for Aether needs no edits to start on Terra, and moving it to Aether later needs none either. Twenty-one original example slices compile for Terra unchanged, and eight example applications are proven end to end ([the matrix](example-apps/README.md)); the examples that need streams are refused explicitly ([why](STREAMS-AND-ENTITIES.md)).
+The same sources run on both runtimes. The blueprint syntax is shared, so a slice written for Aether needs no edits to start on Terra, and moving it to Aether later needs none either. Twenty-one original example slices compile for Terra unchanged, and eight example applications are proven end to end ([the matrix](example-apps/README.md)); the examples that need streams are refused explicitly ([why](../docs/rfc/RFC-0020-terra-streams-and-entities.md)).
 
 ## What you get
 
@@ -30,7 +30,7 @@ Terra does not start an Aether node, and distributed collaborators are outside i
 
 ## Deployment shape
 
-Direction (2026-11-06, not a shipped guarantee): Terra will ship resource clients that work from both runtimes, so the runtime and each resource's backend are chosen independently, and the standard deployment becomes two Terra instances with state in external standard infrastructure. Today the contract is narrower: two instances may start against one database, because the migration engine's database fence (PostgreSQL `pg_try_advisory_lock`, per database) lets one run at a time and a second instance's startup fails with a refusal instead of waiting (guarantee in the reference); pub-sub is in-process, so two instances do not share events. See [the reference](SPEC.md#database-startup).
+Direction (2026-11-06, not a shipped guarantee): Terra will ship resource clients that work from both runtimes, so the runtime and each resource's backend are chosen independently, and the standard deployment becomes two Terra instances with state in external standard infrastructure. Today the contract is narrower: two instances may start against one database, because the migration engine's database fence (PostgreSQL `pg_try_advisory_lock`, per database) lets one session run a datasource's migrations at a time, and a second instance's startup waits for the holder and then re-runs, finding the migrations applied (guarantee in the reference); pub-sub is in-process, so two instances do not share events. See [the reference](SPEC.md#database-startup).
 
 ## Run the demo distribution
 
@@ -74,4 +74,4 @@ Details: [launcher guide](launcher/README.md), [example POM](examples/pom.xml). 
 - [HTTP host](http/README.md): versioning, authentication, probes, drain.
 - [Example applications](example-apps/README.md): eight applications with live PostgreSQL proofs.
 - [Specification](SPEC.md): contracts, increments, evidence, test counts.
-- [Streams and durable entities](STREAMS-AND-ENTITIES.md): not supported; investigation and proposed contract.
+- [Streams and durable entities](../docs/rfc/RFC-0020-terra-streams-and-entities.md): not supported; investigation and proposed contract.

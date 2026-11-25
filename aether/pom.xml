@@ -482,9 +482,7 @@
                     <version>3.5.1</version>
                     <configuration>
                         <argLine>${vthread.argLine}</argLine>
-                        <excludes>
-                            <exclude>**/*IT.java</exclude>
-                        </excludes>
+                        <!-- No <excludes>: the root's list (`**/*IT.java` and surefire's default `**/*$*`, #3688) is inherited. -->
                     </configuration>
                 </plugin>
                 <plugin>

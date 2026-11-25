@@ -25,7 +25,7 @@ V001 creates the two base tables (users, orders) with surrogate PKs and FKs. V00
 - `JSONB` — `metadata` column with `DEFAULT '{}'` and a GIN index.
 - `UUID` — `correlation_id` with `DEFAULT gen_random_uuid()`.
 - `ARRAY` — `tags TEXT[]` with `DEFAULT '{}'` and a GIN index.
-- `GENERATED ALWAYS AS ... STORED` — `total_with_tax` as `total * 1.08`.
+- `GENERATED ALWAYS AS ... STORED NOT NULL` — `total_with_tax` as `total * 1.08`; PostgreSQL does not infer NOT NULL for generated columns, so it is declared.
 - `CHECK` constraint — `total > 0` via named `ALTER TABLE ADD CONSTRAINT`.
 - Partial index — `WHERE status <> 'cancelled'`.
 

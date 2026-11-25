@@ -379,13 +379,13 @@ sealed interface BootstrapPhaseDeploy {
             }
         }
 
-        return new BootstrapError.DeploymentFailed(sourceName.value(),
-                                                   "Only " + formed
-                                                  + " of " + expected
-                                                  + " cores reported formation (aether-formed label) within " + timeoutMs / 1000
-                                                  + "s. Nodes self-assemble via discovery; check the VMs' cloud-init logs,"
-                                                  + " that the aether-cluster/aether-node-id labels exist on all core VMs,"
-                                                  + " and that [cloud.discovery] cluster_name reached the node config.").result();
+        return new BootstrapError.VmSurfaceFailure(new BootstrapError.DeploymentFailed(sourceName.value(),
+                                                                                       "Only " + formed
+                                                                                      + " of " + expected
+                                                                                      + " cores reported formation (aether-formed label) within " + timeoutMs / 1000
+                                                                                      + "s. Nodes self-assemble via discovery; check that the aether-cluster/aether-node-id labels exist on all core VMs"
+                                                                                      + " and that [cloud.discovery] cluster_name reached the node config."),
+                                                   "the cloud-init logs").result();
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -1070,17 +1070,17 @@ sealed interface BootstrapPhaseDeploy {
             // This gate polls the management API on each node's PUBLIC address; it does not inspect
             // cloud-init. Naming only cloud-init sent a 2026-08-05 live investigation to the wrong
             // place: the nodes had booted fine and the port was simply firewalled off.
-            return new BootstrapError.DeploymentFailed(sourceName.value(),
-                                                       unreachable.size()
-                                                      + " node(s) never answered the management"
-                                                      + " API on port " + mgmtPort
-                                                      + ". Unreachable IPs: " + String.join(", ", ips)
-                                                      + ". Most likely: ingress does not permit " + mgmtPort
-                                                      + "/tcp from this host (a declared [source.<name>.firewall]"
-                                                      + " is deny-by-default and Aether never opens the management"
-                                                      + " port itself), or the runtime failed to start —"
-                                                      + " check /var/log/cloud-init-output.log and the aether-node"
-                                                      + " service on the host.").result();
+            return new BootstrapError.VmSurfaceFailure(new BootstrapError.DeploymentFailed(sourceName.value(),
+                                                                                           unreachable.size()
+                                                                                          + " node(s) never answered the management"
+                                                                                          + " API on port " + mgmtPort
+                                                                                          + ". Unreachable IPs: " + String.join(", ",
+                                                                                                                                ips)
+                                                                                          + ". Most likely: ingress does not permit " + mgmtPort
+                                                                                          + "/tcp from this host (a declared [source.<name>.firewall]"
+                                                                                          + " is deny-by-default and Aether never opens the management"
+                                                                                          + " port itself), or the runtime failed to start."),
+                                                       "/var/log/cloud-init-output.log and the aether-node service").result();
         }
 
         System.out.printf("  [%s/cloud] All nodes reported healthy%n", sourceName);

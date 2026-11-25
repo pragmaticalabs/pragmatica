@@ -217,7 +217,19 @@ final class NettyHttpServer implements HttpServer {
                                              .childOption(ChannelOption.SO_KEEPALIVE,
                                                           socketOptions.soKeepalive());
 
-        return Promise.promise(promise -> bootstrap.bind(config.port())
+        return config.bindAddress()
+                     .fold(cause -> bindHostRefused(config, cause, ownsGroups, bossGroup, workerGroup),
+                           address -> bindTo(address, bootstrap, config, sslContext, bossGroup, workerGroup, ownsGroups));
+    }
+
+    private static Promise<HttpServer> bindTo(InetSocketAddress address,
+                                              ServerBootstrap bootstrap,
+                                              HttpServerConfig config,
+                                              Option<SslContext> sslContext,
+                                              EventLoopGroup bossGroup,
+                                              EventLoopGroup workerGroup,
+                                              boolean ownsGroups) {
+        return Promise.promise(promise -> bootstrap.bind(address)
                                                    .addListener((ChannelFuture future) -> onBind(config,
                                                                                                  promise,
                                                                                                  future,
@@ -225,6 +237,18 @@ final class NettyHttpServer implements HttpServer {
                                                                                                  bossGroup,
                                                                                                  workerGroup,
                                                                                                  ownsGroups)));
+    }
+
+    /// #2180: a bind host that does not resolve refuses startup: falling back to every interface would widen the
+    /// exposure the operator narrowed. Like a failed bind, the groups this create made are released first.
+    private static Promise<HttpServer> bindHostRefused(HttpServerConfig config,
+                                                       Cause cause,
+                                                       boolean ownsGroups,
+                                                       EventLoopGroup bossGroup,
+                                                       EventLoopGroup workerGroup) {
+        log.error("HTTP server '{}' will not start: {}", config.name(), cause.message());
+
+        return releaseGroupsOnBindFailure(ownsGroups, bossGroup, workerGroup).fold(_ -> cause.promise());
     }
 
     private static void onBind(HttpServerConfig config,
@@ -248,7 +272,7 @@ final class NettyHttpServer implements HttpServer {
             // #1612: the groups this create made are terminated (bounded) BEFORE the failure is reported, so a
             // caller that retries sees no event-loop threads left over from this attempt. The bind failure is
             // what the create reports; a termination failure is only logged.
-            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause());
+            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause(), config.bindHost());
 
             releaseGroupsOnBindFailure(ownsGroups, bossGroup, workerGroup).onResultRun(() -> promise.fail(bindFailed));
         }
@@ -477,20 +501,29 @@ final class NettyHttpServer implements HttpServer {
                 return;
             }
 
+            var method = HttpMethod.httpMethod(request.method().name());
+
+            if (method.isFailure()) {
+                rejectUnknownMethod(ctx, requestId, method);
+
+                return;
+            }
+
             var target = RequestTarget.requestTarget(request.uri());
 
             if (target.isFailure()) {
                 rejectMalformedTarget(ctx, requestId, target);
             } else {
-                dispatchRequest(ctx, request, requestId, target.unwrap());
+                dispatchRequest(ctx, request, requestId, method.unwrap(), target.unwrap());
             }
         }
 
         private void dispatchRequest(ChannelHandlerContext ctx,
                                      FullHttpRequest request,
                                      String requestId,
+                                     HttpMethod method,
                                      RequestTarget target) {
-            var requestContext = createRequestContext(requestId, request, target);
+            var requestContext = createRequestContext(requestId, method, request, target);
             var keepAlive = HttpUtil.isKeepAlive(request);
             var responseWriter = new NettyResponseWriter(ctx, requestId, keepAlive, pendingResponses::decrementAndGet);
 
@@ -534,6 +567,18 @@ final class NettyHttpServer implements HttpServer {
                    HttpStatus.BAD_REQUEST,
                    "Malformed request target",
                    () -> {});
+        }
+
+        /// #3679: RFC 9110 §15.6.2 — a method the server does not recognize is answered 501 before routing,
+        /// authorization, audit and any handler, never read as `GET`. The cause is logged; the response does not echo the method.
+        private void rejectUnknownMethod(ChannelHandlerContext ctx, String requestId, Result<HttpMethod> method) {
+            method.onFailure(cause -> log.debug("Rejecting request {} with 501: {}", requestId, cause.message()));
+            pendingResponses.incrementAndGet();
+            refuse(ctx,
+                   requestId,
+                   HttpStatus.NOT_IMPLEMENTED,
+                   "Method not implemented",
+                   pendingResponses::decrementAndGet);
         }
 
         /// #2386: RFC 9112 §3.2 — a request with more than one `Host` line is answered 400, and the connection is
@@ -648,9 +693,10 @@ final class NettyHttpServer implements HttpServer {
             ctx.close();
         }
 
-        private HttpRequest createRequestContext(String requestId, FullHttpRequest request, RequestTarget target) {
-            // Netty validates the HTTP method before we receive it, so this will always succeed
-            var method = HttpMethod.httpMethod(request.method().name()).fold(_ -> HttpMethod.GET, v -> v);
+        private HttpRequest createRequestContext(String requestId,
+                                                 HttpMethod method,
+                                                 FullHttpRequest request,
+                                                 RequestTarget target) {
             var headers = Headers.headers(fieldMap(request.headers()));
             // #2310: the chunked trailer section; the aggregator leaves it empty for a request that sent none
             var trailers = Headers.trailers(fieldMap(request.trailingHeaders()));

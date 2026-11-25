@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import org.pragmatica.aether.resource.BackendRuntime;
 import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.Publisher;
@@ -20,12 +21,15 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
+import io.micrometer.core.instrument.MeterRegistry;
+
 
 /// Construction-only view. Every resource acquisition belongs to exactly one application slice.
 public final class TerraContext {
     private final Map<Class<?>, Object> slices;
     private final ConfigurationProvider configuration;
     private final TerraTopics topics;
+    private final MeterRegistry meters;
     private final Scope scope;
     private final Map<String, Object> steps = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -33,10 +37,12 @@ public final class TerraContext {
                  Map<Class<?>, Object> slices,
                  ConfigurationProvider configuration,
                  ResourceProviderFacade resources,
-                 TerraTopics topics) {
+                 TerraTopics topics,
+                 MeterRegistry meters) {
         this.slices = slices;
         this.configuration = configuration;
         this.topics = topics;
+        this.meters = meters;
         this.scope = new Scope(artifact, resources);
     }
 
@@ -130,8 +136,10 @@ public final class TerraContext {
                                 .async();
             }
 
-            var enriched = context.withExtension(String.class, artifact)
-                                  .withExtension(ConfigurationProvider.class, configuration);
+            var enriched = withMeters(context.withExtension(String.class, artifact)
+                                             .withExtension(ConfigurationProvider.class, configuration)
+                                             .withExtension(BackendRuntime.class, BackendRuntime.TERRA),
+                                      context);
             Promise<T> acquisition = Result.lift(Causes::fromThrowable,
                                                  () -> Objects.requireNonNull(delegate.provide(type, section, enriched),
                                                                               "Provider returned null resource promise: " + artifact
@@ -141,6 +149,13 @@ public final class TerraContext {
             acquisitions.add(acquisition.mapToUnit());
 
             return acquisition;
+        }
+
+        // #3650: the application registry is a default, never an override: a registry the caller supplied is kept (#526).
+        private ProvisioningContext withMeters(ProvisioningContext enriched, ProvisioningContext supplied) {
+            return supplied.hasExtension(MeterRegistry.class)
+                   ? enriched
+                   : enriched.withExtension(MeterRegistry.class, meters);
         }
 
         @Override

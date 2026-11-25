@@ -6,7 +6,12 @@ package org.pragmatica.terra;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CopyOnWriteArrayList;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.resource.SpiResourceProvider;
+import org.pragmatica.aether.resource.interceptor.MetricsMethodInterceptor;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.config.ConfigurationProvider;
@@ -149,4 +154,64 @@ class TerraApplicationTest {
         assertThat(released).containsExactly(second.artifact(), first.artifact());
     }
 
+    /// #3650 item 1: `@Metrics` provisions on Terra. Before, the provisioning context carried no `MeterRegistry` and
+    /// `MetricsInterceptorFactory` failed with "Context does not contain MeterRegistry".
+    @Test void start_metricsInterceptor_provisionsAndRecordsIntoTheApplicationRegistry() {
+        var config = ConfigurationProvider.builder().withDefaults(Map.of("metrics.greet.name", "greet.calls")).build();
+        var interceptor = new java.util.concurrent.atomic.AtomicReference<MetricsMethodInterceptor>();
+        var factory = new Factory<>("g:first:1", First.class, List.of(), ctx ->
+            ctx.resources().provide(MetricsMethodInterceptor.class, "metrics.greet").onSuccess(interceptor::set).map(_ -> new First(1)));
+        var resources = SpiResourceProvider.spiResourceProvider((_, _) -> cause("unscoped").result()).facade();
+        var app = TerraApplication.start(new TerraBlueprint(List.of(factory.artifact())), List.of(factory), _ -> config, resources)
+            .await(timeSpan(5).seconds());
+
+        assertThat(app.<String>fold(c -> c.message(), _ -> "started")).isEqualTo("started");
+        var metrics = app.unwrap().metrics();
+        Fn1<Promise<String>, String> method = name -> Promise.success("hello " + name);
+        assertThat(interceptor.get().intercept(method).apply("terra").await(timeSpan(5).seconds()).isSuccess()).isTrue();
+        assertThat(metrics.registry().find("greet.calls.success").timer().count()).isEqualTo(1);
+        assertThat(app.unwrap().close().await(timeSpan(5).seconds()).isSuccess()).isTrue();
+        assertThat(metrics.registry().isClosed()).as("closing the application closes its metric sinks").isTrue();
+    }
+
+    /// The application registry is a default, never an override (#526 rule, as on Aether).
+    @Test void start_callerSuppliedMeterRegistry_isKeptOverTheApplicationRegistry() {
+        var seen = new CopyOnWriteArrayList<MeterRegistry>();
+        var own = new SimpleMeterRegistry();
+        ResourceProviderFacade provider = new ResourceProviderFacade() {
+            public <T> Promise<T> provide(Class<T> type, String section) { return cause("unused").promise(); }
+            @SuppressWarnings("unchecked") public <T> Promise<T> provide(Class<T> type, String section, ProvisioningContext context) {
+                seen.add(context.extension(MeterRegistry.class).unwrap());
+                return Promise.success((T) section);
+            }
+            public Promise<Unit> releaseAll(String scope) { return Promise.unitPromise(); }
+        };
+        var factory = new Factory<>("g:first:1", First.class, List.of(), ctx ->
+            Promise.all(ctx.resources().provide(String.class, "plain"),
+                        ctx.resources().provide(String.class, "own", ProvisioningContext.provisioningContext().withExtension(MeterRegistry.class, own)))
+                   .map((a, b) -> new First(1)));
+        var app = TerraApplication.start(new TerraBlueprint(List.of(factory.artifact())), List.of(factory), _ -> CONFIG, provider)
+            .await(timeSpan(5).seconds()).unwrap();
+
+        assertThat(seen).containsExactly(app.metrics().registry(), own);
+        assertThat(app.close().await(timeSpan(5).seconds()).isSuccess()).isTrue();
+    }
+
+    @Test void start_failedConstruction_closesTheMetricSinks() {
+        var registry = new java.util.concurrent.atomic.AtomicReference<MeterRegistry>();
+        ResourceProviderFacade provider = new ResourceProviderFacade() {
+            public <T> Promise<T> provide(Class<T> type, String section) { return cause("unused").promise(); }
+            public <T> Promise<T> provide(Class<T> type, String section, ProvisioningContext context) {
+                registry.set(context.extension(MeterRegistry.class).unwrap());
+                return cause("acquisition failed").promise();
+            }
+            public Promise<Unit> releaseAll(String scope) { return Promise.unitPromise(); }
+        };
+        var factory = new Factory<>("g:first:1", First.class, List.of(), ctx -> ctx.resources().provide(Object.class, "fail").map(_ -> new First(1)));
+        var result = TerraApplication.start(new TerraBlueprint(List.of(factory.artifact())), List.of(factory), _ -> CONFIG, provider)
+            .await(timeSpan(5).seconds());
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(registry.get().isClosed()).as("a refused start leaves no open sink behind").isTrue();
+    }
 }

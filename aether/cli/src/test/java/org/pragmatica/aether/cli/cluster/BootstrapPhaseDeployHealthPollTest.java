@@ -152,6 +152,13 @@ class BootstrapPhaseDeployHealthPollTest {
                    () -> "Failure message must name what was actually polled. Got: " + msg);
         assertTrue(msg.contains("firewall"),
                    () -> "Failure message must offer the likeliest cause (blocked ingress). Got: " + msg);
+        // #1030: the VM-log pointer is not in the phase text; it rides the carrier so the caller that knows
+        // whether the VMs survive (--keep-on-failure) words it.
+        boolean carriesLogs = result.fold(c -> c instanceof BootstrapError.VmSurfaceFailure f
+                                               && f.logs().contains("cloud-init-output.log"),
+                                          v -> false);
+        assertTrue(carriesLogs, "Health-gate failure must be a VmSurfaceFailure naming the cloud-init output log");
+        assertFalse(msg.contains("cloud-init-output.log"), () -> "Phase text must not name VM logs. Got: " + msg);
     }
 
     @Test
