@@ -512,6 +512,26 @@ class WorkerCursorResumeTest {
             assertThat(source.forPass(List.of(FIRST)).apply(FIRST)).isEqualTo(Option.none());
         }
 
+        /// A core pass keeps no remote key, so a forwarding pass after it never acts on what was found before.
+        @Test
+        void corePass_forgetsWhatEarlierForwardingPassesFound() {
+            var forwarding = new AtomicBoolean(true);
+            var switching = CommittedCursorRead.committedEpochs(forwarding::get,
+                                                                _ -> Option.none(),
+                                                                CommittedCursorRead.consensusReads(this::pendingApply));
+
+            switching.forPass(List.of(FIRST));
+            replies.getFirst().succeed(List.of(Option.some(rewound(REWOUND))));
+            assertThat(passUntilSent(switching, List.of(FIRST), 2).apply(FIRST)).describedAs("control: the FOUND is acted on")
+                                                                                 .isEqualTo(Option.some(REWOUND));
+
+            forwarding.set(false);
+            switching.forPass(List.of(FIRST));
+            forwarding.set(true);
+
+            assertThat(switching.forPass(List.of(FIRST)).apply(FIRST)).isEqualTo(Option.none());
+        }
+
         @Test
         void worker_mirrorEpochIsIgnored() {
             var mirrored = CommittedCursorRead.committedEpochs(() -> true,
@@ -544,18 +564,25 @@ class WorkerCursorResumeTest {
         /// lookup of the pass that sent it reflects that answer.
         private Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey> passUntilSent(List<StreamConsumerManager.SubscriptionKey> keys,
                                                                                                                                 int count) {
+            return passUntilSent(source, keys, count);
+        }
+
+        private Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey> passUntilSent(StreamConsumerManager.CommittedEpochSource epochs,
+                                                                                                                                List<StreamConsumerManager.SubscriptionKey> keys,
+                                                                                                                                int count) {
             var lookup = new AtomicReference<Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey>>();
 
-            PollUntil.pollUntil(() -> passAndCount(keys, lookup), sent -> sent >= count, AWAIT_DEADLINE)
+            PollUntil.pollUntil(() -> passAndCount(epochs, keys, lookup), sent -> sent >= count, AWAIT_DEADLINE)
                      .assertMet(count + " reads sent");
 
             return lookup.get();
         }
 
-        private int passAndCount(List<StreamConsumerManager.SubscriptionKey> keys,
+        private int passAndCount(StreamConsumerManager.CommittedEpochSource epochs,
+                                 List<StreamConsumerManager.SubscriptionKey> keys,
                                  AtomicReference<Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey>> lookup) {
             var before = applies.size();
-            var pass = source.forPass(keys);
+            var pass = epochs.forPass(keys);
 
             if (applies.size() > before) {
                 lookup.set(pass);

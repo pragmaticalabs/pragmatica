@@ -658,7 +658,8 @@ public interface StreamConsumerManager {
                 .forEach(key -> restartForRewind(key, byGroup));
         }
 
-        private static boolean rewoundBehind(Option<SubscriptionSnapshot> snapshot, Option<RewindEpoch> committedEpoch) {
+        private static boolean rewoundBehind(Option<SubscriptionSnapshot> snapshot,
+                                             Option<RewindEpoch> committedEpoch) {
             return snapshot.filter(live -> !live.awaitingCursorFetch())
                            .map(live -> committedEpoch.map(committed -> committed.isStrictlyAfter(live.rewindEpoch()))
                                                       .or(false))
