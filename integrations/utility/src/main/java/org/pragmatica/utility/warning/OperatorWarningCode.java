@@ -34,7 +34,7 @@ import org.pragmatica.lang.Option;
 /// conflict with any other PR adding a code (this file merges with `merge=union`, see `.gitattributes`).
 ///
 /// Never rename the string of a shipped code, because anything
-/// that matches on it (alert rules, scripts, a future server-side filter) depends on it.
+/// that matches on it (alert rules, scripts, the `code` filter of `GET /api/v1/events`, #1631) depends on it.
 public enum OperatorWarningCode {
     /// SWIM's #336 co-confirmation kill-gate is holding the death of a long-healthy peer. This node
     /// alone judged the peer FAULTY, with no transport corroboration.
