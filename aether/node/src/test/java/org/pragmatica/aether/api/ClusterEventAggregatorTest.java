@@ -3018,6 +3018,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
                 OperatorWarningCode.HTTP_TLS_ROTATION_RESTORED,
                 OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
+                OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE,
                 OperatorWarningCode.IDENTITY_LEDGER_DURABLE,
                 OperatorWarningCode.BACKUP_CONFIG_RESTORED,
                 OperatorWarningCode.GENESIS_SEAT_REACHABLE,
