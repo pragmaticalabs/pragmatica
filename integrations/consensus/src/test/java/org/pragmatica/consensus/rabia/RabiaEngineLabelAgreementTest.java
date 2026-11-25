@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
@@ -142,7 +143,8 @@ class RabiaEngineLabelAgreementTest {
         assertThat(first.refusal()).isInstanceOfSatisfying(ConsensusError.LabelAgreementRefused.class,
                                                            refused -> assertThat(refused.member()).isEqualTo(N1));
         assertThat(nodes).allSatisfy(node -> assertThat(node.network.getMessages()).as("nothing cast by " + node.self).isEmpty());
-        assertThat(nodes).allSatisfy(node -> assertThat(node.engine.isStopRequested()).isTrue());
+        assertThat(nodes).allSatisfy(node -> assertThat(await(node.engine::isStopRequested)).as("refusal stops the engine, right after it fails the start")
+                                                                                         .isTrue());
     }
 
     /// A peer that lacks the label differs from a peer that has it, on both sides of the pair.
@@ -196,10 +198,32 @@ class RabiaEngineLabelAgreementTest {
         waiting.handshaken(peer);
 
         assertThat(await(waiting::syncStarted)).as("the quorum agrees, so the node syncs").isTrue();
+        assertThat(await(() -> waiting.count(OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE) == 1)).as("the recovery reaches the sink, which hands off on its own thread")
+                                                                                                  .isTrue();
         assertThat(waiting.warnings.stream().map(OperatorWarning::code))
             .as("the warning is closed by its recovery, once, before the node syncs")
             .containsExactly(OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE, OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE);
         assertThat(waiting.warnings.getLast().subject()).isEqualTo(waiting.warnings.getFirst().subject());
+    }
+
+    /// #3525 round 1 (F1): the label wait lives no longer than the engine that consumes it. With a quorum that never handshakes
+    /// the wait has no deadline, so stopping the engine must end it: no further poll, no warning past the bound, whether the
+    /// quorum is incomplete or later completes.
+    @Test
+    void engineStoppedDuringTheWait_theWaitEndsAndRaisesNothing() {
+        var waiting = node(N1, "a", SHORT_WAIT);
+
+        waiting.activeEdge();
+        assertThat(await(() -> waiting.lookups.get() > 0)).as("the wait is polling").isTrue();
+        var stoppedAt = System.nanoTime();
+        waiting.engine.stop().await();
+
+        assertThat(await(() -> waiting.guard.get().isResolved())).as("stopping the engine ends the wait").isTrue();
+        var pollsAtEnd = waiting.lookups.get();
+
+        assertThat(await(() -> System.nanoTime() - stoppedAt > SHORT_WAIT.nanos() * 3)).as("the bound, and then some, has passed").isTrue();
+        assertThat(waiting.warnings).as("nothing is raised on a stopped engine").isEmpty();
+        assertThat(waiting.lookups.get()).as("no poll after the wait ended").isEqualTo(pollsAtEnd);
     }
 
     /// A new wait episode warns again: the first episode ends with the quorum, a later one (a fresh guard run) waits again
@@ -216,7 +240,8 @@ class RabiaEngineLabelAgreementTest {
                                               JoinGenerationGuard.WIRE_GENERATION,
                                               LabelAgreement.labelAgreement(own, Set.of(LABEL), 1,
                                                                          waiting.engine::raiseJoinQuorumIncomplete,
-                                                                         waiting.engine::raiseJoinQuorumComplete));
+                                                                         waiting.engine::raiseJoinQuorumComplete),
+                                              waiting.engine::isStopRequested);
 
         assertThat(await(() -> waiting.count(OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE) == 1)).isTrue();
         view.put(N2, helloLabels("a"));
@@ -229,7 +254,8 @@ class RabiaEngineLabelAgreementTest {
                                   JoinGenerationGuard.WIRE_GENERATION,
                                   LabelAgreement.labelAgreement(own, Set.of(LABEL), 1,
                                                                          waiting.engine::raiseJoinQuorumIncomplete,
-                                                                         waiting.engine::raiseJoinQuorumComplete));
+                                                                         waiting.engine::raiseJoinQuorumComplete),
+                                  waiting.engine::isStopRequested);
 
         assertThat(await(() -> waiting.count(OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE) == 2)).as("the second episode raises its own warning")
                                                                                                     .isTrue();
@@ -290,6 +316,8 @@ class RabiaEngineLabelAgreementTest {
         final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
         final RabiaEngine<RabiaEnginePauseResumeTest.TestCommand> engine;
         final Promise<Unit> started;
+        /// The wait of the latest pre-sync check run: the promise the engine's check returned.
+        final AtomicReference<Promise<Unit>> guard = new AtomicReference<>();
 
         Node(NodeId self, String labelValue, TimeSpan wait) {
             this.self = self;
@@ -306,12 +334,19 @@ class RabiaEngineLabelAgreementTest {
                                                           engine::raiseJoinQuorumComplete);
             var others = Set.of(N1, N2, N3);
 
-            engine.preSyncCheck(() -> JoinGenerationGuard.admit(without(others, self),
-                                                                this::lookup,
-                                                                wait,
-                                                                JoinGenerationGuard.WIRE_GENERATION,
-                                                                agreement));
+            engine.preSyncCheck(() -> guard(JoinGenerationGuard.admit(without(others, self),
+                                                                      this::lookup,
+                                                                      wait,
+                                                                      JoinGenerationGuard.WIRE_GENERATION,
+                                                                      agreement,
+                                                                      engine::isStopRequested)));
             this.started = engine.start();
+        }
+
+        private Promise<Unit> guard(Promise<Unit> wait) {
+            guard.set(wait);
+
+            return wait;
         }
 
         long count(OperatorWarningCode code) {

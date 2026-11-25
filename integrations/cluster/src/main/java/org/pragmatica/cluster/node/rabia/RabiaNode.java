@@ -578,7 +578,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                          config.joinGenerationWait(),
                                          config.agreeingLabels(),
                                          consensus::raiseJoinQuorumIncomplete,
-                                         consensus::raiseJoinQuorumComplete));
+                                         consensus::raiseJoinQuorumComplete,
+                                         consensus::isStopRequested));
         network.setProposalRelayMembership(id -> consensus.voterConfiguration()
                                                           .map(voters -> voters.contains(id))
                                                           .or(false));
@@ -1097,18 +1098,20 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// The pre-sync check the engine runs on a cluster ACTIVE edge: the wire-generation join guard (#2981 step 6), with no label
     /// agreement.
     static Supplier<Promise<Unit>> joinGuard(TopologyObserver topologyManager, ClusterNetwork network, TimeSpan wait) {
-        return joinGuard(topologyManager, network, wait, Set.of(), _ -> Unit.unit(), Unit::unit);
+        return joinGuard(topologyManager, network, wait, Set.of(), _ -> Unit.unit(), Unit::unit, () -> false);
     }
 
     /// The pre-sync check with label agreement (#3525): also refuses on a handshaken core peer whose value of an `agreeingLabels`
     /// label differs from this node's, and passes only once a quorum of the core has handshaken. `onIncomplete` is told the
     /// peers still missing, once per wait episode, after `wait`; `onComplete` is told when an episode that did so ends with the quorum.
+    /// `ended` is true once the engine that consumes the wait has stopped: the wait then cancels itself and tells neither.
     static Supplier<Promise<Unit>> joinGuard(TopologyObserver topologyManager,
                                              ClusterNetwork network,
                                              TimeSpan wait,
                                              Set<String> agreeingLabels,
                                              Fn1<Unit, Set<NodeId>> onIncomplete,
-                                             Fn0<Unit> onComplete) {
+                                             Fn0<Unit> onComplete,
+                                             Fn0<Boolean> ended) {
         return () -> JoinGenerationGuard.admit(joinDecisionSet(topologyManager),
                                                network::peerHelloLabels,
                                                wait,
@@ -1117,7 +1120,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                              agreeingLabels,
                                                                              quorumPeers(topologyManager),
                                                                              onIncomplete,
-                                                                             onComplete));
+                                                                             onComplete),
+                                               ended);
     }
 
     /// How many core peers must have handshaken for this node plus them to be a quorum of the core: this node is always a

@@ -21,8 +21,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
@@ -50,6 +52,13 @@ class LabelAgreementTest {
     private final AtomicInteger recoveries = new AtomicInteger();
 
     private final AtomicInteger lookups = new AtomicInteger();
+    /// The consumer of every wait in this class: set at the end of each test so a wait left pending stops polling.
+    private final AtomicBoolean ended = new AtomicBoolean();
+
+    @AfterEach
+    void endTheWaits() {
+        ended.set(true);
+    }
 
     private Option<Map<String, String>> labelsOf(NodeId id) {
         lookups.incrementAndGet();
@@ -90,7 +99,7 @@ class LabelAgreementTest {
     private void assertRefused(String ownValue, String peerValue, Option<String> memberValue, Option<String> ownSeen) {
         handshaken.put(A, hello(peerValue));
 
-        JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement(ownValue, 1))
+        JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement(ownValue, 1), ended::get)
                            .await(AWAIT)
                            .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("must be refused"))
                            .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.LabelAgreementRefused(A,
@@ -122,7 +131,7 @@ class LabelAgreementTest {
     void bothAbsent_agree_andTheQuorumDecides() {
         handshaken.put(A, hello(null));
 
-        var result = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, agreement(null, 1)).await(AWAIT);
+        var result = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, agreement(null, 1), ended::get).await(AWAIT);
 
         assertThat(result.isSuccess()).as("one handshaken peer is the quorum; the generation bound passes over the other").isTrue();
     }
@@ -132,7 +141,7 @@ class LabelAgreementTest {
         handshaken.put(A, hello("on"));
         handshaken.put(B, hello("on"));
 
-        assertThat(JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement("on", 2)).await(AWAIT)
+        assertThat(JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement("on", 2), ended::get).await(AWAIT)
                                       .isSuccess()).isTrue();
     }
 
@@ -140,7 +149,7 @@ class LabelAgreementTest {
     /// generation-only guard (no labels) still passes at the bound as before.
     @Test
     void pastTheDeadline_quorumIncomplete_staysPending_whileNoLabelsPassesAtTheDeadline() {
-        var pending = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, agreement("on", 1));
+        var pending = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, agreement("on", 1), ended::get);
         var noLabels = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN);
 
         assertThat(noLabels.await(AWAIT).isSuccess()).as("control: the generation wait still passes at its bound").isTrue();
@@ -158,7 +167,7 @@ class LabelAgreementTest {
     void incompleteQuorum_noticeOncePerEpisode_namingTheMissingPeers() {
         handshaken.put(A, hello("on"));
 
-        var pending = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, agreement("on", 2));
+        var pending = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, agreement("on", 2), ended::get);
 
         PollUntil.pollUntil(notices::size, count -> count >= 1, Duration.ofSeconds(5)).assertMet("the notice");
         awaitMorePolls();
@@ -172,7 +181,7 @@ class LabelAgreementTest {
     void episodeThatNoticed_endsWithTheQuorum_tellsTheRecoveryOnce() {
         handshaken.put(A, hello("on"));
 
-        var pending = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, agreement("on", 2));
+        var pending = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, agreement("on", 2), ended::get);
 
         PollUntil.pollUntil(notices::size, count -> count >= 1, Duration.ofSeconds(5)).assertMet("the notice");
         assertThat(recoveries.get()).as("no recovery while the quorum is incomplete").isZero();
@@ -190,7 +199,7 @@ class LabelAgreementTest {
         handshaken.put(A, hello("on"));
         handshaken.put(B, hello("on"));
 
-        assertThat(JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement("on", 2)).await(AWAIT).isSuccess()).isTrue();
+        assertThat(JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement("on", 2), ended::get).await(AWAIT).isSuccess()).isTrue();
         assertThat(notices).isEmpty();
         assertThat(recoveries.get()).isZero();
     }
@@ -200,9 +209,28 @@ class LabelAgreementTest {
     void mismatch_whileTheQuorumIsIncomplete_failsAtOnce() {
         handshaken.put(A, hello("off"));
 
-        var result = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement("on", 2)).await(AWAIT);
+        var result = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, OWN, agreement("on", 2), ended::get).await(AWAIT);
 
         assertThat(result.isFailure()).isTrue();
+    }
+
+    /// #3525 round 1 (F1): the quorum wait has no deadline, so its consumer ending is what ends it. Once `ended` reads true the wait
+    /// cancels its promise, polls no more and tells nobody, whether it was waiting before or after the generation bound.
+    @Test
+    void consumerEnded_theWaitIsCancelledAndNothingIsToldAfter() {
+        var pending = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, OWN, agreement("on", 2), ended::get);
+
+        PollUntil.pollUntil(notices::size, count -> count >= 1, Duration.ofSeconds(5)).assertMet("the notice");
+        ended.set(true);
+        PollUntil.pollUntil(pending::isResolved, resolved -> resolved, Duration.ofSeconds(5)).assertMet("the wait ends");
+        var pollsAtEnd = lookups.get();
+        handshaken.put(A, hello("on"));
+        handshaken.put(B, hello("on"));
+
+        assertThat(pending.await(AWAIT).isFailure()).as("cancelled, not admitted").isTrue();
+        assertThat(lookups.get()).as("no poll after the wait ended").isEqualTo(pollsAtEnd);
+        assertThat(notices).as("no further notice").hasSize(1);
+        assertThat(recoveries.get()).as("no recovery for a wait that was cancelled").isZero();
     }
 
     @Test
