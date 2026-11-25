@@ -6,7 +6,7 @@ Place application files under `src/main/terra/`:
 
 ```text
 blueprint.toml
-terra.toml                 # optional HTTP/auth settings
+terra.toml                 # optional HTTP/auth and [management] settings
 resources.toml             # optional deployment resource settings
 slices/<encoded-artifact>.toml  # optional per-slice overrides
 schema/*.sql               # optional database migrations
@@ -48,6 +48,44 @@ authorization_role = "VIEWER"  # VIEWER, OPERATOR, ADMIN
 ```
 
 For example, override that credential with `TERRA_API_KEYS__CLIENT__KEY`. JWT mode uses `[jwt]` with required `jwks_url`, optional `issuer`, `audience`, `role_claim` (default `role`), `cache_ttl_seconds` (3600), `clock_skew_seconds` (30), and `auth_schemes` (default `["Bearer"]`: the `Authorization` schemes accepted in front of the token, matched case-insensitively; an empty or duplicated list fails the launch). `algorithm = "HS256"` in `[jwt]` selects shared-secret verification instead of JWKS (#2880): `secret` (`TERRA_JWT__SECRET`; at least 32 bytes, used exactly as written with no trimming; an empty or whitespace-only value fails the launch) is required, `jwks_url` is refused, and the configured mode, not the token header, picks the algorithm. **A `secret` written in `terra.toml` is plaintext on disk and in anything that copies the file; set `TERRA_JWT__SECRET` instead and keep the key out of the file.** `nbf` and `iat` in a token are enforced in every JWT mode (beyond `clock_skew_seconds`). `security_mode = "custom"` with `http.authenticator = "<name>"` selects one `HttpAuthenticatorFactory` installed through `ServiceLoader`; zero matches or two factories with the same name fail the launch naming them. Refusals follow RFC 6750: a missing credential is `401` with `WWW-Authenticate: <scheme> realm="Terra"` (the first `auth_schemes` entry under JWT, `ApiKey` under api-key mode), a refused one is `401` with `error="invalid_token"` added, and `403` (no challenge) is only a caller lacking the route role. Unknown host keys fail. `none` makes undeclared routes public but does not bypass explicitly protected route policies.
+
+## Management endpoints (`/actuator`)
+
+The launcher serves Spring Boot Actuator-compatible endpoints (#3651) from the `terra-management` module, under Spring's own `management.*` and `info.*` keys. They are read from `terra.toml` sections and from `TERRA_` environment names. **A default launch serves `/actuator/health` on the application listener** (and `/actuator`, the discovery document), so an application that has a slice route under `/actuator` fails startup, naming the route; move the endpoints with `management.endpoints.web.base-path`.
+
+```toml
+[management.endpoints.web.exposure]
+include = ["health", "info"]   # a TOML array or a comma list "health,info"; "*" for all; default health
+exclude = []                   # same forms; exclude wins over include
+
+[management.endpoints.web]
+base-path = "/actuator"        # default; a trailing slash is dropped, "" or "/" mounts at the root
+
+[management.endpoints.web.discovery]
+enabled = true                 # default; the HAL document at the base path (never served at base path "/")
+
+[management.endpoints]
+enabled-by-default = true      # default; [management.endpoint.<id>] enabled = true|false overrides one endpoint
+
+[management.endpoint.health]
+show-details = "never"         # never (default) | when-authorized | always
+show-components = "never"      # same values; defaults to the show-details value
+
+[management.server]
+port = 9090                    # absent: the application listener; -1: no HTTP management; 0: an ephemeral port
+
+[management.info.env]
+enabled = false                # default; true adds the [info] keys to /info
+
+[info.app]
+name = "demo"                  # free-form info.* keys, served under /info when management.info.env.enabled
+```
+
+Every key above is the whole set: an unrecognised `management.*` key, or an exposure list that is not endpoint ids or `*` (a mistyped list would otherwise expose nothing), stops the load naming the key. Endpoints: `health` (with `livenessState`, `readinessState`, `ping`, `diskSpace` components and the `liveness` and `readiness` groups), `info` (`build` from `META-INF/build-info.properties` plus the `info.*` keys), `metrics` and `prometheus`. `health` and `info` are open; discovery, `metrics` and `prometheus` need an authenticated caller through the host's authenticator.
+
+A separate `management.server.port` inherits the application's TLS and `max_content_length` (Spring does the same while `management.server.ssl` is unset): with `http.tls_certificate` set the management port answers https only, and discovery links read `https://`. Environment names carry no dash, so in a `management.*` key `_` reads as `-`: `TERRA_MANAGEMENT__ENDPOINTS__WEB__BASE_PATH` sets `management.endpoints.web.base-path`. A key given in two forms (for example `base-path` in `terra.toml` and `base_path` in the environment) with different values stops the load.
+
+Differences from Spring Boot: GET only, every other method including `HEAD` answers `405` with `Allow: GET`; a JSON answer is `application/vnd.spring-boot.actuator.v3+json` unless `Accept` prefers `application/json`, and the v2 media type (and any `Accept` that admits neither) answers `406`; an unrecognised `management.*` key is refused instead of ignored; there is no `management.server.ssl`, `management.server.address` or JMX exposure.
 
 `--check` parses the graph/configuration and migration inputs without creating resources or listeners. It cannot establish database connectivity, validate every resource factory's settings, or prove TLS key validity. Those checks happen during startup; a startup error exits nonzero. Health probes are `/__terra/health/live` and `/__terra/health/ready`.
 

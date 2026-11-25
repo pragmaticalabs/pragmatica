@@ -232,6 +232,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `terra/examples` | `org.pragmatica-lite:terra-examples` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
 | `terra/http` | `org.pragmatica-lite:terra-http` | jar | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
 | `terra/launcher` | `org.pragmatica-lite:terra-launcher` | jar | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
+| `terra/management` | `org.pragmatica-lite:terra-management` | jar | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
 | `terra/maven-plugin` | `org.pragmatica-lite:terra-maven-plugin` | maven-plugin | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
 | `terra/runtime` | `org.pragmatica-lite:terra-runtime` | jar | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
 | `test-logging` | `org.pragmatica-lite:test-logging` | jar | skip | test support; consumers take their own test dependencies, the template adds none |

@@ -81,6 +81,10 @@ Without that property, the PostgreSQL test is explicitly skipped. The proof cove
 
 The `terra-http` module hosts the generated routers over HTTP/1.1 or TLS and owns graceful application shutdown. It supports path/header API version selection, API-key and JWT authentication, route policy enforcement, and health probes. See [the host guide](http/README.md) for configuration, ownership, and drain semantics. `TerraCatalogHttpTest` drives the unchanged Catalog source through real listeners in both versioning modes, including JSON, CSV, binary payloads, and typed failures.
 
+## Management endpoints
+
+The `terra-management` module serves Actuator-compatible `health`, `info`, `metrics` and `prometheus` endpoints under Spring Boot's `management.*` keys (#3651); Aether modules are banned from depending on it. The launcher mounts it by default: a launch serves `/actuator/health` on the application listener, and a slice route at or under the base path (default `/actuator`) is refused at startup naming the route, because the host reserves that prefix. Configure the endpoints through `terra.toml`: see [the launcher guide](launcher/README.md#management-endpoints-actuator).
+
 ## Run the standalone distribution
 
 ```sh
