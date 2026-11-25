@@ -30,8 +30,6 @@ import java.util.stream.Stream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -51,7 +49,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.JitterUtil;
-import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.utils.OwnerLifetime;
+import org.pragmatica.lang.utils.OwnerLifetime.Handle;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
@@ -359,34 +358,43 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// proactive bump to at most once per at-risk window so a silently-isolated node does not
     /// flood incarnation churn (over-bumping would break anti-oscillation). `0` = never bumped.
     private final AtomicLong lastAtRiskBumpAt = new AtomicLong(0L);
-    private final AtomicReference<Option<ScheduledFuture<?>>> tickFuture = new AtomicReference<>(none());
-
-    /// #501: the join-announce loop's handle, retained so [#stop] can cancel it. Before this it was
-    /// local to [#announceJoin] and a stopped protocol kept announcing for up to 30 s.
-    private final AtomicReference<Option<ScheduledFuture<?>>> announceFuture = new AtomicReference<>(none());
-
+    /// #3754: every task this protocol schedules (probe tick, probe timeouts, seed ANNOUNCE, join-announce loop) goes
+    /// through this lifetime, and [#stop] ends it. A lifetime is created fresh per activation: [#start] swaps in a new
+    /// one when the current one has ended, and every body receives the lifetime it was scheduled on, so a re-arm from
+    /// inside a body cannot reach the next activation. A live lifetime from construction lets [#announceJoin] arm its
+    /// loop before [#start], as it always could.
+    private final AtomicReference<OwnerLifetime> lifetime;
+    private final Supplier<OwnerLifetime> lifetimes;
+    private final AtomicReference<Option<Handle>> tickFuture = new AtomicReference<>(none());
+    /// The join-announce loop's handle, retained so a re-announce can supersede it. [#stop] does not cancel it:
+    /// ending the [#lifetime] does (#501, #3754).
+    private final AtomicReference<Option<Handle>> announceFuture = new AtomicReference<>(none());
     /// Identity retained from [#announceJoin] for the isolated-and-alone ANNOUNCE ([#announceWhileAlone]).
     private volatile Option<AnnounceIdentity> announceIdentity = none();
     /// Every seed address this node was given, by [#announceJoin]'s `seeds` or by [#addSeedMember] (production registers
     /// its seeds only through the latter). Kept after a seed is swept from the member map: the isolated-and-alone ANNOUNCE
     /// ([#announceWhileAlone]) draws on it.
     private final Set<InetSocketAddress> seedAddresses = ConcurrentHashMap.newKeySet();
-    /// #501: `true` from [#stop] until the next [#start]. Cancelling [#announceFuture] is not on its
-    /// own enough to tie the announce loop's lifetime to [#stop], because two announces can still
-    /// escape a stopped protocol: an [#announceJoin] that resolved this protocol before the stop and
-    /// calls in after it (arming a loop no later `stop()` will ever see — the shape #501 was filed
-    /// about), and a `runAnnounceAttempt` already executing, which `cancel(false)` does not interrupt.
-    /// This latch is the code that REFUSES both: [#announceJoin] arms nothing while it is set, and
-    /// [#runAnnounceAttempt] re-reads it BEFORE EACH SEED, so an attempt already in flight stops at
-    /// the seed it has reached.
+
+    /// #501, #3754: a protocol is stopped from [#stop] until the next [#start], which is exactly when its [#lifetime] has
+    /// ended. Cancelling the announce handle was not on its own enough to tie the announce loop to [#stop], because two
+    /// announces can still escape a stopped protocol: an [#announceJoin] that resolved this protocol before the stop and
+    /// calls in after it (arming a loop no later `stop()` will ever see: the shape #501 was filed about), and a
+    /// `runAnnounceAttempt` already executing, which a cancel does not interrupt. The ended lifetime is the code that
+    /// REFUSES both: [#announceJoin] arms nothing on it, and [#runAnnounceAttempt] re-reads it BEFORE EACH SEED, so an
+    /// attempt already in flight stops at the seed it has reached.
     ///
-    /// A latch rather than holding [#lifecycleLock] across the attempt: `runAnnounceAttempt` sends to
+    /// A flag rather than holding [#lifecycleLock] across the attempt: `runAnnounceAttempt` sends to
     /// every seed, and `NettySwimTransport.resolveAndSend` falls back to SYNCHRONOUS DNS resolution
-    /// for an unresolved seed host — under that lock an unresolvable seed would block `stop()` for the
+    /// for an unresolved seed host: under that lock an unresolvable seed would block `stop()` for the
     /// resolver timeout. The residual window is one send already past its check; it completes and
-    /// never re-arms, because `runAnnounceAttempt` does not reschedule and `cancel(false)` has stopped
-    /// the executor's re-arm.
-    private final AtomicBoolean announceStopped = new AtomicBoolean(false);
+    /// never re-arms, because `runAnnounceAttempt` does not reschedule and the ended lifetime has
+    /// cancelled the executor's re-arm.
+    private boolean isStopped() {
+        return lifetime.get()
+                       .isEnded();
+    }
+
     /// Per-member last-probe ORDINAL (a strictly-monotonic `probeOrdinal` value), keyed by
     /// `NodeId` so probe scheduling is identity-stable under churn. Stamped in [#probeTarget]
     /// the moment a probe is sent. [#selectNextProbeTarget] always picks the least-recently-
@@ -596,6 +604,30 @@ public final class SwimProtocol implements SwimMessageHandler {
                  BooleanSupplier isBooting,
                  Predicate<NodeId> transportConnected,
                  SerialExecutor stateExecutor) {
+        this(config,
+             transport,
+             listener,
+             selfId,
+             selfAddress,
+             isBooting,
+             transportConnected,
+             stateExecutor,
+             OwnerLifetime::ownerLifetime);
+    }
+
+    /// The scheduling seam, injected as the lifetime source (#3754): production passes the shared default, a test passes
+    /// a supplier of lifetimes over a fake scheduler.
+    SwimProtocol(SwimConfig config,
+                 SwimTransport transport,
+                 SwimMembershipListener listener,
+                 NodeId selfId,
+                 InetSocketAddress selfAddress,
+                 BooleanSupplier isBooting,
+                 Predicate<NodeId> transportConnected,
+                 SerialExecutor stateExecutor,
+                 Supplier<OwnerLifetime> lifetimes) {
+        this.lifetimes = lifetimes;
+        this.lifetime = new AtomicReference<>(lifetimes.get());
         this.stateExecutor = stateExecutor;
         this.config = config;
         this.transport = transport;
@@ -661,15 +693,15 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                SerialExecutor.serialExecutor()));
     }
 
-    /// Start the protocol: begin periodic probing via SharedScheduler.
+    /// Start the protocol: begin periodic probing on a lifetime that [#stop] ends.
     /// First tick delayed by startupDelay to allow all TCP connections to establish after quorum.
     public Result<SwimProtocol> start() {
         synchronized (lifecycleLock) {
             if (tickFuture.get().isPresent()) {
                 return SwimError.General.PROTOCOL_ALREADY_RUNNING.result();
             }
-            // #501: a restarted protocol may announce again; the stop-latch is per stop/start cycle.
-            announceStopped.set(false);
+            // #501, #3754: a restarted protocol may announce again; the lifetime is per stop/start cycle.
+            var active = activeLifetime();
             // Light jitter (±20%) on the startup offset only — period is intentionally fixed to keep
             // failure-detection latency predictable. The jitter de-syncs simultaneous starts after a
             // shared quorum-formation event so probe traffic is not thundering-herd.
@@ -678,7 +710,7 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                            JitterUtil.LIGHT_MAX_FACTOR);
             var startup = TimeSpan.timeSpan(jitteredStartupMs).millis();
 
-            tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::dispatchTick, startup, config.period())));
+            tickFuture.set(option(active.scheduleAtFixedRate(this::dispatchTick, startup, config.period())));
             LOG.info("SWIM protocol started for node {} (first probe in {}ms; jittered from base {}ms)",
                      selfId.id(),
                      jitteredStartupMs,
@@ -691,21 +723,28 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Stop the protocol.
     public Result<SwimProtocol> stop() {
         synchronized (lifecycleLock) {
-            // #501: the announce loop's lifetime is stop()'s, NOT the probe tick's. Both statements
-            // run BEFORE the running-check, or a protocol whose tick was never armed (announceJoin
-            // without start(), or a join that raced a stop) returns PROTOCOL_NOT_RUNNING while its
-            // announce loop runs on to the 60-attempt cap — 30 s of ANNOUNCE from a stopped node.
-            announceStopped.set(true);
-            announceFuture.getAndSet(none()).onPresent(f -> f.cancel(false));
+            // #501, #3754: the lifetime ends BEFORE the running-check, or a protocol whose tick was never armed
+            // (announceJoin without start(), or a join that raced a stop) returns PROTOCOL_NOT_RUNNING while its
+            // announce loop runs on to the 60-attempt cap: 30 s of ANNOUNCE from a stopped node. Ending it cancels the
+            // probe tick, every probe timeout, every seed ANNOUNCE and the announce loop alike.
+            lifetime.get().end();
             if (!tickFuture.get().isPresent()) {
                 return SwimError.General.PROTOCOL_NOT_RUNNING.result();
             }
 
-            tickFuture.getAndSet(none()).onPresent(f -> f.cancel(false));
+            tickFuture.set(none());
             LOG.info("SWIM protocol stopped for node {}", selfId.id());
 
             return Result.success(this);
         }
+    }
+
+    /// The live lifetime of this activation: the current one, or a fresh one when [#stop] ended it. Called with
+    /// [#lifecycleLock] held, the only writer of the field.
+    private OwnerLifetime activeLifetime() {
+        return lifetime.updateAndGet(current -> current.isEnded()
+                                                ? lifetimes.get()
+                                                : current);
     }
 
     /// Add a seed member to the membership list.
@@ -956,7 +995,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         option(members.get(peer)).filter(member -> member.state() == MemberState.SUSPECT)
               .filter(_ -> hasCurrentTransportDeathHint(peer))
               .filter(_ -> noPendingProbeOf(peer))
-              .onPresent(this::probeTarget);
+              .onPresent(member -> probeTarget(member,
+                                               lifetime.get()));
     }
 
     private boolean noPendingProbeOf(NodeId peer) {
@@ -1094,11 +1134,18 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     // -- Internal tick --
-    private void dispatchTick() {
-        stateExecutor.execute(this::tick);
+    private void dispatchTick(OwnerLifetime lt) {
+        stateExecutor.execute(() -> tick(lt));
     }
 
-    private void tick() {
+    // #3754: a tick dispatched before the stop runs here after it; the check on the executor is the second read of the
+    // lifetime, immediately before every effect of the round (wire probes, suspicion events, gossip). The round runs as one
+    // task on the serial executor, so nothing but the stop's own flag write can interleave with it.
+    private void tick(OwnerLifetime lt) {
+        if (lt.isEnded()) {
+            return;
+        }
+
         pruneMembershipScope();
         sweepAddressCandidates();
         refreshSelfAlive();
@@ -1106,14 +1153,14 @@ public final class SwimProtocol implements SwimMessageHandler {
         reevaluateColdBootSuppressedFaulty();
         reevaluateTransportVetoedFaulty();
         cleanupFaultyMembers();
-        probeRound();
+        probeRound(lt);
         sendAppGossip();
     }
 
     /// One probe per round: the least-recently-probed probable member, or, with none and the self-isolation latch set,
     /// one isolation ping ([#probeWhileIsolated]).
-    private void probeRound() {
-        selectNextProbeTarget().onPresent(this::probeTarget).onEmpty(this::probeWhileIsolated);
+    private void probeRound(OwnerLifetime lt) {
+        selectNextProbeTarget().onPresent(target -> probeTarget(target, lt)).onEmpty(() -> probeWhileIsolated(lt));
     }
 
     /// #3028 design §3.4 (S1) `[guess: design rule]`: a latched node probes nobody ([#isProbable] excludes FAULTY), so
@@ -1122,27 +1169,27 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// and the peer's own refuted claim re-admits the peer here, which clears the latch (a verified Ack alone does not
     /// while this node's death record for the peer refuses it). Peers already swept from the member map are not
     /// reached here ([#announceWhileAlone], D4b, covers them).
-    private void probeWhileIsolated() {
+    private void probeWhileIsolated(OwnerLifetime lt) {
         if (!selfIsolated) {
             return;
         }
 
-        selectIsolationProbeTarget().onPresent(this::sendIsolationPing).onEmpty(this::announceWhileAlone);
+        selectIsolationProbeTarget().onPresent(this::sendIsolationPing).onEmpty(() -> announceWhileAlone(lt));
     }
 
     /// #3028 D4b: a latched node whose member map is empty (every peer swept) has no peer left to ping, so it asks ONE
     /// seed for the view again, after a random delay below one protocol period (`[guess: design rule]`: spreads
     /// simultaneous recoveries). The reply is merged like the join ANNOUNCE's. No retry state: the next round repeats
     /// while the node stays alone.
-    private void announceWhileAlone() {
+    private void announceWhileAlone(OwnerLifetime lt) {
         if (!members.isEmpty()) {
             return;
         }
 
-        announceIdentity.onPresent(this::scheduleSeedAnnounce);
+        announceIdentity.onPresent(target -> scheduleSeedAnnounce(lt, target));
     }
 
-    private void scheduleSeedAnnounce(AnnounceIdentity target) {
+    private void scheduleSeedAnnounce(OwnerLifetime lt, AnnounceIdentity target) {
         var seeds = List.copyOf(seedAddresses);
 
         if (seeds.isEmpty()) {
@@ -1153,18 +1200,15 @@ public final class SwimProtocol implements SwimMessageHandler {
         var delayMs = ThreadLocalRandom.current().nextLong(Math.max(1L,
                                                                     config.period().millis()));
 
-        SharedScheduler.schedule(() -> sendSeedAnnounce(target, seed),
-                                 TimeSpan.timeSpan(delayMs).millis());
+        lt.schedule(_ -> sendSeedAnnounce(target, seed),
+                    TimeSpan.timeSpan(delayMs).millis());
     }
 
+    // No second lifetime check: the body's first statement is the send, so the wrapper's own read of the lifetime is the
+    // only window there is (#3754, no in-flight stretch for a check to narrow).
     private void sendSeedAnnounce(AnnounceIdentity target, InetSocketAddress seed) {
-        if (!announceStopped.get()) {
-            transport.send(seed,
-                           Announce.announce(target.self(),
-                                             target.clusterName(),
-                                             selfIncarnation.get(),
-                                             selfBootToken.get()));
-        }
+        transport.send(seed,
+                       Announce.announce(target.self(), target.clusterName(), selfIncarnation.get(), selfBootToken.get()));
     }
 
     private Option<SwimMember> selectIsolationProbeTarget() {
@@ -1320,7 +1364,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         lastInboundReachabilityAt.set(System.currentTimeMillis());
     }
 
-    private void probeTarget(SwimMember target) {
+    private void probeTarget(SwimMember target, OwnerLifetime lt) {
         requireConfined("probeTarget");
         var seq = sequenceCounter.incrementAndGet();
         var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
@@ -1336,7 +1380,7 @@ public final class SwimProtocol implements SwimMessageHandler {
                  .onFailure(cause -> lhmIncrement("probe send to " + target.nodeId()
                                                                            .id()
                                                  + " failed: " + cause.message()));
-        scheduleProbeTimeout(seq);
+        scheduleProbeTimeout(seq, lt);
     }
 
     private void expireSuspectMembers() {
@@ -1974,19 +2018,22 @@ public final class SwimProtocol implements SwimMessageHandler {
         return member.state() == MemberState.ALIVE || member.state() == MemberState.SUSPECT || member.state() == MemberState.OBSERVED;
     }
 
-    private void scheduleProbeTimeout(long seq) {
-        SharedScheduler.schedule(() -> dispatchProbeTimeout(seq), config.probeTimeout());
+    private void scheduleProbeTimeout(long seq, OwnerLifetime lt) {
+        lt.schedule(l -> dispatchProbeTimeout(seq, l), config.probeTimeout());
     }
 
-    private void dispatchProbeTimeout(long seq) {
-        stateExecutor.execute(() -> onProbeTimeout(seq));
+    private void dispatchProbeTimeout(long seq, OwnerLifetime lt) {
+        stateExecutor.execute(() -> onProbeTimeout(seq, lt));
     }
 
-    private void onProbeTimeout(long seq) {
-        option(pendingProbes.get(seq)).onPresent(probe -> handleProbeTimeout(seq, probe));
+    // #3754: a timeout dispatched before the stop runs here after it, and would send a PingReq (re-arming itself) or
+    // raise a suspicion event. The check on the executor is the second read of the lifetime, immediately before both
+    // effects: the handler is one task on the serial executor, so only the stop's own flag write can interleave with it.
+    private void onProbeTimeout(long seq, OwnerLifetime lt) {
+        option(pendingProbes.get(seq)).filter(_ -> !lt.isEnded()).onPresent(probe -> handleProbeTimeout(seq, probe, lt));
     }
 
-    private void handleProbeTimeout(long seq, PendingProbe probe) {
+    private void handleProbeTimeout(long seq, PendingProbe probe, OwnerLifetime lt) {
         requireConfined("handleProbeTimeout");
         if (probe.indirectSent()) {
             // Full probe cycle (direct + indirect) produced no ack: local trouble —
@@ -1998,10 +2045,10 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        sendIndirectProbes(seq, probe);
+        sendIndirectProbes(seq, probe, lt);
     }
 
-    private void sendIndirectProbes(long seq, PendingProbe probe) {
+    private void sendIndirectProbes(long seq, PendingProbe probe, OwnerLifetime lt) {
         requireConfined("sendIndirectProbes");
         pendingProbes.put(seq,
                           PendingProbe.pendingProbe(probe.targetId(), probe.startTime(), true));
@@ -2009,7 +2056,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         var pingReq = PingReq.pingReq(selfId, probe.targetId(), seq);
 
         others.forEach(other -> transport.send(other.address(), pingReq));
-        scheduleProbeTimeout(seq);
+        scheduleProbeTimeout(seq, lt);
     }
 
     private List<SwimMember> selectRandomOtherMembers(NodeId exclude, int count) {
@@ -2884,7 +2931,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         // lock. Without it the announce loop can be installed after a concurrent stop() has already
         // read announceFuture, leaving a live loop no stop() can reach.
         synchronized (lifecycleLock) {
-            if (announceStopped.get()) {
+            if (isStopped()) {
                 LOG.info("SWIM ANNOUNCE join refused for node {} — protocol is stopped",
                          self.id().id());
 
@@ -2904,18 +2951,20 @@ public final class SwimProtocol implements SwimMessageHandler {
             }
 
             var attempts = new AtomicInteger(0);
-            var future = new AtomicReference<ScheduledFuture<?>>();
-            var task = SharedScheduler.scheduleAtFixedRate(() -> runAnnounceAttempt(self,
-                                                                                    clusterName,
-                                                                                    incarnation,
-                                                                                    seeds,
-                                                                                    attempts,
-                                                                                    future),
-                                                           TimeSpan.timeSpan(500).millis());
+            var future = new AtomicReference<Handle>();
+            var task = lifetime.get()
+                               .scheduleAtFixedRate(lt -> runAnnounceAttempt(self,
+                                                                             clusterName,
+                                                                             incarnation,
+                                                                             seeds,
+                                                                             attempts,
+                                                                             future,
+                                                                             lt),
+                                                    TimeSpan.timeSpan(500).millis());
 
             future.set(task);
-            // A re-announce supersedes the previous loop; stop() cancels whichever is current.
-            announceFuture.getAndSet(option(task)).onPresent(f -> f.cancel(false));
+            // A re-announce supersedes the previous loop; stop() ends the lifetime that holds whichever is current.
+            announceFuture.getAndSet(option(task)).onPresent(Handle::cancel);
         }
     }
 
@@ -2934,7 +2983,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         var bootToken = selfBootToken.get();
 
         targets.stream()
-               .takeWhile(_ -> !announceStopped.get())
+               .takeWhile(_ -> !isStopped())
                .forEach(target -> transport.send(target,
                                                  Announce.announce(self, clusterName, incarnation, bootToken)));
     }
@@ -3105,7 +3154,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                     long incarnation,
                                     List<InetSocketAddress> seeds,
                                     AtomicInteger attempts,
-                                    AtomicReference<ScheduledFuture<?>> future) {
+                                    AtomicReference<Handle> future,
+                                    OwnerLifetime lt) {
         if (joinAckReceived) {
             cancelAnnounce(future, self, "join acknowledged by seed");
 
@@ -3123,7 +3173,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         // for the resolver timeout — without this, a stop() during an attempt still announces this
         // node to every remaining seed.
         seeds.stream()
-             .takeWhile(_ -> !announceStopped.get())
+             .takeWhile(_ -> !lt.isEnded())
              .forEach(seed -> transport.send(seed,
                                              Announce.announce(self,
                                                                clusterName,
@@ -3134,8 +3184,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
-    private void cancelAnnounce(AtomicReference<ScheduledFuture<?>> future, NodeInfo self, String reason) {
-        option(future.getAndSet(null)).onPresent(f -> f.cancel(false));
+    private void cancelAnnounce(AtomicReference<Handle> future, NodeInfo self, String reason) {
+        option(future.getAndSet(null)).onPresent(Handle::cancel);
         LOG.info("SWIM ANNOUNCE join stopped for node {} ({})",
                  self.id().id(),
                  reason);
@@ -3695,7 +3745,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// second-hand FAULTY downgraded to SUSPECT gathers first-hand evidence promptly. A
     /// no-op if the member is no longer tracked.
     private void reProbe(NodeId peer) {
-        option(members.get(peer)).onPresent(this::probeTarget);
+        option(members.get(peer)).onPresent(member -> probeTarget(member, lifetime.get()));
     }
 
     private void addMemberUpdate(SwimMember member) {
@@ -4375,7 +4425,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Test-only: one [#probeRound], including the isolation ping (#3028 §3.4).
     @Contract
     void probeRoundForTest() {
-        onStateExecutorForTest(this::probeRound);
+        onStateExecutorForTest(() -> probeRound(lifetime.get()));
     }
 
     /// Test-only: run one least-recently-probed selection-and-probe cycle (the
@@ -4390,7 +4440,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     private Option<SwimMember> probeOnce() {
         var selected = selectNextProbeTarget();
 
-        selected.onPresent(this::probeTarget);
+        selected.onPresent(target -> probeTarget(target, lifetime.get()));
 
         return selected;
     }
