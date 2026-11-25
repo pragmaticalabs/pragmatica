@@ -30,6 +30,9 @@ import static org.pragmatica.postgres.util.HexConverter.parseHexBinary;
  * @author Antti Laisi
  */
 public class DataConverter {
+    /// Prefix of the refusal of an untyped read of a binary value whose type has no case of its own; the type name follows.
+    public static final String BINARY_UNTYPED_REFUSAL = "No untyped read of a binary value of type ";
+
     private final Map<Class<?>, Converter<?>> typeToConverter;
     private final Charset encoding;
 
@@ -925,6 +928,16 @@ public class DataConverter {
         return new UUID(buffer.getLong(), buffer.getLong());
     }
 
+    /// The untyped read of a type with no Java type: the server's text. A binary value is refused with a message naming the
+    /// type, so a type later added to `Oid.supportsBinary` without its own case fails loudly instead of returning garbage.
+    private String toServerText(Oid oid, byte[] value, boolean binary) {
+        if (binary) {
+            throw new IllegalArgumentException(BINARY_UNTYPED_REFUSAL + oid);
+        }
+
+        return toString(oid, value, false);
+    }
+
     @SuppressWarnings("unchecked")
     public <T> T toObject(Oid oid, byte[] value, Class<T> type, boolean binary) {
         if (value == null) {
@@ -978,7 +991,8 @@ public class DataConverter {
             // a range (bounds and inclusivity) or an inet without loss. The types that reach this branch are exactly the ones
             // the server sends in text format (`Oid.supportsBinary` lists the binary ones, all handled above), and
             // `UNSPECIFIED` stands for every type the driver has no `Oid` for (inet, cidr, ranges, jsonb[], enums, ...).
-            default -> toString(oid, value, binary);
+            // Nothing enforces "all handled above" at compile time, so a BINARY value here is refused, never read as text.
+            default -> toServerText(oid, value, binary);
         };
     }
 

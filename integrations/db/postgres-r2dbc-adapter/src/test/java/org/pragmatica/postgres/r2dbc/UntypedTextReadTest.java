@@ -49,4 +49,33 @@ class UntypedTextReadTest {
         assertThatThrownBy(() -> converter.toObject(Oid.JSONB, text, java.util.Map.class, false)).isInstanceOf(IllegalArgumentException.class)
                                                                                                  .hasMessageContaining("java.util.Map");
     }
+
+    @Test void toObject_aBinaryValueOfATypeWithoutAJavaType_isRefusedNamingTheType() {
+        var bytes = new byte[]{0, 1, 2, 3};
+
+        assertThatThrownBy(() -> converter.toObject(Oid.JSONB, bytes, null, true)).isInstanceOf(IllegalArgumentException.class)
+                                                                                  .hasMessage(DataConverter.BINARY_UNTYPED_REFUSAL + Oid.JSONB);
+        assertThatThrownBy(() -> converter.toObject(Oid.UNSPECIFIED, bytes, Object.class, true)).isInstanceOf(IllegalArgumentException.class)
+                                                                                                .hasMessage(DataConverter.BINARY_UNTYPED_REFUSAL + Oid.UNSPECIFIED);
+    }
+
+    @Test void toObject_everyBinaryCapableType_neverReachesTheTextBranch() {
+        var bytes = new byte[]{0, 1, 2, 3};
+
+        for (var oid : Oid.values()) {
+            if (oid.supportsBinary()) {
+                assertThat(refusalOf(oid, bytes)).as("%s is binary-capable and needs a case of its own in toObject", oid).doesNotContain(DataConverter.BINARY_UNTYPED_REFUSAL);
+            }
+        }
+    }
+
+    /// The message of whatever the untyped binary read throws (a malformed payload may fail in the type's own decoder, which is fine here); empty when it returns.
+    private String refusalOf(Oid oid, byte[] bytes) {
+        try {
+            converter.toObject(oid, bytes, null, true);
+            return "";
+        } catch (RuntimeException e) {
+            return String.valueOf(e.getMessage());
+        }
+    }
 }
