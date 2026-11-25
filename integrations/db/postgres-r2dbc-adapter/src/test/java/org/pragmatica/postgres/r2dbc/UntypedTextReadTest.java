@@ -12,17 +12,18 @@
  * limitations under the License.
  */
 
-package org.pragmatica.postgres;
+package org.pragmatica.postgres.r2dbc;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.postgres.Oid;
 import org.pragmatica.postgres.conversion.DataConverter;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// #2501: a read with no target (or the `Object` target jOOQ asks for) of a column type the driver has no Java type for
-/// yields the server's text instead of being refused. Needs no server: the text is what the server sends for these types.
+/// yields the server's text instead of being refused. Needs no server (the module's own tests are off by default, this module's run): the text is what the server sends for these types.
 class UntypedTextReadTest {
     private static final List<Oid> TEXT_TYPES = List.of(Oid.JSON, Oid.JSONB, Oid.INTERVAL, Oid.INTERVAL_ARRAY, Oid.XML, Oid.XML_ARRAY, Oid.MONEY, Oid.MONEY_ARRAY, Oid.BIT, Oid.BIT_ARRAY, Oid.VARBIT, Oid.VARBIT_ARRAY, Oid.NAME, Oid.NAME_ARRAY, Oid.OID, Oid.OID_ARRAY, Oid.POINT, Oid.BOX, Oid.HSTORE, Oid.VOID, Oid.UNSPECIFIED);
     private final DataConverter converter = new DataConverter(List.of(), StandardCharsets.UTF_8);

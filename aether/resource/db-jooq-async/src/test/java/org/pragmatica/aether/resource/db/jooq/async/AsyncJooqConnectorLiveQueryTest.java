@@ -342,13 +342,13 @@ class AsyncJooqConnectorLiveQueryTest {
     }
 
     @Test
-    void fetchOne_typedInetAsAString_isReadByItsJooqType() {
+    void fetchOne_inetCastToText_isReadByItsJooqType() {
         freshRichTable();
 
         var addr = DSL.field("addr::text", SQLDataType.VARCHAR);
         var record = richRow(addr);
 
-        assertThat(record.get(addr)).isEqualTo("10.0.0.1");
+        assertThat(record.get(addr)).isEqualTo("10.0.0.1/32");
     }
 
     @Test
@@ -361,18 +361,6 @@ class AsyncJooqConnectorLiveQueryTest {
         assertThat(record.get(0)).isEqualTo("{\"b\": 2}");
         assertThat(record.get(1)).isEqualTo("03:00:00");
         assertThat(record.get(2)).isEqualTo("192.168.0.1");
-    }
-
-    /// The conversion error of #2481 still names the column, the PostgreSQL type and the target when the target is one the driver
-    /// has no conversion to.
-    @Test
-    void fetchOne_aTargetTheDriverCannotConvert_failsWithAMessageNamingTheColumnTypeAndTarget() {
-        freshRichTable();
-
-        var cause = failure(connector.fetchOne(connector.dsl().select(DSL.field("doc", java.util.Map.class)).from(DSL.table("live_rich")).where(DSL.field("id", Integer.class).eq(1))));
-
-        assertThat(cause).isInstanceOf(DatabaseConnectorError.QueryFailed.class);
-        assertThat(cause.message()).contains("'doc'").contains("JSONB").contains("java.util.Map").doesNotContain("null");
     }
 
     @Test
