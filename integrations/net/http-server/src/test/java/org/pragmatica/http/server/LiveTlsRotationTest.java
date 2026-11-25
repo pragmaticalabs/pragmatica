@@ -65,6 +65,7 @@ import static org.pragmatica.http.server.TlsCertificates.http1Config;
 import static org.pragmatica.http.server.TlsCertificates.http1Server;
 import static org.pragmatica.http.server.TlsCertificates.http3Client;
 import static org.pragmatica.http.server.TlsCertificates.http3Server;
+import static org.pragmatica.http.server.TlsCertificates.http3ServerWithoutH3;
 import static org.pragmatica.http.server.TlsCertificates.nativeRefCnt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.testing.PollUntil.pollUntil;
@@ -220,6 +221,19 @@ class LiveTlsRotationTest {
             assertThat(connection.peer()).isEqualTo(certificate(first));
             assertThat(connection.get()).isEqualTo(SERVED);
         }
+    }
+
+    /// #3747: a swap to a server context that cannot serve HTTP/3 (no `h3` ALPN) is refused, the old context stays
+    /// installed, and a connection opened afterwards is served with the old certificate.
+    @Test
+    void http3_swapToContextWithoutH3_isRefused_laterConnectionsStillServed() throws Exception {
+        var first = bundle("h3-no-alpn-first");
+        var holder = LiveTls.liveQuicTls(http3Server(first)).unwrap();
+        var port = http3(holder);
+        var outcome = holder.swap(http3ServerWithoutH3(bundle("h3-no-alpn-bad")));
+
+        assertThat(outcome.isFailure()).as("a context without h3 is refused").isTrue();
+        assertThat(h3Probe(port)).isEqualTo(certificate(first));
     }
 
     @Test

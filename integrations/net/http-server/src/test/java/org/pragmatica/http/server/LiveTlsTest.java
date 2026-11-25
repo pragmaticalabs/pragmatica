@@ -33,6 +33,7 @@ import static org.pragmatica.http.server.TlsCertificates.http1Client;
 import static org.pragmatica.http.server.TlsCertificates.http1Server;
 import static org.pragmatica.http.server.TlsCertificates.http3Client;
 import static org.pragmatica.http.server.TlsCertificates.http3Server;
+import static org.pragmatica.http.server.TlsCertificates.http3ServerWithoutH3;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #2032: a [LiveTls] holder admits only a context its protocol can serve, a swap installs the new context, and a
@@ -72,6 +73,13 @@ class LiveTlsTest {
     void liveQuicTls_clientContext_isRefused() {
         assertThat(refusal(LiveTls.liveQuicTls(http3Client())))
             .isEqualTo(HttpServerError.TlsContextRefused.NOT_HTTP3_SERVER);
+    }
+
+    /// #3747: a server QUIC context without the `h3` ALPN token cannot serve HTTP/3, so no holder is built over it.
+    @Test
+    void liveQuicTls_serverContextWithoutH3_isRefused() {
+        assertThat(refusal(LiveTls.liveQuicTls(http3ServerWithoutH3(bundle("unit-no-h3")))))
+            .isInstanceOf(HttpServerError.TlsContextRefused.class);
     }
 
     @Test
