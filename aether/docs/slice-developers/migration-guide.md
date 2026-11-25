@@ -4,14 +4,16 @@ This guide shows how to gradually extract functionality from a monolithic applic
 
 ## The Strangler Fig Pattern
 
-Aether supports incremental migration using the strangler fig pattern:
+Incremental adoption starts with [Pragmatica Terra](../../../terra/README.md): the same slice sources run on Terra as one JVM with no cluster to operate. Aether is the scale-out step, when a slice needs independent scaling or cluster-wide state. Ember and Forge are development and test tools; they are not an embeddable production runtime and not a migration path.
+
+The strangler fig pattern, applied to slices:
 
 1. **Identify** a hot path or bottleneck in your monolith
 2. **Extract** it into a slice
 3. **Route** traffic to the slice
 4. **Repeat** until the monolith is hollowed out
 
-Your existing application keeps running throughout. No big bang migration.
+Your existing application keeps running throughout. No big bang migration. The diagram shows the extracted slice on Aether, the scale-out target; the same slice runs on Terra first.
 
 ```
 Before:                          After (Phase 1):
