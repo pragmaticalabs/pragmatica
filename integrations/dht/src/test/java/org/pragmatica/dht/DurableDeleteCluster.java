@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.stream.IntStream;
@@ -37,6 +38,10 @@ final class DurableDeleteCluster {
 
     final AtomicLong clock = new AtomicLong(System.currentTimeMillis());
     final Set<NodeId> unreachable = ConcurrentHashMap.newKeySet();
+    /// While true, a put request is parked instead of delivered: the writer sees no evidence from any replica and applies its own
+    /// slot, and [#deliverHeld] then lets the replicas' (late) answers decide the quorum (#3720, the rollback of #1818).
+    volatile boolean holding;
+    private final List<Map.Entry<NodeId, ProtocolMessage>> held = new CopyOnWriteArrayList<>();
     private final Map<NodeId, Member> members = new LinkedHashMap<>();
 
     DurableDeleteCluster(int size, DHTConfig config) {
@@ -148,8 +153,21 @@ final class DurableDeleteCluster {
         return text.getBytes(StandardCharsets.UTF_8);
     }
 
+    void deliverHeld() {
+        var due = List.copyOf(held);
+
+        held.clear();
+        due.forEach(entry -> deliver(entry.getKey(), entry.getValue()));
+    }
+
     private void deliver(NodeId target, ProtocolMessage message) {
         if (unreachable.contains(target)) {
+            return;
+        }
+
+        if (holding && message instanceof DHTMessage.PutRequest) {
+            held.add(Map.entry(target, message));
+
             return;
         }
 

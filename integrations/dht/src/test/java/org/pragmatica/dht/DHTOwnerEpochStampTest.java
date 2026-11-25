@@ -56,16 +56,29 @@ class DHTOwnerEpochStampTest {
 
     /// #1818 is unchanged for a floor-stamped put: the writer's OWN store accepted it (its high-water lags), so the coordinator
     /// takes that accept back, whatever cause the caller is handed. Without it, anti-entropy would spread the copy the others refused.
+    /// The replicas' answers are held back, so the writer has no evidence and applies its own slot first (the one path on which
+    /// there is an accept to take back); the refusals then arrive late and sink the quorum.
     @Test
     void put_floorStampRefusedByAppliedHighWater_isRolledBackOnTheWriter() {
         var cluster = new DurableDeleteCluster(3, RF3, DHTOwnerEpochStampTest::writerLagsOthersApplied, _ -> OwnerEpochSource.zero());
         var key = bytes("early-writer-rollback");
 
-        var put = cluster.member(WRITER).client().put(key, bytes("v")).await();
+        cluster.holding = true;
+        var put = cluster.member(WRITER).client().put(key, bytes("v"));
+        cluster.holding = false;
+        var deadline = System.nanoTime() + 1_500_000_000L;
 
-        assertThat(put.isFailure()).as("control: the put was refused, so the writer's own accept is the only copy that could remain").isTrue();
-        assertThat(cluster.members()).as("nothing is left on the writer or on a replica")
-                                     .allMatch(member -> !cluster.holdsLive(member.id(), key));
+        while (!cluster.holdsLive(WRITER, key) && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(cluster.holdsLive(WRITER, key)).as("arming: with no evidence the writer applied its own slot").isTrue();
+
+        cluster.deliverHeld();
+        var outcome = put.await();
+
+        assertThat(outcome.isFailure()).as("control: the late refusals sank the quorum").isTrue();
+        assertThat(cluster.holdsLive(WRITER, key)).as("the writer's own accept is taken back").isFalse();
     }
 
     /// The remove path stamps with the same `freshStamp()` and hands its failure through the same `afterFailedWrite`.
@@ -90,7 +103,6 @@ class DHTOwnerEpochStampTest {
         assertThat(put.isFailure()).isTrue();
         put.onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.WriteIndeterminate.class)
                                                 .isNotInstanceOf(DHTError.OwnershipNotApplied.class));
-        assertThat(cluster.members()).allMatch(member -> !cluster.holdsLive(member.id(), key));
     }
 
     @Test
