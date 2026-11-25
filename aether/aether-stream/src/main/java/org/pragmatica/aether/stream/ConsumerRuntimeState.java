@@ -778,7 +778,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                      ConsumerKey key,
                                      ConsumerState state,
                                      int attempt) {
-        result.onSuccess(cursor -> startFromCursor(key, state, cursor))
+        result.onSuccess(cursor -> startFromCursor(key, state, cursor, attempt))
               .onFailure(cause -> retryCursorFetch(store, key, state, attempt, cause));
     }
 
@@ -786,7 +786,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// derived from its commits is stamped with the rewind that positioned it, never with whatever epoch
     /// is current when the commit happens to resolve.
     @Contract
-    private void startFromCursor(ConsumerKey key, ConsumerState state, Option<Cursor> cursor) {
+    private void startFromCursor(ConsumerKey key, ConsumerState state, Option<Cursor> cursor, int attempt) {
+        if (attempt > 1) {
+            reportCursorReadable(key, attempt, "a fetch read the cursor and the consumer starts from it");
+        }
+
         state.clearAwaitingCursorFetch();
         cursor.onPresent(state::resumeAt);
         startConsumer(key, state);
@@ -799,6 +803,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                   int attempt,
                                   Cause cause) {
         if (closed.get() || state.isCancelled()) {
+            if (attempt > 1) {
+                reportCursorReadable(key,
+                                     attempt,
+                                     "the consumer was cancelled while its fetch was failing; it no longer retries here");
+            }
+
             return;
         }
 
@@ -809,8 +819,42 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                 key.partition(),
                 attempt,
                 cause.message());
+        if (attempt == 1) {
+            reportCursorUnreadable(key, cause);
+        }
+
         SharedScheduler.schedule(() -> fetchCursorAndStart(store, key, state, attempt + 1),
                                  TimeSpan.timeSpan(computeBackoff(Math.min(attempt, 30))).millis());
+    }
+
+    /// #3283: once per run of failed fetches — the first failure opens it, [#reportCursorReadable] closes it. A failed fetch
+    /// never starts the consumer, so the warning stands for exactly the time the partition delivers nothing for this reason.
+    @Contract
+    private void reportCursorUnreadable(ConsumerKey key, Cause cause) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE,
+                               consumerSubject(key),
+                               "Consumer group {} on {}[{}] has not started: its cursor fetch failed and is retried with backoff; it "
+                              + "does not start at the reset point instead: {}",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               cause.message());
+    }
+
+    @Contract
+    private void reportCursorReadable(ConsumerKey key, int attempt, String outcome) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE,
+                               consumerSubject(key),
+                               "Consumer group {} on {}[{}] cursor fetch ended after {} failed attempts: {}",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               attempt - 1,
+                               outcome);
     }
 
     private void startConsumer(ConsumerKey key, ConsumerState state) {

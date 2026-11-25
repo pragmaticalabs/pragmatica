@@ -58,6 +58,7 @@ import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
 import org.pragmatica.aether.node.projection.ProjectionRegistry;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
+import org.pragmatica.aether.node.stream.CommittedCursorRead;
 import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
@@ -1374,12 +1375,17 @@ public sealed interface StreamAssembly {
         var consensusBatchCounters = ConsensusBatchCounters.consensusBatchCounters();
         Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> cursorCommandWriter = consensusBatchCounters.counting(commands -> switchableCluster.apply(commands)
                                                                                                                                           .mapToUnit());
+        // #3283: a worker's replica excludes cursor checkpoints, so its resume and its rewind check read them through
+        // consensus (a KVCommand.Get forwarded to a core), never from its own mirror. A core node keeps its local read.
+        BooleanSupplier forwardingCluster = () -> switchableCluster.current() instanceof ForwardingClusterNode;
+        var committedCursorRead = CommittedCursorRead.consensusRead(commands -> switchableCluster.<Object> apply(commands));
         var streamClusterCursorStore = ProjectionAwareCursorStore.projectionAwareCursorStore(ClusterCursorStore.clusterCursorStore(streamCursorStore,
                                                                                                                                    config.self(),
                                                                                                                                    committedCursorReader,
                                                                                                                                    committedConsumerAssignments,
                                                                                                                                    cursorCommandWriter,
-                                                                                                                                   () -> switchableCluster.current() instanceof ForwardingClusterNode),
+                                                                                                                                   forwardingCluster,
+                                                                                                                                   committedCursorRead),
                                                                                              projectionRegistry);
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
         // group-attributed and appended to the topic's `.dlq` stream through the same confirmation
@@ -1440,10 +1446,9 @@ public sealed interface StreamAssembly {
                                                                                                                                         streamName -> streamConsumerOwnership.partitionCount(streamName)
                                                                                                                                                                              .isPresent()),
                                                                                 consumerAssignmentAuthority,
-                                                                                (streamName, partition, group) -> committedCursorReader.apply(AetherKey.StreamCursorCheckpointKey.streamCursorCheckpointKey(streamName,
-                                                                                                                                                                                                            partition,
-                                                                                                                                                                                                            group))
-                                                                                                                                       .map(AetherValue.StreamCursorCheckpointValue::rewindEpoch));
+                                                                                CommittedCursorRead.committedEpochs(forwardingCluster,
+                                                                                                                    committedCursorReader,
+                                                                                                                    committedCursorRead));
 
         streamConsumerManager.setOperatorWarningSink(operatorWarningSink);
         // #1271: a node that loses quorum stops delivering at the self-fence's DETECTION, not at the drain's
