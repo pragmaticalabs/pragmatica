@@ -6,6 +6,6 @@
   (`combine.children="append"`), and `aether/node` drops its own copy (#3665). Failsafe sets `<includes>` only and keeps
   its default.
 - **A static nested class with test methods is dropped by that exclude and nothing reported it.**
-  `NestedTestScanTest` fails the build on one over every `src/test/java` and `src/it/java` tree (`@Nested` classes and
-  abstract bases that a top-level or `@Nested` class extends are legal), and on any pom whose surefire or failsafe
+  `NestedTestScanTest` fails the build on one over every `src/test/java` and `src/it/java` tree (legal iff something runs it: a top-level class, a `@Nested` class whose
+  enclosing types are all run, a class its own launcher-importing file lists by `Name.class`, or an abstract base a run class extends), and on any pom whose surefire or failsafe
   `<excludes>` list would drop the default again. `PlanWitnessTest.PlannedFixture` became a top-level class.
