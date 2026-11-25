@@ -29,7 +29,7 @@ Terra does not start an Aether node, and distributed collaborators are outside i
 
 ## Deployment shape
 
-Direction (2026-11-06, not a shipped guarantee): Terra will ship resource clients that work from both runtimes, so the runtime and each resource's backend are chosen independently, and the standard deployment becomes two Terra instances with state in external standard infrastructure. Today the contract is narrower: two instances may start against one database, because the migration engine's database fence (PostgreSQL `pg_try_advisory_lock`, per database) lets one run at a time and a second instance's startup fails with a refusal instead of waiting (guarantee in the reference); pub-sub is in-process, so two instances do not share events. See [the reference](SPEC.md#database-startup).
+Direction (2026-11-06, not a shipped guarantee): Terra will ship resource clients that work from both runtimes, so the runtime and each resource's backend are chosen independently, and the standard deployment becomes two Terra instances with state in external standard infrastructure. Today the contract is narrower: two instances may start against one database, because the migration engine's database fence (PostgreSQL `pg_try_advisory_lock`, per database) lets one session run a datasource's migrations at a time, and a second instance's startup waits for the holder and then re-runs, finding the migrations applied (guarantee in the reference); pub-sub is in-process, so two instances do not share events. See [the reference](SPEC.md#database-startup).
 
 ## Run the demo distribution
 
