@@ -41,8 +41,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// cleanup settle; there is no timeout-driven retry.
 ///
 /// Across processes (#2787), the database migration fence of the shared runner (FDB-2a, #2591) excludes: one instance
-/// runs a datasource's migration while every other instance meets the fence held ([MigrationError.MigrationFencedInDatabase])
-/// and waits for it under the A6 ruling, then re-runs and finds the history already applied.
+/// runs a datasource's migration at a time while it holds the fence; every other instance meets the fence held
+/// ([MigrationError.MigrationFencedInDatabase]) and waits for it under the A6 ruling, then re-runs and finds the history
+/// already applied.
 public interface TerraMigrations {
     /// Zero means no statement bound on the pinned migration session (FDB-2a, #2591): Terra had no bound before the fence.
     /// On PostgreSQL it is set explicitly (`statement_timeout = 0`, `lock_timeout = 0`), overriding role defaults.
@@ -233,8 +234,10 @@ record MigrationRun(String owner,
     /// the holder lives; the holder's own run then shows in the history this run reads. From the
     /// [TerraMigrations#HELD_WARNING_THRESHOLD]th consecutive Held on, each one is logged as a warning naming the holder.
     /// Every other cause ends the run as before. Recovery: FER (degrade forward: wait, then run again), and it earns only
-    /// "exactly one instance runs each script, and a waiting instance starts once the holder is gone", because the fence
-    /// ends with the holder's session; there is no timeout, so a holder that never ends keeps this startup waiting.
+    /// "at most one session runs a datasource's scripts at a time while it holds the fence; a script in the history is not
+    /// re-run; a holder that dies inside a script with non-transactional statements (history recorded separately) can lead
+    /// to a re-run", and a waiting instance starts once the holder's session is gone, because the fence ends with it;
+    /// there is no timeout, so a holder that never ends keeps this startup waiting.
     private Promise<SchemaMigrations.SchemaResult> migrateWhileHeld(MigrationTask task,
                                                                     SqlConnector connector,
                                                                     int held) {
