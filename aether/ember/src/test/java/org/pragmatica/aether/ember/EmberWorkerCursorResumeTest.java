@@ -106,10 +106,13 @@ class EmberWorkerCursorResumeTest {
         awaitUntil(() -> committedOffset(leader(), cursorKey).equals(Option.some(COMMITTED_OFFSET)),
                    WAIT_BOUND_MS,
                    "the predecessor's forwarded checkpoint is committed at " + COMMITTED_OFFSET + ", leader reads " + committedOffset(leader(), cursorKey));
-        assertThat(committedOffset(node(successor), cursorKey)).as("premise: a worker's mirror never holds a cursor checkpoint")
-                                                               .isEqualTo(Option.none());
 
         assign(successor, successorEpoch);
+        // #3726 verification F1: asserted only after `assign` awaited the successor's mirror holding a key committed AFTER the checkpoint. The replica
+        // applies in commit order, so a checkpoint the replica did not exclude would be here by now; checked earlier, "absent" was also what a
+        // lagging mirror reads, so the assertion could not fail (mutant: ReplicaFilter admits StreamCursorCheckpointKey).
+        assertThat(committedOffset(node(successor), cursorKey)).as("premise: a worker's mirror excludes cursor checkpoints (it is not merely behind)")
+                                                               .isEqualTo(Option.none());
         var runtime = StreamTripwireSupport.component(node(successor), "streamConsumerRuntime", StreamConsumerRuntime.class);
         var resumed = new CopyOnWriteArrayList<Long>();
         var fresh = new CopyOnWriteArrayList<Long>();
