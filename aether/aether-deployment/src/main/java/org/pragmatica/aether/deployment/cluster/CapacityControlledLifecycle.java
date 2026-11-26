@@ -22,6 +22,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -39,6 +40,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -76,7 +78,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                           AtomicLong leadershipGeneration,
                                           AtomicReference<OperatorWarningSink> warningSink,
                                           LongSupplier clock,
-                                          TimeSpan ceiling) implements NodeLifecycleManager {
+                                          TimeSpan ceiling,
+                                          LongSupplier nanoClock,
+                                          TimeSpan applyTimeout) implements NodeLifecycleManager, FencePort {
     private static final Logger log = LoggerFactory.getLogger(CapacityControlledLifecycle.class);
 
     public static CapacityControlledLifecycle capacityControlledLifecycle(NodeLifecycleManager delegate,
@@ -122,6 +126,31 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                    IntSupplier limit,
                                                                    TimeSpan ceiling,
                                                                    LongSupplier clock) {
+        return capacityControlledLifecycle(delegate,
+                                           self,
+                                           store,
+                                           apply,
+                                           activeLeader,
+                                           limit,
+                                           ceiling,
+                                           clock,
+                                           System::nanoTime,
+                                           ProtocolConfig.DEFAULT_APPLY_TIMEOUT);
+    }
+
+    /// `nanoClock` is the monotonic clock of the fence's elapsed check: it is not `clock`, whose epoch milliseconds a wall-clock step
+    /// could move backwards, disabling the check, or forwards, refusing healthy effects. `applyTimeout` is the consensus engine's own
+    /// apply deadline: the fence refuses a witness accepted more than that after submit, so the node-side window equals the engine's.
+    static CapacityControlledLifecycle capacityControlledLifecycle(NodeLifecycleManager delegate,
+                                                                   NodeId self,
+                                                                   KVStore<AetherKey, AetherValue> store,
+                                                                   Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply,
+                                                                   BooleanSupplier activeLeader,
+                                                                   IntSupplier limit,
+                                                                   TimeSpan ceiling,
+                                                                   LongSupplier clock,
+                                                                   LongSupplier nanoClock,
+                                                                   TimeSpan applyTimeout) {
         return new CapacityControlledLifecycle(delegate,
                                                self,
                                                store,
@@ -141,7 +170,36 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                new AtomicLong(),
                                                new AtomicReference<>(OperatorWarningSink.logOnly()),
                                                clock,
-                                               ceiling);
+                                               ceiling,
+                                               nanoClock,
+                                               applyTimeout);
+    }
+
+    /// The same lifecycle, sharing every piece of state, with the consensus `applyTimeout` the fence's elapsed check uses: the node
+    /// assembly passes the value the engine was built with (read once at boot, on both sides).
+    public CapacityControlledLifecycle withApplyTimeout(TimeSpan timeout) {
+        return new CapacityControlledLifecycle(delegate,
+                                               self,
+                                               store,
+                                               apply,
+                                               activeLeader,
+                                               limit,
+                                               initializing,
+                                               inventoried,
+                                               inventoryReconciling,
+                                               activeSources,
+                                               inventoryCursors,
+                                               undispatched,
+                                               dispatchStamps,
+                                               dispatchMisses,
+                                               unmatchedSince,
+                                               leading,
+                                               leadershipGeneration,
+                                               warningSink,
+                                               clock,
+                                               ceiling,
+                                               nanoClock,
+                                               timeout);
     }
 
     public enum AdmissionFailure implements org.pragmatica.lang.Cause {
@@ -265,11 +323,14 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// leader first found it unmatched, so a slow cloud boot is never released mid-boot. The same bounded lanes as the OBSERVED absence
     /// confirmation.
     private Promise<Unit> confirmDispatches(SourceName source, String binding, Set<NodeId> observed) {
-        return leader().filter(_ -> allSourcesInventoried())
-                     .fold(Promise::unitPromise,
-                           _ -> confirmEarlierTermDispatches(source,
-                                                             binding,
-                                                             staleDispatches(source, binding, observed)));
+        return activation().filter(_ -> allSourcesInventoried())
+                         .fold(Promise::unitPromise,
+                               current -> confirmEarlierTermDispatches(source,
+                                                                       binding,
+                                                                       staleDispatches(source,
+                                                                                       binding,
+                                                                                       observed,
+                                                                                       current.generation())));
     }
 
     /// Fail-safe: a configuration that cannot be read, or none committed with an incomplete ledger, is not "every source inventoried".
@@ -277,8 +338,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return unseenSources(configuration()).fold(_ -> false, List::isEmpty);
     }
 
-    private List<NodeId> staleDispatches(SourceName source, String binding, Set<NodeId> observed) {
-        var generation = leadershipGeneration.get();
+    private List<NodeId> staleDispatches(SourceName source, String binding, Set<NodeId> observed, long generation) {
         var now = clock.getAsLong();
 
         return reservations().entrySet()
@@ -454,9 +514,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                             spec.context().sourceName(),
                             binding,
                             spec.context().role(),
-                            inventoriedUnder).flatMap(accepted -> accepted
-                                                                  ? dispatch(node, spec)
-                                                                  : AdmissionFailure.CAPACITY_UNAVAILABLE.promise())
+                            inventoriedUnder).flatMap(committed -> committed.admitted()
+                                                                             .fold(() -> AdmissionFailure.CAPACITY_UNAVAILABLE.promise(),
+                                                                                   reserved -> dispatch(node, spec, reserved)))
                            .timeout(ceiling)
                            .fold(result -> releaseSourceBinding(binding, result));
     }
@@ -478,19 +538,23 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                : Promise.unitPromise();
     }
 
-    private Promise<InstanceInfo> dispatch(NodeId node, ProvisionSpec spec) {
-        return leader().fold(() -> abandonDispatch(node,
-                                                   spec.context().sourceName()),
-                             current -> dispatchUnder(node, spec, current));
+    /// The create's sink (C1): the provider is asked only if a fresh read of the activation still pairs a present leader with the
+    /// generation the reservation was committed under. The reserve is the commit that makes the create this node's; the re-read is the
+    /// fence. A leadership lost, or lost and regained, in between takes [#abandonDispatch], because the reservation is committed.
+    private Promise<InstanceInfo> dispatch(NodeId node, ProvisionSpec spec, Activation reserved) {
+        return activation().filter(current -> current.generation() == reserved.generation())
+                         .fold(() -> abandonDispatch(node,
+                                                     spec.context().sourceName()),
+                               current -> dispatchUnder(node, spec, current));
     }
 
     /// The leadership generation is remembered per node so that this instance can tell an allocation it dispatched itself since it last
     /// gained leadership, in flight, from one an earlier leadership left behind. Process-local on purpose: an instance that does not know a
     /// DISPATCHED allocation treats it as earlier, which is what a restarted or newly elected leader is. The generation advances only when
     /// this node GAINS leadership; a same-leader re-commit (new view sequence, no lost leadership) does not advance it.
-    private Promise<InstanceInfo> dispatchUnder(NodeId node, ProvisionSpec spec, LeaderValue current) {
+    private Promise<InstanceInfo> dispatchUnder(NodeId node, ProvisionSpec spec, Activation current) {
         dispatchStamps.put(node,
-                           new DispatchStamp(leadershipGeneration.get(), clock.getAsLong()));
+                           new DispatchStamp(current.generation(), clock.getAsLong()));
 
         return records().reservation(node)
                       .toResult(Causes.cause("Missing committed capacity binding before create"))
@@ -654,13 +718,30 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return records().reservations();
     }
 
+    /// The leader this node holds, as the one accessor [#activation] answers it.
     private Option<LeaderValue> leader() {
-        return observeLeadership(store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
-                                      .filter(value -> activeLeader.getAsBoolean() && value.leader()
-                                                                                           .equals(self)));
+        return activation().map(Activation::value);
     }
 
-    /// Counts lose -> gain edges as the instance observes them (every reconcile and dispatch asks `leader()`). A gain also starts the
+    /// The ONE accessor of C1: whether this node holds the stored leader, and the leadership generation that read pairs with it. It is
+    /// `synchronized` and covers the store read, the lose-to-gain observation and the read of the generation, so "present" is never
+    /// paired with a generation older than the gain it follows. A fenced effect reads it at submit and again in its continuation; nothing
+    /// else reads the generation (TA8 scans the tree).
+    ///
+    /// Lock order: this monitor, then the KVStore monitor (`getTyped`). Nothing that runs under the KVStore monitor, or under a lock
+    /// `activeLeader` takes, calls back into this record (the lock-free `isLeader` reads two atomics).
+    synchronized Option<Activation> activation() {
+        return observeLeadership(storedLeader()).map(value -> Activation.activation(value,
+                                                                                    leadershipGeneration.get()));
+    }
+
+    private Option<LeaderValue> storedLeader() {
+        return store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                    .filter(value -> activeLeader.getAsBoolean() && value.leader()
+                                                                         .equals(self));
+    }
+
+    /// Counts lose -> gain edges as the instance observes them (every reconcile and dispatch asks [#activation]). A gain also starts the
     /// absence counts afresh: they are "this leader's". [limit: an interlude of another leader that this instance never observed,
     /// with no call to it in between, reads as continuous leadership.]
     private Option<LeaderValue> observeLeadership(Option<LeaderValue> current) {
@@ -878,21 +959,21 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// Reserves only under the configuration the admission inventoried for: the commit carries a read witness of it, so a configuration
     /// committed since (while the inventory was being taken, or before the commit lands) rejects the reservation, and the next admission
     /// inventories again.
-    private Promise<Boolean> reserveBound(NodeId node,
-                                          SourceName source,
-                                          String binding,
-                                          String intendedRole,
-                                          AetherValue.ClusterConfigValue inventoriedUnder) {
+    private Promise<Committed> reserveBound(NodeId node,
+                                            SourceName source,
+                                            String binding,
+                                            String intendedRole,
+                                            AetherValue.ClusterConfigValue inventoriedUnder) {
         var current = ledger();
         var configuration = Option.some(inventoriedUnder);
 
         if (records().holds(node) || current.filter(value -> value.inventoryComplete() && value.allocated() < limit.getAsInt())
                                             .isEmpty()) {
-            return Promise.success(false);
+            return Promise.success(Committed.refused());
         }
 
-        return current.fold(() -> Promise.success(false),
-                            value -> mutate(current,
+        return current.fold(() -> Promise.success(Committed.refused()),
+                            value -> commit(current,
                                             new CapacityLedgerValue(value.allocated() + 1, value.version() + 1, true),
                                             List.of(new KVCommand.ReadWitness<AetherKey>(AetherKey.ClusterConfigKey.CURRENT,
                                                                                          configuration.map(config -> (Object) config))),
@@ -964,29 +1045,72 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return mutate(before, after, List.of(), changes);
     }
 
+    /// The ledger commit, answering only whether it was accepted. The five callers that need no [Activation] use it; the reserve of a
+    /// create uses [#commit].
     private Promise<Boolean> mutate(Option<CapacityLedgerValue> before,
                                     CapacityLedgerValue after,
                                     List<KVCommand.ReadWitness<AetherKey>> guards,
                                     List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
-        return leader().fold(() -> Promise.success(false),
-                             currentLeader -> {
-                                 var mutations = new ArrayList<>(changes);
+        return commit(before, after, guards, changes).map(Committed::accepted);
+    }
 
-                                 mutations.add(records().ledgerChange(before, after));
-                                 var id = UUID.randomUUID().toString();
-                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(records().ledgerKey(),
-                                                                                                       id,
-                                                                                                       currentLeader,
-                                                                                                       guards,
-                                                                                                       mutations);
+    /// The ledger commit together with the [Activation] it was built from: the generation is captured by the same read the transaction's
+    /// leader comes from, so the first create after a regain carries the new generation.
+    private Promise<Committed> commit(Option<CapacityLedgerValue> before,
+                                      CapacityLedgerValue after,
+                                      List<KVCommand.ReadWitness<AetherKey>> guards,
+                                      List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
+        return activation().fold(() -> Promise.success(Committed.refused()),
+                                 used -> commitUnder(used, before, after, guards, changes));
+    }
 
-                                 return apply.apply(List.of(command))
-                                             .map(results -> results.stream()
-                                                                    .filter(KVCommand.TransactionResult.class::isInstance)
-                                                                    .map(KVCommand.TransactionResult.class::cast)
-                                                                    .anyMatch(result -> result.transactionId()
-                                                                                              .equals(id) && result.accepted()));
-                             });
+    private Promise<Committed> commitUnder(Activation used,
+                                           Option<CapacityLedgerValue> before,
+                                           CapacityLedgerValue after,
+                                           List<KVCommand.ReadWitness<AetherKey>> guards,
+                                           List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
+        var mutations = new ArrayList<>(changes);
+
+        mutations.add(records().ledgerChange(before, after));
+        var id = UUID.randomUUID().toString();
+        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(records().ledgerKey(),
+                                                                              id,
+                                                                              used.value(),
+                                                                              guards,
+                                                                              mutations);
+
+        return apply.apply(List.of(command))
+                    .map(results -> Committed.committed(isAccepted(results, id), used));
+    }
+
+    private static boolean isAccepted(List<Object> results, String id) {
+        return resultOf(results, id).filter(KVCommand.TransactionResult::accepted)
+                                    .isPresent();
+    }
+
+    private static Option<KVCommand.TransactionResult> resultOf(List<Object> results, String id) {
+        return Option.from(results.stream()
+                                  .filter(KVCommand.TransactionResult.class::isInstance)
+                                  .map(KVCommand.TransactionResult.class::cast)
+                                  .filter(result -> result.transactionId()
+                                                          .equals(id))
+                                  .findFirst());
+    }
+
+    /// A ledger commit's outcome with the [Activation] its transaction was built from; none when no leader was present to build it.
+    private record Committed(boolean accepted, Option<Activation> activation) {
+        static Committed committed(boolean accepted, Activation used) {
+            return new Committed(accepted, Option.some(used));
+        }
+
+        static Committed refused() {
+            return new Committed(false, Option.none());
+        }
+
+        /// The activation of an accepted commit.
+        Option<Activation> admitted() {
+            return activation.filter(_ -> accepted);
+        }
     }
 
     private Promise<Unit> releaseConfirmed(NodeId node, SourceName source, String binding) {
@@ -1379,8 +1503,76 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                             .equals(binding))
                       .toResult(Causes.cause("Termination does not match the committed capacity source binding"))
                       .async()
-                      .flatMap(_ -> delegate.terminateNode(node, source, binding))
+                      .flatMap(reservation -> terminateFenced(node, source, binding, reservation))
                       .flatMap(_ -> instancesForNode(node, source, binding).mapToUnit());
+    }
+
+    /// The terminate's sink (C1): the only `delegate.terminateNode` in this record. The provider is asked only in the continuation of an
+    /// accepted witness of the reservation as it was read here, so a reservation released or replaced since, or a leader other than the
+    /// stored one, refuses the terminate with a typed cause that reaches the caller's reap budget.
+    private Promise<Unit> terminateFenced(NodeId node,
+                                          SourceName source,
+                                          String binding,
+                                          CapacityReservationValue reservation) {
+        return fenced(List.of(records().witness(node, Option.some(reservation))),
+                      () -> delegate.terminateNode(node, source, binding));
+    }
+
+    /// The port of C1 (see [FencePort]): submit a witness-only leader transaction, then, in its continuation, run `effect` only if the
+    /// witness was accepted no more than `applyTimeout` after submit (this node's monotonic clock) and a fresh read of [#activation] still
+    /// pairs a present leader with the generation submitted under. It always fails with a typed cause, never `false`: this differs from
+    /// [#transact] on purpose, so every caller sees why the effect did not run.
+    @Override
+    public <T> Promise<T> fenced(List<KVCommand.ReadWitness<AetherKey>> guards, Supplier<Promise<T>> effect) {
+        return activation().fold(() -> FenceFailure.NotLeader.notLeader().promise(),
+                                 submitted -> witnessed(submitted, nanoClock.getAsLong(), guards, effect));
+    }
+
+    private <T> Promise<T> witnessed(Activation submitted,
+                                     long submittedAt,
+                                     List<KVCommand.ReadWitness<AetherKey>> guards,
+                                     Supplier<Promise<T>> effect) {
+        var id = UUID.randomUUID().toString();
+        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(records().ledgerKey(),
+                                                                              id,
+                                                                              submitted.value(),
+                                                                              guards,
+                                                                              List.of());
+
+        return apply.apply(List.of(command))
+                    .flatMap(results -> witnessOutcome(results, id))
+                    .flatMap(_ -> stillCurrent(submitted, submittedAt))
+                    .flatMap(_ -> effect.get());
+    }
+
+    /// Accepted only on an accepted result of THIS transaction: a refusal, and an answer that does not carry the transaction at all, both
+    /// refuse the witness.
+    private static Promise<Unit> witnessOutcome(List<Object> results, String id) {
+        var result = resultOf(results, id);
+
+        return result.filter(KVCommand.TransactionResult::accepted)
+                     .fold(() -> refusedWitness(result),
+                           _ -> Promise.unitPromise());
+    }
+
+    private static Promise<Unit> refusedWitness(Option<KVCommand.TransactionResult> result) {
+        return FenceFailure.LeadershipNotWitnessed.leadershipNotWitnessed(result.flatMap(KVCommand.TransactionResult::refusal)
+                                                                                .map(KVCommand.Refusal::kind)
+                                                                                .or(KVCommand.RefusalKind.UNKNOWN))
+                           .promise();
+    }
+
+    /// The continuation's checks, in order: the elapsed time since submit, then the activation re-read.
+    private Promise<Unit> stillCurrent(Activation submitted, long submittedAt) {
+        return nanoClock.getAsLong() - submittedAt > applyTimeout.nanos()
+               ? FenceFailure.WitnessExpired.witnessExpired().promise()
+               : unchanged(submitted);
+    }
+
+    private Promise<Unit> unchanged(Activation submitted) {
+        return activation().filter(current -> current.generation() == submitted.generation())
+                         .fold(() -> FenceFailure.ActivationChanged.activationChanged().promise(),
+                               _ -> Promise.unitPromise());
     }
 
     @Override
