@@ -32,7 +32,8 @@ import static org.pragmatica.testing.PollUntil.pollUntil;
 /// connects. The engine raises `genesis-seat-unreachable` (subject `-1`) and the cluster forms with the two live cores.
 ///
 /// Pins the assembly: `AetherNode` binding the engine's warning sink to its event aggregator (`useOperatorWarningSink`) and
-/// `RabiaEngine#signalUnreachableSeats` at the install. Removing either leaves the event log without the warning and this test red.
+/// the install's own deadline (`RabiaEngine#armGenesisSeatConfirmation`, 5 s after the install). Removing either leaves the event log
+/// without the warning and this test red.
 /// `GenesisSeatUnreachableTest` pins the same emission at unit level with a faked network.
 ///
 /// The second test pins ask 2: auto-heal replaces a seat dead from genesis within a bound, and the warning closes. The remedy sentence
