@@ -36,6 +36,7 @@ class StreamApiRoutesDeleteStreamTest {
     private static Object stubbed(String method, StreamPartitionManager manager) {
         return switch (method) {
             case "streamPartitionManager" -> manager;
+            case "kvStore" -> StreamRouteFixtures.emptyStore();
             default -> throw new UnsupportedOperationException("Not stubbed in test proxy: " + method);
         };
     }

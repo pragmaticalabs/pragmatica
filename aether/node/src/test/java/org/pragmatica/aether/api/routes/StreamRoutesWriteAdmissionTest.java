@@ -194,6 +194,24 @@ class StreamRoutesWriteAdmissionTest {
         assertThat(namespaces.lookup(address()).isEmpty()).as("catalog reference released").isTrue();
     }
 
+    /// The delete retires the catalog entry once: after it, the catalog no longer knows the stream, so a second delete at the
+    /// same node answers "not found", as it would at the owner.
+    @Test
+    void delete_secondDeleteAtNonOwner_afterTheCatalogEntryIsReleased_isStreamNotFound() {
+        var serving = serving(Long.MAX_VALUE);
+        var routes = routes(serving, false, StreamRouteFixtures.registryWith(address(), RETENTION));
+
+        routes.deleteStream(NAMESPACE, STREAM, VERSION)
+              .await()
+              .onFailure(cause -> fail("control: the first delete is answered: " + cause.message()));
+
+        var failure = routes.deleteStream(NAMESPACE, STREAM, VERSION)
+                            .await()
+                            .fold(cause -> cause, _ -> fail("a stream already deleted must not read as deleted again"));
+
+        assertThat(failure).isInstanceOf(StreamError.StreamNotFound.class);
+    }
+
     /// The control: the catalog does not know the stream either, so the answer is "not found" at every node.
     @Test
     void delete_streamUnknownToTheCatalogAndToTheNode_isStreamNotFound() {
