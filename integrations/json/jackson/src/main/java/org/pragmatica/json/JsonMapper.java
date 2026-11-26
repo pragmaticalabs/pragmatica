@@ -163,6 +163,16 @@ public interface JsonMapper {
                : node.toString();
     }
 
+    /// This mapper as the writer of an HTTP client body (#3723): a failed `Result` or a `Cause` is written with its
+    /// `clientMessage()`, never its `message()`, which may carry a caught throwable's stack trace. The general mapper keeps
+    /// `message()`: the CLI, cloud clients and state files read it back. Every other setting is kept; the mapper this was
+    /// derived from is unchanged. A mapper that is not backed by Jackson here answers itself.
+    ///
+    /// @return A mapper that writes client text for failures
+    default JsonMapper clientFacing() {
+        return this;
+    }
+
     /// Creates a new JsonMapper builder.
     ///
     /// @return Builder instance
