@@ -40,7 +40,9 @@ import static org.pragmatica.lang.Result.unitResult;
 ///
 /// A request for a target that already has a witness in flight joins that witness and gets its outcome through its own gate: the sink
 /// deduplicates the witness per target, never the gate. A target already in the registry runs its gate at once and starts no witness.
-/// Every caller's promise is resolved by the sink after that caller's own gate returned, so never under the owner's monitor.
+/// Every caller's promise is resolved by the sink after that caller's own gate returned, so never under the owner's monitor, and
+/// after the witness's intent is removed from `intents`: no caller, and no promise chained on a caller or on [#inFlight], observes an
+/// outcome while the request is still in flight. The one place that does both, in that order, is [#settle].
 ///
 /// The port is injected, so this lane's wiring passes an unfenced adapter; lane (b3) passes the CCL port.
 final class FencedDrainSink implements DrainSink {
@@ -75,6 +77,13 @@ final class FencedDrainSink implements DrainSink {
     record Joined(DrainGate gate, Promise<Unit> caller) {
         static Joined joined(DrainGate gate) {
             return new Joined(gate, Promise.promise());
+        }
+    }
+
+    /// One caller's answer, held back until the intent is out of `intents`.
+    private record Settlement(Joined joined, Result<Unit> answer) {
+        static Settlement settlement(Joined joined, Result<Unit> answer) {
+            return new Settlement(joined, answer);
         }
     }
 
@@ -183,41 +192,79 @@ final class FencedDrainSink implements DrainSink {
     private void submitWitness(NodeId target, Intent intent) {
         port.<Unit> fenced(List.of(),
                            () -> runAccepted(target, intent))
-            .onFailure(cause -> failJoined(target, intent, cause))
-            .onResult(intent.outcome()::resolve);
+            .onResult(result -> witnessEnded(target, intent, result));
     }
 
-    /// The accepted continuation: runs every joined gate, batch by batch, then answers whether the target is registered.
-    private Promise<Unit> runAccepted(NodeId target, Intent intent) {
-        runBatches(target, intent);
+    /// A refused witness settles its callers first (the intent leaves `intents` before any of them is resolved), then the outcome that
+    /// [#inFlight] hands out is resolved: one handler, so the order holds on the event thread. An accepted witness has settled in
+    /// [#runAccepted] already.
+    @Contract
+    private void witnessEnded(NodeId target, Intent intent, Result<Unit> result) {
+        intent.outcome().resolve(result.onFailure(cause -> failJoined(target, intent, cause)));
+    }
 
+    /// The accepted continuation: runs every joined gate, batch by batch, reads whether the target is registered, then settles the
+    /// callers. The registry is read while the intent is closed and still present, so a request that arrives meanwhile is sent to a
+    /// fresh decision by [#retryAfterClosed] against the registry this answer was read from.
+    private Promise<Unit> runAccepted(NodeId target, Intent intent) {
+        return settling(target, intent, runBatches(target, intent), registeredOrCancelled(target));
+    }
+
+    private Promise<Unit> registeredOrCancelled(NodeId target) {
         return drainTargets.get()
                            .contains(target)
                ? Promise.unitPromise()
                : AttemptCancelled.attemptCancelled().promise();
     }
 
-    @Contract
-    private void runBatches(NodeId target, Intent intent) {
-        var batch = intent.takeOrClose();
+    /// Settles the callers and hands `outcome` on: the argument is read before the intent leaves, the callers after.
+    private Promise<Unit> settling(NodeId target, Intent intent, List<Settlement> answers, Promise<Unit> outcome) {
+        settle(target, intent, answers);
 
-        if (batch.isEmpty()) {
-            intents.remove(target, intent);
+        return outcome;
+    }
 
-            return;
-        }
+    /// Runs the gates of every batch in order, until a take answers empty and closes the intent. Nothing is resolved here. The gates of a
+    /// batch run before the next take: [#followedBy] receives its first argument evaluated, then asks for the rest.
+    private List<Settlement> runBatches(NodeId target, Intent intent) {
+        return runBatch(target, intent, intent.takeOrClose());
+    }
 
-        batch.forEach(joined -> joined.caller()
-                                      .resolve(runGate(target,
-                                                       joined.gate())));
-        runBatches(target, intent);
+    private List<Settlement> runBatch(NodeId target, Intent intent, List<Joined> batch) {
+        return batch.isEmpty()
+               ? List.of()
+               : followedBy(gatesOf(target, batch), runBatches(target, intent));
+    }
+
+    private List<Settlement> gatesOf(NodeId target, List<Joined> batch) {
+        return batch.stream()
+                    .map(joined -> Settlement.settlement(joined,
+                                                         runGate(target,
+                                                                 joined.gate())))
+                    .toList();
+    }
+
+    private static List<Settlement> followedBy(List<Settlement> first, List<Settlement> rest) {
+        return Stream.concat(first.stream(),
+                             rest.stream())
+                     .toList();
     }
 
     @Contract
     private void failJoined(NodeId target, Intent intent, Cause cause) {
-        intent.closeAll().forEach(joined -> joined.caller()
-                                                  .fail(cause));
+        settle(target,
+               intent,
+               intent.closeAll().stream().map(joined -> Settlement.settlement(joined, cause.<Unit> result())).toList());
+    }
+
+    /// The one settle path: the intent leaves `intents` first, then the callers are resolved. A caller, or a promise chained on a
+    /// caller or on [#inFlight], therefore never observes its outcome while the request is still in flight.
+    @Contract
+    private void settle(NodeId target, Intent intent, List<Settlement> answers) {
         intents.remove(target, intent);
+        answers.forEach(settlement -> settlement.joined()
+                                                .caller()
+                                                .resolve(settlement.answer()));
     }
 
     /// One caller's own gate: refused if it holds the owner's monitor, else the registry add under the gate, and the FSM call after the
