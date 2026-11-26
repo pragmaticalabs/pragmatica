@@ -14,6 +14,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
+import org.pragmatica.aether.deployment.cluster.DrainSink;
 import org.pragmatica.aether.deployment.cluster.NodeReconcilerState;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.cluster.ReplacementInstanceState;
@@ -5458,7 +5459,7 @@ class LeaderReconcilerTest {
                                                                         () -> Option.<org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue> none(),
                                                                         commands -> Promise.success(List.<Object> of()),
                                                                         () -> org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase.NORMAL,
-                                                                        _ -> {},
+                                                                        DrainSink.synchronous(_ -> {}, _ -> {}),
                                                                         _ -> {},
                                                                         Option::none,
                                                                         liveness);
