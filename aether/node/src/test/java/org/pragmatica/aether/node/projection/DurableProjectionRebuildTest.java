@@ -408,17 +408,16 @@ class DurableProjectionRebuildTest {
                                                                        RewindEpoch.rewindEpoch(INCARNATION, sequence, 1L));
     }
 
-    private void awaitStarted(long maxMs) throws InterruptedException {
-        var deadline = System.currentTimeMillis() + maxMs;
+    private void awaitStarted(long maxMs) {
+        PollUntil.pollUntil(this::startedConsumers, started -> started == 1, Duration.ofMillis(maxMs))
+                 .assertMet("the consumer started once its fetch landed");
+        assertThat(subscriptionsForGroup()).as("exactly one consumer, and it is not fetching").hasSize(1);
+    }
 
-        while (subscriptionsForGroup().stream().anyMatch(StreamConsumerRuntime.SubscriptionSnapshot::awaitingCursorFetch)
-               && System.currentTimeMillis() < deadline) {
-            TimeUnit.MILLISECONDS.sleep(50);
-        }
-
-        assertThat(subscriptionsForGroup()).as("the consumer started once its fetch landed, within " + maxMs + "ms")
-                                           .hasSize(1)
-                                           .noneMatch(StreamConsumerRuntime.SubscriptionSnapshot::awaitingCursorFetch);
+    private long startedConsumers() {
+        return subscriptionsForGroup().stream()
+                                      .filter(snapshot -> !snapshot.awaitingCursorFetch())
+                                      .count();
     }
 
     /// #1400 (the RED pin, red at the base: the old store stays REBUILDING at offset 0). A rebuild requested here whose
@@ -784,15 +783,15 @@ class DurableProjectionRebuildTest {
 
     /// Runs passes until the `count`-th epoch read is sent. A pass sends only when the previous read has landed, so the
     /// pass that sends it is the first to act on that answer.
-    private void passUntilEpochReadsSent(int count) throws InterruptedException {
-        var deadline = System.currentTimeMillis() + 10_000;
+    private void passUntilEpochReadsSent(int count) {
+        PollUntil.pollUntil(this::reconcileAndCountEpochReads, sent -> sent >= count, Duration.ofSeconds(10))
+                 .assertMet(count + " epoch reads sent");
+    }
 
-        while (epochReads.size() < count && System.currentTimeMillis() < deadline) {
-            manager.reconcile();
-            TimeUnit.MILLISECONDS.sleep(20);
-        }
+    private int reconcileAndCountEpochReads() {
+        manager.reconcile();
 
-        assertThat(epochReads).as(count + " epoch reads sent within 10s").hasSizeGreaterThanOrEqualTo(count);
+        return epochReads.size();
     }
 
     /// The committed checkpoint as a core answers the epoch read: one Get answer for the one held key.

@@ -60,7 +60,16 @@ public interface CommittedCursorRead {
         var reads = consensusReads(cluster);
 
         return key -> reads.read(List.of(key))
-                           .map(List::getFirst);
+                           .flatMap(answers -> onlyAnswer(key, answers).async());
+    }
+
+    /// [#getAnswers] returns one entry per key, so a single read has exactly one; a list of another size is UNREADABLE here
+    /// too, never decoded as ABSENT (unreachable through [#consensusReads], kept so the guarantee does not rest on it).
+    private static Result<Option<StreamCursorCheckpointValue>> onlyAnswer(StreamCursorCheckpointKey key,
+                                                                          List<Option<StreamCursorCheckpointValue>> answers) {
+        return answers.size() == 1
+               ? Result.success(answers.getFirst())
+               : malformed(List.of(key), answers).result();
     }
 
     /// The batch form: one command list through `cluster`, one [KVCommand.Get] per key, decoded positionally
