@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.Deque;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberCluster.EventLogEntry;
@@ -57,29 +58,17 @@ public final class ForgeApiHandler {
     private final ChaosController chaosController;
     private final InventoryState inventoryState;
 
-    private ForgeApiHandler(EmberCluster cluster,
-                            ForgeMetrics metrics,
-                            ConfigurableLoadRunner configurableLoadRunner,
+    private ForgeApiHandler(Function<ForgeApiHandler, RequestRouter> routerOf,
                             ChaosController chaosController,
                             InventoryState inventoryState,
                             Deque<ForgeEvent> events,
-                            long startTime,
-                            OperatorKey operatorKey) {
+                            long startTime) {
         this.chaosController = chaosController;
         this.inventoryState = inventoryState;
         this.events = events;
         this.startTime = startTime;
         this.jsonCodec = JsonCodecAdapter.defaultCodec();
-        this.router = ForgeRouter.forgeRouter(cluster,
-                                              configurableLoadRunner,
-                                              chaosController,
-                                              this::getConfig,
-                                              inventoryState,
-                                              metrics,
-                                              events,
-                                              startTime,
-                                              this::logEvent,
-                                              operatorKey);
+        this.router = routerOf.apply(this);
     }
 
     /// `operatorKey` is the credential every proxied call to an embedded node carries (#1105).
@@ -92,14 +81,29 @@ public final class ForgeApiHandler {
         var events = new ConcurrentLinkedDeque<ForgeEvent>();
         var startTime = System.currentTimeMillis();
 
-        return new ForgeApiHandler(cluster,
-                                   metrics,
-                                   configurableLoadRunner,
+        return new ForgeApiHandler(handler -> ForgeRouter.forgeRouter(cluster,
+                                                                      configurableLoadRunner,
+                                                                      chaosController,
+                                                                      handler::getConfig,
+                                                                      inventoryState,
+                                                                      metrics,
+                                                                      events,
+                                                                      startTime,
+                                                                      handler::logEvent,
+                                                                      operatorKey),
                                    chaosController,
                                    inventoryState,
                                    events,
-                                   startTime,
-                                   operatorKey);
+                                   startTime);
+    }
+
+    /// A handler over a caller-supplied router, so a test can drive the response boundary with a route of its own.
+    static ForgeApiHandler forgeApiHandler(RequestRouter router) {
+        return new ForgeApiHandler(_ -> router,
+                                   ChaosController.chaosController(_ -> {}),
+                                   InventoryState.inventoryState(),
+                                   new ConcurrentLinkedDeque<>(),
+                                   System.currentTimeMillis());
     }
 
     private static void executeChaosEvent(EmberCluster cluster, ChaosEvent event) {
