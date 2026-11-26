@@ -31,6 +31,8 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.cluster.DrainGate;
+import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.deployment.cluster.FenceFailure.ActivationChanged;
 import org.pragmatica.aether.deployment.cluster.FenceFailure.AttemptCancelled;
 import org.pragmatica.aether.deployment.cluster.FenceFailure.CalledUnderOwnerMonitor;
@@ -499,6 +501,25 @@ class NodeLifecycleRoutesFencedDrainTest {
         assertThat(retried.await(SETTLE).isSuccess()).isTrue();
         assertThat(warningCodesAfterFlush()).as("the accepted retry raises the recovery once")
                                             .containsOnlyOnce(OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+    }
+
+    /// A3: the principal who forced the drain is read in the admission, where the request's security context is bound: the warning
+    /// is raised later, by the commit's continuation, outside that context. Red mutant: the principal read when the warning is raised.
+    @Test
+    void drainRoute_forcedPastTheFloor_warningNamesThePrincipalBoundAtAdmission_whenTheWitnessIsAcceptedLater() {
+        host(slice("a", 2, 2), node(1), node(2));
+        var context = SecurityContext.securityContext("ops-alice").unwrap();
+        var drain = new AtomicReference<Promise<NodeLifecycleRoutes.TransitionResult>>();
+
+        ScopedValue.where(SecurityContextHolder.scopedValue(), context)
+                   .run(() -> drain.set(routes.drainNodeForTest(node(1).id(), true)));
+        scripted.accept(0);
+
+        assertThat(drain.get().await(SETTLE).isSuccess()).isTrue();
+        warningCodesAfterFlush();
+        assertThat(warnings).filteredOn(warning -> warning.code() == OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE)
+                            .singleElement()
+                            .satisfies(warning -> assertThat(warning.message()).contains("ops-alice").doesNotContain("by unknown"));
     }
 
     /// A3, the control for both: while the commit is in flight nothing is raised either; the warnings come with the response.
