@@ -13,8 +13,8 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-
 class WriteBehindIntegrationTest {
+
     private static final byte[] CONTENT_A = "write-behind-integration-alpha".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CONTENT_B = "write-behind-integration-bravo".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CONTENT_C = "write-behind-integration-charlie".getBytes(StandardCharsets.UTF_8);
@@ -31,13 +31,12 @@ class WriteBehindIntegrationTest {
 
     @Nested
     class WriteBehindFlushTests {
+
         private StorageInstance instance;
 
         @BeforeEach
         void setUp() {
-            instance = StorageInstance.storageInstance("wb-integration",
-                                                       List.of(fastTier, slowTier),
-                                                       WritePolicy.WRITE_BEHIND);
+            instance = StorageInstance.storageInstance("wb-integration", List.of(fastTier, slowTier), WritePolicy.WRITE_BEHIND);
         }
 
         @AfterEach
@@ -47,78 +46,73 @@ class WriteBehindIntegrationTest {
 
         @Test
         void storageInstance_writeBehind_eventuallyWritesToAllTiers() {
-            instance.put(CONTENT_A)
-                    .await()
+            instance.put(CONTENT_A).await()
                     .onFailure(c -> fail("put failed: " + c.message()))
                     .onSuccess(_ -> {
-                                   assertThat(fastTier.usedBytes()).isGreaterThan(0);
-                                   awaitAtLeast(slowTier::usedBytes, 1);
-                                   assertThat(slowTier.usedBytes()).isGreaterThan(0);
-                               });
+                        assertThat(fastTier.usedBytes()).isGreaterThan(0);
+                        awaitAtLeast(slowTier::usedBytes, 1);
+                        assertThat(slowTier.usedBytes()).isGreaterThan(0);
+                    });
         }
 
         @Test
         void storageInstance_writeBehind_fastTierReadableImmediately() {
-            instance.put(CONTENT_A)
-                    .await()
+            instance.put(CONTENT_A).await()
                     .onFailure(c -> fail("put failed: " + c.message()))
-                    .onSuccess(id -> instance.get(id)
-                                             .await()
-                                             .onFailure(c -> fail("get failed: " + c.message()))
-                                             .onSuccess(opt -> {
-                                                            assertThat(opt.isPresent()).isTrue();
-                                                            opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
-                                                        }));
+                    .onSuccess(id ->
+                        instance.get(id).await()
+                                .onFailure(c -> fail("get failed: " + c.message()))
+                                .onSuccess(opt -> {
+                                    assertThat(opt.isPresent()).isTrue();
+                                    opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
+                                })
+                    );
         }
 
         @Test
         void storageInstance_writeBehind_multipleBlocksEventuallyFlushed() {
-            instance.put(CONTENT_A).await().onFailure(c -> fail("put A failed: " + c.message()));
-            instance.put(CONTENT_B).await().onFailure(c -> fail("put B failed: " + c.message()));
-            instance.put(CONTENT_C).await().onFailure(c -> fail("put C failed: " + c.message()));
+            instance.put(CONTENT_A).await()
+                    .onFailure(c -> fail("put A failed: " + c.message()));
+            instance.put(CONTENT_B).await()
+                    .onFailure(c -> fail("put B failed: " + c.message()));
+            instance.put(CONTENT_C).await()
+                    .onFailure(c -> fail("put C failed: " + c.message()));
+
             awaitAtLeast(slowTier::usedBytes, CONTENT_A.length + CONTENT_B.length + CONTENT_C.length);
+
             assertThat(slowTier.usedBytes()).isGreaterThanOrEqualTo(CONTENT_A.length + CONTENT_B.length + CONTENT_C.length);
         }
 
         @Test
         void storageInstance_writeBehind_readFromSlowTierAfterFastTierEviction() {
-            var id = instance.put(CONTENT_A)
-                             .await()
-                             .fold(c -> {
-                                       fail("put failed: " + c.message());
-
-                                       return null;
-                                   },
+            var id = instance.put(CONTENT_A).await()
+                             .fold(c -> { fail("put failed: " + c.message()); return null; },
                                    blockId -> blockId);
+
             // MemoryTier.put reserves usedBytes BEFORE it stores the block: await the block itself, not the byte count.
-            awaitAtLeast(() -> slowTier.exists(id)
-                                       .await()
-                                       .or(false)
-                               ? 1
-                               : 0,
-                         1);
+            awaitAtLeast(() -> slowTier.exists(id).await().or(false) ? 1 : 0, 1);
             assertThat(slowTier.usedBytes()).isGreaterThan(0);
+
             // Remove from fast tier to force waterfall read from slow tier
             fastTier.delete(id).await();
-            instance.get(id)
-                    .await()
+
+            instance.get(id).await()
                     .onFailure(c -> fail("get from slow tier failed: " + c.message()))
                     .onSuccess(opt -> {
-                                   assertThat(opt.isPresent()).isTrue();
-                                   opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
-                               });
+                        assertThat(opt.isPresent()).isTrue();
+                        opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
+                    });
         }
     }
 
     @Nested
     class WriteThroughComparisonTests {
+
         private StorageInstance instance;
 
         @BeforeEach
         void setUp() {
-            instance = StorageInstance.storageInstance("wt-integration",
-                                                       List.of(fastTier, slowTier),
-                                                       WritePolicy.WRITE_THROUGH);
+            instance = StorageInstance.storageInstance("wt-integration", List.of(fastTier, slowTier), WritePolicy.WRITE_THROUGH);
         }
 
         @AfterEach
@@ -128,40 +122,25 @@ class WriteBehindIntegrationTest {
 
         @Test
         void storageInstance_writeThrough_writesToAllTiersImmediately() {
-            instance.put(CONTENT_A)
-                    .await()
+            instance.put(CONTENT_A).await()
                     .onFailure(c -> fail("put failed: " + c.message()))
                     .onSuccess(_ -> {
-                                   assertThat(fastTier.usedBytes()).isGreaterThan(0);
-                                   assertThat(slowTier.usedBytes()).isGreaterThan(0);
-                               });
+                        assertThat(fastTier.usedBytes()).isGreaterThan(0);
+                        assertThat(slowTier.usedBytes()).isGreaterThan(0);
+                    });
         }
 
         @Test
         void storageInstance_writeThrough_bothTiersHaveSameData() {
-            var id = instance.put(CONTENT_A)
-                             .await()
-                             .fold(c -> {
-                                       fail("put failed: " + c.message());
-
-                                       return null;
-                                   },
+            var id = instance.put(CONTENT_A).await()
+                             .fold(c -> { fail("put failed: " + c.message()); return null; },
                                    blockId -> blockId);
-            var fastData = fastTier.get(id)
-                                   .await()
-                                   .fold(c -> {
-                                             fail("fast get failed: " + c.message());
 
-                                             return null;
-                                         },
+            var fastData = fastTier.get(id).await()
+                                   .fold(c -> { fail("fast get failed: " + c.message()); return null; },
                                          opt -> opt);
-            var slowData = slowTier.get(id)
-                                   .await()
-                                   .fold(c -> {
-                                             fail("slow get failed: " + c.message());
-
-                                             return null;
-                                         },
+            var slowData = slowTier.get(id).await()
+                                   .fold(c -> { fail("slow get failed: " + c.message()); return null; },
                                          opt -> opt);
 
             assertThat(fastData.isPresent()).isTrue();
@@ -180,7 +159,6 @@ class WriteBehindIntegrationTest {
                 TimeUnit.MILLISECONDS.sleep(10);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-
                 return;
             }
         }

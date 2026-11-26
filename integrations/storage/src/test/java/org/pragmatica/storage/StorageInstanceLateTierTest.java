@@ -9,15 +9,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
+import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import org.junit.jupiter.api.Test;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-
 
 /// Async-callback probe for the lifecycle bookkeeping of [StorageInstance]. The metadata a caller reads right after an
 /// operation resolves (that the block is gone, that a cache tier now holds it, that a read counted as an access) is
@@ -31,7 +29,6 @@ class StorageInstanceLateTierTest {
     private static final long CACHE_RECORDING_DELAY_MS = 30;
 
     private final MetadataStore metadata = slowCacheTierRecording(MetadataStore.inMemoryMetadataStore("late-tiers"));
-
     private final StorageInstance storage = StorageInstance.storageInstance("late-tiers",
                                                                             List.of(new LateTier(MemoryTier.memoryTier(1024 * 1024)),
                                                                                     new LateTier(MemoryTier.memoryTier(1024 * 1024,
@@ -46,14 +43,11 @@ class StorageInstanceLateTierTest {
             var id = putAndAwait("delete-" + trial);
 
             storage.delete(id).await().onFailure(cause -> fail(cause.message()));
-            stillThere.addAndGet(storage.exists(id).await().fold(_ -> 1,
-                                                                 present -> present
-                                                                            ? 1
-                                                                            : 0));
+            stillThere.addAndGet(storage.exists(id).await().fold(_ -> 1, present -> present ? 1 : 0));
         }
 
         assertThat(stillThere.get()).as("trials where the caller still found the block right after its delete resolved")
-                  .isZero();
+                                    .isZero();
     }
 
     @Test
@@ -63,16 +57,11 @@ class StorageInstanceLateTierTest {
         for (var trial = 0; trial < TRIALS; trial++) {
             var id = putAndAwait("promote-" + trial);
 
-            missing.addAndGet(metadata.getLifecycle(id)
-                                      .filter(lc -> lc.presentIn()
-                                                      .contains(TierLevel.MEMORY))
-                                      .isPresent()
-                              ? 0
-                              : 1);
+            missing.addAndGet(metadata.getLifecycle(id).filter(lc -> lc.presentIn().contains(TierLevel.MEMORY)).isPresent() ? 0 : 1);
         }
 
         assertThat(missing.get()).as("trials where the caller did not yet see the cache tier recorded as holding the block")
-                  .isZero();
+                                 .isZero();
     }
 
     @Test
@@ -84,12 +73,11 @@ class StorageInstanceLateTierTest {
             var before = accessCount(id);
 
             storage.get(id).await().onFailure(cause -> fail(cause.message()));
-            uncounted.addAndGet(accessCount(id) > before
-                                ? 0
-                                : 1);
+            uncounted.addAndGet(accessCount(id) > before ? 0 : 1);
         }
 
-        assertThat(uncounted.get()).as("trials where the caller's read had not yet been counted as an access").isZero();
+        assertThat(uncounted.get()).as("trials where the caller's read had not yet been counted as an access")
+                                   .isZero();
     }
 
     /// The metadata write that records a cache tier as holding the block is the side effect under test, so that one write is
@@ -97,16 +85,12 @@ class StorageInstanceLateTierTest {
     private static MetadataStore slowCacheTierRecording(MetadataStore delegate) {
         return (MetadataStore) Proxy.newProxyInstance(MetadataStore.class.getClassLoader(),
                                                       new Class<?>[]{MetadataStore.class},
-                                                      (_, method, args) -> invokeSlowingCacheTierRecording(delegate,
-                                                                                                           method,
-                                                                                                           args));
+                                                      (_, method, args) -> invokeSlowingCacheTierRecording(delegate, method, args));
     }
 
     @SuppressWarnings("unchecked")
     private static Object invokeSlowingCacheTierRecording(MetadataStore delegate, Method method, Object[] args) throws Throwable {
-        if (method.getName().equals("computeLifecycle") && addsCacheTier(delegate,
-                                                                         (BlockId) args[0],
-                                                                         (UnaryOperator<BlockLifecycle>) args[1])) {
+        if (method.getName().equals("computeLifecycle") && addsCacheTier(delegate, (BlockId) args[0], (UnaryOperator<BlockLifecycle>) args[1])) {
             sleep(CACHE_RECORDING_DELAY_MS);
         }
 
@@ -119,11 +103,8 @@ class StorageInstanceLateTierTest {
 
     private static boolean addsCacheTier(MetadataStore delegate, BlockId id, UnaryOperator<BlockLifecycle> updater) {
         return delegate.getLifecycle(id)
-                       .filter(lifecycle -> !lifecycle.presentIn()
-                                                      .contains(TierLevel.MEMORY))
-                       .filter(lifecycle -> updater.apply(lifecycle)
-                                                   .presentIn()
-                                                   .contains(TierLevel.MEMORY))
+                       .filter(lifecycle -> !lifecycle.presentIn().contains(TierLevel.MEMORY))
+                       .filter(lifecycle -> updater.apply(lifecycle).presentIn().contains(TierLevel.MEMORY))
                        .isPresent();
     }
 
@@ -136,9 +117,7 @@ class StorageInstanceLateTierTest {
     }
 
     private int accessCount(BlockId id) {
-        return metadata.getLifecycle(id)
-                       .map(metadata.accessTracker()::accessCount)
-                       .or(-1);
+        return metadata.getLifecycle(id).map(metadata.accessTracker()::accessCount).or(-1);
     }
 
     private BlockId putAndAwait(String content) {
@@ -146,7 +125,6 @@ class StorageInstanceLateTierTest {
                       .await()
                       .fold(cause -> {
                                 fail(cause.message());
-
                                 return null;
                             },
                             id -> id);
@@ -202,7 +180,8 @@ class StorageInstanceLateTierTest {
         private static <T> Promise<T> later(Supplier<Promise<T>> call) {
             var promise = Promise.<T> promise();
 
-            Thread.ofVirtual().start(() -> answerAfterDelay(promise, call));
+            Thread.ofVirtual()
+                  .start(() -> answerAfterDelay(promise, call));
 
             return promise;
         }

@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
@@ -25,7 +26,6 @@ import static org.pragmatica.storage.ContentFixture.feed;
 import static org.pragmatica.storage.ContentFixture.payload;
 import static org.pragmatica.storage.ContentFixture.read;
 import static org.pragmatica.storage.ContentFixture.uploaded;
-import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// The credits a v2 writer takes and gives back, ported from the byte[] store's pins: #1437 (a write that fails part-way
@@ -59,34 +59,29 @@ class ContentStoreCreditsTest {
             var writer = fixture.store("alpha").create(ObjectSpec.objectSpec("a/b")).await().unwrap();
 
             feed(writer, DATA, 0, 10).await().unwrap();
+
             var taken = chunkIdsOf(Arrays.copyOf(DATA, CHUNK * 6));
 
             writer.abort().await().unwrap();
-            assertThat(fixture.metadata.listAllLifecycles()).as("locator: the writer had stored blocks before the abort")
-                      .hasSize(6);
+
+            assertThat(fixture.metadata.listAllLifecycles()).as("locator: the writer had stored blocks before the abort").hasSize(6);
             assertCredits(fixture, taken, 0, "abort must return every credit the writer took");
         }
 
         @Test
         void aBlockThatFailsToStore_failsTheWrite_andReturnsTheCreditsOfTheOthers() {
             var failing = chunkIdsOf(DATA).get(3);
-            var fixture = new ContentFixture(new FaultyTier(MemoryTier.memoryTier(1 << 20),
-                                                            content -> blockIdOf(content).equals(failing)));
+            var fixture = new ContentFixture(new FaultyTier(MemoryTier.memoryTier(1 << 20), content -> blockIdOf(content).equals(failing)));
             var writer = fixture.store("alpha").create(ObjectSpec.objectSpec("a/b")).await().unwrap();
             var outcome = feed(writer, DATA, 0, 10).flatMap(_ -> writer.commit(none()));
 
             assertThat(failureOf(outcome)).as("the write fails with the tier's cause").isNotNull();
             writer.abort().await().unwrap();
-            assertCredits(fixture,
-                          chunkIdsOf(DATA).subList(0, 3),
-                          0,
-                          "the blocks stored before the failure gave their credit back");
+
+            assertCredits(fixture, chunkIdsOf(DATA).subList(0, 3), 0, "the blocks stored before the failure gave their credit back");
             assertThat(fixture.refCountOf(failing)).as("the block that failed holds nothing").isLessThanOrEqualTo(0);
-            assertThat(fixture.metadata.listAllLifecycles()
-                                       .stream()
-                                       .filter(lifecycle -> lifecycle.refCount() > 0)
-                                       .toList()).as("nothing is still credited")
-                      .isEmpty();
+            assertThat(fixture.metadata.listAllLifecycles().stream().filter(lifecycle -> lifecycle.refCount() > 0).toList())
+                .as("nothing is still credited").isEmpty();
             assertThat(fixture.storage.listRefs("o/alpha/")).as("no entry was written").isEmpty();
         }
 
@@ -96,6 +91,7 @@ class ContentStoreCreditsTest {
             var writer = fixture.store("alpha").create(ObjectSpec.objectSpec("a/b")).await().unwrap();
 
             feed(writer, DATA, 0, 13).await().unwrap();
+
             var wrong = Sha256.sha256(new byte[]{1}).unwrap();
 
             assertThat(failureOf(writer.commit(some(wrong)))).isInstanceOf(ContentStoreError.DigestMismatch.class);
@@ -110,6 +106,7 @@ class ContentStoreCreditsTest {
             var writer = fixture.store("alpha").create(spec).await().unwrap();
 
             feed(writer, DATA, 0, 13).await().unwrap();
+
             assertThat(failureOf(writer.commit(none()))).isInstanceOf(ContentStoreError.LengthMismatch.class);
             assertCredits(fixture, chunkIdsOf(DATA), 0, "a refused commit returns every credit");
         }
@@ -118,19 +115,15 @@ class ContentStoreCreditsTest {
         void anEntryThatCannotBeWritten_releasesTheManifestAndTheChunks() {
             var refused = new AtomicBoolean(true);
             var fixture = new ContentFixture(new FaultyTier(MemoryTier.memoryTier(1 << 20),
-                                                            content -> refused.get() && ContentEnvelope.kindOf(content)
-                                                                                                       .filter(kind -> kind == ContentEnvelope.ENTRY)
-                                                                                                       .isPresent()));
+                                                       content -> refused.get() && ContentEnvelope.kindOf(content).filter(kind -> kind == ContentEnvelope.ENTRY).isPresent()));
             var writer = fixture.store("alpha").create(ObjectSpec.objectSpec("a/b")).await().unwrap();
 
             feed(writer, DATA, 0, 13).await().unwrap();
+
             assertThat(failureOf(writer.commit(none()))).isNotNull();
             assertCredits(fixture, chunkIdsOf(DATA), 0, "chunks");
-            assertThat(fixture.metadata.listAllLifecycles()
-                                       .stream()
-                                       .filter(lifecycle -> lifecycle.refCount() > 0)
-                                       .toList()).as("nothing at all is still credited, the manifest included")
-                      .isEmpty();
+            assertThat(fixture.metadata.listAllLifecycles().stream().filter(lifecycle -> lifecycle.refCount() > 0).toList())
+                .as("nothing at all is still credited, the manifest included").isEmpty();
         }
 
         @Test
@@ -140,15 +133,18 @@ class ContentStoreCreditsTest {
 
             feed(writer, DATA, 0, 13).await().unwrap();
             writer.commit(none()).await().unwrap();
+
             assertThat(failureOf(writer.commit(none()))).isEqualTo(ContentStoreError.General.WRITER_CLOSED);
             assertThat(failureOf(writer.write(ByteBuffer.wrap(new byte[]{1})))).isEqualTo(ContentStoreError.General.WRITER_CLOSED);
             writer.abort().await().unwrap();
             assertThat(fixture.storage.listRefs("o/alpha/")).as("abort after commit changed nothing").hasSize(1);
+
             var aborted = fixture.store("alpha").create(ObjectSpec.objectSpec("a/c")).await().unwrap();
             var other = payload(CHUNK * 3 + 1, 22);
 
             feed(aborted, other, 0, 13).await().unwrap();
             aborted.abort().await().unwrap();
+
             assertThat(failureOf(aborted.write(ByteBuffer.wrap(new byte[]{1})))).isEqualTo(ContentStoreError.General.WRITER_CLOSED);
             assertThat(failureOf(aborted.commit(none()))).isEqualTo(ContentStoreError.General.WRITER_CLOSED);
             assertThat(fixture.storage.listRefs("o/alpha/")).as("the aborted writer created no object").hasSize(1);
@@ -165,8 +161,8 @@ class ContentStoreCreditsTest {
             feed(writer, DATA, 0, 13).await().unwrap();
             writer.abort().await().unwrap();
             gc.activate();
-            assertThat(collectAfterGrace(gc)).as("the collector found the six released full chunks orphaned")
-                      .isEqualTo(DATA.length / CHUNK);
+
+            assertThat(collectAfterGrace(gc)).as("the collector found the six released full chunks orphaned").isEqualTo(DATA.length / CHUNK);
             assertThat(fixture.storage.get(chunkIdsOf(DATA).getFirst()).await().unwrap()).isEqualTo(none());
         }
     }
@@ -184,7 +180,9 @@ class ContentStoreCreditsTest {
             assertCredits(fixture, chunkIdsOf(DATA), 1, "locator: one credit per chunk while the object lives");
             assertThat(fixture.refCountOf(info.ref().manifest())).as("locator: manifest").isEqualTo(1);
             assertThat(fixture.refCountOf(entryBlock)).as("locator: entry").isEqualTo(1);
+
             store.delete(info.ref().id()).await().unwrap();
+
             assertCredits(fixture, chunkIdsOf(DATA), 0, "chunks");
             assertThat(fixture.refCountOf(info.ref().manifest())).as("manifest").isEqualTo(0);
             assertThat(fixture.refCountOf(entryBlock)).as("entry").isEqualTo(0);
@@ -198,10 +196,14 @@ class ContentStoreCreditsTest {
             var second = uploaded(fixture.store("beta"), DATA);
 
             assertCredits(fixture, chunkIdsOf(DATA), 2, "locator: two objects, two credits per shared chunk");
+
             store.delete(first.ref().id()).await().unwrap();
+
             assertCredits(fixture, chunkIdsOf(DATA), 1, "the other object still holds its credit");
             assertThat(read(fixture.store("beta"), second.ref(), ByteRange.whole())).isEqualTo(DATA);
+
             fixture.store("beta").delete(second.ref().id()).await().unwrap();
+
             assertCredits(fixture, chunkIdsOf(DATA), 0, "the last delete frees the blocks");
         }
 
@@ -214,6 +216,7 @@ class ContentStoreCreditsTest {
 
             store.delete(info.ref().id()).await().unwrap();
             store.delete(info.ref().id()).await().unwrap();
+
             assertCredits(fixture, chunkIdsOf(DATA), 1, "the second delete of the same object released nothing more");
             assertThat(read(fixture.store("beta"), keeper.ref(), ByteRange.whole())).isEqualTo(DATA);
         }
@@ -226,21 +229,17 @@ class ContentStoreCreditsTest {
             var entryRef = "o/alpha/" + info.ref().id().asString();
             var firstEntry = fixture.storage.resolveRef(entryRef).unwrap();
 
-            store.update(info.ref().id(),
-                         MetaPatch.metaPatch(none(), some("x/y"), none())).await().unwrap();
-            store.bind(ObjectName.objectName("n").unwrap(),
-                       info.ref().id(),
-                       Precondition.nameFree()).await().unwrap();
+            store.update(info.ref().id(), MetaPatch.metaPatch(none(), some("x/y"), none())).await().unwrap();
+            store.bind(ObjectName.objectName("n").unwrap(), info.ref().id(), Precondition.nameFree()).await().unwrap();
+
             assertThat(fixture.refCountOf(firstEntry)).as("the superseded entry gave back its credit").isEqualTo(0);
             assertThat(fixture.refCountOf(fixture.storage.resolveRef(entryRef).unwrap())).isEqualTo(1);
-            assertThat(fixture.refCountOf(fixture.storage.resolveRef("n/alpha/n").unwrap())).as("the name binding holds one credit")
-                      .isEqualTo(1);
+            assertThat(fixture.refCountOf(fixture.storage.resolveRef("n/alpha/n").unwrap())).as("the name binding holds one credit").isEqualTo(1);
+
             store.delete(info.ref().id()).await().unwrap();
-            assertThat(fixture.metadata.listAllLifecycles()
-                                       .stream()
-                                       .filter(lifecycle -> lifecycle.refCount() > 0)
-                                       .toList()).as("after delete nothing is credited any more")
-                      .isEmpty();
+
+            assertThat(fixture.metadata.listAllLifecycles().stream().filter(lifecycle -> lifecycle.refCount() > 0).toList())
+                .as("after delete nothing is credited any more").isEmpty();
         }
     }
 

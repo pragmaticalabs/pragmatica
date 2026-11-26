@@ -5,18 +5,16 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.locks.LockSupport;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.io.TempDir;
-
 import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// G2 (spec v2 §9): re-seeding a block whose record survived but whose shared copy did not (an in-memory DHT after a
 /// whole-cluster restart) must land the block in the shared tier, and the GC freshness refresh must move a held block's
@@ -50,10 +48,12 @@ class StorageInstanceEnsureHeldTest {
         var id = node.put(CONTENT).await().unwrap();
 
         shared.delete(id).await().unwrap();
+
         assertThat(shared.exists(id).await().unwrap()).as("precondition: the shared copy is gone").isFalse();
+
         node.ensureHeld(id, TierLevel.REMOTE).await().unwrap();
-        assertThat(shared.get(id).await().unwrap().unwrap()).as("the re-seed reached the shared tier")
-                  .isEqualTo(CONTENT);
+
+        assertThat(shared.get(id).await().unwrap().unwrap()).as("the re-seed reached the shared tier").isEqualTo(CONTENT);
     }
 
     /// The re-seed changes no reference count and moves no epoch: the record already existed and tier presence is an
@@ -65,11 +65,14 @@ class StorageInstanceEnsureHeldTest {
         shared.delete(id).await().unwrap();
         // The record forgets the shared copy too, so the presence asserted below can only come from the re-seed.
         store.observeLifecycle(id, lc -> lc.withTierRemoved(TierLevel.REMOTE));
+
         assertThat(store.getLifecycle(id).unwrap().presentIn()).as("precondition").doesNotContain(TierLevel.REMOTE);
+
         var before = store.getLifecycle(id).unwrap();
         var epoch = store.currentEpoch();
 
         node.ensureHeld(id, TierLevel.REMOTE).await().unwrap();
+
         var after = store.getLifecycle(id).unwrap();
 
         assertThat(after.refCount()).isEqualTo(before.refCount());
@@ -87,6 +90,7 @@ class StorageInstanceEnsureHeldTest {
 
         s3.clock.addAndGet(60_000L);
         node.ensureHeld(id, TierLevel.REMOTE).await().unwrap();
+
         assertThat(shared.stat(id).await().unwrap().unwrap().writtenAtMillis()).isEqualTo(written + 60_000L);
         assertThat(s3.blockPuts()).as("the block is not rewritten").isEqualTo(blockPuts);
     }
@@ -95,7 +99,8 @@ class StorageInstanceEnsureHeldTest {
     void reseed_ofABlockNoTierHolds_failsWithBlockNotFound_andWritesNothing() {
         var id = BlockId.blockId("held nowhere".getBytes(StandardCharsets.UTF_8)).unwrap();
 
-        assertThat(node.ensureHeld(id, TierLevel.REMOTE).await().<Cause> fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.BlockNotFound.class);
+        assertThat(node.ensureHeld(id, TierLevel.REMOTE).await().<Cause>fold(cause -> cause, _ -> null))
+            .isInstanceOf(StorageError.BlockNotFound.class);
         assertThat(shared.exists(id).await().unwrap()).isFalse();
     }
 
@@ -107,7 +112,9 @@ class StorageInstanceEnsureHeldTest {
         var id = BlockId.blockId(CONTENT).unwrap();
 
         memory.put(id, "not the content".getBytes(StandardCharsets.UTF_8)).await().unwrap();
-        assertThat(corruptNode.ensureHeld(id, TierLevel.REMOTE).await().<Cause> fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.IntegrityError.class);
+
+        assertThat(corruptNode.ensureHeld(id, TierLevel.REMOTE).await().<Cause>fold(cause -> cause, _ -> null))
+            .isInstanceOf(StorageError.IntegrityError.class);
         assertThat(shared.exists(id).await().unwrap()).isFalse();
     }
 
@@ -115,7 +122,8 @@ class StorageInstanceEnsureHeldTest {
     void ensureHeld_onATierTheInstanceLacks_failsWithNoSuchTier() {
         var id = node.put(CONTENT).await().unwrap();
 
-        assertThat(node.ensureHeld(id, TierLevel.MEMORY).await().<Cause> fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.NoSuchTier.class);
+        assertThat(node.ensureHeld(id, TierLevel.MEMORY).await().<Cause>fold(cause -> cause, _ -> null))
+            .isInstanceOf(StorageError.NoSuchTier.class);
     }
 
     /// Re-seeding the private tier from the shared one works the same way: the disk copy is restored from the bucket.
@@ -125,6 +133,7 @@ class StorageInstanceEnsureHeldTest {
 
         disk.delete(id).await().unwrap();
         node.ensureHeld(id, TierLevel.LOCAL_DISK).await().unwrap();
+
         assertThat(disk.get(id).await().unwrap().unwrap()).isEqualTo(CONTENT);
     }
 
@@ -132,7 +141,7 @@ class StorageInstanceEnsureHeldTest {
     /// written yet and the first tier's copy does not exist yet, so the call would fail with BlockNotFound at once.
     @Test
     void ensureHeld_waitsForAWriteOfTheSameIdInFlight() {
-        var gate = Promise.<Unit> promise();
+        var gate = Promise.<Unit>promise();
         var gated = new GatedTier(MemoryTier.memoryTier(1 << 20, TierLevel.LOCAL_DISK), gate);
         var gatedNode = StorageInstance.storageInstance("g2-in-flight", List.of(gated, shared));
         var id = BlockId.blockId(CONTENT).unwrap();
@@ -140,8 +149,11 @@ class StorageInstanceEnsureHeldTest {
         var held = gatedNode.ensureHeld(id, TierLevel.REMOTE);
 
         LockSupport.parkNanos(200_000_000L);
+
         assertThat(held.isResolved()).as("ensureHeld waits while the put is in flight").isFalse();
+
         gate.succeed(Unit.unit());
+
         assertThat(put.await().unwrap()).isEqualTo(id);
         held.await().unwrap();
         assertThat(shared.get(id).await().unwrap().unwrap()).isEqualTo(CONTENT);
@@ -157,7 +169,9 @@ class StorageInstanceEnsureHeldTest {
         var id = BlockId.blockId(CONTENT).unwrap();
 
         local.put(id, CONTENT).await().unwrap();
-        assertThat(failingNode.ensureHeld(id, TierLevel.REMOTE).await().<Cause> fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.WriteError.class);
+
+        assertThat(failingNode.ensureHeld(id, TierLevel.REMOTE).await().<Cause>fold(cause -> cause, _ -> null))
+            .isInstanceOf(StorageError.WriteError.class);
         assertThat(remote.exists(id).await().unwrap()).as("nothing written").isFalse();
     }
 

@@ -7,17 +7,15 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.utils.Causes;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-
 
 /// #2201 A-01: the O(1) state the ordered section's guard reads from the log -- the cached last epoch key and the log's health. D-01: the
 /// fail-stop listener an owner installs replaces the instance sink's report, and the transition is reported once.
@@ -38,9 +36,9 @@ class AppendLogSectionStateTest {
         wal.write(2, bytes("c"), 2L, key("3"), NUMERIC).onFailure(cause -> fail(cause.message()));
         assertThat(wal.lastEpochKey()).as("a new epoch replaces the cached key").isEqualTo(Option.some(key("3")));
         wal.truncateSuffix(1).onFailure(cause -> fail(cause.message()));
-        assertThat(wal.lastEpochKey()).as("a cut that drops the last entry lowers the cached key")
-                  .isEqualTo(Option.some(key("1")));
+        assertThat(wal.lastEpochKey()).as("a cut that drops the last entry lowers the cached key").isEqualTo(Option.some(key("1")));
         wal.close();
+
         var reopened = AppendLog.open(file()).unwrap();
 
         assertThat(reopened.lastEpochKey()).as("loaded with the history").isEqualTo(Option.some(key("1")));
@@ -60,6 +58,7 @@ class AppendLogSectionStateTest {
            .onSuccess(_ -> fail("a fail-stopped log reads as writable"))
            .onFailure(cause -> assertThat(cause).isInstanceOf(AppendLog.WalError.FailStopped.class));
         wal.close();
+
         var closed = AppendLog.open(dir.resolve("q.wal")).unwrap();
 
         closed.close();
@@ -123,7 +122,6 @@ class AppendLogSectionStateTest {
         Field field = AppendLog.class.getDeclaredField("channel");
 
         field.setAccessible(true);
-
         return (FileChannel) field.get(wal);
     }
 

@@ -36,7 +36,7 @@ class StorageInstanceMaxBlockSizeTest {
         var data = new byte[size];
 
         for (var i = 0; i < size; i++) {
-            data[i] = (byte)(i % 251);
+            data[i] = (byte) (i % 251);
         }
 
         return data;
@@ -46,10 +46,8 @@ class StorageInstanceMaxBlockSizeTest {
         result.onSuccess(_ -> fail("a block of " + size + " bytes must be refused"))
               .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StorageError.BlockTooLarge.class,
                                                                            tooLarge -> {
-                                                                               assertThat(tooLarge.size()).as("offered size")
-                                                                                         .isEqualTo(size);
-                                                                               assertThat(tooLarge.maxBytes()).as("limit")
-                                                                                         .isEqualTo(MAX);
+                                                                               assertThat(tooLarge.size()).as("offered size").isEqualTo(size);
+                                                                               assertThat(tooLarge.maxBytes()).as("limit").isEqualTo(MAX);
                                                                            }));
     }
 
@@ -64,16 +62,14 @@ class StorageInstanceMaxBlockSizeTest {
     void blockOverTheMaximum_isRefused_andNothingIsClaimed() {
         var content = bytes(MAX + 1);
 
-        assertTooLarge(storage.put(content).await(),
-                       MAX + 1);
+        assertTooLarge(storage.put(content).await(), MAX + 1);
         assertThat(metadataStore.containsBlock(BlockId.blockId(content).unwrap())).as("no claim was made").isFalse();
         assertThat(storage.exists(BlockId.blockId(content).unwrap()).await().unwrap()).isFalse();
     }
 
     @Test
     void putRefOverTheMaximum_isRefused_andNoRefIsCreated() {
-        assertTooLarge(storage.putRef("big", bytes(MAX + 1)).await(),
-                       MAX + 1);
+        assertTooLarge(storage.putRef("big", bytes(MAX + 1)).await(), MAX + 1);
         assertThat(storage.resolveRef("big").isEmpty()).isTrue();
     }
 
@@ -81,29 +77,24 @@ class StorageInstanceMaxBlockSizeTest {
     void swapRefOverTheMaximum_isRefused_andLeavesTheCurrentValue() {
         var kept = storage.putRef("name", bytes(10)).await().unwrap();
 
-        assertTooLarge(storage.swapRef("name", bytes(MAX + 1)).await(),
-                       MAX + 1);
+        assertTooLarge(storage.swapRef("name", bytes(MAX + 1)).await(), MAX + 1);
         assertThat(storage.resolveRef("name").unwrap()).isEqualTo(kept);
     }
 
     @Test
     void defaultMaximum_isSixteenMiB() {
         assertThat(StorageInstance.DEFAULT_MAX_BLOCK_BYTES).isEqualTo(16 * 1024 * 1024);
-        assertThat(StorageInstance.storageInstance("plain",
-                                                   List.of(MemoryTier.memoryTier(64L * 1024 * 1024)))
+        assertThat(StorageInstance.storageInstance("plain", List.of(MemoryTier.memoryTier(64L * 1024 * 1024)))
                                   .maxBlockBytes()).isEqualTo(16_777_216);
     }
 
     @Test
     void defaultInstance_acceptsExactlySixteenMiB_andRefusesOneByteMore() {
-        var plain = StorageInstance.storageInstance("plain",
-                                                    List.of(MemoryTier.memoryTier(64L * 1024 * 1024)));
+        var plain = StorageInstance.storageInstance("plain", List.of(MemoryTier.memoryTier(64L * 1024 * 1024)));
         var atLimit = new byte[16 * 1024 * 1024];
         var over = new byte[16 * 1024 * 1024 + 1];
 
-        plain.put(atLimit)
-             .await()
-             .onFailure(cause -> fail("a block of exactly 16 MiB must be accepted: " + cause.message()));
+        plain.put(atLimit).await().onFailure(cause -> fail("a block of exactly 16 MiB must be accepted: " + cause.message()));
         plain.put(over)
              .await()
              .onSuccess(_ -> fail("a block over 16 MiB must be refused"))
@@ -115,9 +106,7 @@ class StorageInstanceMaxBlockSizeTest {
     void anInstanceThatDoesNotSayOtherwise_reportsTheDefaultMaximum() {
         var bare = (StorageInstance) java.lang.reflect.Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
                                                                               new Class<?>[]{StorageInstance.class},
-                                                                              (proxy, method, args) -> java.lang.reflect.InvocationHandler.invokeDefault(proxy,
-                                                                                                                                                         method,
-                                                                                                                                                         args));
+                                                                              (proxy, method, args) -> java.lang.reflect.InvocationHandler.invokeDefault(proxy, method, args));
 
         assertThat(bare.maxBlockBytes()).isEqualTo(16 * 1024 * 1024);
     }

@@ -40,9 +40,7 @@ final class ContentFixture {
     }
 
     int refCountOf(BlockId id) {
-        return metadata.getLifecycle(id)
-                       .map(BlockLifecycle::refCount)
-                       .or(-1);
+        return metadata.getLifecycle(id).map(BlockLifecycle::refCount).or(-1);
     }
 
     /// Pseudo-random bytes, so no two blocks of a payload are equal.
@@ -55,8 +53,7 @@ final class ContentFixture {
     }
 
     static Promise<ObjectInfo> upload(ContentStore store, ObjectSpec spec, byte[] data, int piece) {
-        return store.create(spec)
-                    .flatMap(writer -> feed(writer, data, 0, piece).flatMap(_ -> writer.commit(none())));
+        return store.create(spec).flatMap(writer -> feed(writer, data, 0, piece).flatMap(_ -> writer.commit(none())));
     }
 
     static Promise<Unit> feed(ObjectWriter writer, byte[] data, int offset, int piece) {
@@ -66,16 +63,11 @@ final class ContentFixture {
 
         var count = Math.min(piece, data.length - offset);
 
-        return writer.write(ByteBuffer.wrap(data, offset, count))
-                     .flatMap(_ -> feed(writer, data, offset + count, piece));
+        return writer.write(ByteBuffer.wrap(data, offset, count)).flatMap(_ -> feed(writer, data, offset + count, piece));
     }
 
     static ObjectInfo uploaded(ContentStore store, byte[] data) {
-        return upload(store,
-                      ObjectSpec.objectSpec("application/octet-stream"),
-                      data,
-                      7).await()
-                     .unwrap();
+        return upload(store, ObjectSpec.objectSpec("application/octet-stream"), data, 7).await().unwrap();
     }
 
     static byte[] read(ContentStore store, ObjectRef ref, ByteRange range) {
@@ -88,9 +80,7 @@ final class ContentFixture {
     }
 
     private static void drain(ChunkStream stream, ByteArrayOutputStream out) {
-        for (Option<ByteBuffer> next = stream.next().await().unwrap(); next.isPresent(); next = stream.next()
-                                                                                                      .await()
-                                                                                                      .unwrap()) {
+        for (Option<ByteBuffer> next = stream.next().await().unwrap(); next.isPresent(); next = stream.next().await().unwrap()) {
             next.onPresent(buffer -> {
                 var bytes = new byte[buffer.remaining()];
 
@@ -101,8 +91,7 @@ final class ContentFixture {
     }
 
     static <T> Cause failureOf(Promise<T> promise) {
-        return promise.await()
-                      .fold(cause -> cause, _ -> null);
+        return promise.await().fold(cause -> cause, _ -> null);
     }
 
     List<BlockId> chunksOf(ObjectInfo info) {
@@ -119,10 +108,9 @@ final class ContentFixture {
     record TamperingTier(StorageTier backing, BlockId target) implements StorageTier {
         @Override
         public Promise<Option<byte[]>> get(BlockId id) {
-            return backing.get(id)
-                          .map(block -> id.equals(target)
-                                        ? block.map(TamperingTier::flipped)
-                                        : block);
+            return backing.get(id).map(block -> id.equals(target)
+                                                ? block.map(TamperingTier::flipped)
+                                                : block);
         }
 
         private static byte[] flipped(byte[] block) {
@@ -174,8 +162,7 @@ final class ContentFixture {
         @Override
         public Promise<Unit> put(BlockId id, byte[] content) {
             return refuse.test(content)
-                   ? org.pragmatica.lang.utils.Causes.cause("tier refused block " + id)
-                                                     .promise()
+                   ? org.pragmatica.lang.utils.Causes.cause("tier refused block " + id).promise()
                    : backing.put(id, content);
         }
 

@@ -7,15 +7,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import org.pragmatica.lang.Result;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-
 
 /// #1759 (I-27, CTO D2/D3/D4): [AppendLog#readRange], the READ-ONLY scan a held-unmaterialized replica serves catch-up from.
 /// Five records, offset i holding payload "event-i" (frame = 24-byte header + payload). A page continues from the previous
@@ -43,7 +41,6 @@ class AppendLogReadRangeTest {
             position += HEADER + payload(i).length;
             ends[i] = position;
         }
-
         log.close();
     }
 
@@ -72,16 +69,18 @@ class AppendLogReadRangeTest {
     @Test
     void readRange_aCrcMismatchBeforeThePageIsFull_failsTheWholePage_neverAValidPrefix() throws Exception {
         flipByteAt(ends[1] + HEADER + 1);
+
         var damaged = AppendLog.readRange(file, 0, 10, 0);
 
         assertDamagedAt(damaged, ends[1]);
         assertThat(offsets(AppendLog.readRange(file, 0, 2, 0).unwrap())).as("a page filled before the damage is served")
-                  .containsExactly(0L, 1L);
+                                                                     .containsExactly(0L, 1L);
     }
 
     @Test
     void readRange_aHeaderCrcMismatch_failsThePage() throws Exception {
         flipByteAt(ends[2] + 5);
+
         assertDamagedAt(AppendLog.readRange(file, 0, 10, 0), ends[2]);
     }
 
@@ -89,6 +88,7 @@ class AppendLogReadRangeTest {
     @Test
     void readRange_aTornHeaderAtTheTail_endsTheLog_theIntactPrefixIsServed() throws Exception {
         Files.write(file, new byte[]{0, 0, 0, 40, 1, 2, 3}, StandardOpenOption.APPEND);
+
         var page = AppendLog.readRange(file, 3, 10, 0).unwrap();
 
         assertThat(offsets(page)).containsExactly(3L, 4L);
@@ -102,6 +102,7 @@ class AppendLogReadRangeTest {
         header[3] = 40;
         Files.write(file, header, StandardOpenOption.APPEND);
         Files.write(file, new byte[]{1, 2, 3}, StandardOpenOption.APPEND);
+
         var page = AppendLog.readRange(file, 0, 10, 0).unwrap();
 
         assertThat(offsets(page)).containsExactly(0L, 1L, 2L, 3L, 4L);
@@ -113,6 +114,7 @@ class AppendLogReadRangeTest {
         var bytes = Files.readAllBytes(file);
 
         Files.write(file, Arrays.copyOf(bytes, (int) ends[4] - 2));
+
         var page = AppendLog.readRange(file, 0, 10, 0).unwrap();
 
         assertThat(offsets(page)).containsExactly(0L, 1L, 2L, 3L);
@@ -126,6 +128,7 @@ class AppendLogReadRangeTest {
 
         log.append(RECORDS, new byte[0], 2_000L).await().onFailure(c -> fail(c.message()));
         log.close();
+
         var page = AppendLog.readRange(file, 4, 10, 0).unwrap();
 
         assertThat(offsets(page)).containsExactly(4L, 5L);
@@ -140,8 +143,8 @@ class AppendLogReadRangeTest {
 
         log.append(RECORDS, new byte[0], 2_000L).await().onFailure(c -> fail(c.message()));
         log.close();
-        Files.write(file,
-                    Arrays.copyOf(Files.readAllBytes(file), (int) ends[RECORDS - 1] + HEADER - 1));
+        Files.write(file, Arrays.copyOf(Files.readAllBytes(file), (int) ends[RECORDS - 1] + HEADER - 1));
+
         var page = AppendLog.readRange(file, 4, 10, 0).unwrap();
 
         assertThat(offsets(page)).containsExactly(4L);
@@ -153,6 +156,7 @@ class AppendLogReadRangeTest {
     @Test
     void readRange_aCrcMismatchInTheFinalFullFrame_isStillDamage() throws Exception {
         flipByteAt(ends[4] - 1);
+
         assertDamagedAt(AppendLog.readRange(file, 0, 10, 0), ends[3]);
     }
 
@@ -168,6 +172,7 @@ class AppendLogReadRangeTest {
 
         Arrays.fill(bytes, (int) ends[RECORDS - 1], (int) ends[RECORDS - 1] + 4, (byte) 0xFF);
         Files.write(file, bytes);
+
         assertDamagedAt(AppendLog.readRange(file, RECORDS, 10, ends[RECORDS - 1]), ends[RECORDS - 1]);
     }
 
@@ -179,6 +184,7 @@ class AppendLogReadRangeTest {
         var page = new AppendLog.RangePage(source, 7L);
 
         source.clear();
+
         assertThat(page.records()).hasSize(1);
     }
 
@@ -199,6 +205,7 @@ class AppendLogReadRangeTest {
 
         AppendLog.readRange(file, 0, 2, 0).onFailure(c -> fail(c.message()));
         assertThat(offsets(AppendLog.readRange(file, 0, 10, 0).unwrap())).containsExactly(0L, 1L, 2L, 3L, 4L);
+
         assertThat(Files.readAllBytes(file)).isEqualTo(before);
         assertThat(Files.getLastModifiedTime(file)).isEqualTo(modified);
         assertThat(listing()).isEqualTo(listing);
@@ -220,18 +227,12 @@ class AppendLogReadRangeTest {
 
     private List<String> listing() throws Exception {
         try (var entries = Files.list(dir)) {
-            return entries.map(path -> path.getFileName()
-                                           .toString())
-                          .sorted()
-                          .toList();
+            return entries.map(path -> path.getFileName().toString()).sorted().toList();
         }
     }
 
     private static List<Long> offsets(AppendLog.RangePage page) {
-        return page.records()
-                   .stream()
-                   .map(AppendLog.WalRecord::offset)
-                   .toList();
+        return page.records().stream().map(AppendLog.WalRecord::offset).toList();
     }
 
     private static byte[] payload(int i) {

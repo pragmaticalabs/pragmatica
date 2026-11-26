@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.CRC32;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -16,12 +18,8 @@ import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.AppendLog.EpochStart;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-
 
 /// #1567 A11: the durable owner-epoch history beside each append log; #1596: opaque keys, caller order.
 class AppendLogEpochHistoryTest {
@@ -38,31 +36,21 @@ class AppendLogEpochHistoryTest {
     void recordEpochStart_forcesTempThenDirectory_beforeTheEntryIsVisible() {
         var logRef = new AtomicReference<AppendLog>();
         var visibleDuringWrite = new AtomicReference<List<EpochStart>>();
-        Fn2<Result<Unit>, Path, byte[]> observing = (path, bytes) -> observeThenWrite(logRef,
-                                                                                      visibleDuringWrite,
-                                                                                      path,
-                                                                                      bytes);
+        Fn2<Result<Unit>, Path, byte[]> observing = (path, bytes) -> observeThenWrite(logRef, visibleDuringWrite, path, bytes);
         var wal = AppendLog.open(file(), AppendLog.TornTailSink.logOnly(), observing).unwrap();
 
         logRef.set(wal);
-        var forced = FileForceRecording.forcedFilesDuring(() -> wal.recordEpochStart(key(3),
-                                                                                     10,
-                                                                                     NUMERIC)
-                                                                   .onFailure(c -> fail(c.message())));
-        var forcedNames = forced.stream().map(f -> f.path()
-                                                    .getFileName()
-                                                    .toString()).toList();
 
-        assertThat(forcedNames).containsSubsequence("p.epochs.tmp",
-                                                    dir.getFileName().toString());
-        assertThat(forced).filteredOn(f -> f.path()
-                                            .getFileName()
-                                            .toString()
-                                            .equals("p.epochs.tmp"))
-                  .allSatisfy(f -> assertThat(f.metaData()).isTrue());
+        var forced = FileForceRecording.forcedFilesDuring(() -> wal.recordEpochStart(key(3), 10, NUMERIC).onFailure(c -> fail(c.message())));
+        var forcedNames = forced.stream().map(f -> f.path().getFileName().toString()).toList();
+
+        assertThat(forcedNames).containsSubsequence("p.epochs.tmp", dir.getFileName().toString());
+        assertThat(forced).filteredOn(f -> f.path().getFileName().toString().equals("p.epochs.tmp"))
+                          .allSatisfy(f -> assertThat(f.metaData()).isTrue());
         assertThat(visibleDuringWrite.get()).as("not visible while the write is in progress").isEmpty();
         assertThat(wal.epochHistory()).containsExactly(start(3, 10));
         wal.close();
+
         assertThat(AppendLog.readEpochHistory(file()).unwrap()).containsExactly(start(3, 10));
     }
 
@@ -77,8 +65,10 @@ class AppendLogEpochHistoryTest {
         assertRefused(wal.recordEpochStart(key(5), 150, NUMERIC), "the same epoch at another start");
         assertRefused(wal.recordEpochStart(key(6), 99, NUMERIC), "a start below the last start");
         wal.recordEpochStart(key(5), 100, NUMERIC).onFailure(c -> fail("an exact repeat is a no-op: " + c.message()));
+
         assertThat(wal.epochHistory()).containsExactly(start(5, 100));
         assertThat(Files.readAllBytes(sidecar())).isEqualTo(before);
+
         wal.recordEpochStart(key(6), 100, NUMERIC).onFailure(c -> fail(c.message()));
         assertThat(wal.epochHistory()).containsExactly(start(5, 100), start(6, 100));
         wal.close();
@@ -93,6 +83,7 @@ class AppendLogEpochHistoryTest {
         wal.recordEpochStart(key(3), 90, NUMERIC).onFailure(c -> fail(c.message()));
         wal.truncateEpochsAbove(60).onFailure(c -> fail(c.message()));
         wal.close();
+
         var reopened = AppendLog.open(file()).unwrap();
 
         assertThat(reopened.epochHistory()).containsExactly(start(1, 0), start(2, 50));
@@ -108,12 +99,15 @@ class AppendLogEpochHistoryTest {
 
         first.recordEpochStart(key(1), 0, NUMERIC).onFailure(c -> fail(c.message()));
         first.close();
+
         var crashing = AppendLog.open(file(), AppendLog.TornTailSink.logOnly(), tornWrite).unwrap();
 
         crashing.recordEpochStart(key(2), 40, NUMERIC).onSuccess(_ -> fail("the temp write was injected to fail"));
         assertThat(crashing.epochHistory()).containsExactly(start(1, 0));
         crashing.close();
+
         assertThat(Files.exists(sidecar().resolveSibling("p.epochs.tmp"))).as("the torn temp is left behind").isTrue();
+
         var reopened = AppendLog.open(file()).unwrap();
 
         assertThat(reopened.epochHistory()).containsExactly(start(1, 0));
@@ -131,6 +125,7 @@ class AppendLogEpochHistoryTest {
         wal.append(0, "a".getBytes(StandardCharsets.UTF_8), 1L).await().onFailure(c -> fail(c.message()));
         wal.recordEpochStart(key(1), 0, NUMERIC).onFailure(c -> fail(c.message()));
         wal.close();
+
         var damaged = Files.readAllBytes(sidecar());
 
         damaged[damaged.length / 2] ^= 0x5A;
@@ -145,6 +140,7 @@ class AppendLogEpochHistoryTest {
         AppendLog.open(file())
                  .onSuccess(_ -> fail("a log whose epoch history is damaged must not open"))
                  .onFailure(cause -> assertThat(cause).isInstanceOf(AppendLog.WalError.EpochHistoryCorrupt.class));
+
         assertThat(Files.readAllBytes(sidecar())).isEqualTo(damaged);
         assertThat(Files.getLastModifiedTime(sidecar())).isEqualTo(sidecarTime);
         assertThat(Files.readAllBytes(file())).isEqualTo(logBytes);
@@ -156,14 +152,13 @@ class AppendLogEpochHistoryTest {
     @Test
     void recordEpochStart_refusesAKeyTheCallersOrderCannotPlaceAfterTheLast() {
         var wal = AppendLog.open(file()).unwrap();
-        AppendLog.EpochOrder sameTermOnly = (later, earlier) -> later.token()
-                                                                     .compareTo(earlier.token()) > 0 && later.token()
-                                                                                                             .charAt(0) == earlier.token()
-                                                                                                                                  .charAt(0);
+        AppendLog.EpochOrder sameTermOnly = (later, earlier) -> later.token().compareTo(earlier.token()) > 0
+                                                                && later.token().charAt(0) == earlier.token().charAt(0);
 
         wal.recordEpochStart(key("a1"), 0, sameTermOnly).onFailure(c -> fail(c.message()));
         assertRefused(wal.recordEpochStart(key("b2"), 10, sameTermOnly), "an unordered key");
         wal.recordEpochStart(key("a2"), 10, sameTermOnly).onFailure(c -> fail(c.message()));
+
         assertThat(wal.epochHistory()).containsExactly(new EpochStart(key("a1"), 0), new EpochStart(key("a2"), 10));
         wal.close();
     }
@@ -176,14 +171,16 @@ class AppendLogEpochHistoryTest {
         var crc = new CRC32();
 
         crc.update(body.getBytes(StandardCharsets.UTF_8));
-        Files.writeString(sidecar(),
-                          body + "crc " + Long.toHexString(crc.getValue()) + "\n");
+        Files.writeString(sidecar(), body + "crc " + Long.toHexString(crc.getValue()) + "\n");
+
         assertThat(AppendLog.readEpochHistory(file()).unwrap()).isEmpty();
+
         var wal = AppendLog.open(file()).unwrap();
 
         assertThat(wal.epochHistory()).isEmpty();
         wal.recordEpochStart(key(4), 0, NUMERIC).onFailure(c -> fail(c.message()));
         wal.close();
+
         assertThat(Files.readString(sidecar())).startsWith(EpochHistory.HEADER + "\n");
         assertThat(AppendLog.readEpochHistory(file()).unwrap()).containsExactly(start(4, 0));
     }
@@ -206,11 +203,12 @@ class AppendLogEpochHistoryTest {
         var afterFirst = Files.readAllBytes(sidecar());
 
         wal.write(1, "b".getBytes(StandardCharsets.UTF_8), 1L, key(1), NUMERIC).onFailure(c -> fail(c.message()));
-        assertThat(Files.readAllBytes(sidecar())).as("a same-epoch record does not rewrite the history")
-                  .isEqualTo(afterFirst);
+        assertThat(Files.readAllBytes(sidecar())).as("a same-epoch record does not rewrite the history").isEqualTo(afterFirst);
+
         wal.write(2, "c".getBytes(StandardCharsets.UTF_8), 1L, key(3), NUMERIC).onFailure(c -> fail(c.message()));
         assertThat(wal.epochHistory()).containsExactly(start(1, 0), start(3, 2));
         wal.close();
+
         assertThat(AppendLog.readEpochHistory(file()).unwrap()).containsExactly(start(1, 0), start(3, 2));
     }
 
@@ -221,15 +219,12 @@ class AppendLogEpochHistoryTest {
         var wal = AppendLog.open(file()).unwrap();
 
         wal.write(0, "a".getBytes(StandardCharsets.UTF_8), 1L, key(5), NUMERIC).onFailure(c -> fail(c.message()));
-        assertRefused(wal.write(1, "b".getBytes(StandardCharsets.UTF_8), 1L, key(4), NUMERIC).mapToUnit(),
-                      "an older epoch");
+        assertRefused(wal.write(1, "b".getBytes(StandardCharsets.UTF_8), 1L, key(4), NUMERIC).mapToUnit(), "an older epoch");
         wal.write(1, "c".getBytes(StandardCharsets.UTF_8), 1L, key(5), NUMERIC).onFailure(c -> fail(c.message()));
+
         var replayed = new ArrayList<String>();
 
-        wal.replay(-1,
-                   r -> replayed.add(new String(r.payload(),
-                                                StandardCharsets.UTF_8)))
-           .onFailure(c -> fail(c.message()));
+        wal.replay(-1, r -> replayed.add(new String(r.payload(), StandardCharsets.UTF_8))).onFailure(c -> fail(c.message()));
         assertThat(replayed).containsExactly("a", "c");
         wal.close();
     }
@@ -241,15 +236,9 @@ class AppendLogEpochHistoryTest {
         Fn2<Result<Unit>, Path, byte[]> failing = (_, _) -> Causes.cause("injected sidecar failure").result();
         var wal = AppendLog.open(file(), AppendLog.TornTailSink.logOnly(), failing).unwrap();
 
-        wal.write(0,
-                  "a".getBytes(StandardCharsets.UTF_8),
-                  1L,
-                  key(1),
-                  NUMERIC)
+        wal.write(0, "a".getBytes(StandardCharsets.UTF_8), 1L, key(1), NUMERIC)
            .onSuccess(_ -> fail("the history write was injected to fail"));
-        wal.write(1,
-                  "b".getBytes(StandardCharsets.UTF_8),
-                  1L)
+        wal.write(1, "b".getBytes(StandardCharsets.UTF_8), 1L)
            .onSuccess(_ -> fail("the log must be fail-stopped"))
            .onFailure(cause -> assertThat(cause).isInstanceOf(AppendLog.WalError.FailStopped.class));
         wal.close();
@@ -267,13 +256,15 @@ class AppendLogEpochHistoryTest {
         wal.write(1, "b".getBytes(StandardCharsets.UTF_8), 1L).onFailure(c -> fail(c.message()));
         wal.recordEpochStart(key(2), 5, NUMERIC).onFailure(c -> fail("the crash left this entry: " + c.message()));
         wal.recordEpochStart(key(3), 9, NUMERIC).onFailure(c -> fail(c.message()));
+
         wal.truncateEpochsAboveHead(6).onFailure(c -> fail(c.message()));
         assertThat(wal.epochHistory()).as("a caller head above the last write keeps what it reaches")
-                  .containsExactly(start(1, 0),
-                                   start(2, 5));
+                                      .containsExactly(start(1, 0), start(2, 5));
+
         wal.truncateEpochsAboveHead(-1).onFailure(c -> fail(c.message()));
         assertThat(wal.epochHistory()).as("bounded by the last written offset, 1").containsExactly(start(1, 0));
         wal.close();
+
         assertThat(AppendLog.readEpochHistory(file()).unwrap()).as("durably").containsExactly(start(1, 0));
     }
 
@@ -283,6 +274,7 @@ class AppendLogEpochHistoryTest {
 
         wal.recordEpochStart(key(1), 0, NUMERIC).onFailure(c -> fail(c.message()));
         wal.truncateEpochsAboveHead(-1).onFailure(c -> fail(c.message()));
+
         assertThat(wal.epochHistory()).containsExactly(start(1, 0));
         wal.close();
     }
@@ -296,11 +288,12 @@ class AppendLogEpochHistoryTest {
         wal.write(0, "a".getBytes(StandardCharsets.UTF_8), 1L, key(1), NUMERIC).onFailure(c -> fail(c.message()));
         wal.recordEpochStart(key(2), 4, NUMERIC).onFailure(c -> fail(c.message()));
         wal.recordEpochStart(key(3), 6, NUMERIC).onFailure(c -> fail(c.message()));
+
         wal.dropEpochStartsAboveHead(0, List.of(start(1, 0), start(3, 6))).onFailure(c -> fail(c.message()));
         assertThat(wal.epochHistory()).as("the named entry at the head and the unnamed one above it are kept")
-                  .containsExactly(start(1, 0),
-                                   start(2, 4));
+                                      .containsExactly(start(1, 0), start(2, 4));
         wal.close();
+
         assertThat(AppendLog.readEpochHistory(file()).unwrap()).as("durably").containsExactly(start(1, 0), start(2, 4));
     }
 
@@ -312,6 +305,7 @@ class AppendLogEpochHistoryTest {
         wal.recordEpochStart(key(1), 0, NUMERIC).onFailure(c -> fail(c.message()));
         wal.recordEpochStart(key(3), 2, NUMERIC).onFailure(c -> fail(c.message()));
         wal.dropEpochStartsAboveHead(-1, List.of(start(1, 0), start(3, 2))).onFailure(c -> fail(c.message()));
+
         assertThat(wal.epochHistory()).isEmpty();
         wal.close();
     }
@@ -342,8 +336,7 @@ class AppendLogEpochHistoryTest {
     }
 
     private static Result<Unit> writeHalfThenFail(Path path, byte[] bytes) {
-        return FileOps.writeBytesForced(path,
-                                        Arrays.copyOf(bytes, bytes.length / 2))
+        return FileOps.writeBytesForced(path, Arrays.copyOf(bytes, bytes.length / 2))
                       .flatMap(_ -> Causes.cause("injected crash before rename").result());
     }
 

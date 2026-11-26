@@ -37,12 +37,12 @@ public final class LargeObjectProbe {
 
     /// The generated stream from `first` to `last` inclusive, regenerated piece by piece (for ranges that are small).
     private static byte[] generated(long first, long last) {
-        var out = new byte[(int)(last - first + 1)];
+        var out = new byte[(int) (last - first + 1)];
         var written = 0;
 
-        for (var at = first; at <= last;) {
+        for (var at = first; at <= last; ) {
             var index = at / PIECE;
-            var inPiece = (int)(at % PIECE);
+            var inPiece = (int) (at % PIECE);
             var count = (int) Math.min(PIECE - inPiece, last - at + 1);
 
             System.arraycopy(piece(index, PIECE), inPiece, out, written, count);
@@ -79,6 +79,7 @@ public final class LargeObjectProbe {
         var bytesRead = 0L;
 
         started = System.nanoTime();
+
         for (var next = stream.next().await().unwrap(); next.isPresent(); next = stream.next().await().unwrap()) {
             var buffer = next.or((ByteBuffer) null);
 
@@ -88,16 +89,10 @@ public final class LargeObjectProbe {
 
         var readMillis = (System.nanoTime() - started) / 1_000_000;
         var chunk = ContentStoreConfig.contentStoreConfig().chunkSizeBytes();
-        var rangesOk = rangeMatches(store, info, chunk - 3L, chunk + 5L) && rangeMatches(store,
-                                                                                         info,
-                                                                                         size - 10,
-                                                                                         size - 1) && rangeMatches(store,
-                                                                                                                   info,
-                                                                                                                   size / 2,
-                                                                                                                   size / 2 + 3L * PIECE) && rangeMatches(store,
-                                                                                                                                                          info,
-                                                                                                                                                          0,
-                                                                                                                                                          0);
+        var rangesOk = rangeMatches(store, info, chunk - 3L, chunk + 5L)
+                       && rangeMatches(store, info, size - 10, size - 1)
+                       && rangeMatches(store, info, size / 2, size / 2 + 3L * PIECE)
+                       && rangeMatches(store, info, 0, 0);
 
         System.out.println("MAX_HEAP_MB=" + Runtime.getRuntime().maxMemory() / (1024 * 1024));
         System.out.println("WRITE_SHA=" + HEX.formatHex(written.digest()));
@@ -113,7 +108,7 @@ public final class LargeObjectProbe {
 
     private static boolean rangeMatches(ContentStore store, ObjectInfo info, long first, long last) {
         var stream = store.open(info.ref(), ByteRange.byteRange(first, some(last))).await().unwrap();
-        var out = new byte[(int)(last - first + 1)];
+        var out = new byte[(int) (last - first + 1)];
         var filled = 0;
 
         for (var next = stream.next().await().unwrap(); next.isPresent(); next = stream.next().await().unwrap()) {
@@ -129,8 +124,7 @@ public final class LargeObjectProbe {
 
     private static long countFiles(Path dir) throws IOException {
         try (var files = Files.walk(dir)) {
-            return files.filter(Files::isRegularFile)
-                        .count();
+            return files.filter(Files::isRegularFile).count();
         }
     }
 }

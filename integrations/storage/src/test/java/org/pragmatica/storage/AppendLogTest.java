@@ -1,5 +1,14 @@
 package org.pragmatica.storage;
 
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.RepeatedTest;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.storage.AppendLog.WalRecord;
+import org.pragmatica.lang.Unit;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
@@ -22,33 +31,25 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
-import org.pragmatica.lang.Promise;
-import org.pragmatica.storage.AppendLog.WalRecord;
-import org.pragmatica.lang.Unit;
-
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.RepeatedTest;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.io.TempDir;
-
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-
 class AppendLogTest {
+
     @TempDir
     Path dir;
 
     @Nested
     class Roundtrip {
+
         @Test
         void replay_returnsAllRecords_inAppendOrderWithFields() {
             var wal = open("roundtrip.wal");
 
             IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1000L + i));
             wal.close();
+
             var records = replayAll(open("roundtrip.wal"), -1L);
 
             assertThat(records).hasSize(5);
@@ -60,6 +61,7 @@ class AppendLogTest {
             var wal = open("skip.wal");
 
             IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 2000L + i));
+
             var records = replayAll(wal, 2L);
 
             assertThat(offsetsOf(records)).containsExactly(3L, 4L);
@@ -71,7 +73,9 @@ class AppendLogTest {
             var wal = open("fresh.wal");
 
             assertThat(replayAll(wal, -1L)).isEmpty();
+
             appendSync(wal, 0L, payload(0), 7L);
+
             assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(0L);
             wal.close();
         }
@@ -83,6 +87,7 @@ class AppendLogTest {
             assertThat(wal.lastOffset()).isEqualTo(-1L);
             appendSync(wal, 41L, payload(41), 1L);
             appendSync(wal, 42L, payload(42), 1L);
+
             assertThat(wal.lastOffset()).isEqualTo(42L);
             wal.close();
         }
@@ -100,8 +105,8 @@ class AppendLogTest {
             for (var offset = 0L; offset < 8_192; offset++) {
                 wal.write(offset, big, 1L + offset).unwrap();
             }
-
             wal.commit(0).await();
+
             var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
             var thread = Thread.currentThread().threadId();
             var before = threads.getThreadAllocatedBytes(thread);
@@ -110,9 +115,9 @@ class AppendLogTest {
 
             assertThat(Files.size(file)).isGreaterThan(32L * 1024 * 1024);
             assertThat(offsetsOf(tail)).containsExactly(8_191L);
-            assertThat(allocated).as("bytes allocated by a replay of the last record of a %d byte log",
-                                     Files.size(file))
-                      .isLessThan(1024L * 1024);
+            assertThat(allocated).as("bytes allocated by a replay of the last record of a %d byte log", Files.size(file))
+                                 .isLessThan(1024L * 1024);
+
             var all = replayAll(wal, -1L);
 
             assertThat(offsetsOf(all)).containsExactlyElementsOf(LongStream.range(0, 8_192).boxed().toList());
@@ -137,6 +142,7 @@ class AppendLogTest {
             var wal = logOf("crc-delivered.wal", 5);
 
             corrupt("crc-delivered.wal", 2L * FRAME + 24, (byte) 0x5A);
+
             assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(0L, 1L);
             wal.close();
         }
@@ -148,6 +154,7 @@ class AppendLogTest {
             var wal = logOf("crc-skipped.wal", 5);
 
             corrupt("crc-skipped.wal", 1L * FRAME + 24, (byte) 0x5A);
+
             assertThat(replayAll(wal, 2L)).isEmpty();
             wal.close();
         }
@@ -159,6 +166,7 @@ class AppendLogTest {
             var wal = logOf("negative.wal", 5);
 
             writeLength("negative.wal", 3L * FRAME, -1);
+
             assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(0L, 1L, 2L);
             wal.close();
         }
@@ -172,7 +180,8 @@ class AppendLogTest {
             var wal = logOf("past-end.wal", 4_096);
             var size = Files.size(dir.resolve("past-end.wal"));
 
-            writeLength("past-end.wal", 2_048L * FRAME, (int)(size - 2_048L * FRAME - 24 + 1));
+            writeLength("past-end.wal", 2_048L * FRAME, (int) (size - 2_048L * FRAME - 24 + 1));
+
             var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
             var thread = Thread.currentThread().threadId();
             var before = threads.getThreadAllocatedBytes(thread);
@@ -180,8 +189,7 @@ class AppendLogTest {
             var allocated = threads.getThreadAllocatedBytes(thread) - before;
 
             assertThat(records).isEmpty();
-            assertThat(allocated).as("bytes allocated by a replay stopped at a length past the end")
-                      .isLessThan(1024L * 1024);
+            assertThat(allocated).as("bytes allocated by a replay stopped at a length past the end").isLessThan(1024L * 1024);
             wal.close();
         }
 
@@ -195,7 +203,8 @@ class AppendLogTest {
             var wal = logOf("in-bounds.wal", 32_768);
             var size = Files.size(dir.resolve("in-bounds.wal"));
 
-            writeLength("in-bounds.wal", 0L, (int)(size - 24));
+            writeLength("in-bounds.wal", 0L, (int) (size - 24));
+
             var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
             var thread = Thread.currentThread().threadId();
             var before = threads.getThreadAllocatedBytes(thread);
@@ -204,9 +213,8 @@ class AppendLogTest {
 
             assertThat(size).isGreaterThan(32L * 1024 * 1024);
             assertThat(records).isEmpty();
-            assertThat(allocated).as("bytes allocated by a replay stopped at a corrupt length inside a %d byte log",
-                                     size)
-                      .isLessThan(1024L * 1024);
+            assertThat(allocated).as("bytes allocated by a replay stopped at a corrupt length inside a %d byte log", size)
+                                 .isLessThan(1024L * 1024);
             wal.close();
         }
 
@@ -221,6 +229,7 @@ class AppendLogTest {
             wal.write(0L, big, 1L).unwrap();
             wal.write(1L, new byte[PAYLOAD], 2L).unwrap();
             wal.commit(0).await();
+
             var records = replayAll(wal, -1L);
 
             assertThat(offsetsOf(records)).containsExactly(0L, 1L);
@@ -234,7 +243,6 @@ class AppendLogTest {
             for (var offset = 0L; offset < records; offset++) {
                 wal.write(offset, new byte[PAYLOAD], 1L + offset).unwrap();
             }
-
             wal.commit(0).await();
 
             return wal;
@@ -248,14 +256,14 @@ class AppendLogTest {
 
         private void writeLength(String name, long position, int length) throws IOException {
             try (var channel = FileChannel.open(dir.resolve(name), StandardOpenOption.WRITE)) {
-                channel.write(ByteBuffer.allocate(4).putInt(0, length),
-                              position);
+                channel.write(ByteBuffer.allocate(4).putInt(0, length), position);
             }
         }
     }
 
     @Nested
     class Durability {
+
         // Proves the append fsync, not mere buffering: a SECOND WAL opened on the same file while
         // the first is still open (and never closed) must see every acked record.
         @Test
@@ -263,6 +271,7 @@ class AppendLogTest {
             var first = open("durable.wal");
 
             IntStream.range(0, 8).forEach(i -> appendSync(first, i, payload(i), 5000L + i));
+
             var second = open("durable.wal");
             var records = replayAll(second, -1L);
 
@@ -274,19 +283,20 @@ class AppendLogTest {
 
     @Nested
     class Recovery {
+
         @Test
         void tornTrailingBytes_droppedOnReopen_validRecordsKept() throws IOException {
             var wal = open("torn.wal");
-
             IntStream.range(0, 3).forEach(i -> appendSync(wal, i, payload(i), 1L));
             wal.close();
-            Files.write(file("torn.wal"),
-                        new byte[]{(byte) 0xAB, (byte) 0xCD, (byte) 0xEF, 0x12, 0x34, 0x56},
-                        StandardOpenOption.APPEND);
-            var reopened = open("torn.wal");
 
+            Files.write(file("torn.wal"), new byte[]{(byte) 0xAB, (byte) 0xCD, (byte) 0xEF, 0x12, 0x34, 0x56},
+                        StandardOpenOption.APPEND);
+
+            var reopened = open("torn.wal");
             assertThat(offsetsOf(replayAll(reopened, -1L))).containsExactly(0L, 1L, 2L);
             assertThat(reopened.lastOffset()).isEqualTo(2L);
+
             appendSync(reopened, 3L, payload(3), 1L);
             assertThat(offsetsOf(replayAll(reopened, -1L))).containsExactly(0L, 1L, 2L, 3L);
             reopened.close();
@@ -295,12 +305,12 @@ class AppendLogTest {
         @Test
         void recordTruncatedMidPayload_droppedOnReopen_earlierKept() throws IOException {
             var wal = open("midcut.wal");
-
             IntStream.range(0, 3).forEach(i -> appendSync(wal, i, payload(i), 1L));
             wal.close();
-            setFileLength(file("midcut.wal"), Files.size(file("midcut.wal")) - 5);
-            var reopened = open("midcut.wal");
 
+            setFileLength(file("midcut.wal"), Files.size(file("midcut.wal")) - 5);
+
+            var reopened = open("midcut.wal");
             assertThat(offsetsOf(replayAll(reopened, -1L))).containsExactly(0L, 1L);
             reopened.close();
         }
@@ -308,12 +318,12 @@ class AppendLogTest {
         @Test
         void flippedPayloadByte_stopsReplayAtCorruptedRecord_earlierIntact() throws IOException {
             var wal = open("crc.wal");
-
             IntStream.range(0, 3).forEach(i -> appendSync(wal, i, fixedPayload(i), 1L));
             wal.close();
-            var recordSize = WAL_HEADER_BYTES + fixedPayload(0).length;
 
-            flipByte(file("crc.wal"), (long) recordSize + WAL_HEADER_BYTES);  // record 1 payload start
+            var recordSize = WAL_HEADER_BYTES + fixedPayload(0).length;
+            flipByte(file("crc.wal"), (long) recordSize + WAL_HEADER_BYTES); // record 1 payload start
+
             var records = replayAll(open("crc.wal"), -1L);
 
             assertThat(offsetsOf(records)).containsExactly(0L);
@@ -322,17 +332,18 @@ class AppendLogTest {
 
     @Nested
     class Truncate {
+
         @Test
         void truncate_dropsAtOrBelow_keepsAbove_lazyBelowThreshold() throws IOException {
             var wal = open("truncate.wal");
-
             IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
-            var sizeBefore = Files.size(file("truncate.wal"));
 
+            var sizeBefore = Files.size(file("truncate.wal"));
             wal.markSealed(2L);
             wal.truncate(2L).onFailure(c -> fail(c.message()));
+
             assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(3L, 4L);
-            assertThat(Files.size(file("truncate.wal"))).isEqualTo(sizeBefore);  // lazy: no rewrite
+            assertThat(Files.size(file("truncate.wal"))).isEqualTo(sizeBefore); // lazy: no rewrite
             wal.close();
         }
 
@@ -342,18 +353,18 @@ class AppendLogTest {
         void truncate_compactsAndShrinks_pastThreshold() throws IOException {
             var big = new byte[64 * 1024];
             var wal = open("compact.wal");
-
             IntStream.range(0, 200).forEach(i -> appendSync(wal, i, big, 1L));
-            var sizeBefore = Files.size(file("compact.wal"));
 
+            var sizeBefore = Files.size(file("compact.wal"));
             wal.markSealed(99L);
             wal.truncate(99L).onFailure(c -> fail(c.message()));
-            var survivors = offsetsOf(replayAll(wal, -1L));
 
+            var survivors = offsetsOf(replayAll(wal, -1L));
             assertThat(survivors).hasSize(100).first().isEqualTo(100L);
             assertThat(survivors).last().isEqualTo(199L);
             assertThat(Files.size(file("compact.wal"))).isLessThan(sizeBefore);
             wal.close();
+
             assertThat(offsetsOf(replayAll(open("compact.wal"), -1L))).hasSize(100);
         }
     }
@@ -362,12 +373,14 @@ class AppendLogTest {
     /// never discards past it, whatever bound the caller passes.
     @Nested
     class SealGate {
+
         @Test
         void truncate_discardsNothing_beforeAnySeal() {
             var wal = open("unsealed.wal");
-
             IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
+
             wal.truncate(4L).onFailure(c -> fail(c.message()));
+
             assertThat(wal.sealedThrough()).isEqualTo(-1L);
             assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(0L, 1L, 2L, 3L, 4L);
             wal.close();
@@ -376,10 +389,11 @@ class AppendLogTest {
         @Test
         void truncate_stopsAtSealedThrough_whenCallerBoundIsHigher() {
             var wal = open("partly-sealed.wal");
-
             IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
+
             wal.markSealed(1L);
             wal.truncate(4L).onFailure(c -> fail(c.message()));
+
             assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(2L, 3L, 4L);
             wal.close();
         }
@@ -390,6 +404,7 @@ class AppendLogTest {
 
             wal.markSealed(7L);
             wal.markSealed(3L);
+
             assertThat(wal.sealedThrough()).isEqualTo(7L);
             wal.close();
         }
@@ -399,13 +414,13 @@ class AppendLogTest {
         @Test
         void sealedThrough_resetsOnReopen_soNothingTruncatesBeforeTheFirstSeal() {
             var wal = open("reopen-seal.wal");
-
             IntStream.range(0, 3).forEach(i -> appendSync(wal, i, payload(i), 1L));
             wal.markSealed(2L);
             wal.close();
-            var reopened = open("reopen-seal.wal");
 
+            var reopened = open("reopen-seal.wal");
             reopened.truncate(2L).onFailure(c -> fail(c.message()));
+
             assertThat(reopened.sealedThrough()).isEqualTo(-1L);
             assertThat(offsetsOf(replayAll(reopened, -1L))).containsExactly(0L, 1L, 2L);
             reopened.close();
@@ -416,27 +431,28 @@ class AppendLogTest {
     /// names the file, so `open` forces the directory when it CREATES the file.
     @Nested
     class CreationDurability {
+
         @Test
         void open_forcesTheDirectory_whenItCreatesTheLogFile() {
             var logDir = dir.resolve("fresh");
             var created = logDir.resolve("p.wal");
-            var forced = FileForceRecording.forcedFilesDuring(() -> AppendLog.open(created)
-                                                                             .onSuccess(AppendLog::close)
-                                                                             .onFailure(c -> fail(c.message())));
 
-            assertThat(forced.stream().map(FileForceRecording.ForcedFile::path).toList()).as("the directory holding the created log file is forced")
-                      .contains(logDir.toAbsolutePath());
+            var forced = FileForceRecording.forcedFilesDuring(() -> AppendLog.open(created).onSuccess(AppendLog::close)
+                                                                                    .onFailure(c -> fail(c.message())));
+
+            assertThat(forced.stream().map(FileForceRecording.ForcedFile::path).toList())
+                .as("the directory holding the created log file is forced")
+                .contains(logDir.toAbsolutePath());
         }
 
         @Test
         void open_doesNotForceTheDirectory_whenTheLogFileExists() {
             var logDir = dir.resolve("existing");
             var existing = logDir.resolve("p.wal");
-
             AppendLog.open(existing).onSuccess(AppendLog::close);
-            var forced = FileForceRecording.forcedFilesDuring(() -> AppendLog.open(existing)
-                                                                             .onSuccess(AppendLog::close)
-                                                                             .onFailure(c -> fail(c.message())));
+
+            var forced = FileForceRecording.forcedFilesDuring(() -> AppendLog.open(existing).onSuccess(AppendLog::close)
+                                                                                           .onFailure(c -> fail(c.message())));
 
             assertThat(forced.stream().map(FileForceRecording.ForcedFile::path).toList()).doesNotContain(logDir.toAbsolutePath());
         }
@@ -448,17 +464,20 @@ class AppendLogTest {
     /// the lying sensor an operator would then act on.
     @Nested
     class Stats {
+
         @Test
         void stats_reportsSizeAndOffsets_afterAppends() throws IOException {
             var wal = open("stats-size.wal");
 
             assertThat(wal.stats().sizeBytes()).as("a fresh WAL holds no bytes").isZero();
             assertThat(wal.stats().lastOffset()).isEqualTo(-1L);
+
             IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
+
             var stats = wal.stats();
 
             assertThat(stats.sizeBytes()).as("sizeBytes is the write position — with no compaction yet that IS the file length")
-                      .isEqualTo(Files.size(file("stats-size.wal")));
+                                         .isEqualTo(Files.size(file("stats-size.wal")));
             assertThat(stats.sizeBytes()).isPositive();
             assertThat(stats.lastOffset()).isEqualTo(4L);
             assertThat(stats.truncatedUpto()).isEqualTo(-1L);
@@ -475,13 +494,17 @@ class AppendLogTest {
 
             assertThat(wal.stats().fsyncCount()).as("nothing has been forced yet").isZero();
             assertThat(wal.stats().fsyncTotalNanos()).isZero();
+
             IntStream.range(0, 4).forEach(i -> appendSync(wal, i, payload(i), 1L));
+
             var stats = wal.stats();
 
             assertThat(stats.fsyncCount()).isEqualTo(4L);
-            assertThat(stats.fsyncTotalNanos()).as("a real force() spans at least one nanoTime tick").isPositive();
-            assertThat(stats.fsyncMaxNanos() * stats.fsyncCount()).as("max must dominate the mean the reader derives as total/count")
-                      .isGreaterThanOrEqualTo(stats.fsyncTotalNanos());
+            assertThat(stats.fsyncTotalNanos()).as("a real force() spans at least one nanoTime tick")
+                                               .isPositive();
+            assertThat(stats.fsyncMaxNanos() * stats.fsyncCount())
+                .as("max must dominate the mean the reader derives as total/count")
+                .isGreaterThanOrEqualTo(stats.fsyncTotalNanos());
             wal.close();
         }
 
@@ -490,18 +513,20 @@ class AppendLogTest {
             var wal = open("stats-truncate.wal");
 
             IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
+
             var sizeBefore = wal.stats().sizeBytes();
 
             assertThat(wal.stats().truncatedUpto()).as("nothing truncated yet — else the bump below proves nothing")
-                      .isEqualTo(-1L);
+                                                   .isEqualTo(-1L);
             wal.markSealed(2L);
             wal.truncate(2L).onFailure(c -> fail(c.message()));
+
             var stats = wal.stats();
 
             assertThat(stats.truncatedUpto()).isEqualTo(2L);
             assertThat(stats.sizeBytes()).as("below the compaction threshold a truncate is a watermark bump; bytes are NOT"
-                                            + " reclaimed, and reporting a shrunken size would hide real disk usage")
-                      .isEqualTo(sizeBefore);
+                                             + " reclaimed, and reporting a shrunken size would hide real disk usage")
+                                         .isEqualTo(sizeBefore);
             assertThat(Files.size(file("stats-truncate.wal"))).isEqualTo(sizeBefore);
             assertThat(stats.lastCompactedUpto()).as("no physical compaction ran").isEqualTo(-1L);
             wal.close();
@@ -513,6 +538,7 @@ class AppendLogTest {
     /// ordered section gets a file in offset order — and an out-of-order offset is refused unwritten.
     @Nested
     class Ordering {
+
         /// Replaces the former `concurrentAppends_allDurableAndReplayable`, whose order-insensitive
         /// `containsAll` accepted a reordered file as correct — it encoded the #1232 defect. Offsets are
         /// taken and appended inside one section (as the partition manager does); the fsync is awaited
@@ -529,24 +555,17 @@ class AppendLogTest {
             var start = new CountDownLatch(1);
             var done = new CountDownLatch(threads);
 
-            IntStream.range(0, threads).forEach(_ -> pool.submit(() -> fireOrdered(wal,
-                                                                                   section,
-                                                                                   nextOffset,
-                                                                                   perThread,
-                                                                                   promises,
-                                                                                   start,
-                                                                                   done)));
+            IntStream.range(0, threads)
+                     .forEach(_ -> pool.submit(() -> fireOrdered(wal, section, nextOffset, perThread, promises, start, done)));
             start.countDown();
             done.await(30, TimeUnit.SECONDS);
-            promises.forEach(p -> p.await()
-                                   .onFailure(c -> fail(c.message())));
+            promises.forEach(p -> p.await().onFailure(c -> fail(c.message())));
             pool.shutdownNow();
             wal.close();
+
             var records = replayAll(open("concurrent.wal"), -1L);
 
-            assertThat(offsetsOf(records)).containsExactlyElementsOf(LongStream.range(0, threads * perThread)
-                                                                               .boxed()
-                                                                               .toList());
+            assertThat(offsetsOf(records)).containsExactlyElementsOf(LongStream.range(0, threads * perThread).boxed().toList());
             records.forEach(r -> assertThat(new String(r.payload(), UTF_8)).isEqualTo("v" + r.offset()));
         }
 
@@ -557,16 +576,12 @@ class AppendLogTest {
             var wal = open("pipelined.wal");
             var count = 500;
             var promises = LongStream.range(0, count)
-                                     .mapToObj(offset -> wal.append(offset,
-                                                                    ("v" + offset).getBytes(UTF_8),
-                                                                    1L))
+                                     .mapToObj(offset -> wal.append(offset, ("v" + offset).getBytes(UTF_8), 1L))
                                      .toList();
 
-            promises.forEach(p -> p.await()
-                                   .onFailure(c -> fail(c.message())));
-            assertThat(offsetsOf(replayAll(wal, -1L))).containsExactlyElementsOf(LongStream.range(0, count)
-                                                                                           .boxed()
-                                                                                           .toList());
+            promises.forEach(p -> p.await().onFailure(c -> fail(c.message())));
+
+            assertThat(offsetsOf(replayAll(wal, -1L))).containsExactlyElementsOf(LongStream.range(0, count).boxed().toList());
             wal.close();
         }
 
@@ -575,8 +590,9 @@ class AppendLogTest {
             var wal = open("sync-write.wal");
 
             wal.append(0L, payload(0), 1L);
+
             assertThat(wal.lastOffset()).as("frame written in the caller's thread, before the fsync resolves")
-                      .isEqualTo(0L);
+                                        .isEqualTo(0L);
             assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(0L);
             wal.close();
         }
@@ -638,8 +654,7 @@ class AppendLogTest {
             var before = listing();
             var commit = wal.commit(seq + 1).await();
 
-            assertThat(commit.isFailure()).as("seq %d was never written, so no close-time force covered it", seq + 1)
-                      .isTrue();
+            assertThat(commit.isFailure()).as("seq %d was never written, so no close-time force covered it", seq + 1).isTrue();
             commit.onFailure(cause -> assertThat(cause).isEqualTo(AppendLog.WalError.General.WAL_CLOSED));
             assertThat(wal.failStopped()).isFalse();
             assertThat(listing()).isEqualTo(before);
@@ -649,7 +664,6 @@ class AppendLogTest {
             var field = AppendLog.class.getDeclaredField(name);
 
             field.setAccessible(true);
-
             return field.get(wal);
         }
 
@@ -661,18 +675,14 @@ class AppendLogTest {
                 if (System.nanoTime() > deadline) {
                     fail("thread neither blocked nor finished: " + thread.getState());
                 }
-
                 Thread.sleep(2);
             }
-
             return thread.getState();
         }
 
         private List<String> listing() throws IOException {
             try (var files = Files.list(dir)) {
-                return files.map(f -> f.getFileName() + ":" + fileLength(f))
-                            .sorted()
-                            .toList();
+                return files.map(f -> f.getFileName() + ":" + fileLength(f)).sorted().toList();
             }
         }
 
@@ -695,6 +705,7 @@ class AppendLogTest {
 
             assertRefusedAsRegression(wal.append(5L, payload(5), 1L), 5L);
             assertRefusedAsRegression(wal.append(4L, payload(4), 1L), 4L);
+
             assertThat(wal.stats().sizeBytes()).isEqualTo(sizeBefore);
             assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(5L);
             appendSync(wal, 6L, payload(6), 1L);
@@ -734,6 +745,7 @@ class AppendLogTest {
             wal.append(1L, payload(1), 1L).await().onSuccess(_ -> fail("the frame write was injected to fail"));
             restoreChannel(wal, wrapper);
             wal.append(2L, payload(2), 1L).await().onSuccess(_ -> fail("a fail-stopped log refuses appends"));
+
             assertThat(reports).as("one report for the fail-stop, none for the refused append").hasSize(1);
             assertThat(reports.getFirst()).startsWith("failstop-sink.wal|");
             wal.close();
@@ -745,6 +757,7 @@ class AppendLogTest {
     /// the ring already assigned it — and recovery refuses a hole loudly rather than renumbering.
     @Nested
     class WriteFailure {
+
         @Test
         void failedFrameWrite_failStopsTheWal_soNoLaterFrameLeavesAGap() {
             var wal = open("write-failure.wal");
@@ -755,19 +768,18 @@ class AppendLogTest {
             wrapper.failWrites = true;
             wal.append(1L, payload(1), 1L).await().onSuccess(_ -> fail("the frame write was injected to fail"));
             restoreChannel(wal, wrapper);
-            wal.append(2L,
-                       payload(2),
-                       1L)
+
+            wal.append(2L, payload(2), 1L)
                .await()
                .onSuccess(_ -> fail("a frame after a failed write would leave a hole at offset 1"))
                .onFailure(cause -> assertThat(cause).isInstanceOf(AppendLog.WalError.FailStopped.class));
             assertThat(wal.stats().failStopped()).isTrue();
             assertThat(wrapper.forceCalls).as("a failed write never reaches the fsync").hasValue(0);
             wal.close();
+
             var reopened = open("write-failure.wal");
 
-            assertThat(offsetsOf(replayAll(reopened, -1L))).as("reopen recovers the contiguous prefix")
-                      .containsExactly(0L);
+            assertThat(offsetsOf(replayAll(reopened, -1L))).as("reopen recovers the contiguous prefix").containsExactly(0L);
             appendSync(reopened, 1L, payload(1), 1L);
             reopened.close();
         }
@@ -779,6 +791,7 @@ class AppendLogTest {
 
             appendSync(wal, 3L, payload(3), 1L);
             wal.append(3L, payload(3), 1L).await().onSuccess(_ -> fail("duplicate offset must be refused"));
+
             assertThat(wal.stats().failStopped()).isFalse();
             appendSync(wal, 4L, payload(4), 1L);
             wal.close();
@@ -790,17 +803,17 @@ class AppendLogTest {
     /// pins: no ack over a failed fsync, no retry of a failed force, fail-stop until reopen.
     @Nested
     class FsyncFailure {
+
         @Test
         void append_resolvesFailure_whenGroupCommitFsyncThrows() {
             var wal = open("fsync-fail.wal");
             var wrapper = injectForceFailingChannel(wal);
 
-            wal.append(0L,
-                       payload(0),
-                       1L)
+            wal.append(0L, payload(0), 1L)
                .await()
                .onSuccess(_ -> fail("append must not ack over a failed fsync"))
                .onFailure(cause -> assertThat(cause.message()).contains("injected fsync failure"));
+
             assertThat(wal.stats().fsyncCount()).as("a failed force is not a completed group commit").isZero();
             restoreChannel(wal, wrapper);
             wal.close();
@@ -815,20 +828,21 @@ class AppendLogTest {
             var wal = open("fail-stop.wal");
 
             appendSync(wal, 0L, payload(0), 1L);
+
             var wrapper = injectForceFailingChannel(wal);
 
             wal.append(1L, payload(1), 1L).await().onSuccess(_ -> fail("fsync was injected to fail"));
             restoreChannel(wal, wrapper);
+
             var sizeBefore = fileSize("fail-stop.wal");
 
-            wal.append(2L,
-                       payload(2),
-                       1L)
+            wal.append(2L, payload(2), 1L)
                .await()
                .onSuccess(_ -> fail("fail-stopped WAL must refuse appends"))
                .onFailure(cause -> assertThat(cause.message()).contains("fail-stopped"));
+
             assertThat(fileSize("fail-stop.wal")).as("a refused append writes nothing — on DISK, not per the accounting")
-                      .isEqualTo(sizeBefore);
+                                                 .isEqualTo(sizeBefore);
             assertThat(wal.stats().fsyncCount()).as("only the pre-failure commit completed").isEqualTo(1L);
             assertThat(wal.stats().failStopped()).as("the state is operator-visible").isTrue();
             wal.close();
@@ -844,17 +858,19 @@ class AppendLogTest {
         void pipelinedAppends_underFsyncFailure_bothFail_withSingleForceAttempt() {
             var wal = open("single-force.wal");
             var wrapper = injectGatedForceFailingChannel(wal);
+
             var first = wal.append(0L, payload(0), 1L);
 
             await(wrapper.forceEntered);
             var second = wal.append(1L, payload(1), 1L);
 
             wrapper.forceProceed.countDown();
+
             first.await().onSuccess(_ -> fail("first append must not ack"));
             second.await()
                   .onSuccess(_ -> fail("second append must not ack"))
                   .onFailure(cause -> assertThat(cause.message()).as("refused by the in-lock fail-stop guard")
-                                                .contains("fail-stopped"));
+                                                                 .contains("fail-stopped"));
             assertThat(wrapper.forceCalls.get()).as("a failed force is never retried").isEqualTo(1);
             restoreChannel(wal, wrapper);
             wal.close();
@@ -871,18 +887,21 @@ class AppendLogTest {
             var wal = open("fail-stop-reopen.wal");
 
             appendSync(wal, 0L, payload(0), 1L);
+
             var wrapper = injectForceFailingChannel(wal);
 
             wal.append(1L, payload(1), 1L).await().onSuccess(_ -> fail("fsync was injected to fail"));
+
             assertThat(offsetsOf(replayAll(wal, -1L))).as("reads still serve").containsExactly(0L, 1L);
             wal.close();
             assertThat(wrapper.forceCalls.get()).as("fail-stopped close skips the close-time force — the forbidden retry")
-                      .isEqualTo(1);
+                                                .isEqualTo(1);
             assertThat(wrapper.delegate.isOpen()).as("the channel is still closed, not leaked").isFalse();
+
             var reopened = open("fail-stop-reopen.wal");
 
             assertThat(offsetsOf(replayAll(reopened, -1L))).as("acked record 0 survives; unacked 1 legitimately resurrects")
-                      .containsExactly(0L, 1L);
+                                                           .containsExactly(0L, 1L);
             assertThat(reopened.stats().failStopped()).as("fail-stop is per-instance, cleared by reopen").isFalse();
             appendSync(reopened, 2L, payload(2), 1L);
             assertThat(reopened.lastOffset()).isEqualTo(2L);
@@ -897,9 +916,11 @@ class AppendLogTest {
             var wal = open("close-leak.wal");
 
             appendSync(wal, 0L, payload(0), 1L);
+
             var wrapper = injectForceFailingChannel(wal);
 
             wal.close();
+
             assertThat(wrapper.forceCalls.get()).as("a healthy close still attempts the final fsync").isEqualTo(1);
             assertThat(wrapper.delegate.isOpen()).as("a failed close-time fsync must not leak the channel").isFalse();
         }
@@ -912,10 +933,12 @@ class AppendLogTest {
             var wal = open("truncate-poisoned.wal");
 
             appendSync(wal, 0L, payload(0), 1L);
+
             var wrapper = injectForceFailingChannel(wal);
 
             wal.append(1L, payload(1), 1L).await().onSuccess(_ -> fail("fsync was injected to fail"));
             restoreChannel(wal, wrapper);
+
             wal.markSealed(0L);
             wal.truncate(0L)
                .onSuccess(_ -> fail("a fail-stopped WAL must refuse truncate"))
@@ -933,17 +956,16 @@ class AppendLogTest {
 
             IntStream.range(0, 200).forEach(i -> appendSync(wal, i, big, 1L));
             Files.createDirectory(file("compact-fail.wal.compact"));
+
             var sizeBefore = Files.size(file("compact-fail.wal"));
 
             wal.markSealed(99L);
             wal.truncate(99L)
                .onSuccess(_ -> fail("compaction with an unwritable temp must fail"))
                .onFailure(cause -> assertThat(cause.message()).contains("WAL truncate failed"));
+
             assertThat(Files.size(file("compact-fail.wal"))).as("live file untouched").isEqualTo(sizeBefore);
-            assertThat(offsetsOf(replayAll(wal, -1L))).as("watermark still filters replay")
-                      .hasSize(100)
-                      .first()
-                      .isEqualTo(100L);
+            assertThat(offsetsOf(replayAll(wal, -1L))).as("watermark still filters replay").hasSize(100).first().isEqualTo(100L);
             appendSync(wal, 200L, payload(200), 1L);
             wal.close();
         }
@@ -954,6 +976,7 @@ class AppendLogTest {
     /// leave) and drives recovery over it — the same technique as the torn-write Recovery group.
     @Nested
     class CrashMidCompaction {
+
         // Window 1 — crash AFTER the temp is fully written+synced, BEFORE the rename. The temp
         // here is a complete VALID WAL (a decoy with different offsets): recovery must read only
         // the live file, no matter how plausible the temp looks.
@@ -963,11 +986,13 @@ class AppendLogTest {
 
             IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
             wal.close();
+
             var decoy = open("decoy.wal");
 
             IntStream.range(50, 53).forEach(i -> appendSync(decoy, i, payload(i), 1L));
             decoy.close();
             Files.copy(file("decoy.wal"), file("window1.wal.compact"));
+
             var reopened = open("window1.wal");
 
             assertThat(offsetsOf(replayAll(reopened, -1L))).containsExactly(0L, 1L, 2L, 3L, 4L);
@@ -981,7 +1006,9 @@ class AppendLogTest {
 
             IntStream.range(0, 5).forEach(i -> appendSync(wal, i, payload(i), 1L));
             wal.close();
+
             Files.write(file("window2.wal.compact"), new byte[]{0x01, 0x02, 0x03});
+
             var reopened = open("window2.wal");
 
             assertThat(offsetsOf(replayAll(reopened, -1L))).containsExactly(0L, 1L, 2L, 3L, 4L);
@@ -998,12 +1025,14 @@ class AppendLogTest {
 
             IntStream.range(0, 200).forEach(i -> appendSync(wal, i, big, 1L));
             Files.write(file("stale-then-compact.wal.compact"), new byte[]{0x0A, 0x0B});
+
             wal.markSealed(99L);
             wal.truncate(99L).onFailure(c -> fail(c.message()));
-            assertThat(Files.notExists(file("stale-then-compact.wal.compact"))).as("temp consumed by the rename")
-                      .isTrue();
+
+            assertThat(Files.notExists(file("stale-then-compact.wal.compact"))).as("temp consumed by the rename").isTrue();
             assertThat(offsetsOf(replayAll(wal, -1L))).hasSize(100).first().isEqualTo(100L);
             wal.close();
+
             assertThat(offsetsOf(replayAll(open("stale-then-compact.wal"), -1L))).hasSize(100);
         }
 
@@ -1019,6 +1048,7 @@ class AppendLogTest {
             IntStream.range(0, 200).forEach(i -> appendSync(wal, i, big, 1L));
             wal.markSealed(99L);
             wal.truncate(99L).onFailure(c -> fail(c.message()));
+
             var independent = open("window3.wal");
             var survivors = offsetsOf(replayAll(independent, -1L));
 
@@ -1031,6 +1061,7 @@ class AppendLogTest {
     }
 
     // === helpers ===
+
     private static final int WAL_HEADER_BYTES = 24;
 
     private AppendLog open(String name) {
@@ -1087,16 +1118,12 @@ class AppendLogTest {
 
     private static List<WalRecord> replayAll(AppendLog wal, long afterOffset) {
         var records = new ArrayList<WalRecord>();
-
         wal.replay(afterOffset, records::add).onFailure(c -> fail(c.message()));
-
         return records;
     }
 
     private static List<Long> offsetsOf(List<WalRecord> records) {
-        return records.stream()
-                      .map(WalRecord::offset)
-                      .collect(Collectors.toList());
+        return records.stream().map(WalRecord::offset).collect(Collectors.toList());
     }
 
     private static void assertRecord(WalRecord record, long offset, long ts) {
@@ -1110,8 +1137,7 @@ class AppendLogTest {
     }
 
     private static byte[] fixedPayload(int i) {
-        return "payload-%02d".formatted(i)
-                             .getBytes(UTF_8);  // constant length for CRC byte targeting
+        return "payload-%02d".formatted(i).getBytes(UTF_8); // constant length for CRC byte targeting
     }
 
     private static void setFileLength(Path path, long length) throws IOException {
@@ -1123,15 +1149,15 @@ class AppendLogTest {
     private static void flipByte(Path path, long position) throws IOException {
         try (var channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
             var buf = ByteBuffer.allocate(1);
-
             channel.read(buf, position);
-            buf.array() [0] ^= (byte) 0xFF;
+            buf.array()[0] ^= (byte) 0xFF;
             buf.flip();
             channel.write(buf, position);
         }
     }
 
     // === fsync-failure injection (reflection: the channel is the WAL's only I/O seam) ===
+
     private static ForceFailingChannel injectForceFailingChannel(AppendLog wal) {
         return injectChannel(wal, false);
     }
@@ -1146,7 +1172,6 @@ class AppendLogTest {
             var wrapper = new ForceFailingChannel((FileChannel) field.get(wal), gated);
 
             field.set(wal, wrapper);
-
             return wrapper;
         } catch (ReflectiveOperationException e) {
             return fail("channel injection failed: " + e);
@@ -1165,7 +1190,6 @@ class AppendLogTest {
         var field = AppendLog.class.getDeclaredField("channel");
 
         field.setAccessible(true);
-
         return field;
     }
 
@@ -1183,9 +1207,7 @@ class AppendLogTest {
 
         ForceFailingChannel(FileChannel delegate, boolean gated) {
             this.delegate = delegate;
-            this.forceProceed = new CountDownLatch(gated
-                                                   ? 1
-                                                   : 0);
+            this.forceProceed = new CountDownLatch(gated ? 1 : 0);
         }
 
         @Override
@@ -1193,7 +1215,6 @@ class AppendLogTest {
             forceCalls.incrementAndGet();
             forceEntered.countDown();
             await(forceProceed);
-
             throw new IOException("injected fsync failure");
         }
 
@@ -1227,7 +1248,6 @@ class AppendLogTest {
             if (failWrites) {
                 throw new IOException("injected write failure");
             }
-
             return delegate.write(src, position);
         }
 

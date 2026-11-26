@@ -7,15 +7,13 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.EnumSet;
 import java.util.List;
 
+import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// #1604: under disk pressure, garbage collection may skip its grace period only for orphans whose ref drop a
 /// metadata snapshot already on disk records -- an ORDER bound on the snapshot's content, no clock compared.
@@ -26,13 +24,9 @@ class DurableOrphanCollectionTest {
     @Test
     void collectsExactlyTheOrphansTheSnapshotRecords_andStillOrphanedNow() {
         var store = MetadataStore.inMemoryMetadataStore("gc");
-        var storage = StorageInstance.storageInstance("gc",
-                                                      List.of(MemoryTier.memoryTier(1 << 20)),
-                                                      store);
+        var storage = StorageInstance.storageInstance("gc", List.of(MemoryTier.memoryTier(1 << 20)), store);
         var snapshots = SnapshotManager.snapshotManager(store, SnapshotConfig.snapshotConfig(dir, "gc"));
-        var collector = StorageGarbageCollector.storageGarbageCollector(storage,
-                                                                        store,
-                                                                        GarbageCollectorConfig.garbageCollectorConfig());
+        var collector = StorageGarbageCollector.storageGarbageCollector(storage, store, GarbageCollectorConfig.garbageCollectorConfig());
         var durablyDropped = storage.putRef("a", bytes("durably dropped")).await().unwrap();
         var droppedAfter = storage.putRef("b", bytes("dropped after the snapshot")).await().unwrap();
         var reReferenced = storage.putRef("c", bytes("re-referenced")).await().unwrap();
@@ -40,10 +34,12 @@ class DurableOrphanCollectionTest {
         collector.activate();
         storage.deleteRef("a").await();
         storage.deleteRef("c").await();
+
         var durable = snapshots.snapshotNow().unwrap();
 
         storage.deleteRef("b").await();
         storage.createRef("c2", reReferenced).await();
+
         assertThat(collector.collectOrphansDurableIn(durable)).isEqualTo(1);
         assertThat(store.getLifecycle(durablyDropped).isPresent()).as("orphaned in the snapshot and now").isFalse();
         assertThat(store.getLifecycle(droppedAfter).isPresent()).as("its drop is not durable yet").isTrue();
@@ -55,24 +51,20 @@ class DurableOrphanCollectionTest {
     @Test
     void earlyCollection_ignoresAMarkerInTheSnapshot_evenWhenTheBlockIsAnOrphanNow() {
         var store = MetadataStore.inMemoryMetadataStore("gc-marker");
-        var storage = StorageInstance.storageInstance("gc-marker",
-                                                      List.of(MemoryTier.memoryTier(1 << 20)),
-                                                      store);
-        var collector = StorageGarbageCollector.storageGarbageCollector(storage,
-                                                                        store,
-                                                                        GarbageCollectorConfig.garbageCollectorConfig());
+        var storage = StorageInstance.storageInstance("gc-marker", List.of(MemoryTier.memoryTier(1 << 20)), store);
+        var collector = StorageGarbageCollector.storageGarbageCollector(storage, store, GarbageCollectorConfig.garbageCollectorConfig());
         var id = storage.putRef("a", bytes("was a marker once")).await().unwrap();
         var staleStore = MetadataStore.inMemoryMetadataStore("stale");
 
         staleStore.createLifecycle(BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(TierLevel.MEMORY)));
-        var stale = SnapshotManager.snapshotManager(staleStore,
-                                                    SnapshotConfig.snapshotConfig(dir.resolve("stale"),
-                                                                                  "gc"))
+
+        var stale = SnapshotManager.snapshotManager(staleStore, SnapshotConfig.snapshotConfig(dir.resolve("stale"), "gc"))
                                    .snapshotNow()
                                    .unwrap();
 
         collector.activate();
         storage.deleteRef("a").await();
+
         assertThat(store.getLifecycle(id).unwrap().isOrphaned()).as("control: it is an orphan now").isTrue();
         assertThat(collector.collectOrphansDurableIn(stale)).isZero();
         assertThat(store.getLifecycle(id).isPresent()).as("its drop is not in any durable snapshot").isTrue();
@@ -86,15 +78,13 @@ class DurableOrphanCollectionTest {
         var shared = new SharedMemoryTier();
         var privateTier = MemoryTier.memoryTier(1 << 20);
         var storage = StorageInstance.storageInstance("gc-shared", List.of(privateTier, shared), store);
-        var snapshots = SnapshotManager.snapshotManager(store,
-                                                        SnapshotConfig.snapshotConfig(dir.resolve("shared"), "gc"));
-        var collector = StorageGarbageCollector.storageGarbageCollector(storage,
-                                                                        store,
-                                                                        GarbageCollectorConfig.garbageCollectorConfig());
+        var snapshots = SnapshotManager.snapshotManager(store, SnapshotConfig.snapshotConfig(dir.resolve("shared"), "gc"));
+        var collector = StorageGarbageCollector.storageGarbageCollector(storage, store, GarbageCollectorConfig.garbageCollectorConfig());
         var id = storage.putRef("a", bytes("shared block")).await().unwrap();
 
         collector.activate();
         storage.deleteRef("a").await();
+
         assertThat(collector.collectOrphansDurableIn(snapshots.snapshotNow().unwrap())).isEqualTo(1);
         assertThat(shared.exists(id).await().unwrap()).as("the shared copy survives").isTrue();
         assertThat(privateTier.exists(id).await().unwrap()).as("the private copy is collected").isFalse();
@@ -149,10 +139,10 @@ class DurableOrphanCollectionTest {
     @Test
     void snapshotNow_failsWhenTheSnapshotCannotBeWritten() throws Exception {
         var store = MetadataStore.inMemoryMetadataStore("gc");
-        var snapshots = SnapshotManager.snapshotManager(store,
-                                                        SnapshotConfig.snapshotConfig(dir.resolve("snaps"), "gc"));
+        var snapshots = SnapshotManager.snapshotManager(store, SnapshotConfig.snapshotConfig(dir.resolve("snaps"), "gc"));
 
         assertThat(snapshots.snapshotNow().isSuccess()).isTrue();
+
         Files.setPosixFilePermissions(dir.resolve("snaps"), PosixFilePermissions.fromString("r-xr-xr-x"));
         try {
             assertThat(snapshots.snapshotNow().isFailure()).isTrue();

@@ -9,14 +9,14 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-
 /// #2257: percent-encoding of snapshot ref names. Percent-encoding over length-prefixing because the
 /// snapshot stays line-oriented text (greppable by an operator, a torn file still fails on one line, no
 /// byte counts to desynchronise), and it is bijective on every Java `String`.
 class SnapshotNameCodecTest {
     @Test
     void encode_leavesLiteralCharacters_unchanged() {
-        assertThat(SnapshotNameCodec.encode("cursors/org.example:app-1_x~y/ns:orders:1/0")).isEqualTo("cursors/org.example:app-1_x~y/ns:orders:1/0");
+        assertThat(SnapshotNameCodec.encode("cursors/org.example:app-1_x~y/ns:orders:1/0"))
+            .isEqualTo("cursors/org.example:app-1_x~y/ns:orders:1/0");
     }
 
     @Test

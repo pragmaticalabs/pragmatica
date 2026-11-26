@@ -11,13 +11,12 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
 import static org.pragmatica.storage.SnapshotConfig.snapshotConfig;
 import static org.pragmatica.storage.SnapshotManager.snapshotManager;
 import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
-
 
 /// #812 -- the content store paired [StorageInstance#put] with [StorageInstance#createRef]. Each
 /// credits the block, so one named block sat at refCount 2, an explicit `deleteRef` only
@@ -35,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// The only thing hand-fed is elapsed time (the grace period). Every refCount below is produced by the
 /// code under test.
 class ContentStoreReclamationTest {
+
     private static final long ONE_MB = 1024 * 1024;
     private static final int CHUNK_SIZE = 128;
     private static final String NAME = "doc.bin";
@@ -61,17 +61,17 @@ class ContentStoreReclamationTest {
     }
 
     private BlockId putContent(String name, byte[] content) {
-        return BlockId.fromHex(store.put(name, content).await().unwrap()).unwrap();
+        return BlockId.fromHex(store.put(name, content)
+                                    .await()
+                                    .unwrap())
+                      .unwrap();
     }
 
     /// The ref the store keeps the entry of the object `name` is bound to under.
     private String entryRefOf(String name) {
-        var info = store.store().lookup(ObjectName.objectName(name).unwrap(),
-                                        Option.none()).await().unwrap().unwrap();
+        var info = store.store().lookup(ObjectName.objectName(name).unwrap(), Option.none()).await().unwrap().unwrap();
 
-        return "o/default/" + info.ref()
-                                  .id()
-                                  .asString();
+        return "o/default/" + info.ref().id().asString();
     }
 
     /// Naming an object rewrites its entry twice, so a bind leaves the two superseded versions of the entry for the
@@ -104,7 +104,7 @@ class ContentStoreReclamationTest {
         var data = new byte[size];
 
         for (var i = 0; i < size; i++) {
-            data[i] = (byte)(i % 251);
+            data[i] = (byte) (i % 251);
         }
 
         return data;
@@ -112,6 +112,7 @@ class ContentStoreReclamationTest {
 
     @Nested
     class SingleBlockContent {
+
         /// Red before the fix: the block sits at refCount 2 after `put`, `deleteRef` brings it to 1,
         /// `isOrphaned` stays false, and `collectGarbage` returns 0 with the block still on the tier.
         @Test
@@ -123,23 +124,28 @@ class ContentStoreReclamationTest {
             var orphanedWhileNamed = isOrphaned(id);
             var settled = collectAfterBinds();
 
-            storage.deleteRef(entryRef).await().onFailure(c -> fail("deleteRef failed: " + c.message()));
+            storage.deleteRef(entryRef)
+                   .await()
+                   .onFailure(c -> fail("deleteRef failed: " + c.message()));
+
             var refCountAfterDrop = refCountOf(id);
             var orphanedAfterDrop = isOrphaned(id);
 
             Thread.sleep(20);
-            assertThat(settled).as("locator: the bind left only the two superseded entry versions")
-                      .isEqualTo(BIND_RESIDUE);
-            assertThat(gc.collectGarbage()).as("the block must actually be collected once its only name is gone")
-                      .isEqualTo(1);
+
+            assertThat(settled).as("locator: the bind left only the two superseded entry versions").isEqualTo(BIND_RESIDUE);
+            assertThat(gc.collectGarbage())
+                    .as("the block must actually be collected once its only name is gone")
+                    .isEqualTo(1);
             assertThat(metadataStore.containsBlock(id)).as("lifecycle metadata must be gone").isFalse();
             storage.get(id)
                    .await()
                    .onFailure(c -> fail("get failed: " + c.message()))
-                   .onSuccess(opt -> assertThat(opt.isEmpty()).as("the block must be gone from the tier")
-                                               .isTrue());
-            assertThat(refCountWhileNamed).as("locator: one name must credit exactly one reference -- put+createRef credited two (#812)")
-                      .isEqualTo(1);
+                   .onSuccess(opt -> assertThat(opt.isEmpty()).as("the block must be gone from the tier").isTrue());
+
+            assertThat(refCountWhileNamed)
+                    .as("locator: one name must credit exactly one reference -- put+createRef credited two (#812)")
+                    .isEqualTo(1);
             assertThat(orphanedWhileNamed).as("locator: a named block is not orphaned").isFalse();
             assertThat(refCountAfterDrop).as("locator: dropping the only name must reach zero").isZero();
             assertThat(orphanedAfterDrop).as("locator: at zero the block must report orphaned").isTrue();
@@ -152,25 +158,26 @@ class ContentStoreReclamationTest {
         @Test
         void put_overExistingName_collectsSupersededObject_andKeepsCurrentContent() throws InterruptedException {
             var supersededId = putContent(NAME, CONTENT_A);
-
             collectAfterBinds();
             var currentId = putContent(NAME, CONTENT_B);
             var supersededRefCount = refCountOf(supersededId);
             var currentRefCount = refCountOf(currentId);
 
             Thread.sleep(20);
+
             assertThat(gc.collectGarbage()).as("exactly the superseded object's chunk, manifest, entry and name binding, and the second bind's residue, must be collected")
-                      .isEqualTo(4 + BIND_RESIDUE);
+                                           .isEqualTo(4 + BIND_RESIDUE);
             assertThat(metadataStore.containsBlock(supersededId)).as("the displaced manifest must be gone").isFalse();
             assertThat(metadataStore.containsBlock(currentId)).as("the live manifest must survive").isTrue();
+
             store.get(NAME)
                  .await()
                  .onFailure(c -> fail("get failed: " + c.message()))
                  .onSuccess(opt -> {
-                                assertThat(opt.isPresent()).as("collection must not have taken the live content")
-                                          .isTrue();
-                                opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT_B));
-                            });
+                     assertThat(opt.isPresent()).as("collection must not have taken the live content").isTrue();
+                     opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT_B));
+                 });
+
             assertThat(supersededRefCount).as("locator: nothing points at the displaced manifest").isZero();
             assertThat(currentRefCount).as("locator: the live manifest holds put's one credit").isEqualTo(1);
         }
@@ -178,6 +185,7 @@ class ContentStoreReclamationTest {
 
     @Nested
     class ChunkedContent {
+
         /// The counter-mutation guard, and the reason the fix removes NEITHER increment. The double
         /// count could also be "resolved" by dropping [StorageInstance#put]'s own credit and moving it
         /// onto the named-ref path -- and that is a use-after-free, not a fix: a chunk block carries no
@@ -193,27 +201,35 @@ class ContentStoreReclamationTest {
             var manifestId = putContent(NAME, content);
             var chunkIds = chunkIdsOf(manifestId);
             var manifestRefCount = refCountOf(manifestId);
-            var chunkRefCounts = chunkIds.stream().map(ContentStoreReclamationTest.this::refCountOf).toList();
+            var chunkRefCounts = chunkIds.stream()
+                                         .map(ContentStoreReclamationTest.this::refCountOf)
+                                         .toList();
 
             Thread.sleep(20);
-            assertThat(gc.collectGarbage()).as("only the superseded entry versions of the bind are orphaned -- collecting any chunk or the manifest is data loss, not reclamation")
-                      .isEqualTo(BIND_RESIDUE);
+
+            assertThat(gc.collectGarbage())
+                    .as("only the superseded entry versions of the bind are orphaned -- collecting any chunk or the manifest is data loss, not reclamation")
+                    .isEqualTo(BIND_RESIDUE);
+
             store.get(NAME)
                  .await()
                  .onFailure(c -> fail("get failed: " + c.message()))
                  .onSuccess(opt -> {
-                                assertThat(opt.isPresent()).as("the document must still be readable after a GC cycle")
-                                          .isTrue();
-                                opt.onPresent(data -> assertThat(data).isEqualTo(content));
-                            });
+                     assertThat(opt.isPresent()).as("the document must still be readable after a GC cycle").isTrue();
+                     opt.onPresent(data -> assertThat(data).isEqualTo(content));
+                 });
+
             assertThat(chunkIds).as("locator: the fixture must genuinely chunk, or this proves nothing").hasSize(4);
-            assertThat(manifestRefCount).as("locator: the manifest is named by nothing and held by put's credit alone")
-                      .isEqualTo(1);
-            assertThat(chunkRefCounts).as("locator: an unnamed chunk is held by put's credit alone").containsOnly(1);
+            assertThat(manifestRefCount).as("locator: the manifest is named by nothing and held by put's credit alone").isEqualTo(1);
+            assertThat(chunkRefCounts).as("locator: an unnamed chunk is held by put's credit alone")
+                                      .containsOnly(1);
         }
 
         private List<BlockId> chunkIdsOf(BlockId manifestId) {
-            return parseChunkIds(storage.get(manifestId).await().unwrap().unwrap());
+            return parseChunkIds(storage.get(manifestId)
+                                        .await()
+                                        .unwrap()
+                                        .unwrap());
         }
 
         private List<BlockId> parseChunkIds(byte[] manifestBytes) {
@@ -228,6 +244,7 @@ class ContentStoreReclamationTest {
 
     @Nested
     class AcrossSnapshotRestore {
+
         @TempDir
         Path tempDir;
 
@@ -248,27 +265,40 @@ class ContentStoreReclamationTest {
             var config = snapshotConfig(tempDir.resolve("snapshots"), 100, 600_000, 5, "reclamation-node");
 
             snapshotManager(metadataStore, config).forceSnapshot();
+
             var restoredStore = MetadataStore.inMemoryMetadataStore("reclamation-restored");
-            var snapshot = snapshotManager(restoredStore, config).restoreFromLatest().unwrap().unwrap();
+            var snapshot = snapshotManager(restoredStore, config).restoreFromLatest()
+                                                                 .unwrap()
+                                                                 .unwrap();
 
             restoredStore.restoreLifecycles(snapshot.lifecycles());
             restoredStore.restoreRefs(snapshot.refs());
+
             var restoredRefCount = refCountIn(restoredStore, id);
             var restoredInstance = StorageInstance.storageInstance("reclamation-restored",
                                                                    List.of(memoryTier),
                                                                    restoredStore);
-            var restoredGc = storageGarbageCollector(restoredInstance, restoredStore, garbageCollectorConfig(0, 500));
-
+            var restoredGc = storageGarbageCollector(restoredInstance,
+                                                     restoredStore,
+                                                     garbageCollectorConfig(0, 500));
             restoredGc.activate();
-            restoredInstance.deleteRef(entryRef).await().onFailure(c -> fail("deleteRef failed: " + c.message()));
+
+            restoredInstance.deleteRef(entryRef)
+                            .await()
+                            .onFailure(c -> fail("deleteRef failed: " + c.message()));
+
             var refCountAfterDrop = refCountIn(restoredStore, id);
 
             Thread.sleep(20);
-            assertThat(restoredGc.collectGarbage()).as("a store rebuilt from a snapshot must collect the block too, with the superseded entry versions the snapshot carried")
-                      .isEqualTo(1 + BIND_RESIDUE);
+
+            assertThat(restoredGc.collectGarbage())
+                    .as("a store rebuilt from a snapshot must collect the block too, with the superseded entry versions the snapshot carried")
+                    .isEqualTo(1 + BIND_RESIDUE);
             assertThat(restoredStore.containsBlock(id)).as("lifecycle metadata must be gone").isFalse();
-            assertThat(restoredRefCount).as("locator: the durable side must carry the corrected count, or the fix is undone on rebuild")
-                      .isEqualTo(1);
+
+            assertThat(restoredRefCount)
+                    .as("locator: the durable side must carry the corrected count, or the fix is undone on rebuild")
+                    .isEqualTo(1);
             assertThat(refCountAfterDrop).as("locator: dropping the only name must reach zero").isZero();
         }
 
@@ -282,15 +312,16 @@ class ContentStoreReclamationTest {
 
             putContent(name, CONTENT_A);
             snapshotManager(metadataStore, config).forceSnapshot();
+
             var restoredStore = MetadataStore.inMemoryMetadataStore("reclamation-restored");
-            var snapshot = snapshotManager(restoredStore, config).restoreFromLatest().unwrap();
+            var snapshot = snapshotManager(restoredStore, config).restoreFromLatest()
+                                                                 .unwrap();
 
             assertThat(snapshot.isPresent()).as("the snapshot passes its integrity check and restores").isTrue();
             restoredStore.restoreLifecycles(snapshot.unwrap().lifecycles());
             restoredStore.restoreRefs(snapshot.unwrap().refs());
-            var restoredStorage = StorageInstance.storageInstance("reclamation-restored",
-                                                                  List.of(memoryTier),
-                                                                  restoredStore);
+
+            var restoredStorage = StorageInstance.storageInstance("reclamation-restored", List.of(memoryTier), restoredStore);
             var restored = NamedContent.namedContent(restoredStorage,
                                                      ContentStoreConfig.contentStoreConfig(CHUNK_SIZE, Compression.NONE));
 

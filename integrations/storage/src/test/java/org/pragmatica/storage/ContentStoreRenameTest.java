@@ -14,6 +14,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
@@ -22,7 +23,6 @@ import static org.pragmatica.storage.ContentFixture.failureOf;
 import static org.pragmatica.storage.ContentFixture.payload;
 import static org.pragmatica.storage.ContentFixture.read;
 import static org.pragmatica.storage.ContentFixture.uploaded;
-import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// Local-mode rename is never unnamed and may briefly carry both names: the new name is bound first, the old one retired
@@ -35,7 +35,6 @@ class ContentStoreRenameTest {
 
     private final ContentFixture fixture = ContentFixture.contentFixture();
     private final ContentStore plain = fixture.store("alpha");
-
     private final java.util.concurrent.atomic.AtomicReference<ObjectId> idOf = new java.util.concurrent.atomic.AtomicReference<>();
 
     /// A store over the fixture's instance whose retire of a name binding first waits for `beforeRetire`; a failed hook
@@ -45,38 +44,22 @@ class ContentStoreRenameTest {
     }
 
     /// As [#storeWithRetireHook], and a swap of a name binding (the bind step) first waits for `beforeBind`.
-    private ContentStore storeWithHooks(Function<String, Promise<Unit>> beforeRetire,
-                                        Function<String, Promise<Unit>> beforeBind) {
+    private ContentStore storeWithHooks(Function<String, Promise<Unit>> beforeRetire, Function<String, Promise<Unit>> beforeBind) {
         var hooked = (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
                                                               new Class<?>[]{StorageInstance.class},
-                                                              (_, method, args) -> invoke(beforeRetire,
-                                                                                          beforeBind,
-                                                                                          method,
-                                                                                          args));
+                                                              (_, method, args) -> invoke(beforeRetire, beforeBind, method, args));
 
-        return ContentStore.contentStore(hooked,
-                                         ContentStoreConfig.contentStoreConfig(ContentFixture.CHUNK,
-                                                                               Compression.NONE,
-                                                                               "alpha",
-                                                                               2,
-                                                                               2))
-                           .unwrap();
+        return ContentStore.contentStore(hooked, ContentStoreConfig.contentStoreConfig(ContentFixture.CHUNK, Compression.NONE, "alpha", 2, 2)).unwrap();
     }
 
-    private Object invoke(Function<String, Promise<Unit>> beforeRetire,
-                          Function<String, Promise<Unit>> beforeBind,
-                          java.lang.reflect.Method method,
-                          Object[] args) throws Throwable {
+    private Object invoke(Function<String, Promise<Unit>> beforeRetire, Function<String, Promise<Unit>> beforeBind, java.lang.reflect.Method method, Object[] args) throws Throwable {
         try {
             if (method.getName().equals("dropRef") && args[0] instanceof String ref && ref.startsWith("n/")) {
-                return beforeRetire.apply(ref)
-                                   .flatMap(_ -> fixture.storage.dropRef(ref));
+                return beforeRetire.apply(ref).flatMap(_ -> fixture.storage.dropRef(ref));
             }
 
             if (method.getName().equals("swapRef") && args[0] instanceof String ref && ref.startsWith("n/")) {
-                return beforeBind.apply(ref)
-                                 .flatMap(_ -> fixture.storage.swapRef(ref,
-                                                                       (byte[]) args[1]));
+                return beforeBind.apply(ref).flatMap(_ -> fixture.storage.swapRef(ref, (byte[]) args[1]));
             }
 
             return method.invoke(fixture.storage, args);
@@ -88,20 +71,13 @@ class ContentStoreRenameTest {
     private ObjectInfo namedAs(ContentStore store, ObjectName name, byte[] data) {
         var info = uploaded(store, data);
 
-        store.bind(name,
-                   info.ref().id(),
-                   Precondition.nameFree()).await().unwrap();
+        store.bind(name, info.ref().id(), Precondition.nameFree()).await().unwrap();
 
         return info;
     }
 
     private Option<ObjectId> found(ContentStore store, ObjectName name) {
-        return store.lookup(name,
-                            none())
-                    .await()
-                    .unwrap()
-                    .map(info -> info.ref()
-                                     .id());
+        return store.lookup(name, none()).await().unwrap().map(info -> info.ref().id());
     }
 
     /// A concurrent reader never sees not-found for an object under rename: the old name until it is retired, the new name
@@ -111,14 +87,12 @@ class ContentStoreRenameTest {
         var seen = new ArrayList<String>();
         var store = storeWithRetireHook(_ -> {
             seen.add("old=" + found(plain, OLD).isPresent() + ",new=" + found(plain, NEW).isPresent());
-
             return Promise.success(unit());
         });
         var info = namedAs(store, OLD, payload(8, 41));
 
-        store.bind(NEW,
-                   info.ref().id(),
-                   Precondition.nameFree()).await().unwrap();
+        store.bind(NEW, info.ref().id(), Precondition.nameFree()).await().unwrap();
+
         assertThat(seen).as("one retire, and both names resolved when it ran").containsExactly("old=true,new=true");
         assertThat(found(store, OLD)).as("the old name is retired once rename returned").isEqualTo(none());
         assertThat(found(store, NEW)).isEqualTo(Option.some(info.ref().id()));
@@ -136,23 +110,21 @@ class ContentStoreRenameTest {
         var gc = storageGarbageCollector(fixture.storage, fixture.metadata, garbageCollectorConfig(0, 500));
 
         assertThat(failureOf(crashed.bind(NEW, id, Precondition.nameFree()))).isNotNull();
+
         assertThat(found(plain, OLD)).as("the old name still resolves").isEqualTo(Option.some(id));
         assertThat(found(plain, NEW)).as("the new name resolves to the same object").isEqualTo(Option.some(id));
-        assertThat(read(plain,
-                        plain.lookup(NEW, none()).await().unwrap().unwrap().ref(),
-                        ByteRange.whole())).isEqualTo(data);
+        assertThat(read(plain, plain.lookup(NEW, none()).await().unwrap().unwrap().ref(), ByteRange.whole())).isEqualTo(data);
         var held = new ArrayList<BlockId>(fixture.chunksOf(info));
 
         held.add(info.ref().manifest());
         held.add(fixture.storage.resolveRef("o/alpha/" + id.asString()).unwrap());
         held.add(fixture.storage.resolveRef("n/alpha/old").unwrap());
         held.add(fixture.storage.resolveRef("n/alpha/new").unwrap());
-        assertThat(held).as("chunks, manifest, entry and both bindings (equal bytes: one block, a credit per binding)")
-                  .allSatisfy(block -> assertThat(fixture.refCountOf(block)).isGreaterThanOrEqualTo(1));
+        assertThat(held).as("chunks, manifest, entry and both bindings (equal bytes: one block, a credit per binding)").allSatisfy(block -> assertThat(fixture.refCountOf(block)).isGreaterThanOrEqualTo(1));
+
         gc.activate();
         gc.collectGarbage();
-        assertThat(held).as("a collector pass reclaimed none of them")
-                  .allSatisfy(block -> assertThat(fixture.storage.exists(block).await().unwrap()).isTrue());
+        assertThat(held).as("a collector pass reclaimed none of them").allSatisfy(block -> assertThat(fixture.storage.exists(block).await().unwrap()).isTrue());
         assertThat(found(plain, OLD)).isEqualTo(Option.some(id));
         assertThat(found(plain, NEW)).isEqualTo(Option.some(id));
         assertThat(read(plain, info.ref(), ByteRange.whole())).isEqualTo(data);
@@ -166,22 +138,19 @@ class ContentStoreRenameTest {
         List<String> order = new ArrayList<>();
         var store = storeWithRetireHook(_ -> retireGate.map(u -> {
             order.add("retire");
-
             return u;
         }));
         var info = namedAs(store, OLD, payload(8, 43));
-        var rename = store.bind(NEW,
-                                info.ref().id(),
-                                Precondition.nameFree())
-                          .map(done -> {
-                              order.add("returned");
 
-                              return done;
-                          });
+        var rename = store.bind(NEW, info.ref().id(), Precondition.nameFree()).map(done -> {
+            order.add("returned");
+            return done;
+        });
 
         assertThat(rename.isResolved()).as("the retire is still pending").isFalse();
         retireGate.succeed(unit());
         rename.await().unwrap();
+
         assertThat(order).containsExactly("retire", "returned");
         assertThat(found(store, OLD)).isEqualTo(none());
     }
@@ -196,12 +165,13 @@ class ContentStoreRenameTest {
 
         assertThat(failureOf(crashed.bind(NEW, id, Precondition.nameFree()))).isNotNull();
         plain.delete(id).await().unwrap();
+
         assertThat(found(plain, OLD)).isEqualTo(none());
         assertThat(found(plain, NEW)).isEqualTo(none());
         assertThat(fixture.storage.resolveRef("n/alpha/old")).as("no binding left behind").isEqualTo(none());
         assertThat(fixture.storage.resolveRef("n/alpha/new")).as("no binding left behind").isEqualTo(none());
-        assertThat(fixture.metadata.listAllLifecycles().stream().filter(lifecycle -> lifecycle.refCount() > 0).toList()).as("credits balanced: nothing holds the deleted object")
-                  .isEmpty();
+        assertThat(fixture.metadata.listAllLifecycles().stream().filter(lifecycle -> lifecycle.refCount() > 0).toList())
+            .as("credits balanced: nothing holds the deleted object").isEmpty();
     }
 
     /// A delete racing a bind, after the entry was read and before the name binding is written, leaves a binding whose entry
@@ -209,22 +179,19 @@ class ContentStoreRenameTest {
     /// binding is cleaned up lazily, by that bind's swap. Mutations that redden it: a binding without an entry is an error; the precondition counts a binding without an entry.
     @Test
     void aDeleteRacingABind_leavesABindingThatReadsAsNotFound_andALaterBindSucceeds() {
-        var racing = storeWithHooks(_ -> Promise.success(unit()),
-                                    _ -> plain.delete(idOf.get())
-                                              .map(_ -> unit()));
+        var racing = storeWithHooks(_ -> Promise.success(unit()), _ -> plain.delete(idOf.get()).map(_ -> unit()));
         var doomed = namedAs(plain, OLD, payload(8, 45));
         var survivor = uploaded(plain, payload(9, 46));
 
         idOf.set(doomed.ref().id());
-        assertThat(failureOf(racing.bind(NEW,
-                                         doomed.ref().id(),
-                                         Precondition.nameFree()))).isInstanceOf(ContentStoreError.ObjectNotFound.class);
-        assertThat(fixture.storage.resolveRef("n/alpha/new")).as("the dangling binding is left until the next bind")
-                  .isNotEqualTo(none());
+
+        assertThat(failureOf(racing.bind(NEW, doomed.ref().id(), Precondition.nameFree()))).isInstanceOf(ContentStoreError.ObjectNotFound.class);
+
+        assertThat(fixture.storage.resolveRef("n/alpha/new")).as("the dangling binding is left until the next bind").isNotEqualTo(none());
         assertThat(plain.lookup(NEW, none()).await().unwrap()).as("reads as not found").isEqualTo(none());
-        plain.bind(NEW,
-                   survivor.ref().id(),
-                   Precondition.nameFree()).await().unwrap();
+
+        plain.bind(NEW, survivor.ref().id(), Precondition.nameFree()).await().unwrap();
+
         assertThat(found(plain, NEW)).isEqualTo(Option.some(survivor.ref().id()));
     }
 }

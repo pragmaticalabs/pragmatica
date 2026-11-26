@@ -9,23 +9,21 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.storage.SnapshotConfig.snapshotConfig;
 import static org.pragmatica.storage.SnapshotManager.snapshotManager;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
-
 
 /// SB-02: a block's record asserts "durably held per the ack point", so the claim a put makes before its
 /// write is not a record of the block: no snapshot captures it, `exists` does not read it, and a put after a
@@ -47,9 +45,11 @@ class StorageInstanceUnacknowledgedClaimTest {
         var inFlight = nodeA.put(CONTENT);
 
         assertThat(parked.entered.await(5, TimeUnit.SECONDS)).isTrue();
+
         var snapshots = dir.resolve("snapshots");
 
         snapshotManager(storeA, snapshotConfig(snapshots, 100, 600_000, 5, NODE_ID)).snapshotNow().unwrap();
+
         var storeB = restoredStore(snapshots);
         var counting = new CountingWriter();
         var nodeB = instance(storeB, diskTier("b", counting));
@@ -58,6 +58,7 @@ class StorageInstanceUnacknowledgedClaimTest {
         assertThat(counting.calls.get()).as("the retried put wrote the block").isEqualTo(1);
         assertThat(nodeB.get(id).await().unwrap().isPresent()).isTrue();
         assertThat(storeB.getLifecycle(id).unwrap().refCount()).as("one reference, not a dedup credit").isEqualTo(1);
+
         parked.release.countDown();
         inFlight.await();
     }
@@ -72,17 +73,18 @@ class StorageInstanceUnacknowledgedClaimTest {
         var inFlight = nodeA.put(CONTENT);
 
         assertThat(parked.entered.await(5, TimeUnit.SECONDS)).isTrue();
-        assertThat(nodeA.exists(id).await().unwrap()).as("in the window")
-                  .isEqualTo(nodeA.get(id).await().unwrap().isPresent());
+        assertThat(nodeA.exists(id).await().unwrap()).as("in the window").isEqualTo(nodeA.get(id).await().unwrap().isPresent());
         assertThat(nodeA.exists(id).await().unwrap()).as("no tier holds it yet").isFalse();
+
         var snapshots = dir.resolve("snapshots");
 
         snapshotManager(storeA, snapshotConfig(snapshots, 100, 600_000, 5, NODE_ID)).snapshotNow().unwrap();
+
         var nodeB = instance(restoredStore(snapshots), diskTier("b", new CountingWriter()));
 
-        assertThat(nodeB.exists(id).await().unwrap()).as("after restore")
-                  .isEqualTo(nodeB.get(id).await().unwrap().isPresent());
+        assertThat(nodeB.exists(id).await().unwrap()).as("after restore").isEqualTo(nodeB.get(id).await().unwrap().isPresent());
         assertThat(nodeB.exists(id).await().unwrap()).isFalse();
+
         parked.release.countDown();
         inFlight.await();
     }
@@ -98,14 +100,16 @@ class StorageInstanceUnacknowledgedClaimTest {
 
         puts.add(node.put(CONTENT));
         assertThat(parked.entered.await(5, TimeUnit.SECONDS)).isTrue();
+
         for (var i = 0; i < 7; i++) {
             puts.add(node.put(CONTENT));
         }
 
         assertThat(store.listAllLifecycles()).as("the open write is not in a snapshot").isEmpty();
+
         parked.release.countDown();
-        var ids = puts.stream().map(p -> p.await()
-                                          .unwrap()).distinct().toList();
+
+        var ids = puts.stream().map(p -> p.await().unwrap()).distinct().toList();
 
         assertThat(ids).hasSize(1);
         assertThat(parked.calls.get()).as("one write for eight puts").isEqualTo(1);
@@ -125,6 +129,7 @@ class StorageInstanceUnacknowledgedClaimTest {
         assertThat(parked.entered.await(5, TimeUnit.SECONDS)).isTrue();
         parked.release.countDown();
         inFlight.await().onSuccess(_ -> fail("the write was injected to fail"));
+
         assertThat(store.getLifecycle(id).isPresent()).isFalse();
         assertThat(store.isUnacknowledged(id)).isFalse();
         assertThat(store.listAllLifecycles()).isEmpty();
@@ -140,6 +145,7 @@ class StorageInstanceUnacknowledgedClaimTest {
         var snapshots = dir.resolve("snapshots");
 
         snapshotManager(store, snapshotConfig(snapshots, 100, 600_000, 5, NODE_ID)).snapshotNow().unwrap();
+
         assertThat(store.isUnacknowledged(id)).isFalse();
         assertThat(restoredStore(snapshots).getLifecycle(id).isPresent()).isTrue();
     }
@@ -167,6 +173,7 @@ class StorageInstanceUnacknowledgedClaimTest {
         };
 
         holder[0] = InMemoryMetadataStore.inMemoryMetadataStore("capture-race", AccessTracker.accessTracker(), map);
+
         var id = BlockId.blockId(CONTENT).unwrap();
 
         assertThat(holder[0].claimUnacknowledged(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK))).isTrue();
@@ -195,6 +202,7 @@ class StorageInstanceUnacknowledgedClaimTest {
             public BlockLifecycle compute(BlockId key,
                                           java.util.function.BiFunction<? super BlockId, ? super BlockLifecycle, ? extends BlockLifecycle> fn) {
                 capture();
+
                 var result = super.compute(key, fn);
 
                 capture();
@@ -210,11 +218,13 @@ class StorageInstanceUnacknowledgedClaimTest {
         };
 
         holder[0] = InMemoryMetadataStore.inMemoryMetadataStore("duplicate-claim", AccessTracker.accessTracker(), map);
+
         var id = BlockId.blockId(CONTENT).unwrap();
 
         assertThat(holder[0].claimUnacknowledged(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK))).isTrue();
         holder[0].acknowledgeClaim(id);
         armed.set(true);
+
         assertThat(holder[0].claimUnacknowledged(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK))).isFalse();
         assertThat(listedAround).as("a capture was taken around the losing claim").isNotEmpty();
         assertThat(listedAround).as("and listed the acknowledged record every time").containsOnly(1);
@@ -222,17 +232,14 @@ class StorageInstanceUnacknowledgedClaimTest {
     }
 
     private static StorageInstance instance(MetadataStore store, LocalDiskTier disk) {
-        return StorageInstance.storageInstance("sb02",
-                                               List.of(MemoryTier.memoryTier(1 << 20), disk),
-                                               store);
+        return StorageInstance.storageInstance("sb02", List.of(MemoryTier.memoryTier(1 << 20), disk), store);
     }
 
     private static MetadataStore restoredStore(Path snapshots) {
         var restored = MetadataStore.inMemoryMetadataStore("restored");
-        var snapshot = snapshotManager(restored,
-                                       snapshotConfig(snapshots, 100, 600_000, 5, NODE_ID)).restoreFromLatest()
-                                      .unwrap()
-                                      .unwrap();
+        var snapshot = snapshotManager(restored, snapshotConfig(snapshots, 100, 600_000, 5, NODE_ID)).restoreFromLatest()
+                                                                                                    .unwrap()
+                                                                                                    .unwrap();
 
         restored.restoreLifecycles(snapshot.lifecycles());
         restored.restoreRefs(snapshot.refs());

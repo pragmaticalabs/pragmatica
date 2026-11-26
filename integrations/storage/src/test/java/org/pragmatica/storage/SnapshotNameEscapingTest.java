@@ -25,12 +25,11 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.storage.InMemoryMetadataStore.inMemoryMetadataStore;
 import static org.pragmatica.storage.MetadataSnapshot.metadataSnapshot;
 import static org.pragmatica.storage.SnapshotConfig.snapshotConfig;
 import static org.pragmatica.storage.SnapshotManager.snapshotManager;
-import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// #2257: a ref name is user data. Every name must come back from a snapshot exactly as it went in, a
 /// snapshot that cannot be read back must fail when it is WRITTEN, and a file written before the fix
@@ -135,6 +134,7 @@ class SnapshotNameEscapingTest {
             store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
             names.forEach(name -> store.putRef(name, id));
             manager.snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
+
             var restored = restoreFresh();
 
             assertThat(restored.refs().keySet()).containsExactlyInAnyOrderElementsOf(names);
@@ -175,12 +175,14 @@ class SnapshotNameEscapingTest {
             store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
             store.putRef(name, id);
             manager.snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
+
             var restored = new AtomicReference<MetadataSnapshot>();
             var thrown = new AtomicReference<Throwable>();
             var thread = new Thread(null, () -> restoreOnSmallStack(restored, thrown), "small-stack-restore", 256 * 1024);
 
             thread.start();
             thread.join();
+
             assertThat(thrown.get()).isNull();
             assertThat(restored.get().refs()).containsKey(name);
         }
@@ -197,16 +199,11 @@ class SnapshotNameEscapingTest {
         @Test
         void restore_keepsEveryLifecycleField_acrossMultipleTiers() {
             var id = blockIdOf("all-fields");
-            var lifecycle = BlockLifecycle.blockLifecycle(id,
-                                                          EnumSet.of(TierLevel.MEMORY, TierLevel.LOCAL_DISK),
-                                                          3,
-                                                          111L,
-                                                          222L,
-                                                          5,
-                                                          333L);
+            var lifecycle = BlockLifecycle.blockLifecycle(id, EnumSet.of(TierLevel.MEMORY, TierLevel.LOCAL_DISK), 3, 111L, 222L, 5, 333L);
 
             store.createLifecycle(lifecycle);
             manager.snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
+
             assertThat(restoreFresh().lifecycles()).containsExactly(lifecycle);
         }
 
@@ -218,6 +215,7 @@ class SnapshotNameEscapingTest {
             store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
             IntStream.range(0, 300).forEach(i -> store.putRef("ref-" + i, id));
             manager.snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
+
             var restored = restoreFresh();
 
             assertThat(restored.refs()).hasSize(300);
@@ -230,23 +228,25 @@ class SnapshotNameEscapingTest {
             store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
             store.putRef(name, id);
             manager.snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
+
             var restored = restoreFresh();
             var freshStore = inMemoryMetadataStore("restored");
 
             freshStore.restoreLifecycles(restored.lifecycles());
             freshStore.restoreRefs(restored.refs());
+
             assertThat(restored.refs()).containsKey(name);
             assertThat(freshStore.resolveRef(name).isPresent()).isTrue();
             assertThat(restored.isValid()).isTrue();
+
             store.removeRef(name);
         }
 
         private MetadataSnapshot restoreFresh() {
-            return snapshotManager(inMemoryMetadataStore("fresh"),
-                                   config).restoreFromLatest()
-                                  .onFailure(SnapshotNameEscapingTest::failed)
-                                  .unwrap()
-                                  .unwrap();
+            return snapshotManager(inMemoryMetadataStore("fresh"), config).restoreFromLatest()
+                                                                          .onFailure(SnapshotNameEscapingTest::failed)
+                                                                          .unwrap()
+                                                                          .unwrap();
         }
     }
 
@@ -269,14 +269,15 @@ class SnapshotNameEscapingTest {
             }
 
             addBlockAndRef(store, "report=final|v2");
+
             for (var step = 1; step <= 7; step++) {
                 addBlockAndRef(store, "after-" + step);
                 manager.forceSnapshot();
-                var restored = snapshotManager(inMemoryMetadataStore("boot-" + step),
-                                               config).restoreFromLatest()
-                                              .onFailure(SnapshotNameEscapingTest::failed)
-                                              .unwrap()
-                                              .unwrap();
+
+                var restored = snapshotManager(inMemoryMetadataStore("boot-" + step), config).restoreFromLatest()
+                                                                                         .onFailure(SnapshotNameEscapingTest::failed)
+                                                                                         .unwrap()
+                                                                                         .unwrap();
 
                 assertThat(restored.epoch()).as("step %d", step).isEqualTo(store.currentEpoch());
                 assertThat(restored.refs()).as("step %d", step).containsKey("report=final|v2");
@@ -320,24 +321,21 @@ class SnapshotNameEscapingTest {
         @Test
         void contentHash_matchesTheDocumentedDefinition() throws Exception {
             var lifecycles = IntStream.range(0, 600)
-                                      .mapToObj(i -> BlockLifecycle.blockLifecycle(blockIdOf("doc-" + i),
-                                                                                   TierLevel.MEMORY))
+                                      .mapToObj(i -> BlockLifecycle.blockLifecycle(blockIdOf("doc-" + i), TierLevel.MEMORY))
                                       .toList();
             var refs = new LinkedHashMap<String, BlockId>();
 
-            lifecycles.forEach(lc -> refs.put("ref=" + lc.blockId().hexString().substring(0, 6),
-                                              lc.blockId()));
+            lifecycles.forEach(lc -> refs.put("ref=" + lc.blockId().hexString().substring(0, 6), lc.blockId()));
+
             var snapshot = metadataSnapshot(5L, NODE_ID, lifecycles, refs);
             var expected = new StringBuilder("epoch=5\n");
 
-            snapshot.lifecycles().forEach(lc -> expected.append(MetadataSnapshot.lifecycleLine(lc))
-                                                        .append('\n'));
+            snapshot.lifecycles().forEach(lc -> expected.append(MetadataSnapshot.lifecycleLine(lc)).append('\n'));
             expected.append("#\n");
-            snapshot.refs().forEach((name, id) -> expected.append(MetadataSnapshot.refLine(name, id))
-                                                          .append('\n'));
+            snapshot.refs().forEach((name, id) -> expected.append(MetadataSnapshot.refLine(name, id)).append('\n'));
+
             assertThat(expected.length()).isGreaterThan(3 * 16 * 1024);
-            assertThat(snapshot.contentHash()).isEqualTo(MessageDigest.getInstance("SHA-256").digest(expected.toString()
-                                                                                                             .getBytes(StandardCharsets.US_ASCII)));
+            assertThat(snapshot.contentHash()).isEqualTo(MessageDigest.getInstance("SHA-256").digest(expected.toString().getBytes(StandardCharsets.US_ASCII)));
         }
 
         /// The hash covers the lines in file order: the order the writer hashed is the order a restore reads.
@@ -357,6 +355,7 @@ class SnapshotNameEscapingTest {
             lines[at] = lines[at + 1];
             lines[at + 1] = swapped;
             Files.writeString(file, String.join("\n", lines));
+
             assertRestoreRefused();
         }
 
@@ -367,11 +366,7 @@ class SnapshotNameEscapingTest {
         void restore_rejectsSnapshot_whenDigitsMoveAcrossLifecycleLines() throws IOException {
             var pair = Stream.iterate(0, i -> i + 1)
                              .map(i -> orphanedLifecycle(blockIdOf("digits-" + i)))
-                             .filter(lc -> lc.blockId()
-                                             .hexString()
-                                             .substring(0, 2)
-                                             .chars()
-                                             .allMatch(Character::isDigit))
+                             .filter(lc -> lc.blockId().hexString().substring(0, 2).chars().allMatch(Character::isDigit))
                              .limit(2)
                              .toList();
             var earlier = MetadataSnapshot.lifecycleLine(pair.get(0));
@@ -381,17 +376,14 @@ class SnapshotNameEscapingTest {
             snapshotManager(store, config).snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
             var file = onlySnapshotFile();
             var content = Files.readString(file);
-            var first = content.indexOf(earlier) < content.indexOf(later)
-                        ? earlier
-                        : later;
-            var second = first.equals(earlier)
-                         ? later
-                         : earlier;
+            var first = content.indexOf(earlier) < content.indexOf(later) ? earlier : later;
+            var second = first.equals(earlier) ? later : earlier;
 
             assertThat(content).contains("\n" + first + "\n" + second + "\n");
             Files.writeString(file,
                               content.replace("\n" + first + "\n" + second + "\n",
                                               "\n" + first + second.substring(0, 2) + "\n" + second.substring(2) + "\n"));
+
             assertRestoreRefused();
         }
 
@@ -406,6 +398,7 @@ class SnapshotNameEscapingTest {
 
             writeSnapshotWith(original);
             replaceInOnlySnapshot("ref-name|" + original.hexString(), "ref-name|" + forged.hexString());
+
             assertRestoreRefused();
         }
 
@@ -415,6 +408,7 @@ class SnapshotNameEscapingTest {
 
             writeSnapshotWith(id);
             replaceInOnlySnapshot(id.hexString() + "|MEMORY|1|", id.hexString() + "|MEMORY|9|");
+
             assertRestoreRefused();
         }
 
@@ -424,6 +418,7 @@ class SnapshotNameEscapingTest {
             var epoch = store.currentEpoch();
 
             replaceInOnlySnapshot("epoch=" + epoch + "\n", "epoch=" + (epoch + 100) + "\n");
+
             assertRestoreRefused();
         }
 
@@ -435,6 +430,7 @@ class SnapshotNameEscapingTest {
             var refLine = lines[lines.length - 1];
 
             Files.writeString(file, Files.readString(file) + refLine + "\n");
+
             assertRestoreRefused();
         }
 
@@ -444,6 +440,7 @@ class SnapshotNameEscapingTest {
             var file = onlySnapshotFile();
 
             Files.writeString(file, Files.readString(file) + "orphan-token-without-target\n");
+
             assertRestoreRefused();
         }
 
@@ -452,15 +449,17 @@ class SnapshotNameEscapingTest {
             writeSnapshotWith(blockIdOf("original-target"));
             var file = onlySnapshotFile();
 
-            Files.writeString(file,
-                              Files.readString(file) + "bad%zzname|" + blockIdOf("y").hexString() + "\n");
+            Files.writeString(file, Files.readString(file) + "bad%zzname|" + blockIdOf("y").hexString() + "\n");
+
             assertRestoreRefused();
         }
 
         @Test
         void restore_rejectsSnapshot_whenFormatVersionIsUnknown() throws IOException {
             writeSnapshotWith(blockIdOf("original-target"));
+
             replaceInOnlySnapshot("format=2\n", "format=3\n");
+
             assertRestoreRefused();
         }
 
@@ -472,11 +471,7 @@ class SnapshotNameEscapingTest {
 
         private Path onlySnapshotFile() throws IOException {
             try (var files = Files.list(tempDir)) {
-                return files.filter(p -> p.getFileName()
-                                          .toString()
-                                          .startsWith("snapshot-"))
-                            .findFirst()
-                            .orElseThrow();
+                return files.filter(p -> p.getFileName().toString().startsWith("snapshot-")).findFirst().orElseThrow();
             }
         }
 
@@ -489,9 +484,7 @@ class SnapshotNameEscapingTest {
         }
 
         private void assertRestoreRefused() {
-            snapshotManager(inMemoryMetadataStore("boot"),
-                            config).restoreFromLatest()
-                           .onSuccess(SnapshotNameEscapingTest::unexpected);
+            snapshotManager(inMemoryMetadataStore("boot"), config).restoreFromLatest().onSuccess(SnapshotNameEscapingTest::unexpected);
         }
     }
 
@@ -509,6 +502,7 @@ class SnapshotNameEscapingTest {
             var idB = blockIdOf("legacy-b");
 
             writeLegacyFile(7L, idA, idB);
+
             var manager = snapshotManager(inMemoryMetadataStore("legacy"), config);
             var restored = manager.restoreFromLatest().onFailure(SnapshotNameEscapingTest::failed).unwrap().unwrap();
 
@@ -516,31 +510,25 @@ class SnapshotNameEscapingTest {
             assertThat(restored.nodeId()).isEqualTo("legacy-node");
             assertThat(restored.timestamp()).isEqualTo(1700000000000L);
             assertThat(restored.lifecycles()).extracting(BlockLifecycle::blockId).containsExactlyInAnyOrder(idA, idB);
-            assertThat(restored.lifecycles()).allSatisfy(lc -> assertThat(lc.presentIn()).containsExactlyInAnyOrder(TierLevel.MEMORY,
-                                                                                                                    TierLevel.LOCAL_DISK));
-            assertThat(restored.refs()).containsOnlyKeys("alpha",
-                                                         "beta",
-                                                         "gamma",
-                                                         "delta",
-                                                         "cursors/org.example:app/ns:orders:1/0");
+            assertThat(restored.lifecycles()).allSatisfy(lc -> assertThat(lc.presentIn()).containsExactlyInAnyOrder(TierLevel.MEMORY, TierLevel.LOCAL_DISK));
+            assertThat(restored.refs()).containsOnlyKeys("alpha", "beta", "gamma", "delta", "cursors/org.example:app/ns:orders:1/0");
             assertThat(restored.refs().get("alpha")).isEqualTo(idA);
             assertThat(restored.isValid()).isTrue();
-            var store = inMemoryMetadataStore("rewrite");
 
+            var store = inMemoryMetadataStore("rewrite");
             store.restoreLifecycles(restored.lifecycles());
             store.restoreRefs(restored.refs());
             store.restoreEpoch(restored.epoch());
             store.putRef("added=after|upgrade", idB);
             snapshotManager(store, config).snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
+
             var latest = tempDir.resolve(Files.readString(tempDir.resolve("LATEST")).trim());
-
             assertThat(Files.readString(latest)).startsWith("format=2\n");
-            var again = snapshotManager(inMemoryMetadataStore("again"),
-                                        config).restoreFromLatest()
-                                       .onFailure(SnapshotNameEscapingTest::failed)
-                                       .unwrap()
-                                       .unwrap();
 
+            var again = snapshotManager(inMemoryMetadataStore("again"), config).restoreFromLatest()
+                                                                              .onFailure(SnapshotNameEscapingTest::failed)
+                                                                              .unwrap()
+                                                                              .unwrap();
             assertThat(again.refs()).containsKeys("alpha", "added=after|upgrade");
         }
 
@@ -554,56 +542,40 @@ class SnapshotNameEscapingTest {
 
             writeLegacyFile(7L, idA, idB);
             writeLegacyFileWithBadName(9L, idA);
-            var restored = snapshotManager(inMemoryMetadataStore("legacy"),
-                                           config).restoreFromLatest()
-                                          .onFailure(SnapshotNameEscapingTest::failed)
-                                          .unwrap()
-                                          .unwrap();
+
+            var restored = snapshotManager(inMemoryMetadataStore("legacy"), config).restoreFromLatest()
+                                                                                  .onFailure(SnapshotNameEscapingTest::failed)
+                                                                                  .unwrap()
+                                                                                  .unwrap();
 
             assertThat(restored.epoch()).isEqualTo(7L);
         }
 
         private void writeLegacyFile(long epoch, BlockId idA, BlockId idB) throws Exception {
-            var refs = Map.of("alpha",
-                              idA,
-                              "beta",
-                              idB,
-                              "gamma",
-                              idA,
-                              "delta",
-                              idB,
-                              "cursors/org.example:app/ns:orders:1/0",
-                              idB);
+            var refs = Map.of("alpha", idA,
+                              "beta", idB,
+                              "gamma", idA,
+                              "delta", idB,
+                              "cursors/org.example:app/ns:orders:1/0", idB);
             var lifecycleIds = Stream.of(idA, idB).sorted(Comparator.comparing(BlockId::hexString).reversed()).toList();
-            var body = "epoch=" + epoch
-                     + "\ntimestamp=1700000000000\nnodeId=legacy-node\ncontentHash=" + HEX.formatHex(legacyHash(lifecycleIds,
-                                                                                                                refs.keySet()
-                                                                                                                    .stream()
-                                                                                                                    .sorted()
-                                                                                                                    .toList()))
-                     + "\n\n# Lifecycles\n" + lifecycleIds.stream()
-                                                          .map(id -> id.hexString()
-                                                                    + "|MEMORY,LOCAL_DISK|2|1700000000003|1700000000004|0|0\n")
-                                                          .collect(Collectors.joining())
-                     + "\n# Refs\n" + refs.entrySet()
-                                          .stream()
-                                          .map(e -> e.getKey() + "|" + e.getValue()
-                                                                        .hexString() + "\n")
-                                          .collect(Collectors.joining());
+            var body = "epoch=" + epoch + "\ntimestamp=1700000000000\nnodeId=legacy-node\ncontentHash="
+                       + HEX.formatHex(legacyHash(lifecycleIds, refs.keySet().stream().sorted().toList()))
+                       + "\n\n# Lifecycles\n"
+                       + lifecycleIds.stream().map(id -> id.hexString() + "|MEMORY,LOCAL_DISK|2|1700000000003|1700000000004|0|0\n").collect(Collectors.joining())
+                       + "\n# Refs\n"
+                       + refs.entrySet().stream().map(e -> e.getKey() + "|" + e.getValue().hexString() + "\n").collect(Collectors.joining());
 
             publish(epoch, body);
         }
 
         private void writeLegacyFileWithBadName(long epoch, BlockId idA) throws Exception {
             var hashedNames = List.of("a=b");
-            var body = "epoch=" + epoch
-                     + "\ntimestamp=1700000000000\nnodeId=legacy-node\ncontentHash=" + HEX.formatHex(legacyHash(List.of(idA),
-                                                                                                                hashedNames))
-                     + "\n\n# Lifecycles\n" + idA.hexString()
-                     + "|MEMORY|1|1700000000001|1700000000002|3|0\n"
-                     + "\n# Refs\n"
-                     + "a=b|" + idA.hexString()
-                     + "\n";
+            var body = "epoch=" + epoch + "\ntimestamp=1700000000000\nnodeId=legacy-node\ncontentHash="
+                       + HEX.formatHex(legacyHash(List.of(idA), hashedNames))
+                       + "\n\n# Lifecycles\n"
+                       + idA.hexString() + "|MEMORY|1|1700000000001|1700000000002|3|0\n"
+                       + "\n# Refs\n"
+                       + "a=b|" + idA.hexString() + "\n";
 
             publish(epoch, body);
         }
@@ -618,10 +590,7 @@ class SnapshotNameEscapingTest {
         private byte[] legacyHash(List<BlockId> ids, List<String> names) throws Exception {
             var digest = MessageDigest.getInstance("SHA-256");
 
-            ids.stream()
-               .map(BlockId::hexString)
-               .sorted()
-               .forEach(hex -> digest.update(hex.getBytes(StandardCharsets.UTF_8)));
+            ids.stream().map(BlockId::hexString).sorted().forEach(hex -> digest.update(hex.getBytes(StandardCharsets.UTF_8)));
             names.stream().sorted().forEach(name -> digest.update(name.getBytes(StandardCharsets.UTF_8)));
 
             return digest.digest();

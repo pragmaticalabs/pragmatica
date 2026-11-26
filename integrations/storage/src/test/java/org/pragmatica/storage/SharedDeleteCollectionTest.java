@@ -6,6 +6,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -13,12 +16,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.StorageGarbageCollector.SharedDeleteLimits;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
 import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// #2258 (streams spec 3.2 items 5-6): a block whose last released reference carried shared-delete authority is deleted
 /// from EVERY tier, the cluster-shared tier first, by its own collector run, and only once that authority is in a durable
@@ -42,11 +40,8 @@ class SharedDeleteCollectionTest {
         disk = LocalDiskTier.localDiskTier(dir.resolve("blocks"), 1L << 30).unwrap();
         shared = new FlakySharedTier();
         storage = StorageInstance.storageInstance("streams", List.of(disk, shared), store);
-        snapshots = SnapshotManager.snapshotManager(store,
-                                                    SnapshotConfig.snapshotConfig(dir.resolve("snapshots"), "streams"));
-        collector = StorageGarbageCollector.storageGarbageCollector(storage,
-                                                                    store,
-                                                                    GarbageCollectorConfig.garbageCollectorConfig());
+        snapshots = SnapshotManager.snapshotManager(store, SnapshotConfig.snapshotConfig(dir.resolve("snapshots"), "streams"));
+        collector = StorageGarbageCollector.storageGarbageCollector(storage, store, GarbageCollectorConfig.garbageCollectorConfig());
         collector.activate();
     }
 
@@ -57,9 +52,11 @@ class SharedDeleteCollectionTest {
         var id = storage.putRef("streams/orders/0/0-9", bytes("segment")).await().unwrap();
 
         storage.deleteRef("streams/orders/0/0-9", SharedDelete.AUTHORISED).await();
+
         assertThat(store.getLifecycle(id).unwrap().sharedDelete()).isEqualTo(SharedDelete.AUTHORISED);
         assertThat(tickPastGrace()).as("the tick leaves an authorised orphan to the shared run").isZero();
         assertThat(store.getLifecycle(id).isPresent()).isTrue();
+
         var run = collector.collectSharedDeletes(snapshots, NO_GRACE);
 
         assertThat(run.deleted()).isEqualTo(1);
@@ -76,6 +73,7 @@ class SharedDeleteCollectionTest {
         var stale = snapshots.snapshotNow().unwrap();
 
         storage.deleteRef("a", SharedDelete.AUTHORISED).await();
+
         var run = collector.collectSharedDeletes(fixed(stale), NO_GRACE);
 
         assertThat(run.deleted()).isZero();
@@ -89,6 +87,7 @@ class SharedDeleteCollectionTest {
         var id = storage.putRef("a", bytes("within the grace")).await().unwrap();
 
         storage.deleteRef("a", SharedDelete.AUTHORISED).await();
+
         assertThat(collector.collectSharedDeletes(snapshots, SharedDeleteLimits.DEFAULT).deleted()).isZero();
         assertThat(shared.holds(id)).isTrue();
     }
@@ -101,8 +100,11 @@ class SharedDeleteCollectionTest {
 
         storage.deleteRef("a", SharedDelete.AUTHORISED).await();
         storage.putRef("b", bytes("re-credited")).await().unwrap();
+
         assertThat(store.getLifecycle(id).unwrap().sharedDelete()).isEqualTo(SharedDelete.NONE);
+
         storage.deleteRef("b").await();
+
         assertThat(collector.collectSharedDeletes(snapshots, NO_GRACE).deleted()).isZero();
         assertThat(tickPastGrace()).isEqualTo(1);
         assertThat(shared.holds(id)).as("released without authority: the shared copy stays").isTrue();
@@ -115,10 +117,12 @@ class SharedDeleteCollectionTest {
 
         storage.putRef("b", bytes("two names")).await();
         storage.deleteRef("a", SharedDelete.AUTHORISED).await();
+
         assertThat(store.getLifecycle(id).unwrap().refCount()).isEqualTo(1);
-        assertThat(store.getLifecycle(id).unwrap().sharedDelete()).as("between the releases")
-                  .isEqualTo(SharedDelete.NONE);
+        assertThat(store.getLifecycle(id).unwrap().sharedDelete()).as("between the releases").isEqualTo(SharedDelete.NONE);
+
         storage.deleteRef("b").await();
+
         assertThat(store.getLifecycle(id).unwrap().sharedDelete()).isEqualTo(SharedDelete.NONE);
     }
 
@@ -127,12 +131,14 @@ class SharedDeleteCollectionTest {
     @Test
     void anIfIdentifiedRelease_followsThePredicate() {
         storage.sharedDeleteIdentification(block -> new String(block, StandardCharsets.UTF_8).startsWith("ID:"));
+
         var identified = storage.putRef("a", bytes("ID: a new segment")).await().unwrap();
         var legacy = storage.putRef("b", bytes("a legacy segment")).await().unwrap();
 
         storage.deleteRef("a", SharedDelete.IF_IDENTIFIED).await();
         storage.deleteRef("b", SharedDelete.IF_IDENTIFIED).await();
         collector.collectSharedDeletes(snapshots, NO_GRACE);
+
         assertThat(shared.holds(identified)).as("identified: deleted everywhere").isFalse();
         assertThat(shared.holds(legacy)).as("not identified: the shared copy stays").isTrue();
         assertThat(disk.exists(legacy).await().unwrap()).as("not identified: the private copy is collected").isFalse();
@@ -145,6 +151,7 @@ class SharedDeleteCollectionTest {
 
         storage.deleteRef("a", SharedDelete.IF_IDENTIFIED).await();
         collector.collectSharedDeletes(snapshots, NO_GRACE);
+
         assertThat(shared.holds(id)).isTrue();
     }
 
@@ -156,12 +163,15 @@ class SharedDeleteCollectionTest {
 
         storage.deleteRef("a", SharedDelete.AUTHORISED).await();
         shared.failDeletes.set(true);
+
         var down = collector.collectSharedDeletes(snapshots, NO_GRACE);
 
         assertThat(down.failed()).isEqualTo(1);
         assertThat(disk.exists(id).await().unwrap()).as("shared first: the private copy is untouched").isTrue();
         assertThat(store.getLifecycle(id).isPresent()).as("the record is back for the next run").isTrue();
+
         shared.failDeletes.set(false);
+
         assertThat(collector.collectSharedDeletes(snapshots, NO_GRACE).deleted()).isEqualTo(1);
         assertThat(shared.holds(id)).isFalse();
         assertThat(disk.exists(id).await().unwrap()).isFalse();
@@ -177,13 +187,15 @@ class SharedDeleteCollectionTest {
         }
 
         shared.deleteDelayMs.set(100);
+
         var run = collector.collectSharedDeletes(snapshots, new SharedDeleteLimits(0L, 1, 10_000, 250L));
 
         assertThat(run.deleted()).as("some, not all").isBetween(1, 5);
         assertThat(run.deferred()).isEqualTo(10 - run.deleted() - run.failed());
+
         shared.deleteDelayMs.set(0);
-        assertThat(collector.collectSharedDeletes(snapshots, NO_GRACE).deleted()).as("the next run completes")
-                  .isEqualTo(10 - run.deleted());
+
+        assertThat(collector.collectSharedDeletes(snapshots, NO_GRACE).deleted()).as("the next run completes").isEqualTo(10 - run.deleted());
     }
 
     /// NT-136 / MT-63: the pressure path deletes an orphan with durable authority from every tier, and leaves one whose
@@ -194,9 +206,11 @@ class SharedDeleteCollectionTest {
         var late = storage.putRef("b", bytes("authority after the snapshot")).await().unwrap();
 
         storage.deleteRef("a", SharedDelete.AUTHORISED).await();
+
         var snapshot = snapshots.snapshotNow().unwrap();
 
         storage.deleteRef("b", SharedDelete.AUTHORISED).await();
+
         assertThat(collector.collectOrphansDurableIn(snapshot)).isEqualTo(1);
         assertThat(shared.holds(durable)).isFalse();
         assertThat(shared.holds(late)).isTrue();
@@ -209,19 +223,18 @@ class SharedDeleteCollectionTest {
         var id = storage.putRef("a", bytes("round trip")).await().unwrap();
 
         storage.deleteRef("a", SharedDelete.IF_IDENTIFIED).await();
+
         var written = snapshots.snapshotNow().unwrap();
         var restored = SnapshotManager.snapshotManager(MetadataStore.inMemoryMetadataStore("streams"),
-                                                       SnapshotConfig.snapshotConfig(dir.resolve("snapshots"),
-                                                                                     "streams"))
+                                                       SnapshotConfig.snapshotConfig(dir.resolve("snapshots"), "streams"))
                                       .restoreFromLatest()
                                       .unwrap()
                                       .unwrap();
 
-        assertThat(restored.lifecycles()).filteredOn(lc -> lc.blockId()
-                                                             .equals(id))
-                  .singleElement()
-                  .extracting(BlockLifecycle::sharedDelete)
-                  .isEqualTo(SharedDelete.IF_IDENTIFIED);
+        assertThat(restored.lifecycles()).filteredOn(lc -> lc.blockId().equals(id))
+                                         .singleElement()
+                                         .extracting(BlockLifecycle::sharedDelete)
+                                         .isEqualTo(SharedDelete.IF_IDENTIFIED);
         assertThat(written.lifecycles()).hasSize(restored.lifecycles().size());
     }
 
@@ -235,6 +248,7 @@ class SharedDeleteCollectionTest {
 
         restoredStore.restoreLifecycles(List.of(flagged));
         restoredStore.restoreRefs(java.util.Map.of("a", id));
+
         assertThat(restoredStore.getLifecycle(id).unwrap().sharedDelete()).isEqualTo(SharedDelete.NONE);
     }
 
@@ -265,9 +279,8 @@ class SharedDeleteCollectionTest {
     /// clamps the grace to at least 1 ms, so the tick waits past it.
     private int tickPastGrace() {
         java.util.concurrent.locks.LockSupport.parkNanos(5_000_000L);
-        var noGrace = StorageGarbageCollector.storageGarbageCollector(storage,
-                                                                      store,
-                                                                      new GarbageCollectorConfig(0L, 500));
+
+        var noGrace = StorageGarbageCollector.storageGarbageCollector(storage, store, new GarbageCollectorConfig(0L, 500));
 
         noGrace.activate();
 
@@ -313,13 +326,10 @@ class SharedDeleteCollectionTest {
         private final MemoryTier backing = MemoryTier.memoryTier(1L << 30, TierLevel.REMOTE);
         final AtomicBoolean failDeletes = new AtomicBoolean();
         final AtomicInteger deletes = new AtomicInteger();
-
         final java.util.concurrent.atomic.AtomicLong deleteDelayMs = new java.util.concurrent.atomic.AtomicLong();
 
         boolean holds(BlockId id) {
-            return backing.exists(id)
-                          .await()
-                          .unwrap();
+            return backing.exists(id).await().unwrap();
         }
 
         @Override

@@ -13,8 +13,8 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-
 class WriteBehindTest {
+
     private static final byte[] CONTENT_A = "write-behind-alpha".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CONTENT_B = "write-behind-bravo".getBytes(StandardCharsets.UTF_8);
     private static final long TIER_MAX = 1024 * 1024;
@@ -30,6 +30,7 @@ class WriteBehindTest {
 
     @Nested
     class WriteThroughTests {
+
         private StorageInstance instance;
 
         @BeforeEach
@@ -44,18 +45,18 @@ class WriteBehindTest {
 
         @Test
         void writeThrough_writesToAllTiers() {
-            instance.put(CONTENT_A)
-                    .await()
+            instance.put(CONTENT_A).await()
                     .onFailure(c -> fail("put failed: " + c.message()))
                     .onSuccess(_ -> {
-                                   assertThat(fastTier.usedBytes()).isGreaterThan(0);
-                                   assertThat(slowTier.usedBytes()).isGreaterThan(0);
-                               });
+                        assertThat(fastTier.usedBytes()).isGreaterThan(0);
+                        assertThat(slowTier.usedBytes()).isGreaterThan(0);
+                    });
         }
     }
 
     @Nested
     class WriteBehindTests {
+
         private StorageInstance instance;
 
         @BeforeEach
@@ -70,60 +71,66 @@ class WriteBehindTest {
 
         @Test
         void writeBehind_writesToFastTierOnly_thenFlushes() {
-            instance.put(CONTENT_A)
-                    .await()
+            instance.put(CONTENT_A).await()
                     .onFailure(c -> fail("put failed: " + c.message()))
                     .onSuccess(_ -> {
-                                   assertThat(fastTier.usedBytes()).isGreaterThan(0);
-                                   awaitAtLeast(slowTier::usedBytes, 1);
-                                   assertThat(slowTier.usedBytes()).isGreaterThan(0);
-                               });
+                        assertThat(fastTier.usedBytes()).isGreaterThan(0);
+                        awaitAtLeast(slowTier::usedBytes, 1);
+                        assertThat(slowTier.usedBytes()).isGreaterThan(0);
+                    });
         }
 
         @Test
         void writeBehind_dataReadableFromFastTier_immediately() {
-            instance.put(CONTENT_A)
-                    .await()
+            instance.put(CONTENT_A).await()
                     .onFailure(c -> fail("put failed: " + c.message()))
-                    .onSuccess(id -> instance.get(id)
-                                             .await()
-                                             .onFailure(c -> fail("get failed: " + c.message()))
-                                             .onSuccess(opt -> {
-                                                            assertThat(opt.isPresent()).isTrue();
-                                                            opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
-                                                        }));
+                    .onSuccess(id ->
+                        instance.get(id).await()
+                                .onFailure(c -> fail("get failed: " + c.message()))
+                                .onSuccess(opt -> {
+                                    assertThat(opt.isPresent()).isTrue();
+                                    opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
+                                })
+                    );
         }
 
         @Test
         void writeBehind_multipleBlocks_allFlushed() {
-            instance.put(CONTENT_A).await().onFailure(c -> fail("put A failed: " + c.message()));
-            instance.put(CONTENT_B).await().onFailure(c -> fail("put B failed: " + c.message()));
+            instance.put(CONTENT_A).await()
+                    .onFailure(c -> fail("put A failed: " + c.message()));
+            instance.put(CONTENT_B).await()
+                    .onFailure(c -> fail("put B failed: " + c.message()));
+
             awaitAtLeast(slowTier::usedBytes, CONTENT_A.length + CONTENT_B.length);
+
             assertThat(slowTier.usedBytes()).isGreaterThanOrEqualTo(CONTENT_A.length + CONTENT_B.length);
         }
     }
 
     @Nested
     class ShutdownTests {
+
         @Test
         void writeBehind_queueDrainOnShutdown() {
-            var instance = StorageInstance.storageInstance("shutdown-test",
-                                                           List.of(fastTier, slowTier),
-                                                           WritePolicy.WRITE_BEHIND);
+            var instance = StorageInstance.storageInstance("shutdown-test", List.of(fastTier, slowTier), WritePolicy.WRITE_BEHIND);
 
-            instance.put(CONTENT_A).await().onFailure(c -> fail("put failed: " + c.message()));
+            instance.put(CONTENT_A).await()
+                    .onFailure(c -> fail("put failed: " + c.message()));
+
             instance.shutdown();
+
             assertThat(slowTier.usedBytes()).isGreaterThan(0);
         }
 
         @Test
         void writeThrough_shutdownIsNoop() {
-            var instance = StorageInstance.storageInstance("noop-shutdown",
-                                                           List.of(fastTier, slowTier),
-                                                           WritePolicy.WRITE_THROUGH);
+            var instance = StorageInstance.storageInstance("noop-shutdown", List.of(fastTier, slowTier), WritePolicy.WRITE_THROUGH);
 
-            instance.put(CONTENT_A).await().onFailure(c -> fail("put failed: " + c.message()));
+            instance.put(CONTENT_A).await()
+                    .onFailure(c -> fail("put failed: " + c.message()));
+
             instance.shutdown();
+
             assertThat(fastTier.usedBytes()).isGreaterThan(0);
             assertThat(slowTier.usedBytes()).isGreaterThan(0);
         }
@@ -139,7 +146,6 @@ class WriteBehindTest {
                 TimeUnit.MILLISECONDS.sleep(10);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-
                 return;
             }
         }

@@ -3,20 +3,20 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.util.function.Consumer;
 
-import org.pragmatica.lang.Result;
-
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-
 class CompressionCodecTest {
+
     private static final byte[] SAMPLE_DATA = "The quick brown fox jumps over the lazy dog".getBytes(StandardCharsets.UTF_8);
 
     @Nested
     class Lz4Tests {
+
         private final CompressionCodec codec = Compression.LZ4.codec();
 
         @Test
@@ -33,8 +33,9 @@ class CompressionCodecTest {
         void compress_largeData_reducesSize() {
             var repetitive = buildRepetitiveData(10_000);
 
-            assertSuccess(codec.compress(repetitive),
-                          compressed -> assertThat(compressed.length).isLessThan(repetitive.length));
+            assertSuccess(codec.compress(repetitive), compressed ->
+                assertThat(compressed.length).isLessThan(repetitive.length)
+            );
         }
 
         @Test
@@ -47,6 +48,7 @@ class CompressionCodecTest {
 
     @Nested
     class ZstdTests {
+
         private final CompressionCodec codec = Compression.ZSTD.codec();
 
         @Test
@@ -63,8 +65,9 @@ class CompressionCodecTest {
         void compress_largeData_reducesSize() {
             var repetitive = buildRepetitiveData(10_000);
 
-            assertSuccess(codec.compress(repetitive),
-                          compressed -> assertThat(compressed.length).isLessThan(repetitive.length));
+            assertSuccess(codec.compress(repetitive), compressed ->
+                assertThat(compressed.length).isLessThan(repetitive.length)
+            );
         }
 
         @Test
@@ -77,6 +80,7 @@ class CompressionCodecTest {
 
     @Nested
     class NoneTests {
+
         private final CompressionCodec codec = Compression.NONE.codec();
 
         @Test
@@ -91,20 +95,24 @@ class CompressionCodecTest {
 
         @Test
         void compress_returnsIdenticalData() {
-            assertSuccess(codec.compress(SAMPLE_DATA), compressed -> assertThat(compressed).isEqualTo(SAMPLE_DATA));
+            assertSuccess(codec.compress(SAMPLE_DATA), compressed ->
+                assertThat(compressed).isEqualTo(SAMPLE_DATA)
+            );
         }
     }
 
     @Nested
     class DecompressionErrorTests {
+
         @Test
         void decompress_wrongSize_lz4_returnsFailure() {
             var codec = Compression.LZ4.codec();
 
-            assertSuccess(codec.compress(SAMPLE_DATA),
-                          compressed -> codec.decompress(compressed, SAMPLE_DATA.length / 2)
-                                             .onSuccess(_ -> fail("Expected failure for wrong original size"))
-                                             .onFailure(cause -> assertThat(cause.message()).contains("Decompression failed")));
+            assertSuccess(codec.compress(SAMPLE_DATA), compressed ->
+                codec.decompress(compressed, SAMPLE_DATA.length / 2)
+                     .onSuccess(_ -> fail("Expected failure for wrong original size"))
+                     .onFailure(cause -> assertThat(cause.message()).contains("Decompression failed"))
+            );
         }
 
         @Test
@@ -120,6 +128,7 @@ class CompressionCodecTest {
 
     @Nested
     class CodecAccessTests {
+
         @Test
         void codec_returnsSameInstance_forSameAlgorithm() {
             assertThat(Compression.LZ4.codec()).isSameAs(Compression.LZ4.codec());
@@ -129,13 +138,16 @@ class CompressionCodecTest {
     }
 
     private static void assertRoundTrip(CompressionCodec codec, byte[] original) {
-        assertSuccess(codec.compress(original),
-                      compressed -> assertSuccess(codec.decompress(compressed, original.length),
-                                                  decompressed -> assertThat(decompressed).isEqualTo(original)));
+        assertSuccess(codec.compress(original), compressed ->
+            assertSuccess(codec.decompress(compressed, original.length), decompressed ->
+                assertThat(decompressed).isEqualTo(original)
+            )
+        );
     }
 
     private static <T> void assertSuccess(Result<T> result, Consumer<T> assertions) {
-        result.onFailure(cause -> fail("Expected success but got: " + cause.message())).onSuccess(assertions::accept);
+        result.onFailure(cause -> fail("Expected success but got: " + cause.message()))
+              .onSuccess(assertions::accept);
     }
 
     private static byte[] buildRepetitiveData(int size) {
@@ -155,7 +167,7 @@ class CompressionCodecTest {
 
         for (int i = 0; i < size; i++) {
             seed = seed * 6364136223846793005L + 1442695040888963407L;
-            data[i] = (byte)(seed >>> 56);
+            data[i] = (byte) (seed >>> 56);
         }
 
         return data;

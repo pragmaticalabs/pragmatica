@@ -6,14 +6,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.UnaryOperator;
 
+import org.junit.jupiter.api.Test;
+
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
-import org.junit.jupiter.api.Test;
-
 import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// #737 -- pins the ordering [DefaultStorageInstance#replaceRef] depends on: the new target's reference
 /// count must be credited BEFORE the superseded target's is released. Reversed, a concurrent GC scan
@@ -21,27 +20,35 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the only thing the new write's caller can reach. This is a mechanism test, not a race test -- it pins
 /// the call order a single-threaded execution produces, which is exactly what a race would need disturbed.
 class DefaultStorageInstanceReplaceRefOrderingTest {
+
     private static final long ONE_GB = 1024 * 1024 * 1024L;
 
     @Test
     void replaceRef_incrementsNewBlock_beforeDecrementingSuperseded() {
         var recording = new RecordingMetadataStore(MetadataStore.inMemoryMetadataStore("order-test"));
         var storage = StorageInstance.storageInstance("order-test",
-                                                      List.of(MemoryTier.memoryTier(ONE_GB)),
-                                                      recording);
+                                                       List.of(MemoryTier.memoryTier(ONE_GB)),
+                                                       recording);
+
         var contentA = "content-a".getBytes(StandardCharsets.UTF_8);
         var contentB = "content-b".getBytes(StandardCharsets.UTF_8);
+
         var idA = await(storage.put(contentA));
         var idB = await(storage.put(contentB));
+
         // Gives the ref something to supersede. No decrement here -- the ref did not exist before.
         await(storage.replaceRef("cursor-ref", contentA));
         recording.events.clear();
+
         // A and B both already exist, so B's credit is a dedup computeLifecycle call -- symmetric with
         // the decrement below -- and this replaceRef supersedes A.
         await(storage.replaceRef("cursor-ref", contentB));
-        assertThat(recording.events).as("one dedup credit for B and one release of the superseded A -- nothing else on this"
-                                       + " path touches a refcount")
-                  .hasSize(2);
+
+        assertThat(recording.events)
+                .as("one dedup credit for B and one release of the superseded A -- nothing else on this"
+                    + " path touches a refcount")
+                .hasSize(2);
+
         var first = recording.events.get(0);
         var second = recording.events.get(1);
 
@@ -54,11 +61,9 @@ class DefaultStorageInstanceReplaceRefOrderingTest {
     private static BlockId await(Promise<BlockId> promise) {
         return promise.await()
                       .fold(cause -> {
-                                org.junit.jupiter.api.Assertions.fail("Expected success: " + cause.message());
-
-                                return null;
-                            },
-                            id -> id);
+                          org.junit.jupiter.api.Assertions.fail("Expected success: " + cause.message());
+                          return null;
+                      }, id -> id);
     }
 
     /// Delegates every [MetadataStore] operation to a real in-memory store, recording each

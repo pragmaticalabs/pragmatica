@@ -15,7 +15,6 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-
 /// Know 3b01e624f1: an [AppendLog.Opener] can list the logs it can open, read-only, so a caller can find logs no committed state names.
 class AppendLogOpenerListTest {
     @TempDir
@@ -29,13 +28,13 @@ class AppendLogOpenerListTest {
             Files.createFile(root.resolve(life + "/1.wal"));
             Files.createFile(root.resolve(life + "/0.wal"));
         }
-
         Files.createFile(root.resolve("a@1/1.wal.pending-cut"));
         Files.createFile(root.resolve("a@1/notes.txt"));
+
         var names = AppendLog.Opener.directory(root).listLogs();
 
         assertThat(names.unwrap()).as("log files only, by name without the suffix, sorted")
-                  .containsExactly("a@1/0", "a@1/1", "b@2/0", "b@2/1", "c@3/0", "c@3/1");
+                                  .containsExactly("a@1/0", "a@1/1", "b@2/0", "b@2/1", "c@3/0", "c@3/1");
     }
 
     @Test

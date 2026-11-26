@@ -20,8 +20,9 @@ final class CatalogFixture {
         var manifest = new byte[Sha256.LENGTH];
 
         manifest[0] = (byte) seed;
-        manifest[1] = (byte)(seed >> 8);
-        manifest[2] = (byte)(seed >> 16);
+        manifest[1] = (byte) (seed >> 8);
+        manifest[2] = (byte) (seed >> 16);
+
         var meta = ObjectMeta.objectMeta(none(),
                                          "application/octet-stream",
                                          size,
@@ -45,7 +46,8 @@ final class CatalogFixture {
         PageTree.PageSource source() {
             return id -> Option.option(blocks.get(id))
                                .async(ContentStoreError.General.CONTENT_NOT_FOUND)
-                               .flatMap(bytes -> CatalogPage.fromBytes(bytes).async());
+                               .flatMap(bytes -> CatalogPage.fromBytes(bytes)
+                                                            .async());
         }
 
         void store(Map<BlockId, byte[]> written) {

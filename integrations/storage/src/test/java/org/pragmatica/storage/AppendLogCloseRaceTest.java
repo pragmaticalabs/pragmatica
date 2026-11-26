@@ -1,5 +1,11 @@
 package org.pragmatica.storage;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,16 +16,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.io.TempDir;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-
 
 /// #2859: a mutator that passed its `closed` check and then waited on a lock while [AppendLog#close] completed must be
 /// refused, not run against the closed log (a write, cut or compaction would fail-stop it and write `<log>.failstopped`; an epoch-history change would rewrite `<log>.epochs`; a marker
@@ -31,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 @Timeout(60)
 class AppendLogCloseRaceTest {
     private static final String WAL_CLOSED_MESSAGE = AppendLog.WalError.General.WAL_CLOSED.message();
+
     private static final AppendLog.EpochOrder ORDER = (later, earlier) -> true;
 
     @TempDir
@@ -39,6 +38,7 @@ class AppendLogCloseRaceTest {
     @Test
     void truncateSuffix_passingTheEntryCheckThenLosingToClose_isRefusedClosed_withoutFailStop() throws Exception {
         var wal = logWithRecords("suffix.wal", 3, 16);
+
         var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.truncateSuffix(0L));
 
         assertRefusedClosedAndNothingMutated(wal, race);
@@ -67,6 +67,7 @@ class AppendLogCloseRaceTest {
     @Test
     void recordAckedMarker_passingTheEntryCheckThenLosingToClose_isRefusedClosed_andWritesNoMarker() throws Exception {
         var wal = logWithRecords("raise.wal", 3, 16);
+
         var race = closeWhileBlockedOn(wal, "markerLock", () -> wal.recordAckedMarker(2L));
 
         assertRefusedClosedAndNothingMutated(wal, race);
@@ -75,10 +76,8 @@ class AppendLogCloseRaceTest {
     @Test
     void write_passingTheEntryCheckThenLosingToClose_isRefusedClosed_withoutFailStop() throws Exception {
         var wal = logWithRecords("write.wal", 3, 16);
-        var race = closeWhileBlockedOn(wal,
-                                       "writeLock",
-                                       () -> wal.write(3L, new byte[16], 1L)
-                                                .mapToUnit());
+
+        var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.write(3L, new byte[16], 1L).mapToUnit());
 
         assertRefusedClosedAndNothingMutated(wal, race);
     }
@@ -87,10 +86,8 @@ class AppendLogCloseRaceTest {
     void writeAttributed_passingTheEntryCheckThenLosingToClose_isRefusedClosed_withoutFailStopOrEpochFile() throws Exception {
         var wal = logWithRecords("write-attr.wal", 3, 16);
         var key = AppendLog.EpochKey.epochKey("e1").unwrap();
-        var race = closeWhileBlockedOn(wal,
-                                       "writeLock",
-                                       () -> wal.write(3L, new byte[16], 1L, key, ORDER)
-                                                .mapToUnit());
+
+        var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.write(3L, new byte[16], 1L, key, ORDER).mapToUnit());
 
         assertRefusedClosedAndNothingMutated(wal, race);
     }
@@ -99,6 +96,7 @@ class AppendLogCloseRaceTest {
     void recordEpochStart_losingToClose_isRefusedClosed_andRewritesNoSidecar() throws Exception {
         var wal = logWithRecords("epoch-record.wal", 3, 16);
         var key = AppendLog.EpochKey.epochKey("e1").unwrap();
+
         var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.recordEpochStart(key, 3L, ORDER));
 
         assertRefusedClosedAndNothingMutated(wal, race);
@@ -107,6 +105,7 @@ class AppendLogCloseRaceTest {
     @Test
     void truncateEpochsAbove_losingToClose_isRefusedClosed_andRewritesNoSidecar() throws Exception {
         var wal = logWithEpochStartAbove("epoch-above.wal");
+
         var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.truncateEpochsAbove(0L));
 
         assertRefusedClosedAndNothingMutated(wal, race);
@@ -115,6 +114,7 @@ class AppendLogCloseRaceTest {
     @Test
     void truncateEpochsAboveHead_losingToClose_isRefusedClosed_andRewritesNoSidecar() throws Exception {
         var wal = logWithEpochStartAbove("epoch-above-head.wal");
+
         var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.truncateEpochsAboveHead(0L));
 
         assertRefusedClosedAndNothingMutated(wal, race);
@@ -124,6 +124,7 @@ class AppendLogCloseRaceTest {
     void dropEpochStartsAboveHead_losingToClose_isRefusedClosed_andRewritesNoSidecar() throws Exception {
         var wal = logWithEpochStartAbove("epoch-drop.wal");
         var entries = wal.epochHistory();
+
         var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.dropEpochStartsAboveHead(0L, entries));
 
         assertRefusedClosedAndNothingMutated(wal, race);
@@ -144,6 +145,7 @@ class AppendLogCloseRaceTest {
         }
 
         closer.join();
+
         assertThat(whileHeld).as("close() waits for the marker change in flight").isEqualTo(Thread.State.BLOCKED);
         assertThat(writableWhileHeld).as("the log is not closed while the marker change is in flight").isTrue();
         assertThat(wal.writable().isFailure()).isTrue();
@@ -152,7 +154,7 @@ class AppendLogCloseRaceTest {
     private record Race(Result<Unit> result, List<String> atClose) {}
 
     private void assertRefusedClosedAndNothingMutated(AppendLog wal, Race race) throws IOException {
-        var outcome = race.result().<String> fold(cause -> cause.message(), _ -> "accepted");
+        var outcome = race.result().<String>fold(cause -> cause.message(), _ -> "accepted");
 
         assertThat(outcome).isEqualTo(WAL_CLOSED_MESSAGE);
         assertThat(wal.failStopped()).as("a cleanly closed log is not fail-stopped").isFalse();
@@ -172,7 +174,6 @@ class AppendLogCloseRaceTest {
         }
 
         thread.join();
-
         return new Race(result.get(), atClose);
     }
 
@@ -180,10 +181,7 @@ class AppendLogCloseRaceTest {
     private AppendLog logWithEpochStartAbove(String name) {
         var wal = logWithRecords(name, 3, 16);
 
-        wal.recordEpochStart(AppendLog.EpochKey.epochKey("e1").unwrap(),
-                             10L,
-                             ORDER).unwrap();
-
+        wal.recordEpochStart(AppendLog.EpochKey.epochKey("e1").unwrap(), 10L, ORDER).unwrap();
         return wal;
     }
 
@@ -191,19 +189,14 @@ class AppendLogCloseRaceTest {
         var wal = AppendLog.open(dir.resolve(name)).unwrap();
         var payload = new byte[payloadBytes];
 
-        IntStream.range(0, count).forEach(i -> wal.append(i, payload, 1L)
-                                                  .await()
-                                                  .unwrap());
-
+        IntStream.range(0, count).forEach(i -> wal.append(i, payload, 1L).await().unwrap());
         return wal;
     }
 
     /// Name, length and content hash of every file in the directory.
     private List<String> snapshot() throws IOException {
         try (var files = Files.list(dir)) {
-            return files.map(AppendLogCloseRaceTest::describe)
-                        .sorted()
-                        .toList();
+            return files.map(AppendLogCloseRaceTest::describe).sorted().toList();
         }
     }
 
@@ -219,7 +212,6 @@ class AppendLogCloseRaceTest {
         var field = AppendLog.class.getDeclaredField(name);
 
         field.setAccessible(true);
-
         return field.get(wal);
     }
 
@@ -231,10 +223,8 @@ class AppendLogCloseRaceTest {
             if (System.nanoTime() > deadline) {
                 fail("thread neither blocked nor finished: " + thread.getState());
             }
-
             Thread.sleep(2);
         }
-
         return thread.getState();
     }
 }

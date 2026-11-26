@@ -13,10 +13,10 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-
 class ContentStoreTest {
-    private static final long MEMORY_MAX = 64 * 1024 * 1024;  // 64 MB
-    private static final int SMALL_CHUNK_SIZE = 64;  // Small chunks for testing
+
+    private static final long MEMORY_MAX = 64 * 1024 * 1024; // 64 MB
+    private static final int SMALL_CHUNK_SIZE = 64; // Small chunks for testing
     private static final byte[] SMALL_CONTENT = "hello content store".getBytes(StandardCharsets.UTF_8);
 
     private StorageInstance storage;
@@ -24,15 +24,14 @@ class ContentStoreTest {
 
     @BeforeEach
     void setUp() {
-        storage = StorageInstance.storageInstance("content-test",
-                                                  List.of(MemoryTier.memoryTier(MEMORY_MAX)));
+        storage = StorageInstance.storageInstance("content-test", List.of(MemoryTier.memoryTier(MEMORY_MAX)));
     }
 
     private static byte[] largeContent(int size) {
         var data = new byte[size];
 
         for (var i = 0; i < size; i++) {
-            data[i] = (byte)(i % 251);  // Prime modulus to avoid repetition patterns
+            data[i] = (byte) (i % 251); // Prime modulus to avoid repetition patterns
         }
 
         return data;
@@ -40,64 +39,69 @@ class ContentStoreTest {
 
     @Nested
     class SmallContentTests {
+
         @BeforeEach
         void setUp() {
-            store = NamedContent.namedContent(storage,
-                                              ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.NONE));
+            store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.NONE));
         }
 
         @Test
         void put_get_smallContent_roundTrips() {
-            store.put("doc.txt", SMALL_CONTENT).await().onFailure(c -> fail("put failed: " + c.message()));
-            store.get("doc.txt")
-                 .await()
+            store.put("doc.txt", SMALL_CONTENT).await()
+                 .onFailure(c -> fail("put failed: " + c.message()));
+
+            store.get("doc.txt").await()
                  .onFailure(c -> fail("get failed: " + c.message()))
                  .onSuccess(opt -> {
-                                assertThat(opt.isPresent()).isTrue();
-                                opt.onPresent(data -> assertThat(data).isEqualTo(SMALL_CONTENT));
-                            });
+                     assertThat(opt.isPresent()).isTrue();
+                     opt.onPresent(data -> assertThat(data).isEqualTo(SMALL_CONTENT));
+                 });
         }
 
         @Test
         void exists_afterPut_returnsTrue() {
-            store.put("exists-test", SMALL_CONTENT).await().onFailure(c -> fail("put failed: " + c.message()));
-            store.exists("exists-test")
-                 .await()
+            store.put("exists-test", SMALL_CONTENT).await()
+                 .onFailure(c -> fail("put failed: " + c.message()));
+
+            store.exists("exists-test").await()
                  .onFailure(c -> fail("exists failed: " + c.message()))
                  .onSuccess(found -> assertThat(found).isTrue());
         }
 
         @Test
         void exists_missing_returnsFalse() {
-            store.exists("nonexistent")
-                 .await()
+            store.exists("nonexistent").await()
                  .onFailure(c -> fail("exists failed: " + c.message()))
                  .onSuccess(found -> assertThat(found).isFalse());
         }
 
         @Test
         void get_missing_returnsFailure() {
-            store.get("nonexistent").await().onSuccess(_ -> fail("expected failure for missing content"));
+            store.get("nonexistent").await()
+                 .onSuccess(_ -> fail("expected failure for missing content"));
         }
 
         @Test
         void delete_removesContent() {
-            store.put("to-delete", SMALL_CONTENT).await().onFailure(c -> fail("put failed: " + c.message()));
-            store.delete("to-delete").await().onFailure(c -> fail("delete failed: " + c.message()));
-            store.exists("to-delete").await().onSuccess(found -> assertThat(found).isFalse());
+            store.put("to-delete", SMALL_CONTENT).await()
+                 .onFailure(c -> fail("put failed: " + c.message()));
+
+            store.delete("to-delete").await()
+                 .onFailure(c -> fail("delete failed: " + c.message()));
+
+            store.exists("to-delete").await()
+                 .onSuccess(found -> assertThat(found).isFalse());
         }
 
         @Test
         void delete_missingContent_succeeds() {
-            store.delete("never-existed")
-                 .await()
+            store.delete("never-existed").await()
                  .onFailure(c -> fail("delete of missing content should succeed: " + c.message()));
         }
 
         @Test
         void put_returnsHexId() {
-            store.put("hex-test", SMALL_CONTENT)
-                 .await()
+            store.put("hex-test", SMALL_CONTENT).await()
                  .onFailure(c -> fail("put failed: " + c.message()))
                  .onSuccess(id -> {
                      assertThat(id).isNotNull();
@@ -108,41 +112,42 @@ class ContentStoreTest {
 
     @Nested
     class ChunkedContentTests {
+
         @BeforeEach
         void setUp() {
-            store = NamedContent.namedContent(storage,
-                                              ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.NONE));
+            store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.NONE));
         }
 
         @Test
         void put_get_largeContent_chunkedRoundTrips() {
-            var large = largeContent(SMALL_CHUNK_SIZE * 3 + 17);  // 3 full chunks + partial
-            store.put("large.bin", large).await().onFailure(c -> fail("put failed: " + c.message()));
-            store.get("large.bin")
-                 .await()
+            var large = largeContent(SMALL_CHUNK_SIZE * 3 + 17); // 3 full chunks + partial
+
+            store.put("large.bin", large).await()
+                 .onFailure(c -> fail("put failed: " + c.message()));
+
+            store.get("large.bin").await()
                  .onFailure(c -> fail("get failed: " + c.message()))
                  .onSuccess(opt -> {
-                                assertThat(opt.isPresent()).isTrue();
-                                opt.onPresent(data -> assertThat(data).isEqualTo(large));
-                            });
+                     assertThat(opt.isPresent()).isTrue();
+                     opt.onPresent(data -> assertThat(data).isEqualTo(large));
+                 });
         }
 
         @Test
         void chunking_correctChunkCount() {
-            var size = SMALL_CHUNK_SIZE * 5;  // Exactly 5 chunks
+            var size = SMALL_CHUNK_SIZE * 5; // Exactly 5 chunks
             var large = largeContent(size);
+
             // Verify by reading the manifest block the put reports
             var manifestId = BlockId.fromHex(store.put("five-chunks", large).await().unwrap()).unwrap();
 
-            storage.get(manifestId)
-                   .await()
+            storage.get(manifestId).await()
                    .onFailure(c -> fail("get manifest failed: " + c.message()))
                    .onSuccess(opt -> opt.onPresent(data -> {
-                                                       var manifest = ContentManifest.fromBytes(data);
-
-                                                       assertThat(manifest.isPresent()).isTrue();
-                                                       manifest.onPresent(m -> assertThat(m.chunkCount()).isEqualTo(5));
-                                                   }));
+                       var manifest = ContentManifest.fromBytes(data);
+                       assertThat(manifest.isPresent()).isTrue();
+                       manifest.onPresent(m -> assertThat(m.chunkCount()).isEqualTo(5));
+                   }));
         }
 
         @Test
@@ -152,26 +157,32 @@ class ContentStoreTest {
             var content = new byte[size];
 
             for (var i = 0; i < size; i++) {
-                content[i] = (byte)(i / SMALL_CHUNK_SIZE + 1);  // Chunk 1 = all 1s, chunk 2 = all 2s, etc.
+                content[i] = (byte) (i / SMALL_CHUNK_SIZE + 1); // Chunk 1 = all 1s, chunk 2 = all 2s, etc.
             }
 
-            store.put("ordered.bin", content).await().onFailure(c -> fail("put failed: " + c.message()));
-            store.get("ordered.bin")
-                 .await()
+            store.put("ordered.bin", content).await()
+                 .onFailure(c -> fail("put failed: " + c.message()));
+
+            store.get("ordered.bin").await()
                  .onFailure(c -> fail("get failed: " + c.message()))
                  .onSuccess(opt -> {
-                                assertThat(opt.isPresent()).isTrue();
-                                opt.onPresent(data -> assertThat(data).isEqualTo(content));
-                            });
+                     assertThat(opt.isPresent()).isTrue();
+                     opt.onPresent(data -> assertThat(data).isEqualTo(content));
+                 });
         }
 
         @Test
         void delete_chunkedContent_removesAllChunks() {
             var large = largeContent(SMALL_CHUNK_SIZE * 2 + 10);
 
-            store.put("to-delete-chunked", large).await().onFailure(c -> fail("put failed: " + c.message()));
-            store.delete("to-delete-chunked").await().onFailure(c -> fail("delete failed: " + c.message()));
-            store.exists("to-delete-chunked").await().onSuccess(found -> assertThat(found).isFalse());
+            store.put("to-delete-chunked", large).await()
+                 .onFailure(c -> fail("put failed: " + c.message()));
+
+            store.delete("to-delete-chunked").await()
+                 .onFailure(c -> fail("delete failed: " + c.message()));
+
+            store.exists("to-delete-chunked").await()
+                 .onSuccess(found -> assertThat(found).isFalse());
         }
 
         @Test
@@ -179,65 +190,60 @@ class ContentStoreTest {
             // Content exactly at chunk size boundary — one chunk
             var content = largeContent(SMALL_CHUNK_SIZE);
 
-            store.put("exact-chunk", content).await().onFailure(c -> fail("put failed: " + c.message()));
-            store.get("exact-chunk")
-                 .await()
+            store.put("exact-chunk", content).await()
+                 .onFailure(c -> fail("put failed: " + c.message()));
+
+            store.get("exact-chunk").await()
                  .onFailure(c -> fail("get failed: " + c.message()))
                  .onSuccess(opt -> {
-                                assertThat(opt.isPresent()).isTrue();
-                                opt.onPresent(data -> assertThat(data).isEqualTo(content));
-                            });
+                     assertThat(opt.isPresent()).isTrue();
+                     opt.onPresent(data -> assertThat(data).isEqualTo(content));
+                 });
         }
     }
 
     @Nested
     class CompressionTests {
+
         @Test
         void put_get_withCompression_roundTrips() {
-            store = NamedContent.namedContent(storage,
-                                              ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.LZ4));
+            store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.LZ4));
             var content = "compressible content repeated repeated repeated".getBytes(StandardCharsets.UTF_8);
 
-            store.put("compressed.txt", content).await().onFailure(c -> fail("put failed: " + c.message()));
-            store.get("compressed.txt")
-                 .await()
+            store.put("compressed.txt", content).await()
+                 .onFailure(c -> fail("put failed: " + c.message()));
+
+            store.get("compressed.txt").await()
                  .onFailure(c -> fail("get failed: " + c.message()))
                  .onSuccess(opt -> {
-                                assertThat(opt.isPresent()).isTrue();
-                                opt.onPresent(data -> assertThat(data).isEqualTo(content));
-                            });
+                     assertThat(opt.isPresent()).isTrue();
+                     opt.onPresent(data -> assertThat(data).isEqualTo(content));
+                 });
         }
 
         @Test
         void put_get_chunkedWithCompression_roundTrips() {
-            store = NamedContent.namedContent(storage,
-                                              ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.LZ4));
+            store = NamedContent.namedContent(storage, ContentStoreConfig.contentStoreConfig(SMALL_CHUNK_SIZE, Compression.LZ4));
             var large = largeContent(SMALL_CHUNK_SIZE * 3 + 7);
 
-            store.put("compressed-chunked.bin", large).await().onFailure(c -> fail("put failed: " + c.message()));
-            store.get("compressed-chunked.bin")
-                 .await()
+            store.put("compressed-chunked.bin", large).await()
+                 .onFailure(c -> fail("put failed: " + c.message()));
+
+            store.get("compressed-chunked.bin").await()
                  .onFailure(c -> fail("get failed: " + c.message()))
                  .onSuccess(opt -> {
-                                assertThat(opt.isPresent()).isTrue();
-                                opt.onPresent(data -> assertThat(data).isEqualTo(large));
-                            });
+                     assertThat(opt.isPresent()).isTrue();
+                     opt.onPresent(data -> assertThat(data).isEqualTo(large));
+                 });
         }
     }
 
     @Nested
     class ManifestTests {
         private static final String SHA256 = HexFormat.of().formatHex(sequence(32));
-
         /// marker `00 AHSE 02`, kind `M`, version 2, chunk size 4096, size 12293, sha256 `00..1f`, count 2, ids `aabb` and `010203`.
-        private static final String GOLDEN_V2 = "004148534502"
-                                              + "4d"
-                                              + "02"
-                                              + "00001000"
-                                              + "0000000000003005" + HexFormat.of().formatHex(sequence(32))
-                                              + "00000002"
-                                              + "00000002aabb"
-                                              + "00000003010203";
+        private static final String GOLDEN_V2 = "004148534502" + "4d" + "02" + "00001000" + "0000000000003005"
+                                                + HexFormat.of().formatHex(sequence(32)) + "00000002" + "00000002aabb" + "00000003010203";
 
         private static byte[] sequence(int length) {
             var bytes = new byte[length];
@@ -278,6 +284,7 @@ class ContentStoreTest {
             var bytes = ContentManifest.contentManifest(4, 10, SHA256, List.of("ab")).toBytes();
 
             bytes[ContentEnvelope.marker().length + 1] = ContentManifest.FORMAT_VERSION + 1;
+
             assertThat(ContentManifest.fromBytes(bytes).isEmpty()).isTrue();
         }
 
@@ -300,6 +307,7 @@ class ContentStoreTest {
         @Test
         void manifest_carriesNoName_soNothingNeedsEscaping() {
             var bytes = ContentManifest.contentManifest(4, 10, SHA256, List.of("ab")).toBytes();
+
             // envelope marker (6) + kind (1) + version (1) + chunk size (4) + size (8) + sha256 (32) + count (4)
             // + id length (4) + id (1)
             assertThat(bytes).hasSize(6 + 1 + 1 + 4 + 8 + 32 + 4 + 4 + 1);
@@ -372,10 +380,10 @@ class ContentStoreTest {
             var payload = payloadWithIdLength(eightMiB + 1, eightMiB);
 
             ContentManifest.parseEnveloped(payloadWithIdLength(1, 1));  // warm-up: class loading must not count
+
             var allocated = allocatedBytesWhile(() -> assertThat(ContentManifest.parseEnveloped(payload).isEmpty()).isTrue());
 
-            assertThat(allocated).as("remaining + 1 refused before any allocation of that length")
-                      .isLessThan(1024 * 1024);
+            assertThat(allocated).as("remaining + 1 refused before any allocation of that length").isLessThan(1024 * 1024);
         }
 
         @Test
@@ -389,8 +397,7 @@ class ContentStoreTest {
         @Test
         void manifest_idLengthPastTheRemainingBytes_isRefused_byOneByte() {
             assertThat(ContentManifest.parseEnveloped(payloadWithIdLength(4, 3)).isEmpty()).isTrue();
-            assertThat(ContentManifest.parseEnveloped(payloadWithIdLength(1, 0)).isEmpty()).as("nothing left for the id")
-                      .isTrue();
+            assertThat(ContentManifest.parseEnveloped(payloadWithIdLength(1, 0)).isEmpty()).as("nothing left for the id").isTrue();
         }
 
         @Test

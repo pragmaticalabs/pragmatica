@@ -15,7 +15,6 @@ import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-
 /// `gather` must hand back every result, in order, however the completions of its inputs interleave.
 ///
 /// A real [Promise] runs the handlers registered on it in registration order, so the interleaving that broke the two-handler
@@ -32,8 +31,8 @@ class ContentStoreGatherTest {
         var inputs = inputs(3);
         var gathered = LocalContentStore.gather(inputs, this::record);
 
-        runLastRegisteredThenTheRest(inputs,
-                                     List.of(Result.success("v0"), Result.success("v1"), Result.success("v2")));
+        runLastRegisteredThenTheRest(inputs, List.of(Result.success("v0"), Result.success("v1"), Result.success("v2")));
+
         assertThat(gathered.isResolved()).isTrue();
         assertThat(gathered.await().unwrap()).containsExactly("v0", "v1", "v2");
     }
@@ -43,16 +42,14 @@ class ContentStoreGatherTest {
         var inputs = inputs(2);
         var gathered = LocalContentStore.gather(inputs, this::record);
 
-        runLastRegisteredThenTheRest(inputs,
-                                     List.of(Result.success("v0"), Result.<String> failure(Causes.cause("input failed"))));
+        runLastRegisteredThenTheRest(inputs, List.of(Result.success("v0"), Result.<String> failure(Causes.cause("input failed"))));
+
         assertThat(gathered.isResolved()).isTrue();
         assertThat(gathered.await().isFailure()).isTrue();
     }
 
     private static List<Promise<String>> inputs(int count) {
-        return java.util.stream.IntStream.range(0, count)
-                                         .mapToObj(_ -> Promise.<String> promise())
-                                         .toList();
+        return java.util.stream.IntStream.range(0, count).mapToObj(_ -> Promise.<String> promise()).toList();
     }
 
     private void record(Promise<String> input, Consumer<Result<String>> handler) {

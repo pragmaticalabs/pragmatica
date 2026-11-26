@@ -33,14 +33,14 @@ class ContentStoreLargeObjectTest {
 
         assertThat(outcome.exitCode()).as(diagnostics).isZero();
         assertThat(Long.parseLong(outcome.get("MAX_HEAP_MB"))).as("the child really ran with a small heap: " + diagnostics)
-                  .isLessThanOrEqualTo(LargeObjectRun.HEAP_MB);
+                                                              .isLessThanOrEqualTo(LargeObjectRun.HEAP_MB);
         assertThat(SIZE).as("the object must be larger than the heap, or this test proves nothing")
-                  .isGreaterThan(LargeObjectRun.HEAP_MB * 1024L * 1024L);
+                        .isGreaterThan(LargeObjectRun.HEAP_MB * 1024L * 1024L);
         assertThat(outcome.get("READ_SHA")).as(diagnostics).isEqualTo(outcome.get("WRITE_SHA"));
         assertThat(outcome.get("STORED_SHA")).as(diagnostics).isEqualTo(outcome.get("WRITE_SHA"));
         assertThat(outcome.get("BYTES_READ")).as(diagnostics).isEqualTo(Long.toString(SIZE));
         assertThat(outcome.get("RANGES_OK")).as(diagnostics).isEqualTo("true");
         assertThat(Long.parseLong(outcome.get("BLOCK_FILES"))).as("every distinct block is on disk: " + diagnostics)
-                  .isGreaterThanOrEqualTo(SIZE / BLOCK);
+                                                              .isGreaterThanOrEqualTo(SIZE / BLOCK);
     }
 }

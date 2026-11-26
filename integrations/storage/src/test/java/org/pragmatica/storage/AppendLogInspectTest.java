@@ -11,7 +11,6 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-
 /// The read-only look at a log that a stream partition takes before it is materialized (a held partition paced
 /// by `reshuffle_concurrency` answers a peer's probe with what its log durably holds): a log that was never
 /// created holds nothing rather than failing, an existing one reports its head, and neither is opened, created
@@ -37,8 +36,8 @@ class AppendLogInspectTest {
         for (var offset = 0L; offset < 3; offset++) {
             log.append(offset, ("event-" + offset).getBytes(), 1000L + offset).await().unwrap();
         }
-
         log.close();
+
         assertThat(opener.inspect("restarted/0").unwrap().headOffset()).isEqualTo(2L);
         assertThat(opener.inspect("restarted/0").unwrap().lowOffset()).isZero();
         assertThat(opener.inspect("never-written/0").unwrap()).isEqualTo(AppendLog.LogExtent.EMPTY);
@@ -63,9 +62,9 @@ class AppendLogInspectTest {
         for (var offset = 0L; offset < 8_192; offset++) {
             log.write(offset, payload, 1L).unwrap();
         }
-
         log.commit(0).await();
         log.close();
+
         var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
         var before = threads.getThreadAllocatedBytes(Thread.currentThread().threadId());
         var extent = AppendLog.inspect(file, 16 * 1024).unwrap();
@@ -75,9 +74,7 @@ class AppendLogInspectTest {
         assertThat(extent.headOffset()).isEqualTo(8_191L);
         assertThat(extent.lowOffset()).isZero();
         assertThat(extent.validBytes()).isEqualTo(extent.fileBytes());
-        assertThat(allocated).as("bytes allocated by inspect of a %d byte log",
-                                 extent.fileBytes())
-                  .isLessThan(1024L * 1024);
+        assertThat(allocated).as("bytes allocated by inspect of a %d byte log", extent.fileBytes()).isLessThan(1024L * 1024);
     }
 
     /// A torn tail (a partial trailing frame) is reported, not counted as valid.
@@ -89,10 +86,10 @@ class AppendLogInspectTest {
         for (var offset = 0L; offset < 3; offset++) {
             log.write(offset, ("e" + offset).getBytes(), 1L).unwrap();
         }
-
         log.commit(0).await();
         log.close();
-        Files.write(file, new byte[]{0, 0, 0, 9, 1, 2}, java.nio.file.StandardOpenOption.APPEND);
+        Files.write(file, new byte[] {0, 0, 0, 9, 1, 2}, java.nio.file.StandardOpenOption.APPEND);
+
         var extent = AppendLog.inspect(file).unwrap();
 
         assertThat(extent.headOffset()).isEqualTo(2L);

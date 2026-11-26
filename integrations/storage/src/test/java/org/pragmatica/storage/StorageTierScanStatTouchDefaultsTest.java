@@ -8,15 +8,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import org.junit.jupiter.api.Test;
-
 import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// A tier that does not provide [StorageTier#scan], [StorageTier#stat] or [StorageTier#touch] (the in-memory DHT tier
 /// today) refuses them, never answers "empty" or "absent"; an encrypting tier passes them to the tier it wraps.
@@ -65,21 +63,23 @@ class StorageTierScanStatTouchDefaultsTest {
     void theDefaults_refuseWithOperationUnsupported() {
         var tier = new BareTier();
 
-        assertThat(tier.stat(ID).await().<Cause> fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.OperationUnsupported.class);
-        assertThat(tier.scan(KeyShard.all(), Option.none(), 10).await().<Cause> fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.OperationUnsupported.class);
-        assertThat(tier.touch(ID).await().<Cause> fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.OperationUnsupported.class);
+        assertThat(tier.stat(ID).await().<Cause>fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.OperationUnsupported.class);
+        assertThat(tier.scan(KeyShard.all(), Option.none(), 10).await().<Cause>fold(cause -> cause, _ -> null))
+            .isInstanceOf(StorageError.OperationUnsupported.class);
+        assertThat(tier.touch(ID).await().<Cause>fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.OperationUnsupported.class);
     }
 
     /// A proxy answering only the interface's default methods: the instance double every other test builds lacks none.
     @Test
     void theInstanceDefault_refusesEnsureHeld() {
         var instance = (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
-                                                                new Class<?>[]{StorageInstance.class},
+                                                                new Class<?>[] {StorageInstance.class},
                                                                 (proxy, method, args) -> InvocationHandler.invokeDefault(proxy,
                                                                                                                          method,
                                                                                                                          args));
 
-        assertThat(instance.ensureHeld(ID, TierLevel.REMOTE).await().<Cause> fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.OperationUnsupported.class);
+        assertThat(instance.ensureHeld(ID, TierLevel.REMOTE).await().<Cause>fold(cause -> cause, _ -> null))
+            .isInstanceOf(StorageError.OperationUnsupported.class);
     }
 
     @Test
@@ -87,10 +87,8 @@ class StorageTierScanStatTouchDefaultsTest {
         var key = new byte[32];
 
         new SecureRandom().nextBytes(key);
-        var keyring = EncryptionKeyring.encryptionKeyring(Map.of("k",
-                                                                 BlockEncryptor.aesGcm(key, "k").unwrap()),
-                                                          "k")
-                                       .unwrap();
+
+        var keyring = EncryptionKeyring.encryptionKeyring(Map.of("k", BlockEncryptor.aesGcm(key, "k").unwrap()), "k").unwrap();
         var clock = new AtomicLong(1_000L);
         var inner = MemoryTier.memoryTier(1 << 20, TierLevel.LOCAL_DISK, clock::get);
         var tier = EncryptingStorageTier.wrap(inner, keyring);
@@ -99,13 +97,11 @@ class StorageTierScanStatTouchDefaultsTest {
 
         tier.put(id, content).await().unwrap();
         clock.set(2_000L);
+
         assertThat(tier.touch(id).await().unwrap()).isTrue();
         assertThat(tier.stat(id).await().unwrap()).isEqualTo(inner.stat(id).await().unwrap());
         assertThat(tier.stat(id).await().unwrap().unwrap().writtenAtMillis()).isEqualTo(2_000L);
         assertThat(tier.stat(id).await().unwrap().unwrap().size()).as("the stored frame").isGreaterThan(content.length);
-        assertThat(tier.scan(KeyShard.all(), Option.none(), 10).await().unwrap().items()).isEqualTo(List.of(inner.stat(id)
-                                                                                                                 .await()
-                                                                                                                 .unwrap()
-                                                                                                                 .unwrap()));
+        assertThat(tier.scan(KeyShard.all(), Option.none(), 10).await().unwrap().items()).isEqualTo(List.of(inner.stat(id).await().unwrap().unwrap()));
     }
 }

@@ -7,9 +7,8 @@ import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
 
-import static org.pragmatica.storage.DemotionConfig.demotionConfig;
 import static org.assertj.core.api.Assertions.assertThat;
-
+import static org.pragmatica.storage.DemotionConfig.demotionConfig;
 
 /// C-08, access tracking: read access lives in a separate in-memory counter that the block record never
 /// carries and no snapshot ever contains. What that buys, and what each test pins:
@@ -29,10 +28,7 @@ class StorageInstanceAccessTrackingTest {
     }
 
     private static String snapshotBody(MetadataStore store) {
-        return MetadataSnapshot.render(store.currentEpoch(),
-                                       store.listAllLifecycles(),
-                                       store.listAllRefs())
-                               .text();
+        return MetadataSnapshot.render(store.currentEpoch(), store.listAllLifecycles(), store.listAllRefs()).text();
     }
 
     /// The same writes give the same snapshot body however many reads there were: the record is not where
@@ -41,19 +37,18 @@ class StorageInstanceAccessTrackingTest {
     void snapshotBody_dependsOnlyOnWrites_notOnReads() {
         var store = MetadataStore.inMemoryMetadataStore("deterministic");
         var node = twoTier(store);
-        var ids = IntStream.range(0, 4).mapToObj(i -> node.put(bytes("block " + i))
-                                                          .await()
-                                                          .unwrap()).toList();
+        var ids = IntStream.range(0, 4).mapToObj(i -> node.put(bytes("block " + i)).await().unwrap()).toList();
         var afterWrites = snapshotBody(store);
         var epochAfterWrites = store.currentEpoch();
 
-        IntStream.range(0, 200).forEach(i -> node.get(ids.get(i % ids.size()))
-                                                 .await()
-                                                 .unwrap());
+        IntStream.range(0, 200).forEach(i -> node.get(ids.get(i % ids.size())).await().unwrap());
         node.exists(ids.getFirst()).await().unwrap();
+
         assertThat(snapshotBody(store)).as("200 reads left the snapshot body as it was").isEqualTo(afterWrites);
         assertThat(store.currentEpoch()).isEqualTo(epochAfterWrites);
+
         node.put(bytes("one more write")).await().unwrap();
+
         assertThat(snapshotBody(store)).as("control: a write does change it").isNotEqualTo(afterWrites);
     }
 
@@ -90,10 +85,7 @@ class StorageInstanceAccessTrackingTest {
         }
 
         boolean stillInMemory(BlockId id) {
-            return store.getLifecycle(id)
-                        .unwrap()
-                        .presentIn()
-                        .contains(TierLevel.MEMORY);
+            return store.getLifecycle(id).unwrap().presentIn().contains(TierLevel.MEMORY);
         }
     }
 
@@ -107,8 +99,7 @@ class StorageInstanceAccessTrackingTest {
         var id = fixture.add("restored block content", 500L);
         var manager = fixture.demotion(DemotionStrategy.LRU, 10);
 
-        assertThat(tracker.isHeldBack(fixture.store().getLifecycle(id).unwrap())).as("inside the window and unknown")
-                  .isTrue();
+        assertThat(tracker.isHeldBack(fixture.store().getLifecycle(id).unwrap())).as("inside the window and unknown").isTrue();
         assertThat(manager.demote()).as("full tier: demoted at once, window or not").isEqualTo(1);
         assertThat(fixture.stillInMemory(id)).isFalse();
     }
@@ -153,6 +144,7 @@ class StorageInstanceAccessTrackingTest {
         var unknown = fixture.add("restored unknown", 700L);
 
         tracker.record(known);
+
         assertThat(fixture.demotion(strategy, 1).demote()).isEqualTo(1);
         assertThat(fixture.stillInMemory(unknown)).as("the unknown block went").isFalse();
         assertThat(fixture.stillInMemory(known)).as("the one read since boot stays").isTrue();
@@ -174,6 +166,7 @@ class StorageInstanceAccessTrackingTest {
         tracker.record(readEarlier);
         clock.addAndGet(5);
         tracker.record(readLater);
+
         assertThat(fixture.demotion(DemotionStrategy.LRU, 3).demote()).isEqualTo(3);
         assertThat(fixture.stillInMemory(unknownOlder)).isFalse();
         assertThat(fixture.stillInMemory(unknownNewer)).isFalse();
@@ -193,6 +186,7 @@ class StorageInstanceAccessTrackingTest {
 
         trackerAfter.record(knownAfter);
         clockAfter.addAndGet(WARM_UP_MS);
+
         assertThat(after.demotion(DemotionStrategy.LRU, 1).demote()).isEqualTo(1);
         assertThat(after.stillInMemory(unknownAfter)).as("after the window the older record goes first").isFalse();
         assertThat(after.stillInMemory(knownAfter)).isTrue();
@@ -209,6 +203,7 @@ class StorageInstanceAccessTrackingTest {
         var younger = fixture.add("restored younger unknown", 700L);
 
         tracker.record(older);
+
         assertThat(fixture.demotion(DemotionStrategy.AGE, 1).demote()).isEqualTo(1);
         assertThat(fixture.stillInMemory(older)).isFalse();
         assertThat(fixture.stillInMemory(younger)).isTrue();
@@ -222,25 +217,28 @@ class StorageInstanceAccessTrackingTest {
         var nanos = new AtomicLong(7_000_000_000L);
         var tracker = AccessTracker.accessTracker(WARM_UP_MS, wall::get, nanos::get);
         var record = BlockLifecycle.blockLifecycle(BlockId.blockId(bytes("stepped")).unwrap(),
-                                                   java.util.EnumSet.of(TierLevel.MEMORY),
-                                                   1,
-                                                   500L,
-                                                   500L,
-                                                   0);
+                                                   java.util.EnumSet.of(TierLevel.MEMORY), 1, 500L, 500L, 0);
 
         step(wall, nanos, 1_000);
         wall.addAndGet(3_600_000);
+
         assertThat(tracker.isHeldBack(record)).as("+1 h wall step: still inside the window").isTrue();
+
         step(wall, nanos, WARM_UP_MS - 1_000 - 1);
+
         assertThat(tracker.isHeldBack(record)).as("one ms short of the window on the monotonic clock").isTrue();
+
         step(wall, nanos, 1);
+
         assertThat(tracker.isHeldBack(record)).as("the window ends on the monotonic clock").isFalse();
+
         var wall2 = new AtomicLong(1_000_000);
         var nanos2 = new AtomicLong(7_000_000_000L);
         var tracker2 = AccessTracker.accessTracker(WARM_UP_MS, wall2::get, nanos2::get);
 
         wall2.addAndGet(-3_600_000);
         step(wall2, nanos2, WARM_UP_MS);
+
         assertThat(tracker2.isHeldBack(record)).as("-1 h wall step: the window did not stretch").isFalse();
     }
 
@@ -260,8 +258,7 @@ class StorageInstanceAccessTrackingTest {
 
     private static void windowEndSwitchesTheOrder(DemotionStrategy strategy) {
         assertThat(demotedWhenWindowAgeIs(strategy, 0)).as("at boot").isEqualTo("unknown");
-        assertThat(demotedWhenWindowAgeIs(strategy, WARM_UP_MS - 1)).as("one ms short of the window")
-                  .isEqualTo("unknown");
+        assertThat(demotedWhenWindowAgeIs(strategy, WARM_UP_MS - 1)).as("one ms short of the window").isEqualTo("unknown");
         assertThat(demotedWhenWindowAgeIs(strategy, WARM_UP_MS)).as("the window has ended").isEqualTo("read");
         assertThat(demotedWhenWindowAgeIs(strategy, WARM_UP_MS + 60_000)).as("long after the window").isEqualTo("read");
     }
@@ -278,12 +275,11 @@ class StorageInstanceAccessTrackingTest {
         tracker.record(read);
         wall.set(1_000_000);
         step(wall, nanos, ageMs);
+
         assertThat(fixture.demotion(strategy, 1).demote()).isEqualTo(1);
         assertThat(fixture.stillInMemory(read) != fixture.stillInMemory(unknown)).as("exactly one went").isTrue();
 
-        return fixture.stillInMemory(unknown)
-               ? "read"
-               : "unknown";
+        return fixture.stillInMemory(unknown) ? "read" : "unknown";
     }
 
     private static void step(AtomicLong wall, AtomicLong nanos, long ms) {
@@ -298,16 +294,15 @@ class StorageInstanceAccessTrackingTest {
         var nanos = new AtomicLong(7_000_000_000L);
         var tracker = AccessTracker.accessTracker(wall::get, nanos::get);
         var record = BlockLifecycle.blockLifecycle(BlockId.blockId(bytes("production")).unwrap(),
-                                                   java.util.EnumSet.of(TierLevel.MEMORY),
-                                                   1,
-                                                   500L,
-                                                   500L,
-                                                   0);
+                                                   java.util.EnumSet.of(TierLevel.MEMORY), 1, 500L, 500L, 0);
 
         wall.addAndGet(3_600_000);
         nanos.addAndGet((15 * 60_000L - 1) * 1_000_000L);
+
         assertThat(tracker.isHeldBack(record)).as("on the monotonic source, whatever the wall clock did").isTrue();
+
         nanos.addAndGet(1_000_000L);
+
         assertThat(tracker.isHeldBack(record)).isFalse();
     }
 
@@ -326,7 +321,9 @@ class StorageInstanceAccessTrackingTest {
                                                      0);
 
         assertThat(tracker.isUnknown(restored)).isTrue();
+
         tracker.record(restored.blockId());
+
         assertThat(tracker.isUnknown(restored)).as("one read in this process makes it known").isFalse();
         assertThat(tracker.isHeldBack(restored)).isFalse();
         assertThat(store.accessTracker()).isSameAs(tracker);
@@ -343,16 +340,19 @@ class StorageInstanceAccessTrackingTest {
         var readLast = node.put(bytes("written first, read last")).await().unwrap();
 
         Thread.sleep(5);
+
         var neverRead = node.put(bytes("written second, never read")).await().unwrap();
 
         Thread.sleep(5);
         node.get(readLast).await().unwrap();
+
         var manager = DemotionManager.demotionManager(List.of(memory, disk),
                                                       store,
                                                       demotionConfig(DemotionStrategy.LRU, 0.01, 0.009, 1));
 
         manager.activate();
         manager.demote();
+
         assertThat(store.getLifecycle(readLast).unwrap().presentIn()).contains(TierLevel.MEMORY);
         assertThat(store.getLifecycle(neverRead).unwrap().presentIn()).doesNotContain(TierLevel.MEMORY);
     }
@@ -368,16 +368,19 @@ class StorageInstanceAccessTrackingTest {
         var readLast = node.put(bytes("written first, read last")).await().unwrap();
 
         Thread.sleep(5);
+
         var neverRead = node.put(bytes("written second, never read")).await().unwrap();
 
         Thread.sleep(5);
         node.get(readLast).await().unwrap();
+
         var manager = DemotionManager.demotionManager(List.of(memory, disk),
                                                       store,
                                                       demotionConfig(DemotionStrategy.SIZE_PRESSURE, 0.01, 0.009, 1));
 
         manager.activate();
         manager.demote();
+
         assertThat(store.getLifecycle(readLast).unwrap().presentIn()).contains(TierLevel.MEMORY);
         assertThat(store.getLifecycle(neverRead).unwrap().presentIn()).doesNotContain(TierLevel.MEMORY);
     }
@@ -398,6 +401,7 @@ class StorageInstanceAccessTrackingTest {
         tracker.record(k2);
         clock.addAndGet(5);
         tracker.record(k3);
+
         assertThat(fixture.demotion(DemotionStrategy.SIZE_PRESSURE, 1).demote()).isEqualTo(1);
         assertThat(fixture.stillInMemory(k1)).as("K1, read first, goes first").isFalse();
         assertThat(fixture.stillInMemory(k2)).isTrue();
@@ -421,7 +425,8 @@ class StorageInstanceAccessTrackingTest {
     }
 
     @SuppressWarnings("deprecation")
-    private void readsLeaveTheRecordUnchanged_andDemotionTakesNoInputFromItsAccessFields(DemotionStrategy strategy) throws InterruptedException {
+    private void readsLeaveTheRecordUnchanged_andDemotionTakesNoInputFromItsAccessFields(DemotionStrategy strategy)
+    throws InterruptedException {
         var memory = MemoryTier.memoryTier(200, TierLevel.MEMORY);
         var disk = MemoryTier.memoryTier(2000, TierLevel.LOCAL_DISK);
         var store = MetadataStore.inMemoryMetadataStore("frozen-fields");
@@ -429,6 +434,7 @@ class StorageInstanceAccessTrackingTest {
         var unread = node.put(bytes("claims a hot record, never read")).await().unwrap();
 
         Thread.sleep(5);
+
         var read = node.put(bytes("claims nothing, read often")).await().unwrap();
 
         store.computeLifecycle(unread,
@@ -440,20 +446,22 @@ class StorageInstanceAccessTrackingTest {
                                                         1_000_000,
                                                         lc.orphanedAt(),
                                                         lc.cacheOnly()));
+
         var recordBefore = store.getLifecycle(read).unwrap();
         var bodyBefore = snapshotBody(store);
 
-        IntStream.range(0, 25).forEach(i -> node.get(read)
-                                                .await()
-                                                .unwrap());
+        IntStream.range(0, 25).forEach(i -> node.get(read).await().unwrap());
+
         assertThat(store.getLifecycle(read).unwrap()).as("25 reads left the record as it was").isEqualTo(recordBefore);
         assertThat(snapshotBody(store)).as("and the serialized snapshot").isEqualTo(bodyBefore);
+
         var manager = DemotionManager.demotionManager(List.of(memory, disk),
                                                       store,
                                                       demotionConfig(strategy, 0.01, 0.009, 1));
 
         manager.activate();
         manager.demote();
+
         assertThat(store.getLifecycle(read).unwrap().presentIn()).contains(TierLevel.MEMORY);
         assertThat(store.getLifecycle(unread).unwrap().presentIn()).doesNotContain(TierLevel.MEMORY);
     }

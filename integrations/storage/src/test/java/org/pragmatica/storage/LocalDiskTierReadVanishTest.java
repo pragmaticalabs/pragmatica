@@ -9,14 +9,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
-import org.pragmatica.lang.io.FileError;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.io.FileError;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
-
 
 /// [LocalDiskTier#get] when the block file is gone by the time it is read (#3594). A delete lands at any moment of a read; a
 /// block that is not there is absent, never a read failure, as `stat` and `touch` already answer. The reclaim of a displaced
@@ -38,12 +36,11 @@ class LocalDiskTierReadVanishTest {
         var hex = id.hexString();
 
         Files.createDirectories(dir.resolve(hex.substring(0, 2)).resolve(hex.substring(2, 4)).resolve(hex));
+
         var read = tier.get(id).await();
 
-        assertThat(read.isFailure()).as("the read of a directory at the block path is a failure, not absence: %s", read)
-                  .isTrue();
-        read.onFailure(cause -> assertThat(cause).as("and it is the read failure")
-                                          .isInstanceOf(FileError.ReadFailed.class));
+        assertThat(read.isFailure()).as("the read of a directory at the block path is a failure, not absence: %s", read).isTrue();
+        read.onFailure(cause -> assertThat(cause).as("and it is the read failure").isInstanceOf(FileError.ReadFailed.class));
     }
 
     /// The race itself: one thread puts and deletes a block over and over while another reads it. Every read answers present
@@ -60,6 +57,7 @@ class LocalDiskTierReadVanishTest {
         IntStream.range(0, ROUNDS * 10).forEach(_ -> countFailure(tier, id, failures));
         done.set(true);
         churn.join();
+
         assertThat(failures.get()).as("reads of a block deleted under them that failed").isZero();
     }
 
@@ -74,9 +72,11 @@ class LocalDiskTierReadVanishTest {
 
         tier.put(id, "held".getBytes()).await().unwrap();
         assertThat(tier.get(id).await().unwrap().or(() -> new byte[0])).isEqualTo("held".getBytes());
+
         Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("---------"));
         try {
             assumeFalse(Files.isReadable(file), "the user running the test reads any file (root)");
+
             assertThat(tier.get(id).await().isFailure()).isTrue();
         } finally {
             Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));

@@ -11,14 +11,12 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
 import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// A0b: a disk-tier mount belongs to one live node. The claim is an OS file lock, so the exclusion does not depend on guessing
 /// whether another process is alive: a second node is refused whatever the claim file says, a holder that is gone leaves
@@ -34,14 +32,13 @@ class MountClaimTest {
     @Test
     void claim_secondNodeOnTheSameMount_isRefusedNamingTheHolder() {
         MountClaim.claim(mount, "node-a").unwrap();
+
         var refusal = MountClaim.claim(mount, "node-b");
 
         assertThat(refusal.isFailure()).as("a second live node must not share the mount").isTrue();
         refusal.onFailure(cause -> {
             assertThat(cause).isInstanceOf(MountClaim.Held.class);
-            assertThat(cause.message()).contains("node-a")
-                      .contains(mount.toString())
-                      .contains("disk_path");
+            assertThat(cause.message()).contains("node-a").contains(mount.toString()).contains("disk_path");
         });
     }
 
@@ -49,9 +46,9 @@ class MountClaimTest {
     @Test
     void claim_leftoverFileOfADeadProcess_isTakenWithoutAnyLivenessGuess() throws Exception {
         var gone = new ProcessBuilder("true").start();
-
         gone.waitFor();
         Files.writeString(claimFile(), "node=node-dead\npid=" + gone.pid() + "\nstarted=1\n");
+
         var claim = MountClaim.claim(mount, "node-b");
 
         assertThat(claim.isSuccess()).as("no lock is held on the file").isTrue();
@@ -62,8 +59,8 @@ class MountClaimTest {
     /// time (another user's) lost its claim. The file naming a live process, with any start time, is not a claim either way.
     @Test
     void claim_leftoverFileNamingALiveProcess_isNotAClaim() throws IOException {
-        Files.writeString(claimFile(),
-                          "node=node-old\npid=" + ProcessHandle.current().pid() + "\nstarted=0\n");
+        Files.writeString(claimFile(), "node=node-old\npid=" + ProcessHandle.current().pid() + "\nstarted=0\n");
+
         assertThat(MountClaim.claim(mount, "node-b").isSuccess()).as("only a held lock is a claim").isTrue();
     }
 
@@ -71,18 +68,17 @@ class MountClaimTest {
     /// the holder instead of falling through to the lock layer, which cannot tell a second claimant of one JVM apart.
     @Test
     void claim_throughASymlinkedAlias_isRefusedNamingTheHolder() throws IOException {
-        var alias = Files.createSymbolicLink(mount.resolveSibling(mount.getFileName() + "-alias"),
-                                             mount);
+        var alias = Files.createSymbolicLink(mount.resolveSibling(mount.getFileName() + "-alias"), mount);
 
         try {
             MountClaim.claim(mount, "node-a").unwrap();
+
             var refusal = MountClaim.claim(alias, "node-b");
 
             assertThat(refusal.isFailure()).as("the alias is the same mount").isTrue();
             refusal.onFailure(cause -> {
                 assertThat(cause).isInstanceOf(MountClaim.Held.class);
-                assertThat(cause.message()).as("the holder is named, not 'another process'")
-                          .contains("node-a");
+                assertThat(cause.message()).as("the holder is named, not 'another process'").contains("node-a");
             });
         } finally {
             Files.deleteIfExists(alias);
@@ -92,6 +88,7 @@ class MountClaimTest {
     @Test
     void claim_sameNodeInTheSameProcess_takesTheClaimOver() {
         MountClaim.claim(mount, "node-a").unwrap();
+
         assertThat(MountClaim.claim(mount, "node-a").isSuccess()).as("a node restarted in one JVM").isTrue();
     }
 
@@ -100,8 +97,8 @@ class MountClaimTest {
         var claim = MountClaim.claim(mount, "node-a").unwrap();
 
         claim.release();
-        assertThat(Files.size(claimFile())).as("the file stays (deleting it races waiting claimants) but names nobody")
-                  .isZero();
+
+        assertThat(Files.size(claimFile())).as("the file stays (deleting it races waiting claimants) but names nobody").isZero();
         assertThat(MountClaim.claim(mount, "node-b").isSuccess()).isTrue();
     }
 
@@ -109,14 +106,14 @@ class MountClaimTest {
     @Test
     void release_ofAClaimTheSameNodeSupersededInThisJvm_leavesTheSuccessorHolding() throws IOException {
         var first = MountClaim.claim(mount, "node-a").unwrap();
-
         MountClaim.claim(mount, "node-a").unwrap();
+
         first.release();
+
         var refusal = MountClaim.claim(mount, "node-b");
 
         assertThat(refusal.isFailure()).as("the successor still holds the mount").isTrue();
-        refusal.onFailure(cause -> assertThat(cause.message()).as("the successor is still registered as the holder")
-                                             .contains("node-a"));
+        refusal.onFailure(cause -> assertThat(cause.message()).as("the successor is still registered as the holder").contains("node-a"));
         assertThat(Files.readString(claimFile())).contains("node=node-a");
     }
 
@@ -124,11 +121,11 @@ class MountClaimTest {
     /// class): the OS refuses the second lock inside the JVM, and that is a refusal, not a claim.
     @Test
     void claim_lockHeldInThisJvmOutsideTheRegistry_isRefused() throws IOException {
-        try (var outsider = java.nio.channels.FileChannel.open(claimFile(),
-                                                               java.nio.file.StandardOpenOption.CREATE,
+        try (var outsider = java.nio.channels.FileChannel.open(claimFile(), java.nio.file.StandardOpenOption.CREATE,
                                                                java.nio.file.StandardOpenOption.WRITE);
              var lock = outsider.tryLock()) {
             assertThat(lock).as("the outsider holds the lock").isNotNull();
+
             var refusal = MountClaim.claim(mount, "node-b");
 
             assertThat(refusal.isFailure()).as("an unregistered holder in this JVM still excludes").isTrue();
@@ -142,15 +139,14 @@ class MountClaimTest {
         for (var round = 0; round < 50; round++) {
             var dir = Files.createDirectory(mount.resolve("race-" + round));
             var gone = new ProcessBuilder("true").start();
-
             gone.waitFor();
             Files.writeString(dir.resolve(MountClaim.CLAIM_FILE), "node=dead\npid=" + gone.pid() + "\nstarted=1\n");
             var results = raceForTheMount(dir, 8);
 
             assertThat(results.stream().filter(Result::isSuccess).count()).as("round %d: winners", round).isEqualTo(1);
-            assertThat(results.stream().filter(Result::isFailure).map(r -> failureOf(r)).toList()).allSatisfy(cause -> assertThat(cause).isInstanceOf(MountClaim.Held.class));
-            results.stream().filter(Result::isSuccess).forEach(r -> r.unwrap()
-                                                                     .release());
+            assertThat(results.stream().filter(Result::isFailure).map(r -> failureOf(r)).toList())
+                .allSatisfy(cause -> assertThat(cause).isInstanceOf(MountClaim.Held.class));
+            results.stream().filter(Result::isSuccess).forEach(r -> r.unwrap().release());
         }
     }
 
@@ -162,33 +158,25 @@ class MountClaimTest {
 
         for (var i = 0; i < nodes; i++) {
             var node = "node-" + i;
-
             futures.add(pool.submit(() -> {
                 ready.countDown();
                 go.await();
-
                 return MountClaim.claim(dir, node);
             }));
         }
-
         ready.await();
         go.countDown();
         var results = new ArrayList<Result<MountClaim>>();
-
         for (var future : futures) {
             results.add(future.get(30, TimeUnit.SECONDS));
         }
-
         pool.shutdown();
-
         return results;
     }
 
     private static Cause failureOf(Result<MountClaim> result) {
         var holder = new Cause[1];
-
         result.onFailure(cause -> holder[0] = cause);
-
         return holder[0];
     }
 
@@ -196,9 +184,9 @@ class MountClaimTest {
     void openClaiming_secondTierOnTheSameMount_failsWithHeldAndTouchesNothing() throws IOException {
         LocalDiskTier.localDiskTier(mount, 1024 * 1024).flatMap(tier -> tier.openClaiming("node-a")).unwrap();
         var partial = mount.resolve("ab").resolve("cd");
-
         Files.createDirectories(partial);
         var leftover = Files.writeString(partial.resolve("abcdef.1.partial"), "in-flight write of the first node");
+
         var second = LocalDiskTier.localDiskTier(mount, 1024 * 1024).flatMap(tier -> tier.openClaiming("node-b"));
 
         assertThat(second.isFailure()).isTrue();
@@ -211,14 +199,12 @@ class MountClaimTest {
     void openClaiming_whenTheOpenFails_givesTheClaimBack() throws IOException {
         var shard = Files.createDirectories(mount.resolve("ab"));
         var unreadable = Set.of(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE);
-
         Files.setPosixFilePermissions(shard, unreadable);
         try {
             var opened = LocalDiskTier.localDiskTier(mount, 1024 * 1024).flatMap(tier -> tier.openClaiming("node-a"));
 
             assertThat(opened.isFailure()).as("the walk over an unreadable shard directory fails the open").isTrue();
-            assertThat(MountClaim.claim(mount, "node-b").isSuccess()).as("the failed open left no claim behind")
-                      .isTrue();
+            assertThat(MountClaim.claim(mount, "node-b").isSuccess()).as("the failed open left no claim behind").isTrue();
         } finally {
             Files.setPosixFilePermissions(shard, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"));
         }
@@ -226,9 +212,7 @@ class MountClaimTest {
 
     @Test
     void localDiskTier_claimFileIsNotABlock() {
-        var tier = LocalDiskTier.localDiskTier(mount, 1024 * 1024)
-                                .flatMap(opened -> opened.openClaiming("node-a"))
-                                .unwrap();
+        var tier = LocalDiskTier.localDiskTier(mount, 1024 * 1024).flatMap(opened -> opened.openClaiming("node-a")).unwrap();
 
         assertThat(tier.usedBytes()).as("the claim file is bookkeeping, not stored bytes").isZero();
         tier.release();
@@ -240,32 +224,30 @@ class MountClaimTest {
     @Test
     void release_throughTheEncryptingWrapper_givesTheMountUp() {
         var keyring = keyring();
-        var disk = LocalDiskTier.localDiskTier(mount, 1024 * 1024)
-                                .flatMap(tier -> tier.openClaiming("node-a"))
-                                .unwrap();
+        var disk = LocalDiskTier.localDiskTier(mount, 1024 * 1024).flatMap(tier -> tier.openClaiming("node-a")).unwrap();
         var armed = EncryptingStorageTier.armLocalDisk(disk, mount, keyring).unwrap();
 
         armed.tier().release();
+
         assertThat(MountClaim.claim(mount, "node-b").isSuccess()).as("the wrapper released the claim").isTrue();
     }
 
     @Test
     void armingEncryption_overAClaimedMount_doesNotReadTheClaimAsPlaintext() {
-        var disk = LocalDiskTier.localDiskTier(mount, 1024 * 1024)
-                                .flatMap(tier -> tier.openClaiming("node-a"))
-                                .unwrap();
+        var disk = LocalDiskTier.localDiskTier(mount, 1024 * 1024).flatMap(tier -> tier.openClaiming("node-a")).unwrap();
+
         var armed = EncryptingStorageTier.armLocalDisk(disk, mount, keyring());
 
         assertThat(armed.isSuccess()).as("the claim file is bookkeeping, not a plaintext block").isTrue();
     }
 
     // --- across processes: the exclusion the in-JVM registry cannot supply ---
+
     /// A forked JVM holds the claim: this JVM is refused naming that process, and when the process is killed (no release runs)
     /// the kernel drops the lock and the mount can be claimed.
     @Test
     void claim_heldByAnotherProcess_isRefusedWhileItLivesAndTakenAfterItIsKilled() throws Exception {
         var holder = forkHolder("node-fork");
-
         try {
             var refusal = MountClaim.claim(mount, "node-here");
 
@@ -273,7 +255,6 @@ class MountClaimTest {
             refusal.onFailure(cause -> {
                 assertThat(cause).isInstanceOf(MountClaim.Held.class);
                 var held = (MountClaim.Held) cause;
-
                 assertThat(held.holderNodeId()).isEqualTo("node-fork");
                 assertThat(held.holderPid()).isEqualTo(holder.pid());
             });
@@ -283,8 +264,7 @@ class MountClaimTest {
         }
 
         assertThat(holder.isAlive()).isFalse();
-        assertThat(MountClaim.claim(mount, "node-here").isSuccess()).as("the kernel dropped the killed holder's lock")
-                  .isTrue();
+        assertThat(MountClaim.claim(mount, "node-here").isSuccess()).as("the kernel dropped the killed holder's lock").isTrue();
     }
 
     /// What the file says is never consulted: a live holder whose claim file reads as empty (the window between create and write)
@@ -292,16 +272,13 @@ class MountClaimTest {
     @Test
     void claim_heldByAnotherProcess_isRefusedWhateverTheFileSays() throws Exception {
         var holder = forkHolder("node-fork");
-
         try {
-            for (var content : new String[]{"", "garbage", "node=x\npid=notanumber\nstarted=0\n"}) {
+            for (var content : new String[] {"", "garbage", "node=x\npid=notanumber\nstarted=0\n"}) {
                 Files.writeString(claimFile(), content);
+
                 var refusal = MountClaim.claim(mount, "node-here");
 
-                assertThat(refusal.isFailure()).as("claim file reads %s",
-                                                   content.isEmpty()
-                                                   ? "empty"
-                                                   : content).isTrue();
+                assertThat(refusal.isFailure()).as("claim file reads %s", content.isEmpty() ? "empty" : content).isTrue();
                 refusal.onFailure(cause -> assertThat(cause).isInstanceOf(MountClaim.Held.class));
             }
         } finally {
@@ -312,28 +289,17 @@ class MountClaimTest {
 
     private Process forkHolder(String nodeId) throws Exception {
         var java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-        var holder = new ProcessBuilder(java,
-                                        "-cp",
-                                        System.getProperty("java.class.path"),
-                                        MountClaimHolderMain.class.getName(),
-                                        mount.toString(),
-                                        nodeId).redirectErrorStream(true)
-                                               .start();
+        var holder = new ProcessBuilder(java, "-cp", System.getProperty("java.class.path"), MountClaimHolderMain.class.getName(),
+                                        mount.toString(), nodeId).redirectErrorStream(true).start();
         var line = new BufferedReader(new InputStreamReader(holder.getInputStream())).readLine();
 
         assertThat(line).as("the forked JVM took the claim").isEqualTo("claimed");
-
         return holder;
     }
 
     private static EncryptionKeyring keyring() {
         var key = new byte[32];
-
         new java.security.SecureRandom().nextBytes(key);
-
-        return EncryptionKeyring.encryptionKeyring(java.util.Map.of("k",
-                                                                    BlockEncryptor.aesGcm(key, "k").unwrap()),
-                                                   "k")
-                                .unwrap();
+        return EncryptionKeyring.encryptionKeyring(java.util.Map.of("k", BlockEncryptor.aesGcm(key, "k").unwrap()), "k").unwrap();
     }
 }

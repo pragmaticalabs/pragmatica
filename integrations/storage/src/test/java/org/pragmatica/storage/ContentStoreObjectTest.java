@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.storage.ContentFixture.CHUNK;
@@ -19,7 +20,6 @@ import static org.pragmatica.storage.ContentFixture.payload;
 import static org.pragmatica.storage.ContentFixture.read;
 import static org.pragmatica.storage.ContentFixture.uploaded;
 import static org.pragmatica.storage.ContentFixture.upload;
-import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// The v2 content store in local mode: what an object is, what a namespace confines, what a range returns. The credits a
@@ -43,18 +43,13 @@ class ContentStoreObjectTest {
         @Test
         void objectMeta_roundTripsThroughStatLookupAndAFreshStore() {
             var expiry = Instant.parse("2031-02-03T04:05:06.789Z");
-            var spec = ObjectSpec.objectSpec(some("report.pdf"),
-                                             "application/pdf",
-                                             some(40L),
-                                             some(expiry),
-                                             Map.of("team", "ops", "k", "v"));
+            var spec = ObjectSpec.objectSpec(some("report.pdf"), "application/pdf", some(40L), some(expiry), Map.of("team", "ops", "k", "v"));
             var before = Instant.now();
             var info = upload(store, spec, payload(40, 1), 9).await().unwrap();
             var name = ObjectName.objectName("reports/2031/report.pdf").unwrap();
 
-            store.bind(name,
-                       info.ref().id(),
-                       Precondition.nameFree()).await().unwrap();
+            store.bind(name, info.ref().id(), Precondition.nameFree()).await().unwrap();
+
             var viaStat = store.stat(info.ref().id()).await().unwrap().unwrap();
             var viaLookup = store.lookup(name, none()).await().unwrap().unwrap();
             var viaFreshStore = fixture.store("alpha").stat(info.ref().id()).await().unwrap().unwrap();
@@ -80,9 +75,7 @@ class ContentStoreObjectTest {
             var patched = store.update(info.ref().id(),
                                        MetaPatch.metaPatch(some(Instant.parse("2040-01-01T00:00:00Z")),
                                                            some("text/plain"),
-                                                           some(Map.of("a", "b"))))
-                               .await()
-                               .unwrap();
+                                                           some(Map.of("a", "b")))).await().unwrap();
 
             assertThat(patched.meta().contentType()).isEqualTo("text/plain");
             assertThat(patched.meta().attributes()).isEqualTo(Map.of("a", "b"));
@@ -114,23 +107,16 @@ class ContentStoreObjectTest {
 
             assertThat(other.stat(mine.ref().id()).await().unwrap()).isEqualTo(none());
             other.delete(mine.ref().id()).await().unwrap();
-            assertThat(failureOf(other.bind(name,
-                                            mine.ref().id(),
-                                            Precondition.unconditional()))).isInstanceOf(ContentStoreError.ObjectNotFound.class);
-            assertThat(failureOf(other.update(mine.ref().id(),
-                                              MetaPatch.metaPatch(none(), some("x/y"), none())))).isInstanceOf(ContentStoreError.ObjectNotFound.class);
-            assertThat(other.list(none(),
-                                  none(),
-                                  100).await().unwrap().items()).extracting(info -> info.ref()
-                                                                                        .id())
-                      .containsExactly(theirs.ref().id());
-            assertThat(store.list(none(),
-                                  none(),
-                                  100).await().unwrap().items()).extracting(info -> info.ref()
-                                                                                        .id())
-                      .containsExactly(mine.ref().id());
-            assertThat(store.stat(mine.ref().id()).await().unwrap().isPresent()).as("alpha's object survived beta's delete")
-                      .isTrue();
+            assertThat(failureOf(other.bind(name, mine.ref().id(), Precondition.unconditional())))
+                .isInstanceOf(ContentStoreError.ObjectNotFound.class);
+            assertThat(failureOf(other.update(mine.ref().id(), MetaPatch.metaPatch(none(), some("x/y"), none()))))
+                .isInstanceOf(ContentStoreError.ObjectNotFound.class);
+
+            assertThat(other.list(none(), none(), 100).await().unwrap().items()).extracting(info -> info.ref().id())
+                                                                                  .containsExactly(theirs.ref().id());
+            assertThat(store.list(none(), none(), 100).await().unwrap().items()).extracting(info -> info.ref().id())
+                                                                                 .containsExactly(mine.ref().id());
+            assertThat(store.stat(mine.ref().id()).await().unwrap().isPresent()).as("alpha's object survived beta's delete").isTrue();
             assertThat(read(store, mine.ref(), ByteRange.whole())).isEqualTo(payload(50, 3));
         }
 
@@ -141,12 +127,9 @@ class ContentStoreObjectTest {
             var theirs = uploaded(other, payload(10, 6));
             var name = ObjectName.objectName("config.json").unwrap();
 
-            store.bind(name,
-                       mine.ref().id(),
-                       Precondition.nameFree()).await().unwrap();
-            other.bind(name,
-                       theirs.ref().id(),
-                       Precondition.nameFree()).await().unwrap();
+            store.bind(name, mine.ref().id(), Precondition.nameFree()).await().unwrap();
+            other.bind(name, theirs.ref().id(), Precondition.nameFree()).await().unwrap();
+
             assertThat(store.lookup(name, none()).await().unwrap().unwrap().ref().id()).isEqualTo(mine.ref().id());
             assertThat(other.lookup(name, none()).await().unwrap().unwrap().ref().id()).isEqualTo(theirs.ref().id());
         }
@@ -164,15 +147,12 @@ class ContentStoreObjectTest {
             for (var bad : new String[]{"", "A", "a/b", "-a", "a b", "x".repeat(64)}) {
                 var config = ContentStoreConfig.contentStoreConfig(CHUNK, Compression.NONE, bad, 2, 2);
 
-                assertThat(config.validatedAgainst(StorageInstance.DEFAULT_MAX_BLOCK_BYTES).isFailure()).as("'%s'", bad)
-                          .isTrue();
+                assertThat(config.validatedAgainst(StorageInstance.DEFAULT_MAX_BLOCK_BYTES).isFailure()).as("'%s'", bad).isTrue();
                 assertThat(ContentStore.contentStore(fixture.storage, config).isFailure()).as("'%s'", bad).isTrue();
             }
 
-            assertThat(ContentStoreConfig.contentStoreConfig()
-                                         .validatedAgainst(StorageInstance.DEFAULT_MAX_BLOCK_BYTES)
-                                         .isSuccess()).as("the default namespace")
-                      .isTrue();
+            assertThat(ContentStoreConfig.contentStoreConfig().validatedAgainst(StorageInstance.DEFAULT_MAX_BLOCK_BYTES).isSuccess())
+                .as("the default namespace").isTrue();
         }
 
         @Test
@@ -189,7 +169,6 @@ class ContentStoreObjectTest {
     @Nested
     class RangedRead {
         private static final int LENGTH = 100;
-
         private final byte[] data = payload(LENGTH, 8);
 
         @Test
@@ -201,11 +180,8 @@ class ContentStoreObjectTest {
                 var first = random.nextInt(LENGTH);
                 var last = first + random.nextInt(LENGTH - first);
 
-                assertThat(read(store,
-                                info.ref(),
-                                ByteRange.byteRange(first,
-                                                    some((long) last)))).as("range %d-%d", first, last)
-                          .isEqualTo(slice(data, first, last));
+                assertThat(read(store, info.ref(), ByteRange.byteRange(first, some((long) last)))).as("range %d-%d", first, last)
+                                                                                                   .isEqualTo(slice(data, first, last));
             }
         }
 
@@ -215,13 +191,8 @@ class ContentStoreObjectTest {
             long[][] edges = {{0, 0}, {0, 15}, {15, 16}, {16, 16}, {16, 31}, {31, 32}, {0, 99}, {96, 99}, {99, 99}, {15, 32}, {17, 30}};
 
             for (var edge : edges) {
-                assertThat(read(store,
-                                info.ref(),
-                                ByteRange.byteRange(edge[0],
-                                                    some(edge[1])))).as("range %d-%d", edge[0], edge[1])
-                          .isEqualTo(slice(data,
-                                           (int) edge[0],
-                                           (int) edge[1]));
+                assertThat(read(store, info.ref(), ByteRange.byteRange(edge[0], some(edge[1])))).as("range %d-%d", edge[0], edge[1])
+                                                                                                 .isEqualTo(slice(data, (int) edge[0], (int) edge[1]));
             }
         }
 
@@ -230,9 +201,7 @@ class ContentStoreObjectTest {
             var info = uploaded(store, data);
 
             assertThat(read(store, info.ref(), ByteRange.byteRange(37, none()))).isEqualTo(slice(data, 37, LENGTH - 1));
-            assertThat(read(store, info.ref(), ByteRange.byteRange(37, some(10_000L)))).isEqualTo(slice(data,
-                                                                                                        37,
-                                                                                                        LENGTH - 1));
+            assertThat(read(store, info.ref(), ByteRange.byteRange(37, some(10_000L)))).isEqualTo(slice(data, 37, LENGTH - 1));
             assertThat(read(store, info.ref(), ByteRange.whole())).isEqualTo(data);
         }
 
@@ -261,11 +230,10 @@ class ContentStoreObjectTest {
 
             new Random(5).nextBytes(compressible);
             java.util.Arrays.fill(compressible, 20, 70, (byte) 7);
+
             var info = uploaded(compressing, compressible);
 
-            assertThat(read(compressing, info.ref(), ByteRange.byteRange(18, some(72L)))).isEqualTo(slice(compressible,
-                                                                                                          18,
-                                                                                                          72));
+            assertThat(read(compressing, info.ref(), ByteRange.byteRange(18, some(72L)))).isEqualTo(slice(compressible, 18, 72));
         }
     }
 
@@ -305,10 +273,7 @@ class ContentStoreObjectTest {
         @Test
         void aOneChunkObject_hasAOneChunkManifest() {
             var info = uploaded(store, payload(CHUNK, 9));
-            var manifest = ContentManifest.fromBytes(fixture.storage.get(info.ref().manifest())
-                                                                    .await()
-                                                                    .unwrap()
-                                                                    .unwrap()).unwrap();
+            var manifest = ContentManifest.fromBytes(fixture.storage.get(info.ref().manifest()).await().unwrap().unwrap()).unwrap();
 
             assertThat(manifest.chunkCount()).isEqualTo(1);
             assertThat(manifest.chunkSize()).isEqualTo(CHUNK);
@@ -341,7 +306,8 @@ class ContentStoreObjectTest {
 
             assertThat(failureOf(store.resume(WriteSessionId.writeSessionId("s")))).isInstanceOf(ContentStoreError.NotSupported.class);
             assertThat(failureOf(store.link(info.ref()))).isInstanceOf(ContentStoreError.NotSupported.class);
-            assertThat(failureOf(store.create(ObjectSpec.objectSpec("a/b")).await().unwrap().checkpoint())).isInstanceOf(ContentStoreError.NotSupported.class);
+            assertThat(failureOf(store.create(ObjectSpec.objectSpec("a/b")).await().unwrap().checkpoint()))
+                .isInstanceOf(ContentStoreError.NotSupported.class);
         }
     }
 
@@ -353,21 +319,17 @@ class ContentStoreObjectTest {
             var second = uploaded(store, payload(9, 13));
             var name = ObjectName.objectName("latest").unwrap();
 
-            store.bind(name,
-                       first.ref().id(),
-                       Precondition.nameFree()).await().unwrap();
-            assertThat(failureOf(store.bind(name,
-                                            second.ref().id(),
-                                            Precondition.nameFree()))).isInstanceOf(ContentStoreError.PreconditionFailed.class);
-            assertThat(failureOf(store.bind(name,
-                                            second.ref().id(),
-                                            Precondition.boundTo(second.ref().id())))).isInstanceOf(ContentStoreError.PreconditionFailed.class);
-            store.bind(name,
-                       second.ref().id(),
-                       Precondition.boundTo(first.ref().id())).await().unwrap();
+            store.bind(name, first.ref().id(), Precondition.nameFree()).await().unwrap();
+
+            assertThat(failureOf(store.bind(name, second.ref().id(), Precondition.nameFree())))
+                .isInstanceOf(ContentStoreError.PreconditionFailed.class);
+            assertThat(failureOf(store.bind(name, second.ref().id(), Precondition.boundTo(second.ref().id()))))
+                .isInstanceOf(ContentStoreError.PreconditionFailed.class);
+
+            store.bind(name, second.ref().id(), Precondition.boundTo(first.ref().id())).await().unwrap();
+
             assertThat(store.lookup(name, none()).await().unwrap().unwrap().ref().id()).isEqualTo(second.ref().id());
-            assertThat(store.stat(first.ref().id()).await().unwrap().unwrap().name()).as("the name left its previous object")
-                      .isEqualTo(none());
+            assertThat(store.stat(first.ref().id()).await().unwrap().unwrap().name()).as("the name left its previous object").isEqualTo(none());
             assertThat(store.stat(second.ref().id()).await().unwrap().unwrap().name().map(ObjectName::value)).isEqualTo(some("latest"));
         }
 
@@ -377,12 +339,9 @@ class ContentStoreObjectTest {
             var oldName = ObjectName.objectName("old").unwrap();
             var newName = ObjectName.objectName("new").unwrap();
 
-            store.bind(oldName,
-                       info.ref().id(),
-                       Precondition.nameFree()).await().unwrap();
-            store.bind(newName,
-                       info.ref().id(),
-                       Precondition.nameFree()).await().unwrap();
+            store.bind(oldName, info.ref().id(), Precondition.nameFree()).await().unwrap();
+            store.bind(newName, info.ref().id(), Precondition.nameFree()).await().unwrap();
+
             assertThat(store.lookup(oldName, none()).await().unwrap()).isEqualTo(none());
             assertThat(store.lookup(newName, none()).await().unwrap().unwrap().ref().id()).isEqualTo(info.ref().id());
         }
@@ -392,30 +351,22 @@ class ContentStoreObjectTest {
             var info = uploaded(store, payload(8, 15));
             var name = ObjectName.objectName("gone-soon").unwrap();
 
-            store.bind(name,
-                       info.ref().id(),
-                       Precondition.nameFree()).await().unwrap();
+            store.bind(name, info.ref().id(), Precondition.nameFree()).await().unwrap();
             store.delete(info.ref().id()).await().unwrap();
             store.delete(info.ref().id()).await().unwrap();
+
             assertThat(store.stat(info.ref().id()).await().unwrap()).isEqualTo(none());
             assertThat(store.lookup(name, none()).await().unwrap()).isEqualTo(none());
-            assertThat(fixture.storage.resolveRef("n/alpha/gone-soon")).as("no name binding is left behind")
-                      .isEqualTo(none());
+            assertThat(fixture.storage.resolveRef("n/alpha/gone-soon")).as("no name binding is left behind").isEqualTo(none());
         }
 
         @Test
         void list_pagesInNameOrder_filtersByPrefix_andResumesFromACursor() {
             for (var i = 0; i < 7; i++) {
                 var info = uploaded(store, payload(5, 100 + i));
-                var name = (i % 2 == 0
-                            ? "docs/"
-                            : "img/") + "item-" + i;
+                var name = (i % 2 == 0 ? "docs/" : "img/") + "item-" + i;
 
-                store.bind(ObjectName.objectName(name).unwrap(),
-                           info.ref().id(),
-                           Precondition.nameFree())
-                     .await()
-                     .unwrap();
+                store.bind(ObjectName.objectName(name).unwrap(), info.ref().id(), Precondition.nameFree()).await().unwrap();
             }
 
             var all = collectPages(none(), 3);
@@ -456,10 +407,7 @@ class ContentStoreObjectTest {
             assertThat(fixture.chunksOf(info)).hasSize(4000);
             store.delete(info.ref().id()).await().unwrap();
             assertThat(store.stat(info.ref().id()).await().unwrap()).isEqualTo(none());
-            assertThat(fixture.metadata.listAllLifecycles()
-                                       .stream()
-                                       .filter(lifecycle -> lifecycle.refCount() > 0)
-                                       .toList()).isEmpty();
+            assertThat(fixture.metadata.listAllLifecycles().stream().filter(lifecycle -> lifecycle.refCount() > 0).toList()).isEmpty();
         }
 
         /// A bind whose first step (the name binding) fails leaves the old state visible: nothing was recorded.
@@ -467,22 +415,20 @@ class ContentStoreObjectTest {
         void aBindThatStopsBeforeTheBindingIsWritten_leavesTheOldStateVisible() {
             var refuseNames = new java.util.concurrent.atomic.AtomicBoolean();
             var flaky = new ContentFixture(new ContentFixture.RefusingTier(MemoryTier.memoryTier(1 << 20),
-                                                                           content -> refuseNames.get() && ContentEnvelope.kindOf(content)
-                                                                                                                          .filter(kind -> kind == ContentEnvelope.NAME)
-                                                                                                                          .isPresent()));
+                                                                 content -> refuseNames.get() && ContentEnvelope.kindOf(content)
+                                                                                                                .filter(kind -> kind == ContentEnvelope.NAME)
+                                                                                                                .isPresent()));
             var flakyStore = flaky.store("alpha");
             var info = uploaded(flakyStore, payload(8, 31));
             var newName = ObjectName.objectName("new").unwrap();
 
             refuseNames.set(true);
-            assertThat(failureOf(flakyStore.bind(newName,
-                                                 info.ref().id(),
-                                                 Precondition.nameFree()))).isNotNull();
-            assertThat(flakyStore.lookup(newName,
-                                         none()).await().unwrap()).as("the new name was never bound")
-                      .isEqualTo(none());
+
+            assertThat(failureOf(flakyStore.bind(newName, info.ref().id(), Precondition.nameFree()))).isNotNull();
+
+            assertThat(flakyStore.lookup(newName, none()).await().unwrap()).as("the new name was never bound").isEqualTo(none());
             assertThat(flakyStore.stat(info.ref().id()).await().unwrap().unwrap().name()).as("a hint nothing confirms is not reported")
-                      .isEqualTo(none());
+                                                                                       .isEqualTo(none());
             assertThat(flakyStore.list(none(), none(), 10).await().unwrap().items()).hasSize(1);
         }
 

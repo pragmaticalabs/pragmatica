@@ -5,6 +5,9 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -12,18 +15,13 @@ import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.io.TempDir;
-
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.storage.AnchorTierTest.await;
 import static org.pragmatica.storage.AnchorTierTest.causeOf;
 import static org.pragmatica.storage.AnchorTierTest.nameOf;
 import static org.pragmatica.storage.AnchorTierTest.valueOf;
-import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// A3-0: the anchor operations of a storage instance -- every durable tier acknowledges a write, the newest version over
 /// all durable tiers is read, a corrupt one fails closed and raises one operator warning per tier and anchor, and old
@@ -43,10 +41,10 @@ class StorageInstanceAnchorTest {
     void aWriteResolvesOnlyOnceEveryDurableTierHas() {
         var slow = new HeldTier(disk("slow"));
         var instance = instanceOver(List.of(disk("fast"), slow), AnchorRetention.DEFAULT);
+
         var write = instance.putAnchor(NAME, 1, valueOf(1));
 
-        assertThat(write.await(timeSpan(300).millis()).isFailure()).as("held while the slow tier has not answered")
-                  .isTrue();
+        assertThat(write.await(timeSpan(300).millis()).isFailure()).as("held while the slow tier has not answered").isTrue();
         slow.openGate();
         await(write);
     }
@@ -57,6 +55,7 @@ class StorageInstanceAnchorTest {
         var instance = instanceOver(List.of(disk("ok"), failing), AnchorRetention.DEFAULT);
 
         failing.fail();
+
         assertThat(causeOf(instance.putAnchor(NAME, 1, valueOf(1)))).isInstanceOf(StorageError.WriteError.class);
     }
 
@@ -65,11 +64,11 @@ class StorageInstanceAnchorTest {
     void theLatestIsTheHighestVersionOverTheDurableTiers() {
         var older = disk("older");
         var newer = disk("newer");
-        var instance = instanceOver(List.of(MemoryTier.memoryTier(1 << 20), older, newer),
-                                    AnchorRetention.DEFAULT);
+        var instance = instanceOver(List.of(MemoryTier.memoryTier(1 << 20), older, newer), AnchorRetention.DEFAULT);
 
         await(older.putAnchor(NAME, 5, valueOf(5)));
         await(newer.putAnchor(NAME, 7, valueOf(7)));
+
         var latest = await(instance.latestAnchor(NAME)).unwrap();
 
         assertThat(latest.version()).isEqualTo(7);
@@ -78,7 +77,8 @@ class StorageInstanceAnchorTest {
 
     @Test
     void anAnchorNoTierHolds_isNone() {
-        assertThat(await(instanceOver(List.of(disk("a"), disk("b")), AnchorRetention.DEFAULT).latestAnchor(NAME)).isEmpty()).isTrue();
+        assertThat(await(instanceOver(List.of(disk("a"), disk("b")), AnchorRetention.DEFAULT).latestAnchor(NAME)).isEmpty())
+            .isTrue();
     }
 
     /// No silent partial view: a tier that cannot answer fails the read, since it may hold the newest version.
@@ -88,6 +88,7 @@ class StorageInstanceAnchorTest {
         var instance = instanceOver(List.of(disk("ok"), failing), AnchorRetention.DEFAULT);
 
         failing.fail();
+
         assertThat(causeOf(instance.latestAnchor(NAME))).isInstanceOf(StorageError.ReadError.class);
         assertThat(anchorWarnings()).as("a tier that cannot answer is not a corrupt anchor").isEmpty();
     }
@@ -102,10 +103,10 @@ class StorageInstanceAnchorTest {
 
         await(instance.putAnchor(NAME, 4, valueOf(4)));
         s3.objects.put("pfx/anchors/" + NAME.storageSegment() + "/v.keep", new byte[0]);
+
         for (int read = 0; read < 3; read++) {
             assertThat(causeOf(instance.latestAnchor(NAME))).isInstanceOf(AnchorError.AnchorKeyMalformed.class);
         }
-
         assertThat(anchorWarnings()).hasSize(1);
         assertThat(anchorWarnings().getFirst().subject()).isEqualTo("content/" + NAME.value() + "@1:REMOTE");
     }
@@ -115,18 +116,18 @@ class StorageInstanceAnchorTest {
     @Test
     void aFailedPut_prunesNothing() {
         var refusing = new HeldTier(disk("refusing"));
-        var instance = instanceOver(List.of(disk("accepting"), refusing),
-                                    AnchorRetention.anchorRetention(2).unwrap());
+        var instance = instanceOver(List.of(disk("accepting"), refusing), AnchorRetention.anchorRetention(2).unwrap());
 
         refusing.openGate();
         for (long version = 1; version <= 5; version++) {
             await(instance.putAnchor(NAME, version, valueOf(version)));
             awaitPrune(instance);
         }
-
         refusing.fail();
+
         assertThat(causeOf(instance.putAnchor(NAME, 10, valueOf(10)))).isInstanceOf(StorageError.WriteError.class);
         awaitPrune(instance);
+
         assertThat(versionsOn(tempDir.resolve("accepting"))).containsExactlyInAnyOrder(3L, 4L, 5L, 10L);
         assertThat(versionsOn(tempDir.resolve("refusing"))).containsExactlyInAnyOrder(3L, 4L, 5L);
     }
@@ -143,21 +144,21 @@ class StorageInstanceAnchorTest {
         await(instance.putAnchor(other, 1, valueOf(1)));
         await(instance.putAnchor(other, 2, valueOf(2)));
         corrupt(tempDir.resolve("corrupted"), NAME, 2);
+
         for (int read = 0; read < 3; read++) {
             assertThat(causeOf(instance.latestAnchor(NAME))).isInstanceOfSatisfying(AnchorError.AnchorCorrupt.class,
-                                                                                    corrupt -> assertThat(corrupt.version()).isEqualTo(2));
+                                                                                   corrupt -> assertThat(corrupt.version()).isEqualTo(2));
         }
-
         assertThat(anchorWarnings()).hasSize(1);
         assertThat(anchorWarnings().getFirst().message()).contains(NAME.value()).contains("version 2");
-        assertThat(await(instance.latestAnchor(other)).unwrap().version()).as("another anchor is unaffected")
-                  .isEqualTo(2);
+        assertThat(await(instance.latestAnchor(other)).unwrap().version()).as("another anchor is unaffected").isEqualTo(2);
+
         corrupt(tempDir.resolve("corrupted"), other, 2);
         assertThat(causeOf(instance.latestAnchor(other))).isInstanceOf(AnchorError.AnchorCorrupt.class);
         assertThat(anchorWarnings()).as("a second anchor is its own condition").hasSize(2);
-        assertThat(anchorWarnings().stream().map(OperatorWarning::subject)).as("each anchor is its own subject, so the event feed throttles and closes them apart")
-                  .containsExactlyInAnyOrder("content/" + NAME.value() + "@0:LOCAL_DISK",
-                                             "content/" + other.value() + "@0:LOCAL_DISK");
+        assertThat(anchorWarnings().stream().map(OperatorWarning::subject))
+            .as("each anchor is its own subject, so the event feed throttles and closes them apart")
+            .containsExactlyInAnyOrder("content/" + NAME.value() + "@0:LOCAL_DISK", "content/" + other.value() + "@0:LOCAL_DISK");
     }
 
     /// The recovery: once that tier's newest version reads back whole (here a newer version was written), the condition
@@ -170,13 +171,15 @@ class StorageInstanceAnchorTest {
         corrupt(tempDir.resolve("corrupted"), NAME, 1);
         assertThat(causeOf(instance.latestAnchor(NAME))).isInstanceOf(AnchorError.AnchorCorrupt.class);
         assertThat(recoveries()).as("nothing recovers while the newest version is corrupt").isEmpty();
+
         await(instance.putAnchor(NAME, 2, valueOf(2)));
         assertThat(await(instance.latestAnchor(NAME)).unwrap().version()).isEqualTo(2);
         assertThat(await(instance.latestAnchor(NAME)).unwrap().version()).isEqualTo(2);
+
         assertThat(recoveries()).hasSize(1);
         assertThat(anchorWarnings()).hasSize(1);
         assertThat(recoveries().getFirst().subject()).as("the recovery closes its own warning's subject")
-                  .isEqualTo(anchorWarnings().getFirst().subject());
+                                                     .isEqualTo(anchorWarnings().getFirst().subject());
     }
 
     @Test
@@ -187,14 +190,14 @@ class StorageInstanceAnchorTest {
 
         await(first.putAnchor(NAME, 3, valueOf(3)));
         await(second.putAnchor(NAME, 3, valueOf(4)));
+
         assertThat(causeOf(instance.latestAnchor(NAME))).isInstanceOf(AnchorError.AnchorDiverged.class);
         assertThat(anchorWarnings()).hasSize(1);
     }
 
     @Test
     void anInstanceWithNoDurableTier_refuses() {
-        var instance = instanceOver(List.of(MemoryTier.memoryTier(1 << 20)),
-                                    AnchorRetention.DEFAULT);
+        var instance = instanceOver(List.of(MemoryTier.memoryTier(1 << 20)), AnchorRetention.DEFAULT);
 
         assertThat(causeOf(instance.putAnchor(NAME, 1, valueOf(1)))).isInstanceOf(AnchorError.NoDurableTier.class);
         assertThat(causeOf(instance.latestAnchor(NAME))).isInstanceOf(AnchorError.NoDurableTier.class);
@@ -204,8 +207,7 @@ class StorageInstanceAnchorTest {
     @Test
     void prunesKeepTheNewestRetentionPlusOneVersions() {
         var tier = disk("pruned");
-        var instance = instanceOver(List.of(tier),
-                                    AnchorRetention.anchorRetention(2).unwrap());
+        var instance = instanceOver(List.of(tier), AnchorRetention.anchorRetention(2).unwrap());
 
         for (long version = 1; version <= 10; version++) {
             await(instance.putAnchor(NAME, version, valueOf(version)));
@@ -219,16 +221,15 @@ class StorageInstanceAnchorTest {
     @Test
     void aLaggingWritersPrune_neverRemovesWhatANewerWriterKeeps() {
         var tier = disk("lagging");
-        var instance = instanceOver(List.of(tier),
-                                    AnchorRetention.anchorRetention(2).unwrap());
+        var instance = instanceOver(List.of(tier), AnchorRetention.anchorRetention(2).unwrap());
 
         for (long version = 10; version <= 12; version++) {
             await(instance.putAnchor(NAME, version, valueOf(version)));
             awaitPrune(instance);
         }
-
         await(instance.putAnchor(NAME, 4, valueOf(4)));
         awaitPrune(instance);
+
         assertThat(versionsOn(tempDir.resolve("lagging"))).containsExactlyInAnyOrder(4L, 10L, 11L, 12L);
         assertThat(await(instance.latestAnchor(NAME)).unwrap().version()).isEqualTo(12);
     }
@@ -238,15 +239,13 @@ class StorageInstanceAnchorTest {
     @Test
     void writesDuringARunningPrune_arePrunedToWhenItEnds() {
         var tier = new HeldTier(disk("overlapped"));
-        var instance = instanceOver(List.of(tier),
-                                    AnchorRetention.anchorRetention(2).unwrap());
+        var instance = instanceOver(List.of(tier), AnchorRetention.anchorRetention(2).unwrap());
 
         tier.openGate();
         tier.holdPrunes();
         for (long version = 1; version <= 6; version++) {
             await(instance.putAnchor(NAME, version, valueOf(version)));
         }
-
         tier.releasePrunes();
         while (instance.anchorPruneInFlight(NAME).isPresent()) {
             awaitPrune(instance);
@@ -259,8 +258,7 @@ class StorageInstanceAnchorTest {
     @Test
     void aFailedPrune_isCountedAndDoesNotFailTheWrite() {
         var tier = new HeldTier(disk("unprunable"));
-        var instance = instanceOver(List.of(tier),
-                                    AnchorRetention.anchorRetention(2).unwrap());
+        var instance = instanceOver(List.of(tier), AnchorRetention.anchorRetention(2).unwrap());
 
         tier.failPrunes();
         for (long version = 1; version <= 5; version++) {
@@ -278,6 +276,7 @@ class StorageInstanceAnchorTest {
     }
 
     // --- fixtures ---
+
     private DefaultStorageInstance instanceOver(List<StorageTier> tiers, AnchorRetention retention) {
         var instance = (DefaultStorageInstance) StorageInstance.storageInstance("content",
                                                                                 tiers,
@@ -288,8 +287,8 @@ class StorageInstanceAnchorTest {
                                                                                 _ -> {},
                                                                                 StorageInstance.DEFAULT_MAX_BLOCK_BYTES,
                                                                                 retention);
-
         reporter = DegradeReporter.degradeReporter("content");
+
         reporter.bind(OperatorWarningSink.handingOffTo(raised::add));
         instance.reportTo(reporter);
 
@@ -297,25 +296,19 @@ class StorageInstanceAnchorTest {
     }
 
     private LocalDiskTier disk(String directory) {
-        return LocalDiskTier.localDiskTier(tempDir.resolve(directory),
-                                           1 << 20)
-                            .unwrap();
+        return LocalDiskTier.localDiskTier(tempDir.resolve(directory), 1 << 20).unwrap();
     }
 
     private List<OperatorWarning> anchorWarnings() {
         flushWarnings();
 
-        return raised.stream()
-                     .filter(warning -> warning.code() == OperatorWarningCode.STORAGE_ANCHOR_CORRUPT)
-                     .toList();
+        return raised.stream().filter(warning -> warning.code() == OperatorWarningCode.STORAGE_ANCHOR_CORRUPT).toList();
     }
 
     private List<OperatorWarning> recoveries() {
         flushWarnings();
 
-        return raised.stream()
-                     .filter(warning -> warning.code() == OperatorWarningCode.STORAGE_ANCHOR_READABLE)
-                     .toList();
+        return raised.stream().filter(warning -> warning.code() == OperatorWarningCode.STORAGE_ANCHOR_READABLE).toList();
     }
 
     /// The sink hands warnings off to one thread in order, so once a sentinel raised now has arrived, so has everything
@@ -325,14 +318,10 @@ class StorageInstanceAnchorTest {
         var deadline = System.nanoTime() + 5_000_000_000L;
 
         reporter.degradedFor(OperatorWarningCode.STORAGE_TIER_FULL, sentinel, "{}", sentinel);
-        while (raised.stream().noneMatch(warning -> warning.message()
-                                                           .equals(sentinel)) && System.nanoTime() < deadline) {
+        while (raised.stream().noneMatch(warning -> warning.message().equals(sentinel)) && System.nanoTime() < deadline) {
             Thread.onSpinWait();
         }
-
-        assertThat(raised).as("the sink delivered the flush sentinel within 5 s")
-                  .anyMatch(warning -> warning.message()
-                                              .equals(sentinel));
+        assertThat(raised).as("the sink delivered the flush sentinel within 5 s").anyMatch(warning -> warning.message().equals(sentinel));
     }
 
     private static void awaitPrune(DefaultStorageInstance instance) {

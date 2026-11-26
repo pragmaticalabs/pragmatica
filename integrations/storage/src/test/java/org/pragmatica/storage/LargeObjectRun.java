@@ -29,13 +29,11 @@ final class LargeObjectRun {
                                          System.getProperty("java.class.path"),
                                          LargeObjectProbe.class.getName(),
                                          Long.toString(size),
-                                         dir.toString()).redirectErrorStream(true)
-                                                        .start();
+                                         dir.toString()).redirectErrorStream(true).start();
         var lines = new ArrayList<String>();
 
         try (var reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            var reading = Thread.ofVirtual().start(() -> reader.lines()
-                                                               .forEach(lines::add));
+            var reading = Thread.ofVirtual().start(() -> reader.lines().forEach(lines::add));
 
             if (!process.waitFor(timeoutMinutes, TimeUnit.MINUTES)) {
                 process.destroyForcibly();
@@ -48,17 +46,10 @@ final class LargeObjectRun {
         var values = new HashMap<String, String>();
 
         synchronized (lines) {
-            lines.stream()
-                 .filter(line -> line.matches("[A-Z_]+=.*"))
-                 .forEach(line -> values.put(line.substring(0,
-                                                            line.indexOf('=')),
-                                             line.substring(line.indexOf('=') + 1)));
+            lines.stream().filter(line -> line.matches("[A-Z_]+=.*")).forEach(line -> values.put(line.substring(0, line.indexOf('=')),
+                                                                                                   line.substring(line.indexOf('=') + 1)));
         }
 
-        return new Outcome(process.isAlive()
-                           ? -1
-                           : process.exitValue(),
-                           values,
-                           String.join("\n", lines));
+        return new Outcome(process.isAlive() ? -1 : process.exitValue(), values, String.join("\n", lines));
     }
 }

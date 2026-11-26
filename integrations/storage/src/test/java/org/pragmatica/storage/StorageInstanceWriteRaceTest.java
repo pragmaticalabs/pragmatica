@@ -7,21 +7,19 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
-
 
 /// #1567, one layer above the tiers: a put never hands out an id whose bytes have not landed on every
 /// required tier, and a required write that fails part-way leaves no unreachable copy behind.
@@ -39,17 +37,20 @@ class StorageInstanceWriteRaceTest {
     void duplicatePut_waitsForTheInFlightWrite_andWritesItselfWhenThatWriteFails() throws InterruptedException {
         var writer = new GatedWriter(true);
         var disk = diskTier(writer);
-        var storage = StorageInstance.storageInstance("race",
-                                                      List.of(MemoryTier.memoryTier(1 << 20), disk));
+        var storage = StorageInstance.storageInstance("race", List.of(MemoryTier.memoryTier(1 << 20), disk));
+
         var first = storage.put(CONTENT);
 
         assertThat(writer.entered.await(5, TimeUnit.SECONDS)).isTrue();
+
         var second = storage.put(CONTENT);
 
-        assertThat(second.await(timeSpan(200).millis()).isFailure()).as("the duplicate waits for the open write")
-                  .isTrue();
+        assertThat(second.await(timeSpan(200).millis()).isFailure()).as("the duplicate waits for the open write").isTrue();
+
         writer.release.countDown();
+
         first.await().onSuccess(_ -> fail("the first write was injected to fail"));
+
         var id = second.await().onFailure(cause -> fail(cause.message())).unwrap();
 
         assertThat(writer.calls.get()).as("the duplicate wrote the block itself").isEqualTo(2);
@@ -65,13 +66,16 @@ class StorageInstanceWriteRaceTest {
         var storage = StorageInstance.storageInstance("race-ok",
                                                       List.of(MemoryTier.memoryTier(1 << 20), diskTier(writer)),
                                                       store);
+
         var first = storage.put(CONTENT);
 
         assertThat(writer.entered.await(5, TimeUnit.SECONDS)).isTrue();
+
         var second = storage.put(CONTENT);
 
         assertThat(second.await(timeSpan(200).millis()).isFailure()).isTrue();
         writer.release.countDown();
+
         var id = first.await().unwrap();
 
         assertThat(second.await().unwrap()).isEqualTo(id);
@@ -92,6 +96,7 @@ class StorageInstanceWriteRaceTest {
         var id = BlockId.blockId(CONTENT).unwrap();
 
         storage.putRef("cursor", CONTENT).await().onSuccess(_ -> fail("the last required tier is full"));
+
         assertThat(disk.exists(id).await().unwrap()).as("no unreachable copy left on disk").isFalse();
         assertThat(disk.usedBytes()).isZero();
         assertThat(storage.resolveRef("cursor").isPresent()).isFalse();

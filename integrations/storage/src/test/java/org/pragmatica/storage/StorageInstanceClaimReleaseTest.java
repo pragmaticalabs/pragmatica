@@ -4,21 +4,21 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-
 
 /// Regression coverage for the claim-not-released bug: a failed durable-tier write
 /// must release the block claim so that a retry actually re-writes the block,
 /// instead of short-circuiting to deduplication and never persisting the content.
 class StorageInstanceClaimReleaseTest {
+
     private static final byte[] CONTENT = "claim-release-regression".getBytes(StandardCharsets.UTF_8);
     private static final long MEMORY_MAX = 1024 * 1024;
 
@@ -35,18 +35,23 @@ class StorageInstanceClaimReleaseTest {
 
     @Test
     void put_afterFailedWrite_retrySucceedsAndPersists() {
-        instance.put(CONTENT).await().onSuccess(_ -> fail("first put should fail under durable-tier backpressure"));
+        instance.put(CONTENT).await()
+                .onSuccess(_ -> fail("first put should fail under durable-tier backpressure"));
+
         var retry = instance.put(CONTENT).await();
 
         retry.onFailure(c -> fail("retry put should succeed after claim release: " + c.message()))
-             .onSuccess(id -> instance.get(id)
-                                      .await()
-                                      .onFailure(c -> fail("get failed: " + c.message()))
-                                      .onSuccess(opt -> {
-                                                     assertThat(opt.isPresent()).as("retry must durably persist the block (claim was released)")
-                                                               .isTrue();
-                                                     opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT));
-                                                 }));
+             .onSuccess(id ->
+                 instance.get(id).await()
+                         .onFailure(c -> fail("get failed: " + c.message()))
+                         .onSuccess(opt -> {
+                             assertThat(opt.isPresent())
+                                 .as("retry must durably persist the block (claim was released)")
+                                 .isTrue();
+                             opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT));
+                         })
+             );
+
         assertThat(durableTier.putCount()).isEqualTo(2);
     }
 

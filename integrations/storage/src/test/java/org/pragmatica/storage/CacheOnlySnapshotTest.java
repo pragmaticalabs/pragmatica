@@ -15,10 +15,9 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.storage.SnapshotConfig.snapshotConfig;
 import static org.pragmatica.storage.SnapshotManager.snapshotManager;
-import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// The cache-only marker in the snapshot format is ADDITIVE: a snapshot written before the marker existed
 /// restores unchanged, and the marker costs an ordinary record nothing.
@@ -50,19 +49,13 @@ class CacheOnlySnapshotTest {
     private static MetadataSnapshot restore(Path dir) {
         var store = MetadataStore.inMemoryMetadataStore("restore");
 
-        return snapshotManager(store,
-                               snapshotConfig(dir, 100, 600_000, 5, NODE_ID)).restoreFromLatest()
-                              .unwrap()
-                              .unwrap();
+        return snapshotManager(store, snapshotConfig(dir, 100, 600_000, 5, NODE_ID)).restoreFromLatest()
+                                                                                      .unwrap()
+                                                                                      .unwrap();
     }
 
     private static BlockLifecycle byId(MetadataSnapshot snapshot, BlockId id) {
-        return snapshot.lifecycles()
-                       .stream()
-                       .filter(lc -> lc.blockId()
-                                       .equals(id))
-                       .findFirst()
-                       .orElseThrow();
+        return snapshot.lifecycles().stream().filter(lc -> lc.blockId().equals(id)).findFirst().orElseThrow();
     }
 
     @Test
@@ -73,6 +66,7 @@ class CacheOnlySnapshotTest {
         assertThat(snapshot.epoch()).isEqualTo(5);
         assertThat(snapshot.lifecycles()).hasSize(3);
         assertThat(snapshot.lifecycles()).noneMatch(BlockLifecycle::cacheOnly);
+
         var alpha = byId(snapshot, idOf("fixture-alpha"));
 
         assertThat(alpha.presentIn()).containsExactlyInAnyOrder(TierLevel.MEMORY, TierLevel.LOCAL_DISK);
@@ -81,6 +75,7 @@ class CacheOnlySnapshotTest {
         assertThat(alpha.createdAt()).isEqualTo(1_699_999_000_000L);
         assertThat(alpha.accessCount()).isEqualTo(7);
         assertThat(alpha.orphanedAt()).isZero();
+
         var bravo = byId(snapshot, idOf("fixture-bravo"));
 
         assertThat(bravo.isOrphaned()).as("an orphan stays an orphan across the upgrade").isTrue();
@@ -94,23 +89,20 @@ class CacheOnlySnapshotTest {
         var dir = copyFixture();
         var original = Files.readString(dir.resolve("snapshot-000005.dat"), StandardCharsets.UTF_8);
 
-        assertThat(DefaultSnapshotManager.serializeSnapshot(restore(dir))).as("the new encoder writes an ordinary record exactly as the old one did")
-                  .isEqualTo(original);
+        assertThat(DefaultSnapshotManager.serializeSnapshot(restore(dir)))
+            .as("the new encoder writes an ordinary record exactly as the old one did")
+            .isEqualTo(original);
     }
 
     @Test
     void restore_preMarkerSnapshot_installsRecordsIntoTheStore() throws Exception {
         var store = MetadataStore.inMemoryMetadataStore("install");
-        var snapshot = snapshotManager(store,
-                                       snapshotConfig(copyFixture(),
-                                                      100,
-                                                      600_000,
-                                                      5,
-                                                      NODE_ID)).restoreFromLatest()
-                                      .unwrap()
-                                      .unwrap();
+        var snapshot = snapshotManager(store, snapshotConfig(copyFixture(), 100, 600_000, 5, NODE_ID)).restoreFromLatest()
+                                                                                                      .unwrap()
+                                                                                                      .unwrap();
 
         store.restoreLifecycles(snapshot.lifecycles());
+
         assertThat(store.listAllLifecycles()).hasSize(3);
         assertThat(store.getLifecycle(idOf("fixture-alpha")).unwrap().cacheOnly()).isFalse();
     }
@@ -119,19 +111,13 @@ class CacheOnlySnapshotTest {
     void snapshot_ofAMarker_roundTripsItAndLeavesOrdinaryLinesAtSevenFields() throws IOException {
         var store = MetadataStore.inMemoryMetadataStore("roundtrip");
         var owned = new BlockLifecycle(idOf("owned"), EnumSet.of(TierLevel.LOCAL_DISK), 1, 10L, 5L, 2, 0L);
-        var marker = new BlockLifecycle(idOf("marker"),
-                                        EnumSet.of(TierLevel.REMOTE, TierLevel.MEMORY),
-                                        0,
-                                        30L,
-                                        20L,
-                                        4,
-                                        0L,
-                                        true);
+        var marker = new BlockLifecycle(idOf("marker"), EnumSet.of(TierLevel.REMOTE, TierLevel.MEMORY), 0, 30L, 20L, 4, 0L, true);
         var dir = Files.createDirectories(tempDir.resolve("roundtrip"));
         var manager = snapshotManager(store, snapshotConfig(dir, 100, 600_000, 5, NODE_ID));
 
         store.createLifecycle(owned);
         store.createLifecycle(marker);
+
         var written = manager.snapshotNow().unwrap();
         var restored = restore(dir);
         var lines = Files.readString(dir.resolve("snapshot-000002.dat")).lines().toList();
@@ -139,12 +125,10 @@ class CacheOnlySnapshotTest {
         assertThat(written.isValid()).isTrue();
         assertThat(byId(restored, marker.blockId())).isEqualTo(marker);
         assertThat(byId(restored, owned.blockId())).isEqualTo(owned);
-        assertThat(lines.stream()
-                        .filter(l -> l.startsWith(owned.blockId().hexString()))
-                        .findFirst()
-                        .orElseThrow()
-                        .split("\\|")).hasSize(7);
-        assertThat(lines.stream().filter(l -> l.startsWith(marker.blockId().hexString())).findFirst().orElseThrow()).endsWith("|CACHE_ONLY");
+        assertThat(lines.stream().filter(l -> l.startsWith(owned.blockId().hexString())).findFirst().orElseThrow().split("\\|"))
+            .hasSize(7);
+        assertThat(lines.stream().filter(l -> l.startsWith(marker.blockId().hexString())).findFirst().orElseThrow())
+            .endsWith("|CACHE_ONLY");
     }
 
     /// The fixture with `flag` appended to the alpha line and the header hash recomputed over the new body, so
@@ -154,13 +138,9 @@ class CacheOnlySnapshotTest {
         var dir = copyFixture();
         var file = dir.resolve("snapshot-000005.dat");
         var original = Files.readString(file, StandardCharsets.UTF_8);
-        var alphaLine = original.lines()
-                                .filter(l -> l.startsWith(idOf("fixture-alpha").hexString()))
-                                .findFirst()
-                                .orElseThrow();
+        var alphaLine = original.lines().filter(l -> l.startsWith(idOf("fixture-alpha").hexString())).findFirst().orElseThrow();
         var body = original.substring(original.indexOf("# Lifecycles")).replace(alphaLine, alphaLine + "|" + flag);
-        var header = original.substring(0, original.indexOf("contentHash="))
-                   + "contentHash=" + HexFormat.of().formatHex(hashOf(body));
+        var header = original.substring(0, original.indexOf("contentHash=")) + "contentHash=" + HexFormat.of().formatHex(hashOf(body));
 
         Files.writeString(file, header + "\n\n" + body, StandardCharsets.UTF_8);
 
@@ -204,9 +184,9 @@ class CacheOnlySnapshotTest {
         var dir = fixtureWithFlagOnAlpha("SOMETHING_NEW");
         var store = MetadataStore.inMemoryMetadataStore("unknown-flag");
 
-        assertThat(snapshotManager(store,
-                                   snapshotConfig(dir, 100, 600_000, 5, NODE_ID)).restoreFromLatest().isFailure()).as("a flag this code cannot read could be one whose absence changes what the record means")
-                  .isTrue();
+        assertThat(snapshotManager(store, snapshotConfig(dir, 100, 600_000, 5, NODE_ID)).restoreFromLatest().isFailure())
+            .as("a flag this code cannot read could be one whose absence changes what the record means")
+            .isTrue();
     }
 
     /// A file in the unversioned layout, whose hash covers block ids and ref names only, so a flag changes nothing it
@@ -216,12 +196,8 @@ class CacheOnlySnapshotTest {
         var id = idOf("legacy-block");
         var record = new BlockLifecycle(id, EnumSet.of(TierLevel.MEMORY), 1, 10L, 5L, 2, 0L);
         var hash = HexFormat.of().formatHex(MetadataSnapshot.legacyContentHash(List.of(record), Map.of("legacy-ref", id)));
-        var file = "epoch=1\ntimestamp=1\nnodeId=" + NODE_ID
-                 + "\ncontentHash=" + hash
-                 + "\n\n# Lifecycles\n" + id.hexString()
-                 + "|MEMORY|1|10|5|2|0" + extraField
-                 + "\n\n# Refs\nlegacy-ref|" + id.hexString()
-                 + "\n";
+        var file = "epoch=1\ntimestamp=1\nnodeId=" + NODE_ID + "\ncontentHash=" + hash + "\n\n# Lifecycles\n"
+                   + id.hexString() + "|MEMORY|1|10|5|2|0" + extraField + "\n\n# Refs\nlegacy-ref|" + id.hexString() + "\n";
 
         Files.writeString(dir.resolve("snapshot-000001.dat"), file, StandardCharsets.UTF_8);
         Files.writeString(dir.resolve("LATEST"), "snapshot-000001.dat", StandardCharsets.UTF_8);
@@ -235,16 +211,14 @@ class CacheOnlySnapshotTest {
 
         assertThat(restored.lifecycles()).hasSize(1);
         assertThat(restored.lifecycles().getFirst().cacheOnly()).isFalse();
+
         var store = MetadataStore.inMemoryMetadataStore("legacy-unknown-flag");
 
-        assertThat(snapshotManager(store,
-                                   snapshotConfig(legacyFileWith("|SOMETHING_NEW"),
-                                                  100,
-                                                  600_000,
-                                                  5,
-                                                  NODE_ID)).restoreFromLatest()
-                                  .isFailure()).as("the hash of this layout ignores flags, so only the parser can refuse one it does not know")
-                  .isTrue();
+        assertThat(snapshotManager(store, snapshotConfig(legacyFileWith("|SOMETHING_NEW"), 100, 600_000, 5, NODE_ID))
+                       .restoreFromLatest()
+                       .isFailure())
+            .as("the hash of this layout ignores flags, so only the parser can refuse one it does not know")
+            .isTrue();
     }
 
     @Test
@@ -254,17 +228,13 @@ class CacheOnlySnapshotTest {
         var captured = MetadataSnapshot.metadataSnapshot(1, NODE_ID, List.of(owned, marker), Map.of());
         var written = DefaultSnapshotManager.serializeSnapshot(captured);
 
-        assertThat(SnapshotReadBack.matches(captured, written)).as("control: the file the encoder wrote reads back")
-                  .isTrue();
-        assertThat(SnapshotReadBack.matches(captured,
-                                            written.replace("|CACHE_ONLY", ""))).as("a marker whose flag was lost")
-                  .isFalse();
-        assertThat(SnapshotReadBack.matches(captured,
-                                            withFlagOnOwnedLine(written, owned))).as("an ordinary record that gained a flag")
-                  .isFalse();
-        assertThat(SnapshotReadBack.matches(captured,
-                                            written.replace("|CACHE_ONLY", "|CACHE_ONLY|CACHE_ONLY"))).as("anything after the flag")
-                  .isFalse();
+        assertThat(SnapshotReadBack.matches(captured, written)).as("control: the file the encoder wrote reads back").isTrue();
+        assertThat(SnapshotReadBack.matches(captured, written.replace("|CACHE_ONLY", "")))
+            .as("a marker whose flag was lost").isFalse();
+        assertThat(SnapshotReadBack.matches(captured, withFlagOnOwnedLine(written, owned)))
+            .as("an ordinary record that gained a flag").isFalse();
+        assertThat(SnapshotReadBack.matches(captured, written.replace("|CACHE_ONLY", "|CACHE_ONLY|CACHE_ONLY")))
+            .as("anything after the flag").isFalse();
     }
 
     private static String withFlagOnOwnedLine(String written, BlockLifecycle owned) {
@@ -278,6 +248,7 @@ class CacheOnlySnapshotTest {
         var id = idOf("hashed");
         var owned = new BlockLifecycle(id, EnumSet.of(TierLevel.REMOTE), 0, 30L, 20L, 4, 0L);
         var marker = new BlockLifecycle(id, EnumSet.of(TierLevel.REMOTE), 0, 30L, 20L, 4, 0L, true);
+
         var ownedHash = MetadataSnapshot.metadataSnapshot(1, NODE_ID, List.of(owned), Map.of()).contentHash();
         var markerHash = MetadataSnapshot.metadataSnapshot(1, NODE_ID, List.of(marker), Map.of()).contentHash();
 

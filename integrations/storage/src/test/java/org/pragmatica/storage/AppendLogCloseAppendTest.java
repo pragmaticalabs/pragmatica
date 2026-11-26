@@ -1,5 +1,15 @@
 package org.pragmatica.storage;
 
+import org.apache.logging.log4j.Level;
+import org.junit.jupiter.api.RepeatedTest;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.testlogging.LogCapture;
+
 import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -11,19 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.testlogging.LogCapture;
-
-import org.apache.logging.log4j.Level;
-import org.junit.jupiter.api.RepeatedTest;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.io.TempDir;
-
 import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// #2539: an append that races or follows [AppendLog#close] resolves to a committed record or to the typed `WAL_CLOSED` cause
 /// -- never to a generic `WAL append failed: null`, and never by fail-stopping the log (which logs an error and writes
@@ -53,6 +51,7 @@ class AppendLogCloseAppendTest {
         var seq = wal.write(0L, new byte[16], 1L).unwrap();
 
         wal.close();
+
         assertThat(wal.commit(seq).await().isSuccess()).as("committed by the close-time force").isTrue();
         assertThat(wal.failStopped()).isFalse();
     }
@@ -63,9 +62,8 @@ class AppendLogCloseAppendTest {
         var wal = AppendLog.open(path).unwrap();
 
         wal.close();
-        assertRefusedClosed(wal.append(0L, new byte[16], 1L).await(),
-                            wal,
-                            path);
+
+        assertRefusedClosed(wal.append(0L, new byte[16], 1L).await(), wal, path);
     }
 
     /// The close-time force runs with the closer's interrupt cleared, so it does not close the channel beneath itself and the
@@ -84,7 +82,7 @@ class AppendLogCloseAppendTest {
         }
 
         assertThat(stillInterrupted).as("the closer's interrupt is restored").isTrue();
-        assertThat(wal.commit(seq).await().<String> fold(Cause::message, _ -> "committed")).isEqualTo("committed");
+        assertThat(wal.commit(seq).await().<String>fold(Cause::message, _ -> "committed")).isEqualTo("committed");
         assertThat(wal.failStopped()).isFalse();
     }
 
@@ -106,16 +104,17 @@ class AppendLogCloseAppendTest {
             }
 
             assertThat(capture.messages(Level.ERROR)).as("an ERROR naming the typed detail")
-                      .anyMatch(m -> m.contains("ClosedByInterruptException"))
-                      .noneMatch(m -> m.contains("null"));
+                                                     .anyMatch(m -> m.contains("ClosedByInterruptException"))
+                                                     .noneMatch(m -> m.contains("null"));
         }
 
-        assertThat(write.<String> fold(Cause::message, _ -> "accepted")).isEqualTo(INTERRUPT_FAULT);
+        assertThat(write.<String>fold(Cause::message, _ -> "accepted")).isEqualTo(INTERRUPT_FAULT);
         assertFailStopped(wal, path);
         assertThat(reported.get()).isEqualTo(new AppendLog.WalError.AppendFailed("ClosedByInterruptException"));
-        assertThat(wal.append(1L, new byte[16], 1L).await().<String> fold(Cause::message, _ -> "accepted")).as("later appends are refused as fail-stopped, not closed")
-                  .isNotEqualTo(WAL_CLOSED_MESSAGE)
-                  .isNotEqualTo("accepted");
+        assertThat(wal.append(1L, new byte[16], 1L).await().<String>fold(Cause::message, _ -> "accepted"))
+            .as("later appends are refused as fail-stopped, not closed")
+            .isNotEqualTo(WAL_CLOSED_MESSAGE)
+            .isNotEqualTo("accepted");
     }
 
     @Test
@@ -132,7 +131,7 @@ class AppendLogCloseAppendTest {
             Thread.interrupted();
         }
 
-        assertThat(commit.<String> fold(Cause::message, _ -> "accepted")).isEqualTo(INTERRUPT_FAULT);
+        assertThat(commit.<String>fold(Cause::message, _ -> "accepted")).isEqualTo(INTERRUPT_FAULT);
         assertFailStopped(wal, path);
     }
 
@@ -149,8 +148,8 @@ class AppendLogCloseAppendTest {
                 startAndAwaitBlocked(closer);
                 write = writeInterrupted(wal, 0L);
             }
-
             closer.join(10_000);
+
             assertThat(capture.messages(Level.ERROR)).as("a stop logs no error").isEmpty();
         }
 
@@ -175,8 +174,8 @@ class AppendLogCloseAppendTest {
                 Thread.interrupted();
             }
         }
-
         closer.join(10_000);
+
         assertRefusedClosed(commit, wal, path);
     }
 
@@ -186,20 +185,19 @@ class AppendLogCloseAppendTest {
     void force_onAChannelAnInterruptedWriterClosed_whileCloseIsInProgress_isRefusedClosed() throws Exception {
         var path = dir.resolve("p1-stop.wal");
         var wal = AppendLog.open(path).unwrap();
-
         wal.write(0L, new byte[16], 1L).unwrap();
         var closer = new Thread(wal::close);
         Result<Unit> force;
 
         synchronized (field(wal, "writeLock")) {
             startAndAwaitBlocked(closer);
-            assertThat(writeInterrupted(wal, 1L).<String> fold(Cause::message, _ -> "accepted")).isEqualTo(WAL_CLOSED_MESSAGE);
+            assertThat(writeInterrupted(wal, 1L).<String>fold(Cause::message, _ -> "accepted")).isEqualTo(WAL_CLOSED_MESSAGE);
             synchronized (field(wal, "syncLock")) {
                 force = forceAndPublish(wal);
             }
         }
-
         closer.join(10_000);
+
         assertRefusedClosed(force, wal, path);
     }
 
@@ -217,9 +215,9 @@ class AppendLogCloseAppendTest {
             awaitChannelClosed(wal);
             commit = groupCommit(wal, seq);
         }
-
         writer.join(10_000);
-        assertThat(commit.<String> fold(Cause::message, _ -> "accepted")).isEqualTo(PLAIN_CLOSED_FAULT);
+
+        assertThat(commit.<String>fold(Cause::message, _ -> "accepted")).isEqualTo(PLAIN_CLOSED_FAULT);
         assertFailStopped(wal, path);
     }
 
@@ -242,9 +240,9 @@ class AppendLogCloseAppendTest {
             assertThat(channelOf(wal).isOpen()).as("the interrupted force closed the channel").isFalse();
             write = writeNext(wal, 1L);
         }
-
         closer.join(10_000);
-        assertThat(forced.get().<String> fold(Cause::message, _ -> "accepted")).isEqualTo(WAL_CLOSED_MESSAGE);
+
+        assertThat(forced.get().<String>fold(Cause::message, _ -> "accepted")).isEqualTo(WAL_CLOSED_MESSAGE);
         assertRefusedClosed(write.mapToUnit(), wal, path);
     }
 
@@ -261,10 +259,11 @@ class AppendLogCloseAppendTest {
             startAndAwaitBlocked(closer);
             duringClose = appendFailure(stopping, new AsynchronousCloseException());
         }
-
         closer.join(10_000);
+
         assertThat(duringClose).isSameAs(AppendLog.WalError.General.WAL_CLOSED);
-        assertThat(appendFailure(idle, new AsynchronousCloseException())).isEqualTo(new AppendLog.WalError.AppendFailed("AsynchronousCloseException"));
+        assertThat(appendFailure(idle, new AsynchronousCloseException()))
+            .isEqualTo(new AppendLog.WalError.AppendFailed("AsynchronousCloseException"));
     }
 
     /// A plain `ClosedChannelException` with no close begun keeps fail-stopping, and its detail is never null.
@@ -275,7 +274,8 @@ class AppendLogCloseAppendTest {
         var seq = wal.write(0L, new byte[16], 1L).unwrap();
 
         channelOf(wal).close();
-        var outcome = wal.commit(seq).await().<String> fold(Cause::message, _ -> "accepted");
+
+        var outcome = wal.commit(seq).await().<String>fold(Cause::message, _ -> "accepted");
 
         assertThat(outcome).isEqualTo(PLAIN_CLOSED_FAULT);
         assertFailStopped(wal, path);
@@ -312,29 +312,27 @@ class AppendLogCloseAppendTest {
         assertThat(threads).as("every thread finished").noneMatch(Thread::isAlive);
         assertThat(stopInterrupted.get()).as("the write interrupted by the stop").isEqualTo(WAL_CLOSED_MESSAGE);
         assertThat(stopOutcomes).as("stop: committed, refused closed or an offset regression")
-                  .allMatch(o -> o.equals("ok") || o.equals(WAL_CLOSED_MESSAGE) || o.equals("OffsetRegression"));
+                                .allMatch(o -> o.equals("ok") || o.equals(WAL_CLOSED_MESSAGE) || o.equals("OffsetRegression"));
         assertThat(stop.failStopped()).as("a stop never fail-stops").isFalse();
         assertThat(Files.exists(AppendLog.failStopMarkOf(stopPath))).as("a stop writes no mark").isFalse();
+
         assertThat(strayInterrupted.get()).as("the stray interrupted write").isEqualTo(INTERRUPT_FAULT);
         assertThat(strayOutcomes).as("stray: nothing reports closed, no detail is null")
-                  .noneMatch(o -> o.equals(WAL_CLOSED_MESSAGE) || o.contains("null"));
+                                 .noneMatch(o -> o.equals(WAL_CLOSED_MESSAGE) || o.contains("null"));
         assertFailStopped(stray, strayPath);
         stray.close();
     }
 
     /// The stop: holds `writeLock` as a writer in flight would, starts the closer, and once the closer is blocked on the lock
     /// (close has begun) interrupts itself and writes the next offset (read under the lock, so the order rule admits it).
-    private static void stopWithAnInFlightInterrupt(AppendLog wal,
-                                                    CountDownLatch start,
-                                                    AtomicReference<String> outcome) {
+    private static void stopWithAnInFlightInterrupt(AppendLog wal, CountDownLatch start, AtomicReference<String> outcome) {
         awaitQuietly(start);
         var closer = new Thread(wal::close);
 
         synchronized (fieldUnchecked(wal, "writeLock")) {
             startAndAwaitBlocked(closer);
-            outcome.set(writeInterrupted(wal, nextOffset(wal)).<String> fold(Cause::message, _ -> "accepted"));
+            outcome.set(writeInterrupted(wal, nextOffset(wal)).<String>fold(Cause::message, _ -> "accepted"));
         }
-
         joinQuietly(closer);
     }
 
@@ -342,7 +340,7 @@ class AppendLogCloseAppendTest {
     private static void strayInterrupt(AppendLog wal, CountDownLatch start, AtomicReference<String> outcome) {
         awaitQuietly(start);
         synchronized (fieldUnchecked(wal, "writeLock")) {
-            outcome.set(writeInterrupted(wal, nextOffset(wal)).<String> fold(Cause::message, _ -> "accepted"));
+            outcome.set(writeInterrupted(wal, nextOffset(wal)).<String>fold(Cause::message, _ -> "accepted"));
         }
     }
 
@@ -353,16 +351,17 @@ class AppendLogCloseAppendTest {
     private Thread appender(AppendLog wal, int id, int count, CountDownLatch start, List<String> outcomes) {
         return new Thread(() -> {
             awaitQuietly(start);
-            IntStream.range(0, count).forEach(i -> record(outcomes,
-                                                          wal.append((long) id * count + i, new byte[16], 1L).await()));
+            IntStream.range(0, count)
+                     .forEach(i -> record(outcomes,
+                                          wal.append((long) id * count + i, new byte[16], 1L).await()));
         });
     }
 
     private static void record(List<String> outcomes, Result<Unit> result) {
-        var outcome = result.<String> fold(cause -> cause instanceof AppendLog.WalError.OffsetRegression
+        var outcome = result.<String>fold(cause -> cause instanceof AppendLog.WalError.OffsetRegression
                                                     ? "OffsetRegression"
                                                     : cause.message(),
-                                           _ -> "ok");
+                                          _ -> "ok");
 
         synchronized (outcomes) {
             outcomes.add(outcome);
@@ -397,7 +396,6 @@ class AppendLogCloseAppendTest {
             if (System.nanoTime() > deadline) {
                 throw new AssertionError("the closer never blocked on writeLock");
             }
-
             Thread.onSpinWait();
         }
     }
@@ -409,7 +407,6 @@ class AppendLogCloseAppendTest {
             if (System.nanoTime() > deadline) {
                 throw new AssertionError("the interrupted writer never closed the channel");
             }
-
             Thread.onSpinWait();
         }
     }
@@ -431,7 +428,7 @@ class AppendLogCloseAppendTest {
     }
 
     private static void assertRefusedClosed(Result<Unit> result, AppendLog wal, Path path) {
-        assertThat(result.<String> fold(Cause::message, _ -> "accepted")).isEqualTo(WAL_CLOSED_MESSAGE);
+        assertThat(result.<String>fold(Cause::message, _ -> "accepted")).isEqualTo(WAL_CLOSED_MESSAGE);
         assertThat(wal.failStopped()).as("a closed log is not fail-stopped").isFalse();
         assertThat(Files.exists(AppendLog.failStopMarkOf(path))).as("a closed log writes no mark").isFalse();
     }
@@ -442,19 +439,19 @@ class AppendLogCloseAppendTest {
     }
 
     private static Result<Unit> groupCommit(AppendLog wal, long seq) throws ReflectiveOperationException {
-        return invoke(wal, "groupCommit", new Class<?>[]{long.class}, seq);
+        return invoke(wal, "groupCommit", new Class<?>[] {long.class}, seq);
     }
 
     private static Result<Unit> forceAndPublish(AppendLog wal) throws ReflectiveOperationException {
-        return invoke(wal, "forceAndPublish", new Class<?>[]{});
+        return invoke(wal, "forceAndPublish", new Class<?>[] {});
     }
 
     private static Result<Long> writeNext(AppendLog wal, long offset) throws ReflectiveOperationException {
-        return invoke(wal, "writeNext", new Class<?>[]{long.class, byte[].class, long.class}, offset, new byte[16], 1L);
+        return invoke(wal, "writeNext", new Class<?>[] {long.class, byte[].class, long.class}, offset, new byte[16], 1L);
     }
 
     private static Cause appendFailure(AppendLog wal, Throwable failure) throws ReflectiveOperationException {
-        return invoke(wal, "appendFailure", new Class<?>[]{Throwable.class}, failure);
+        return invoke(wal, "appendFailure", new Class<?>[] {Throwable.class}, failure);
     }
 
     @SuppressWarnings("unchecked")
@@ -462,7 +459,6 @@ class AppendLogCloseAppendTest {
         var method = AppendLog.class.getDeclaredMethod(name, types);
 
         method.setAccessible(true);
-
         return (T) method.invoke(wal, args);
     }
 
@@ -474,7 +470,6 @@ class AppendLogCloseAppendTest {
         var field = AppendLog.class.getDeclaredField(name);
 
         field.setAccessible(true);
-
         return field.get(wal);
     }
 

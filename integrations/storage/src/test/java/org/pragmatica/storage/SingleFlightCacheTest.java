@@ -6,22 +6,21 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.io.TimeSpan;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-
-import static org.pragmatica.lang.Option.some;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class SingleFlightCacheTest {
+
     private SingleFlightCache cache;
 
     @BeforeEach
@@ -30,29 +29,29 @@ class SingleFlightCacheTest {
     }
 
     private static BlockId blockIdOf(byte[] content) {
-        return BlockId.blockId(content).fold(_ -> {
-                                                 fail("BlockId creation failed");
-
-                                                 return null;
-                                             },
-                                             id -> id);
+        return BlockId.blockId(content)
+                      .fold(_ -> { fail("BlockId creation failed"); return null; },
+                            id -> id);
     }
 
     @Nested
     class DeduplicationTests {
+
         @Test
         void deduplicate_singleCall_executesLoader() {
             var id = blockIdOf("test".getBytes(StandardCharsets.UTF_8));
             var data = "payload".getBytes(StandardCharsets.UTF_8);
             var callCount = new AtomicInteger(0);
+
             var result = cache.deduplicate(id, () -> loaderWithCounter(data, callCount));
 
             result.await()
                   .onFailure(c -> fail("Expected success: " + c.message()))
                   .onSuccess(opt -> {
-                                 assertThat(opt.isPresent()).isTrue();
-                                 opt.onPresent(bytes -> assertThat(bytes).isEqualTo(data));
-                             });
+                      assertThat(opt.isPresent()).isTrue();
+                      opt.onPresent(bytes -> assertThat(bytes).isEqualTo(data));
+                  });
+
             assertThat(callCount.get()).isEqualTo(1);
         }
 
@@ -61,12 +60,15 @@ class SingleFlightCacheTest {
             var id = blockIdOf("shared".getBytes(StandardCharsets.UTF_8));
             var data = "shared-data".getBytes(StandardCharsets.UTF_8);
             var callCount = new AtomicInteger(0);
+
             Promise<Option<byte[]>> slowPromise = Promise.promise();
+
             var first = cache.deduplicate(id, () -> delayedLoaderWithCounter(slowPromise, data, callCount));
             var second = cache.deduplicate(id, () -> loaderWithCounter(data, callCount));
 
             assertThat(first).isSameAs(second);
             assertThat(callCount.get()).isEqualTo(1);
+
             slowPromise.succeed(some(data));
         }
 
@@ -78,6 +80,7 @@ class SingleFlightCacheTest {
 
             cache.deduplicate(id, () -> loaderWithCounter(data, callCount)).await();
             assertThat(callCount.get()).isEqualTo(1);
+
             cache.deduplicate(id, () -> loaderWithCounter(data, callCount)).await();
             assertThat(callCount.get()).isEqualTo(2);
         }
@@ -85,6 +88,7 @@ class SingleFlightCacheTest {
 
     @Nested
     class HungLoaderEvictionTests {
+
         private static final TimeSpan SHORT_BOUND = timeSpan(150).millis();
 
         /// A loader that never resolves must NOT poison its BlockId forever. The in-flight
@@ -96,22 +100,24 @@ class SingleFlightCacheTest {
             var bounded = SingleFlightCache.singleFlightCache(SHORT_BOUND);
             var id = blockIdOf("hung".getBytes(StandardCharsets.UTF_8));
             var hungCalls = new AtomicInteger(0);
+
             // First caller: loader never resolves → must surface a Timeout, not hang.
-            bounded.deduplicate(id,
-                                () -> hangingLoaderWithCounter(hungCalls))
+            bounded.deduplicate(id, () -> hangingLoaderWithCounter(hungCalls))
                    .await(timeSpan(5).seconds())
                    .onSuccessRun(() -> fail("Expected timeout failure for hung loader"))
                    .onFailure(c -> assertThat(c).isInstanceOf(CoreError.Timeout.class));
+
             assertThat(hungCalls.get()).isEqualTo(1);
+
             // Entry must have been evicted on timeout → a fresh, healthy load now runs.
             var data = "fresh".getBytes(StandardCharsets.UTF_8);
             var freshCalls = new AtomicInteger(0);
 
-            bounded.deduplicate(id,
-                                () -> loaderWithCounter(data, freshCalls))
+            bounded.deduplicate(id, () -> loaderWithCounter(data, freshCalls))
                    .await(timeSpan(5).seconds())
                    .onFailure(c -> fail("Expected fresh load to succeed: " + c.message()))
                    .onSuccess(opt -> opt.onPresent(bytes -> assertThat(bytes).isEqualTo(data)));
+
             assertThat(freshCalls.get()).isEqualTo(1);
         }
 
@@ -141,8 +147,9 @@ class SingleFlightCacheTest {
             var bounded = SingleFlightCache.singleFlightCache(SHORT_BOUND);
             var id = blockIdOf("hung-starved".getBytes(StandardCharsets.UTF_8));
             var hungCalls = new AtomicInteger(0);
+
             int carrierCount = Integer.getInteger("jdk.virtualThreadScheduler.parallelism",
-                                                  Runtime.getRuntime().availableProcessors());
+                                                   Runtime.getRuntime().availableProcessors());
             var released = new AtomicBoolean(false);
             var started = new CountDownLatch(carrierCount);
             var occupiers = new Thread[carrierCount];
@@ -157,26 +164,28 @@ class SingleFlightCacheTest {
             }
 
             try {
-                assertThat(started.await(5, TimeUnit.SECONDS)).as("every virtual-thread carrier must be occupied before the bound fires")
-                          .isTrue();
+                assertThat(started.await(5, TimeUnit.SECONDS))
+                    .as("every virtual-thread carrier must be occupied before the bound fires")
+                    .isTrue();
+
                 // First caller: loader never resolves → surfaces a Timeout once the bound fires.
                 // The cleanup this triggers cannot run yet — every carrier is held by a spinning
                 // occupier.
-                bounded.deduplicate(id,
-                                    () -> hangingLoaderWithCounter(hungCalls))
+                bounded.deduplicate(id, () -> hangingLoaderWithCounter(hungCalls))
                        .await(timeSpan(5).seconds())
                        .onSuccessRun(() -> fail("Expected timeout failure for hung loader"))
                        .onFailure(c -> assertThat(c).isInstanceOf(CoreError.Timeout.class));
+
                 // Second caller, arriving while the cleanup is still queued behind the occupiers:
                 // must get a fresh load, not the stale already-resolved entry.
                 var data = "fresh".getBytes(StandardCharsets.UTF_8);
                 var freshCalls = new AtomicInteger(0);
 
-                bounded.deduplicate(id,
-                                    () -> loaderWithCounter(data, freshCalls))
+                bounded.deduplicate(id, () -> loaderWithCounter(data, freshCalls))
                        .await(timeSpan(5).seconds())
                        .onFailure(c -> fail("Expected fresh load to succeed: " + c.message()))
                        .onSuccess(opt -> opt.onPresent(bytes -> assertThat(bytes).isEqualTo(data)));
+
                 assertThat(freshCalls.get()).isEqualTo(1);
             } finally {
                 released.set(true);
@@ -220,8 +229,9 @@ class SingleFlightCacheTest {
             var id = blockIdOf("cleanup-clobber".getBytes(StandardCharsets.UTF_8));
             var aCalls = new AtomicInteger(0);
             Promise<Option<byte[]>> controlledA = Promise.promise();
+
             int carrierCount = Integer.getInteger("jdk.virtualThreadScheduler.parallelism",
-                                                  Runtime.getRuntime().availableProcessors());
+                                                   Runtime.getRuntime().availableProcessors());
             var released = new AtomicBoolean(false);
             var started = new CountDownLatch(carrierCount);
             var occupiers = new Thread[carrierCount];
@@ -236,52 +246,65 @@ class SingleFlightCacheTest {
             }
 
             try {
-                assertThat(started.await(5, TimeUnit.SECONDS)).as("every virtual-thread carrier must be occupied before A is failed")
-                          .isTrue();
+                assertThat(started.await(5, TimeUnit.SECONDS))
+                    .as("every virtual-thread carrier must be occupied before A is failed")
+                    .isTrue();
+
                 // A: a loader failed by hand. Registered while still unresolved, so this observer
                 // shares the same async dispatch batch as the cache's own cleanup and is guaranteed
                 // to run strictly after it (registration order).
                 var aPromise = cache.deduplicate(id, () -> delayedLoaderWithCounter(controlledA, new byte[0], aCalls));
                 var cleanupAObserved = new CountDownLatch(1);
-
                 aPromise.onResultRun(cleanupAObserved::countDown);
+
                 controlledA.fail(new CoreError.Timeout("A failed by hand"));
-                assertThat(aPromise.isResolved()).as("A must read as resolved while its cleanup is still queued behind the occupiers")
-                          .isTrue();
-                assertThat(cleanupAObserved.getCount()).as("A's cleanup must still be queued behind the occupiers")
-                          .isEqualTo(1);
+
+                assertThat(aPromise.isResolved())
+                    .as("A must read as resolved while its cleanup is still queued behind the occupiers")
+                    .isTrue();
+                assertThat(cleanupAObserved.getCount())
+                    .as("A's cleanup must still be queued behind the occupiers")
+                    .isEqualTo(1);
+
                 // B: a fresh, deliberately unresolved load for the same id, created while A's
                 // cleanup is still queued behind the occupiers (A reads as resolved, so this is a
                 // legitimate supersession, not a bug).
                 Promise<Option<byte[]>> controlledB = Promise.promise();
                 var bData = "b-data".getBytes(StandardCharsets.UTF_8);
                 var bCalls = new AtomicInteger(0);
+
                 var bPromise = cache.deduplicate(id, () -> delayedLoaderWithCounter(controlledB, bData, bCalls));
 
                 assertThat(bPromise).isNotSameAs(aPromise);
                 assertThat(bCalls.get()).isEqualTo(1);
+
                 // Release the carriers so A's queued cleanup can finally run, and wait for proof
                 // that it actually has — not just that we asked it to.
                 released.set(true);
                 for (var occupier : occupiers) {
                     occupier.join();
                 }
+                assertThat(cleanupAObserved.await(5, TimeUnit.SECONDS))
+                    .as("A's delayed cleanup must actually execute before checking for clobbering")
+                    .isTrue();
 
-                assertThat(cleanupAObserved.await(5, TimeUnit.SECONDS)).as("A's delayed cleanup must actually execute before checking for clobbering")
-                          .isTrue();
                 // A's cleanup ran. With a key-only remove(id) it would have deleted B's still-live
                 // entry; a further caller must instead JOIN B, and B's loader must not run twice.
                 var cCalls = new AtomicInteger(0);
-                var thirdCallPromise = cache.deduplicate(id,
-                                                         () -> loaderWithCounter("c-data".getBytes(StandardCharsets.UTF_8),
-                                                                                 cCalls));
+                var thirdCallPromise = cache.deduplicate(id, () -> loaderWithCounter("c-data".getBytes(StandardCharsets.UTF_8), cCalls));
 
-                assertThat(thirdCallPromise).as("a caller arriving after A's delayed cleanup must join the still-live B, not start a third load")
-                          .isSameAs(bPromise);
-                assertThat(cCalls.get()).as("the single-flight guarantee is broken if a third load was started")
-                          .isZero();
-                assertThat(bCalls.get()).as("B's loader must not have been invoked again").isEqualTo(1);
+                assertThat(thirdCallPromise)
+                    .as("a caller arriving after A's delayed cleanup must join the still-live B, not start a third load")
+                    .isSameAs(bPromise);
+                assertThat(cCalls.get())
+                    .as("the single-flight guarantee is broken if a third load was started")
+                    .isZero();
+                assertThat(bCalls.get())
+                    .as("B's loader must not have been invoked again")
+                    .isEqualTo(1);
+
                 controlledB.succeed(some(bData));
+
                 bPromise.await(timeSpan(5).seconds())
                         .onFailure(c -> fail("Expected B's load to succeed: " + c.message()))
                         .onSuccess(opt -> opt.onPresent(bytes -> assertThat(bytes).isEqualTo(bData)));
@@ -304,13 +327,17 @@ class SingleFlightCacheTest {
             var id = blockIdOf("shared-bounded".getBytes(StandardCharsets.UTF_8));
             var data = "shared-data".getBytes(StandardCharsets.UTF_8);
             var callCount = new AtomicInteger(0);
+
             Promise<Option<byte[]>> slowPromise = Promise.promise();
+
             var first = cache.deduplicate(id, () -> delayedLoaderWithCounter(slowPromise, data, callCount));
             var second = cache.deduplicate(id, () -> loaderWithCounter(data, callCount));
 
             assertThat(first).isSameAs(second);
             assertThat(callCount.get()).isEqualTo(1);
+
             slowPromise.succeed(some(data));
+
             first.await(timeSpan(5).seconds())
                  .onFailure(c -> fail("Expected shared load to succeed: " + c.message()))
                  .onSuccess(opt -> opt.onPresent(bytes -> assertThat(bytes).isEqualTo(data)));
@@ -319,21 +346,18 @@ class SingleFlightCacheTest {
 
     private static Promise<Option<byte[]>> hangingLoaderWithCounter(AtomicInteger counter) {
         counter.incrementAndGet();
-
         return Promise.promise();  // never resolves
     }
 
     private static Promise<Option<byte[]>> loaderWithCounter(byte[] data, AtomicInteger counter) {
         counter.incrementAndGet();
-
         return Promise.success(some(data));
     }
 
-    private static Promise<Option<byte[]>> delayedLoaderWithCounter(Promise<Option<byte[]>> controlled,
-                                                                    byte[] data,
-                                                                    AtomicInteger counter) {
+    private static Promise<Option<byte[]>> delayedLoaderWithCounter(
+        Promise<Option<byte[]>> controlled, byte[] data, AtomicInteger counter
+    ) {
         counter.incrementAndGet();
-
         return controlled;
     }
 }

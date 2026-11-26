@@ -10,8 +10,8 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-
 class BlockEncryptorTest {
+
     private static final String KEY_ID = "test-key-1";
     private static final byte[] TEST_DATA = "Hello, AES-256-GCM encryption!".getBytes();
 
@@ -27,11 +27,11 @@ class BlockEncryptorTest {
 
     @Nested
     class AesGcmEncryption {
+
         @Test
         void encrypt_decrypt_roundTrip() {
             encryptor.encrypt(TEST_DATA)
-                     .flatMap(encrypted -> encryptor.decrypt(encrypted.ciphertext(),
-                                                             encrypted.params()))
+                     .flatMap(encrypted -> encryptor.decrypt(encrypted.ciphertext(), encrypted.params()))
                      .onFailure(cause -> fail("Round-trip failed: " + cause.message()))
                      .onSuccess(decrypted -> assertThat(decrypted).isEqualTo(TEST_DATA));
         }
@@ -42,21 +42,20 @@ class BlockEncryptorTest {
             var result2 = encryptor.encrypt(TEST_DATA);
 
             result1.onFailure(cause -> fail("First encryption failed: " + cause.message()))
-                   .onSuccess(enc1 -> result2.onFailure(cause -> fail("Second encryption failed: " + cause.message()))
-                                             .onSuccess(enc2 -> assertThat(enc1.params().iv()).isNotEqualTo(enc2.params()
-                                                                                                                .iv())));
+                   .onSuccess(enc1 ->
+                       result2.onFailure(cause -> fail("Second encryption failed: " + cause.message()))
+                              .onSuccess(enc2 -> assertThat(enc1.params().iv()).isNotEqualTo(enc2.params().iv()))
+                   );
         }
 
         @Test
         void encrypt_differentKey_cannotDecrypt() {
             var otherKey = new byte[32];
-
             new SecureRandom().nextBytes(otherKey);
             var otherEncryptor = BlockEncryptor.aesGcm(otherKey, "other-key").unwrap();
 
             encryptor.encrypt(TEST_DATA)
-                     .flatMap(encrypted -> otherEncryptor.decrypt(encrypted.ciphertext(),
-                                                                  encrypted.params()))
+                     .flatMap(encrypted -> otherEncryptor.decrypt(encrypted.ciphertext(), encrypted.params()))
                      .onSuccess(_ -> fail("Decryption with wrong key should fail"));
         }
 
@@ -69,18 +68,15 @@ class BlockEncryptorTest {
 
         private void verifyTamperedCiphertextFails(BlockEncryptor.EncryptedData encrypted) {
             var tampered = encrypted.ciphertext();
-
             tampered[0] ^= 0xFF;
-            encryptor.decrypt(tampered,
-                              encrypted.params())
+            encryptor.decrypt(tampered, encrypted.params())
                      .onSuccess(_ -> fail("Tampered ciphertext should fail decryption"));
         }
 
         @Test
         void encrypt_emptyData_succeeds() {
             encryptor.encrypt(new byte[0])
-                     .flatMap(encrypted -> encryptor.decrypt(encrypted.ciphertext(),
-                                                             encrypted.params()))
+                     .flatMap(encrypted -> encryptor.decrypt(encrypted.ciphertext(), encrypted.params()))
                      .onFailure(cause -> fail("Empty data round-trip failed: " + cause.message()))
                      .onSuccess(decrypted -> assertThat(decrypted).isEmpty());
         }
@@ -88,11 +84,10 @@ class BlockEncryptorTest {
         @Test
         void encrypt_largeData_succeeds() {
             var largeData = new byte[1024 * 1024];
-
             Arrays.fill(largeData, (byte) 0xAB);
+
             encryptor.encrypt(largeData)
-                     .flatMap(encrypted -> encryptor.decrypt(encrypted.ciphertext(),
-                                                             encrypted.params()))
+                     .flatMap(encrypted -> encryptor.decrypt(encrypted.ciphertext(), encrypted.params()))
                      .onFailure(cause -> fail("Large data round-trip failed: " + cause.message()))
                      .onSuccess(decrypted -> assertThat(decrypted).isEqualTo(largeData));
         }
@@ -114,17 +109,17 @@ class BlockEncryptorTest {
         @Test
         void aesGcm_invalidKeyLength_returnsFailure() {
             var shortKey = new byte[16];
-
             new SecureRandom().nextBytes(shortKey);
+
             BlockEncryptor.aesGcm(shortKey, KEY_ID)
                           .onSuccess(_ -> fail("Should fail with invalid key length"))
                           .onFailure(cause -> {
-                                         assertThat(cause).isInstanceOf(EncryptionError.InvalidKeyLength.class);
-                                         // #253 SHOULD-FIX #7: the failure must name the key id an operator needs
-                                         // to act on, not just report a byte-length mismatch in the abstract.
-                                         assertThat(cause.message()).as("InvalidKeyLength must name the key id")
-                                                   .contains(KEY_ID);
-                                     });
+                              assertThat(cause).isInstanceOf(EncryptionError.InvalidKeyLength.class);
+                              // #253 SHOULD-FIX #7: the failure must name the key id an operator needs
+                              // to act on, not just report a byte-length mismatch in the abstract.
+                              assertThat(cause.message()).as("InvalidKeyLength must name the key id")
+                                                         .contains(KEY_ID);
+                          });
         }
 
         @Test
@@ -139,9 +134,7 @@ class BlockEncryptorTest {
             var aad = "253-header-prefix".getBytes();
 
             encryptor.encrypt(TEST_DATA, aad)
-                     .flatMap(encrypted -> encryptor.decrypt(encrypted.ciphertext(),
-                                                             encrypted.params(),
-                                                             aad))
+                     .flatMap(encrypted -> encryptor.decrypt(encrypted.ciphertext(), encrypted.params(), aad))
                      .onFailure(cause -> fail("AAD round-trip failed: " + cause.message()))
                      .onSuccess(decrypted -> assertThat(decrypted).isEqualTo(TEST_DATA));
         }
@@ -153,11 +146,9 @@ class BlockEncryptorTest {
 
             encryptor.encrypt(TEST_DATA, encryptAad)
                      .onFailure(cause -> fail("Encryption failed: " + cause.message()))
-                     .onSuccess(encrypted -> encryptor.decrypt(encrypted.ciphertext(),
-                                                               encrypted.params(),
-                                                               tamperedAad)
-                                                      .onSuccess(_ -> fail("Decryption with a different AAD must fail authentication"))
-                                                      .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DecryptionFailed.class)));
+                     .onSuccess(encrypted -> encryptor.decrypt(encrypted.ciphertext(), encrypted.params(), tamperedAad)
+                                                       .onSuccess(_ -> fail("Decryption with a different AAD must fail authentication"))
+                                                       .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DecryptionFailed.class)));
         }
 
         @Test
@@ -166,15 +157,15 @@ class BlockEncryptorTest {
 
             encryptor.encrypt(TEST_DATA, aad)
                      .onFailure(cause -> fail("Encryption failed: " + cause.message()))
-                     .onSuccess(encrypted -> encryptor.decrypt(encrypted.ciphertext(),
-                                                               encrypted.params())
-                                                      .onSuccess(_ -> fail("Decryption that drops the AAD used at encryption must fail"))
-                                                      .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DecryptionFailed.class)));
+                     .onSuccess(encrypted -> encryptor.decrypt(encrypted.ciphertext(), encrypted.params())
+                                                       .onSuccess(_ -> fail("Decryption that drops the AAD used at encryption must fail"))
+                                                       .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DecryptionFailed.class)));
         }
     }
 
     @Nested
     class NoOpEncryption {
+
         @Test
         void noOpEncryptor_passesThrough() {
             var noop = BlockEncryptor.NONE;
@@ -201,6 +192,7 @@ class BlockEncryptorTest {
 
     @Nested
     class EncryptionParamsTest {
+
         @Test
         void none_isNotEncrypted() {
             assertThat(EncryptionParams.NONE.isEncrypted()).isFalse();
@@ -209,7 +201,6 @@ class BlockEncryptorTest {
         @Test
         void withAlgorithm_isEncrypted() {
             var params = EncryptionParams.encryptionParams("AES/GCM/NoPadding", new byte[12], "key-1");
-
             assertThat(params.isEncrypted()).isTrue();
         }
 
@@ -217,9 +208,8 @@ class BlockEncryptorTest {
         void defensiveCopy_ivNotShared() {
             var iv = new byte[]{1, 2, 3};
             var params = EncryptionParams.encryptionParams("AES/GCM/NoPadding", iv, "key-1");
-
             iv[0] = 99;
-            assertThat(params.iv() [0]).isEqualTo((byte) 1);
+            assertThat(params.iv()[0]).isEqualTo((byte) 1);
         }
     }
 }

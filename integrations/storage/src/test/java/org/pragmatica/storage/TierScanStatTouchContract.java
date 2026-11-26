@@ -6,15 +6,13 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.stream.IntStream;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// The A2b contract of [StorageTier#stat], [StorageTier#scan] and [StorageTier#touch], run against every tier that
 /// provides them (memory, local disk, S3 over an in-memory client and over MinIO). Each subclass builds a fresh, empty
@@ -24,8 +22,10 @@ abstract class TierScanStatTouchContract {
     private static final int BLOCKS = 40;
 
     protected StorageTier tier;
+
     /// A fresh tier holding no blocks.
     protected abstract StorageTier newTier();
+
     /// Makes the write time [StorageTier#stat] reports for `id` strictly older than one a touch made after this returns
     /// would set: move the tier's clock on, backdate the file, or wait out the provider's one-second precision.
     protected abstract void age(BlockId id);
@@ -51,6 +51,7 @@ abstract class TierScanStatTouchContract {
     void stat_ofAHeldBlock_reportsItsStoredSizeAndAWriteTime() {
         var content = bytes("stat me");
         var id = store(content);
+
         var stat = tier.stat(id).await().unwrap();
 
         assertThat(stat.map(BlockStat::id)).isEqualTo(Option.some(id));
@@ -71,9 +72,11 @@ abstract class TierScanStatTouchContract {
         var id = store(content);
 
         age(id);
+
         var aged = tier.stat(id).await().unwrap().unwrap();
 
         assertThat(tier.touch(id).await().unwrap()).as("the tier held the block").isTrue();
+
         var touched = tier.stat(id).await().unwrap().unwrap();
 
         assertThat(touched.writtenAtMillis()).as("the touch moved the write time").isGreaterThan(aged.writtenAtMillis());
@@ -94,7 +97,9 @@ abstract class TierScanStatTouchContract {
     /// within a shard. Small pages force the cursor through every shard boundary.
     @Test
     void scan_overEveryShard_returnsEachBlockExactlyOnce_inItsOwnShard() {
-        var ids = IntStream.range(0, BLOCKS).mapToObj(i -> store(bytes("scanned block " + i))).toList();
+        var ids = IntStream.range(0, BLOCKS)
+                           .mapToObj(i -> store(bytes("scanned block " + i)))
+                           .toList();
 
         for (var count : List.of(1, 3, 4)) {
             var seen = new ArrayList<BlockId>();
@@ -108,8 +113,7 @@ abstract class TierScanStatTouchContract {
                 seen.addAll(found);
             }
 
-            assertThat(seen).as("count %d covers every block exactly once", count)
-                      .containsExactlyInAnyOrderElementsOf(ids);
+            assertThat(seen).as("count %d covers every block exactly once", count).containsExactlyInAnyOrderElementsOf(ids);
         }
     }
 
@@ -120,6 +124,7 @@ abstract class TierScanStatTouchContract {
                            .sorted(Comparator.comparing(BlockId::hexString))
                            .toList();
         var all = KeyShard.all();
+
         var first = tier.scan(all, Option.none(), 2).await().unwrap();
         var second = tier.scan(all, first.next(), 2).await().unwrap();
         var third = tier.scan(all, second.next(), 2).await().unwrap();
@@ -134,6 +139,7 @@ abstract class TierScanStatTouchContract {
     @Test
     void scan_ofAFullLastPage_isFollowedByAnEmptyPageWithoutACursor() {
         IntStream.range(0, 2).forEach(i -> store(bytes("exact page " + i)));
+
         var full = tier.scan(KeyShard.all(), Option.none(), 2).await().unwrap();
         var after = tier.scan(KeyShard.all(), full.next(), 2).await().unwrap();
 
@@ -146,12 +152,10 @@ abstract class TierScanStatTouchContract {
     @Test
     void scan_refusesALimitBelowOne_andACursorNoScanHandedOut() {
         var badLimit = tier.scan(KeyShard.all(), Option.none(), 0).await();
-        var badCursor = tier.scan(KeyShard.all(),
-                                  Option.some(Cursor.cursor("../not-a-block")),
-                                  5).await();
+        var badCursor = tier.scan(KeyShard.all(), Option.some(Cursor.cursor("../not-a-block")), 5).await();
 
-        assertThat(badLimit.<Cause> fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.InvalidScan.class);
-        assertThat(badCursor.<Cause> fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.InvalidScan.class);
+        assertThat(badLimit.<Cause>fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.InvalidScan.class);
+        assertThat(badCursor.<Cause>fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.InvalidScan.class);
     }
 
     /// Anchors live beside the blocks on the tiers that keep them, and are never listed as blocks.
@@ -159,9 +163,8 @@ abstract class TierScanStatTouchContract {
     void scan_listsBlocksOnly_notAnchors() {
         var id = store(bytes("the only block"));
 
-        tier.putAnchor(AnchorName.anchorName("scan-anchor").unwrap(),
-                       3,
-                       bytes("anchor value")).await().unwrap();
+        tier.putAnchor(AnchorName.anchorName("scan-anchor").unwrap(), 3, bytes("anchor value")).await().unwrap();
+
         assertThat(scanAll(KeyShard.all(), 10)).containsExactly(id);
     }
 
@@ -169,28 +172,31 @@ abstract class TierScanStatTouchContract {
     /// the touch is a marker object beside the block, at every page size, so a marker can open the page after its block.
     @Test
     void scan_listsATouchedBlockOnce_withTheTimeStatReports() {
-        var ids = IntStream.range(0, 3).mapToObj(i -> store(bytes("touched block " + i))).toList();
+        var ids = IntStream.range(0, 3)
+                           .mapToObj(i -> store(bytes("touched block " + i)))
+                           .toList();
 
         ids.forEach(this::age);
-        var aged = ids.stream().map(id -> tier.stat(id)
-                                              .await()
-                                              .unwrap()
-                                              .unwrap()
-                                              .writtenAtMillis()).toList();
+
+        var aged = ids.stream().map(id -> tier.stat(id).await().unwrap().unwrap().writtenAtMillis()).toList();
 
         ids.forEach(id -> assertThat(tier.touch(id).await().unwrap()).isTrue());
+
         for (var index = 0; index < ids.size(); index++) {
             assertThat(tier.stat(ids.get(index)).await().unwrap().unwrap().writtenAtMillis()).as("stat after the touch")
-                      .isGreaterThan(aged.get(index));
+                                                                                                .isGreaterThan(aged.get(index));
         }
 
         for (var limit : List.of(1, 2, 10)) {
             var scanned = scanAllStats(KeyShard.all(), limit);
 
             assertThat(scanned.stream().map(BlockStat::id).toList()).as("page size %d", limit)
-                      .containsExactlyInAnyOrderElementsOf(ids);
+                                                                   .containsExactlyInAnyOrderElementsOf(ids);
             scanned.forEach(stat -> assertThat(inWholeSeconds(stat)).as("page size %d", limit)
-                                              .isEqualTo(inWholeSeconds(tier.stat(stat.id()).await().unwrap().unwrap())));
+                                                                    .isEqualTo(inWholeSeconds(tier.stat(stat.id())
+                                                                                                  .await()
+                                                                                                  .unwrap()
+                                                                                                  .unwrap())));
         }
     }
 
@@ -201,9 +207,7 @@ abstract class TierScanStatTouchContract {
     }
 
     protected List<BlockId> scanAll(KeyShard shard, int limit) {
-        return scanAllStats(shard, limit).stream()
-                           .map(BlockStat::id)
-                           .toList();
+        return scanAllStats(shard, limit).stream().map(BlockStat::id).toList();
     }
 
     protected List<BlockStat> scanAllStats(KeyShard shard, int limit) {
