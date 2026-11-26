@@ -79,10 +79,13 @@ class EmberGenesisSeatUnreachableTest {
         assertThat(cluster.startHeldBackNodes().await(START_BOUND).isSuccess()).as("the late core starts").isTrue();
 
         awaitCondition("the two live cores install a three-seat roster that still names the dead seat", this::liveCoresFormedWithDeadSeat);
-        awaitCondition("the unreachable-seat warning reaches a live node's event log", () -> !unreachableSubjects().isEmpty());
+        var snapshot = pollUntil(this::unreachableSnapshot, seen -> !seen.events().isEmpty(), Duration.ofMillis(CONDITION_BOUND_MS), POLL_INTERVAL)
+                           .assertMet("the unreachable-seat warning reaches a live node's event log")
+                           .finalValue();
 
-        assertThat(unreachableSubjects()).as("the warning names the one seat that never connected, and no other").containsExactly(DEAD_SEAT);
-        var summary = unreachableEvents().getFirst().summary();
+        assertThat(snapshot.subjects()).as("the warning names the one seat that never connected, and no other (read once, on the snapshot that satisfied the wait: " + snapshot + ")")
+                                       .containsExactly(DEAD_SEAT);
+        var summary = snapshot.events().getFirst().summary();
 
         assertThat(summary).as("the message names the seat, the effect on formation and the heal-on remedy (the auto-heal state at the raise: the key is absent at genesis, so on)")
                            .contains(DEAD_SEAT, "Formation is not blocked", "Auto-heal is on", "within ~75 s", "Operator action")
@@ -162,23 +165,37 @@ class EmberGenesisSeatUnreachableTest {
                                                                    .isPresent());
     }
 
-    private Set<String> unreachableSubjects() {
-        return unreachableEvents().stream().map(event -> event.details().get("subject")).collect(Collectors.toSet());
+    /// What one read of every live node's event log saw: the unreachable-seat warnings, and the reads that FAILED. A failed read is
+    /// not "no warning" (while the event stream's owner is still promoting, every read of it fails for a long time): it never
+    /// contributes events, it is carried in the snapshot so that a missed wait names it, and the wait simply polls again.
+    private record Snapshot(List<ClusterEvent.OperatorWarning> events, List<String> failedReads) {
+        static Snapshot snapshot(List<ClusterEvent.OperatorWarning> events, List<String> failedReads) {
+            return new Snapshot(events, failedReads);
+        }
+
+        Set<String> subjects() {
+            return events.stream().map(event -> event.details().get("subject")).collect(Collectors.toSet());
+        }
     }
 
-    private List<ClusterEvent.OperatorWarning> unreachableEvents() {
-        return cluster.allNodes()
-                      .stream()
-                      .flatMap(core -> core.eventAggregator()
-                                           .events()
-                                           .await()
-                                           .map(List::copyOf)
-                                           .or(List.of())
-                                           .stream())
-                      .filter(ClusterEvent.OperatorWarning.class::isInstance)
-                      .map(ClusterEvent.OperatorWarning.class::cast)
-                      .filter(event -> UNREACHABLE_CODE.equals(event.details().get("code")))
-                      .toList();
+    private Snapshot unreachableSnapshot() {
+        var reads = cluster.allNodes()
+                           .stream()
+                           .collect(Collectors.toMap(core -> String.valueOf(core.self().id()), core -> core.eventAggregator().events().await()));
+        var events = reads.values()
+                          .stream()
+                          .flatMap(read -> read.fold(_ -> Stream.<ClusterEvent>empty(), List::stream))
+                          .filter(ClusterEvent.OperatorWarning.class::isInstance)
+                          .map(ClusterEvent.OperatorWarning.class::cast)
+                          .filter(event -> UNREACHABLE_CODE.equals(event.details().get("code")))
+                          .toList();
+        var failed = reads.entrySet()
+                          .stream()
+                          .filter(read -> read.getValue().isFailure())
+                          .map(read -> read.getKey() + ": " + read.getValue().fold(Cause::message, _ -> ""))
+                          .toList();
+
+        return Snapshot.snapshot(events, failed);
     }
 
     /// Cores `-1` and `-2` started, `-3` held back but in the genesis roster: both wait in genesis. A genesis-pending start never
