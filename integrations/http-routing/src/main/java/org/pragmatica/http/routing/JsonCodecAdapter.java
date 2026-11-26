@@ -62,8 +62,7 @@ public record JsonCodecAdapter(JsonMapper mapper) implements JsonCodec {
     @Override
     public Result<byte[]> serialize(Object value) {
         return mapper.writeAsBytes(value)
-                     .mapError(cause -> CodecError.serializationFailed(SERIALIZATION_FAILED,
-                                                                       cause));
+                     .mapError(cause -> CodecError.serializationFailed(SERIALIZATION_FAILED, cause));
     }
 
     @Override
