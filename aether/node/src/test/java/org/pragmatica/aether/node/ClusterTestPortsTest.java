@@ -27,6 +27,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.lang.Option;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -136,49 +138,60 @@ class ClusterTestPortsTest {
         var taken = occupiableClusterCandidate(true);
 
         try (var held = new DatagramSocket(new InetSocketAddress(taken))) {
-            var got = ClusterTestPorts.freeClusterPort(offering(taken));
+            var skips = new ArrayList<ClusterTestPorts.Skip>();
+            var got = ClusterTestPorts.freeClusterPort(offering(taken), skips);
 
             assertThat(got).as("a port with cluster UDP held must not be issued").isNotEqualTo(taken);
+            assertThat(skips).as("the skip names the probe that read it busy")
+                             .contains(skippedBusy(taken, taken, ClusterTestPorts.Protocol.UDP));
         }
-        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeClusterPort(offering(taken)), taken, ClusterTestPorts.isFreeClusterPort(taken), "control: the same port, released");
+        var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+        assertAcceptedUnlessProbedBusy(ClusterTestPorts.freeClusterPort(offering(taken), skips), taken, skips, "control: the same port, released");
     }
 
     /// #3188: the released-port control cannot promise the SAME port back. The lock held since [#occupiableClusterCandidate] keeps every
     /// cooperating allocator out, but a process that binds an explicit window port without the lock (another module under `-T 1C`) can take the
-    /// released port between the release and the re-probe, and the allocator then correctly issues another one. This forces that contender into
-    /// the window deterministically: the control must hold, and the allocator must have skipped the port because it is taken.
+    /// released port before the allocator's probe, and the allocator then correctly issues another one. This forces that contender into
+    /// the window deterministically: the control must hold, and the allocator must have skipped the port because a probe read it busy.
     @Test
     void releasedPortControl_holdsWhenAThirdPartyTakesThePortInTheWindow() throws IOException {
         var taken = occupiableClusterCandidate(true);
 
         try (var contender = new DatagramSocket(new InetSocketAddress(taken))) {
-            var got = ClusterTestPorts.freeClusterPort(offering(taken));
+            var skips = new ArrayList<ClusterTestPorts.Skip>();
+            var got = ClusterTestPorts.freeClusterPort(offering(taken), skips);
 
             assertThat(got).as("the contender holds " + taken + ", so it must not be issued").isNotEqualTo(taken);
-            assertAcceptedUnlessTakenMeanwhile(got, taken, ClusterTestPorts.isFreeClusterPort(taken), "control: the same port, released");
+            assertAcceptedUnlessProbedBusy(got, taken, skips, "control: the same port, released");
         }
     }
 
-    /// The control still bites: a port reported free that the allocator refused fails it, so it cannot pass vacuously.
+    /// The control still bites: a refusal with no probe that read the port busy (the allocator turned away a port every probe called free)
+    /// fails it, so it cannot pass vacuously. A refusal that names a busy probe passes, whatever the port's state afterwards.
     @Test
     void releasedPortControl_failsWhenAFreePortWasRefused() {
         var taken = occupiableClusterCandidate(true);
+        var refusedWithoutCause = List.of(new ClusterTestPorts.Skip(taken, Option.none()));
+        var refusedForBusyProbe = List.of(skippedBusy(taken, taken + SWIM, ClusterTestPorts.Protocol.UDP));
 
-        assertThatThrownBy(() -> assertAcceptedUnlessTakenMeanwhile(taken + 1, taken, true, "refused"))
+        assertThatThrownBy(() -> assertAcceptedUnlessProbedBusy(taken + 1, taken, refusedWithoutCause, "refused"))
             .isInstanceOf(AssertionError.class);
+        assertAcceptedUnlessProbedBusy(taken + 1, taken, refusedForBusyProbe, "refused for a busy probe");
     }
 
-    /// #3188: "released, so accepted again" holds unless another process took the port after the release. Either the allocator returned the
-    /// port, or the port is observably taken by now; a free port that was refused is a real defect and still fails. The residual: a contender
-    /// that binds and releases the port inside the allocator's probe leaves a free port refused. No retry hides that.
-    private static void assertAcceptedUnlessTakenMeanwhile(int got, int taken, boolean stillFree, String label) {
+    /// #3471: "released, so accepted again" holds unless the allocator skipped the port because a probe read it busy. The control asserts on
+    /// the allocator's own record of that probe, never on a later re-probe: a contender that binds and releases the port inside the
+    /// probe leaves the port free afterwards, and the skip is still correct. A skip with no busy probe behind it is the defect.
+    private static void assertAcceptedUnlessProbedBusy(int got, int taken, List<ClusterTestPorts.Skip> skips, String label) {
         if (got != taken) {
-            assertThat(stillFree).as(label + ": " + taken + " was refused although it is free").isFalse();
+            assertThat(skips).as(label + ": " + taken + " was refused although no probe read it busy")
+                             .anyMatch(skip -> skip.candidate() == taken && skip.probedBusy());
         }
     }
 
-    private static boolean isFreeOnBothProtocols(int port) {
-        return ClusterTestPorts.udpFree(port) && ClusterTestPorts.tcpFree(port);
+    private static ClusterTestPorts.Skip skippedBusy(int candidate, int port, ClusterTestPorts.Protocol protocol) {
+        return new ClusterTestPorts.Skip(candidate, Option.some(new ClusterTestPorts.Busy(port, protocol)));
     }
 
     @Test
@@ -186,9 +199,15 @@ class ClusterTestPortsTest {
         var taken = occupiableClusterCandidate(true);
 
         try (var held = new DatagramSocket(new InetSocketAddress(taken + SWIM))) {
-            assertThat(ClusterTestPorts.freeClusterPort(offering(taken))).as("SWIM UDP held").isNotEqualTo(taken);
+            var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+            assertThat(ClusterTestPorts.freeClusterPort(offering(taken), skips)).as("SWIM UDP held").isNotEqualTo(taken);
+            assertThat(skips).as("the skip names the SWIM probe")
+                             .contains(skippedBusy(taken, taken + SWIM, ClusterTestPorts.Protocol.UDP));
         }
-        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeClusterPort(offering(taken)), taken, ClusterTestPorts.isFreeClusterPort(taken), "control: SWIM released");
+        var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+        assertAcceptedUnlessProbedBusy(ClusterTestPorts.freeClusterPort(offering(taken), skips), taken, skips, "control: SWIM released");
     }
 
     /// The both-protocol helper must skip a candidate whose TCP side is taken, and one whose UDP side is taken.
@@ -198,9 +217,15 @@ class ClusterTestPortsTest {
 
         try (var held = new ServerSocket()) {
             held.bind(new InetSocketAddress(taken));
-            assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("TCP held").isNotEqualTo(taken);
+            var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+            assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken), skips)).as("TCP held").isNotEqualTo(taken);
+            assertThat(skips).as("the skip names the TCP probe")
+                             .contains(skippedBusy(taken, taken, ClusterTestPorts.Protocol.TCP));
         }
-        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeTcpAndUdpPort(offering(taken)), taken, isFreeOnBothProtocols(taken), "control: TCP released");
+        var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+        assertAcceptedUnlessProbedBusy(ClusterTestPorts.freeTcpAndUdpPort(offering(taken), skips), taken, skips, "control: TCP released");
     }
 
     @Test
@@ -208,9 +233,15 @@ class ClusterTestPortsTest {
         var taken = occupiableClusterCandidate(false);
 
         try (var held = new DatagramSocket(new InetSocketAddress(taken))) {
-            assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("UDP held").isNotEqualTo(taken);
+            var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+            assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken), skips)).as("UDP held").isNotEqualTo(taken);
+            assertThat(skips).as("the skip names the UDP probe")
+                             .contains(skippedBusy(taken, taken, ClusterTestPorts.Protocol.UDP));
         }
-        assertAcceptedUnlessTakenMeanwhile(ClusterTestPorts.freeTcpAndUdpPort(offering(taken)), taken, isFreeOnBothProtocols(taken), "control: UDP released");
+        var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+        assertAcceptedUnlessProbedBusy(ClusterTestPorts.freeTcpAndUdpPort(offering(taken), skips), taken, skips, "control: UDP released");
     }
 
     /// #2731 proof (cooperating allocators in two JVMs): a child JVM allocates ports and holds them WITHOUT binding, i.e.
