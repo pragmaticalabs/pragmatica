@@ -9,6 +9,7 @@ import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.lang.management.ManagementFactory;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -27,6 +28,8 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
 import java.util.stream.Stream;
+
+import com.sun.management.UnixOperatingSystemMXBean;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -165,17 +168,35 @@ class ClusterTestPortsTest {
         }
     }
 
-    /// The control still bites: a refusal with no probe that read the port busy (the allocator turned away a port every probe called free)
-    /// fails it, so it cannot pass vacuously. A refusal that names a busy probe passes, whatever the port's state afterwards.
+    /// The control still bites: a refusal that no busy probe explains (the allocator turned away a port every probe called free)
+    /// fails it, so it cannot pass vacuously. A refusal that names a busy probe passes, whatever the port's state afterwards. A skip for
+    /// any other cause (window, lock) is not "a probe read it busy" and does not excuse the refusal; the failure names the cause.
     @Test
     void releasedPortControl_failsWhenAFreePortWasRefused() {
         var taken = occupiableClusterCandidate(true);
-        var refusedWithoutCause = List.of(new ClusterTestPorts.Skip(taken, Set.of()));
-        var refusedForBusyProbe = List.of(new ClusterTestPorts.Skip(taken, Set.of(new ClusterTestPorts.Busy(taken + SWIM, ClusterTestPorts.Protocol.UDP))));
+        var refusedForLock = List.of(ClusterTestPorts.Skip.skip(taken, ClusterTestPorts.SkipCause.LockRefused.lockRefused()));
+        var refusedForWindow = List.of(ClusterTestPorts.Skip.skip(taken, ClusterTestPorts.SkipCause.OutsideWindow.outsideWindow()));
+        var refusedForBusyProbe = List.of(ClusterTestPorts.Skip.skip(taken, busyProbe(new ClusterTestPorts.Busy(taken + SWIM, ClusterTestPorts.Protocol.UDP))));
 
-        assertThatThrownBy(() -> assertAcceptedUnlessProbedBusy(taken + 1, taken, refusedWithoutCause, "refused"))
+        assertThatThrownBy(() -> assertAcceptedUnlessProbedBusy(taken + 1, taken, refusedForLock, "refused"))
+            .isInstanceOf(AssertionError.class)
+            .hasMessageContaining("LockRefused");
+        assertThatThrownBy(() -> assertAcceptedUnlessProbedBusy(taken + 1, taken, refusedForWindow, "refused"))
+            .isInstanceOf(AssertionError.class)
+            .hasMessageContaining("OutsideWindow");
+        assertThatThrownBy(() -> assertAcceptedUnlessProbedBusy(taken + 1, taken, List.of(), "refused"))
             .isInstanceOf(AssertionError.class);
         assertAcceptedUnlessProbedBusy(taken + 1, taken, refusedForBusyProbe, "refused for a busy probe");
+    }
+
+    /// #3471: the probe-busy cause cannot be built from an empty set: "no probe read it busy" is not a cause the record can carry.
+    @Test
+    void probeBusy_refusesAnEmptySet_andKeepsEveryProbeOfANonEmptyOne() {
+        var probes = Set.of(new ClusterTestPorts.Busy(40_000, ClusterTestPorts.Protocol.UDP),
+                            new ClusterTestPorts.Busy(40_000, ClusterTestPorts.Protocol.TCP));
+
+        assertThat(ClusterTestPorts.SkipCause.ProbeBusy.probeBusy(Set.of()).isFailure()).as("empty set refused").isTrue();
+        assertThat(busyProbe(probes.toArray(new ClusterTestPorts.Busy[0])).busy()).isEqualTo(probes);
     }
 
     /// #3471: "released, so accepted again" holds unless the allocator skipped the port because a probe read it busy. The control asserts on
@@ -183,7 +204,7 @@ class ClusterTestPortsTest {
     /// probe leaves the port free afterwards, and the skip is still correct. A skip with no busy probe behind it is the defect.
     private static void assertAcceptedUnlessProbedBusy(int got, int taken, List<ClusterTestPorts.Skip> skips, String label) {
         if (got != taken) {
-            assertThat(skips).as(label + ": " + taken + " was refused although no probe read it busy")
+            assertThat(skips).as(label + ": " + taken + " was refused although no probe read it busy; causes recorded for it: " + causesOf(skips, taken))
                              .anyMatch(skip -> skip.candidate() == taken && skip.probedBusy());
         }
     }
@@ -339,6 +360,157 @@ class ClusterTestPortsTest {
         }
     }
 
+    /// #3471, window path: a candidate outside the window (either port of a cluster candidate, or the only port of the TCP+UDP form) is
+    /// recorded as OutsideWindow, takes no lock, and is never read as a probe-busy refusal.
+    @Test
+    void windowSkips_recordOutsideWindow_andTakeNoLock() {
+        var window = ClusterTestPorts.WINDOW;
+        var below = window.first() - 1;
+        var swimOutside = window.last() - SWIM + 1;
+        var tcpUdpOutside = window.last() + 1;
+        var clusterSkips = new ArrayList<ClusterTestPorts.Skip>();
+        var tcpUdpSkips = new ArrayList<ClusterTestPorts.Skip>();
+
+        ClusterTestPorts.freeClusterPort(offeringAll(below, swimOutside), clusterSkips);
+        ClusterTestPorts.freeTcpAndUdpPort(offeringAll(tcpUdpOutside), tcpUdpSkips);
+
+        assertSingleSkip(clusterSkips, below, ClusterTestPorts.SkipCause.OutsideWindow.class);
+        assertSingleSkip(clusterSkips, swimOutside, ClusterTestPorts.SkipCause.OutsideWindow.class);
+        assertSingleSkip(tcpUdpSkips, tcpUdpOutside, ClusterTestPorts.SkipCause.OutsideWindow.class);
+        assertThat(List.of(below, tcpUdpOutside)).as("nothing locked for a candidate outside the window")
+                                                              .noneMatch(ClusterTestPorts::heldHere);
+    }
+
+    /// #3471, m3: the record belongs to the call. A second call with its own list sees nothing of the first call's skips, so one shared
+    /// record copied into every caller's list is caught.
+    @Test
+    void skipRecord_isPerCall_notSharedAcrossCallers() throws IOException {
+        var taken = occupiableClusterCandidate(true);
+        var free = occupiableClusterCandidate(true);
+        var first = new ArrayList<ClusterTestPorts.Skip>();
+        var second = new ArrayList<ClusterTestPorts.Skip>();
+
+        try (var held = new DatagramSocket(new InetSocketAddress(taken))) {
+            ClusterTestPorts.freeClusterPort(offering(taken), first);
+        }
+        ClusterTestPorts.freeClusterPort(offering(free), second);
+
+        assertSingleSkip(first, taken, ClusterTestPorts.SkipCause.ProbeBusy.class);
+        assertThat(skipsFor(second, taken)).as("the first call's skip leaked into the second caller's list").isEmpty();
+    }
+
+    /// #3471, m5: with nothing holding it, a reserved free port is accepted and no cause is recorded for it. A refusal fabricated for a free
+    /// port (the allocator citing a busy probe nobody saw) fails here; the released-port controls tolerate any busy probe, so they cannot.
+    @Test
+    void reservedFreePort_isAccepted_withNoCauseRecorded() {
+        var taken = occupiableClusterCandidate(true);
+        var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+        assertThat(ClusterTestPorts.freeClusterPort(offering(taken), skips)).as("nothing holds " + taken).isEqualTo(taken);
+        assertThat(skips).as("a free port is issued without a skip").isEmpty();
+    }
+
+    /// #3471, m17: issuing a port the test reserved moves its lock from the reservation to the issued set. Dropping a reservation afterwards
+    /// must not release the issued port: it stays held for the JVM's life.
+    @Test
+    void issuedReservedPort_staysLocked_afterTheReservationIsDropped() {
+        var taken = occupiableClusterCandidate(true);
+        var skips = new ArrayList<ClusterTestPorts.Skip>();
+        var got = ClusterTestPorts.freeClusterPort(offering(taken), skips);
+
+        assertAcceptedUnlessProbedBusy(got, taken, skips, "control: a reserved free port");
+        if (got == taken) {
+            ClusterTestPorts.unreserve(taken, taken + SWIM);
+            assertThat(List.of(ClusterTestPorts.heldHere(taken), ClusterTestPorts.heldHere(taken + SWIM)))
+                .as("the issued port's locks survive unreserve (adoptReserved moved them)")
+                .containsExactly(true, true);
+        }
+    }
+
+    /// #3471, m4: a probe releases its socket on every outcome. Many probes of a free port leave no descriptor behind and the port stays
+    /// bindable; a probe socket that is never closed shows as growing descriptors.
+    @Test
+    void probes_releaseTheirSocket() throws IOException {
+        var port = occupiableClusterCandidate(true);
+        var before = openFds();
+
+        for (int i = 0; i < 200; i++) {
+            assertThat(ClusterTestPorts.udpFree(port)).as("UDP probe " + i).isTrue();
+            assertThat(ClusterTestPorts.tcpFree(port)).as("TCP probe " + i).isTrue();
+        }
+        assertThat(openFds()).as("descriptors left behind by 400 probes").isLessThanOrEqualTo(before + 20);
+        try (var udp = new DatagramSocket(new InetSocketAddress(port)); var tcp = new ServerSocket()) {
+            tcp.bind(new InetSocketAddress(port));
+            assertThat(udp.getLocalPort()).as("the probes left the port bindable").isEqualTo(port);
+        }
+    }
+
+    /// #3471, m10: a probe-busy skip releases the locks it took. The candidate is NOT reserved (a reservation would hide a leak: the
+    /// allocator would leave nothing of its own in the held set), so a leaked lock shows as the port still held here, and as a refused
+    /// `reserve`.
+    @Test
+    void probeBusySkip_releasesTheLocksItTook_andLeavesNoProbeSocket() throws IOException {
+        var candidate = unlockedFreeCandidate();
+        var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+        try (var held = new DatagramSocket(new InetSocketAddress(candidate))) {
+            ClusterTestPorts.freeClusterPort(offering(candidate), skips);
+        }
+        assertSingleSkip(skips, candidate, ClusterTestPorts.SkipCause.ProbeBusy.class);
+        assertThat(List.of(ClusterTestPorts.heldHere(candidate), ClusterTestPorts.heldHere(candidate + SWIM)))
+            .as("locks left behind by a probe-busy skip").containsExactly(false, false);
+        assertThat(ClusterTestPorts.isFreeClusterPort(candidate)).as("a probe socket left behind").isTrue();
+        assertThat(ClusterTestPorts.reserve(candidate, candidate + SWIM)).as("the locks can be taken again").isTrue();
+        reservations.add(new int[] {candidate, candidate + SWIM});
+    }
+
+    /// #3471, A6 and m12: a candidate whose lock another JVM holds is skipped for the lock, with every probe reading it free; the cause is
+    /// LockRefused, never ProbeBusy. Nothing is bound or held here afterwards.
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void lockHeldByAnotherJvm_isRecordedAsLockRefused_notAsAProbe() throws Exception {
+        var child = PortHolder.start("new", "5");
+
+        try {
+            var candidate = child.ports().getFirst();
+            var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+            assertThat(ClusterTestPorts.isFreeClusterPort(candidate)).as("the lock holder binds nothing: every probe reads it free").isTrue();
+            assertThat(ClusterTestPorts.freeClusterPort(offering(candidate), skips)).isNotEqualTo(candidate);
+            assertSingleSkip(skips, candidate, ClusterTestPorts.SkipCause.LockRefused.class);
+            assertThat(skipsFor(skips, candidate).getFirst().probedBusy()).as("a lock refusal is not a probe read").isFalse();
+            assertThat(ClusterTestPorts.isFreeClusterPort(candidate)).as("no probe socket left").isTrue();
+        } finally {
+            child.kill();
+        }
+    }
+
+    /// #3471, m11: a lock refusal on the SECOND port of a candidate releases the lock already taken on the first. The candidate's SWIM
+    /// port belongs to another JVM, its cluster port to nobody: after the skip the cluster port can be locked again.
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void lockRefusalOnTheSwimPort_releasesTheLockTakenOnTheClusterPort() throws Exception {
+        var child = PortHolder.start("new", "20");
+
+        try {
+            var candidate = child.ports().stream()
+                                 .map(port -> port - SWIM)
+                                 .filter(ClusterTestPorts.WINDOW::contains)
+                                 .filter(ClusterTestPortsTest::lockIsFree)
+                                 .findFirst()
+                                 .orElseThrow();
+            var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+            assertThat(ClusterTestPorts.freeClusterPort(offering(candidate), skips)).isNotEqualTo(candidate);
+            assertSingleSkip(skips, candidate, ClusterTestPorts.SkipCause.LockRefused.class);
+            assertThat(ClusterTestPorts.heldHere(candidate)).as("the cluster port's lock left behind by the refusal").isFalse();
+            assertThat(ClusterTestPorts.reserve(candidate)).as("the cluster port can be locked again").isTrue();
+            reservations.add(new int[] {candidate});
+        } finally {
+            child.kill();
+        }
+    }
+
     /// Positive controls: each probe must read a port this test holds as taken, or "free" is vacuous.
     @Test
     void probe_seesHeldClusterUdp() throws IOException {
@@ -420,6 +592,58 @@ class ClusterTestPortsTest {
     private static IntSupplier offering(int port) {
         var offers = new ArrayDeque<>(List.of(port));
 
+        return () -> offers.isEmpty() ? ClusterTestPorts.windowCandidate() : offers.poll();
+    }
+
+    /// A window port, with its SWIM port, that no allocator holds right now (checked by taking and dropping the locks) and whose
+    /// sockets are free. NOT kept reserved: a reservation would hide a lock the allocator leaks.
+    private static int unlockedFreeCandidate() {
+        for (int attempt = 0; attempt < 200; attempt++) {
+            var port = ClusterTestPorts.windowCandidate();
+
+            if (ClusterTestPorts.WINDOW.contains(port + SWIM) && lockIsFree(port) && lockIsFree(port + SWIM) && ClusterTestPorts.isFreeClusterPort(port)) {
+                return port;
+            }
+        }
+        throw new IllegalStateException("no unlocked free window port");
+    }
+
+    private static boolean lockIsFree(int port) {
+        var taken = ClusterTestPorts.reserve(port);
+
+        ClusterTestPorts.unreserve(port);
+        return taken;
+    }
+
+    private static long openFds() {
+        return ((UnixOperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean()).getOpenFileDescriptorCount();
+    }
+
+    private static ClusterTestPorts.SkipCause.ProbeBusy busyProbe(ClusterTestPorts.Busy... probes) {
+        return ClusterTestPorts.SkipCause.ProbeBusy.probeBusy(Set.of(probes)).unwrap();
+    }
+
+    private static List<ClusterTestPorts.Skip> skipsFor(List<ClusterTestPorts.Skip> skips, int candidate) {
+        return skips.stream().filter(skip -> skip.candidate() == candidate).toList();
+    }
+
+    private static List<String> causesOf(List<ClusterTestPorts.Skip> skips, int candidate) {
+        return skipsFor(skips, candidate).stream().map(skip -> skip.cause().getClass().getSimpleName()).toList();
+    }
+
+    /// Exactly one skip for `candidate` in the record, and its cause is of type `cause`.
+    private static void assertSingleSkip(List<ClusterTestPorts.Skip> skips, int candidate, Class<? extends ClusterTestPorts.SkipCause> cause) {
+        assertThat(skipsFor(skips, candidate)).as("skips recorded for " + candidate).hasSize(1)
+                                              .allSatisfy(skip -> assertThat(skip.cause()).isInstanceOf(cause));
+    }
+
+    /// Offers each of `ports` once, in order, then random window ports.
+    private static IntSupplier offeringAll(int... ports) {
+        var offers = new ArrayDeque<Integer>();
+
+        for (int port : ports) {
+            offers.add(port);
+        }
         return () -> offers.isEmpty() ? ClusterTestPorts.windowCandidate() : offers.poll();
     }
 

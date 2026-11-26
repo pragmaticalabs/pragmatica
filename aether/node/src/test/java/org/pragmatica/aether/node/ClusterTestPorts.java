@@ -6,6 +6,9 @@ package org.pragmatica.aether.node;
 
 import java.util.Locale;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -28,6 +31,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.IntSupplier;
+
+import static org.pragmatica.lang.Result.success;
 
 /// #2016 / #2731: ports for node tests that boot a real [AetherNode].
 ///
@@ -172,14 +177,55 @@ public final class ClusterTestPorts {
     /// A probe that found `port` busy on `protocol`.
     record Busy(int port, Protocol protocol) {}
 
-    /// #3471: why the allocator skipped `candidate`. `busy` holds EVERY probe that read a port busy for it (the probes run on to
-    /// completion, so a third party that also holds another port of the candidate only adds to the set); empty when the skip came from
-    /// somewhere else (outside the window, or the cross-JVM lock refused), and also when a candidate whose every probe said free was
-    /// refused, which is the defect a test control exists to catch. A skip with a busy probe is correct whatever the port's state
-    /// afterwards: a contender may take and release it inside the probe.
-    record Skip(int candidate, Set<Busy> busy) {
+    /// #3471: why the allocator skipped a candidate: exactly one case per skip path, recorded at the site of the decision. A test
+    /// control reads a skip as "a free port was refused" only through [ProbeBusy]; a skip for any other reason is a different
+    /// mechanism and is never read as a refused free port.
+    sealed interface SkipCause {
+        /// The candidate (or its SWIM port) lies outside the [#WINDOW]; no lock was taken, no probe ran.
+        record OutsideWindow() implements SkipCause {
+            static OutsideWindow outsideWindow() {
+                return new OutsideWindow();
+            }
+        }
+
+        /// The lock step refused a port of the candidate: this JVM already holds it (issued, or reserved and not adopted), the lock file
+        /// could not be opened, or another JVM holds the OS lock. No probe ran.
+        record LockRefused() implements SkipCause {
+            static LockRefused lockRefused() {
+                return new LockRefused();
+            }
+        }
+
+        /// At least one probe read a port of the candidate busy; `busy` holds EVERY such probe (the probes run on to completion, so a
+        /// third party that also holds another port of the candidate only adds to the set). Never empty: [#probeBusy] refuses an empty
+        /// set, so "no probe read it busy" cannot be recorded as this cause. A skip with this cause is correct whatever the port's state
+        /// afterwards: a contender may take and release it inside the probe.
+        record ProbeBusy(Set<Busy> busy) implements SkipCause {
+            static final Cause NO_BUSY_PROBE = Causes.cause("no probe read the candidate busy");
+
+            static Result<ProbeBusy> probeBusy(Set<Busy> busy) {
+                return busy.isEmpty()
+                       ? NO_BUSY_PROBE.result()
+                       : success(new ProbeBusy(Set.copyOf(busy)));
+            }
+        }
+    }
+
+    /// #3471: the allocator turned `candidate` away, for `cause`.
+    record Skip(int candidate, SkipCause cause) {
+        static Skip skip(int candidate, SkipCause cause) {
+            return new Skip(candidate, cause);
+        }
+
         boolean probedBusy() {
-            return !busy.isEmpty();
+            return cause instanceof SkipCause.ProbeBusy;
+        }
+
+        /// The probes that read a port busy; empty for every cause but [SkipCause.ProbeBusy].
+        Set<Busy> busy() {
+            return cause instanceof SkipCause.ProbeBusy(var busy)
+                   ? busy
+                   : Set.of();
         }
     }
 
@@ -204,7 +250,7 @@ public final class ClusterTestPorts {
             var candidate = candidates.getAsInt();
 
             if (!(WINDOW.contains(candidate) && WINDOW.contains(candidate + SWIM_OFFSET))) {
-                skips.add(new Skip(candidate, Set.of()));
+                skips.add(Skip.skip(candidate, SkipCause.OutsideWindow.outsideWindow()));
             } else if (claimAll(adoptReserved, skips, candidate, candidate + SWIM_OFFSET)) {
                 return candidate;
             }
@@ -233,7 +279,7 @@ public final class ClusterTestPorts {
             var candidate = candidates.getAsInt();
 
             if (!WINDOW.contains(candidate)) {
-                skips.add(new Skip(candidate, Set.of()));
+                skips.add(Skip.skip(candidate, SkipCause.OutsideWindow.outsideWindow()));
             } else if (claimAll(adoptReserved, skips, candidate)) {
                 return candidate;
             }
@@ -298,8 +344,8 @@ public final class ClusterTestPorts {
         }
     }
 
-    /// Locks every port in `ports`, then probes them; on any refusal, releases what this call locked and records the [Skip] with the
-    /// probe that read a port busy (#3471).
+    /// Locks every port in `ports`, then probes them; on any refusal, releases what this call locked and records the [Skip] with its
+    /// [SkipCause] (#3471): the lock step refused, or the probes that read a port busy.
     private static synchronized boolean claimAll(boolean adoptReserved, List<Skip> skips, int first, int... rest) {
         var ports = new int[rest.length + 1];
 
@@ -308,18 +354,24 @@ public final class ClusterTestPorts {
         for (int i = 0; i < ports.length; i++) {
             if (!(adoptReserved && RESERVED.containsKey(ports[i])) && !lock(ports[i], HELD)) {
                 releaseFirst(ports, i);
-                skips.add(new Skip(first, Set.of()));
+                skips.add(Skip.skip(first, SkipCause.LockRefused.lockRefused()));
                 return false;
             }
         }
-        var busy = allBusy(ports);
+        return SkipCause.ProbeBusy.probeBusy(allBusy(ports))
+                        .fold(_ -> issue(ports), busy -> refuse(ports, skips, first, busy));
+    }
 
-        if (busy.isEmpty()) {
-            adoptReserved(ports);
-            return true;
-        }
+    /// No probe read a port busy: the locks become the issued port's.
+    private static boolean issue(int[] ports) {
+        adoptReserved(ports);
+        return true;
+    }
+
+    /// A probe read a port busy: nothing stays locked, and the skip carries the probes.
+    private static boolean refuse(int[] ports, List<Skip> skips, int first, SkipCause.ProbeBusy busy) {
         releaseFirst(ports, ports.length);
-        skips.add(new Skip(first, busy));
+        skips.add(Skip.skip(first, busy));
         return false;
     }
 
