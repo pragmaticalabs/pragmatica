@@ -117,10 +117,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
         /// Asks for the drain of the target. Succeeds once the target is registered, and the leader's cluster-sync ping then
         /// carries it; fails with the cause that kept it from being queued.
         Promise<Unit> request(NodeId node);
-
         /// The drain targets with a request in flight, and the commanded-but-not-yet-departed ones.
         Set<NodeId> pending();
-
         /// The request in flight for the target, if any. Its promise succeeds only if the target is then registered.
         Option<Promise<Unit>> inFlight(NodeId node);
 
@@ -273,9 +271,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier) {
-        return new NodeLifecycleRoutes(nodeSupplier,
-                                       DrainPort.none(),
-                                       Option.none());
+        return new NodeLifecycleRoutes(nodeSupplier, DrainPort.none(), Option.none());
     }
 
     /// Membership v2 (B5b) — production factory wiring the leader's DRAIN command sink + the
@@ -294,7 +290,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                           Consumer<NodeId> drainCommandSink,
                                                           Supplier<Set<NodeId>> pendingDrainsSupplier,
                                                           SliceFloor sliceFloor) {
-        return withDrainPort(nodeSupplier, DrainPort.registry(acknowledging(drainCommandSink), pendingDrainsSupplier), sliceFloor);
+        return withDrainPort(nodeSupplier,
+                             DrainPort.registry(acknowledging(drainCommandSink), pendingDrainsSupplier),
+                             sliceFloor);
     }
 
     /// The legacy `Consumer` sink as a port sink: the request is answered once the consumer returned.
@@ -304,6 +302,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private static Promise<Unit> acknowledge(Consumer<NodeId> sink, NodeId node) {
         sink.accept(node);
+
         return Promise.unitPromise();
     }
 
@@ -501,8 +500,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// the target self-drains via its `DrainProcedure`. The CTM grace-terminate backstop reaps the
     /// container if it never self-exits. No `LifecycleWriter` write happens here.
     private Promise<TransitionResult> drainNode(String nodeIdStr, boolean force) {
-        return settled(RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
-                                   .map(node -> admitOperatorDrain(node, true, force)));
+        return settled(RequestParse.asRequest(NodeId.nodeId(nodeIdStr)).flatMap(node -> admitOperatorDrain(node,
+                                                                                                           true,
+                                                                                                           force)));
     }
 
     /// The admission's own checks ran synchronously, under the monitor; what is left is the commit of the drain request.
@@ -655,7 +655,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// floor. Asking the port again instead would start a request that skipped both.
     private Promise<Unit> awaitPending(NodeId node) {
         return drainPort.inFlight(node)
-                        .fold(() -> admitUnlessUnderWay(node), promise -> promise);
+                        .fold(() -> admitUnlessUnderWay(node),
+                              promise -> promise);
     }
 
     private Promise<Unit> admitUnlessUnderWay(NodeId node) {
@@ -676,7 +677,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private boolean reportsDraining(NodeId node) {
         return readLifecycleState(node).filter(NodeReportedState::isDraining)
-                                     .isPresent();
+                                 .isPresent();
     }
 
     /// Whether `cause` is the slice floor holding a drain back: the one refusal a replacement reports as "blocked".
@@ -926,8 +927,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// `drain` (the target self-drains then halts via its `DrainProcedure`); the CTM grace-terminate
     /// backstop reaps the container. No `LifecycleWriter` write happens here.
     private Promise<TransitionResult> shutdownNode(String nodeIdStr, boolean force) {
-        return settled(RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
-                                   .map(node -> admitOperatorDrain(node, false, force)));
+        return settled(RequestParse.asRequest(NodeId.nodeId(nodeIdStr)).flatMap(node -> admitOperatorDrain(node,
+                                                                                                           false,
+                                                                                                           force)));
     }
 
     Promise<TransitionResult> shutdownNodeForTest(String nodeIdStr) {

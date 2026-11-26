@@ -34,6 +34,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.unitResult;
 
+
 /// The one production [DrainSink] (#3754 C1, design r6 §3): a DRAIN request is committed through the [FencePort] as a witness, and the
 /// registry add and the FSM call run only in the accepted continuation, each under its own caller's [DrainGate].
 ///
@@ -88,6 +89,7 @@ final class FencedDrainSink implements DrainSink {
             var intent = new Intent();
 
             intent.joined.add(first);
+
             return intent;
         }
 
@@ -97,7 +99,7 @@ final class FencedDrainSink implements DrainSink {
 
         /// Adds a caller unless the witness has already taken its last batch; `false` sends the caller to a fresh request.
         synchronized boolean join(Joined entry) {
-            return !closed && joined.add(entry);
+            return ! closed && joined.add(entry);
         }
 
         /// The callers joined since the last take. An empty answer closes the intent: no later caller can join it.
@@ -106,6 +108,7 @@ final class FencedDrainSink implements DrainSink {
 
             joined = new ArrayList<>();
             closed = batch.isEmpty();
+
             return batch;
         }
 
@@ -115,6 +118,7 @@ final class FencedDrainSink implements DrainSink {
 
             joined = new ArrayList<>();
             closed = true;
+
             return batch;
         }
     }
@@ -128,8 +132,7 @@ final class FencedDrainSink implements DrainSink {
 
     @Override
     public Option<Promise<Unit>> inFlight(NodeId target) {
-        return Option.option(intents.get(target))
-                     .map(Intent::outcome);
+        return Option.option(intents.get(target)).map(Intent::outcome);
     }
 
     /// The targets with a witness in flight and the targets in the registry. The intents are read first and the registry second: a move
@@ -138,8 +141,7 @@ final class FencedDrainSink implements DrainSink {
         var inFlightTargets = Set.copyOf(intents.keySet());
 
         return Stream.concat(inFlightTargets.stream(),
-                             drainTargets.get()
-                                         .stream())
+                             drainTargets.get().stream())
                      .collect(Collectors.toUnmodifiableSet());
     }
 
@@ -153,13 +155,13 @@ final class FencedDrainSink implements DrainSink {
     private Promise<Unit> joinOrOpen(NodeId target, Joined entry) {
         var fresh = Intent.intent(entry);
 
-        return Option.option(intents.putIfAbsent(target, fresh))
-                     .fold(() -> open(target, fresh, entry),
-                           existing -> join(target, existing, entry));
+        return Option.option(intents.putIfAbsent(target, fresh)).fold(() -> open(target, fresh, entry),
+                                                                      existing -> join(target, existing, entry));
     }
 
     private Promise<Unit> open(NodeId target, Intent intent, Joined entry) {
         submitWitness(target, intent);
+
         return entry.caller();
     }
 
@@ -173,6 +175,7 @@ final class FencedDrainSink implements DrainSink {
     /// closed witness registered is answered as registered.
     private Promise<Unit> retryAfterClosed(NodeId target, Intent closed, Joined entry) {
         intents.remove(target, closed);
+
         return admit(target, entry.gate());
     }
 
@@ -187,11 +190,11 @@ final class FencedDrainSink implements DrainSink {
     /// The accepted continuation: runs every joined gate, batch by batch, then answers whether the target is registered.
     private Promise<Unit> runAccepted(NodeId target, Intent intent) {
         runBatches(target, intent);
+
         return drainTargets.get()
                            .contains(target)
                ? Promise.unitPromise()
-               : AttemptCancelled.attemptCancelled()
-                                 .promise();
+               : AttemptCancelled.attemptCancelled().promise();
     }
 
     @Contract
@@ -200,18 +203,20 @@ final class FencedDrainSink implements DrainSink {
 
         if (batch.isEmpty()) {
             intents.remove(target, intent);
+
             return;
         }
+
         batch.forEach(joined -> joined.caller()
-                                      .resolve(runGate(target, joined.gate())));
+                                      .resolve(runGate(target,
+                                                       joined.gate())));
         runBatches(target, intent);
     }
 
     @Contract
     private void failJoined(NodeId target, Intent intent, Cause cause) {
-        intent.closeAll()
-              .forEach(joined -> joined.caller()
-                                       .fail(cause));
+        intent.closeAll().forEach(joined -> joined.caller()
+                                                  .fail(cause));
         intents.remove(target, intent);
     }
 
@@ -226,13 +231,12 @@ final class FencedDrainSink implements DrainSink {
     private Result<Unit> runOwned(NodeId target, DrainGate gate) {
         return gate.runIfOwned(() -> registryAdd.accept(target))
                ? callFsm(target)
-               : AttemptCancelled.attemptCancelled()
-                                 .result();
+               : AttemptCancelled.attemptCancelled().result();
     }
 
     private Result<Unit> callFsm(NodeId target) {
-        Option.option(membershipFsmRef.get())
-              .onPresent(fsm -> fsm.onDrainRequested(target));
+        Option.option(membershipFsmRef.get()).onPresent(fsm -> fsm.onDrainRequested(target));
+
         return unitResult();
     }
 
