@@ -1422,8 +1422,36 @@ class ManagementServerImpl implements ManagementServer {
             }
         }
 
-        writeNotFound(instrumented, path);
+        writeUnmatched(ctx, instrumented);
         recordRequestMetrics(methodName, path, instrumented, startTime);
+    }
+
+    /// A path no route answers for this method. When the path is registered for OTHER methods the refusal is `405` with the
+    /// `Allow` list (RFC 9110 15.5.6), not `404`: `404` says the resource does not exist, and a client cannot tell a refused
+    /// write verb on a known path from a mistyped one. A path no method knows stays [#writeNotFound].
+    private static void writeUnmatched(HttpRequest ctx, ResponseWriter response) {
+        var allowed = allowedMethods(ctx.path());
+
+        if (allowed.isEmpty()) {
+            writeNotFound(response, ctx.path());
+
+            return;
+        }
+
+        response.header("Allow", allowed);
+        ProblemResponses.writeProblem(response,
+                                      HttpStatus.METHOD_NOT_ALLOWED,
+                                      "Method not allowed for " + ctx.path() + "; allowed: " + allowed,
+                                      ctx.path(),
+                                      ctx.requestId());
+    }
+
+    /// The methods the declared routes answer for `path`, in [HttpMethod] order, comma-separated; empty when none does.
+    private static String allowedMethods(String path) {
+        return Stream.of(HttpMethod.values())
+                     .filter(method -> ManagementRoute.match(method, path).isSuccess())
+                     .map(HttpMethod::name)
+                     .collect(Collectors.joining(", "));
     }
 
     /// The body shape (`File not found: <path>`, text/plain) is what the retired static-file fallback
