@@ -18,7 +18,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.LeavingRequested;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
@@ -285,6 +287,19 @@ class NodeDeploymentStopLifetimeTest {
 
             assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Stopped.class);
             assertThat(lifetime.isEnded()).isTrue();
+        }
+
+        /// D3: `Leaving` handles only `Shutdown`; were it ignored the FSM would never reach `Stopped` and its lifetime would outlive the node.
+        @Test
+        void shutdownFromLeaving_endsTheLifetime() {
+            harness.dispatch(new LeavingRequested(DrainReason.OPERATOR_DRAIN));
+            assertThat(harness.state()).as("control: the drain request left the FSM in Leaving").isInstanceOf(NodeDeploymentState.Leaving.class);
+            assertThat(lifetime.isEnded()).as("control: a drain request is not a stop").isFalse();
+
+            harness.dispatch(new Shutdown());
+
+            assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Stopped.class);
+            assertThat(lifetime.isEnded()).as("a node stop that finds the FSM in Leaving still ends it").isTrue();
         }
 
         @Test
