@@ -25,13 +25,16 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #3723 / #3794 (F3): a slice route whose PAYLOAD is a failed `Result` (or holds a `Cause`) has that failure written by the
-/// Jackson Result codec into a `200` body. Whatever mapper the router is given, the body carries the failure's client text
-/// only: no class name, no trace of a caught throwable.
+/// #3723 / #3794 (F3): a slice route whose payload HOLDS a failed `Result` or a `Cause` (a record component: a top-level
+/// `Result` is the route's own success/failure channel, which the router unwraps) has that failure written by the Jackson
+/// codec into a `200` body. Whatever mapper the router is given, the body carries the failure's client text only: no class
+/// name, no trace of a caught throwable.
 class SliceRouterFailedResultPayloadNoTraceTest {
     private static final String SENTINEL = "SENTINEL-3794-slice-payload";
 
     record Outcome(Cause failure) {}
+
+    record Envelope(Result<String> outcome) {}
 
     private static final ErrorMapper MAPPER = cause -> switch (cause) {
         case HttpError he -> he;
@@ -65,13 +68,13 @@ class SliceRouterFailedResultPayloadNoTraceTest {
     }
 
     @Test
-    void failedResultPayload_overAThrowable_defaultMapper_writesClientText() {
-        assertClientText(respond(aThrowable().<String> result(), JsonMapper.defaultJsonMapper()));
+    void failedResultInsideAPayloadRecord_overAThrowable_defaultMapper_writesClientText() {
+        assertClientText(respond(new Envelope(aThrowable().result()), JsonMapper.defaultJsonMapper()));
     }
 
     @Test
-    void failedResultPayload_overAThrowable_valueObjectMapper_writesClientText() {
-        assertClientText(respond(aThrowable().<String> result(), JsonMapper.valueObjectJsonMapper()));
+    void failedResultInsideAPayloadRecord_overAThrowable_valueObjectMapper_writesClientText() {
+        assertClientText(respond(new Envelope(aThrowable().result()), JsonMapper.valueObjectJsonMapper()));
     }
 
     @Test
@@ -80,7 +83,8 @@ class SliceRouterFailedResultPayloadNoTraceTest {
     }
 
     @Test
-    void successResultPayload_isWrittenUnchanged() {
-        assertThat(respond(Result.success("fine"), JsonMapper.defaultJsonMapper())).contains("\"success\":true").contains("fine");
+    void successResultInsideAPayloadRecord_isWrittenUnchanged() {
+        assertThat(respond(new Envelope(Result.success("fine")), JsonMapper.defaultJsonMapper())).contains("\"success\":true")
+                                                                                              .contains("fine");
     }
 }
