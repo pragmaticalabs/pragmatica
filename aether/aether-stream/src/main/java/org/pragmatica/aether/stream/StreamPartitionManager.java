@@ -2135,10 +2135,9 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// #3796: a destroy at a node that holds no ring for the stream. The caller has established, from the catalog, that the stream
     /// exists, so the answer is the owner's: the config removal is submitted and every node that applies it tears its own rings
-    /// down ([#onStreamConfigRemove]). The applied life is dropped here too, as in [#destroyStream], so a create that follows
-    /// proposes a new life. Without a cluster node (minimal runtime) no removal is submitted, as in [#destroyStream].
+    /// down ([#onStreamConfigRemove], which also drops the applied life). Without a cluster node (minimal runtime) no removal is
+    /// submitted, as in [#destroyStream].
     public Result<Unit> destroyUnmaterialized(String streamName) {
-        entries.appliedConfigs().remove(streamName);
         publishStreamConfigRemoval(streamName);
 
         return Result.unitResult();

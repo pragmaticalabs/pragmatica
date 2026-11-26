@@ -111,29 +111,6 @@ class StreamConfigReplicationTest {
             }
         }
 
-        /// #3796: the applied life of a node that could not hold the rings is dropped at once, so a create that follows proposes a
-        /// new life instead of adopting the one being removed (the same ruling as [StreamPartitionManager#destroyStream], #1278).
-        @Test
-        void destroyUnmaterialized_dropsTheAppliedLife_whichHoldsNoRing() {
-            var writer = streamPartitionManager(Long.MAX_VALUE, clusterNode);
-            var receiver = streamPartitionManager(0L);
-            try {
-                var retention = RetentionPolicy.retentionPolicy(500, 512 * 1024, 30_000);
-                writer.createStream(StreamConfig.streamConfig("events", 2, retention, "earliest"));
-                receiver.onStreamConfigPut(new ValuePut<>(clusterNode.streamConfigPuts().getFirst(), Option.empty()));
-                assertThat(receiver.committedPartitions("events").isPresent()).as("control: the config is applied").isTrue();
-                assertThat(receiver.streamInfo("events").isEmpty()).as("control: no ring is held").isTrue();
-
-                receiver.destroyUnmaterialized("events")
-                        .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
-
-                assertThat(receiver.committedPartitions("events").isEmpty()).as("the applied life is dropped").isTrue();
-            } finally {
-                receiver.close();
-                writer.close();
-            }
-        }
-
         @Test
         void createStream_writesStreamConfigKey_visible_via_ValuePut_hydration() {
             // Mirrors the cluster path: node A (writer) writes, node B (receiver) consumes
