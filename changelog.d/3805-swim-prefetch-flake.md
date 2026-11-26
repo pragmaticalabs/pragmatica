@@ -1,4 +1,4 @@
-### Fixed (2026-11-26 — #3805: flaky EmberStoragePrefetchOverSwimTest, the peer's fetch count was 0 after a 160 s wait)
+### Changed (2026-11-26 — #3805: EmberStoragePrefetchOverSwimTest names the stalled link; the flake itself stays open)
 - **The test reported a bare `0L` when the hint-to-prefetch chain stalled, with no way to tell which link failed.** It now
   keeps the reader reading until the peer's prefetch completes (the peer's `warmed` counter), the observed end of the chain,
   and then asserts each link in causal order: hint produced (`hintsSent`), SWIM datagram sent (`swim.sent`), delivered to the
