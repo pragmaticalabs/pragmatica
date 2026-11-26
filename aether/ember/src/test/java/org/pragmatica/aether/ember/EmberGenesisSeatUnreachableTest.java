@@ -74,7 +74,7 @@ class EmberGenesisSeatUnreachableTest {
     @Timeout(400)
     void anAgreedSeatThatNeverConnects_isNamedWithItsRemedy_andTheClusterStillForms() {
         startTwoPendingCores();
-        assertThat(cluster.killNode(DEAD_SEAT, false).await(STOP_BOUND).isSuccess()).as("the seat's process is killed while pending").isTrue();
+        killDeadSeatAndAwaitItsLinkDrop();
         assertThat(cluster.startHeldBackNodes().await(START_BOUND).isSuccess()).as("the late core starts").isTrue();
 
         awaitCondition("the two live cores install a three-seat roster that still names the dead seat", this::liveCoresFormedWithDeadSeat);
@@ -96,7 +96,7 @@ class EmberGenesisSeatUnreachableTest {
     @Timeout(900)
     void anAgreedSeatThatNeverConnects_isReplacedByAutoHeal_withinTheBound() {
         startTwoPendingCores();
-        assertThat(cluster.killNode(DEAD_SEAT, false).await(STOP_BOUND).isSuccess()).as("the seat's process is killed while pending").isTrue();
+        killDeadSeatAndAwaitItsLinkDrop();
         assertThat(cluster.startHeldBackNodes().await(START_BOUND).isSuccess()).as("the late core starts").isTrue();
         awaitCondition("the two live cores install a three-seat roster that still names the dead seat", this::liveCoresFormedWithDeadSeat);
 
@@ -108,6 +108,19 @@ class EmberGenesisSeatUnreachableTest {
         System.out.println("EmberGenesisSeatUnreachableTest: replaced in " + (System.currentTimeMillis() - started) + " ms; voters="
                            + EmberNodeReplacementTest.installedVoters(cluster.allNodes().getFirst()));
         awaitCondition("the warning is closed because the seat left the roster", () -> closedSubjects().contains(DEAD_SEAT));
+    }
+
+    /// `killNode(.., false)` bounds the stop at one second and swallows the bound's expiry, so under load it returns success while the killed
+    /// core is still stopping and the survivor still holds a live link to it (#3774, second mode: in a loaded suite run the roster installed
+    /// with `-1` still CONNECTED, so no seat was unreachable and no warning could be raised). The seat is dead for this test once the survivor's
+    /// link to it is gone: before the late core starts, `-2`'s only peer is `-1`.
+    private void killDeadSeatAndAwaitItsLinkDrop() {
+        assertThat(cluster.killNode(DEAD_SEAT, false).await(STOP_BOUND).isSuccess()).as("the seat's process is killed while pending").isTrue();
+        awaitCondition("the surviving started core's link to the killed seat is gone", this::survivorHoldsNoLink);
+    }
+
+    private boolean survivorHoldsNoLink() {
+        return cluster.getNode(PREFIX + "-2").filter(core -> core.connectedNodeCount() == 0).isPresent();
     }
 
     private boolean deadSeatReplaced() {
