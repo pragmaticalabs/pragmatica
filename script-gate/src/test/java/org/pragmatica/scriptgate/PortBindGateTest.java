@@ -185,7 +185,7 @@ class PortBindGateTest {
     /// also gives the wiring test a real allowed site to find in the stamp.
     @Test
     void heldPort_holdsItsPort_whileOpen_andReleasesItOnClose() {
-        var held = Result.lift(HeldPort::udp).unwrap();
+        var held = Result.lift(() -> HeldPort.udp()).unwrap();
 
         assertThat(held.isBound()).isTrue();
         assertThat(held.isClosed()).isFalse();
@@ -198,7 +198,7 @@ class PortBindGateTest {
 
     @Test
     void heldPortTcp_isOpenAndBound() {
-        var held = Result.lift(HeldPort::tcp).unwrap();
+        var held = Result.lift(() -> HeldPort.tcp()).unwrap();
 
         assertThat(held.isBound()).isTrue();
         assertThat(held.isClosed()).isFalse();
@@ -208,7 +208,7 @@ class PortBindGateTest {
 
     @Test
     void heldPortHttpServer_holdsItsOwnPort_andReadsItBack() {
-        var server = Result.lift(HeldPort::httpServer).unwrap();
+        var server = Result.lift(() -> HeldPort.httpServer()).unwrap();
 
         assertThat(server.getAddress().getPort()).isPositive();
         server.stop(0);
