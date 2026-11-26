@@ -7,15 +7,10 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
-import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.serialization.Deserializer;
-import org.pragmatica.serialization.Serializer;
-
-import static org.pragmatica.lang.Result.success;
 
 
 public final class IdempotencyInterceptorFactory implements ResourceFactory<IdempotencyMethodInterceptor, IdempotencyConfig> {
@@ -68,31 +63,10 @@ public final class IdempotencyInterceptorFactory implements ResourceFactory<Idem
                               shared -> new IdempotencyMethodInterceptor(shared.store(), shared.claims(), keyExtractor));
     }
 
-    private Result<? extends CacheBackend> createStore(IdempotencyConfig config, ProvisioningContext context) {
-        return switch (config.mode()) {
-            case LOCAL -> success(createInMemory(config));
-            case DISTRIBUTED -> createDHTBackend(config, context);
-            case TIERED -> createDHTBackend(config, context).map(dhtStore -> createTiered(config, dhtStore));
-        };
-    }
-
-    private static TieredCache createTiered(IdempotencyConfig config, CacheBackend dhtStore) {
-        return TieredCache.tieredCache(createInMemory(config), dhtStore);
-    }
-
-    private static InMemoryCache createInMemory(IdempotencyConfig config) {
-        return InMemoryCache.inMemoryCache(config.retentionSeconds(), config.maxEntries());
-    }
-
-    /// The REPLICATED DHT at the committed `[replication]` factors, never the cache namespace's (#1777 Q4): a dedup
-    /// record lost with its only copy re-executes the call it guarded.
-    private Result<CacheBackend> createDHTBackend(IdempotencyConfig config, ProvisioningContext context) {
-        return Result.all(context.extension(DHTClient.class),
-                          context.extension(Serializer.class),
-                          context.extension(Deserializer.class),
-                          success(config.storeName()),
-                          success(config.retentionSeconds()))
-                     .map(DHTCacheBackend::dhtCacheBackend);
+    /// The backend comes from the selection seam only (#3658): this factory never builds one itself. A `dht` store
+    /// is the REPLICATED DHT, never the cache namespace's (#1777 Q4; [CacheBackends]).
+    private static Result<CacheBackend> createStore(IdempotencyConfig config, ProvisioningContext context) {
+        return CacheBackends.cacheBackend(StoreSpec.storeSpec(config), context);
     }
 
     private record StoreAndClaims(CacheBackend store, ConcurrentHashMap<Object, Promise<Object>> claims) {

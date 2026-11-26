@@ -23,6 +23,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// #2201 E-02 (spec 3.2 item 9): the one table names each inert key, and each refusal message starts with the key it
 /// refuses, so an operator reading the deploy or activation refusal knows which line to remove (F4, i3).
 class InertKeyRulesTest {
+    /// The whole clause of each table, so a message that carried the other table's step name fails (#3520: `contains("S2b")` could not tell).
+    private static final String RETENTION_CLAUSE = "the stream's retention still comes from today's keys (`retention`, `retention_value`, "
+                                                   + "`retention_mode`, `max_age`, `max_count`, `max_bytes`) until release step S2a3 enforces the [retention] "
+                                                   + "declaration (#3334). Remove the [retention] sub-section and declare retention with today's keys until S2a3.";
+    private static final String HOT_CLAUSE = "the ring is still sized from today's retention until release step S2b sizes it from the [hot] "
+                                             + "window (#3334). Remove the [hot] sub-section until S2b.";
+
     @Test
     void everyNonDefaultConsumerKey_isNamed_andItsMessageStartsWithIt() {
         var everyKey = ConsumerConfig.consumerConfig("billing", 50, ProcessingMode.PARALLEL, ErrorStrategy.SKIP, 5_000L, 9, "orders-dlq", ReadPreference.ANY_REPLICA);
@@ -77,8 +84,8 @@ class InertKeyRulesTest {
                          .containsExactly("8MB", "50", "1h", "2GB", "100", "all");
         assertThat(inert).allSatisfy(key -> assertThat(key.message()).startsWith(key.key() + " = '" + key.value() + "'")
                                                                       .contains("has no runtime effect yet"));
-        assertThat(inert.get(0).message()).contains("S2b");
-        assertThat(inert.get(2).message()).contains("S2a3");
+        assertThat(inert.get(0).message()).isEqualTo("hot.max_bytes = '8MB' has no runtime effect yet — " + HOT_CLAUSE);
+        assertThat(inert.get(2).message()).isEqualTo("retention.max_age = '1h' has no runtime effect yet — " + RETENTION_CLAUSE);
     }
 
     /// The same keys written as dotted keys (no header) are refused alike: one rule over the section's keys.

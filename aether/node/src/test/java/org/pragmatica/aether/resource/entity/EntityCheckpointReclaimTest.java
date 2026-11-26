@@ -7,16 +7,21 @@ package org.pragmatica.aether.resource.entity;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.IntStream;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
@@ -37,6 +42,7 @@ import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -88,6 +94,12 @@ class EntityCheckpointReclaimTest {
     private KVStore<AetherKey, AetherValue> kv;
     /// Full scans of `kv` (`forEach`), which the delete-time check runs for a block without a readable identity header.
     private final AtomicInteger scans = new AtomicInteger();
+    /// The thread that runs the test: every other thread reading a pointer is a scheduled delete checking it.
+    private Thread testThread;
+    /// While set, a pointer read by a thread other than the test's blocks until it opens ([#holdDeleteChecks]).
+    private volatile CountDownLatch deleteChecksHeld;
+    /// Pointer reads by threads other than the test's that have returned: the delete-time checks that ran.
+    private final AtomicInteger deleteChecks = new AtomicInteger();
     /// Names the storage instances and durable tiers a test builds beyond the fixture's.
     private final AtomicInteger durables = new AtomicInteger();
     @TempDir
@@ -97,11 +109,30 @@ class EntityCheckpointReclaimTest {
     @BeforeEach
     void setUp() {
         manager = streamPartitionManager(64L * 1024 * 1024, EvictionListener.NOOP, ReplicationManager.NONE, Option.none(), (_, _) -> -1L);
+        testThread = Thread.currentThread();
         shared = new RecordingTier();
         storage = StorageInstance.storageInstance("entity-ckpt",
                                                   List.of(MemoryTier.memoryTier(ONE_GB), shared),
                                                   MetadataStore.inMemoryMetadataStore("entity-ckpt"));
         kv = new KVStore<>(MessageRouter.mutable(), noopSerializer(), noopDeserializer()) {
+            @Override
+            public <VV> Option<VV> getTyped(StructuredKey key, Class<VV> valueClass) {
+                var held = deleteChecksHeld;
+                var fromADelete = Thread.currentThread() != testThread;
+
+                if (held != null && fromADelete) {
+                    awaitOpen(held);
+                }
+
+                var found = super.getTyped(key, valueClass);
+
+                if (fromADelete) {
+                    deleteChecks.incrementAndGet();
+                }
+
+                return found;
+            }
+
             @Override
             public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, BiConsumer<KK, VV> consumer) {
                 scans.incrementAndGet();
@@ -112,6 +143,7 @@ class EntityCheckpointReclaimTest {
 
     @AfterEach
     void tearDown() {
+        Option.option(deleteChecksHeld).onPresent(CountDownLatch::countDown);
         manager.close();
         storage.shutdown();
         extraStorages.stream().filter(extra -> extra != storage).forEach(StorageInstance::shutdown);
@@ -450,11 +482,13 @@ class EntityCheckpointReclaimTest {
 
     /// Hazard (v-2516 F1): the claim falls back outside the fence (the pointer removed, then rewritten at the same claim with identical
     /// bytes, which name the same block) while the delete of that block is pending. The delete checks the pointer when it runs and keeps
-    /// the block the pointer names again.
+    /// the block the pointer names again. The delete's check is held until the pointer is rewritten (the grace outliving the rewrite),
+    /// so no grace and no host stall decides the order.
     @Test
     void aPointerRemovedAndRewrittenAtTheSameClaim_duringTheGrace_keepsTheBlockItNames() {
-        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(1).seconds(), FAST_RETRY));
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
         var first = save(substrate, 0, 1L, snapshot("same"), Option.none());
+        var release = holdDeleteChecks();
 
         save(substrate, 0, 2L, snapshot("two"), Option.none());
         apply(List.of(new KVCommand.Remove<AetherKey>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0))));
@@ -463,7 +497,10 @@ class EntityCheckpointReclaimTest {
         apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0),
                                                                 EntityFoldCheckpointValue.entityFoldCheckpointValue(1L, first.hexString()))));
         assertThat(pointed(0)).as("control: the rewritten pointer names the displaced block again").isEqualTo(first);
-        pause(3_000L);
+        assertThat(deleteChecks.get()).as("control: the delete has not checked yet").isZero();
+        release.countDown();
+        awaitDeleteCheck(1);
+        pause(PAST_SHORT_GRACE_MS);
         assertThat(readable(first)).as("the block the current pointer names is readable").isTrue();
     }
 
@@ -471,8 +508,9 @@ class EntityCheckpointReclaimTest {
     /// a lookup of any other key (no pointer of partition 0 exists here) would delete the block the pointer names.
     @Test
     void aPointerRemovedAndRewrittenAtTheSameClaim_onPartition3_keepsTheBlockItNames() {
-        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(1).seconds(), FAST_RETRY));
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
         var first = save(substrate, 3, 1L, snapshot("same"), Option.none());
+        var release = holdDeleteChecks();
 
         save(substrate, 3, 2L, snapshot("two"), Option.none());
         apply(List.of(new KVCommand.Remove<AetherKey>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 3))));
@@ -481,7 +519,10 @@ class EntityCheckpointReclaimTest {
         assertThat(pointed(3)).as("control: the rewritten pointer names the displaced block again").isEqualTo(first);
         assertThat(kv.getTyped(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0), EntityFoldCheckpointValue.class).isPresent()).as("control: no pointer of partition 0")
                                                                                                                          .isFalse();
-        pause(3_000L);
+        assertThat(deleteChecks.get()).as("control: the delete has not checked yet").isZero();
+        release.countDown();
+        awaitDeleteCheck(1);
+        pause(PAST_SHORT_GRACE_MS);
         assertThat(readable(first)).as("the block the current pointer names is readable").isTrue();
     }
 
@@ -697,6 +738,204 @@ class EntityCheckpointReclaimTest {
         assertThat(newOwner.exists(written).await().unwrap()).as("on its own durable tier").isTrue();
     }
 
+    /// #2536: a put that failed indeterminately (the quorum was missed, some replicas hold the block) is never named by a pointer. Once a later
+    /// save of the same partition succeeds and its swap is confirmed, the block is deleted; before that nothing confirms and it is kept.
+    @Test
+    void anIndeterminatePutThatLanded_isDeletedOnceALaterSaveConfirms() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var kept = save(substrate, 0, 1L, snapshot("v1"), Option.none());
+
+        var stale = failedPutThatLanded(substrate, 0, 2L);
+
+        assertThat(pointed(0)).as("control: the failed save moved no pointer").isEqualTo(kept);
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(stale)).as("nothing has confirmed a later save yet").isTrue();
+        var current = save(substrate, 0, 2L, snapshot("v2"), Option.none());
+
+        eventually("the stale block is deleted once the retry's swap is confirmed", 5_000L, () -> !readable(stale));
+        assertThat(deletesOf(stale)).as("through StorageInstance#delete, once").isEqualTo(1L);
+        assertThat(readable(current)).as("the block the pointer names is kept").isTrue();
+        assertThat(pointed(0)).isEqualTo(current);
+    }
+
+    /// The same, when the later save advances the claim: the idle-partition retry above and a fold that moved on both reclaim the block.
+    @Test
+    void anIndeterminatePutThatLanded_isDeletedWhenTheLaterSaveAdvancesTheClaim() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+
+        save(substrate, 0, 1L, snapshot("v1"), Option.none());
+        var stale = failedPutThatLanded(substrate, 0, 2L);
+        var current = save(substrate, 0, 3L, snapshot("v3"), Option.none());
+
+        eventually("the stale block is deleted", 5_000L, () -> !readable(stale));
+        assertThat(readable(current)).isTrue();
+    }
+
+    /// Two attempts that each landed a block of their own (every put carries a fresh nonce): one confirmed save deletes both, each once.
+    @Test
+    void twoIndeterminateAttempts_areBothDeletedByTheNextConfirmedSave() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var firstStale = failedPutThatLanded(substrate, 0, 1L);
+        var secondStale = failedPutThatLanded(substrate, 0, 1L);
+
+        assertThat(secondStale).as("control: the second attempt, identical in content, landed a block of its own").isNotEqualTo(firstStale);
+        var current = save(substrate, 0, 1L, snapshot("v1"), Option.none());
+
+        assertThat(current).as("control: the confirmed save is a block of its own").isNotEqualTo(firstStale).isNotEqualTo(secondStale);
+
+        eventually("both stale blocks are deleted", 5_000L, () -> !readable(firstStale) && !readable(secondStale));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(deletesOf(firstStale)).isEqualTo(1L);
+        assertThat(deletesOf(secondStale)).isEqualTo(1L);
+        assertThat(readable(current)).isTrue();
+    }
+
+    /// A save with no indeterminate attempt before it deletes what the swap displaced and nothing else.
+    @Test
+    void aSuccessWithNoPriorIndeterminateAttempt_deletesNothingExtra() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var displaced = save(substrate, 0, 1L, snapshot("v1"), Option.none());
+
+        save(substrate, 0, 2L, snapshot("v2"), Option.none());
+        eventually("the displaced block is deleted", 5_000L, () -> !readable(displaced));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(shared.deletes).as("only the displaced block").containsOnly(displaced);
+    }
+
+    /// The delete of a stale block that the store refuses is retried within the bound; past it the block stays recorded, and the next
+    /// confirmed save deletes it.
+    @Test
+    void aRefusedDeleteOfAStaleBlock_staysRecorded_andIsRetriedByTheNextConfirmedSave() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var stale = failedPutThatLanded(substrate, 0, 1L);
+
+        shared.refuseDeletes.set(DELETE_ATTEMPTS);
+        var first = save(substrate, 0, 1L, snapshot("v1"), Option.none());
+
+        eventually("the bound is spent", 5_000L, () -> deletesOf(stale) >= DELETE_ATTEMPTS);
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(deletesOf(stale)).as("exactly the bound, then no more").isEqualTo(DELETE_ATTEMPTS);
+        assertThat(readable(stale)).as("the refused block is still there").isTrue();
+        save(substrate, 0, 2L, snapshot("v2"), Option.none());
+        eventually("the next confirmed save deletes it", 5_000L, () -> !readable(stale) && !readable(first));
+        assertThat(deletesOf(stale)).as("the bound, then the accepted attempt").isEqualTo(DELETE_ATTEMPTS + 1L);
+    }
+
+    /// A save the fence refused confirms nothing: the stale block is kept (the writer deletes only its own refused block), and it goes
+    /// with the next save whose swap is confirmed.
+    @Test
+    void aRefusedSave_confirmsNothing_soTheStaleBlockWaitsForTheNextConfirmedSave() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var committed = save(substrate, 0, 5L, snapshot("v5"), Option.none());
+        var stale = failedPutThatLanded(substrate, 0, 2L);
+
+        save(substrate, 0, 2L, snapshot("v2"), Option.none());
+        var refused = shared.puts.getLast();
+
+        assertThat(pointed(0)).as("control: the lower claim was refused").isEqualTo(committed);
+        eventually("the writer's own refused block is deleted", 5_000L, () -> !readable(refused));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(stale)).as("a refused swap confirms nothing").isTrue();
+        var current = save(substrate, 0, 6L, snapshot("v6"), Option.none());
+
+        eventually("a confirmed save deletes the stale block", 5_000L, () -> !readable(stale));
+        assertThat(readable(current)).isTrue();
+    }
+
+    /// The delete checks the pointers when it runs: a stale block a pointer names by then (a restore outside the fence names it) is kept.
+    /// The delete's check is held until the pointer names the block, so no grace and no host stall decides the order.
+    @Test
+    void aStaleBlockNamedByAPointerWhenTheDeleteRuns_isNeverDeleted() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var release = holdDeleteChecks();
+        var stale = failedPutThatLanded(substrate, 0, 1L);
+
+        save(substrate, 0, 1L, snapshot("v1"), Option.none());
+        apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(EntityCheckpointKey.entityCheckpointKey(KEYSPACE, 0),
+                                                                EntityFoldCheckpointValue.entityFoldCheckpointValue(1L, stale.hexString()))));
+        assertThat(pointed(0)).as("control: a pointer names the stale block").isEqualTo(stale);
+        assertThat(deleteChecks.get()).as("control: the delete has not checked yet").isZero();
+        release.countDown();
+        awaitDeleteCheck(1);
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(stale)).as("the block a pointer names is kept").isTrue();
+        assertThat(deletesOf(stale)).isZero();
+    }
+
+    /// The record is bounded (16 per pointer): past it the oldest block is forgotten and stays in storage; the rest are deleted. The 16 is
+    /// pinned here on purpose: a changed bound is a decision, not a refactor.
+    @Test
+    void moreFailedPutsThanTheBound_forgetTheOldest_andDeleteTheRest() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var stale = IntStream.range(0, 17).mapToObj(_ -> failedPutThatLanded(substrate, 0, 1L)).toList();
+
+        save(substrate, 0, 1L, snapshot("v1"), Option.none());
+        eventually("the 16 newest are deleted", 10_000L, () -> stale.stream().skip(1).noneMatch(this::readable));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(readable(stale.getFirst())).as("the oldest was forgotten, and stays").isTrue();
+        assertThat(deletesOf(stale.getFirst())).isZero();
+    }
+
+    /// #2536 deviation, question 1 (a put that failed at the caller landing LATER than the later confirmed save): the block lands after the
+    /// delete ran, so it stays (a leak, the L-12 class, stated as a limit). Nothing names it: only a put that succeeded is published
+    /// (`writeThenPublish`), so the pointer, the confirmed block and the reads are untouched. Red if a late landing could move the pointer.
+    @Test
+    void aFailedPutThatLandsAfterTheLaterConfirmedSave_isALeak_neverANamedBlock() {
+        var substrate = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+
+        shared.failThenLandLater.set(1);
+        assertThat(substrate.saveCheckpoint(KEYSPACE, 0, 5L, snapshot("v5"), Option.none()).await().isFailure()).as("control: the put failed").isTrue();
+        var stale = shared.puts.getLast();
+        var current = save(substrate, 0, 5L, snapshot("v5"), Option.none());
+
+        assertThat(current).as("control: the retry, identical in content, is a block of its own").isNotEqualTo(stale);
+
+        eventually("the delete of the stale block ran while it was absent", 5_000L, () -> deletesOf(stale) >= 1L);
+        shared.landPending();
+        assertThat(readable(stale)).as("control: the block landed after the delete").isTrue();
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(pointed(0)).as("the late landing names nothing").isEqualTo(current);
+        assertThat(readable(current)).isTrue();
+        assertThat(namedBlocks()).as("no pointer names the late block").doesNotContain(stale);
+    }
+
+    /// #2536 deviation, question 2 (a recorded id named by a pointer another node wrote): another node at the SAME claim writes a block of its
+    /// own (fresh 128-bit nonce per frame), so its pointer cannot name the recorded id. The first node's confirmed save at the equal claim
+    /// deletes the stale block and nothing else: the other node's block is displaced at an equal claim and deferred, not deleted.
+    @Test
+    void aStaleBlockIsNeverNamedByTheOtherNodesPointer_andItsReleaseDeletesNothingElse() {
+        var first = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY));
+        var second = substrate(checkpointReclaim(TimeSpan.timeSpan(0).millis(), FAST_RETRY),
+                               storageOver(MemoryTier.memoryTier(ONE_GB), MemoryTier.memoryTier(ONE_GB)));
+        var stale = failedPutThatLanded(first, 0, 5L);
+        var takeover = save(second, 0, 5L, snapshot("v5"), Option.none());
+
+        assertThat(takeover).as("the other node's pointer names a block of its own").isNotEqualTo(stale);
+        var current = save(first, 0, 5L, snapshot("v5"), Option.none());
+
+        assertThat(current).as("the retry, identical in content, is a block of its own").isNotEqualTo(stale).isNotEqualTo(takeover);
+
+        eventually("the stale block is deleted", 5_000L, () -> !readable(stale));
+        pause(PAST_SHORT_GRACE_MS);
+        assertThat(shared.deletes).as("the other node's block is deferred at the equal claim, not deleted").containsOnly(stale);
+        assertThat(readable(current)).isTrue();
+        assertThat(readable(takeover)).isTrue();
+    }
+
+    /// Fails one save at `through` after its block landed, and answers that block. The save carries [#snapshot] of `"v" + through` and no
+    /// lineage, the same keyspace, partition, claim, snapshot and lineage as a later `save(substrate, partition, through, snapshot("v" + through),
+    /// Option.none())`: the two blocks differ only in the per-put nonce.
+    private BlockId failedPutThatLanded(EntityLogSubstrate substrate, int partition, long through) {
+        shared.landThenFailPuts.set(1);
+        assertThat(substrate.saveCheckpoint(KEYSPACE, partition, through, snapshot("v" + through), Option.none()).await().isFailure())
+                .as("control: the put failed indeterminately").isTrue();
+        var stale = shared.puts.getLast();
+
+        assertThat(readable(stale)).as("control: the failed put landed").isTrue();
+
+        return stale;
+    }
+
     /// Every block the shared tier was given that is still readable, other than `current`.
     private List<BlockId> leaked(BlockId current) {
         return shared.puts.stream().distinct().filter(id -> !id.equals(current)).filter(this::readable).toList();
@@ -795,6 +1034,14 @@ class EntityCheckpointReclaimTest {
         return BlockId.fromHex(pointer.blockIdHex()).unwrap();
     }
 
+    private List<BlockId> namedBlocks() {
+        var named = new ArrayList<BlockId>();
+
+        kv.forEach(EntityCheckpointKey.class, EntityFoldCheckpointValue.class, (_, pointer) -> named.add(BlockId.fromHex(pointer.blockIdHex()).unwrap()));
+
+        return named;
+    }
+
     private boolean readable(BlockId id) {
         return storage.get(id).await().unwrap().isPresent();
     }
@@ -856,6 +1103,34 @@ class EntityCheckpointReclaimTest {
         }
     }
 
+    /// Holds every delete-time pointer check at its read: the check cannot start before [#release] (the latch's `countDown`) runs, however
+    /// long the test takes to get to it, so the order "the pointer changes, then the delete checks it" does not depend on a grace period or on
+    /// the speed of the host. The test must run [#awaitDeleteCheck] after the release.
+    private CountDownLatch holdDeleteChecks() {
+        var latch = new CountDownLatch(1);
+
+        deleteChecksHeld = latch;
+
+        return latch;
+    }
+
+    /// Waits for `count` delete-time pointer checks to have read the pointer (the read has returned; the delete, if any, follows at once).
+    private void awaitDeleteCheck(int count) {
+        eventually("a delete's pointer check has run", 5_000L, () -> deleteChecks.get() >= count);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static void awaitOpen(CountDownLatch latch) {
+        try {
+            if (!latch.await(30, TimeUnit.SECONDS)) {
+                fail("the held delete check was never released");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail("interrupted", e);
+        }
+    }
+
     /// A shared tier that records every put and delete; `refuseDeletes` refusals are answered first, as a DHT remove that missed its
     /// write quorum.
     private static final class RecordingTier implements StorageTier {
@@ -863,6 +1138,12 @@ class EntityCheckpointReclaimTest {
         final List<BlockId> puts = new CopyOnWriteArrayList<>();
         final List<BlockId> deletes = new CopyOnWriteArrayList<>();
         final AtomicInteger refuseDeletes = new AtomicInteger();
+        /// Puts that store the block and then fail, as a DHT write that missed its quorum with some replicas already holding the block.
+        final AtomicInteger landThenFailPuts = new AtomicInteger();
+        /// Puts that fail at the caller at once (a timeout while the replica writes are still in flight) and store the block only when
+        /// [#landPending] runs: a block that lands after the caller was told it failed.
+        final AtomicInteger failThenLandLater = new AtomicInteger();
+        final Map<BlockId, byte[]> pendingLandings = new ConcurrentHashMap<>();
         /// Answers as the production remote tier does: shared and durable.
         volatile boolean durable;
         /// Reads find nothing, whatever the tier holds.
@@ -884,7 +1165,20 @@ class EntityCheckpointReclaimTest {
         public Promise<Unit> put(BlockId id, byte[] content) {
             puts.add(id);
 
-            return delegate.put(id, content);
+            if (failThenLandLater.getAndDecrement() > 0) {
+                pendingLandings.put(id, content);
+
+                return Causes.cause("write timed out, replica writes in flight").<Unit> promise();
+            }
+
+            return landThenFailPuts.getAndDecrement() > 0
+                   ? delegate.put(id, content).flatMap(_ -> Causes.cause("write quorum missed, replicas may hold the block").<Unit> promise())
+                   : delegate.put(id, content);
+        }
+
+        void landPending() {
+            pendingLandings.forEach((id, content) -> delegate.put(id, content).await());
+            pendingLandings.clear();
         }
 
         @Override

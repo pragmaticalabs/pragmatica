@@ -22,7 +22,7 @@ package org.pragmatica.dht;
 ///
 /// The epoch is minted CP-side as `org.pragmatica.aether.slice.generation.Epoch(rabiaTerm,
 /// localCounter)` in the BSL-1.1 `aether/slice` module, which depends on this Apache-2.0 module —
-/// never the reverse. So this source exposes the epoch only as its two primitive `long`s. The
+/// never the reverse. So this source exposes the epoch only as primitive `long`s, in one [OwnerEpoch]. The
 /// aether-level wiring binds the real source to the committed `DhtPartitionOwnershipValue.ownerEpoch`
 /// for the node's ownership arc; non-cluster paths and tests use [#zero] (the unfenced floor,
 /// `Epoch.ZERO`).
@@ -31,12 +31,26 @@ package org.pragmatica.dht;
 /// public `DHTClient` write API unchanged: the stamp is a per-node property of the owner, not of the
 /// individual call site.
 public interface OwnerEpochSource {
-    /// This node's current ownership-epoch cluster `incarnation` (#1529) for stamping outgoing puts.
-    long currentEpochIncarnation();
-    /// This node's current ownership-epoch `rabiaTerm` for stamping outgoing puts.
-    long currentEpochTerm();
-    /// This node's current ownership-epoch `localCounter` for stamping outgoing puts.
-    long currentEpochCounter();
+    /// This node's current ownership epoch, read ONCE, for stamping one outgoing put (#3720). The three components come from a
+    /// single read of the ownership record, so a record applied while a put is being stamped can never yield a mixed epoch that
+    /// no owner ever held.
+    OwnerEpoch currentEpoch();
+
+    /// One owner epoch as the DHT wire carries it: the cluster `incarnation` (#1529), the `rabiaTerm` and the `localCounter`.
+    /// Primitives only: the BSL-1.1 `Epoch` type never enters this module.
+    record OwnerEpoch(long incarnation, long rabiaTerm, long localCounter) {
+        /// The unfenced floor (`Epoch.ZERO` -> `0:0:0`): what a node stamps while the ownership record is not applied.
+        public static final OwnerEpoch FLOOR = new OwnerEpoch(0L, 0L, 0L);
+
+        public static OwnerEpoch ownerEpoch(long incarnation, long rabiaTerm, long localCounter) {
+            return new OwnerEpoch(incarnation, rabiaTerm, localCounter);
+        }
+
+        /// `true` iff this is the floor: no ownership record was applied when the epoch was read.
+        public boolean isFloor() {
+            return equals(FLOOR);
+        }
+    }
 
     /// The unfenced floor source (`Epoch.ZERO` → `0:0`) for non-cluster DHT paths and tests. A put
     /// stamped at the floor is never rejected by a fresh high-water and never advances it.

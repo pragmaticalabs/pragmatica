@@ -2,6 +2,7 @@ package org.pragmatica.postgres.conversion;
 
 import java.lang.reflect.Array;
 import java.nio.ByteBuffer;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BiFunction;
@@ -93,7 +94,39 @@ final class ArrayConversions {
             throw new IllegalStateException("Failed to read array");
         }
 
-        return (T) toNestedArrays(holder.getFirst(), elementType, getElementOid(oid), parse);
+        return (T) toNestedArrays(holder.getFirst(),
+                                  elementType,
+                                  getElementOid(oid),
+                                  elementParser(elementType, oid, parse));
+    }
+
+    /// The text parser for the requested leaf type. The supplied `canonical` parser yields the canonical element
+    /// (`BigDecimal` for float arrays, `Instant` for timestamp arrays) that an untyped read and a `BigDecimal[]` or
+    /// `Instant[]` read keep; a leaf that is the natural Java type of the column is parsed directly, so it never
+    /// passes through a type it cannot be stored into (`Double.valueOf` also reads `NaN` and `Infinity`, which
+    /// `BigDecimal` rejects). `Double` reads either float column, `Float` reads `float4` only: a `float8` element
+    /// does not narrow into `Float`, as the scalar path refuses it, so that read keeps the canonical element and
+    /// fails as before. Binary counterpart: `leafValue`.
+    private static BiFunction<Oid, String, Object> elementParser(Class<?> leaf,
+                                                                 Oid arrayOid,
+                                                                 BiFunction<Oid, String, Object> canonical) {
+        if (leaf == Double.class && isFloatArray(arrayOid)) {
+            return (_, text) -> Double.valueOf(text);
+        }
+
+        if (leaf == Float.class && arrayOid == Oid.FLOAT4_ARRAY) {
+            return (_, text) -> Float.valueOf(text);
+        }
+
+        if (leaf == LocalDateTime.class && arrayOid == Oid.TIMESTAMP_ARRAY) {
+            return TemporalConversions::toLocalDateTime;
+        }
+
+        return canonical;
+    }
+
+    private static boolean isFloatArray(Oid arrayOid) {
+        return arrayOid == Oid.FLOAT4_ARRAY || arrayOid == Oid.FLOAT8_ARRAY;
     }
 
     private static int skipBounds(final char[] text) {
@@ -282,13 +315,35 @@ final class ArrayConversions {
             var arr = (Object[]) Array.newInstance(elementType, dims[0]);
 
             for (int i = 0; i < dims[0]; i++) {
-                arr[i] = canonicalize(oid, readBinaryElement(buf, elementCodec));
+                arr[i] = leafValue(oid, elementType, readBinaryElement(buf, elementCodec));
             }
 
             return (T) arr;
         }
 
         return (T) readMultiDimArray(buf, dims, 0, elementType, elementCodec, oid);
+    }
+
+    /// The element for the requested leaf type, from a codec-decoded value. Text counterpart: `elementParser`.
+    /// A leaf that is the natural Java type of the column keeps the decoded value (a `Float` widens to `Double`
+    /// by its decimal text, as the text path reads it); every other leaf takes the canonical element, so
+    /// `float8[]` into `Float[]` fails as before (no narrowing, as in the text path).
+    private static Object leafValue(Oid arrayOid, Class<?> leaf, Object decoded) {
+        if (leaf == Double.class && isFloatArray(arrayOid)) {
+            return decoded instanceof Float f
+                   ? Double.valueOf(f.toString())
+                   : decoded;
+        }
+
+        if (leaf == Float.class && arrayOid == Oid.FLOAT4_ARRAY) {
+            return decoded;
+        }
+
+        if (leaf == LocalDateTime.class && arrayOid == Oid.TIMESTAMP_ARRAY) {
+            return decoded;
+        }
+
+        return canonicalize(arrayOid, decoded);
     }
 
     /// Coerce a codec-decoded element to the canonical type used by the text path's
@@ -364,7 +419,7 @@ final class ArrayConversions {
             var arr = (Object[]) Array.newInstance(elementType, size);
 
             for (int i = 0; i < size; i++) {
-                arr[i] = canonicalize(arrayOid, readBinaryElement(buf, codec));
+                arr[i] = leafValue(arrayOid, elementType, readBinaryElement(buf, codec));
             }
 
             return arr;

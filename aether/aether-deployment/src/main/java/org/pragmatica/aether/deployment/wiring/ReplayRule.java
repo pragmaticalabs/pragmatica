@@ -16,7 +16,8 @@ package org.pragmatica.aether.deployment.wiring;
 /// worker's node FSM stays ACTIVE. That burst is the only carrier of the goals committed during the gap; dropping it would freeze the worker
 /// (review C1). The dedupe by revision is sound on a worker because the replica carries the cores' revisions (`KVStore.applyEffects` sets
 /// `slot + 1`, an install sets the snapshot's revision), so a stamp at or below the snapshot revision is in the snapshot. An install can move
-/// that revision DOWN (`KVStore.restoreCommittedSnapshot` assigns it: a new incarnation, or `AHEAD` against a lagging core), so the snapshot
+/// that revision DOWN (`KVStore.restoreCommittedSnapshot` assigns it: a new incarnation, another lineage, or another id at one incarnation number;
+/// within one lineage `ReplicaApplier.admits` refuses a snapshot below what the replica holds, #3359), so the snapshot
 /// revision a worker dedupes against is the last install's, never a monotone maximum.
 public enum ReplayRule {
     CORE,

@@ -13,29 +13,55 @@ import java.util.Map;
 import java.util.zip.CRC32;
 
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
+import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
+import org.pragmatica.db.migration.MigrationError;
 import org.pragmatica.db.migration.MigrationScript;
 import org.pragmatica.db.migration.ParsedMigration;
 import org.pragmatica.db.migration.SchemaMigrations;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Startup migrations for an exploded blueprint: schema/*.sql or schema/<datasource>/*.sql.
 /// The process-wide queue serializes aliases too. It is released only after SQL and connector
-/// cleanup settle; there is no timeout-driven retry or claim of cross-process exclusion.
+/// cleanup settle; there is no timeout-driven retry.
+///
+/// Across processes (#2787), the database migration fence of the shared runner (FDB-2a, #2591) excludes: one instance
+/// runs a datasource's migration at a time while it holds the fence; every other instance meets the fence held
+/// ([MigrationError.MigrationFencedInDatabase]) and waits for it under the A6 ruling, then re-runs and finds the history
+/// already applied.
 public interface TerraMigrations {
     /// Zero means no statement bound on the pinned migration session (FDB-2a, #2591): Terra had no bound before the fence.
     /// On PostgreSQL it is set explicitly (`statement_timeout = 0`, `lock_timeout = 0`), overriding role defaults.
     TimeSpan STATEMENT_TIMEOUT = timeSpan(0).nanos();
+    /// The A6 ruling's retry backoff, the same values as Aether's schema orchestrator (`SchemaOrchestratorService`):
+    /// base, cap, exponent clamp, and the consecutive-Held count from which each further Held is logged as a warning.
+    long HELD_BACKOFF_BASE_MS = 5000;
+    long HELD_BACKOFF_CAP_MS = 45_000;
+    int HELD_BACKOFF_MAX_EXPONENT = 3;
+    int HELD_WARNING_THRESHOLD = 3;
     Promise<List<Report>> apply();
+
+    /// The wait before re-running after the `held`th consecutive fenced-in-the-database outcome: 5 s x 3^held, the
+    /// exponent clamped first, never above the 45 s cap (15 s, then 45 s).
+    static TimeSpan heldBackoff(int held) {
+        return timeSpan(Math.min(HELD_BACKOFF_BASE_MS * (long) Math.pow(3, Math.min(held, HELD_BACKOFF_MAX_EXPONENT)),
+                                 HELD_BACKOFF_CAP_MS)).millis();
+    }
 
     record Report(String datasource, SchemaMigrations.SchemaResult result) {}
 
@@ -81,8 +107,8 @@ public interface TerraMigrations {
         var tasks = scripts.entrySet()
                            .stream()
                            .sorted(Map.Entry.comparingByKey())
-                           .map(entry -> new MigrationTask(entry.getKey(),
-                                                           List.copyOf(entry.getValue())))
+                           .map(entry -> MigrationTask.migrationTask(entry.getKey(),
+                                                                     List.copyOf(entry.getValue())))
                            .toList();
 
         if (tasks.stream()
@@ -101,14 +127,15 @@ public interface TerraMigrations {
                                  .flatMap(task -> task.scripts()
                                                       .stream())
                                  .map(ParsedMigration::parsedMigration)
-                                 .toList()).map(_ -> new MigrationRun(ownerBase,
-                                                                      tasks,
-                                                                      provider,
-                                                                      SchemaMigrations.schemaMigrations(STATEMENT_TIMEOUT)));
+                                 .toList()).map(_ -> MigrationRun.migrationRun(ownerBase,
+                                                                               tasks,
+                                                                               provider,
+                                                                               SchemaMigrations.schemaMigrations(STATEMENT_TIMEOUT),
+                                                                               TerraMigrations::heldBackoff));
     }
 
     // Filesystem API boundary; callers lift all failures before provisioning any database.
-    @org.pragmatica.lang.Contract
+    @Contract
     private static Map<String, List<MigrationScript>> readScripts(Path schema) throws java.io.IOException {
         var scripts = new LinkedHashMap<String, List<MigrationScript>>();
 
@@ -142,17 +169,37 @@ public interface TerraMigrations {
     }
 }
 
-record MigrationTask(String datasource, List<MigrationScript> scripts) {}
+record MigrationTask(String datasource, List<MigrationScript> scripts) {
+    static MigrationTask migrationTask(String datasource, List<MigrationScript> scripts) {
+        return new MigrationTask(datasource, scripts);
+    }
+}
 
+/// `heldBackoff` maps the consecutive fenced-in-the-database count to the wait before the next run
+/// ([TerraMigrations#heldBackoff] in production).
 record MigrationRun(String owner,
                     List<MigrationTask> tasks,
                     DatasourceConnectionProvider provider,
-                    SchemaMigrations engine) implements TerraMigrations {
+                    SchemaMigrations engine,
+                    Fn1<TimeSpan, Integer> heldBackoff) implements TerraMigrations {
+    private static final Logger log = LoggerFactory.getLogger(TerraMigrations.class);
+    private static final String NODE = "terra";
+
+    static MigrationRun migrationRun(String owner,
+                                     List<MigrationTask> tasks,
+                                     DatasourceConnectionProvider provider,
+                                     SchemaMigrations engine,
+                                     Fn1<TimeSpan, Integer> heldBackoff) {
+        return new MigrationRun(owner, tasks, provider, engine, heldBackoff);
+    }
+
     public Promise<List<Report>> apply() {
         return MigrationQueue.submit(this::migrateAll);
     }
 
-    private Promise<List<Report>> migrateAll() {
+    /// The run outside this JVM's queue: what [#apply] queues. Package-private so a test can stand for a second process,
+    /// which has a queue of its own.
+    Promise<List<Report>> migrateAll() {
         var chain = Promise.success(List.<Report> of());
 
         for (var task : tasks) {
@@ -171,19 +218,79 @@ record MigrationRun(String owner,
     }
 
     private Promise<Report> migrateOne(MigrationTask task) {
-        Promise<org.pragmatica.aether.resource.db.SqlConnector> acquisition = Result.lift(Causes::fromThrowable,
-                                                                                          () -> provider.connector(task.datasource()))
-                                                                                    .fold(Promise::failure,
-                                                                                          promise -> promise);
+        Promise<SqlConnector> acquisition = Result.lift(Causes::fromThrowable,
+                                                        () -> provider.connector(task.datasource()))
+                                                  .fold(Promise::failure, promise -> promise);
 
-        return acquisition.flatMap(connector -> engine.migrate(task.datasource(),
-                                                               task.scripts(),
-                                                               connector,
-                                                               "terra",
-                                                               owner))
+        return acquisition.flatMap(connector -> migrateWhileHeld(task, connector, 0))
                           .map(result -> new Report(task.datasource(),
                                                     result))
                           .fold(result -> release(task.datasource()).fold(cleanup -> complete(result, cleanup)));
+    }
+
+    /// A6 ruling (FDB-2a, #2591, know 8fc2af106e), reused for Terra (#2787): another database session holds the fence,
+    /// so this run ran and read nothing. That is no failure of this instance: it waits [#heldBackoff] for the
+    /// consecutive-Held count and re-runs on the same connector (each run opens a fresh pinned session), for as long as
+    /// the holder lives; the holder's own run then shows in the history this run reads. From the
+    /// [TerraMigrations#HELD_WARNING_THRESHOLD]th consecutive Held on, each one is logged as a warning naming the holder.
+    /// Every other cause ends the run as before. Recovery: FER (degrade forward: wait, then run again), and it earns only
+    /// "at most one session runs a datasource's scripts at a time while it holds the fence; a script in the history is not
+    /// re-run; a holder that dies inside a script with non-transactional statements (history recorded separately) can lead
+    /// to a re-run", and a waiting instance starts once the holder's session is gone, because the fence ends with it;
+    /// there is no timeout, so a holder that never ends keeps this startup waiting.
+    private Promise<SchemaMigrations.SchemaResult> migrateWhileHeld(MigrationTask task,
+                                                                    SqlConnector connector,
+                                                                    int held) {
+        return engine.migrate(task.datasource(),
+                              task.scripts(),
+                              connector,
+                              NODE,
+                              owner)
+                     .fold(outcome -> afterRun(task, connector, held, outcome));
+    }
+
+    private Promise<SchemaMigrations.SchemaResult> afterRun(MigrationTask task,
+                                                            SqlConnector connector,
+                                                            int held,
+                                                            Result<SchemaMigrations.SchemaResult> outcome) {
+        return outcome.fold(cause -> retryIfHeld(task, connector, held, cause), Promise::success);
+    }
+
+    private Promise<SchemaMigrations.SchemaResult> retryIfHeld(MigrationTask task,
+                                                               SqlConnector connector,
+                                                               int held,
+                                                               Cause cause) {
+        return cause instanceof MigrationError.MigrationFencedInDatabase
+               ? waitThenRetry(task, connector, held + 1, cause)
+               : cause.promise();
+    }
+
+    private Promise<SchemaMigrations.SchemaResult> waitThenRetry(MigrationTask task,
+                                                                 SqlConnector connector,
+                                                                 int held,
+                                                                 Cause cause) {
+        var delay = heldBackoff.apply(held);
+
+        logHeld(task.datasource(), held, delay, cause);
+
+        return Promise.promise(delay, Result::unitResult).flatMap(_ -> migrateWhileHeld(task, connector, held));
+    }
+
+    @Contract
+    private static void logHeld(String datasource, int held, TimeSpan delay, Cause cause) {
+        if (held >= HELD_WARNING_THRESHOLD) {
+            log.warn("Schema migration for '{}' has been fenced in the database {} consecutive times; it waits and retries in {} ms: {}",
+                     datasource,
+                     held,
+                     delay.millis(),
+                     cause.message());
+        } else {
+            log.info("Schema migration for '{}' is fenced in the database ({}), retrying in {} ms (consecutive {})",
+                     datasource,
+                     cause.message(),
+                     delay.millis(),
+                     held);
+        }
     }
 
     private Promise<Unit> release(String datasource) {

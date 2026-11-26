@@ -16,7 +16,9 @@ A monorepo for building reliable Java backends with functional programming patte
 
 **[Aether Runtime](aether/README.md)** — Unified Application Runtime for Java. Deploy services as slices, scale transparently, no microservices boilerplate. Consensus-based state, automatic topology management, built-in observability.
 
-**[Terra Runtime](terra/README.md)** — Standalone compilation target for the same slice sources. Initial support includes blueprint-selected composition, scoped resources, local interceptors, in-process pub-sub, and shared database migrations.
+**[Pragmatica Terra](terra/README.md)** — The second runtime for the same slice sources: one JVM, no cluster. Slices written for Aether compile for Terra unchanged, so Terra is where an existing application starts and Aether is the scale-out step. The runtime (Terra or Aether) and each resource's backend (cache, pub-sub, streams, database) are chosen independently; the direction is two Terra instances with state in external infrastructure such as PostgreSQL (not a shipped guarantee; see [Deployment shape](terra/README.md#deployment-shape)). Per-instance state and connection sizing are in [Running more than one Terra instance](terra/INSTANCES.md). Today Terra supports blueprint-selected composition, scoped resources, local interceptors, in-process pub-sub, and shared database migrations; shared cache, pub-sub, Kafka streams and database-backed entities are open work (#2785, #2099, #2100, #3658).
+
+**Ember and Forge** — Development tools, not runtimes for production. Ember is the in-process test and dev-loop cluster; Forge is the local simulator built on it, with chaos and load generation. Run your slices on Terra or Aether; use Ember and Forge to develop and test them.
 
 ## Prerequisites
 

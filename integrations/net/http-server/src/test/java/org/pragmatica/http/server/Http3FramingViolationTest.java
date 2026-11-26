@@ -55,6 +55,7 @@ class Http3FramingViolationTest {
     void start() {
         server = Http3Server.create(HttpServerConfig.httpServerConfig("h3-framing", 0),
                                     QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
+                                                         .flatMap(LiveTls::liveQuicTls)
                                                          .unwrap(),
                                     recorder)
                             .await(timeSpan(10).seconds())

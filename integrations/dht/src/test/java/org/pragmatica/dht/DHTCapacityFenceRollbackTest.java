@@ -176,18 +176,8 @@ class DHTCapacityFenceRollbackTest {
 
     private record StaleOwnerEpoch() implements OwnerEpochSource {
         @Override
-        public long currentEpochIncarnation() {
-            return OLD_EPOCH[0];
-        }
-
-        @Override
-        public long currentEpochTerm() {
-            return OLD_EPOCH[1];
-        }
-
-        @Override
-        public long currentEpochCounter() {
-            return OLD_EPOCH[2];
+        public OwnerEpoch currentEpoch() {
+            return OwnerEpoch.ownerEpoch(OLD_EPOCH[0], OLD_EPOCH[1], OLD_EPOCH[2]);
         }
     }
 

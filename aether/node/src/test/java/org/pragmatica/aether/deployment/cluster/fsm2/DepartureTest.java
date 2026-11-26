@@ -364,6 +364,8 @@ class DepartureTest {
     void nodeDecommissioned_isNeverProduced() throws Exception {
         var root = Tripwire.repositoryRoot();
 
+        assertThat(Tripwire.mentions(root, "MembershipDecision")).as("precondition: the scan reaches the production sources")
+                  .isNotEmpty();
         assertThat(Tripwire.constructions(root, "NodeDecommissioned")).as("production constructors of NodeDecommissioned")
                   .isEmpty();
         assertThat(Tripwire.mentions(root.resolve("aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/fsm2"),

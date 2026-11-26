@@ -442,7 +442,11 @@ public final class SpiResourceProvider implements ResourceProvider {
             // Contained: a factory that throws synchronously fails the placeholder (evicted below) instead of
             // leaving it unresolved, which would hang this slice's own retry.
             Promise.unitPromise()
-                   .flatMap(_ -> provisionBound(factory, config, resourceType, configSection, context))
+                   .flatMap(_ -> provisionBound(factory,
+                                                config,
+                                                resourceType,
+                                                configSection,
+                                                withSection(context, configSection)))
                    .onResult(placeholder::resolve);
         }
 
@@ -681,13 +685,24 @@ public final class SpiResourceProvider implements ResourceProvider {
             var typed = (ResourceFactory<T, C>) factory;
 
             if (typed.supports(config)) {
-                return invokeProvision(typed, config, contextOpt).<Provisioned<?>> map(resource -> Provisioned.provisioned(resource,
-                                                                                                                           typed))
+                return invokeProvision(typed,
+                                       config,
+                                       withSection(contextOpt, configSection)).<Provisioned<?>> map(resource -> Provisioned.provisioned(resource,
+                                                                                                                                        typed))
                                       .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause));
             }
         }
 
         return new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise();
+    }
+
+    /// The context a PER-SLICE factory is invoked with: the caller's, plus the section it is provisioned for (#280 R27).
+    /// The node-shared path (`provideWith`'s `sharedPools.acquire`) calls `provisionBound` with the caller's context
+    /// untouched, so a [NodeShareable] factory never learns a section.
+    private static Option<ProvisioningContext> withSection(Option<ProvisioningContext> contextOpt,
+                                                           String configSection) {
+        return contextOpt.map(context -> context.withExtension(ResourceSection.class,
+                                                               ResourceSection.resourceSection(configSection)));
     }
 
     private static <T, C> Promise<T> invokeProvision(ResourceFactory<T, C> factory,

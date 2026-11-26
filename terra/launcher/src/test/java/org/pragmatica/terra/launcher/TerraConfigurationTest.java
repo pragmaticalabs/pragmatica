@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.terra.TerraFactory;
+import org.pragmatica.terra.TerraMetrics;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -52,6 +53,44 @@ class TerraConfigurationTest {
         var deployment = TerraConfiguration.deployment(directory).unwrap();
 
         assertThat(TerraConfiguration.host(directory, deployment).unwrap().getString("authenticator.test-header.token").unwrap()).isEqualTo("let-me-in");
+    }
+
+    /// #3650: the metric sinks are configured in terra.toml's management section, read at plan load, and reach the
+    /// started application.
+    @Test void load_managementSection_isAHostKeyAndConfiguresTheApplicationMetricSinks() throws Exception {
+        Files.writeString(directory.resolve("blueprint.toml"), "[[slices]]\nartifact = \"test:starting:1\"\n");
+        Files.writeString(directory.resolve("terra.toml"), "[management.prometheus.metrics.export]\nenabled = true\n");
+        var app = TerraLaunchPlan.load(directory).flatMap(TerraLaunchPlan::startApplication).await(timeSpan(5).seconds()).unwrap();
+        try {
+            app.metrics().registry().counter("terra.launch.probe").increment();
+            assertThat(app.metrics().prometheusScrape().unwrap()).contains("terra_launch_probe_total 1.0");
+        } finally {
+            assertThat(app.close().await(timeSpan(5).seconds()).isSuccess()).isTrue();
+        }
+    }
+
+    @Test void load_noManagementSection_startsWithNoPrometheusSink() throws Exception {
+        Files.writeString(directory.resolve("blueprint.toml"), "[[slices]]\nartifact = \"test:starting:1\"\n");
+        var app = TerraLaunchPlan.load(directory).flatMap(TerraLaunchPlan::startApplication).await(timeSpan(5).seconds()).unwrap();
+        try {
+            assertThat(app.metrics().prometheusScrape().isEmpty()).isTrue();
+        } finally {
+            assertThat(app.close().await(timeSpan(5).seconds()).isSuccess()).isTrue();
+        }
+    }
+
+    @Test void load_invalidMetricSinkSetting_failsAtLoad() throws Exception {
+        Files.writeString(directory.resolve("blueprint.toml"), "[[slices]]\nartifact = \"test:starting:1\"\n");
+        Files.writeString(directory.resolve("terra.toml"), "[management.otlp.metrics.export]\nstep = \"30s\"\n");
+        var result = TerraLaunchPlan.load(directory).await(timeSpan(5).seconds());
+        assertThat(result.<String>fold(cause -> cause.message(), _ -> "unexpected success")).contains("url is not");
+    }
+
+    @Test void host_quotedResourceAttributeKey_readsAsTheDottedAttributeName() throws Exception {
+        Files.writeString(directory.resolve("terra.toml"), "[management.opentelemetry.resource-attributes]\n\"service.name\" = \"shop\"\n[management.otlp.metrics.export]\nurl = \"http://collector:4318/v1/metrics\"\n");
+        var host = TerraConfiguration.host(directory, TerraConfiguration.deployment(directory).unwrap()).unwrap();
+        var settings = TerraMetrics.Settings.settings(host).unwrap();
+        assertThat(settings.otlp().unwrap().resourceAttributes()).containsExactlyEntriesOf(Map.of("service.name", "shop"));
     }
 
     @Test void environment_doubleUnderscore_preservesUnderscoredResourceKeys() {

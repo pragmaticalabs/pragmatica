@@ -10,6 +10,8 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
+import org.pragmatica.testlogging.SourceWalk;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -145,9 +147,11 @@ class LocaleIndependenceGateTest {
 
     /// An unreadable tree fails the test loudly: an empty scan would pass vacuously.
     private static List<Path> scannedFiles(Path root) {
-        try (var files = Files.walk(root)) {
-            return files.filter(path -> isScanned(root, path))
-                        .toList();
+        try {
+            return SourceWalk.files(root)
+                             .stream()
+                             .filter(path -> isScanned(root, path))
+                             .toList();
         } catch (IOException e) {
             return fail("cannot walk the repository tree", e);
         }

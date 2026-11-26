@@ -126,7 +126,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: 'zulu'
+          distribution: 'temurin'
 
       - name: Cache tla2tools.jar
         id: tla-cache
@@ -178,7 +178,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           java-version: '25'
-          distribution: 'zulu'
+          distribution: 'temurin'
 
       - name: Cache tla2tools.jar
         id: tla-cache

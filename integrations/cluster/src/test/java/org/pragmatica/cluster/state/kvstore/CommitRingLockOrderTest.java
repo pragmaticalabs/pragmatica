@@ -112,7 +112,7 @@ class CommitRingLockOrderTest {
         var writer = new Thread(() -> {
             for (var slot = 1L; !stop.get(); slot += 2) {
                 commit(store, slot, put("k" + (slot % 50), "v" + slot));
-                store.applyEffects(new ReplicaEntry(IncarnationTag.incarnationTag(1, "A"), slot + 1, slot + 1, "raw-" + slot, List.of()));
+                store.applyEffects(new ReplicaEntry(IncarnationTag.incarnationTag(1, "A", RingFixtures.LINEAGE), slot + 1, slot + 1, "raw-" + slot, List.of()));
             }
         }, "writer");
         var flusher = new Thread(() -> {
@@ -125,7 +125,7 @@ class CommitRingLockOrderTest {
                     store.get(new Key("k1"));
                 });
 
-                ring.subscribeFrom(IncarnationTag.incarnationTag(1, "A"), ring.nextSlot(), anchor, small);
+                ring.subscribeFrom(IncarnationTag.incarnationTag(1, "A", RingFixtures.LINEAGE), ring.nextSlot(), anchor, small);
             }
         }, "flusher");
         var reader = new Thread(() -> {
@@ -233,13 +233,13 @@ class CommitRingLockOrderTest {
         var writer = new Thread(() -> {
             for (var slot = 1L; !stop.get(); slot += 2) {
                 commit(store, slot, put("k" + (slot % 50), "v" + slot));
-                store.applyEffects(new ReplicaEntry(IncarnationTag.incarnationTag(1, "A"), slot + 1, slot + 1, "raw-" + slot, List.of()));
+                store.applyEffects(new ReplicaEntry(IncarnationTag.incarnationTag(1, "A", RingFixtures.LINEAGE), slot + 1, slot + 1, "raw-" + slot, List.of()));
             }
         }, "ranked-writer");
         var flusher = new Thread(() -> {
             while (!stop.get()) {
                 ring.flush();
-                ring.subscribeFrom(IncarnationTag.incarnationTag(1, "A"), ring.nextSlot(), ring.anchor(), CommitRing.subscription(200, _ -> {
+                ring.subscribeFrom(IncarnationTag.incarnationTag(1, "A", RingFixtures.LINEAGE), ring.nextSlot(), ring.anchor(), CommitRing.subscription(200, _ -> {
                     closes.incrementAndGet();
                     store.get(new Key("k1"));
                 }));

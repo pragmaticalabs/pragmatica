@@ -48,9 +48,7 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if (event instanceof SchemaEvent.ColumnAdded e && !e.column().nullable() && e.column()
-                                                                                         .defaultExpr()
-                                                                                         .isEmpty()) {
+            if (event instanceof SchemaEvent.ColumnAdded e && isNotNullWithoutDefault(e.column())) {
                 return List.of(LintDiagnostic.warning(id(),
                                                       "Adding NOT NULL column '" + e.column()
                                                                                     .name()
@@ -60,6 +58,15 @@ public final class LockHazardRules {
             }
 
             return List.of();
+        }
+
+        /// A serial column is NOT NULL and has a default, the next value of its sequence (#2795).
+        private static boolean isNotNullWithoutDefault(Column column) {
+            return ! column.nullable()
+                   && column.defaultExpr()
+                            .isEmpty()
+                   && !column.type()
+                             .isSerial();
         }
     }
 

@@ -132,6 +132,46 @@ class FlowContentPreservationTest {
             "// chain rationale");
     }
 
+    // #1718: a short chain that would fit on one line was joined onto it and its inter-link comments dropped.
+    private static String chainSource(String body) {
+        return "class X {\n    Object f() {\n" + body + "        return b;\n    }\n    Object foo;\n    Object g;\n}\n";
+    }
+
+    @Test void chainOwnLineComment_inLocalVarInitializer_preserved() {
+        assertPreservedAndIdempotent(
+            chainSource("        var b = foo.group(g)\n                   // keep this one\n                   .channel(K.class);\n"),
+            "// keep this one");
+    }
+
+    @Test void chainOwnLineComment_afterNewReceiver_preserved() {
+        assertPreservedAndIdempotent(
+            chainSource("        var b = new Bootstrap().group(g)\n                               // keep after new\n                               .channel(K.class);\n"),
+            "// keep after new");
+    }
+
+    @Test void chainBlockComment_betweenLinks_preserved() {
+        assertPreservedAndIdempotent(
+            chainSource("        var b = foo.group(g)\n                   /* block between */\n                   .channel(K.class);\n"),
+            "/* block between */");
+    }
+
+    @Test void chainTrailingLineComment_afterFirstLink_preserved() {
+        assertPreservedAndIdempotent(
+            chainSource("        var b = foo.group(g) // trailing on first link\n                   .channel(K.class);\n"),
+            "// trailing on first link");
+    }
+
+    @Test void chainOwnLineComment_inStatementPosition_preserved() {
+        assertPreservedAndIdempotent(
+            chainSource("        foo.group(g)\n           // statement-position rationale\n           .channel(K.class);\n"),
+            "// statement-position rationale");
+    }
+
+    @Test void chainWithoutComment_stillJoinsOntoOneLine() {
+        var out = format(chainSource("        var b = foo.group(g)\n                   .channel(K.class);\n"));
+        assertThat(out).contains("var b = foo.group(g).channel(K.class);");
+    }
+
     @Test void annotationTrailingComment_beforeMethod_preserved() {
         assertPreservedAndIdempotent(
             "class X {\n    @SuppressWarnings(\"x\") // netty future callback chain\n    void f() {}\n}\n",

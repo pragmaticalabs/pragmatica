@@ -21,6 +21,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.metrics.MinuteAggregate;
 import org.pragmatica.aether.api.BuildInfo;
 import org.pragmatica.aether.api.ClusterEvent;
+import org.pragmatica.aether.api.ClusterEventFilter;
 import org.pragmatica.aether.api.ManagementApiResponses.CertificateStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterEventView;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterInfo;
@@ -117,7 +118,9 @@ public final class StatusRoutes implements RouteSource {
                                          .asJson(),
                          ManagementRoutes.<List<ClusterEventView>> route(ManagementRoute.EVENTS)
                                          .withQuery(QueryParameter.aLong("sinceEpoch"),
-                                                    QueryParameter.aLong("sinceSeq"))
+                                                    QueryParameter.aLong("sinceSeq"),
+                                                    QueryParameter.aString("code"),
+                                                    QueryParameter.aString("severity"))
                                          .to(this::buildEventsResponse)
                                          .asJson(),
                          ManagementRoutes.<CertificateStatusResponse> route(ManagementRoute.CERTIFICATES_LIST).toJson(this::buildCertificateStatusResponse),
@@ -133,13 +136,24 @@ public final class StatusRoutes implements RouteSource {
                                   ctx.isAuthenticated());
     }
 
+    /// #1631: the `code`/`severity` filter is parsed first, so an unknown severity answers 400 before any read, and is
+    /// applied to whatever the cursor selected.
     private Promise<List<ClusterEventView>> buildEventsResponse(Option<Long> sinceEpochParam,
-                                                                Option<Long> sinceSeqParam) {
+                                                                Option<Long> sinceSeqParam,
+                                                                Option<String> codeParam,
+                                                                Option<String> severityParam) {
+        return ClusterEventFilter.clusterEventFilter(codeParam, severityParam)
+                                 .async()
+                                 .mapWith(__ -> selectEvents(sinceEpochParam, sinceSeqParam),
+                                          ClusterEventFilter::apply)
+                                 .map(StatusRoutes::toEventViews);
+    }
+
+    private Promise<List<ClusterEvent>> selectEvents(Option<Long> sinceEpochParam, Option<Long> sinceSeqParam) {
         var aggregator = nodeSupplier.get().eventAggregator();
 
         if (sinceEpochParam.isEmpty() && sinceSeqParam.isEmpty()) {
-            return aggregator.events()
-                             .map(StatusRoutes::toEventViews);
+            return aggregator.events();
         }
         // BEHAVIOR CHANGE (review C5): the `since` cursor is now an Instant in the namespace-stream
         // events API. The legacy `?sinceSeq=` cursor (an opaque sequence number in rc1) is remapped
@@ -149,8 +163,7 @@ public final class StatusRoutes implements RouteSource {
         // timestamps. See CHANGELOG.
         var sinceMillis = sinceSeqParam.fold(() -> 0L, seq -> seq);
 
-        return aggregator.eventsSince(Instant.ofEpochMilli(sinceMillis))
-                         .map(StatusRoutes::toEventViews);
+        return aggregator.eventsSince(Instant.ofEpochMilli(sinceMillis));
     }
 
     /// Project the sealed {@link ClusterEvent} list onto the self-describing

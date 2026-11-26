@@ -110,7 +110,7 @@
                 <configuration>
                     <skipTests>${postgres-async.skipTests}</skipTests>
                     <excludedGroups>${postgres-async.excludedGroups}</excludedGroups>
-                    <excludes>
+                    <excludes combine.children="append">
                         <exclude>**/PerformanceTest.java</exclude>
                     </excludes>
                 </configuration>

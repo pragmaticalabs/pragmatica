@@ -122,6 +122,27 @@ public sealed interface DHTError extends Cause {
         }
     }
 
+    /// A write refused by owner-epoch fences although THIS writer's stamp was the floor (#3720): the node had not applied
+    /// the committed ownership record when it stamped the put, and a replica that had applied it refused the zero epoch.
+    /// That is the writer being early, not deposed: nothing here says another owner took over, and the retry is stamped
+    /// with the epoch as this node has applied it by then. The outcome is as unknown as [WriteIndeterminate]'s (a replica
+    /// whose high-water lagged may have accepted the zero-stamped copy; the coordinator rolled its own accept back), so a
+    /// caller treats it the same way and may tell the two apart to wait for the record instead of fencing itself off.
+    static DHTError ownershipNotApplied(int required, int achieved, int fenced) {
+        return new OwnershipNotApplied(required, achieved, fenced);
+    }
+
+    record OwnershipNotApplied(int required, int achieved, int fenced) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Write refused: this node had not applied the committed DHT ownership record when it stamped the put"
+                 + " (required " + required
+                 + " acks, got " + achieved
+                 + ", " + fenced
+                 + " refused the zero owner epoch); it may have been applied; retry once the record is applied";
+        }
+    }
+
     /// One replica's refusal of a put stamped with an older replication change than it has applied (#1777, CTO ruling
     /// R1c). The write as a whole fails [ReplicationChangeStale] if quorum becomes unreachable because of it.
     static DHTError replicaOnNewerReplication(NodeId replica) {

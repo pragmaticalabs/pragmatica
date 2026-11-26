@@ -62,10 +62,10 @@ public final class TerraDemo {
         return Result.lift(Causes::fromThrowable,
                            () -> {
                                try (var input = TerraDemo.class.getResourceAsStream("/blueprint.toml")) {
-                               return new String(java.util.Objects.requireNonNull(input, "Missing blueprint.toml")
-                                                                  .readAllBytes(),
-                                                 StandardCharsets.UTF_8);
-                           }
+                                   return new String(java.util.Objects.requireNonNull(input, "Missing blueprint.toml")
+                                                                      .readAllBytes(),
+                                                     StandardCharsets.UTF_8);
+                               }
                            })
                      .flatMap(TerraBlueprint::parse);
     }

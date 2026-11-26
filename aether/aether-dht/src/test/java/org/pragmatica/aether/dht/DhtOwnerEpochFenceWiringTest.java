@@ -18,6 +18,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTError;
+import org.pragmatica.dht.OwnerEpochSource;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.messaging.MessageRouter;
@@ -118,16 +119,17 @@ class DhtOwnerEpochFenceWiringTest {
 
             var source = KvOwnerEpochSource.kvOwnerEpochSource(store, CORE);
 
-            assertThat(source.currentEpochTerm()).isEqualTo(8L);
-            assertThat(source.currentEpochCounter()).isEqualTo(3L);
+            assertThat(source.currentEpoch()).isEqualTo(OwnerEpochSource.OwnerEpoch.ownerEpoch(0L, 8L, 3L));
         }
 
         @Test
         void kvOwnerEpochSource_noCommittedOwnership_stampsEpochZero() {
             var source = KvOwnerEpochSource.kvOwnerEpochSource(store, CORE);
 
-            assertThat(source.currentEpochTerm()).isEqualTo(Epoch.ZERO.rabiaTerm());
-            assertThat(source.currentEpochCounter()).isEqualTo(Epoch.ZERO.localCounter());
+            assertThat(source.currentEpoch()).isEqualTo(OwnerEpochSource.OwnerEpoch.ownerEpoch(Epoch.ZERO.incarnation(),
+                                                                                              Epoch.ZERO.rabiaTerm(),
+                                                                                              Epoch.ZERO.localCounter()));
+            assertThat(source.currentEpoch().isFloor()).isTrue();
         }
 
         @Test
@@ -136,7 +138,9 @@ class DhtOwnerEpochFenceWiringTest {
             var source = KvOwnerEpochSource.kvOwnerEpochSource(store, CORE);
 
             // Current owner stamps with the source and is accepted.
-            engine.putVersioned(key("k"), value("v1"), 100L, source.currentEpochIncarnation(), source.currentEpochTerm(), source.currentEpochCounter())
+            var stamp = source.currentEpoch();
+
+            engine.putVersioned(key("k"), value("v1"), 100L, stamp.incarnation(), stamp.rabiaTerm(), stamp.localCounter())
                   .await()
                   .onFailure(c -> fail("Current owner stamp must be accepted: " + c.message()))
                   .onSuccess(written -> assertThat(written).isTrue());

@@ -17,7 +17,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 
@@ -83,19 +82,21 @@ class LogCaptureUsageGuardTest {
 
     /// Repository-relative paths of every `src/test` java file, outside the `test-logging` module, that matches.
     private static Set<String> matchingSources(Path root) throws IOException {
-        try (Stream<Path> files = Files.walk(root)) {
-            return files.filter(path -> path.toString().endsWith(".java"))
-                        .filter(path -> isTestSource(root.relativize(path)))
-                        .filter(LogCaptureUsageGuardTest::matches)
-                        .map(path -> root.relativize(path).toString().replace('\\', '/'))
-                        .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
-        }
+        return SourceWalk.files(root)
+                         .stream()
+                         .filter(path -> path.toString().endsWith(".java"))
+                         .filter(path -> isTestSource(root.relativize(path)))
+                         .filter(LogCaptureUsageGuardTest::matches)
+                         .map(path -> root.relativize(path).toString().replace('\\', '/'))
+                         .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
     }
 
     private static long testSourceCount(Path root) throws IOException {
-        try (Stream<Path> files = Files.walk(root)) {
-            return files.filter(path -> path.toString().endsWith(".java")).filter(path -> isTestSource(root.relativize(path))).count();
-        }
+        return SourceWalk.files(root)
+                         .stream()
+                         .filter(path -> path.toString().endsWith(".java"))
+                         .filter(path -> isTestSource(root.relativize(path)))
+                         .count();
     }
 
     private static boolean isTestSource(Path relative) {

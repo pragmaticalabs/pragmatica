@@ -35,7 +35,7 @@ comprehensive-persistence/
 | Isolated schema per datasource | `schema/analytics/` loaded for `AnalyticsPersistence`, primary `schema/` for everything else |
 | Transitive resource wiring | `OrderSliceFactory` provisions two `PgSqlConnector`s from the slice method signature |
 | `BIGINT GENERATED ALWAYS AS IDENTITY` | `orders.id`, `customers.id`, `order_metrics.id` — omitted from `NewOrderMetric` input record, exempted by NOT-NULL coverage check |
-| `GENERATED ALWAYS AS (expr) STORED` | `orders.total_with_tax` — exempted from INSERT coverage |
+| `GENERATED ALWAYS AS (expr) STORED NOT NULL` | `orders.total_with_tax` — exempted from INSERT coverage; NOT NULL is declared, PostgreSQL does not infer it |
 | `TEXT[]` array column | `products.tags` → mapped to `String[]` via `row.getObject("tags", String[].class)` |
 | Non-primitive `@Query` parameters | `UUID` in `findByCorrelationId`, `Instant`/`BigDecimal` in `recentOrderTotalForCustomer` — imports auto-collected in generated factory |
 | Non-primitive scalar return types | `Promise<BigDecimal>` from `recentOrderTotalForCustomer` and `recentRevenueForCustomer` — row accessor inferred via `TypeMapper` |

@@ -1,0 +1,243 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.api;
+
+import java.net.http.HttpHeaders;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse.BodyHandler;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.pragmatica.aether.config.AlertConfig;
+import org.pragmatica.aether.config.AlertConfig.EventConfig;
+import org.pragmatica.aether.config.AlertConfig.WebhookConfig;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.OwnerLifetime;
+import org.pragmatica.testlogging.LogCapture;
+
+import org.apache.logging.log4j.Level;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
+/// #3754: the webhook retry is scheduled on the forwarder's lifetime, and `close()` ends it. Each test drives the production
+/// order (arm a send or a retry, then `close()`, then let the late event happen) over a fake seam and a scripted client, so
+/// there is no socket, thread or clock.
+///
+/// - (a) a retry armed before the close never posts after it (the wrapper is fired by hand, past the cancel);
+/// - (b) a send in flight at the close ends without a WARN, a retry or a hang: its `forward` promise resolves, which the
+///   unchecked path (a retry onto an ended lifetime) would leave unresolved;
+/// - (c) a `forward` waiting on a retry the close cancelled does not dangle: the close resolves it as a failure naming the stop;
+/// - (d) the second check guards effects, never an outcome the receiver already gave: a 2xx that lands after the close resolves
+///   as success, with nothing logged.
+class AlertForwarderStopTest {
+    private final FakeOwnerSeam seam = new FakeOwnerSeam();
+    private final ScriptedHttp http = new ScriptedHttp();
+    private LogCapture capture;
+
+    @BeforeEach
+    void setUp() {
+        capture = LogCapture.capture(AlertForwarder.class, Level.WARN, false);
+    }
+
+    @AfterEach
+    void tearDown() {
+        capture.close();
+    }
+
+    @Test
+    void close_endsARetryArmedBefore_soItNeverPostsAfterTheClose() {
+        http.answers.add(Causes.cause("connection refused").promise());
+        var forwarder = forwarderWithRetries(2);
+
+        forwarder.forward(AlertEvent.AlertResolved.resolved("a-1", "test"));
+
+        assertThat(seam.enqueued()).as("control: the failed send armed a retry").isEqualTo(1);
+        forwarder.close();
+        seam.fire(0);
+
+        assertThat(http.sends).as("the first POST only; the retry armed before the close did not run").isEqualTo(1);
+    }
+
+    @Test
+    void close_duringASend_resolvesTheForwardWithoutARetry() {
+        var inFlight = Promise.<HttpResult<String>> promise();
+
+        http.answers.add(inFlight);
+        var forwarder = forwarderWithRetries(2);
+        var forwarded = forwarder.forward(AlertEvent.AlertResolved.resolved("a-2", "test"));
+
+        forwarder.close();
+        inFlight.resolve(Causes.cause("connection reset").result());
+
+        assertThat(forwarded.isResolved()).as("the send ended on the stopped forwarder instead of retrying into it").isTrue();
+        assertThat(isStopped(forwarded)).isTrue();
+        assertThat(seam.enqueued()).isZero();
+        assertThat(http.sends).isEqualTo(1);
+        assertThat(capture.messages(Level.WARN)).as("the outcome was not reported on the stopped forwarder").isEmpty();
+    }
+
+    @Test
+    void close_resolvesTheForwardOfACancelledRetry_asStopped() {
+        http.answers.add(Causes.cause("connection refused").promise());
+        var forwarder = forwarderWithRetries(2);
+        var forwarded = forwarder.forward(AlertEvent.AlertResolved.resolved("a-4", "test"));
+
+        assertThat(forwarded.isResolved()).as("control: the retry is armed and the forward waits on it").isFalse();
+        forwarder.close();
+
+        assertThat(forwarded.isResolved()).as("the close resolves the forward it cancelled the retry of").isTrue();
+        assertThat(isStopped(forwarded)).as("as a failure naming the stop").isTrue();
+        assertThat(seam.enqueued()).isEqualTo(1);
+    }
+
+    @Test
+    void close_duringASend_thatThenAnswers2xx_resolvesAsSuccessWithNothingLogged() {
+        var inFlight = Promise.<HttpResult<String>> promise();
+
+        http.answers.add(inFlight);
+        var forwarder = forwarderWithRetries(2);
+        var forwarded = forwarder.forward(AlertEvent.AlertResolved.resolved("a-5", "test"));
+
+        forwarder.close();
+        inFlight.resolve(Result.success(okReply()));
+
+        assertThat(forwarded.isResolved()).isTrue();
+        assertThat(isSuccess(forwarded)).as("the receiver got the alert: the outcome is not rewritten as 'not sent'").isTrue();
+        assertThat(capture.messages()).as("no WARN or ERROR for a delivered alert").isEmpty();
+        assertThat(http.sends).isEqualTo(1);
+    }
+
+    /// The close lands between the settle check (the first read of the flag) and the `pendingRetries.put`: the WARN that
+    /// `handleTransportFailure` writes sits exactly there, so a log observer that calls `close()` builds the interleaving in
+    /// production order. The close sweeps an empty map and the schedule lands on an ended lifetime, so only the re-read after
+    /// the put can resolve the retry's promise.
+    @Test
+    void close_betweenTheFirstFlagReadAndThePut_stillResolvesTheForwardAsStopped() {
+        http.answers.add(Causes.cause("connection refused").promise());
+        var forwarder = new AtomicReference<AlertForwarder>();
+
+        try (var closing = LogCapture.capture(AlertForwarder.class.getName(), Level.WARN, false, _ -> forwarder.get().close())) {
+            forwarder.set(forwarderWithRetries(2));
+
+            var forwarded = forwarder.get().forward(AlertEvent.AlertResolved.resolved("a-6", "test"));
+
+            assertThat(closing.messages(Level.WARN)).as("control: the close ran from inside the WARN, after the first read").hasSize(1);
+            assertThat(forwarded.isResolved()).as("the retry the close could not see is abandoned by the re-read").isTrue();
+            assertThat(isStopped(forwarded)).isTrue();
+            assertThat(seam.enqueued()).as("nothing was enqueued on the ended lifetime").isZero();
+        }
+    }
+
+    @Test
+    void resolvedRetry_leavesThePendingMap() {
+        http.answers.add(Causes.cause("connection refused").promise());
+        http.answers.add(Promise.success(okReply()));
+        var forwarder = forwarderWithRetries(2);
+        var forwarded = forwarder.forward(AlertEvent.AlertResolved.resolved("a-7", "test"));
+
+        assertThat(forwarder.pendingRetryCount()).as("control: the armed retry is tracked").isEqualTo(1);
+        seam.fire(0);
+
+        assertThat(isSuccess(forwarded)).as("the retry delivered").isTrue();
+        // onResult handlers run on the virtual-thread pool, not in the resolver: the removal is awaited, never read at once.
+        await().atMost(Duration.ofSeconds(5))
+               .untilAsserted(() -> assertThat(forwarder.pendingRetryCount()).as("a resolved retry is not kept for the close to sweep")
+                                                                          .isZero());
+    }
+
+    /// Pre-existing behaviour (the constructor made the same decision before #3754), moved into `webhookClient` by this PR and
+    /// pinned here: disabled alerts own no webhook client and send nothing, whatever the webhook section says.
+    @Test
+    void disabledAlerts_createNoWebhookClientAndSendNothing() {
+        var disabled = alertConfig(false);
+        var live = AlertForwarder.alertForwarder(alertConfig(true), OwnerLifetime.ownerLifetime(seam));
+        var off = AlertForwarder.alertForwarder(disabled, OwnerLifetime.ownerLifetime(seam));
+        var offWithClient = AlertForwarder.alertForwarder(disabled, OwnerLifetime.ownerLifetime(seam), Option.some(http));
+
+        try {
+            assertThat(live.hasWebhookClient()).as("control: the same webhook section with alerts enabled owns a client").isTrue();
+            assertThat(off.hasWebhookClient()).as("alerts disabled: no client although the webhook is enabled with urls").isFalse();
+            assertThat(offWithClient.forward(AlertEvent.AlertResolved.resolved("a-8", "test")).isResolved()).isTrue();
+            assertThat(http.sends).as("alerts disabled: no send even through a client").isZero();
+        } finally {
+            live.close();
+            off.close();
+        }
+    }
+
+    /// Control for the two tests above: the same failure without a close arms a retry, leaves the forward pending and logs one
+    /// WARN, so the resolved promise there and the missing WARN above are the close's doing.
+    @Test
+    void send_failingWithoutAClose_armsARetryAndStaysPending() {
+        var inFlight = Promise.<HttpResult<String>> promise();
+
+        http.answers.add(inFlight);
+        var forwarded = forwarderWithRetries(2).forward(AlertEvent.AlertResolved.resolved("a-3", "test"));
+
+        inFlight.resolve(Causes.cause("connection reset").result());
+
+        assertThat(forwarded.isResolved()).isFalse();
+        assertThat(seam.enqueued()).isEqualTo(1);
+        assertThat(capture.messages(Level.WARN)).as("the failure is reported when the forwarder is live").hasSize(1);
+    }
+
+    private static HttpResult<String> okReply() {
+        return new HttpResult<>(200, HttpHeaders.of(Map.of(), (_, _) -> true), "");
+    }
+
+    private static boolean isSuccess(Promise<?> forwarded) {
+        return forwarded.await(timeSpan(1).seconds()).isSuccess();
+    }
+
+    private static boolean isStopped(Promise<?> forwarded) {
+        return forwarded.await(timeSpan(1).seconds())
+                        .fold(cause -> cause instanceof AlertForwarder.AlertForwarderError.Stopped, _ -> false);
+    }
+
+    private AlertForwarder forwarderWithRetries(int retries) {
+        return AlertForwarder.alertForwarder(alertConfig(true, retries), OwnerLifetime.ownerLifetime(seam), Option.some(http));
+    }
+
+    private static AlertConfig alertConfig(boolean alertsEnabled) {
+        return alertConfig(alertsEnabled, 2);
+    }
+
+    private static AlertConfig alertConfig(boolean alertsEnabled, int retries) {
+        var webhook = WebhookConfig.webhookConfig(true, List.of("http://127.0.0.1:1/hook"), retries, timeSpan(5).seconds()).unwrap();
+
+        return AlertConfig.alertConfig(alertsEnabled, webhook, EventConfig.eventConfig(true).unwrap(), 0.05).unwrap();
+    }
+
+    /// Answers each send with the next scripted promise and counts the sends.
+    private static final class ScriptedHttp implements HttpOperations {
+        private final List<Promise<HttpResult<String>>> answers = new ArrayList<>();
+        private int sends;
+
+        @Override
+        public Promise<HttpResult<String>> sendString(HttpRequest request) {
+            sends++;
+
+            return answers.removeFirst();
+        }
+
+        @Override
+        public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
+            throw new AssertionError("the forwarder sends strings");
+        }
+    }
+}

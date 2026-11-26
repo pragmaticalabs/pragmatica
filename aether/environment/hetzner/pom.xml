@@ -52,8 +52,8 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <excludes>
-                        <exclude>**/*IT.java</exclude>
+                    <!-- Appended to the root's list (`**/*IT.java`, `**/*$*`; #3688); `**/*IT.java` already covers `*CloudIT`, kept for the reader. -->
+                    <excludes combine.children="append">
                         <exclude>**/*CloudIT.java</exclude>
                     </excludes>
                 </configuration>

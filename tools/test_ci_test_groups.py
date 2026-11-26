@@ -363,7 +363,7 @@ class RepositoryGroupsTest(unittest.TestCase):
 
     def test_the_aggregate_fails_unless_every_needed_job_passed(self):
         job = groups.CI.read_text().split("\n  build-and-test:\n", 1)[1].split("\n  forge-tests:\n", 1)[0]
-        self.assertIn("    if: always() && needs.push-dedupe.outputs.skip != 'true'\n", job)  # always() without it a failed group SKIPS the required check, which passes
+        self.assertIn("    if: always() && needs.push-dedupe.outputs.skip != 'true' && needs.push-dedupe.outputs.skip_tests != 'true'\n", job)  # always() without it a failed group SKIPS the required check, which passes
         self.assertIn('[ "${{ needs.static-gates.result }}" = success ] && [ "${{ needs.test-group.result }}" = success ]', job)
 
     def test_a_skipped_duplicate_push_run_never_posts_a_required_context_name(self):
@@ -372,7 +372,9 @@ class RepositoryGroupsTest(unittest.TestCase):
         ci = groups.CI.read_text()
         for name in ("build-and-test", "forge-tests", "stub-suites"):
             job = ci.split(f"\n  {name}:\n", 1)[1].split("\n\n", 1)[0]
-            self.assertIn(f"    name: ${{{{ needs.push-dedupe.outputs.skip == 'true' && '{name} (duplicate push run, skipped)' || '{name}' }}}}\n", job)
+            # forge-tests runs on a merge-queue-tested push (it saves the cache), so only the other two have a second skipped name
+            queue = "" if name == "forge-tests" else f" || needs.push-dedupe.outputs.skip_tests == 'true' && '{name} (merge queue tested this commit, skipped)'"
+            self.assertIn(f"    name: ${{{{ needs.push-dedupe.outputs.skip == 'true' && '{name} (duplicate push run, skipped)'{queue} || '{name}' }}}}\n", job)
         for name in ("test-group", "ember-shard", "consensus-shard"):
             self.assertIn(f"    name: {name}-${{{{ matrix.", ci.split(f"\n  {name}:\n", 1)[1].split("\n\n", 1)[0])
 

@@ -88,4 +88,21 @@ class QuestionMarkEscapeTest {
     void unescape_unterminatedQuote_runsToTheEnd() {
         assertThat(QuestionMarkEscape.unescape("a ?? 'open ??")).isEqualTo("a ? 'open ??");
     }
+
+    /// #2501: `_` is an identifier character, so an `e` or a `$` after it belongs to the identifier and opens nothing.
+    @Test
+    void unescape_anEAfterAnUnderscore_doesNotMakeAnEscapeString() {
+        assertThat(QuestionMarkEscape.unescape("SELECT my_e'a\\' ?? 'b'")).isEqualTo("SELECT my_e'a\\' ? 'b'");
+    }
+
+    @Test
+    void unescape_aDollarAfterAnUnderscore_opensNoQuote() {
+        assertThat(QuestionMarkEscape.unescape("SELECT 1 AS a_$b$, j ?? 'k'")).isEqualTo("SELECT 1 AS a_$b$, j ? 'k'");
+    }
+
+    @Test
+    void unescape_aDollarTagThatStartsOrContainsAnUnderscore_isAQuote() {
+        assertThat(QuestionMarkEscape.unescape("SELECT $_a$ ?? $_a$ ?? x")).isEqualTo("SELECT $_a$ ?? $_a$ ? x");
+        assertThat(QuestionMarkEscape.unescape("SELECT $a_b$ ?? $a_b$ ?? x")).isEqualTo("SELECT $a_b$ ?? $a_b$ ? x");
+    }
 }

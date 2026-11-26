@@ -6,6 +6,7 @@
 package org.pragmatica.aether.stream.forward;
 
 import java.util.ArrayDeque;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
@@ -55,6 +56,7 @@ import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlA
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward.publishForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.readForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.validatedReadForward;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #2583 P2: a reply the handler sends to a forwarding requester reports its [WriteOutcome]. A reply the transport did not
 /// accept moves [StreamReadForwardMetrics#replyNotSent] (read through the interface the node assembly shares), opens one
@@ -79,6 +81,7 @@ class StreamForwardReplyNotSentTest {
     private List<NodeId> targets;
     private Deque<Promise<WriteOutcome>> script;
     private List<Scheduled> scheduled;
+    private List<Scheduled> expiries;
     private ScheduledExecutorService neverFires;
     private LogCapture handlerLog;
 
@@ -90,6 +93,7 @@ class StreamForwardReplyNotSentTest {
         targets = new CopyOnWriteArrayList<>();
         script = new ArrayDeque<>();
         scheduled = new CopyOnWriteArrayList<>();
+        expiries = new CopyOnWriteArrayList<>();
         neverFires = Executors.newSingleThreadScheduledExecutor();
         handlerLog = LogCapture.capture(StreamForwardHandler.class, Level.INFO, true);
         partitionManager.createStream(streamConfig(STREAM));
@@ -123,7 +127,8 @@ class StreamForwardReplyNotSentTest {
                                                Option.none(),
                                                Option.none(),
                                                RefusalBackoff.refusalBackoff(() -> NO_JITTER),
-                                               this::schedule);
+                                               this::schedule,
+                                               this::scheduleExpiry);
     }
 
     private Promise<WriteOutcome> answer(NodeId target, StreamForwardMessage message) {
@@ -137,6 +142,12 @@ class StreamForwardReplyNotSentTest {
 
     private ScheduledFuture<?> schedule(Runnable task, TimeSpan delay) {
         scheduled.add(new Scheduled(task, delay));
+
+        return neverFires.schedule(() -> {}, 1, TimeUnit.HOURS);
+    }
+
+    private ScheduledFuture<?> scheduleExpiry(Runnable task, TimeSpan delay) {
+        expiries.add(new Scheduled(task, delay));
 
         return neverFires.schedule(() -> {}, 1, TimeUnit.HOURS);
     }
@@ -528,6 +539,133 @@ class StreamForwardReplyNotSentTest {
         readTo(handler, REQUESTER);
 
         assertThat(episodeLines(Level.WARN)).hasSize(1);
+    }
+
+    /// #3219: the mark that suppresses a departed requester's re-sends is needed only while a re-send chain can still run, and
+    /// is expired then; a node that is removed and never returns no longer stays in the handler for the life of the process.
+    @Test
+    void departedMark_isExpiredAfterItsTtl() {
+        var handler = handlerAnswering(sent());
+
+        handler.onNodeRemoved(removed(REQUESTER));
+
+        assertThat(handler.departedMarks()).as("marked while its re-send chain can still run").isEqualTo(1);
+        assertThat(expiries).singleElement()
+                            .satisfies(expiry -> assertThat(expiry.delay().nanos()).isEqualTo(DefaultStreamForwardHandler.DEPARTED_MARK_TTL.nanos()));
+
+        expiries.getFirst().task().run();
+
+        assertThat(handler.departedMarks()).as("a node that never returns leaves nothing behind").isZero();
+    }
+
+    @Test
+    void departedMarksOfManyNodes_areAllExpired() {
+        var handler = handlerAnswering(sent());
+
+        for (var i = 0; i < 50; i++) {
+            handler.onNodeRemoved(removed(NodeId.randomNodeId()));
+        }
+
+        assertThat(handler.departedMarks()).isEqualTo(50);
+
+        expiries.forEach(expiry -> expiry.task().run());
+
+        assertThat(handler.departedMarks()).isZero();
+    }
+
+    /// The TTL must outlive the longest re-send chain: the four holds doubling from the first hold, capped, at full jitter.
+    @Test
+    void departedMarkTtl_outlivesTheLongestResendChain() {
+        var hold = RefusalBackoff.FIRST_HOLD.nanos();
+        var chain = 0L;
+
+        for (var resend = 0; resend < DefaultStreamForwardHandler.MAX_REPLY_RESENDS; resend++) {
+            chain += Math.round(hold * (1.0 + RefusalBackoff.JITTER));
+            hold = Math.min(hold * 2, RefusalBackoff.MAX_HOLD.nanos());
+        }
+
+        assertThat(DefaultStreamForwardHandler.DEPARTED_MARK_TTL.nanos()).isGreaterThan(chain);
+    }
+
+    @Test
+    void expiryOfAnEarlierDeparture_keepsTheMarkOfALaterOne() {
+        var handler = handlerAnswering(sent());
+
+        handler.onNodeRemoved(removed(REQUESTER));
+        readTo(handler, REQUESTER);
+        handler.onNodeRemoved(removed(REQUESTER));
+        expiries.getFirst().task().run();
+
+        assertThat(handler.departedMarks()).as("the first departure's timer must not clear the second's mark").isEqualTo(1);
+
+        expiries.getLast().task().run();
+
+        assertThat(handler.departedMarks()).isZero();
+    }
+
+    /// The production wiring: the handler built without the test seam expires the mark on the shared scheduler, so a node
+    /// removed and never heard from again leaves nothing behind. Waits for the condition (the mark is gone), not for a time.
+    @Test
+    void departedMark_underTheProductionScheduler_isExpired() {
+        StreamForwardTransport transport = this::answer;
+        var handler = new DefaultStreamForwardHandler(OWNER,
+                                                      partitionManager,
+                                                      transport,
+                                                      1_048_576L,
+                                                      metrics,
+                                                      Option.none(),
+                                                      Option.none(),
+                                                      Option.none());
+
+        handler.onNodeRemoved(removed(REQUESTER));
+
+        assertThat(handler.departedMarks()).isEqualTo(1);
+
+        pollUntil(handler::departedMarks, marks -> marks == 0, Duration.ofSeconds(30)).assertMet("the mark expired on the shared scheduler");
+    }
+
+    @Test
+    void returningRequester_clearsItsMark() {
+        var handler = handlerAnswering(sent());
+
+        handler.onNodeRemoved(removed(REQUESTER));
+        readTo(handler, REQUESTER);
+
+        assertThat(handler.departedMarks()).isZero();
+    }
+
+    @Test
+    void expiredMark_noLongerSuppressesTheEpisode() {
+        var handler = handlerAnswering(dead());
+
+        handler.onNodeRemoved(removed(REQUESTER));
+        expiries.getFirst().task().run();
+        readTo(handler, REQUESTER);
+
+        assertThat(episodeLines(Level.WARN)).as("the node is treated as any requester once its mark expired").hasSize(1);
+    }
+
+    /// Positive control for the test-visible accessor: an open episode is counted, a second requester's is counted apart,
+    /// and an accepted reply closes only its own (#3219).
+    @Test
+    void openEpisodes_countsAnEpisodeWhileItIsOpen() {
+        var handler = handlerAnswering(dead());
+
+        assertThat(handler.openEpisodes()).isZero();
+
+        readTo(handler, REQUESTER);
+
+        assertThat(handler.openEpisodes()).as("REQUESTER's refused reply opened one episode").isEqualTo(1);
+
+        readTo(handler, OTHER_REQUESTER);
+
+        assertThat(handler.openEpisodes()).as("a second requester opens a second one").isEqualTo(2);
+
+        script.clear();
+        script.add(Promise.success(sent()));
+        readTo(handler, REQUESTER);
+
+        assertThat(handler.openEpisodes()).as("an accepted reply closes only its own requester's").isEqualTo(1);
     }
 
     private static MembershipDecision.NodeRemoved removed(NodeId node) {

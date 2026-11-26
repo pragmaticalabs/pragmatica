@@ -179,6 +179,20 @@ public class RabiaEngine<C extends Command> {
     private final AtomicReference<ScheduledFuture<?>> genesisTimer = new AtomicReference<>();
     /// Seats this node raised [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for and has not closed yet (#1654).
     private final Set<NodeId> unreachableGenesisSeats = ConcurrentHashMap.newKeySet();
+    /// Seats of the installed roster that were not connected at the install and have not been decided yet (#3774). Decided once, by the
+    /// one-shot timer [#genesisSeatConfirmTimer] when [#GENESIS_SEAT_CONFIRM_WINDOW] after the install has passed: a seat that is connected
+    /// then, or has left the roster, is dropped without a warning; one still unconnected is named.
+    private final Set<NodeId> unconfirmedGenesisSeats = ConcurrentHashMap.newKeySet();
+    /// The confirmation deadline of the install (#3774): armed by the install, cancelled by [#stop]. It does not read the engine state, so it
+    /// runs in every state the engine can be in after the install (never activated, syncing, paused, active, observer).
+    private final AtomicReference<ScheduledFuture<?>> genesisSeatConfirmTimer = new AtomicReference<>();
+    private volatile TimeSpan genesisSeatConfirmWindow = GENESIS_SEAT_CONFIRM_WINDOW;
+
+    /// The remedy sentence of the seat warning (#1654), read once at the raise and never again: the warning is true in the auto-heal
+    /// state it was raised in. The node binds it to its live auto-heal state ([#useGenesisSeatRemedy]); until then it names no state.
+    private final AtomicReference<Supplier<String>> genesisSeatRemedy = new AtomicReference<>(() -> UNBOUND_SEAT_REMEDY);
+
+    private static final String UNBOUND_SEAT_REMEDY = "Operator action: if the seat neither returns nor is replaced, check that node (#1654).";
 
     private final AtomicReference<OperatorWarningSink> operatorWarningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
 
@@ -187,6 +201,13 @@ public class RabiaEngine<C extends Command> {
     private static final TimeSpan GENESIS_ROUND_BASE = TimeSpan.timeSpan(250).millis();
     private static final int GENESIS_BACKOFF_STEPS = 5;
     private static final int GENESIS_WARN_EVERY_ROUNDS = 10;
+    /// Time after the genesis install at which a seat that was not connected at the install is decided (#3774): named if it is still
+    /// unconnected then, dropped without a warning if it is connected or has left the roster. The bound is stated from the install and does
+    /// not depend on activation, a phase or any tick: a dead seat is named about this long after the install (plus the executor's queueing
+    /// delay), never earlier. 5 s is a guess, not a measurement: a seat that completed the agreement on its own link and is only
+    /// mid-handshake here attaches in milliseconds (9 ms in the #3774 evidence), and the same order as the sync retry interval. A seat that
+    /// needs longer than this to attach is still named, and the warning closes when it connects.
+    static final TimeSpan GENESIS_SEAT_CONFIRM_WINDOW = TimeSpan.timeSpan(5).seconds();
 
     private volatile Option<Cause> authorityFailure = Option.none();
     /// #3213 — whether the persisted state was written by THIS engine instance ([#saveState]). Its configuration was then
@@ -568,12 +589,15 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// #1654: the view agreement counts each member's last two reports with no freshness, so a member that reported
-    /// twice and then died can be agreed. Formation goes ahead; every agreed seat that is not a connected, authenticated
-    /// peer now is named once, loudly, for auto-heal to replace.
+    /// twice and then died can be agreed. Formation goes ahead. Every agreed seat that is not a connected, authenticated
+    /// peer now is only a suspect: the install can be completed by a seat's own report while that seat is still mid-handshake
+    /// here, so naming it at the install would send the operator to a healthy node (#3774). The deadline armed here
+    /// ([#armGenesisSeatConfirmation]) decides the suspects [#GENESIS_SEAT_CONFIRM_WINDOW] after the install.
     private void signalUnreachableSeats(VoterConfiguration configuration) {
         var reachable = connectedSeats();
 
-        configuration.members().stream().filter(seat -> !reachable.contains(seat)).forEach(this::signalUnreachableSeat);
+        configuration.members().stream().filter(seat -> !reachable.contains(seat)).forEach(unconfirmedGenesisSeats::add);
+        armGenesisSeatConfirmation();
     }
 
     /// Connectivity only, not discovery: with `cluster.genesis_voters` a seat can be connected before membership counts it,
@@ -586,6 +610,40 @@ public class RabiaEngine<C extends Command> {
         return Set.copyOf(connected);
     }
 
+    /// The decision of the install's suspects is driven by its own one-shot timer, started at the install and ended by the decision or by
+    /// [#performStop]. Not by the stall tick or the quiet-slot probe: those exist only while the engine is in a phase or activated, and a
+    /// node that installs genesis and never activates (it needs a sync majority first) has neither (#3785).
+    private void armGenesisSeatConfirmation() {
+        if (unconfirmedGenesisSeats.isEmpty() || stopping.get()) {
+            return;
+        }
+
+        var task = SharedScheduler.schedule(() -> safeExecute(this::confirmUnconnectedGenesisSeats),
+                                            genesisSeatConfirmWindow);
+
+        Option.option(genesisSeatConfirmTimer.getAndSet(task)).onPresent(previous -> previous.cancel(false));
+    }
+
+    /// Decides every suspect of the install, once: a seat that is connected or has left the voter roster is dropped without a warning (it
+    /// never needed one, so there is nothing to close); a seat still unconnected is named.
+    private void confirmUnconnectedGenesisSeats() {
+        var connected = network.connectedPeers();
+
+        List.copyOf(unconfirmedGenesisSeats).forEach(seat -> confirmUnconnectedGenesisSeat(seat, connected));
+    }
+
+    private void confirmUnconnectedGenesisSeat(NodeId seat, Set<NodeId> connected) {
+        unconfirmedGenesisSeats.remove(seat);
+        if (!connected.contains(seat) && !hasLeftVoterRoster(seat)) {
+            signalUnreachableSeat(seat);
+        }
+    }
+
+    private boolean hasLeftVoterRoster(NodeId seat) {
+        return voters.filter(configuration -> !configuration.contains(seat))
+                     .isPresent();
+    }
+
     private Unit signalUnreachableSeat(NodeId seat) {
         unreachableGenesisSeats.add(seat);
 
@@ -593,16 +651,18 @@ public class RabiaEngine<C extends Command> {
                                       operatorWarningSink.get(),
                                       OperatorWarningCode.GENESIS_SEAT_UNREACHABLE,
                                       seat.id(),
-                                      "Node {} installs genesis with seat {} not connected: the seat reported the agreed view earlier and is "
-                                     + "unreachable now. Formation is not blocked; auto-heal is expected to replace the seat. Operator "
-                                     + "action: if the seat neither returns nor is replaced, check that node (#1654).",
+                                      "Node {} installed genesis with seat {} not connected, and the seat was still not connected when checked, {} ms or more "
+                                     + "after the install: it reported the agreed view earlier. Formation is not blocked. {}",
                                       self,
-                                      seat);
+                                      seat,
+                                      genesisSeatConfirmWindow.millis(),
+                                      genesisSeatRemedy.get().get());
     }
 
     /// Closes [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for every seat this node raised it for that is a connected peer again
     /// or has left the voter roster (replaced). Runs on the phase-stall tick (InPhase) and on the idle slot probe tick (Idle), so a seat
-    /// closes within one tick interval whether or not a phase is in progress.
+    /// closes within one tick interval whether or not a phase is in progress. Both ticks need an activated engine: an engine that installed
+    /// genesis and never activates names its dead seat (the install's own deadline, [#armGenesisSeatConfirmation]) but closes no warning.
     private void resolveUnreachableGenesisSeats() {
         if (unreachableGenesisSeats.isEmpty()) {
             return;
@@ -620,7 +680,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (voters.filter(configuration -> !configuration.contains(seat)).isPresent()) {
+        if (hasLeftVoterRoster(seat)) {
             closeUnreachableGenesisSeat(seat, "left the voter roster (replaced)");
         }
     }
@@ -638,20 +698,77 @@ public class RabiaEngine<C extends Command> {
                                       how);
     }
 
+    /// Raises [OperatorWarningCode#CONSENSUS_QUORUM_INCOMPLETE] (#3525): the join guard has waited past its bound with fewer than a
+    /// quorum of core peers handshaken. The guard calls this once per wait episode; the warning names the peers still missing.
+    public Unit raiseJoinQuorumIncomplete(Set<NodeId> missing) {
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE,
+                                      self.id(),
+                                      "Node {} casts no ballot yet: it has not handshaken a quorum of the core that agrees on the "
+                                     + "labels every core member must share. Waiting for core peers {}. Operator action: check that "
+                                     + "those nodes are running and reachable from this node (#3525).",
+                                      self,
+                                      missing.stream().map(NodeId::id).toList());
+    }
+
+    /// Raises [OperatorWarningCode#CONSENSUS_QUORUM_COMPLETE], the recovery of [#raiseJoinQuorumIncomplete] (#3525): the wait that
+    /// raised the warning has ended with a quorum handshaken and agreeing. The guard calls this only after the warning was raised.
+    public Unit raiseJoinQuorumComplete() {
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE,
+                                      self.id(),
+                                      "Node {} has handshaken a quorum of the core that agrees on the labels every core member must "
+                                     + "share; the wait for core peers is over (#3525).",
+                                      self);
+    }
+
     /// Binds this engine's operator warnings to its node's event log (#1654). Until called, they are logged only.
     @Contract
     public void useOperatorWarningSink(OperatorWarningSink sink) {
         operatorWarningSink.set(sink);
     }
 
-    /// Test hook: one idle slot probe tick on the apply executor, which also runs the unreachable-genesis-seat check.
+    /// Binds the remedy sentence of the genesis seat warning (#1654) to the node's live auto-heal state; read once, when the warning is raised.
+    @Contract
+    public void useGenesisSeatRemedy(Supplier<String> remedy) {
+        genesisSeatRemedy.set(remedy);
+    }
+
+    /// Test hook: the genesis install's confirmation deadline, run now on the apply executor.
+    Unit runGenesisSeatConfirmationForTesting() {
+        safeExecute(this::confirmUnconnectedGenesisSeats);
+
+        return Unit.unit();
+    }
+
+    /// Test hook: shortens the install's confirmation window; read when the install arms the deadline.
+    @Contract
+    void useGenesisSeatConfirmWindowForTesting(TimeSpan window) {
+        genesisSeatConfirmWindow = window;
+    }
+
+    /// Test-only view of the install's confirmation window.
+    TimeSpan genesisSeatConfirmWindowForTesting() {
+        return genesisSeatConfirmWindow;
+    }
+
+    /// Test-only view of the install's deadline: armed and not yet fired or cancelled.
+    boolean genesisSeatConfirmationPendingForTesting() {
+        return Option.option(genesisSeatConfirmTimer.get())
+                     .filter(task -> !task.isDone())
+                     .isPresent();
+    }
+
+    /// Test hook: one idle slot probe tick on the apply executor, which also runs the unreachable-genesis-seat close check.
     Unit runQuietSlotProbeForTesting() {
         safeExecute(this::probeQuietSlot);
 
         return Unit.unit();
     }
 
-    /// Test hook: one phase-stall tick on the apply executor, which also runs the unreachable-genesis-seat check.
+    /// Test hook: one phase-stall tick on the apply executor, which also runs the unreachable-genesis-seat close check.
     Unit runPhaseStallCheckForTesting() {
         safeExecute(this::checkPhaseStall);
 
@@ -848,6 +965,14 @@ public class RabiaEngine<C extends Command> {
 
     public Option<VoterConfiguration> voterConfiguration() {
         return voters;
+    }
+
+    /// Test seam (#1654 Ember): the genesis members whose last two reports this pending node holds as consecutive rounds of its own view.
+    /// Empty for a node that never ran one. The agreement is never cleared: after genesis is installed the snapshot stays frozen at its last
+    /// value, so it says nothing about a node that is no longer genesis-pending. Read-only snapshot, safe from any thread.
+    public Set<NodeId> genesisStableReporters() {
+        return genesisAgreement.map(GenesisViewAgreement::stableReporters)
+                               .or(Set.of());
     }
 
     public org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {
@@ -1601,7 +1726,17 @@ public class RabiaEngine<C extends Command> {
         safeExecute(this::doClusterConnected);
     }
 
+    /// The one entry into `Syncing` from a cold start, a paused-before-activation resume or a resync (#3742): a node whose pre-sync check
+    /// has not passed enters no sync round, whoever asks. [#doClusterActive], [#clusterConnected] and [#doResumeFromPause] reach here
+    /// already past the check; [#triggerResync], reachable from any Propose in any engine state, does not, so the check is enforced
+    /// here and not at its callers. A refused entry changes nothing: the check's completion re-enters through [#handleClusterActive].
     private void doClusterConnected() {
+        if (!preSyncDone) {
+            log.debug("Node {}: sync round not started, the pre-sync check has not passed", self);
+
+            return;
+        }
+
         syncRounds.set(0);
         electorateRefusalReported.set(false);
         // Catch-up race fix: broadcast the first SyncRequest IMMEDIATELY instead of waiting a full
@@ -2465,6 +2600,7 @@ public class RabiaEngine<C extends Command> {
 
     private void performStop(Promise<Unit> promise) {
         cancelGenesisTimer();
+        Option.option(genesisSeatConfirmTimer.getAndSet(null)).onPresent(task -> task.cancel(false));
         Option.option(cleanupTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         Option.option(quietSlotProbeTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         Option.option(decisionGapTask.getAndSet(null)).onPresent(task -> task.cancel(false));
@@ -4368,13 +4504,17 @@ public class RabiaEngine<C extends Command> {
     /// Triggers a resync when the node detects it's significantly behind.
     /// No-op when already syncing — doSynchronize() handles retries internally — and while activation is gated and not yet
     /// authorized (A-04): a ballot must not start a sync round, and so a path to serving, on an engine that was never
-    /// allowed to activate. A Paused engine still resyncs (ruling a20d1dbca5).
+    /// allowed to activate. A Paused engine still resyncs (ruling a20d1dbca5). It starts no sync round before the pre-sync check
+    /// has passed (#3742): [#doClusterConnected] refuses, so a far-future Propose cannot move a node that has not yet agreed with a
+    /// quorum into `Syncing` (nor, through it, into a ballot).
     /// ```tla RabiaAdopt:Resync
     /// \* D10. triggerResync re-enters Syncing through doClusterConnected: from Active/Observing, or from Paused of either kind (ruling
     /// \* a20d1dbca5); a Syncing engine is a no-op. Nothing is reset: phases, applied log and durable state stay (phases.clear()
     /// \* runs only in shutdownAndReset). Callers: a far-future Propose or Decision (timer = FALSE: any live peer ahead, from
     /// \* Active or Paused) and decisionGapExpired (timer = TRUE: not Paused, a Decision buffered past the missing slot, so the
     /// \* peer is two or more slots ahead). The distance bound MAX_PHASE_AHEAD and the delay are abstracted away.
+    /// \* Precondition outside the model (#3742): the node's pre-sync check has passed. doClusterConnected, the one entry into
+    /// \* "syncing" for every caller, returns without a state change until it has; the model begins after the check.
     /// Resync(n, timer) ==
     ///   /\ ResyncOn
     ///   /\ st[n] \in IF timer THEN {"active"} ELSE {"active", "paused", "pausedsync"}

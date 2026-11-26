@@ -211,6 +211,14 @@ public sealed interface RunOutcome permits RunOutcome.unused {
         }
     }
 
+    /// The formatter's content guard refused the file (#3691): the formatted text would lose or change a comment or a
+    /// token, so nothing was written; the message names the file and the first difference.
+    record Refused(String message) implements FormatOutcome {
+        public static Refused refused(String message) {
+            return new Refused(message);
+        }
+    }
+
     /// `failBeforeFormat` and the file has lint errors: the format step was not run for it.
     record Withheld() implements FormatOutcome {
         public static Withheld withheld() {

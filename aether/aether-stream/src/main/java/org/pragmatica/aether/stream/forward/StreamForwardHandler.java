@@ -7,9 +7,11 @@ package org.pragmatica.aether.stream.forward;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.http.HttpError;
 import org.pragmatica.aether.stream.replication.ReplicationError;
@@ -183,6 +185,9 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private static final long PER_EVENT_OVERHEAD_BYTES = 24L;
     private static final long ENVELOPE_OVERHEAD_BYTES = 64L;
     static final int MAX_REPLY_RESENDS = 4;
+    /// How long a departed-requester mark lives (#3219): twice the longest a refused reply can still be pending, which is the
+    /// re-send chain of [#MAX_REPLY_RESENDS] holds at the full upward jitter (4.5 s), so no re-send or late refusal outlives it.
+    static final TimeSpan DEPARTED_MARK_TTL = TimeSpan.timeSpan(10).seconds();
 
     private final NodeId selfNodeId;
     private final StreamPartitionManager partitionManager;
@@ -193,9 +198,11 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private final Option<TieredStreamReader> tieredReader;
     private final Option<ControlLog> controlLog;
     private final Set<NodeId> unsentRequesters = ConcurrentHashMap.newKeySet();
-    private final Set<NodeId> departedRequesters = ConcurrentHashMap.newKeySet();
+    private final Map<NodeId, Long> departedRequesters = new ConcurrentHashMap<>();
+    private final AtomicLong departures = new AtomicLong();
     private final RefusalBackoff<StreamForwardMessage> replyBackoff;
     private final Fn2<ScheduledFuture<?>, Runnable, TimeSpan> resendScheduler;
+    private final Fn2<ScheduledFuture<?>, Runnable, TimeSpan> departedExpiryScheduler;
 
     DefaultStreamForwardHandler(NodeId selfNodeId,
                                 StreamPartitionManager partitionManager,
@@ -214,11 +221,13 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
              tieredReader,
              controlLog,
              RefusalBackoff.refusalBackoff(),
+             SharedScheduler::schedule,
              SharedScheduler::schedule);
     }
 
     /// Test seam (#2583 P2): `resendScheduler` runs the re-send of a reply the transport provably did not write, and
-    /// `replyBackoff` draws its hold (a seeded source makes the jitter repeatable).
+    /// `replyBackoff` draws its hold (a seeded source makes the jitter repeatable). `departedExpiryScheduler` (#3219) runs
+    /// the expiry of a departed-requester mark.
     DefaultStreamForwardHandler(NodeId selfNodeId,
                                 StreamPartitionManager partitionManager,
                                 StreamForwardTransport transport,
@@ -228,7 +237,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                 Option<TieredStreamReader> tieredReader,
                                 Option<ControlLog> controlLog,
                                 RefusalBackoff<StreamForwardMessage> replyBackoff,
-                                Fn2<ScheduledFuture<?>, Runnable, TimeSpan> resendScheduler) {
+                                Fn2<ScheduledFuture<?>, Runnable, TimeSpan> resendScheduler,
+                                Fn2<ScheduledFuture<?>, Runnable, TimeSpan> departedExpiryScheduler) {
         this.selfNodeId = selfNodeId;
         this.partitionManager = partitionManager;
         this.transport = transport;
@@ -239,6 +249,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         this.controlLog = controlLog;
         this.replyBackoff = replyBackoff;
         this.resendScheduler = resendScheduler;
+        this.departedExpiryScheduler = departedExpiryScheduler;
     }
 
     /// #2583 P2: every reply reads its [WriteOutcome]. A reply the transport did not accept is counted
@@ -261,7 +272,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
 
     @Contract
     private void sendReply(NodeId requester, StreamForwardMessage response, int resends) {
-        if (departedRequesters.contains(requester)) {
+        if (departedRequesters.containsKey(requester)) {
             replyBackoff.sent(response);
 
             return;
@@ -305,7 +316,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     @Contract
     private void countUnsentReply(NodeId requester, String detail) {
         metrics.recordReplyNotSent();
-        if (!departedRequesters.contains(requester) && unsentRequesters.add(requester)) {
+        if (!departedRequesters.containsKey(requester) && unsentRequesters.add(requester)) {
             log.warn("Forward reply to {} not sent ({}); further unsent replies to it are counted, not logged",
                      requester,
                      detail);
@@ -319,11 +330,27 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         }
     }
 
+    /// Marks the removed node departed so a pending re-send or late refusal for it is dropped quietly, and expires the mark
+    /// after [#DEPARTED_MARK_TTL] (#3219): without that, every node that is removed and never sends again would stay in the
+    /// set for the life of the process.
+    ///
+    /// Recovery: design-out. After the TTL no re-send chain of that node can still run (the chain ends in 4.5 s), so
+    /// dropping the mark changes no behaviour; a node that returns earlier clears it in [#reply]. The expiry removes only the
+    /// departure it was scheduled for, so a node removed, returned and removed again keeps its newer mark.
     @Contract
     @Override
     public void onNodeRemoved(MembershipDecision.NodeRemoved removed) {
-        departedRequesters.add(removed.nodeId());
-        unsentRequesters.remove(removed.nodeId());
+        var node = removed.nodeId();
+        var departure = departures.incrementAndGet();
+
+        departedRequesters.put(node, departure);
+        unsentRequesters.remove(node);
+        departedExpiryScheduler.apply(() -> departedRequesters.remove(node, departure), DEPARTED_MARK_TTL);
+    }
+
+    /// Test-visible: departed-requester marks not yet expired or cleared.
+    int departedMarks() {
+        return departedRequesters.size();
     }
 
     /// Test-visible: requesters with an open WARN episode.

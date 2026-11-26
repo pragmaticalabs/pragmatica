@@ -68,7 +68,7 @@ class Http3FinLossTest {
     @BeforeEach
     void start() {
         server = Http3Server.create(HttpServerConfig.httpServerConfig("h3-fin-loss-wire", 0).withClassifier(_ -> Disposition.aggregate(100L * 1024 * 1024)),
-                                    QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols()).unwrap(),
+                                    QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols()).flatMap(LiveTls::liveQuicTls).unwrap(),
                                     (request, writer) -> writer.okText("handled " + request.body().length))
                             .await(timeSpan(10).seconds())
                             .unwrap();

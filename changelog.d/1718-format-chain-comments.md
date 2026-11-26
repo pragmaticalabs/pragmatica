@@ -1,0 +1,3 @@
+### Fixed (2026-11-24 — #1718: jbct formatter drops a `//` comment inside a builder chain when joining it onto one line)
+- **`jbct:format` deleted comments between the links of a method chain that fits on one line.** The joined-onto-one-line path printed each link without its leading trivia, so an own-line `//` or `/* */` comment, or a trailing `//` after a link, vanished and the chain collapsed onto one line.
+- A chain with a comment between its links is now always laid out vertically, where each link owns its comments; chains without comments still join exactly as before. [verified: `jbct/jbct-format/src/test/java/org/pragmatica/jbct/format/flow/FlowContentPreservationTest.java` `chain*` tests]

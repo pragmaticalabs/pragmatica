@@ -396,12 +396,15 @@ public final class DistributedDHTClient implements DHTClient {
         return putStamped(key, value, freshStamp(), targets, quorum);
     }
 
-    /// A put stamped with this node's HLC time and current owner epoch — what every client write carries.
+    /// A put stamped with this node's HLC time and current owner epoch — what every client write carries. The epoch is ONE read
+    /// of the ownership record (#3720): three reads could straddle the record's apply and send an epoch no owner ever held.
     private WriteStamp freshStamp() {
+        var epoch = ownerEpochSource.currentEpoch();
+
         return new WriteStamp(node.hlcClock().now().packed(),
-                              ownerEpochSource.currentEpochIncarnation(),
-                              ownerEpochSource.currentEpochTerm(),
-                              ownerEpochSource.currentEpochCounter(),
+                              epoch.incarnation(),
+                              epoch.rabiaTerm(),
+                              epoch.localCounter(),
                               node.replicationFence(),
                               false);
     }
@@ -598,7 +601,12 @@ public final class DistributedDHTClient implements DHTClient {
                               long epochTerm,
                               long epochCounter,
                               long replicationVersion,
-                              boolean repair) {}
+                              boolean repair) {
+        /// The stamp carries the floor epoch: the ownership record was not applied when it was read (#3720).
+        boolean atFloor() {
+            return OwnerEpochSource.OwnerEpoch.ownerEpoch(epochIncarnation, epochTerm, epochCounter).isFloor();
+        }
+    }
 
     /// A put that lost its quorum to owner-epoch fences is INDETERMINATE (#1818, the owner's fence ruling):
     /// this node's own store may have accepted it because its high-water lags, and anti-entropy copies bypass
@@ -656,8 +664,18 @@ public final class DistributedDHTClient implements DHTClient {
         return cause instanceof DHTError.WriteIndeterminate || fenced
                ? localWrite.map(local -> rollBackLocalAccept(key, stamp, local))
                            .or(Promise.success(false))
-                           .fold(_ -> cause.<T> promise())
+                           .fold(_ -> toldApart(cause, stamp).<T> promise())
                : cause.promise();
+    }
+
+    /// #3720: the cause the caller is handed, after the rollback decision above has been taken on the ORIGINAL cause. A fence
+    /// refusal of a put this node stamped at the floor can only come from a replica whose high-water is above zero: the
+    /// writer had not applied the ownership record yet, so it was early, not deposed ([DHTError.OwnershipNotApplied], the
+    /// DHT twin of the stream's #2755 refusal). Any other fence refusal keeps [DHTError.WriteIndeterminate].
+    private static Cause toldApart(Cause cause, WriteStamp stamp) {
+        return cause instanceof DHTError.WriteIndeterminate indeterminate && stamp.atFloor()
+               ? DHTError.ownershipNotApplied(indeterminate.required(), indeterminate.achieved(), indeterminate.fenced())
+               : cause;
     }
 
     private Promise<Boolean> rollBackLocalAccept(byte[] key,

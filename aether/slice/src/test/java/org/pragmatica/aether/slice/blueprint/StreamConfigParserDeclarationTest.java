@@ -86,7 +86,7 @@ class StreamConfigParserDeclarationTest {
 
         assertThat(refusal("[streams.orders.retention]\nmax_count = 100\n")).isEqualTo(countOnly);
         assertThat(refusal("[streams.orders.retention]\nmax_count = 100\nmax_age = \"1h\"\n")).isEqualTo(countOnly);
-        assertThat(retention("[streams.orders.retention]\nmax_count = 100\nmax_bytes = \"2GB\"\n").maxBytes().or(0L)).isEqualTo(2 * GIB);
+        assertThat(retention("[streams.orders.retention]\nmax_count = 100000\nmax_bytes = \"2GB\"\n").maxBytes().or(0L)).isEqualTo(2 * GIB);
     }
 
     /// A declared block stores exactly the bounds it names, plus the default mode; a named mode wins.

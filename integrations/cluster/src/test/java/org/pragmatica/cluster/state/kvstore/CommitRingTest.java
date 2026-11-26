@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// Naming: NT-O.. identifiers are the design's test plan; each test names the invariant it pins and the mutation that turns it red.
 class CommitRingTest {
-    private static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "A");
+    private static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "A", RingFixtures.LINEAGE);
 
     private static List<KVCommand<?>> effect(String key, String value) {
         return List.of(new KVCommand.Put<>(new RingFixtures.Key(key), value));
@@ -153,7 +153,7 @@ class CommitRingTest {
 
         fill(ring, 0, 2);
 
-        assertThat(ring.subscribeFrom(IncarnationTag.incarnationTag(1, "OTHER"), 2, pairs(0, 2), sink()))
+        assertThat(ring.subscribeFrom(IncarnationTag.incarnationTag(1, "OTHER", RingFixtures.LINEAGE), 2, pairs(0, 2), sink()))
                 .as("a re-minted incarnation 1 is a different life: tags compare by equality, not by number (mutation: compare by number only)")
                 .isInstanceOfSatisfying(Refused.class, refused -> assertThat(refused.reason()).isEqualTo(RefusalReason.INCARNATION_MISMATCH));
         assertThat(ring.subscribeFrom(IncarnationTag.NONE, 2, pairs(0, 2), sink()))
@@ -374,10 +374,10 @@ class CommitRingTest {
 
         fill(ring, 0, 2);
         ring.subscribeFrom(TAG, 2, pairs(0, 2), CommitRing.subscription(closed::add));
-        ring.append(IncarnationTag.incarnationTag(2, "B"), 2, "bump", effect("inc", "2"), 3);
+        ring.append(IncarnationTag.incarnationTag(2, "B", RingFixtures.LINEAGE), 2, "bump", effect("inc", "2"), 3);
 
         assertThat(closed).containsExactly(CloseReason.INCARNATION_MISMATCH);
-        assertThat(ring.tag()).isEqualTo(IncarnationTag.incarnationTag(2, "B"));
+        assertThat(ring.tag()).isEqualTo(IncarnationTag.incarnationTag(2, "B", RingFixtures.LINEAGE));
         assertThat(ring.entries()).as("the bump batch is not delivered").isEmpty();
         assertThat(ring.floor()).isEqualTo(3L);
     }

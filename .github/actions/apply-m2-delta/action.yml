@@ -1,0 +1,25 @@
+name: Apply the Maven dependency delta
+description: >-
+  #3745: unpacks the artifacts deps-prime fetched from Maven Central (the part of the dependency set the restored cache
+  lacked, e.g. a dependency added by the change under test) into ~/.m2/repository. Best effort: a missing artifact (deps-prime
+  failed or was skipped) leaves the job exactly as it was, resolving from Central with the #3280 retries.
+runs:
+  using: composite
+  steps:
+    - name: Download m2-delta
+      uses: actions/download-artifact@v5
+      continue-on-error: true
+      with:
+        name: m2-delta
+        path: ${{ runner.temp }}/m2-delta
+    - name: Unpack m2-delta
+      shell: bash
+      run: |
+        f="$RUNNER_TEMP/m2-delta/m2-delta.tgz"
+        if [ -f "$f" ]; then
+          mkdir -p "$HOME/.m2/repository"
+          tar -xzf "$f" -C "$HOME/.m2/repository"
+          echo "::notice::applied m2-delta: $(tar -tzf "$f" | wc -l) file(s) fetched once by deps-prime"
+        else
+          echo "::notice::no m2-delta (deps-prime failed or was skipped); this job resolves from Central itself"
+        fi

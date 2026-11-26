@@ -33,7 +33,9 @@ import org.pragmatica.aether.slice.StreamDeclaration;
 import org.pragmatica.aether.slice.TruncationDeclaration;
 import org.pragmatica.aether.slice.TruncationPolicy;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.DeclarationBounds;
 import org.pragmatica.aether.slice.stream.DeclarationDefaults;
+import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.aether.slice.stream.StreamEngineKey;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
@@ -291,6 +293,30 @@ public interface StreamConfigParser {
                                                               String streamName,
                                                               Map<String, String> roleHints,
                                                               ReplicationFactors defaults) {
+        return refuseTableArrays(doc, section, streamName).flatMap(_ -> parseDeclaredResource(doc,
+                                                                                              section,
+                                                                                              streamName,
+                                                                                              roleHints,
+                                                                                              defaults));
+    }
+
+    /// #3520: a `[[streams.<alias>.<name>]]` table array is read by no part of the stream parser, so it was accepted and
+    /// ignored (a `[[streams.x.retention]]` declared nothing and nothing said so). Refused as malformed, naming the first
+    /// one in sorted order; the [StreamSection] views never see table arrays, so this is the only place that can.
+    private static Result<Unit> refuseTableArrays(TomlDocument doc, String section, String alias) {
+        return Option.from(doc.tableArrayNames()
+                              .stream()
+                              .filter(name -> name.startsWith(section + "."))
+                              .sorted()
+                              .findFirst()).fold(() -> success(unit()),
+                                                 name -> new StreamDeclarationError.TableArrayDeclared(alias, name).result());
+    }
+
+    private static Result<StreamResource> parseDeclaredResource(TomlDocument doc,
+                                                                String section,
+                                                                String streamName,
+                                                                Map<String, String> roleHints,
+                                                                ReplicationFactors defaults) {
         var sourceOpt = doc.getString(section, "source");
         var versionOpt = doc.getString(section, "version");
         var explicitRoleOpt = doc.getString(section, "role");
@@ -716,10 +742,9 @@ public interface StreamConfigParser {
         var consistency = optionalEnum(section, "consistency", List.of("eventual", "strong"), "eventual");
         var compression = optionalEnum(section, "compression", List.of("none", "lz4", "zstd"), "none");
         var retention = parseRetention(section);
-        var storageDeclaration = Result.all(partitions, maxEventSize)
-                                       .flatMap((count, size) -> parseDeclaration(section, count, size))
-                                       .flatMap(declared -> refuseTruncationShape(section.alias(),
-                                                                                  declared));
+        var storageDeclaration = Result.all(partitions, maxEventSize).flatMap((count, size) -> parseCheckedDeclaration(section,
+                                                                                                                       count,
+                                                                                                                       size));
 
         return firstFailure(List.of(partitions,
                                     factor,
@@ -907,6 +932,106 @@ public interface StreamConfigParser {
                                                                                                                                 some(t),
                                                                                                                                 some(h),
                                                                                                                                 none())));
+    }
+
+    /// [#parseDeclaration], then the shape refusals, then the floors ([#refuseBelowBounds]): the first failure is the cause, so
+    /// a section malformed in another way reports that refusal first, and a well-formed `until_consumed` block with a low
+    /// `[hot]` reports the floor before the T-146 gate ([#refuseNotYetAvailable]) runs.
+    private static Result<StreamDeclaration> parseCheckedDeclaration(StreamSection section,
+                                                                     int partitions,
+                                                                     long maxEventSize) {
+        return parseDeclaration(section, partitions, maxEventSize).flatMap(declared -> refuseTruncationShape(section.alias(),
+                                                                                                             declared))
+                               .flatMap(declared -> refuseBelowBounds(section.alias(),
+                                                                      partitions,
+                                                                      maxEventSize,
+                                                                      declared));
+    }
+
+    /// The resolved declaration against the seal and ring floors (stream-storage-design 2.2), on the values the stream will run
+    /// with (a default counts as a value): the hot window against the seal runs, then against `max_event_size`, then the
+    /// retention share, then `hot.max_count` against the ring's index capacity. Refuses, never clamps (the clamp is 6c's).
+    private static Result<StreamDeclaration> refuseBelowBounds(String alias,
+                                                               int partitions,
+                                                               long maxEventSize,
+                                                               StreamDeclaration declared) {
+        return hotWindowRefusal(alias,
+                                declared.hot(),
+                                maxEventSize).orElse(() -> retentionShareRefusal(alias,
+                                                                                 declared.retention(),
+                                                                                 partitions,
+                                                                                 maxEventSize))
+                               .orElse(() -> unindexableRefusal(alias,
+                                                                declared.hot(),
+                                                                maxEventSize))
+                               .fold(() -> success(declared),
+                                     Cause::result);
+    }
+
+    private static Option<Cause> hotWindowRefusal(String alias, Option<HotWindowDeclaration> hot, long maxEventSize) {
+        return hot.flatMap(window -> hotFloors(alias, window, maxEventSize));
+    }
+
+    private static Option<Cause> hotFloors(String alias, HotWindowDeclaration window, long maxEventSize) {
+        return belowSealRuns(alias, window).orElse(() -> belowMaxEvent(alias, window, maxEventSize));
+    }
+
+    private static Option<Cause> belowSealRuns(String alias, HotWindowDeclaration window) {
+        return window.maxBytes()
+                     .filter(bytes -> bytes < DeclarationBounds.minHotBytes())
+                     .<Cause> map(bytes -> new StreamDeclarationError.HotWindowBelowSealRuns(alias,
+                                                                                             "hot.max_bytes",
+                                                                                             bytes,
+                                                                                             DeclarationBounds.minHotBytes()))
+                     .orElse(() -> countBelowSealRuns(alias, window));
+    }
+
+    private static Option<Cause> countBelowSealRuns(String alias, HotWindowDeclaration window) {
+        return window.maxCount()
+                     .filter(count -> count < DeclarationBounds.minHotCount())
+                     .<Cause> map(count -> new StreamDeclarationError.HotWindowBelowSealRuns(alias,
+                                                                                             "hot.max_count",
+                                                                                             count,
+                                                                                             DeclarationBounds.minHotCount()));
+    }
+
+    private static Option<Cause> belowMaxEvent(String alias, HotWindowDeclaration window, long maxEventSize) {
+        return window.maxBytes()
+                     .filter(bytes -> bytes < maxEventSize)
+                     .map(bytes -> new StreamDeclarationError.HotWindowBelowMaxEvent(alias, bytes, maxEventSize));
+    }
+
+    private static Option<Cause> retentionShareRefusal(String alias,
+                                                       Option<RetentionDeclaration> retention,
+                                                       int partitions,
+                                                       long maxEventSize) {
+        return retention.flatMap(declared -> DeclarationBounds.shareRefusal(declared, partitions, maxEventSize))
+                        .map(refusal -> new StreamDeclarationError.RetentionShareTooSmall(alias,
+                                                                                          refusal.arm(),
+                                                                                          refusal.setBy(),
+                                                                                          refusal.share(),
+                                                                                          refusal.minimum(),
+                                                                                          refusal.smallestValid()));
+    }
+
+    /// Only `hot.max_count` is checked, against the capacity of the first region of `hot.max_bytes`: a `[retention]`
+    /// `max_count` no longer sizes the ring, and `StreamPartitionManager` keeps its own check as the second line.
+    private static Option<Cause> unindexableRefusal(String alias, Option<HotWindowDeclaration> hot, long maxEventSize) {
+        return hot.flatMap(window -> unindexableIn(alias, window, maxEventSize));
+    }
+
+    private static Option<Cause> unindexableIn(String alias, HotWindowDeclaration window, long maxEventSize) {
+        return Option.all(window.maxBytes(),
+                          window.maxCount())
+                     .flatMap((bytes, count) -> unindexable(alias, bytes, count, maxEventSize));
+    }
+
+    private static Option<Cause> unindexable(String alias, long hotBytes, long hotCount, long maxEventSize) {
+        var capacity = RingGeometry.maxCapacity(RingGeometry.firstSegmentBytes(hotBytes, maxEventSize));
+
+        return hotCount > capacity
+               ? Option.<Cause> some(new StreamDeclarationError.RetentionCountUnindexable(alias, hotCount, capacity))
+               : none();
     }
 
     /// The first refusal of `parts`, else `parsed`: the typed cause of one key, never a composite of several.

@@ -1046,6 +1046,28 @@ class CapacityControlledLifecycleTest {
         assertThat(lookups.get()).isZero();
     }
 
+    /// k02: the generation a stamp is compared against is the CURRENT one (the accessor's), not zero. A dispatch of this very instance,
+    /// stamped under an earlier generation, is an earlier leadership's however young it is: after a lost-and-regained leadership both
+    /// observed, it is examined (looked up) although it is far younger than the create ceiling, and, still young, is not released.
+    @Test
+    void ownDispatchStampedUnderAnEarlierGeneration_isExaminedAfterARegain_evenWhenYoung() {
+        initialize(0);
+        var leading = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var own = clocked(CORE, leading::get, commands -> Promise.success(store.process(store.createBatch(commands))));
+        own.provisionNode(spec("first", "east")).await();
+        leading.set(false);
+        own.activation();
+        leading.set(true);
+        own.activation();
+
+        for (int pass = 0; pass < 2 * CapacityControlledLifecycle.ABSENCE_CONFIRMATIONS; pass++) {
+            own.reconcileInventory().await().unwrap();
+        }
+
+        assertThat(lookups.get()).as("the earlier generation's dispatch is looked up although young").isPositive();
+        assertThat(phaseOf("first")).as("young: not released").isEqualTo(AetherValue.CapacityReservationPhase.DISPATCHED);
+    }
+
     /// An earlier term's allocation is examined only after the new leader has inventoried every committed source: a source it could not
     /// list yet may be holding the instance.
     @Test

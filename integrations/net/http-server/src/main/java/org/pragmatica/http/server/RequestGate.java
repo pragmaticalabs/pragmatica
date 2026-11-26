@@ -107,7 +107,10 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
     private final ArrayDeque<Object> held = new ArrayDeque<>();
 
     /// A streamed request: its head, and its body on the way to the sink.
-    private record Streamed(io.netty.handler.codec.http.HttpRequest head, BodySink sink, BodyStream body) {}
+    private record Streamed(io.netty.handler.codec.http.HttpRequest head,
+                            HttpMethod method,
+                            BodySink sink,
+                            BodyStream body) {}
 
     RequestGate(HttpServerConfig config) {
         this.config = config;
@@ -202,16 +205,32 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
 
     /// Classifies the head; returns false when the request was refused.
     private boolean begin(ChannelHandlerContext ctx, io.netty.handler.codec.http.HttpRequest head) {
-        return switch (classifier.classify(headOf(head))) {
+        return HttpMethod.httpMethod(head.method().name()).fold(cause -> refuseUnknownMethod(ctx, cause),
+                                                                method -> classify(ctx, head, method));
+    }
+
+    /// #3679: a method the server does not recognize is answered 501 on the head, before the classifier (routing and
+    /// authorization by head) and before any body byte is read; the response does not echo the method.
+    private boolean refuseUnknownMethod(ChannelHandlerContext ctx, Cause cause) {
+        log.debug("Refusing a request with 501: {}", cause.message());
+
+        return refuse(ctx, writer -> writer.error(HttpStatus.NOT_IMPLEMENTED, "Method not implemented"));
+    }
+
+    private boolean classify(ChannelHandlerContext ctx,
+                             io.netty.handler.codec.http.HttpRequest head,
+                             HttpMethod method) {
+        return switch (classifier.classify(headOf(head, method))) {
             case Disposition.Reject reject -> refuse(ctx, reject.respond());
             case Disposition.Aggregate aggregate -> admit(ctx, head, aggregate);
-            case Disposition.Stream streamed -> beginStream(ctx, head, streamed);
+            case Disposition.Stream streamed -> beginStream(ctx, head, method, streamed);
         };
     }
 
     /// Starts streaming the body to the sink; returns false, since the request is never forwarded.
     private boolean beginStream(ChannelHandlerContext ctx,
                                 io.netty.handler.codec.http.HttpRequest head,
+                                HttpMethod method,
                                 Disposition.Stream streamed) {
         var sink = streamed.sink();
 
@@ -224,6 +243,7 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
         var bounds = streamed.bounds();
 
         stream = some(new Streamed(head,
+                                   method,
                                    sink,
                                    BodyStream.bodyStream(ctx.executor(),
                                                          ctx.channel(),
@@ -294,7 +314,7 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
     }
 
     private void complete(ChannelHandlerContext ctx, Streamed streamed, HttpHeaders trailers) {
-        var request = requestOf(streamed.head(), Headers.trailers(fieldMap(trailers)));
+        var request = requestOf(streamed.head(), streamed.method(), Headers.trailers(fieldMap(trailers)));
         var keepAlive = HttpUtil.isKeepAlive(streamed.head());
         var writer = new NettyHttpServer.NettyResponseWriter(ctx,
                                                              request.requestId(),
@@ -494,14 +514,15 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
         channel.closeFuture().addListener(_ -> deadline.cancel(false));
     }
 
-    private static HttpRequest headOf(io.netty.handler.codec.http.HttpRequest head) {
-        return requestOf(head, Headers.empty());
+    private static HttpRequest headOf(io.netty.handler.codec.http.HttpRequest head, HttpMethod method) {
+        return requestOf(head, method, Headers.empty());
     }
 
     /// The request as a streamed body's sink gets it: the head and `trailers`, with an empty body.
-    private static HttpRequest requestOf(io.netty.handler.codec.http.HttpRequest head, Headers trailers) {
+    private static HttpRequest requestOf(io.netty.handler.codec.http.HttpRequest head,
+                                         HttpMethod method,
+                                         Headers trailers) {
         var target = RequestTarget.lenientTarget(head.uri());
-        var method = HttpMethod.httpMethod(head.method().name()).or(HttpMethod.GET);
 
         return new HeadRequest(IdGenerator.generate("req"),
                                method,

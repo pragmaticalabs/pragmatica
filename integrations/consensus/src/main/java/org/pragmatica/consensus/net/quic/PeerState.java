@@ -781,6 +781,11 @@ public final class PeerState {
         return reconcileCurrentDelayMs;
     }
 
+    /// Time (ms, the reconciler's clock) of the last dial the backoff allowed, 0 if none; intended for tests/diagnostics.
+    public synchronized long reconcileLastAttemptMs() {
+        return reconcileLastAttemptMs;
+    }
+
     private void changePhase(Phase next, long nowNanos, String cause) {
         var from = this.phase;
 

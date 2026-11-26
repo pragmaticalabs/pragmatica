@@ -128,11 +128,18 @@ public final class TerraHttpServer {
                          : "draining".getBytes(java.nio.charset.StandardCharsets.UTF_8),
                          CommonContentType.TEXT_PLAIN);
         } else if (admission.admit()) {
-            dispatch(request).recover(_ -> HttpResponseData.httpResponseData(500, "Internal server error"))
+            dispatch(request).recover(_ -> TerraProblem.response(HttpStatus.INTERNAL_SERVER_ERROR,
+                                                                 "Internal server error",
+                                                                 request.path(),
+                                                                 request.requestId()))
                     .flatMap(response -> write(writer, response))
                     .withResult(admission::complete);
         } else {
-            writer.error(HttpStatus.SERVICE_UNAVAILABLE, "Terra is not accepting requests");
+            TerraProblem.write(writer,
+                               HttpStatus.SERVICE_UNAVAILABLE,
+                               "Terra is not accepting requests",
+                               request.path(),
+                               request.requestId());
         }
     }
 

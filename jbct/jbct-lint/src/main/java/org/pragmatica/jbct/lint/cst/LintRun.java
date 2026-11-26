@@ -37,6 +37,7 @@ import org.pragmatica.jbct.lint.cst.RunOutcome.Line;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Verdict;
 import org.pragmatica.jbct.lint.cst.RunOutcome.Withheld;
 import org.pragmatica.jbct.lint.cst.RunOutcome.WouldChange;
+import org.pragmatica.jbct.lint.cst.RunOutcome.Refused;
 import org.pragmatica.jbct.lint.cst.RunOutcome.WriteFailed;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.Java25Parser;
@@ -212,7 +213,7 @@ public final class LintRun {
     }
 
     private static boolean unfinished(FileResult file) {
-        return failed(file.lint()) || failed(file.format()) || file.format() instanceof WriteFailed;
+        return failed(file.lint()) || failed(file.format()) || file.format() instanceof WriteFailed || file.format() instanceof Refused;
     }
 
     private static boolean failed(LintOutcome outcome) {
@@ -232,7 +233,7 @@ public final class LintRun {
                            count(outcomes, SkippedByMode.class),
                            count(outcomes, ReadFailed.class),
                            count(outcomes, ParseFailed.class),
-                           count(outcomes, WriteFailed.class));
+                           count(outcomes, WriteFailed.class) + count(outcomes, Refused.class));
     }
 
     private static int count(List<?> outcomes, Class<?> kind) {

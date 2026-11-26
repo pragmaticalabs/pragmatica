@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.slice.stream.DeclarationBounds;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
@@ -158,6 +159,83 @@ public sealed interface StreamDeclarationError extends Cause {
         }
     }
 
+    /// `hot.max_bytes` or `hot.max_count` below two seal runs (#3333, S2a1 section 2.2): a hot window that cannot hold two
+    /// seal runs is refused at parse, never clamped up. `dimension` is the key (`hot.max_bytes` or `hot.max_count`), `declared`
+    /// its value (the default counts when the key is not written) and `minimum` the smallest value that clears the check.
+    record HotWindowBelowSealRuns(String alias, String dimension, long declared, long minimum) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares " + dimension
+                 + " = " + declared
+                 + ", below two seal runs: the smallest valid " + dimension
+                 + " is " + minimum;
+        }
+    }
+
+    /// `hot.max_bytes` below `max_event_size` (#3333, S2a1 section 2.2): no ring of the stream could accept a maximal event.
+    /// Checked after [HotWindowBelowSealRuns]. The create-time twin is `StreamError.HotWindowBelowMaxEvent` in `aether-stream`,
+    /// which this module cannot see; it stays the second line.
+    record HotWindowBelowMaxEvent(String alias, long hotMaxBytes, long maxEventSize) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares hot.max_bytes = " + hotMaxBytes
+                 + ", below max_event_size = " + maxEventSize
+                 + ": no ring of the stream could accept one maximal event; the smallest valid hot.max_bytes is " + maxEventSize;
+        }
+    }
+
+    /// A replay-window share below the seal or ring floor (#3333, S2a1 section 2.2): `arm` is the check that failed, `setBy`
+    /// the `retention` key whose value sets the share, `share` the per-partition value compared (bytes; records for the count
+    /// arm), `minimum` what it is compared against and `smallestValid` the smallest value of `setBy` that clears the arm for
+    /// this partition count. Refused rather than clamped up.
+    record RetentionShareTooSmall(String alias,
+                                  DeclarationBounds.Arm arm,
+                                  String setBy,
+                                  long share,
+                                  long minimum,
+                                  long smallestValid) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares " + setBy
+                 + " so small that the per-partition share is " + share + unitOf(arm)
+                 + ", below " + floorOf(arm)
+                 + " (" + minimum + unitOf(arm)
+                 + "): the smallest valid " + setBy
+                 + " is " + smallestValid;
+        }
+
+        private static String unitOf(DeclarationBounds.Arm arm) {
+            return arm == DeclarationBounds.Arm.COUNT
+                   ? " records"
+                   : " bytes";
+        }
+
+        private static String floorOf(DeclarationBounds.Arm arm) {
+            return switch (arm) {
+                case BYTE -> "two merged segments";
+                case COUNT -> "two seal runs";
+                case EVENT -> "max_event_size";
+            };
+        }
+    }
+
+    /// `hot.max_count` above the index capacity of the ring's first data region (#3333, S2a1 section 2.2): `maxCapacity` is
+    /// `RingGeometry.maxCapacity(firstSegmentBytes(hot.max_bytes, max_event_size))`. A separate record from
+    /// `StreamError.RetentionCountUnindexable` in `aether-stream` (the create-time check), which this module cannot see; the
+    /// retention `max_count` is not what is checked.
+    record RetentionCountUnindexable(String alias, long maxCount, long maxCapacity) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares hot.max_count = " + maxCount
+                 + ", above the indexable ring capacity " + maxCapacity
+                 + " of its first data region";
+        }
+    }
+
     /// A key whose release has not merged yet (#3333, T-146): refused instead of accepted and ignored, so no declaration is
     /// stored that nothing enforces. The release that lands the behaviour removes the refusal.
     record NotYetAvailable(String alias, String key, String release) implements StreamDeclarationError {
@@ -223,6 +301,19 @@ public sealed interface StreamDeclarationError extends Cause {
                  + "' declares both " + newKey
                  + " and " + oldKey
                  + ": declare retention in the [retention] block only and remove " + oldKey;
+        }
+    }
+
+    /// A `[[streams.<alias>.<name>]]` table array under a stream section (#3520): the section holds tables, and no part of the
+    /// parser reads an array of them, so it is refused as malformed instead of accepted and ignored. `name` is the full table
+    /// array name, as the TOML document reports it.
+    record TableArrayDeclared(String alias, String name) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' declares [[" + name
+                 + "]] as an array of tables: a stream section holds tables, so write it as [" + name
+                 + "]";
         }
     }
 

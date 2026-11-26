@@ -2,7 +2,7 @@
 
 Current checkpoint (2026-10-08): compiler, migrations, HTTP/authentication, executable assembly, and expanded examples are implemented. Nine distributions compile 21 original slice implementations. The sections below retain each increment's scope and evidence; [the example matrix](example-apps/README.md) describes current application support. Streams/entities remain explicitly unsupported, with an investigation and proposed next contract.
 
-Terra builds unchanged Aether slice sources into one JVM application. The application is selected by an Aether-format blueprint and assembled from factories generated for Terra. The initial deployment contract is one process per database. Existing Aether binaries are not a compatibility target.
+Terra builds unchanged Aether slice sources into one JVM application. The application is selected by an Aether-format blueprint and assembled from factories generated for Terra. The initial deployment contract is one JVM process per application instance; several instances may share a database, serialised only at migration time by the database fence (see Database startup). Existing Aether binaries are not a compatibility target.
 
 ## First increment acceptance contract
 
@@ -14,7 +14,7 @@ This increment establishes the compiler and executable composition path. It must
 4. Resources retain a slice identity for configuration and release. Provisioning reuses the SPI with explicit configuration, not process-global singleton configuration. Concurrent acquisitions must be accounted for during failed startup: drain acquisitions before releasing all attempted scopes. Failed factory construction still releases its resources. Closing is idempotent and rejects new topic publications before draining accepted deliveries and releasing resources.
 5. Local pub-sub is ephemeral fan-out. A publication snapshots the registered handlers, invokes every handler once, and completes only after all handlers settle. Any failure fails the publication after all results are collected. There is no persistence, retry, deduplication, replay, cross-process delivery, or total ordering across concurrent publications. No subscribers means successful delivery to an empty set. Payload objects are shared by reference and must be treated as immutable. Subscriber defects become failed promises. Recursive publication is supported while the application is running; draining rejects newly initiated publications.
 6. Existing `Publisher<T>` and single-payload `Subscriber` annotations are supported. Topic names are resolved consistently for publishers/subscribers from explicit topic configuration or typed constants. Durable topics, streams, schedules, durable entities, context-carrying subscribers, transitive reactive methods, and live config notifications are rejected in this increment. They must never silently become no-ops.
-7. Configuration is supplied explicitly to each slice by the embedding application. It can differ between slices; there is no merging of JAR-local `resources.toml` files. Local cache and other SPI factories may be provided. Missing configuration/factories fail startup. Distributed cache/idempotency modes are not automatically converted to local modes. No automatic schema migration is claimed until the shared migration engine milestone lands.
+7. Configuration is supplied explicitly to each slice by the embedding application. It can differ between slices; there is no merging of JAR-local `resources.toml` files. Local cache and other SPI factories may be provided. Missing configuration/factories fail startup. Distributed cache/idempotency modes are not automatically converted to local modes: the backend-selection seam refuses `dht` on Terra with a typed `BackendUnavailable` at slice start (#3658). No automatic schema migration is claimed until the shared migration engine milestone lands.
 8. Existing generated `SliceRouterFactory` adapters remain usable with Terra-created typed instances. Tests must demonstrate Catalog routing through that adapter. Network listener security, cross-slice route composition, and graceful HTTP draining belong to the listener milestone.
 
 ## Build and verification
@@ -29,11 +29,11 @@ Extract the execution/history portion of `aether-deployment/schema` into a share
 
 1. `aether/db-migrations` owns execution, parsing, dialect selection, and history evolution. Its API uses neutral script data and a versionless owner coordinate, with no dependency on Aether deployment, blueprint loading, consensus, or management HTTP. Aether retains a compatibility adapter for its policy, result, and error types; no persisted schema format or existing execution algorithm is changed by the extraction.
 2. Terra can start an exploded application from a blueprint file and its sibling `schema/` directory. Layout and UTF-8 CRC32 checksums match Aether blueprint packaging: `schema/*.sql` belongs to `database`, and `schema/<name>/*.sql` belongs to `database.<name>`. Migration-bearing applications require a versioned blueprint `id`; its versionless coordinate is the persisted owner. Invalid selection or migration filenames fail before database provisioning.
-3. Terra provisions migration connectors through the existing datasource SPI with explicit configuration. It serializes all startup migration attempts in the process, including aliases and separate application objects. It releases each connector before proceeding. An attempt retains its place in the queue until SQL and cleanup actually settle, even if a caller stops waiting or times out. No automatic retry or cross-process coordination is added.
+3. Terra provisions migration connectors through the existing datasource SPI with explicit configuration. It serializes all startup migration attempts in the process, including aliases and separate application objects. It releases each connector before proceeding. An attempt retains its place in the queue until SQL and cleanup actually settle, even if a caller stops waiting or times out. Terra adds no exclusion of its own across processes: that comes from the shared engine's database fence, and the one retry Terra adds is the wait-and-re-run of a run that met the fence held (#2787; see Database startup).
 4. All migrations and their cleanup finish before any slice constructor runs. Failure prevents readiness and construction. Successful application objects expose per-datasource migration counts, current versions, and elapsed times. Schema changes remain committed if subsequent slice construction fails; restarting rechecks existing history.
 5. Recompile the unchanged ecommerce InventoryService source and exercise its SQL calls after startup migration against a real PostgreSQL instance. Tests must also establish repeated-start idempotence, checksum/owner rejection, transactional failure behavior, migration-before-construction ordering, and failed-attempt cleanup/queue behavior. Existing Aether manager and schema route tests must exercise the shared engine through the adapter.
 
-This increment does not add a schema administration CLI, a JAR resolver, production HTTP hosting, or application-wide automatic retry. Recovery is to correct the reported configuration/script/ownership problem and start again once the previous attempt has actually settled; applied versioned scripts must not be edited.
+This increment does not add a schema administration CLI, a JAR resolver, production HTTP hosting, or application-wide automatic retry (the wait-and-re-run on a held database fence came later, #2787; see Database startup). Recovery is to correct the reported configuration/script/ownership problem and start again once the previous attempt has actually settled; applied versioned scripts must not be edited.
 
 ## Subsequent assembly and HTTP milestones
 
@@ -85,7 +85,7 @@ Executed on 2026-10-07:
 - Explicit format/lint gates passed for `aether/db-migrations`, `aether/aether-deployment`, `terra/runtime`, and `terra/examples`; the node module check also passed. The processor’s pre-existing rc4 lint debt described above remains unchanged.
 - `git diff --check` passed. The isolated PostgreSQL instance was stopped after validation.
 
-This is **605 focused tests** for the second increment. Container-dependent Aether database tests and Forge/multi-node validation were not part of this run. No cross-process exclusion, other-dialect live proof, production HTTP listener, or executable-distribution claim is made. No migration execution/history algorithm was intentionally changed during extraction; existing engine limitations (including nontransactional checkpoint crash windows) remain.
+This is **605 focused tests** for the second increment. Container-dependent Aether database tests and Forge/multi-node validation were not part of this run. No Terra-level cross-process exclusion test at this checkpoint (added later by #2787: `TerraMigrationsFenceTest`), other-dialect live proof, production HTTP listener, or executable-distribution claim is made. No migration execution/history algorithm was intentionally changed during extraction; existing engine limitations (including nontransactional checkpoint crash windows) remain.
 
 
 ## HTTP hosting milestone
@@ -164,7 +164,7 @@ The live ecommerce proof exposed unsupported `Instant` arguments in shared JDBC 
 | Keyed interceptors | DONE | Terra generation registers `TypeToken`; the original banking account methods compile and sequential credit/read/transfer operations pass with LOCAL caching. |
 | Application-only embedding | DONE | `TerraLaunchPlan.startApplication()` uses the same migration/construction path; banking, step, and persistence tests await owned close. |
 | Shared defects discovered by examples | DONE | JDBC Instant normalization; native PostgreSQL generic conversion preserving binary/text format; cache-aside population and write-around invalidation awaited before business completion. Shared tests and live examples pass. |
-| Streams/entities investigation | DONE | `STREAMS-AND-ENTITIES.md` traces local WAL, consumer cursors, entity state machine, timers, codec and ownership requirements. It labels the next contract as proposed, with no implemented Terra durability claim. |
+| Streams/entities investigation | DONE | [`RFC-0020`](../docs/rfc/RFC-0020-terra-streams-and-entities.md) (moved from `STREAMS-AND-ENTITIES.md`; partly superseded by #2099 and #2100) traces local WAL, consumer cursors, entity state machine, timers, codec and ownership requirements. It labels the next contract as proposed, with no implemented Terra durability claim. |
 
 Executed on 2026-10-08 using JDK 25, the isolated Maven repository, and local PostgreSQL 14.20:
 
@@ -174,7 +174,7 @@ Executed on 2026-10-08 using JDK 25, the isolated Maven repository, and local Po
 - Existing stream/entity feasibility suites: **69 tests passed**, independently of Terra. No Terra stream/entity or replicated-availability proof is implied.
 - Touched runtime, launcher, JDBC resource, and interceptor JBCT gates passed. Normally skipped legacy gates were also examined: processor retains the baseline 38 lint/10 formatting failures, JDBC integration retains five lint failures, and the touched native PostgreSQL converter retains 43 lint failures. Exported baseline comparisons found no added lint failures; changed/new production files are formatted. These legacy checks are not reported as green.
 
-The cache change orders sequential maintenance; it does not provide concurrent read/write coherence or a forced maintenance timeout. Original example sources remain authoritative: comprehensive persistence still rejects nullable columns mapped to required fields, and banking's transfer history remains in memory. Windows execution, cloud/Forge, multi-node startup, cross-process migration exclusion, and stream/entity durability are outside this validation.
+The cache change orders sequential maintenance; it does not provide concurrent read/write coherence or a forced maintenance timeout. Original example sources remain authoritative: comprehensive persistence still rejects nullable columns mapped to required fields, and banking's transfer history remains in memory. Windows execution, cloud/Forge, multi-node startup, and stream/entity durability are outside this validation; cross-process migration exclusion was added later (#2787, see Database startup).
 
 The downstream `aether/node -am install -DskipTests` reactor passed after the shared fixes, with no skipped modules.
 
@@ -189,3 +189,79 @@ After boundary hardening, `mvn -o -T 1 -f terra/pom.xml clean install -Dterra.te
 A compiler regression reproduced a stream resource accepted through an injected plain step: the shared `PlainInterfaceModel.dependencies` list is currently empty. Terra now inspects the same static factory parameters used by shared generation. Parameterized tests require explicit refusal of nested `StreamPublisher`, `StreamAccess`, and durable-entity resources. This change is Terra-only and does not change Aether's factory/envelope output. The changed descriptor's explicit JBCT check passes with zero lint errors or format issues.
 
 Final compiler validation passed **367 tests**. All 20 application child modules then clean-built successfully with that compiler; this last assembly-only run skipped tests, following the successful 64-test full Terra run above. The isolated PostgreSQL test cluster was stopped after verification. No original `examples/` sources were modified.
+
+## Embedding, SPI and descriptor reference
+
+Moved from the user README (#2800). This section is reference for embedders and processor users; the increment contracts and reconciliations above remain the acceptance record, and [the README](README.md) is the user guide.
+
+### Example module and demo
+
+`terra-examples` adds the existing Catalog, ecommerce PricingService and InventoryService, and shared value-type source directories to a separate compilation. Their business code is unchanged. Additional Shop, Counter, Events, and Sink slices demonstrate dependency injection, LOCAL caching, publisher/subscriber generation, and direct, `Option`, `Result`, and `Promise` factory returns.
+
+The [example blueprint](examples/src/main/resources/blueprint.toml) selects six slices. The test invokes Catalog's generated HTTP router and PricingService, then exercises Shop's direct dependencies and delivery to Sink. The runnable demo publishes once and closes the application.
+
+From the repository root, using Java 25 with preview enabled and the repository's normal Maven bootstrap completed:
+
+```sh
+mvn -pl terra/examples -am install -DskipTests
+mvn -pl terra/runtime,terra/examples,jbct/slice-processor test
+mvn -pl terra/examples dependency:build-classpath -Dmdep.outputFile=/tmp/terra-classpath
+java --enable-preview -cp "terra/examples/target/classes:$(cat /tmp/terra-classpath)" org.pragmatica.terra.example.TerraDemo
+```
+
+Follow the repository's isolated Maven repository instructions in `CLAUDE.md`. The demo prints a successful delivery and exits; it does not bind a network port or require a database.
+
+### Compilation and embedding
+
+Use `slice-processor` with these javac options and include `terra-runtime` on the compilation/runtime classpath:
+
+```text
+-Aslice.target=terra
+-Aslice.groupId=com.example
+-Aslice.artifactId=application
+-Aslice.version=1.0.0
+```
+
+Terra shares annotation analysis, resource injection, factory return handling, interception, and route generation with the default Aether target. For `OrderService`, it emits `OrderServiceFactory` accepting `TerraContext` and a `TerraFactory` service descriptor identified by `com.example:application-order-service:1.0.0`. Compile the targets into separate output directories. Generated Terra factories omit Aether dispatch proxies, wire codecs, and `Slice` adapters.
+
+`TerraBlueprint.parse(toml)` returns the application selection. `TerraApplication.start(blueprint, configurationForArtifact)` discovers generated descriptors and provisions resources through the existing SPI. The overload accepting descriptors and a `ResourceProviderFacade` supports explicit embedding. Retrieve an entry point with `application.slice(MySlice.class)` and await `application.close()` during shutdown.
+
+Every selected dependency must appear in the blueprint with its exact generated coordinate. Dependencies are constructed first; injected instances retain their interceptor wrappers. The implementation accepts blueprint identity and slice selection, including deployment-only scaling fields, and refuses unsupported sections. One instance is created per selected slice. The assembler obtains Terra-built candidate JARs from Maven runtime dependencies and checks this selection.
+
+Configuration is explicit and scoped per slice. Supply resource sections through the configuration provider. The executable launcher reads each owning JAR’s defaults separately; embedding callers supply their own providers. Existing LOCAL cache factories are reused. Other SPI resources require their dependencies and configuration; database startup uses the explicit migration path below, while distributed collaborators remain outside Terra’s supported runtime.
+
+### Pub-sub contract
+
+Existing typed topics, `Publisher<T>` resources, and single-payload subscriber annotations work without source changes. Topic configuration resolves `topic_name`, falling back to the section/typed topic name. Only ephemeral durability is accepted.
+
+A publication invokes every handler in its subscriber snapshot and waits for all results, even if a handler fails. No subscribers is success. Handlers receive the same payload reference and must treat it as immutable. Concurrent publications have no total ordering. There is no persistence, replay, retry, deduplication, or cross-process delivery.
+
+Publication is admitted only after all slices and subscriptions are ready. Closing rejects new publications, drains accepted deliveries, then releases resources in reverse construction order. Callers must stop other entry points before closing; arbitrary direct calls are not automatically drained. Handlers that never complete prevent a graceful drain.
+
+Single-payload subscriptions on injected plain-interface steps bind to the exact instance used by the slice. Streams, schedules, durable entities/topics, context-carrying subscribers, and live configuration callbacks are refused, including unsupported resources nested in steps. [Streams and durable entities](../docs/rfc/RFC-0020-terra-streams-and-entities.md) records reusable storage code and a proposed next contract; it does not claim implemented support. The HTTP host below supplies listener lifecycle, authentication, route composition, and draining for the generated typed routers.
+
+### Database startup
+
+Terra reuses [the shared migration engine](../aether/db-migrations/README.md), also called by Aether. It preserves the existing `aether_schema_history`, history metadata, and owner tables. Supply a versioned blueprint identity, for example `id = "com.example:inventory-app:1.0.0"`; the persisted owner is `com.example:inventory-app`, so upgrading the application version retains ownership.
+
+For an exploded application, place SQL under `schema/` next to `blueprint.toml`. `schema/V001__tables.sql` uses the `database` configuration section; `schema/orders/V001__tables.sql` uses `database.orders`. Filenames and UTF-8 CRC32 checksums follow Aether’s blueprint format. Call:
+
+```java
+TerraApplication.start(blueprintPath, configurationForSlice, migrationConfiguration)
+```
+
+This loads and validates the migration inputs, validates slice selection, migrates each datasource, closes the migration connections, then constructs slices. The embedding overload accepting a `TerraMigrations` plan supports application-specific packaging. The original `start(TerraBlueprint, ...)` overload without a migration plan remains for applications with no migrations; it cannot discover files without a path.
+
+Include the desired SQL resource factory, connection pool, and JDBC driver. The example module explicitly includes `resource-db-jdbc` and HikariCP; its PostgreSQL test adds the driver. Supply `database.jdbc_url` through the configuration provider. Migration and slice configuration should point at the same database when they share a schema.
+
+`application.migrations()` reports the applied count, current version, and duration for each datasource. All startup migrations are serialized within the JVM, including datasource aliases. Across processes the guarantee is the shared engine's database fence (`SchemaMigrations.migrate` runs under `MigrationFence.acquire`, the same path Aether uses). On PostgreSQL it is `pg_try_advisory_lock(0x41455448, 1)`, per database, held on one pinned session for the whole run and released when that session closes; MySQL/MariaDB (`GET_LOCK`), H2, SQL Server and Oracle take an equivalent session lock. While one process holds it, a second process's migration runs and reads nothing and ends with `MigrationFencedInDatabase` naming the holder; Terra treats that as no failure of the second instance: it waits 15 s and then 45 s between re-runs, for as long as the holder's session lives, logging a warning naming the holder from the third consecutive wait, and its re-run finds the migrations applied and applies none. What this guarantees, per operation: at most one session runs a datasource's scripts at a time while it holds the fence; a script already in the history is not re-run. A holder that dies inside a script with non-transactional statements (its history recorded separately, see the checkpoint limitation below) can lead to a re-run of that script by the next session. The wait has no timeout: a holder that never ends keeps the waiting startup waiting; to end it, terminate the holder's database session (the log names it). CockroachDB, DB2 and SQLite have no session lock; there each script's transaction takes a per-script lock, which guarantees only that a script's statements and history row commit at most once, and no instance is held out, so none waits. The fence covers the migration run only: it does not coordinate running slices, and pub-sub stays in-process. Two instances against live PostgreSQL, through JDBC and pg-async, are exercised by `terra/runtime/src/test/java/org/pragmatica/terra/TerraMigrationsFenceTest.java` (one applies, the other waits and applies none, the script is entered once); the backoff and its production wiring by `TerraMigrationsHeldRetryTest`; the fence itself by the `aether/db-migrations` tests. Other engines are not covered by a Terra test. Any other migration failure still fails startup and is not retried. No retry or timeout advances the migration queue while SQL or connection cleanup remains outstanding.
+
+On failure, startup returns the cause and creates no slices. Correct the configuration, ownership, or unapplied script and restart after the previous attempt settles. Never edit an already-applied versioned script; publish another migration. A successfully migrated schema remains committed if later slice construction fails. Nontransactional migrations retain the engine’s statement checkpoints and its existing crash-window limitation: a committed statement whose checkpoint was not saved may run again on restart.
+
+Run the PostgreSQL proof against a local test database (the test creates and drops only uniquely named test schemas):
+
+```sh
+mvn -pl terra/examples test -Dterra.test.jdbcUrl='jdbc:postgresql://localhost:5432/test_database?user=test_user'
+```
+
+Without that property, the PostgreSQL test is explicitly skipped. The proof covers InventoryService SQL calls, a schema query during factory construction, restart idempotence, checksum and ownership refusal, and transactional DDL/history rollback. Unit tests separately pin startup failure and queue retention across caller timeouts and cleanup failure.
