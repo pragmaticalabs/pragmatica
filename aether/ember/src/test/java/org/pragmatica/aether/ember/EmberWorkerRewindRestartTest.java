@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.function.BooleanSupplier;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -36,14 +37,15 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.engineKey;
 /// #3283 (G1): a worker-held DECLARED consumer is restarted when its group is rewound, through the node's own wiring
 /// (`StreamAssembly` passes `CommittedCursorRead.committedEpochs` to `StreamConsumerManager`).
 ///
-/// 3 cores and 1 worker. The slice is a real jar in a staged repository (see [WorkerConsumerSlice]) deployed WORKERS_ONLY, so the worker loads it,
-/// writes its own ACTIVE row, and its `StreamConsumerManager` attaches the declared partition through its real runtime. A checkpoint with a newer
+/// 3 cores and 3 workers (the shape of `EmberWorkerStreamConsumerTest`, whose fixture run is green). The slice is a real jar in a staged repository
+/// (see [WorkerConsumerSlice]) deployed WORKERS_ONLY, so the one worker the system picks loads it, writes its own ACTIVE row, and its `StreamConsumerManager` attaches the declared partition through its real runtime. A checkpoint with a newer
 /// rewind epoch is then committed through the leader under the committed assignment's token, as a projection rebuild does. A worker's replica
 /// excludes cursor checkpoints and it gets no put notification for one, so only the reconcile pass's committed-epoch source can see the rewind:
 /// the worker's consumer must restart and run under the rewound epoch.
 @PortBudget
 class EmberWorkerRewindRestartTest {
     private static final int CORES = 3;
+    private static final int WORKERS = 3;
     private static final int SLOTS = 2 * CORES;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_OFFSET = 80;
@@ -90,14 +92,16 @@ class EmberWorkerRewindRestartTest {
         slice = WorkerConsumerSlice.stagedAt(stagedRoot, SLICE);
         cluster = EmberTestPorts.startedCluster(PORTS, this::stagedCluster, START_BOUND);
         awaitUntil(() -> cluster.currentLeader().isPresent(), WAIT_BOUND_MS, "a leader is elected");
-        var worker = startedWorker();
+        var workers = IntStream.range(0, WORKERS)
+                               .mapToObj(_ -> startedWorker())
+                               .toList();
 
-        awaitUntil(() -> leader().membershipFsm().workerCountedMembers().contains(worker),
+        awaitUntil(() -> leader().membershipFsm().workerCountedMembers().containsAll(workers),
                    WAIT_BOUND_MS,
-                   "the leader counts " + worker.id() + " as a worker member");
+                   "the leader counts every worker as a worker member: " + workers);
         StreamTripwireSupport.createStream(leader(), StreamTripwireSupport.smallRingStream(STREAM, 1, 1_000L, 3_600_000L));
         slice.deployOnWorkers(leader());
-        slice.awaitActiveWorker(this::leader, List.of(worker), WAIT_BOUND_MS, this::diagnostics);
+        var worker = slice.awaitActiveWorker(this::leader, workers, WAIT_BOUND_MS, this::diagnostics);
         WorkerConsumerSlice.commit(leader(),
                                    registrationKey(),
                                    AetherValue.StreamRegistrationValue.streamRegistrationValue(worker, GROUP, false, "java.lang.String"));
