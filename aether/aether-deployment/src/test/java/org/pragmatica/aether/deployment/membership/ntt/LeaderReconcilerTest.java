@@ -1407,6 +1407,31 @@ class LeaderReconcilerTest {
             assertThat(reconciler.inFlightProvisioningKeys()).as("a stale pass must not settle a placeholder of the next term").containsExactly(PEER_A);
         }
 
+        /// The stop path reads the configured target while it clears the term's state (the leadership-loss record): by then the term's
+        /// lifetime must already be ended, so a body that read its flag late finds an ended term with nothing left to act on.
+        @Test
+        void deactivate_endsTheLifetimeBeforeItClearsAnything() {
+            var reads = new AtomicInteger();
+            var armedTaskLiveAtARead = new AtomicBoolean();
+
+            configuredCoreCount.set(5);
+            reconciler.activate();
+            var activation = scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst();
+            configuredCoreCount.onRead(() -> observeLifetimeAtRead(activation, reads, armedTaskLiveAtARead));
+
+            reconciler.deactivate();
+
+            assertThat(reads.get()).as("the stop path reads the target while it clears").isPositive();
+            assertThat(armedTaskLiveAtARead.get()).as("the lifetime ended before the first clearing read").isFalse();
+        }
+
+        private void observeLifetimeAtRead(ManualTask armed, AtomicInteger reads, AtomicBoolean armedTaskLive) {
+            reads.incrementAndGet();
+            if (!armed.cancelled()) {
+                armedTaskLive.set(true);
+            }
+        }
+
         @Test
         void armedLatch_staleBodyAfterRestart_leavesTheNextTermUnarmed() {
             configuredCoreCount.set(5);
@@ -5253,6 +5278,7 @@ class LeaderReconcilerTest {
 
     private static final class MutableIntSupplier implements IntSupplier {
         private final AtomicInteger value;
+        private volatile Runnable onRead = () -> {};
 
         MutableIntSupplier(int initial) {
             this.value = new AtomicInteger(initial);
@@ -5260,7 +5286,14 @@ class LeaderReconcilerTest {
 
         @Override
         public int getAsInt() {
+            onRead.run();
             return value.get();
+        }
+
+        /// Runs `hook` on every read: the stop path reads the target mid-way through its own clearing, which no other seam reaches.
+        @Contract
+        void onRead(Runnable hook) {
+            onRead = hook;
         }
 
         @Contract
