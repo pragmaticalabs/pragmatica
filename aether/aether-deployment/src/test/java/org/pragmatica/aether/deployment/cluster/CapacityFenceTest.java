@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -14,6 +15,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.Function;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
@@ -40,6 +43,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #3754 C1, lane (a): a leader-only external effect (terminate, and the create's dispatch) is issued only in the continuation of an
 /// accepted leader transaction this node committed for it, and only while ONE accessor, [CapacityControlledLifecycle#activation],
@@ -207,6 +211,40 @@ class CapacityFenceTest {
         return store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, AetherValue.CapacityLedgerValue.class).unwrap();
     }
 
+    private Option<AetherValue> reservation() {
+        return store.get(new AetherKey.CapacityReservationKey(NODE));
+    }
+
+    /// The reservation before the terminate, with the control that there is one to keep (an absent-equals-absent check would be vacuous).
+    private Option<AetherValue> reservationToKeep() {
+        var reservation = reservation();
+
+        assertThat(reservation.isPresent()).as("control: there is a reservation to keep").isTrue();
+        return reservation;
+    }
+
+    /// F5: a refusal mutates nothing (the witness carries an empty mutation list): the reservation and the ledger, with its version, are
+    /// exactly what they were before the terminate.
+    private void assertRefusalLeftTheStoreUntouched(Option<AetherValue> reservationBefore, AetherValue.CapacityLedgerValue ledgerBefore) {
+        assertThat(reservation()).as("the reservation is as it was before the refusal").isEqualTo(reservationBefore);
+        assertThat(ledger()).as("the ledger and its version are unchanged after the refusal").isEqualTo(ledgerBefore);
+    }
+
+    /// A lifecycle whose witness transaction is answered by `answer` (given the witness's transaction id) instead of by the store; every
+    /// other command goes to the store as usual.
+    private CapacityControlledLifecycle answeringWitnessWith(Function<String, List<Object>> answer) {
+        return CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, commands -> commands.stream().filter(CapacityFenceTest::isWitness)
+                                                                                                                  .findFirst()
+                                                                                                                  .map(witness -> Promise.success(answer.apply(((KVCommand.LeaderTransaction<?, ?>) witness).transactionId())))
+                                                                                                                  .orElseGet(() -> apply(commands)),
+            leading::get, () -> 5, SourceProfile.DEFAULT_REPLACEMENT_CEILING, epoch::get, nano::get, FIVE_SECONDS);
+    }
+
+    private static void assertRefusedAs(Result<Unit> outcome, RefusalKind kind) {
+        assertFailsWith(outcome, FenceFailure.LeadershipNotWitnessed.class);
+        outcome.onFailure(cause -> assertThat(cause).isEqualTo(FenceFailure.LeadershipNotWitnessed.leadershipNotWitnessed(kind)));
+    }
+
     private Result<Unit> terminate() {
         return lifecycle.terminateNode(NODE, EAST, "binding").await();
     }
@@ -223,6 +261,8 @@ class CapacityFenceTest {
     @Test
     void terminate_underAStoreNamingAnotherLeader_failsWithLeaderRefusal_andCallsNoProvider() {
         terminable();
+        var reservationBefore = reservationToKeep();
+        var ledgerBefore = ledger();
         beforeWitness = () -> replaceLeader(new LeaderValue(SUCCESSOR, 2));
 
         var outcome = terminate();
@@ -230,6 +270,7 @@ class CapacityFenceTest {
         assertFailsWith(outcome, FenceFailure.LeadershipNotWitnessed.class);
         outcome.onFailure(cause -> assertThat(cause).isEqualTo(FenceFailure.LeadershipNotWitnessed.leadershipNotWitnessed(RefusalKind.LEADER)));
         assertThat(terminates.get()).as("no provider call").isZero();
+        assertRefusalLeftTheStoreUntouched(reservationBefore, ledgerBefore);
     }
 
     /// TA1p: stored leader, unchanged reservation: exactly ONE provider call, and the guard (the reservation exactly as `records()` read it)
@@ -248,6 +289,8 @@ class CapacityFenceTest {
     @Test
     void terminate_whenTheReservationIsReleasedBetweenTheReadAndTheWitness_failsWithWitnessRefusal_andCallsNoProvider() {
         terminable();
+        reservationToKeep();
+        var ledgerBefore = ledger();
         beforeWitness = this::releaseReservation;
 
         var outcome = terminate();
@@ -255,6 +298,8 @@ class CapacityFenceTest {
         assertFailsWith(outcome, FenceFailure.LeadershipNotWitnessed.class);
         outcome.onFailure(cause -> assertThat(cause).isEqualTo(FenceFailure.LeadershipNotWitnessed.leadershipNotWitnessed(RefusalKind.WITNESS)));
         assertThat(terminates.get()).as("no provider call").isZero();
+        // the release is the competing writer's: the refusal leaves the reservation released and the ledger as it was
+        assertRefusalLeftTheStoreUntouched(Option.none(), ledgerBefore);
     }
 
     /// TA1g: leadership lost and regained (both observed) between the submit and the accept: the witness is accepted, the continuation
@@ -262,12 +307,15 @@ class CapacityFenceTest {
     @Test
     void terminate_whenLeadershipIsLostAndRegainedBetweenSubmitAndAccept_failsWithActivationChanged_andCallsNoProvider() {
         terminable();
+        var reservationBefore = reservationToKeep();
+        var ledgerBefore = ledger();
         afterWitness = this::observedLossAndRegain;
 
         var outcome = terminate();
 
         assertFailsWith(outcome, FenceFailure.ActivationChanged.class);
         assertThat(terminates.get()).as("no provider call").isZero();
+        assertRefusalLeftTheStoreUntouched(reservationBefore, ledgerBefore);
     }
 
     // ---- TA1t, TA1c: the elapsed check ----
@@ -276,12 +324,15 @@ class CapacityFenceTest {
     @Test
     void terminate_whenTheElapsedTimeExceedsTheConfiguredApplyTimeout_failsWithWitnessExpired_andCallsNoProvider() {
         terminable();
+        var reservationBefore = reservationToKeep();
+        var ledgerBefore = ledger();
         afterWitness = () -> nano.addAndGet(6 * SECOND_NANOS);
 
         var outcome = terminate();
 
         assertFailsWith(outcome, FenceFailure.WitnessExpired.class);
         assertThat(terminates.get()).as("no provider call").isZero();
+        assertRefusalLeftTheStoreUntouched(reservationBefore, ledgerBefore);
     }
 
     /// TA1t, second case: the timeout is read from configuration, not a constant. With the default (30 s) a 6 s delay is healthy; with 5 s
@@ -343,6 +394,141 @@ class CapacityFenceTest {
 
         assertThat(outcome.isSuccess()).as("terminate: %s", outcome).isTrue();
         assertThat(terminates.get()).isEqualTo(1);
+    }
+
+    // ---- the witness answer, the port's own entry, the defaults (lane b gaps k12 k41 k19 k26 k33 k35 k36 k38) ----
+
+    /// k12: an accepted answer that carries ANOTHER transaction's id is not this witness's answer: the witness is refused (UNKNOWN: no
+    /// result of this transaction), the provider is never asked.
+    @Test
+    void terminate_whenTheAnswerCarriesAnotherTransactionId_refusesTheWitness_andCallsNoProvider() {
+        terminable();
+        lifecycle = answeringWitnessWith(_ -> List.of(new KVCommand.TransactionResult("another-transaction", true)));
+
+        var outcome = terminate();
+
+        assertRefusedAs(outcome, RefusalKind.UNKNOWN);
+        assertThat(terminates.get()).as("no provider call").isZero();
+    }
+
+    /// k41: an answer without the transaction (and, as the second case, a refused one that carries no kind) gives the UNKNOWN kind, not
+    /// a guessed LEADER.
+    @Test
+    void terminate_whenTheAnswerLacksTheTransactionOrItsRefusalKind_refusesWithUnknown() {
+        terminable();
+        lifecycle = answeringWitnessWith(_ -> List.of());
+        assertRefusedAs(terminate(), RefusalKind.UNKNOWN);
+
+        lifecycle = answeringWitnessWith(id -> List.of(new KVCommand.TransactionResult(id, false)));
+        assertRefusedAs(terminate(), RefusalKind.UNKNOWN);
+        assertThat(terminates.get()).as("no provider call").isZero();
+    }
+
+    /// k19: the stored leader at SUBMIT is another node: the port itself answers NotLeader and the effect never runs. The store accepts
+    /// a witness that names the stored leader, so only the submit-time `equals(self)` stands between the effect and a leader that is not
+    /// this node.
+    @Test
+    void fenced_whenTheStoreNamesAnotherLeaderAtSubmit_failsWithNotLeader_andRunsNoEffect() {
+        terminable();
+        replaceLeader(new LeaderValue(SUCCESSOR, 2));
+        var ran = new AtomicInteger();
+
+        var outcome = lifecycle.fenced(List.of(), () -> {
+            ran.incrementAndGet();
+            return Promise.success("ran");
+        }).await();
+
+        assertThat(outcome.isFailure()).as("fenced: %s", outcome).isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isEqualTo(FenceFailure.NotLeader.notLeader()));
+        assertThat(ran.get()).as("the effect did not run").isZero();
+    }
+
+    /// k26: the public port with NO guards still witnesses the leader: the leader replaced before the witness is applied refuses, and the
+    /// effect does not run. (`terminate` always passes one guard, so only this entry covers an empty guard list.)
+    @Test
+    void fenced_withNoGuards_stillWitnessesTheLeader_andRunsNoEffectWhenItWasReplaced() {
+        terminable();
+        beforeWitness = () -> replaceLeader(new LeaderValue(SUCCESSOR, 2));
+        var ran = new AtomicInteger();
+
+        var outcome = lifecycle.fenced(List.of(), () -> {
+            ran.incrementAndGet();
+            return Promise.success("ran");
+        }).await();
+
+        assertThat(outcome.isFailure()).as("fenced: %s", outcome).isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isEqualTo(FenceFailure.LeadershipNotWitnessed.leadershipNotWitnessed(RefusalKind.LEADER)));
+        assertThat(ran.get()).as("the effect did not run").isZero();
+    }
+
+    /// k33: the continuation's documented order is the elapsed check first, the activation re-read second: with BOTH the timeout passed
+    /// and the activation changed, the refusal is WitnessExpired.
+    @Test
+    void terminate_whenBothTheTimeoutPassedAndTheActivationChanged_failsWithWitnessExpired() {
+        terminable();
+        afterWitness = () -> {
+            observedLossAndRegain();
+            nano.addAndGet(6 * SECOND_NANOS);
+        };
+
+        var outcome = terminate();
+
+        assertFailsWith(outcome, FenceFailure.WitnessExpired.class);
+        assertThat(terminates.get()).as("no provider call").isZero();
+    }
+
+    /// k35: the shorter factories take the engine's default apply timeout (30 s), not another value; the "default" behaviour test above
+    /// passes it explicitly, so only this reads the factories' own default.
+    @Test
+    void theShorterFactories_defaultTheApplyTimeoutToTheEnginesDefault() {
+        var sixArgument = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, this::apply, leading::get, () -> 5);
+        var sevenArgument = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, this::apply, leading::get, () -> 5,
+            SourceProfile.DEFAULT_REPLACEMENT_CEILING);
+        var eightArgument = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, this::apply, leading::get, () -> 5,
+            SourceProfile.DEFAULT_REPLACEMENT_CEILING, epoch::get);
+
+        assertThat(sixArgument.applyTimeout()).isEqualTo(ProtocolConfig.DEFAULT_APPLY_TIMEOUT);
+        assertThat(sevenArgument.applyTimeout()).isEqualTo(ProtocolConfig.DEFAULT_APPLY_TIMEOUT);
+        assertThat(eightArgument.applyTimeout()).isEqualTo(ProtocolConfig.DEFAULT_APPLY_TIMEOUT);
+    }
+
+    /// k36: the default monotonic clock is `System.nanoTime`: a REAL delay over the apply timeout (20 ms timeout, 150 ms delay between
+    /// submit and the continuation) is refused through the default factory. A default of epoch milliseconds would read the delay as 150
+    /// "nanoseconds" and let it pass.
+    @Test
+    void terminate_throughTheDefaultFactory_refusesARealDelayOverTheApplyTimeout() {
+        terminable();
+        lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, this::apply, leading::get, () -> 5,
+            SourceProfile.DEFAULT_REPLACEMENT_CEILING, epoch::get).withApplyTimeout(TimeSpan.timeSpan(20).millis());
+        afterWitness = () -> {
+            var until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(150);
+
+            while (System.nanoTime() < until) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+            }
+        };
+
+        var outcome = terminate();
+
+        assertFailsWith(outcome, FenceFailure.WitnessExpired.class);
+        assertThat(terminates.get()).as("no provider call").isZero();
+    }
+
+    /// k38: `withApplyTimeout` keeps the injected monotonic clock (the golden covers only the timeout): the copy refuses a 3 s elapsed
+    /// on the injected clock under its own 2 s timeout, and accepts 1 s. A copy that took the epoch clock as its monotonic one would see no time pass.
+    @Test
+    void withApplyTimeout_keepsTheInjectedMonotonicClock() {
+        terminableTwice();
+        lifecycle = lifecycle.withApplyTimeout(TimeSpan.timeSpan(2).seconds());
+        afterWitness = () -> nano.addAndGet(SECOND_NANOS);
+        assertThat(terminate().isSuccess()).as("1 s of the copy's 2 s").isTrue();
+
+        observeNode();
+        afterWitness = () -> nano.addAndGet(3 * SECOND_NANOS);
+        var late = terminate();
+
+        assertFailsWith(late, FenceFailure.WitnessExpired.class);
+        assertThat(terminates.get()).as("the late witness issued nothing").isEqualTo(1);
     }
 
     // ---- TA6, TA6c, TA7: the create's dispatch ----
@@ -415,9 +601,10 @@ class CapacityFenceTest {
             }
         }
 
+        /// An upper bound far above the test's own wait: the test always releases, so the park never ends by itself first.
         private static void awaitQuietly(CountDownLatch latch) {
             try {
-                latch.await(500, TimeUnit.MILLISECONDS);
+                latch.await(15, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -428,13 +615,20 @@ class CapacityFenceTest {
         return new CapacityControlledLifecycle(base.delegate(), base.self(), base.store(), base.apply(), base.activeLeader(), base.limit(),
             base.initializing(), base.inventoried(), base.inventoryReconciling(), base.activeSources(), base.inventoryCursors(),
             base.undispatched(), base.dispatchStamps(), misses, base.unmatchedSince(), base.leading(), base.leadershipGeneration(),
-            base.warningSink(), base.clock(), base.ceiling(), base.nanoClock(), base.applyTimeout());
+            base.monitor(), base.warningSink(), base.clock(), base.ceiling(), base.nanoClock(), base.applyTimeout());
+    }
+
+    /// Waits for the EVENT that decides the interleaving: `thread` is blocked (on a monitor) or has finished. A bounded poll of the
+    /// thread's own state, so no assertion rests on a sleep.
+    private static void awaitBlockedOrDone(Thread thread, CountDownLatch done) {
+        pollUntil(thread::getState, state -> state == Thread.State.BLOCKED || done.getCount() == 0, Duration.ofSeconds(5));
     }
 
     /// TA9, deterministic interleaving: thread A takes the lose-to-gain edge and is parked inside the accessor, after the gain is counted
     /// and before the absence counts are cleared. Thread B then reads the accessor. `activation()` is ONE monitor step, so B cannot finish
     /// while A is parked inside it; B's answer, when it arrives, pairs "present" with a generation that includes A's gain. Without the
-    /// monitor B finishes while A is parked, with the gain half done.
+    /// monitor B finishes while A is parked, with the gain half done. B's "has not finished" is asserted only once B is BLOCKED on the
+    /// monitor (the event), and A's park ends only when the test releases it, so no timer races the assertion.
     @Test
     void activation_isOneMonitorStep_aReaderNeverPairsPresentWithAGenerationOlderThanTheGainItFollows() throws Exception {
         initialize(0);
@@ -450,14 +644,58 @@ class CapacityFenceTest {
             secondDone.countDown();
         });
 
-        var finishedWhileParked = secondDone.await(250, TimeUnit.MILLISECONDS);
+        awaitBlockedOrDone(reader, secondDone);
+        var stateWhileParked = reader.getState();
+        var finishedWhileParked = secondDone.getCount() == 0;
         misses.release.countDown();
         first.join(5_000);
         reader.join(5_000);
 
+        assertThat(stateWhileParked).as("B is blocked on the monitor while A is parked inside the step").isEqualTo(Thread.State.BLOCKED);
         assertThat(finishedWhileParked).as("B must wait for A's whole step").isFalse();
         assertThat(second.get().isPresent()).isTrue();
         assertThat(second.get().map(Activation::generation).or(-1L)).as("present is never paired with a generation older than the gain").isGreaterThanOrEqualTo(1L);
+    }
+
+    /// F3: the copy `withApplyTimeout` returns shares the original's monitor, so an original and its copy over one store cannot both be
+    /// inside the accessor. `activeLeader` runs inside the accessor under the monitor: it counts the callers inside and parks the first.
+    @Test
+    void anOriginalAndItsApplyTimeoutCopy_serialiseOnOneMonitor() throws Exception {
+        initialize(0);
+        var inside = new AtomicInteger();
+        var mostInside = new AtomicInteger();
+        var parked = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var firstCall = new AtomicBoolean();
+        var original = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, this::apply, () -> {
+            mostInside.accumulateAndGet(inside.incrementAndGet(), Math::max);
+
+            if (firstCall.compareAndSet(false, true)) {
+                parked.countDown();
+                ParkingMisses.awaitQuietly(release);
+            }
+            inside.decrementAndGet();
+            return true;
+        }, () -> 5, SourceProfile.DEFAULT_REPLACEMENT_CEILING, epoch::get, nano::get, FIVE_SECONDS);
+        var copy = original.withApplyTimeout(TimeSpan.timeSpan(7).seconds());
+        var copyDone = new CountDownLatch(1);
+        var first = Thread.ofPlatform().start(original::activation);
+
+        assertThat(parked.await(5, TimeUnit.SECONDS)).as("the original is parked inside the accessor").isTrue();
+        var second = Thread.ofPlatform().start(() -> {
+            copy.activation();
+            copyDone.countDown();
+        });
+
+        awaitBlockedOrDone(second, copyDone);
+        var stateWhileParked = second.getState();
+        var mostWhileParked = mostInside.get();
+        release.countDown();
+        first.join(5_000);
+        second.join(5_000);
+
+        assertThat(stateWhileParked).as("the copy is blocked on the shared monitor").isEqualTo(Thread.State.BLOCKED);
+        assertThat(mostWhileParked).as("one caller inside the accessor at a time, across the original and its copy").isEqualTo(1);
     }
 
     /// TA9, smoke: a bounded randomized run (not the evidence; the deterministic test above is). One thread flips the leadership flag, the
