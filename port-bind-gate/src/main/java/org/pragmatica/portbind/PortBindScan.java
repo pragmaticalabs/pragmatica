@@ -40,6 +40,8 @@ import java.util.stream.Stream;
 public final class PortBindScan {
     static final String ENFORCE = "enforce";
     static final String REPORT = "report";
+    /// The stamp file's name, written to the module's `target/`.
+    public static final String STAMP = "port-bind-gate.txt";
     private static final String ALLOW_LIST_RESOURCE = "allowlist.txt";
     private static final Pattern LAMBDA = Pattern.compile("lambda\\$(.+)\\$\\d+");
     private static final String FIX = "bind the port through org.pragmatica.portbind.HeldPort (it comes back open and holds the port for as long as it is open), or"
@@ -49,14 +51,14 @@ public final class PortBindScan {
     /// One call site: the class (binary name), the enclosing method (lambdas folded into the method that holds them), the source
     /// line and the API reference it reaches.
     public record Site(String className, String method, int line, String api) {
-        String location() {
+        public String location() {
             return className + ":" + line;
         }
     }
 
     /// What one scan of one module found.
-    record Result(int classFiles, List<Site> sites, List<Site> violations, List<AllowList.Entry> stale) {
-        boolean clean() {
+    public record Findings(int classFiles, List<Site> sites, List<Site> violations, List<AllowList.Entry> stale) {
+        public boolean clean() {
             return violations.isEmpty() && stale.isEmpty();
         }
     }
@@ -84,6 +86,7 @@ public final class PortBindScan {
         var result = scan(module, directory, PortBindScan.class.getClassLoader(), bundledAllowList());
 
         System.out.println(summary(module, result));
+        writeStamp(directory, module, result);
         if (mode.equals(REPORT)) {
             reportLines(module, result).forEach(System.out::println);
         } else if (!result.clean()) {
@@ -92,7 +95,24 @@ public final class PortBindScan {
         }
     }
 
-    static AllowList bundledAllowList() {
+    /// The types of [BindApis]: what the scan refuses, for a pin that holds every one of them to a fixture.
+    public static List<String> apiTypes() {
+        return BindApis.ALL.stream()
+                           .map(BindApis.Api::type)
+                           .toList();
+    }
+
+    /// The scan's own evidence, next to the classes it read: the summary line, then every bind call site with its verdict. A test
+    /// in the same module reads it, which is how "the gate ran here, over these classes" is pinned from inside the fork.
+    private static void writeStamp(Path classes, String module, Findings result) throws IOException {
+        var lines = new ArrayList<String>();
+
+        lines.add(summary(module, result));
+        lines.addAll(reportLines(module, result));
+        Files.write(classes.toAbsolutePath().getParent().resolve(STAMP), lines);
+    }
+
+    public static AllowList bundledAllowList() {
         try (var in = PortBindScan.class.getResourceAsStream(ALLOW_LIST_RESOURCE)) {
             if (in == null) {
                 throw new IllegalStateException(ALLOW_LIST_RESOURCE + " is missing from the port-bind-gate jar");
@@ -105,7 +125,7 @@ public final class PortBindScan {
 
     /// Scans every class file under `classes`. `loader` resolves a call's receiver type; the directory itself is added in front
     /// of it, so a test class that extends a bind type is resolved from the very classes being scanned.
-    static Result scan(String module, Path classes, ClassLoader loader, AllowList allowList) throws IOException {
+    public static Findings scan(String module, Path classes, ClassLoader loader, AllowList allowList) throws IOException {
         try (var own = new URLClassLoader(new URL[]{classes.toUri().toURL()}, loader)) {
             var apis = new BindApis(own);
             var sites = new ArrayList<Site>();
@@ -122,7 +142,7 @@ public final class PortBindScan {
                                   .filter(site -> !allowList.excuses(module, site.className(), site.method()))
                                   .toList();
 
-            return new Result(count, List.copyOf(sites), violations, allowList.staleFor(module, sites));
+            return new Findings(count, List.copyOf(sites), violations, allowList.staleFor(module, sites));
         }
     }
 
@@ -209,12 +229,12 @@ public final class PortBindScan {
         };
     }
 
-    static String summary(String module, Result result) {
+    public static String summary(String module, Findings result) {
         return "[port-bind-gate] " + module + ": scanned " + result.classFiles() + " test class file(s), "
                + result.sites().size() + " bind call site(s), " + result.violations().size() + " not allowed, " + result.stale().size() + " stale allow-list entr(ies)";
     }
 
-    private static List<String> reportLines(String module, Result result) {
+    private static List<String> reportLines(String module, Findings result) {
         return result.sites()
                      .stream()
                      .map(site -> "PORT-BIND-SITE " + module + " " + site.location() + " " + site.method() + " " + site.api()
@@ -222,7 +242,7 @@ public final class PortBindScan {
                      .toList();
     }
 
-    static List<String> failures(String module, Result result) {
+    public static List<String> failures(String module, Findings result) {
         var lines = new ArrayList<String>();
 
         result.violations()

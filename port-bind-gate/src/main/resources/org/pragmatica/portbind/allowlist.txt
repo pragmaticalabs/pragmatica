@@ -4,3 +4,4 @@
 # its enclosing method); `Class` excuses the whole class. The reason is required and says why this socket is not a
 # pick-then-rebind hazard. An entry that excuses no call site in its module fails that module's scan (stale).
 # HeldPort needs no entry: it is in this module's src/main, not a scanned tree.
+script-gate | org.pragmatica.scriptgate.PortBindGateTest#heldPort_holdsItsPort_whileOpen_andReleasesItOnClose | pins that a port HeldPort holds cannot be bound by another socket: the second bind is expected to FAIL while the first is open, and nothing uses the port after

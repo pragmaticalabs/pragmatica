@@ -10,15 +10,15 @@ import java.util.List;
 ///
 /// An entry that excuses no call site in its module is STALE and fails the scan of that module: the list may not outlive the
 /// call it excused. `HeldPort` has no entry: it ships in this module's `src/main`, which is not a scanned tree.
-record AllowList(List<Entry> entries) {
-    record Entry(String module, String target, String reason) {
+public record AllowList(List<Entry> entries) {
+    public record Entry(String module, String target, String reason) {
         boolean excuses(String module, String className, String method) {
             return this.module.equals(module)
                    && (target.equals(className) || target.equals(className + "#" + method));
         }
     }
 
-    static AllowList parse(String text) {
+    public static AllowList parse(String text) {
         var entries = new ArrayList<Entry>();
 
         text.lines()
@@ -37,13 +37,13 @@ record AllowList(List<Entry> entries) {
         return new Entry(parts[0].strip(), parts[1].strip(), parts[2].strip());
     }
 
-    boolean excuses(String module, String className, String method) {
+    public boolean excuses(String module, String className, String method) {
         return entries.stream()
                       .anyMatch(entry -> entry.excuses(module, className, method));
     }
 
     /// The entries of `module` that excuse none of `sites`.
-    List<Entry> staleFor(String module, List<PortBindScan.Site> sites) {
+    public List<Entry> staleFor(String module, List<PortBindScan.Site> sites) {
         return entries.stream()
                       .filter(entry -> entry.module().equals(module))
                       .filter(entry -> sites.stream()

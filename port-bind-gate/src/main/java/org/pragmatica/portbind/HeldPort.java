@@ -1,9 +1,9 @@
 package org.pragmatica.portbind;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.DatagramSocket;
 import java.net.ServerSocket;
-import java.net.SocketException;
 
 /// The one place a test builds a port-0 socket by itself (#1826, #3801). The port-bind gate refuses every other bind call in
 /// a compiled test class, so a port a test uses comes from here, from a module's `ClusterTestPorts` reservation, or from
@@ -16,13 +16,21 @@ import java.net.SocketException;
 public final class HeldPort {
     private HeldPort() {}
 
-    /// A UDP socket bound to a kernel-chosen port, open.
-    public static DatagramSocket udp() throws SocketException {
-        return new DatagramSocket(0);
+    /// A UDP socket bound to a kernel-chosen port, open. A failure to bind (no free port) is unchecked: it fails the test that asked.
+    public static DatagramSocket udp() {
+        try {
+            return new DatagramSocket(0);
+        } catch (IOException e) {
+            throw new UncheckedIOException("no UDP port could be bound", e);
+        }
     }
 
-    /// A TCP server socket bound to a kernel-chosen port, open.
-    public static ServerSocket tcp() throws IOException {
-        return new ServerSocket(0);
+    /// A TCP server socket bound to a kernel-chosen port, open. A failure to bind is unchecked, as in [#udp()].
+    public static ServerSocket tcp() {
+        try {
+            return new ServerSocket(0);
+        } catch (IOException e) {
+            throw new UncheckedIOException("no TCP port could be bound", e);
+        }
     }
 }
