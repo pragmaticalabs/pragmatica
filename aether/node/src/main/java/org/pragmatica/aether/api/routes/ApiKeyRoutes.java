@@ -261,7 +261,7 @@ public final class ApiKeyRoutes implements RouteSource {
 
     @SuppressWarnings({"unchecked", "JBCT-EX-01"})
     @Contract
-    private void sweepExpiredKeys() {
+    void sweepExpiredKeys() {
         try {
             var node = nodeSupplier.get();
 
