@@ -80,6 +80,12 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<AlertConfig> alerts,
                                Option<String> clusterSecret,
                                DeploymentEngine deploymentEngine) {
+    /// #3525 L2: this node's own topology entry carries its `[backup]` stamp, whichever way the configuration was assembled
+    /// (`Main`, Ember, a test) and through every `with*` copy; see [BackupAgreement].
+    public AetherNodeConfig {
+        topology = BackupAgreement.stamped(topology, backupConfig);
+    }
+
     /// The configuration without a deployment engine: the engine is FSM2, the default of every node since the flip (FSM replacement plan F6,
     /// #2767). LEGACY stays reachable through [#withDeploymentEngine] until it is deleted (F7).
     public AetherNodeConfig(TopologyConfig topology,

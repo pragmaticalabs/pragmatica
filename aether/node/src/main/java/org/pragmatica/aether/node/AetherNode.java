@@ -187,7 +187,6 @@ import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
 import org.pragmatica.consensus.net.quic.PeerConnectivityReporter;
 import org.pragmatica.cluster.node.SwitchableClusterNode;
-import org.pragmatica.cluster.node.rabia.NodeConfig;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.consensus.rabia.RabiaPersistence;
 import org.pragmatica.cluster.state.kvstore.*;
@@ -795,10 +794,7 @@ public interface AetherNode extends ManageableNode {
 
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
-        var nodeConfig = NodeConfig.nodeConfig(config.protocol(),
-                                               config.topology(),
-                                               config.activationGated(),
-                                               config.clusterFormation());
+        var nodeConfig = BackupAgreement.nodeConfig(config);
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
         var leaderTerm = LeaderTerm.leaderTerm(config.self(),
                                                () -> kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class));
@@ -991,10 +987,7 @@ public interface AetherNode extends ManageableNode {
     /// `[backup]` enabled with a path — the one condition for the backup service, its restore source, and
     /// the restore gate on this node's submit path.
     static Option<BackupConfig> enabledBackup(AetherNodeConfig config) {
-        return config.backupConfig()
-                     .filter(BackupConfig::enabled)
-                     .filter(backup -> !backup.path()
-                                              .isBlank());
+        return BackupAgreement.enabled(config.backupConfig());
     }
 
     /// #1533 — the central restore gate: on a backup-enabled node every batch this node submits to
