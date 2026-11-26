@@ -326,7 +326,7 @@ public sealed interface Causes {
             public String clientMessage() {
                 return causes().size() == 1
                        ? causes().getFirst()
-                                 .clientMessage()
+                               .clientMessage()
                        : listedClientMessage();
             }
 
