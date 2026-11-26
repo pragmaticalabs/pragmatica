@@ -1341,6 +1341,277 @@ class LeaderReconcilerTest {
             assertThat(events).containsExactly("core-capacity-awaiting-durable");
         }
 
+        /// The failure input of the stale-term invariant: the body of term N is in flight when the stop and the next activation land.
+        private void restartTerm() {
+            reconciler.deactivate();
+            reconciler.activate();
+        }
+
+        private void runNextTermActivationPass() {
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getLast().runIfLive();
+        }
+
+        private Set<NodeId> stopThenRetainPeerA() {
+            reconciler.deactivate();
+
+            return Set.of(PEER_A);
+        }
+
+        /// Term N's debounce task is armed and returned; `inFlightHook` runs in the first read of the clock of the pass it carries.
+        private ManualTask armStalePass(Runnable inFlightHook) {
+            reconciler.activate();
+            reconciler.onTopologyUnhealthy();
+            timeSource.runOnNextRead(inFlightHook);
+
+            return liveTaskAt(DEBOUNCE_DELAY);
+        }
+
+        private long liveDebounceTasks() {
+            return scheduler.tasksByDelay(DEBOUNCE_DELAY).stream().filter(task -> !task.isDone()).count();
+        }
+
+        private void restartAndAgePastCeiling() {
+            restartTerm();
+            timeSource.advanceTimeMillis(DEFAULT_REPLACEMENT_CEILING.millis() + 1);
+        }
+
+        private void restartAndJoinInherited() {
+            restartTerm();
+            observeCoreHealthy(PEER_A);
+        }
+
+        private void restartAndTriggerNextTerm() {
+            restartTerm();
+            reconciler.onTopologyUnhealthy();
+        }
+
+        @Test
+        void evictBody_staleAfterRestart_leavesTheNextTermsInFlightEntry() {
+            configuredCoreCount.set(5);
+            var stale = armStalePass(this::restartAndAgePastCeiling);
+            reconciler.setRetainedDispatchedSupplier(() -> Set.of(PEER_A));
+
+            stale.runIfLive();
+
+            assertThat(reconciler.inFlightProvisioningKeys()).as("a stale pass must not evict the next term's inherited placeholder").containsExactly(PEER_A);
+        }
+
+        @Test
+        void settleBody_staleAfterRestart_leavesTheNextTermsPlaceholder() {
+            configuredCoreCount.set(5);
+            var stale = armStalePass(this::restartAndJoinInherited);
+            reconciler.setRetainedDispatchedSupplier(() -> Set.of(PEER_A));
+
+            stale.runIfLive();
+
+            assertThat(reconciler.inFlightProvisioningKeys()).as("a stale pass must not settle a placeholder of the next term").containsExactly(PEER_A);
+        }
+
+        @Test
+        void armedLatch_staleBodyAfterRestart_leavesTheNextTermUnarmed() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+
+            armStalePass(this::restartTerm).runIfLive();
+
+            assertThat(reconciler.isArmedForProvisioning()).as("the stale pass observed a quorum, the next term has not").isFalse();
+        }
+
+        @Test
+        void reachedLatch_staleBodyAfterRestart_leavesTheNextTermUnlatched() {
+            configuredCoreCount.set(4);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, PEER_C));
+
+            armStalePass(this::restartTerm).runIfLive();
+
+            assertThat(reconciler.isReachedFullMembership()).as("the stale pass observed full membership, the next term has not").isFalse();
+        }
+
+        private void driveDeficitPass(Runnable inFlightHook) {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            runNextTermActivationPass();
+            removePeers(PEER_D);
+            timeSource.runOnNextRead(inFlightHook);
+            triggerAndFireReconcile();
+            ctm.clear();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+        }
+
+        @Test
+        void deficitPass_controlWithoutStop_provisionsAfterTheWindow() {
+            driveDeficitPass(() -> {});
+
+            assertThat(ctm.provisionReplacementCalls()).as("control: the anchor of the term aged past the window").hasSize(1);
+        }
+
+        @Test
+        void deficitAnchor_staleBodyAfterRestart_startsTheNextTermsOwnRun() {
+            driveDeficitPass(this::restartTerm);
+
+            assertThat(ctm.provisionReplacementCalls()).as("the next term's first pass anchors its own deficit run, so it is still inside the debounce").isEmpty();
+        }
+
+        @Test
+        void decisionSnapshot_staleBodyAfterRestart_leavesTheNextTermNotEvaluated() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+
+            armStalePass(this::restartTerm).runIfLive();
+
+            assertThat(reconciler.lastProvisioningDecision().isEmpty()).as("a stale pass must not record a decision into the next term").isTrue();
+        }
+
+        @Test
+        void scalingHeldAsk_staleBodyAfterRestart_isNeverMade() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            ctm.runOnNextAutoHealRead(this::restartTerm);
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(reconciler.isLeader()).as("the next term leads").isTrue();
+            assertThat(ctm.scalingHeldAsked()).as("a stale pass must not write the hold state of the next term").isEmpty();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+        }
+
+        @Test
+        void provisionDispatch_staleBodyAfterRestart_putsNoPlaceholderAndReadsNoCeiling() {
+            var ceilingRead = new AtomicBoolean();
+
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            runNextTermActivationPass();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            reconciler.setInstalledVotersSupplier(new HookedVoters(2, Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), this::restartTerm));
+            ctm.runOnNextReplacementCeilingRead(() -> ceilingRead.set(true));
+
+            triggerAndFireReconcile();
+
+            assertThat(ceilingRead.get()).as("the dispatch stopped before it stamped a placeholder").isFalse();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+        }
+
+        @Test
+        void deficitAnchorReset_staleBodyAfterRestart_leavesTheNextTermsAnchor() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            runNextTermActivationPass();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            reconciler.setInstalledVotersSupplier(new HookedVoters(2,
+                                                                   Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                                                   this::restartAndRunActivationPass));
+            triggerAndFireReconcile();
+            ctm.clear();
+            advancePastProvisioningGates();
+
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("the next term's anchor, set by its own first pass, survived the stale reset").hasSize(1);
+        }
+
+        private void restartAndRunActivationPass() {
+            restartTerm();
+            runNextTermActivationPass();
+        }
+
+        @Test
+        void activation_stopInsideSeeding_leavesNoPlaceholderAndNoTask() {
+            configuredCoreCount.set(5);
+            reconciler.setRetainedDispatchedSupplier(this::stopThenRetainPeerA);
+
+            reconciler.activate();
+
+            assertThat(reconciler.isLeader()).isFalse();
+            assertThat(reconciler.inFlightProvisioningCount()).as("no placeholder is seeded on a stopped term").isZero();
+            assertThat(scheduler.liveTasks()).isEmpty();
+        }
+
+        @Test
+        void nonLeaderQuorumLossPass_observesOnly_actsOnNothing() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+
+            reconciler.onQuorumLossIntent(QuorumLossIntent.quorumLossIntent(timeSource.nanoTime(), 2, 3));
+            liveTaskAt(DEBOUNCE_DELAY).runIfLive();
+
+            assertThat(listener.events()).as("the pass still observes").hasSize(1);
+            assertThat(ctm.scalingHeldAsked()).isEmpty();
+            assertThat(ctm.drainNodeCalls()).isEmpty();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+            assertThat(reconciler.lastProvisioningDecision().isEmpty()).isTrue();
+            assertThat(scheduler.liveTasks()).as("the non-leader pass arms nothing").isEmpty();
+        }
+
+        @Test
+        void debounceFinish_staleBodyAfterRestart_leavesTheNextTermsDebounceAlone() {
+            configuredCoreCount.set(5);
+            var stale = armStalePass(this::restartAndTriggerNextTerm);
+
+            stale.runIfLive();
+            reconciler.onTopologyUnhealthy();
+
+            assertThat(liveDebounceTasks()).as("the next term's pending debounce is still the only one: the stale finish did not clear it").isEqualTo(1);
+        }
+
+        @Test
+        void followUpTrigger_staleBodyAfterRestart_armsNothingAndLeavesTheDebounceFree() {
+            configuredCoreCount.set(5);
+            var stale = armStalePass(this::restartTerm);
+
+            reconciler.onTopologyUnhealthy();
+            stale.runIfLive();
+
+            assertThat(liveDebounceTasks()).as("the stale follow-up armed no pass").isZero();
+
+            reconciler.onTopologyUnhealthy();
+
+            assertThat(liveDebounceTasks()).as("the next term schedules its own pass").isEqualTo(1);
+        }
+
+        @Test
+        void pendingTrigger_ofTermN_doesNotLeakIntoTheNextTerm() {
+            configuredCoreCount.set(5);
+            reconciler.activate();
+            reconciler.onConfigChange();
+            restartTerm();
+            listener.clear();
+
+            reconciler.onSwimMemberHealthy(PEER_A, 1L);
+            fireDebouncedReconcile();
+
+            assertThat(listener.events()).hasSize(1);
+            assertThat(listener.events().getFirst().trigger()).as("the next term's pass carries its own trigger").isEqualTo(ReconcileTrigger.MEMBER_APPEARED);
+        }
+
+        @Test
+        void drainGraceReEval_firesThenDefersAgain_armsItAgain() {
+            configuredCoreCount.set(2);
+            seedYoung(NodeId.randomNodeId(), NodeId.randomNodeId());
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            liveTaskAt(DRAIN_GRACE_FOLLOW_UP_DELAY).runIfLive();
+            fireDebouncedReconcile();
+
+            assertThat(scheduler.tasksByDelay(DRAIN_GRACE_FOLLOW_UP_DELAY).stream().filter(task -> !task.isDone()).count())
+                .as("the fired follow-up cleared its slot, so the pass that defers again arms one")
+                .isEqualTo(1);
+        }
+
         @Test
         void nextActivation_getsAFreshLifetime_andItsTaskRuns() {
             configuredCoreCount.set(5);
@@ -5819,12 +6090,52 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// Installed-voters supplier that runs a hook inside its nth read. A reconcile pass reads it twice: for the quorum evidence at the
+    /// top, and for the departed pairing at the start of its dispatch, so the second read is the point after the decision and before
+    /// any dispatch effect.
+    private static final class HookedVoters implements Supplier<Set<NodeId>> {
+        private final AtomicInteger reads = new AtomicInteger();
+        private final int hookedRead;
+        private final Set<NodeId> voters;
+        private final Runnable hook;
+
+        HookedVoters(int hookedRead, Set<NodeId> voters, Runnable hook) {
+            this.hookedRead = hookedRead;
+            this.voters = voters;
+            this.hook = hook;
+        }
+
+        @Override
+        public Set<NodeId> get() {
+            if (reads.incrementAndGet() == hookedRead) {
+                hook.run();
+            }
+
+            return voters;
+        }
+    }
+
     private static final class TestTimeSource implements TimeSource {
         private volatile long nanos = 0L;
 
+        /// Runs once, inside the next read of the clock: the first read of a reconcile pass is its first step, before any effect, so the hook
+        /// is how a test makes the pass the body already in flight when the stop and the next activation land.
+        private final AtomicReference<Runnable> onNextRead = new AtomicReference<>();
+
         @Override
         public long nanoTime() {
+            var hook = onNextRead.getAndSet(null);
+
+            if (hook != null) {
+                hook.run();
+            }
+
             return nanos;
+        }
+
+        @Contract
+        void runOnNextRead(Runnable hook) {
+            onNextRead.set(hook);
         }
 
         @Contract

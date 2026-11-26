@@ -960,7 +960,7 @@ public final class LeaderReconciler {
     /// concurrent triggers during reconcile-in-flight flag a single follow-up pass. A body re-arms on the lifetime it
     /// received, and a trigger of an ended lifetime does nothing: the check is immediately before the first write of the debounce
     /// state, which a stale body therefore never reaches. A stop that lands between the check and the schedule leaves a state owned by
-    /// the ended lifetime, which the next term takes over, and the cancelled handle it gets back releases that same state.
+    /// the ended lifetime, which counts as idle: the next term takes it over, so nothing has to release it.
     @Contract
     private void triggerReconcile(OwnerLifetime life, ReconcileTrigger trigger) {
         if (life.isEnded()) {
@@ -992,9 +992,7 @@ public final class LeaderReconciler {
             return;
         }
 
-        if (life.schedule(this::runDebouncedReconcile, DEBOUNCE_DELAY).isCancelled()) {
-            debounce.compareAndSet(next, Debounce.IDLE);
-        }
+        life.schedule(this::runDebouncedReconcile, DEBOUNCE_DELAY);
     }
 
     @Contract
@@ -2268,7 +2266,7 @@ public final class LeaderReconciler {
             triggerReconcile(life, ReconcileTrigger.NTT_FIRE);
         }
 
-        pollInFlightInstanceStates();
+        pollInFlightInstanceStates(life);
         if (!inFlightProvisioning.isEmpty()) {
             armInFlightSweep(life);
         }
@@ -2278,8 +2276,8 @@ public final class LeaderReconciler {
     /// DISPATCHING entry is skipped (its create may not have happened yet, so an empty listing would
     /// say nothing), and so is an entry whose previous query is still outstanding (single-flight).
     @Contract
-    private void pollInFlightInstanceStates() {
-        inFlightProvisioning.forEach(this::pollInstanceStateIfDue);
+    private void pollInFlightInstanceStates(OwnerLifetime life) {
+        inFlightProvisioning.forEach((id, entry) -> pollInstanceStateIfDue(life, id, entry));
     }
 
     /// The query's failure channel is not observed here: [`ClusterTopologyManager#replacementInstanceState`]
@@ -2287,8 +2285,8 @@ public final class LeaderReconciler {
     /// so a failure that escaped that contract leaves the entry exactly as UNKNOWN would, bounded by
     /// the ceiling.
     @Contract
-    private void pollInstanceStateIfDue(NodeId id, InFlightEntry entry) {
-        if (entry.isDispatching() || !statusQueriesOutstanding.add(id)) {
+    private void pollInstanceStateIfDue(OwnerLifetime life, NodeId id, InFlightEntry entry) {
+        if (!mayAct(life) || entry.isDispatching() || !statusQueriesOutstanding.add(id)) {
             return;
         }
 
