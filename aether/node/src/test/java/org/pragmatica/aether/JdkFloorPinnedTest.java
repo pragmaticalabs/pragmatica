@@ -23,6 +23,8 @@ import static org.assertj.core.api.Assertions.fail;
 /// below it, or whose build-time check line differs from its siblings, is red here. The check itself is proven by building
 /// (below-floor base: the build fails), see the PR; this test pins that each definition CARRIES it and that the four carry the same one.
 ///
+/// The same file pins that the node's `Main` and `ForgeServer` call the gate before reading any config.
+///
 /// WHY TEXT PINS: the definitions are Dockerfiles and a heredoc inside `build-and-push.sh`, with no Java seam. The subject under
 /// test is the file on disk, read from the repository, as in `NodeLauncherExitOnOomPinnedTest`.
 class JdkFloorPinnedTest {
@@ -30,6 +32,9 @@ class JdkFloorPinnedTest {
     private static final String FORGE = "aether/docker/aether-forge/Dockerfile";
     private static final String FORGE_LEGACY = "aether/forge/Dockerfile";
     private static final String BUILD_AND_PUSH = "build-and-push.sh";
+    private static final String NODE_MAIN = "aether/node/src/main/java/org/pragmatica/aether/Main.java";
+    private static final String FORGE_MAIN = "aether/forge/forge-core/src/main/java/org/pragmatica/aether/forge/ForgeServer.java";
+    private static final String GATE_CALL = "JvmVulnerabilityGate.enforceForThisProcess(";
     private static final List<String> DEFINITIONS = List.of(NODE, FORGE, FORGE_LEGACY, BUILD_AND_PUSH);
 
     private static final Pattern BASE = Pattern.compile("(?m)^ARG JDK_BASE=eclipse-temurin:(\\d+(?:\\.\\d+)*)_\\d+-(?:jdk|jre)-\\S+$");
@@ -98,6 +103,26 @@ class JdkFloorPinnedTest {
         }
 
         assertThat(checks).as("the four definitions carry the same check line").containsOnly(checks.getFirst());
+    }
+
+    /// The start-up gate is only an enforcer if both entry points call it, and first: a listener binds only after the config is
+    /// read, so "before the config is read" is "before any listener binds". Text pin for the same reason as above: `Main.run()` and
+    /// `ForgeServer.main` start whole processes, so there is no seam to call them through; deleting or moving the call reaches no
+    /// other test.
+    @Test
+    void bothMains_callTheGateOnceBeforeTheConfigIsRead() {
+        assertCalledBefore(NODE_MAIN, "publishConfigPath();");
+        assertCalledBefore(FORGE_MAIN, "StartupConfig.startupConfig(args)");
+    }
+
+    private static void assertCalledBefore(String path, String firstConfigStep) {
+        var source = read(path);
+        var call = source.indexOf(GATE_CALL);
+
+        assertThat(call).as("%s calls the gate", path).isGreaterThanOrEqualTo(0);
+        assertThat(source.indexOf(GATE_CALL, call + 1)).as("%s calls the gate exactly once", path).isEqualTo(-1);
+        assertThat(source.indexOf(firstConfigStep)).as("%s: the gate runs before `%s`", path, firstConfigStep)
+                  .isGreaterThan(call);
     }
 
     /// The check line with the one escaping difference removed: inside the unquoted heredoc of `build-and-push.sh` every `$` is `\$`.
