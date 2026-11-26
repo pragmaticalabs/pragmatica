@@ -60,7 +60,7 @@ final class RouteProbe {
     private static Route<?> resolved(Stream<Route<?>> routes, ManagementRoute which) {
         var registered = routes.toList();
 
-        return ManagementRouter.managementRouter((RouteSource) registered::stream).registered(which.name()).unwrap();
+        return ManagementRouter.managementRouter((RouteSource) registered::stream).unwrap().registered(which.name()).unwrap();
     }
 
     static HttpStatus problemStatus(Cause cause) {

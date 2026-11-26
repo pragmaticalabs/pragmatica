@@ -12,6 +12,7 @@ import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 /// A `GET` management route at a given path whose [GrantedHandler] runs a test-supplied body, for tests outside this package.
 public final class GrantedBodyRoute implements RouteSource {
@@ -31,7 +32,7 @@ public final class GrantedBodyRoute implements RouteSource {
         return new GrantedBodyRoute(path, body);
     }
 
-    public static ManagementRouter routerWith(RouteSource[] sources, RouteSource... extra) {
+    public static Result<ManagementRouter> routerWith(RouteSource[] sources, RouteSource... extra) {
         return ManagementRouter.managementRouter(Stream.concat(Stream.of(sources), Stream.of(extra))
                                                        .toArray(RouteSource[]::new));
     }

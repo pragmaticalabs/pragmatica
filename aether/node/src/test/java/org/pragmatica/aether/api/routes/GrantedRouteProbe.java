@@ -16,6 +16,7 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 
 /// A `GET` management route whose handler is a [GrantedHandler], for tests outside this package (the type is
@@ -41,7 +42,7 @@ public final class GrantedRouteProbe implements RouteSource {
     }
 
     /// The router a management server assembles from its own `sources`, with this probe's route added.
-    public ManagementRouter routerWith(RouteSource[] sources) {
+    public Result<ManagementRouter> routerWith(RouteSource[] sources) {
         return ManagementRouter.managementRouter(Stream.concat(Stream.of(sources), Stream.of(this))
                                                        .toArray(RouteSource[]::new));
     }

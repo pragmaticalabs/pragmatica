@@ -149,7 +149,7 @@ class StreamApiRoutesPublishBatchTest {
         var manager = streamPartitionManager(Long.MAX_VALUE);
         try {
             createStream(manager, ConsistencyMode.EVENTUAL);
-            var router = ManagementRouter.managementRouter(routesFor(manager));
+            var router = ManagementRouter.managementRouter(routesFor(manager)).unwrap();
             var recorder = new RecordingResponseWriter();
             var path = ManagementRoute.STREAMS_PUBLISH_BATCH.assemble(NAMESPACE, STREAM, VERSION).unwrap();
             var body = "[{\"data\":\"ok\",\"partition\":0},{\"data\":\"bad\",\"partition\":" + PARTITIONS + "}]";

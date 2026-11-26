@@ -187,7 +187,7 @@ class SliceRoutesScaleFloorTest {
 
     /// Posts a scale request and waits for its response: the fenced write answers once its transaction's outcome is known.
     static RecordingResponseWriter scale(ScaleManageableNode node, int instances) {
-        var router = ManagementRouter.managementRouter(SliceRoutes.sliceRoutes(() -> node));
+        var router = ManagementRouter.managementRouter(SliceRoutes.sliceRoutes(() -> node)).unwrap();
         var recorder = new RecordingResponseWriter();
         var request = "{\"artifact\":\"" + SLICE.asString() + "\",\"instances\":" + instances + "}";
 

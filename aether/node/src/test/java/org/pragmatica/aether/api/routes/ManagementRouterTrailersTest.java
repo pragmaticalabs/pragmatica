@@ -47,7 +47,7 @@ class ManagementRouterTrailersTest {
         RouteSource source = () -> Stream.of(PROBE);
         var writer = new BodyWriter();
 
-        assertThat(ManagementRouter.managementRouter(source).handle(new TrailerRequest(trailers), writer)).isTrue();
+        assertThat(ManagementRouter.managementRouter(source).unwrap().handle(new TrailerRequest(trailers), writer)).isTrue();
 
         return writer.body();
     }
