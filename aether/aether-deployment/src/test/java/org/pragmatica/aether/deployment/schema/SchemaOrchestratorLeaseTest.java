@@ -772,6 +772,8 @@ class SchemaOrchestratorLeaseTest {
             assertThat(time.pending()).as("both stops left no armed tick").isZero();
             assertThat(cluster.lockPuts()).as("neither stop wrote").isEqualTo(putsBefore);
             assertThat(committedLock()).as("the lock is untouched").isEqualTo(claim);
+
+            seedPendingSchema();
             assertRefusedByTheStop(orchestrator.migrateIfNeeded(DATASOURCE).await(timeSpan(5).seconds()));
         }
 
