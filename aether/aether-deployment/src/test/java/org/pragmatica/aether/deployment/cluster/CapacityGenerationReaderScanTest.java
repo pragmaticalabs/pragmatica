@@ -33,7 +33,7 @@ class CapacityGenerationReaderScanTest {
     /// Any mention of the pairing method, a call or a method reference alike.
     private static final Pattern OCCURRENCE = Pattern.compile("\\bpairedWith\\b");
     /// Text blocks, string and char literals are kept whole (they may hold `//`); the comments are what is dropped.
-    private static final Pattern TOKEN = Pattern.compile("\"\"\"[\\s\\S]*?\"\"\"|\"(?:\\\\.|[^\"\\\\\\n])*\"|'(?:\\\\.|[^'\\\\\\n])'|//[^\\n]*|/\\*[\\s\\S]*?\\*/");
+    private static final Pattern TOKEN = Pattern.compile("\"\"\"[\\s\\S]*?\"\"\"|\"[^\"\\\\\\n]*+(?:\\\\.[^\"\\\\\\n]*+)*+\"|'(?:\\\\.|[^'\\\\\\n])'|//[^\\n]*|/\\*[\\s\\S]*?\\*/");
 
     private static String read(Path path) {
         try {

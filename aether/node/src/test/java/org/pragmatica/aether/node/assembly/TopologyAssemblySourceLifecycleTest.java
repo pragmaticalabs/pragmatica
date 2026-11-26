@@ -38,13 +38,14 @@ class TopologyAssemblySourceLifecycleTest {
         var protocol = ProtocolConfig.protocolConfig(timeSpan(1).seconds(), timeSpan(1).seconds(), 10, 10, CONFIGURED).unwrap();
         var clusterNode = (RabiaNode<KVCommand<AetherKey>>) Mockito.mock(RabiaNode.class);
         var kvStore = (KVStore<AetherKey, AetherValue>) Mockito.mock(KVStore.class);
+        var autoHeal = config.autoHeal();
 
         Mockito.doReturn(protocol).when(config).protocol();
         Mockito.doReturn(new NodeId("self")).when(config).self();
         Mockito.doReturn(Option.none()).when(config).environment();
         Mockito.doReturn(Option.none()).when(config).configProvider();
         Mockito.doReturn(Option.none()).when(config).clusterName();
-        Mockito.doReturn(Option.none()).when(config.autoHeal()).maxNodes();
+        Mockito.doReturn(Option.none()).when(autoHeal).maxNodes();
         Mockito.doReturn(Mockito.mock(LeaderManager.class)).when(clusterNode).leaderManager();
 
         var lifecycle = TopologyAssembly.sourceLifecycle(new SourceLifecycleInputs(config, kvStore, clusterNode, new AtomicReference<>()));
