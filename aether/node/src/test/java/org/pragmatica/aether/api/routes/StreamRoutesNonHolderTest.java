@@ -181,6 +181,23 @@ class StreamRoutesNonHolderTest {
         assertThat(read.events()).hasSize(EVENTS);
     }
 
+    /// With no committed config the declared count falls back to this node's own ring: a stream registered before its config
+    /// commit, on a node that holds the stream metadata-only, still refuses an undeclared partition with 400 instead of asking
+    /// an owner that cannot answer it.
+    @Test
+    void read_registeredNotCommitted_undeclaredPartition_answers400_fromTheLocalCount() {
+        ownerHolds(2, EVENTS);
+        servingHoldsMetadataOnly(2);
+
+        var routes = StreamRouteFixtures.routes(servingPartitions,
+                                                forwardingRouter(),
+                                                StreamRouteFixtures.emptyStore(),
+                                                StreamRouteFixtures.registryWith(address(), RETENTION));
+        var failure = RouteProbe.failureOf(routes, ManagementRoute.STREAM_READ, List.of(NAMESPACE, STREAM, VERSION, "read", "5"), Map.of());
+
+        assertThat(failure).isInstanceOf(ManagementServerError.InvalidPartition.class);
+    }
+
     @Test
     void read_streamNotMaterializedOnServingNode_eventsComeFromTheOwner() {
         ownerHolds(2, EVENTS);
