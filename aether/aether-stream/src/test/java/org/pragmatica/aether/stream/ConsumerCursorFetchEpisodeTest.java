@@ -31,14 +31,14 @@ import static org.pragmatica.utility.warning.OperatorWarningCode.STREAM_CONSUMER
 
 /// #3283 round 2: the unreadable-cursor episode of a consumer key, driven state by state with no scheduler and no store, so
 /// every interleaving is fixed and the "reported nothing" cases are exact, not timed. The sink is a single-thread hand-off,
-/// so each test ends by opening an episode of ANOTHER key: its raise is the last entry, and everything the operation under
-/// test reported (or did not) stands before it.
+/// so each test ends by opening an episode of a fresh ANOTHER key (one open episode raises once): its raise is the last
+/// entry, and everything the operation under test reported (or did not) stands before it.
 class ConsumerCursorFetchEpisodeTest {
     private static final ConsumerKey KEY = ConsumerKey.consumerKey("orders", 0, "group-1");
-    private static final ConsumerKey BARRIER = ConsumerKey.consumerKey("orders", 1, "group-1");
     private static final Duration DEADLINE = Duration.ofSeconds(5);
 
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+    private int barriers;
     private StreamPartitionManager manager;
     private ConsumerRuntimeState runtime;
 
@@ -120,7 +120,7 @@ class ConsumerCursorFetchEpisodeTest {
     }
 
     private List<OperatorWarningCode> afterBarrier(int expectedCount) {
-        runtime.openCursorFetchEpisode(BARRIER, state(), failure());
+        runtime.openCursorFetchEpisode(ConsumerKey.consumerKey("orders", 1 + barriers++, "group-1"), state(), failure());
         awaitCount(expectedCount);
 
         return warnings.stream()
