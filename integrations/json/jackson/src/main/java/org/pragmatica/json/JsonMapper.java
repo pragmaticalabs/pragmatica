@@ -273,6 +273,11 @@ public interface JsonMapper {
     /// Implementation of JsonMapper interface wrapping Jackson 3.0 JsonMapper.
     record JsonMapperImpl(tools.jackson.databind.json.JsonMapper mapper) implements JsonMapper {
         @Override
+        public JsonMapper clientFacing() {
+            return new JsonMapperImpl(mapper.rebuild().addModule(new ClientFacingModule()).build());
+        }
+
+        @Override
         public <T> Result<String> writeAsString(T value) {
             return Result.lift(JsonError::fromException, () -> mapper.writeValueAsString(value));
         }

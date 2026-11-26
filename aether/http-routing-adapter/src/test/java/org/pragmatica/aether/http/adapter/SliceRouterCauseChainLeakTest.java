@@ -67,9 +67,13 @@ class SliceRouterCauseChainLeakTest {
 
         return (JsonMapper) Proxy.newProxyInstance(JsonMapper.class.getClassLoader(),
                                                    new Class[]{JsonMapper.class},
-                                                   (_, method, args) -> {
+                                                   (self, method, args) -> {
                                                        if (method.getName().equals("writeAsBytes")) {
                                                            return Result.failure(Causes.cause("serializer down"));
+                                                       }
+                                                       // The HTTP codec derives its mapper with clientFacing(); the derived mapper must still be this failing one.
+                                                       if (method.getName().equals("clientFacing")) {
+                                                           return self;
                                                        }
                                                        return method.invoke(real, args);
                                                    });

@@ -28,6 +28,13 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 /// Adapter that wraps JsonMapper to implement JsonCodec interface.
 /// Bridges between Jackson-based JSON serialization and the `byte[]` codec seam.
 public record JsonCodecAdapter(JsonMapper mapper) implements JsonCodec {
+    /// Every HTTP response body is written through an adapter, so this is where a failed `Result` or a `Cause` inside a
+    /// body is held to its client text (#3723): the wrapped mapper is [JsonMapper#clientFacing()] however the adapter was
+    /// made. The general mapper the caller passed (the CLI, cloud clients and state files use such mappers) is unchanged.
+    public JsonCodecAdapter {
+        mapper = mapper.clientFacing();
+    }
+
     /// Creates a JsonCodec adapter for the given JsonMapper.
     ///
     /// @param mapper The JsonMapper instance to wrap
