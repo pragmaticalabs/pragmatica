@@ -1604,8 +1604,12 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             return asString();
         }
 
-        public static Result<DeclaredRouteKey> declaredRouteKey(Artifact artifact, String httpMethod, String pathTemplate) {
-            return Result.all(Verify.ensure(httpMethod, HTTP_METHOD.asMatchPredicate(), DECLARED_ROUTE_KEY_FORMAT_ERROR),
+        public static Result<DeclaredRouteKey> declaredRouteKey(Artifact artifact,
+                                                                String httpMethod,
+                                                                String pathTemplate) {
+            return Result.all(Verify.ensure(httpMethod,
+                                            HTTP_METHOD.asMatchPredicate(),
+                                            DECLARED_ROUTE_KEY_FORMAT_ERROR),
                               Verify.ensure(pathTemplate, Verify.Is::notBlank, DECLARED_ROUTE_KEY_FORMAT_ERROR))
                          .map((method, path) -> new DeclaredRouteKey(artifact, method, path));
         }
@@ -1628,8 +1632,9 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             var method = content.substring(artifactEnd + 1, methodEnd);
             var path = content.substring(methodEnd + 1);
 
-            return Artifact.artifact(content.substring(0, artifactEnd))
-                           .flatMap(artifact -> declaredRouteKey(artifact, method, path));
+            return Artifact.artifact(content.substring(0, artifactEnd)).flatMap(artifact -> declaredRouteKey(artifact,
+                                                                                                             method,
+                                                                                                             path));
         }
     }
 
