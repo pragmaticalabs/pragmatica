@@ -58,12 +58,15 @@ import org.pragmatica.testlogging.SourceWalk;
 /// walk in `src/main`, or a declared root that is later changed; those are left to review. The fix it asks for is `SourceWalk`.
 ///
 /// `PICK_THEN_REBIND` is a hazard in a socket's lifetime (#1826), found by [PickThenRebind] over the statements of the trees in
-/// `PICK_THEN_REBIND_SCOPE`, not by a line regex. It is never an allow-list entry and never declared: a hit is fixed.
+/// `PICK_THEN_REBIND_SCOPE`, not by a line regex: it enforces WHERE a port-0 socket is built (the shared helper, or a line marked
+/// `// port0-held: <reason>`), not where the port goes afterwards. It is never an allow-list entry and never declared: a hit is fixed.
 final class FlakeScan {
     private static final List<String> SCANNED_SOURCES = List.of("/src/test/java/", "/src/it/java/");
-    /// The trees the `PICK_THEN_REBIND` pass examines. TODO(#1826): aether/node only (part a); widen to `integrations/consensus/` (part b),
-    /// `integrations/net/http-server/` (part c) and the other sites listed in `oss/internal/s56/facts-f1826a.md`, each in the lane that converts
-    /// its sites: a tree listed before its sites are converted fails the build.
+    /// The trees the `PICK_THEN_REBIND` pass examines. TODO(#1826): aether/node only (part a); widen to `integrations/consensus/` (part b) and
+    /// `integrations/net/http-server/` (part c), then to the other trees holding port-0 sockets: `aether/cli/`, `aether/ember/`,
+    /// `aether/forge/forge-tests/`, `aether/resource/db-async/`, `aether/resource/notification/`, `integrations/db/postgres-async/`,
+    /// `integrations/net/http-client/`, `integrations/net/redis/`, `integrations/net/smtp/`, `integrations/net/tcp/` and `integrations/swim/`,
+    /// each in the lane that converts or marks its sites: a tree listed before its sites are converted fails the build.
     private static final List<String> PICK_THEN_REBIND_SCOPE = List.of("aether/node/");
 
     /// A pattern with a fixed flake behind it, and the fix the failure message points at.
@@ -82,7 +85,7 @@ final class FlakeScan {
         REPO_WALK("\\bFiles\\s*\\.\\s*(walk|walkFileTree|find)\\s*\\(",
                   "scan source files with org.pragmatica.testlogging.SourceWalk.files(root): the java.nio walks (walk, walkFileTree, find) list and stat every entry before any filter runs, so a walk from a repository or multi-module root visits other modules' target/ while a parallel build rewrites it and fails with NoSuchFileException. A walk of a directory nothing else writes (a directory the test creates, the module's own fixed source path, a class directory complete before the forks start) is declared in RepoWalkExceptions with its reason (#3703)"),
         PICK_THEN_REBIND("(?!)",
-                         "take the port from the module's ClusterTestPorts (its reservation holds until the real bind) or bind port 0 in the server itself and read the bound port back: a port read from a socket that is then closed can be taken by another process before the real bind (#1826)");
+                         "a port-0 socket is built only by the shared helper (HeldPort, which returns it open) or on a line marked `// port0-held: <reason>`, the reason saying the socket stays open for as long as its port is used (an empty reason does not count). A port read from a socket that is then closed can be taken by another process before the real bind: take such a port from the module's ClusterTestPorts (its reservation holds until the real bind) or bind port 0 in the server itself and read the bound port back (#1826)");
 
         private final Pattern pattern;
         private final String fix;
@@ -163,7 +166,7 @@ final class FlakeScan {
             }
         }
         if (PICK_THEN_REBIND_SCOPE.stream().anyMatch(relative::startsWith)) {
-            hits.addAll(PickThenRebind.hits(relative, statements));
+            hits.addAll(PickThenRebind.hits(relative, lines, statements));
         }
     }
 

@@ -96,7 +96,7 @@ class StreamMemoryBudgetBootTest {
     /// "free" would make the refusal's assertion vacuous.
     @Test
     void portProbe_seesAHeldPortAsTaken() throws IOException {
-        try (var held = new DatagramSocket(0)) {
+        try (var held = new DatagramSocket(0)) { // port0-held: the positive-control socket stays open while the probe reads its port
             assertThat(isFree(held.getLocalPort())).isFalse();
         }
     }

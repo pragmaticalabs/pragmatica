@@ -59,7 +59,7 @@ class ManagementServerTlsFailClosedTest {
     @Test
     @Timeout(60)
     void start_unbuildableTls_failsBeforeAnyBind() throws IOException {
-        try (var held = new ServerSocket(0)) {
+        try (var held = new ServerSocket(0)) { // port0-held: the blocker socket stays open for the whole try block, the server under test runs inside it
             var server = managementServerWithMissingCertificate(held.getLocalPort(), HttpProtocol.H1);
 
             var outcome = server.start().await(START_BOUND);

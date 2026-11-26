@@ -18,103 +18,72 @@ package org.pragmatica.testing;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 
 /// The `PICK_THEN_REBIND` pass of `FlakeScan` (#1826): a test that binds a socket to port 0, reads the port the OS chose, and lets
 /// the socket close before anything binds that number. Between the close and the real bind any other process, or another module's
 /// test under the module-parallel build, can take the port, and the test fails with `BindException: Address already in use`.
-/// The port has to come from an allocator whose reservation holds until the real bind (the module's `ClusterTestPorts`), or the test
-/// binds port 0 itself and reads the bound port back.
 ///
-/// What the pass SEES: a try-with-resources that opens `new ServerSocket(0..)` or `new DatagramSocket(0..)` and, inside its body,
-/// either returns the socket's `getLocalPort()` (the pick-then-close helper) or assigns it to a target that was declared before (`port =
-/// probe.getLocalPort();`, the port outliving the block). Both shapes let the number leave the socket's lifetime by construction.
-/// What it does NOT see, and review must: a socket held in a field or a local and closed by an explicit `close()`; a port that leaves
-/// the block through a collection, a lambda or standard output (`PortHolderMain`'s `legacy` mode does that on purpose, as the red
-/// control for the allocator that replaced it); a port-0 bind through another API (`InetSocketAddress`, a channel). A held socket
-/// whose port is used inside the block (`held.getLocalPort()` as an argument, `var port = held.getLocalPort()` read before the close) is
-/// the safe form and is not flagged.
+/// The pass does not analyse where the port goes: text cannot follow a number through a variable, a collection, a lambda or a return,
+/// and every form it missed was another way out. It enforces a LOCATION rule on the construction instead. Every port-0 socket built in a
+/// scanned tree is either built inside [#HELPER], the one file that returns such a socket still open (bind-and-hold), or sits on a line
+/// marked `// port0-held: <reason>`, the reason saying the socket stays open for as long as its port is used. An unmarked construction
+/// elsewhere is a hit, and a marker with no reason does not count. A hit is fixed, never listed.
+///
+/// What it SEES, in a statement with string and char literals blanked (a pattern in a string or a text block is not a construction):
+/// `new ServerSocket(0..)` and `new DatagramSocket(0..)`, also `java.net.`-qualified; either with a `new InetSocketAddress(.., 0)` argument;
+/// `new DatagramSocket()` (it binds an ephemeral port at once); and a `.bind(..)` of `new InetSocketAddress(.., 0)`, of `0` or of `null`
+/// (a channel, a Netty bootstrap, a socket built unbound). One statement or wrapped over lines; the line of the construction carries the marker.
+/// What it does NOT see, and review must: a port-0 bind whose port or address arrives through a variable (`new ServerSocket(port)` with
+/// `port == 0`), a server another API binds to port 0 itself (`HttpServer.create`, a Netty `bind` with a computed argument), and whether a
+/// marked socket really stays open: the marker is a statement by its author, enforced by review, as is a close the caller makes on a socket
+/// the helper returned (`PortHolderMain`'s `legacy` mode does that on purpose, as the red control for the allocator that replaced it).
 final class PickThenRebind {
-    private static final Pattern TRY = Pattern.compile("^try\\s*\\(.*", Pattern.DOTALL);
+    /// The one file that builds port-0 sockets for the caller and hands them back open.
+    static final String HELPER = "aether/node/src/test/java/org/pragmatica/aether/node/HeldPort.java";
 
-    private static final Pattern PORT_ZERO_SOCKET = Pattern.compile("\\b(\\w+)\\s*=\\s*new\\s+(?:java\\s*\\.\\s*net\\s*\\.\\s*)?(?:ServerSocket|DatagramSocket)\\s*\\(\\s*0\\s*[,)]");
+    private static final String NET = "(?:java\\s*\\.\\s*net\\s*\\.\\s*)?";
+    private static final String ADDRESS_PORT_0 = "new\\s+" + NET + "InetSocketAddress\\s*\\(\\s*(?:[^()]*(?:\\([^()]*\\))?[^()]*,\\s*)?0\\s*\\)";
+    private static final Pattern CONSTRUCTION = Pattern.compile("new\\s+" + NET + "(?:ServerSocket|DatagramSocket)\\s*\\(\\s*(?:0\\s*[,)]|" + ADDRESS_PORT_0 + ")"
+                                                                + "|new\\s+" + NET + "DatagramSocket\\s*\\(\\s*\\)"
+                                                                + "|\\.\\s*bind\\s*\\(\\s*(?:(?:0|null)\\s*\\)|" + ADDRESS_PORT_0 + ")");
+    private static final Pattern MARKER = Pattern.compile("//\\s*port0-held:\\s*\\S");
+    private static final Pattern LITERAL = Pattern.compile("\"\"\"[\\s\\S]*?\"\"\"|\"(?:\\\\.|[^\"\\\\\\n])*\"|'(?:\\\\.|[^'\\\\\\n])*'");
 
     private PickThenRebind() {}
 
-    /// The escaping reads of every port-0 socket a try-with-resources opens in `statements` (from `FlakeScan`'s statement reader).
-    static List<FlakeScan.Hit> hits(String file, List<FlakeScan.Statement> statements) {
+    /// The unmarked port-0 constructions in `statements` (from `FlakeScan`'s statement reader over `lines`), none for [#HELPER] itself.
+    static List<FlakeScan.Hit> hits(String file, String[] lines, List<FlakeScan.Statement> statements) {
         var hits = new ArrayList<FlakeScan.Hit>();
 
-        for (var i = 0; i < statements.size(); i++) {
-            if (TRY.matcher(statements.get(i).text()).matches()) {
-                var opened = headerEnd(statements, i);
-                var sockets = socketVariables(statements, i, opened);
-
-                sockets.forEach(socket -> escapes(statements, opened, socket, file, hits));
-            }
+        if (!HELPER.equals(file)) {
+            statements.forEach(statement -> constructions(file, lines, statement, hits));
         }
-
         return hits;
     }
 
-    /// The index of the statement that ends the `try (...)` header with `{`: resources separated by `;` arrive as several statements.
-    private static int headerEnd(List<FlakeScan.Statement> statements, int from) {
-        var end = from;
+    private static void constructions(String file, String[] lines, FlakeScan.Statement statement, List<FlakeScan.Hit> hits) {
+        var seen = blank(statement.text());
+        var matcher = CONSTRUCTION.matcher(seen);
 
-        while (end < statements.size() - 1 && !statements.get(end).text().endsWith("{")) {
-            end++;
-        }
+        while (matcher.find()) {
+            var line = statement.line() + (int) seen.substring(0, matcher.start()).chars().filter(c -> c == '\n').count();
 
-        return end;
-    }
-
-    private static List<String> socketVariables(List<FlakeScan.Statement> statements, int from, int to) {
-        var header = new StringBuilder();
-
-        for (var i = from; i <= to; i++) {
-            header.append(statements.get(i).text()).append('\n');
-        }
-
-        return PORT_ZERO_SOCKET.matcher(header)
-                               .results()
-                               .map(match -> match.group(1))
-                               .toList();
-    }
-
-    /// Walks the try body (statements until the brace depth opened by the header closes) and reports every escaping read of `socket`.
-    private static void escapes(List<FlakeScan.Statement> statements,
-                                int headerEnd,
-                                String socket,
-                                String file,
-                                List<FlakeScan.Hit> hits) {
-        var access = Pattern.quote(socket) + "\\s*\\.\\s*getLocalPort\\s*\\(\\s*\\)\\s*;$";
-        var returned = Pattern.compile("^return\\s+" + access, Pattern.DOTALL);
-        var assigned = Pattern.compile("^[\\w.\\[\\]]+\\s*=\\s*" + access, Pattern.DOTALL);
-        var depth = 1;
-
-        for (var i = headerEnd + 1; i < statements.size() && depth > 0; i++) {
-            var statement = statements.get(i);
-
-            if (returned.matcher(statement.text()).matches() || assigned.matcher(statement.text()).matches()) {
-                hits.add(FlakeScan.Hit.hit(file,
-                                           statement.line(),
-                                           FlakeScan.Kind.PICK_THEN_REBIND,
-                                           String.join(" ",
-                                                       statement.text().split("\\s+"))));
+            if (!marked(lines[line - 1])) {
+                hits.add(FlakeScan.Hit.hit(file, line, FlakeScan.Kind.PICK_THEN_REBIND, String.join(" ", statement.text().split("\\s+"))));
             }
-
-            depth += braceDelta(statement.text());
         }
     }
 
-    private static int braceDelta(String text) {
-        if (text.endsWith("{")) {
-            return 1;
-        }
+    /// A `// port0-held: <reason>` comment with a non-empty reason, outside any string literal on the line.
+    private static boolean marked(String line) {
+        return MARKER.matcher(blank(line)).find();
+    }
 
-        return text.endsWith("}")
-               ? -1
-               : 0;
+    /// `text` with the content of every string literal, char literal and text block replaced by spaces, line breaks kept, so offsets and lines hold.
+    private static String blank(String text) {
+        return LITERAL.matcher(text).replaceAll(literal -> Matcher.quoteReplacement(literal.group().replaceAll("[^\\n]", " ")));
     }
 }

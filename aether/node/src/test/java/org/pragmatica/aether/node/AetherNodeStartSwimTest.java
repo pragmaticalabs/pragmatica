@@ -216,7 +216,7 @@ class AetherNodeStartSwimTest {
         var gateClock = new AtomicLong();
         var detectors = new CopyOnWriteArrayList<CoreSwimHealthDetector>();
 
-        try (var sender = new DatagramSocket()) {
+        try (var sender = new DatagramSocket()) { // port0-held: a sender socket, open for the whole try block, its port is only the datagram source
             var started = startOnFreePort((detector, failNode) -> AetherNode.startSwim(detector,
                                                                                        network(),
                                                                                        RotatingGossipEncryptor.rotatingGossipEncryptor(aesGcm(NODE_KEY,
@@ -257,7 +257,7 @@ class AetherNodeStartSwimTest {
         var published = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
         var detectors = new CopyOnWriteArrayList<CoreSwimHealthDetector>();
 
-        try (var sender = new DatagramSocket()) {
+        try (var sender = new DatagramSocket()) { // port0-held: a sender socket, open for the whole try block, its port is only the datagram source
             var started = startOnFreePort((detector, failNode) -> startPublishingTo(published, detector, failNode));
             var swimPort = started.swimPort();
 
