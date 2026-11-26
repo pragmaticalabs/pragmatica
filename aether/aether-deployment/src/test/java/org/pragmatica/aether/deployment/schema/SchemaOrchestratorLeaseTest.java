@@ -18,6 +18,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.LongStream;
@@ -174,7 +175,7 @@ class SchemaOrchestratorLeaseTest {
     @Test
     void holderThatStopsRenewing_losesTheLockAfterTheTtl() {
         orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
-        var claim = committedLock();
+        var claim = awaitClaim();
 
         time.advanceWithoutFiring(TTL_MS + 1);
         seedPendingSchema();
@@ -569,7 +570,7 @@ class SchemaOrchestratorLeaseTest {
             var orchestrator = orchestrator(NODE_1, 60_000L);
 
             orchestrator.migrateIfNeeded(DATASOURCE);
-            var claim = committedLock();
+            var claim = awaitClaim();
             var putsBefore = cluster.lockPuts();
 
             assertThat(time.pending()).as("the lease armed its first renewal tick").isEqualTo(1);
@@ -586,7 +587,7 @@ class SchemaOrchestratorLeaseTest {
             var orchestrator = orchestrator(NODE_1, 60_000L);
 
             orchestrator.migrateIfNeeded(DATASOURCE);
-            var claim = committedLock();
+            var claim = awaitClaim();
             var putsBefore = cluster.lockPuts();
 
             kvStore.holdNextReadOf(LOCK_KEY);
@@ -656,7 +657,7 @@ class SchemaOrchestratorLeaseTest {
             var orchestrator = orchestrator(NODE_1, 60_000L);
 
             orchestrator.migrateIfNeeded(DATASOURCE);
-            var claim = committedLock();
+            var claim = awaitClaim();
             var putsBefore = cluster.lockPuts();
 
             orchestrator.stop();
@@ -700,6 +701,20 @@ class SchemaOrchestratorLeaseTest {
             assertThat(schemaManager.invocations).as("no script ran").isEmpty();
             assertThat(cluster.lockPuts()).as("no lock claim").isEqualTo(putsBefore);
             assertThat(statusOf(DATASOURCE)).isEqualTo(SchemaStatus.PENDING);
+        }
+
+        /// #3754 d7: the ENTRY check refuses a dispatch at a stopped orchestrator before it takes the fence or reads the lock.
+        /// The second check would also refuse it (and release the fence), so the refusal alone cannot tell the two apart; the
+        /// lock key is read only past the entry check, so a read of it is a dispatch that got past the entry.
+        @Test
+        void stop_dispatchAtAStoppedOrchestrator_isRefusedAtTheEntryCheck_beforeTheLockIsRead() {
+            var orchestrator = orchestrator(NODE_1, 60_000L);
+
+            orchestrator.stop();
+            var readsBefore = kvStore.readsOf(LOCK_KEY);
+
+            assertRefusedByTheStop(orchestrator.migrateIfNeeded(DATASOURCE).await(timeSpan(5).seconds()));
+            assertThat(kvStore.readsOf(LOCK_KEY)).as("the entry check refused before the lock read").isEqualTo(readsBefore);
         }
 
         /// #3754 F4: a stop that lands between the entry check and the claim Put (the lock read lies between them) is
@@ -762,7 +777,7 @@ class SchemaOrchestratorLeaseTest {
             var orchestrator = orchestrator(NODE_1, 60_000L);
 
             orchestrator.migrateIfNeeded(DATASOURCE);
-            var claim = committedLock();
+            var claim = awaitClaim();
             var putsBefore = cluster.lockPuts();
 
             orchestrator.stop();
@@ -833,6 +848,7 @@ class SchemaOrchestratorLeaseTest {
             var orchestrator = orchestrator(NODE_1, _ -> POSTGRES_VERSION, LeaseTiming.withTtl(SHORT_TTL_MS));
 
             orchestrator.migrateIfNeeded(DATASOURCE);
+            awaitClaim();
             var claimPuts = cluster.lockPuts();
 
             awaitEvent("the real scheduler renewed the lease", () -> cluster.lockPuts() > claimPuts);
@@ -859,18 +875,10 @@ class SchemaOrchestratorLeaseTest {
         return List.copyOf(received).stream().filter(warning -> !SENTINEL.equals(warning.subject())).toList();
     }
 
-    /// Whether the orchestrator's single-flight fence holds an entry for [#DATASOURCE] (`inFlightMigrations`, private state
-    /// with no other observer once a stop makes every later dispatch fail at the entry check).
+    /// Whether the orchestrator's single-flight fence holds an entry for [#DATASOURCE]: read through the instance's
+    /// package-private test seam, the only observer once a stop makes every later dispatch fail at the entry check.
     private static boolean fenceHeld(SchemaOrchestratorService orchestrator) {
-        try {
-            var field = SchemaOrchestratorServiceInstance.class.getDeclaredField("inFlightMigrations");
-
-            field.setAccessible(true);
-
-            return ((Map<?, ?>) field.get(orchestrator)).containsKey(DATASOURCE);
-        } catch (ReflectiveOperationException e) {
-            throw new AssertionError("the single-flight fence field is not readable", e);
-        }
+        return ((SchemaOrchestratorServiceInstance) orchestrator).fenceHeldForTest(DATASOURCE);
     }
 
     private List<Long> redispatchDelays() {
@@ -893,6 +901,14 @@ class SchemaOrchestratorLeaseTest {
         assertThat(committedLock()).isEqualTo(successor);
 
         return successor;
+    }
+
+    /// Waits for the claim's own completion (the lock committed), so a count or a snapshot read after an un-awaited
+    /// `migrateIfNeeded` can never be read before, or satisfied by, a later write; returns the claim.
+    private SchemaMigrationLockValue awaitClaim() {
+        awaitEvent("the lock claim was committed", () -> lockOf(DATASOURCE) != null);
+
+        return committedLock();
     }
 
     private SchemaMigrationLockValue committedLock() {
@@ -1097,7 +1113,7 @@ class SchemaOrchestratorLeaseTest {
     private static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         final NodeId self;
         final InMemoryKvStore kvStore;
-        private final java.util.concurrent.atomic.AtomicInteger lockPuts = new java.util.concurrent.atomic.AtomicInteger();
+        private final AtomicInteger lockPuts = new AtomicInteger();
 
         RecordingClusterNode(NodeId self, InMemoryKvStore kvStore) {
             this.self = self;
@@ -1260,8 +1276,18 @@ class SchemaOrchestratorLeaseTest {
             released.countDown();
         }
 
+        private final ConcurrentHashMap<AetherKey, AtomicInteger> reads = new ConcurrentHashMap<>();
+
+        /// How many times `key` has been read through [#get] (any thread).
+        int readsOf(AetherKey key) {
+            var count = reads.get(key);
+
+            return count == null ? 0 : count.get();
+        }
+
         @Override
         public Option<AetherValue> get(AetherKey key) {
+            reads.computeIfAbsent(key, _ -> new AtomicInteger()).incrementAndGet();
             if (key.equals(heldKey) && Thread.currentThread() != heldFor) {
                 heldKey = null;
                 reached.countDown();

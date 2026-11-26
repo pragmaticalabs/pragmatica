@@ -890,6 +890,12 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private final ConcurrentHashMap<String, Object> inFlightMigrations = new ConcurrentHashMap<>();
+
+    // --- package-private test seam (inert read: no state change, no side effect) ---
+    boolean fenceHeldForTest(String datasourceName) {
+        return inFlightMigrations.containsKey(datasourceName);
+    }
+
     /// The cancel handle of each datasource's scheduled re-dispatch (on [#lifetime]).
     private final ConcurrentHashMap<String, Handle> scheduledRetries = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Object, Lease> leases = new ConcurrentHashMap<>();
