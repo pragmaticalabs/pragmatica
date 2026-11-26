@@ -230,6 +230,11 @@ public class AlertForwarder implements AsyncCloseable {
         return AlertForwarderError.WebhookError.webhookError(url, error).promise();
     }
 
+    /// @return the number of retries armed and not yet resolved; for tests
+    int pendingRetryCount() {
+        return pendingRetries.size();
+    }
+
     private void abandonPendingRetries() {
         pendingRetries.forEach((promise, url) -> promise.resolve(AlertForwarderError.Stopped.stopped(url).result()));
     }

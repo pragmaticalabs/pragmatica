@@ -141,6 +141,20 @@ class AlertForwarderStopTest {
         }
     }
 
+    @Test
+    void resolvedRetry_leavesThePendingMap() {
+        http.answers.add(Causes.cause("connection refused").promise());
+        http.answers.add(Promise.success(okReply()));
+        var forwarder = forwarderWithRetries(2);
+        var forwarded = forwarder.forward(AlertEvent.AlertResolved.resolved("a-7", "test"));
+
+        assertThat(forwarder.pendingRetryCount()).as("control: the armed retry is tracked").isEqualTo(1);
+        seam.fire(0);
+
+        assertThat(isSuccess(forwarded)).as("the retry delivered").isTrue();
+        assertThat(forwarder.pendingRetryCount()).as("a resolved retry is not kept for the close to sweep").isZero();
+    }
+
     /// Control for the two tests above: the same failure without a close arms a retry, leaves the forward pending and logs one
     /// WARN, so the resolved promise there and the missing WARN above are the close's doing.
     @Test
