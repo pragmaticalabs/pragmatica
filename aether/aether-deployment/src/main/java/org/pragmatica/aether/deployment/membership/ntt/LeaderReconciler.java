@@ -1090,8 +1090,10 @@ public final class LeaderReconciler {
     /// The one gate of an effect of a body (a write to a field another term reads, a call into the manager that writes, an arm of the
     /// scheduler, a dispatch): the body acts only while its OWN term is live and this node leads. Read immediately before the effect, with
     /// nothing effectful between the read and the effect. A body of an ended term finds its own lifetime ended whatever a later term
-    /// has set; a body on the non-leader lifetime (a quorum-loss intent reconciles without leadership) finds no leadership. That body
-    /// only observes: it reaches the listener and nothing else.
+    /// has set; a body on the non-leader lifetime (a quorum-loss intent reconciles without leadership) finds no leadership. Effects
+    /// that pass through this gate are refused to such a body. Three term-scoped writes do not pass through it yet (#3777): the
+    /// `pairedDeparted` removal in `departedVoters`, the `durableConfirmedSince` stamps in `countedDurable` (written by the non-leader
+    /// pass too), and the `armOnce` slot compare-and-set after the schedule.
     private boolean mayAct(OwnerLifetime life) {
         return ! life.isEnded() && isLeader.get();
     }

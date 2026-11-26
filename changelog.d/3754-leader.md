@@ -8,3 +8,5 @@
   the surplus drain and the durable-stall operator warning. It narrows the window and does not close it: a stale leader is
   refused for the provision and the drain only by a fence at the receiver, which is a separate change.
 - The debounce state (in-flight flag, pending trigger) is reset by the stop, since the cancelled debounce task no longer clears it.
+- Three term-scoped writes still bypass the lifetime gate and are tracked by #3777: the `pairedDeparted` removal, the
+  `durableConfirmedSince` stamps (also written by the non-leader quorum-loss pass), and the `armOnce` slot compare-and-set.
