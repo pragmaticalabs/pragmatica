@@ -18,9 +18,11 @@ package org.pragmatica.swim;
 import java.net.InetSocketAddress;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.OwnerLifetime;
 
 /// The one place a test builds a [SwimProtocol] (#3568, the class of #3560): the executor is chosen at construction,
 /// so no entry point needs a waiting wrapper in the test that calls it.
@@ -88,5 +90,43 @@ public final class SwimTestProtocols {
                                                isBooting,
                                                transportConnected,
                                                SerialExecutor.serialExecutor()));
+    }
+
+    /// #3754: a protocol whose lifetimes schedule through `lifetimes` (lifetimes over a fake scheduler), on the quiescing
+    /// executor. A test that fires the scheduler's wrappers by hand drives production order through the real `stop()`.
+    static Result<SwimProtocol> swimProtocolOnLifetimes(SwimConfig config,
+                                                        SwimTransport transport,
+                                                        SwimMembershipListener listener,
+                                                        NodeId selfId,
+                                                        InetSocketAddress selfAddress,
+                                                        Supplier<OwnerLifetime> lifetimes) {
+        return Result.success(new SwimProtocol(config,
+                                               transport,
+                                               listener,
+                                               selfId,
+                                               selfAddress,
+                                               () -> true,
+                                               id -> false,
+                                               SerialExecutor.quiescingSerialExecutor(),
+                                               lifetimes));
+    }
+
+    /// #3754: as [#swimProtocolOnLifetimes], on the production (non-waiting) executor, for a test that holds the
+    /// executor so a body dispatched before the stop is still queued when the stop runs.
+    static Result<SwimProtocol> swimProtocolOnLifetimesHeldExecutor(SwimConfig config,
+                                                                    SwimTransport transport,
+                                                                    SwimMembershipListener listener,
+                                                                    NodeId selfId,
+                                                                    InetSocketAddress selfAddress,
+                                                                    Supplier<OwnerLifetime> lifetimes) {
+        return Result.success(new SwimProtocol(config,
+                                               transport,
+                                               listener,
+                                               selfId,
+                                               selfAddress,
+                                               () -> true,
+                                               id -> false,
+                                               SerialExecutor.serialExecutor(),
+                                               lifetimes));
     }
 }

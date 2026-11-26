@@ -7,6 +7,7 @@ package org.pragmatica.aether.api;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.DoubleSupplier;
 
@@ -23,6 +24,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.net.tcp.Server;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,10 +41,11 @@ class ForwardReplyResenderTest {
     private static final HttpForwardResponse REPLY = reply("req-1");
 
     private final AtomicLong nowNanos = new AtomicLong();
-    private final List<TimeSpan> holds = new ArrayList<>();
-    private final List<Runnable> pending = new ArrayList<>();
+    private final FakeOwnerSeam seam = new FakeOwnerSeam();
     private final List<WriteOutcome> script = new ArrayList<>();
     private final List<HttpForwardResponse> writes = new ArrayList<>();
+    private final AtomicInteger jitterDraws = new AtomicInteger();
+    private Runnable duringSend = () -> {};
 
     @Test
     void send_writtenFirstTime_isNeverResent() {
@@ -51,7 +54,7 @@ class ForwardReplyResenderTest {
         resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(10).seconds());
 
         assertThat(writes).hasSize(1);
-        assertThat(holds).isEmpty();
+        assertThat(holds()).isEmpty();
     }
 
     @Test
@@ -62,9 +65,9 @@ class ForwardReplyResenderTest {
         resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(10).seconds());
         runScheduled();
 
-        assertThat(holds).extracting(TimeSpan::millis).containsExactly(250L);
+        assertThat(holds()).extracting(TimeSpan::millis).containsExactly(250L);
         assertThat(writes).as("the same frame, twice").containsExactly(REPLY, REPLY);
-        assertThat(pending).isEmpty();
+        assertThat(seam.nextLive().isEmpty()).isTrue();
     }
 
     @Test
@@ -77,7 +80,7 @@ class ForwardReplyResenderTest {
         resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(1).hours());
         runScheduled();
 
-        assertThat(holds).extracting(TimeSpan::millis).containsExactly(250L, 500L, 1000L, 2000L, 4000L, 4000L, 4000L, 4000L, 4000L);
+        assertThat(holds()).extracting(TimeSpan::millis).containsExactly(250L, 500L, 1000L, 2000L, 4000L, 4000L, 4000L, 4000L, 4000L);
         assertThat(writes).hasSize(10);
     }
 
@@ -93,8 +96,8 @@ class ForwardReplyResenderTest {
         resender(random).deliver(network, ENTRY, REPLY, timeSpan(1).hours());
         runScheduled();
 
-        assertThat(holds.get(0).millis()).as("first hold, low draw: 250 ms - 20%").isEqualTo(200L);
-        assertThat(holds.get(1).millis()).as("second hold, high draw: 500 ms + 20%").isBetween(599L, 600L);
+        assertThat(holds().get(0).millis()).as("first hold, low draw: 250 ms - 20%").isEqualTo(200L);
+        assertThat(holds().get(1).millis()).as("second hold, high draw: 500 ms + 20%").isBetween(599L, 600L);
     }
 
     @Test
@@ -111,7 +114,7 @@ class ForwardReplyResenderTest {
         resender.deliver(network, ENTRY, reply("req-2"), timeSpan(1).hours());
         runScheduled();
 
-        assertThat(holds).extracting(TimeSpan::millis).as("250, 500 for the first reply; 250 again for the second").containsExactly(250L, 500L, 250L);
+        assertThat(holds()).extracting(TimeSpan::millis).as("250, 500 for the first reply; 250 again for the second").containsExactly(250L, 500L, 250L);
     }
 
     @Test
@@ -127,7 +130,7 @@ class ForwardReplyResenderTest {
         resender.deliver(network, ENTRY, reply("req-2"), timeSpan(1).hours());
         runScheduled();
 
-        assertThat(holds).extracting(TimeSpan::millis)
+        assertThat(holds()).extracting(TimeSpan::millis)
                          .as("two replies to ONE peer: each is on its own schedule (250, 250 first holds; 500, 500 second)")
                          .containsExactly(250L, 250L, 500L, 500L);
     }
@@ -149,7 +152,7 @@ class ForwardReplyResenderTest {
         }
         runScheduled();
 
-        assertThat(holds).extracting(TimeSpan::millis).containsExactly(250L, 250L, 250L, 250L, 250L);
+        assertThat(holds()).extracting(TimeSpan::millis).containsExactly(250L, 250L, 250L, 250L, 250L);
         assertThat(writes).as("five first sends and five re-sends, none given up").hasSize(10);
         assertThat(nowNanos.get()).isLessThanOrEqualTo(timeSpan(2500).millis().nanos());
     }
@@ -163,9 +166,9 @@ class ForwardReplyResenderTest {
         resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(2).seconds());
         runScheduled();
 
-        assertThat(holds).extracting(TimeSpan::millis).as("250 + 500 + 1000 = 1750 ms spent; the next 2000 ms hold exceeds the 250 ms left").containsExactly(250L, 500L, 1000L);
+        assertThat(holds()).extracting(TimeSpan::millis).as("250 + 500 + 1000 = 1750 ms spent; the next 2000 ms hold exceeds the 250 ms left").containsExactly(250L, 500L, 1000L);
         assertThat(writes).hasSize(4);
-        assertThat(pending).isEmpty();
+        assertThat(seam.nextLive().isEmpty()).isTrue();
         assertThat(nowNanos.get()).isLessThanOrEqualTo(timeSpan(2).seconds().nanos());
     }
 
@@ -175,7 +178,7 @@ class ForwardReplyResenderTest {
 
         resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(100).millis());
 
-        assertThat(holds).isEmpty();
+        assertThat(holds()).isEmpty();
         assertThat(writes).hasSize(1);
     }
 
@@ -185,7 +188,7 @@ class ForwardReplyResenderTest {
 
         resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(10).seconds());
 
-        assertThat(holds).isEmpty();
+        assertThat(holds()).isEmpty();
         assertThat(writes).hasSize(1);
     }
 
@@ -207,24 +210,71 @@ class ForwardReplyResenderTest {
     void productionResender_holdsASecondRefusedReplyForTheFirstHold_notAnEscalatedOne() {
         script.add(refused());
         script.add(refused());
-        var resender = ForwardReplyResender.forwardReplyResender((task, hold) -> holds.add(hold));
+        var resender = ForwardReplyResender.forwardReplyResender(OwnerLifetime.ownerLifetime(seam));
 
         resender.deliver(network, ENTRY, REPLY, timeSpan(1).hours());
         resender.deliver(network, ENTRY, reply("req-2"), timeSpan(1).hours());
 
-        assertThat(holds).extracting(TimeSpan::millis).hasSize(2).allSatisfy(hold -> assertThat(hold).isBetween(200L, 300L));
+        assertThat(holds()).extracting(TimeSpan::millis).hasSize(2).allSatisfy(hold -> assertThat(hold).isBetween(200L, 300L));
+    }
+
+    /// #3754 (a): a re-send armed before the stop never writes after it. The wrapper is fired by hand, past the cancel, so the
+    /// verdict rests on the lifetime's own flag read and not only on the sweep.
+    @Test
+    void stop_endsAResendArmedBefore_soItNeverWritesAfterTheStop() {
+        script.add(refused());
+        script.add(sent());
+        var resender = resender(() -> 0.5);
+
+        resender.deliver(network, ENTRY, REPLY, timeSpan(10).seconds());
+        assertThat(seam.nextLive().isPresent()).as("control: the refused reply armed a re-send").isTrue();
+        resender.stop();
+        seam.fire(0);
+
+        assertThat(writes).as("the first send only; the re-send armed before the stop did not run").hasSize(1);
+    }
+
+    /// #3754 (b): a send in flight when the stop runs settles silently. The stop is called from inside the send, so the
+    /// refusal outcome arrives on an ended lifetime; neither the backoff is consulted (no jitter draw, which a WARN or a re-arm
+    /// would have needed) nor a re-send armed.
+    @Test
+    void stop_duringASend_settlesWithoutAWarnOrAReArm() {
+        script.add(refused());
+        var resender = resender(this::countedHalf);
+
+        duringSend = resender::stop;
+        resender.deliver(network, ENTRY, REPLY, timeSpan(10).seconds());
+
+        assertThat(jitterDraws.get()).as("the outcome was not acted on").isZero();
+        assertThat(seam.enqueued()).isZero();
+    }
+
+    /// Control for the test above: the same refusal without a stop draws the jitter once and arms a re-send, so the zero there
+    /// is the stop's doing.
+    @Test
+    void send_refusedWithoutAStop_drawsTheJitterAndArmsAResend() {
+        script.add(refused());
+
+        resender(this::countedHalf).deliver(network, ENTRY, REPLY, timeSpan(10).seconds());
+
+        assertThat(jitterDraws.get()).isEqualTo(1);
+        assertThat(seam.enqueued()).isEqualTo(1);
+    }
+
+    private double countedHalf() {
+        jitterDraws.incrementAndGet();
+
+        return 0.5;
     }
 
     private ForwardReplyResender resender(DoubleSupplier random) {
-        return ForwardReplyResender.forwardReplyResender((task, hold) -> {
-                                                             holds.add(hold);
-                                                             pending.add(() -> {
-                                                                 nowNanos.addAndGet(hold.nanos());
-                                                                 task.run();
-                                                             });
-                                                         },
+        return ForwardReplyResender.forwardReplyResender(OwnerLifetime.ownerLifetime(seam),
                                                          nowNanos::get,
                                                          () -> RefusalBackoff.refusalBackoff(random));
+    }
+
+    private List<TimeSpan> holds() {
+        return seam.delays();
     }
 
     /// Records every reply and answers each send with the next scripted outcome.
@@ -232,6 +282,7 @@ class ForwardReplyResenderTest {
         @Override
         public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             writes.add((HttpForwardResponse) message);
+            duringSend.run();
 
             return Promise.success(script.removeFirst());
         }
@@ -255,8 +306,11 @@ class ForwardReplyResenderTest {
     };
 
     private void runScheduled() {
-        while (!pending.isEmpty()) {
-            pending.removeFirst().run();
+        while (seam.nextLive().isPresent()) {
+            var task = seam.nextLive().unwrap();
+
+            nowNanos.addAndGet(task.delay().nanos());
+            task.runWrapper();
         }
     }
 

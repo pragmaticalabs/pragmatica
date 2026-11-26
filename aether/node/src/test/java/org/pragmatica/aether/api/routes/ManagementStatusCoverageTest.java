@@ -52,6 +52,7 @@ class ManagementStatusCoverageTest {
     private static final String API = "org.pragmatica.aether.api.";
     private static final String ROUTES = API + "routes.";
     private static final Map<String, String> PINNED = new TreeMap<>(Map.ofEntries(
+            entry(API + "AlertForwarder$AlertForwarderError$Stopped", "SERVICE_UNAVAILABLE"),
             entry(API + "AlertForwarder$AlertForwarderError$WebhookError", "BAD_GATEWAY"),
             entry(API + "AlertManager$InjectionError#INVALID_SEVERITY", "BAD_REQUEST"),
             entry(API + "AlertManager$InjectionError#MESSAGE_REQUIRED", "BAD_REQUEST"),

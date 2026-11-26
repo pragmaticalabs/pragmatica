@@ -85,6 +85,7 @@ class FalseDeathWorkerCatchUpTest {
     private KVStore<AetherKey, AetherValue> worker;
     private ReplicaApplier<AetherKey, AetherValue> applier;
     private NodeDeploymentManager manager;
+    private DeploymentWiring productionWiring;
     private TestSliceStore sliceStore;
     private TestClusterNode clusterNode;
     private HttpRoutePublisher publisher;
@@ -406,13 +407,28 @@ class FalseDeathWorkerCatchUpTest {
         assertUnloadedAndQuiet(GONE, mark);
     }
 
+    /// #3754: the same production assembly, then the node's stop (`DeploymentWiring.stop()`): the manager handed its stop to `nodeStop()`, so the node FSM
+    /// is Stopped and ignores the post-burst raise, leaving the loaded slice alone. A manager that never registers its stop, or a wiring whose stop does not
+    /// run it, leaves the FSM Active and the sweep unloads the slice.
+    @Test
+    void armH_productionWiring_nodeStopStopsTheNodeFsm_soTheLaterRaiseSweepsNothing() {
+        assembleThroughProductionWiring();
+        resync();
+        sliceStore.markAsLoadedWithSlice(GONE);
+
+        productionWiring.stop();
+        resync();
+
+        assertThat(sliceStore.loaded()).as("a stopped node FSM ignores CatchUpSwept").extracting(SliceStore.LoadedSlice::artifact).containsExactly(GONE);
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void assembleThroughProductionWiring() {
         var router = MessageRouter.mutable();
 
         worker = newStore(router);
         applier = ReplicaApplier.replicaApplier(worker, 1 << 20);
-        var wiring = DeploymentWiring.deploymentWiring(DeploymentEngine.LEGACY,
+        var wiring = productionWiring = DeploymentWiring.deploymentWiring(DeploymentEngine.LEGACY,
                                                        true,
                                                        new SimpleMeterRegistry(),
                                                        openGuard(),
@@ -432,7 +448,8 @@ class FalseDeathWorkerCatchUpTest {
                                                                            NodeDeploymentManager.DEFAULT_ACTIVATION_CHAIN_TIMEOUT,
                                                                            NodeDeploymentManager.DEFAULT_TRANSITION_RETRY_DELAY,
                                                                            () -> Epoch.epoch(1L, 1L, 1L),
-                                                                           wiring.replayEnd(worker));
+                                                                           wiring.replayEnd(worker),
+                                                                           wiring.nodeStop());
         KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                             .onPut(NodeArtifactKey.class, manager::onNodeArtifactPut)
                             .onRemove(NodeArtifactKey.class, manager::onNodeArtifactRemove)

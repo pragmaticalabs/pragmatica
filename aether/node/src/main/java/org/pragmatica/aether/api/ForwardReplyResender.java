@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import java.util.function.BiConsumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -16,7 +15,7 @@ import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.utils.OwnerLifetime;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,35 +43,50 @@ import org.slf4j.LoggerFactory;
 /// A re-send can reach a requester that already holds an earlier copy (a `ConnectionDead` frame may have sat in the offline
 /// buffer). The requester ignores a reply for a correlation it no longer waits on (`HttpForwarder#onHttpForwardResponse`
 /// removes the pending entry on the first reply), so a duplicate or late reply is harmless.
+///
+/// Stop (#3754): every re-send is scheduled on an [OwnerLifetime] that [#stop()] ends, so a re-send armed before the stop
+/// never runs after it. A send already in flight at the stop settles silently: `settle` re-reads the lifetime before it
+/// WARNs or re-arms (the second check, class N: the effect is a re-send of an idempotent reply frame or a WARN, and this node is
+/// the only sender of the reply, so a late one is harmless).
 final class ForwardReplyResender {
     private static final Logger log = LoggerFactory.getLogger(ForwardReplyResender.class);
 
-    private final BiConsumer<Runnable, TimeSpan> scheduler;
+    private final OwnerLifetime lifetime;
     private final LongSupplier nanoClock;
     private final Supplier<RefusalBackoff<Unit>> backoffs;
 
-    private ForwardReplyResender(BiConsumer<Runnable, TimeSpan> scheduler,
+    private ForwardReplyResender(OwnerLifetime lifetime,
                                  LongSupplier nanoClock,
                                  Supplier<RefusalBackoff<Unit>> backoffs) {
-        this.scheduler = scheduler;
+        this.lifetime = lifetime;
         this.nanoClock = nanoClock;
         this.backoffs = backoffs;
     }
 
     /// The production resender: shared scheduler, system nano clock, jittered backoff.
     static ForwardReplyResender forwardReplyResender() {
-        return forwardReplyResender(ForwardReplyResender::scheduleShared);
+        return forwardReplyResender(OwnerLifetime.ownerLifetime());
     }
 
-    /// The production resender with only the scheduler replaced: the clock and the per-reply jittered backoff stay production.
-    static ForwardReplyResender forwardReplyResender(BiConsumer<Runnable, TimeSpan> scheduler) {
-        return forwardReplyResender(scheduler, System::nanoTime, RefusalBackoff::refusalBackoff);
+    /// The production resender with only the lifetime replaced: the clock and the per-reply jittered backoff stay production.
+    static ForwardReplyResender forwardReplyResender(OwnerLifetime lifetime) {
+        return forwardReplyResender(lifetime, System::nanoTime, RefusalBackoff::refusalBackoff);
     }
 
-    static ForwardReplyResender forwardReplyResender(BiConsumer<Runnable, TimeSpan> scheduler,
+    static ForwardReplyResender forwardReplyResender(OwnerLifetime lifetime,
                                                      LongSupplier nanoClock,
                                                      Supplier<RefusalBackoff<Unit>> backoffs) {
-        return new ForwardReplyResender(scheduler, nanoClock, backoffs);
+        return new ForwardReplyResender(lifetime, nanoClock, backoffs);
+    }
+
+    /// Ends the lifetime: no re-send scheduled before this runs after it, and a send in flight settles silently. Idempotent.
+    Unit stop() {
+        return lifetime.end();
+    }
+
+    /// @return `true` once [#stop()] has run; for tests
+    boolean isStopped() {
+        return lifetime.isEnded();
     }
 
     /// Sends `reply` to `target` through `network`; `budget` is the requester's remaining wait, which bounds every re-send.
@@ -102,6 +116,10 @@ final class ForwardReplyResender {
                         WriteOutcome outcome,
                         RefusalBackoff<Unit> holds,
                         long deadlineNanos) {
+        if (lifetime.isEnded()) {
+            return;
+        }
+
         switch (outcome) {
             case WriteOutcome.Sent _ -> {}
             case WriteOutcome.EncodeFailed _ -> giveUp(target, reply, outcome, "cannot be encoded");
@@ -132,7 +150,7 @@ final class ForwardReplyResender {
             return;
         }
 
-        scheduler.accept(() -> write(network, target, reply, holds, deadlineNanos), hold);
+        lifetime.schedule(_ -> write(network, target, reply, holds, deadlineNanos), hold);
     }
 
     @Contract
@@ -142,10 +160,5 @@ final class ForwardReplyResender {
                  target,
                  outcome,
                  reason);
-    }
-
-    @Contract
-    private static void scheduleShared(Runnable task, TimeSpan delay) {
-        SharedScheduler.schedule(task, delay);
     }
 }
