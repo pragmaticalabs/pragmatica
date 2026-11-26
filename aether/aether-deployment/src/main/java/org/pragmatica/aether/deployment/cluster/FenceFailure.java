@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.cluster.state.kvstore.KVCommand.RefusalKind;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 
 
@@ -68,6 +69,19 @@ public sealed interface FenceFailure extends Cause {
         @Override
         public String message() {
             return "The attempt was cancelled while its witness was in flight";
+        }
+    }
+
+    /// A [DrainSink] request arrived from a caller that still holds the owner's monitor, so the sink refused it before any gate or write:
+    /// a request issued under that monitor could invert the lock order against the registry. `target` is the node the request named.
+    record CalledUnderOwnerMonitor(NodeId target) implements FenceFailure {
+        public static CalledUnderOwnerMonitor calledUnderOwnerMonitor(NodeId target) {
+            return new CalledUnderOwnerMonitor(target);
+        }
+
+        @Override
+        public String message() {
+            return "Drain of " + target + " requested while the owner monitor was held";
         }
     }
 }
