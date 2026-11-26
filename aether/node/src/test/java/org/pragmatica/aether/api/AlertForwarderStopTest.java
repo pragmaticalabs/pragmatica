@@ -7,6 +7,7 @@ package org.pragmatica.aether.api;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandler;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #3754: the webhook retry is scheduled on the forwarder's lifetime, and `close()` ends it. Each test drives the production
@@ -152,7 +154,10 @@ class AlertForwarderStopTest {
         seam.fire(0);
 
         assertThat(isSuccess(forwarded)).as("the retry delivered").isTrue();
-        assertThat(forwarder.pendingRetryCount()).as("a resolved retry is not kept for the close to sweep").isZero();
+        // onResult handlers run on the virtual-thread pool, not in the resolver: the removal is awaited, never read at once.
+        await().atMost(Duration.ofSeconds(5))
+               .untilAsserted(() -> assertThat(forwarder.pendingRetryCount()).as("a resolved retry is not kept for the close to sweep")
+                                                                          .isZero());
     }
 
     /// Pre-existing behaviour (the constructor made the same decision before #3754), moved into `webhookClient` by this PR and
