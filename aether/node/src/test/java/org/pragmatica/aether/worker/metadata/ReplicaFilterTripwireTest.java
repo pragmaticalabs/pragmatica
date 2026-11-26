@@ -134,6 +134,19 @@ class ReplicaFilterTripwireTest {
                                                                                                          .isFalse();
     }
 
+    /// #3389: the declared-route row is INCLUDED and enters the scope of its artifact, so a worker holding the artifact reads the route's declared
+    /// state from its replica. Mutation: move `DeclaredRouteKey` to the EXCLUDE arm, or drop its `scopesFor` arm, and this goes red.
+    @Test
+    void declaredRouteKey_isIncluded_andEntersTheScopeOfItsArtifact() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var key = AetherKey.DeclaredRouteKey.declaredRouteKey(ARTIFACT, "GET", "/orders/{id}").unwrap();
+
+        index.put(key, OPAQUE);
+
+        assertThat(ReplicaFilter.replicaFilter().excludes(key)).as("the declared-route row reaches the worker replica").isFalse();
+        assertThat(index.snapshot("artifact:" + ARTIFACT.base().asString())).as("scoped by its artifact").containsKey(key);
+    }
+
     /// F3 (P3-D, know `23ca0fd65f` D.2): the node FSM's two key families reach a worker over the replica feed: its goals (`SliceDesiredKey`) and
     /// the observed rows, its own echo included (`SliceObservedKey`). The cluster FSM's own families do not. MT: either family moved back to
     /// EXCLUDE is red here.
