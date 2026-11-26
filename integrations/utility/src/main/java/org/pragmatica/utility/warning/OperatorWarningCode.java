@@ -673,10 +673,12 @@ public enum OperatorWarningCode {
     /// during a reconfiguration: then the voter may still be stuck and a new episode starts from zero). Exactly one per stuck warning,
     /// from the node that raised it. INFO, published only after a published stuck warning for the voter (#752 mechanism).
     CORE_VOTER_SYNCING_ENDED("core-voter-syncing-ended", "consensus", WarningLevel.INFO, CORE_VOTER_SYNCING_STUCK),
-    /// Genesis formed with a seat of the agreed roster that was not a connected, authenticated peer when the roster was installed
-    /// (#1654): the view agreement counts each member's last two reports with no freshness, so a member that reported the view and
-    /// then died is still agreed. Formation is not blocked; auto-heal is expected to replace the seat. Raised once per seat by the node
-    /// that installed the roster; the subject is the seat's node id. Closed by [#GENESIS_SEAT_REACHABLE].
+    /// Genesis formed with a seat of the agreed roster that was not a connected, authenticated peer when the roster was installed and
+    /// stayed unconnected for two consecutive engine ticks after it (#1654, #3774): the view agreement counts each member's last two
+    /// reports with no freshness, so a member that reported the view and then died is still agreed. A seat that connects inside those
+    /// two ticks (it can be mid-handshake at the install) is never named. Formation is not blocked; auto-heal is expected to replace
+    /// the seat. Raised once per seat by the node that installed the roster; the subject is the seat's node id. Closed by
+    /// [#GENESIS_SEAT_REACHABLE].
     GENESIS_SEAT_UNREACHABLE("genesis-seat-unreachable", "consensus", WarningLevel.WARNING),
     /// The recovery of [#GENESIS_SEAT_UNREACHABLE], same subject (#1654): the seat is a connected peer again, or it left the voter
     /// roster (replaced); the message says which. INFO, published only after a published unreachable event for the seat (#752 mechanism).

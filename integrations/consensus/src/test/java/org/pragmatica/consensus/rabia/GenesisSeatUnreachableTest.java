@@ -94,6 +94,7 @@ class GenesisSeatUnreachableTest {
         engine = pendingB();
         engine.useGenesisSeatRemedy(remedy::get);
         formWithYGoneOn(engine);
+        confirmWindow();
 
         assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
         assertThat(unreachableMessages()).singleElement().asString().endsWith("Formation is not blocked. REMEDY-ARM-ONE");
@@ -112,6 +113,7 @@ class GenesisSeatUnreachableTest {
         engine = pendingB();
         engine.useGenesisSeatRemedy(() -> "REMEDY-ARM-TWO");
         formWithYGoneOn(engine);
+        confirmWindow();
 
         assertThat(unreachableMessages()).singleElement().asString().endsWith("Formation is not blocked. REMEDY-ARM-TWO");
     }
@@ -173,7 +175,9 @@ class GenesisSeatUnreachableTest {
     /// slot probe tick; the stall tick is never invoked here.
     @Test
     void unreachableSeat_reconnectsWhileEngineIdle_isClosedByTheIdleProbeTick() {
-        formWithYGone();
+        engine = pendingB();
+        formWithYGoneOn(engine);
+        engine.runQuietSlotProbeForTesting();
         engine.runQuietSlotProbeForTesting();
         settle();
         assertThat(seatWarnings()).as("still unreachable: nothing closes").containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
@@ -209,9 +213,53 @@ class GenesisSeatUnreachableTest {
         assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y), code(GENESIS_SEAT_REACHABLE, Y));
     }
 
+    /// #3774: the seat that completes the agreement can still be mid-handshake at the install (its report arrived on its own link before
+    /// this node's dial to it attached). It is not named at the install, and a seat that connects inside the confirm window is never named,
+    /// so there is nothing to close either. Pre-fix the warning was raised at the install and closed by the next tick.
+    @Test
+    void seatThatConnectsInsideTheConfirmWindow_isNeverNamed() {
+        engine = pendingB();
+        formWithYGoneOn(engine);
+        assertThat(seatWarnings()).as("the install itself names nothing: the seat may still be mid-handshake").isEmpty();
+
+        engine.runPhaseStallCheckForTesting();
+        settle();
+        connected.add(Y);
+        engine.runPhaseStallCheckForTesting();
+        engine.runPhaseStallCheckForTesting();
+        engine.runPhaseStallCheckForTesting();
+        settle();
+
+        assertThat(engine.voterConfiguration()).as("precondition: genesis formed").isEqualTo(Option.some(new VoterConfiguration(0, VIEW)));
+        assertThat(seatWarnings()).as("no raise and no close: the seat was never named").isEmpty();
+    }
+
+    /// The other edge of the window: one tick of unconnected is not enough, the second consecutive one names the seat.
+    @Test
+    void seatUnconnectedForOneTickOnly_isNamedOnTheSecondConsecutiveTick() {
+        engine = pendingB();
+        formWithYGoneOn(engine);
+        engine.runPhaseStallCheckForTesting();
+        settle();
+        assertThat(seatWarnings()).as("one unconnected tick names nothing").isEmpty();
+
+        engine.runPhaseStallCheckForTesting();
+        settle();
+
+        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
+    }
+
     private void formWithYGone() {
         engine = pendingB();
         formWithYGoneOn(engine);
+        confirmWindow();
+    }
+
+    /// The seat stays unconnected through the whole confirm window: two consecutive stall ticks.
+    private void confirmWindow() {
+        engine.runPhaseStallCheckForTesting();
+        engine.runPhaseStallCheckForTesting();
+        settle();
     }
 
     private List<String> unreachableMessages() {

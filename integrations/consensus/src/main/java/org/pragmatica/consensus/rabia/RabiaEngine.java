@@ -179,6 +179,10 @@ public class RabiaEngine<C extends Command> {
     private final AtomicReference<ScheduledFuture<?>> genesisTimer = new AtomicReference<>();
     /// Seats this node raised [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for and has not closed yet (#1654).
     private final Set<NodeId> unreachableGenesisSeats = ConcurrentHashMap.newKeySet();
+    /// Seats of the installed roster that were not connected at the install, with the consecutive ticks each has stayed unconnected since
+    /// (#3774). Not yet warned about: a seat is named only after [#GENESIS_SEAT_CONFIRM_TICKS] such ticks, and a seat that connects or leaves
+    /// the roster before then is dropped without a warning.
+    private final Map<NodeId, Integer> unconfirmedGenesisSeats = new ConcurrentHashMap<>();
 
     /// The remedy sentence of the seat warning (#1654), read once at the raise and never again: the warning is true in the auto-heal
     /// state it was raised in. The node binds it to its live auto-heal state ([#useGenesisSeatRemedy]); until then it names no state.
@@ -193,6 +197,11 @@ public class RabiaEngine<C extends Command> {
     private static final TimeSpan GENESIS_ROUND_BASE = TimeSpan.timeSpan(250).millis();
     private static final int GENESIS_BACKOFF_STEPS = 5;
     private static final int GENESIS_WARN_EVERY_ROUNDS = 10;
+    /// Consecutive ticks a seat that was not connected at the genesis install must stay unconnected before it is named (#3774). Two, so the
+    /// window is at least one full tick interval whatever the timer's phase at the install: the seat that completed the agreement can
+    /// still be mid-handshake there (its report arrived on its own link before this node's dial to it attached), and the dead seat is
+    /// still unconnected after the window.
+    private static final int GENESIS_SEAT_CONFIRM_TICKS = 2;
 
     private volatile Option<Cause> authorityFailure = Option.none();
     /// #3213 — whether the persisted state was written by THIS engine instance ([#saveState]). Its configuration was then
@@ -574,12 +583,14 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// #1654: the view agreement counts each member's last two reports with no freshness, so a member that reported
-    /// twice and then died can be agreed. Formation goes ahead; every agreed seat that is not a connected, authenticated
-    /// peer now is named once, loudly, for auto-heal to replace.
+    /// twice and then died can be agreed. Formation goes ahead. Every agreed seat that is not a connected, authenticated
+    /// peer now is only a suspect: the install can be completed by a seat's own report while that seat is still mid-handshake
+    /// here, so naming it at the install would send the operator to a healthy node (#3774). [#confirmUnconnectedGenesisSeats]
+    /// names the seats that stay unconnected, once, loudly, for auto-heal to replace.
     private void signalUnreachableSeats(VoterConfiguration configuration) {
         var reachable = connectedSeats();
 
-        configuration.members().stream().filter(seat -> !reachable.contains(seat)).forEach(this::signalUnreachableSeat);
+        configuration.members().stream().filter(seat -> !reachable.contains(seat)).forEach(seat -> unconfirmedGenesisSeats.put(seat, 0));
     }
 
     /// Connectivity only, not discovery: with `cluster.genesis_voters` a seat can be connected before membership counts it,
@@ -592,6 +603,32 @@ public class RabiaEngine<C extends Command> {
         return Set.copyOf(connected);
     }
 
+    /// Ticks each suspect seat of the install: a seat that is connected or has left the voter roster is dropped without a warning (it
+    /// never needed one, so there is nothing to close); a seat still unconnected after [#GENESIS_SEAT_CONFIRM_TICKS] consecutive ticks
+    /// is named. Runs first on the same two ticks as [#resolveUnreachableGenesisSeats].
+    private void confirmUnconnectedGenesisSeats() {
+        if (unconfirmedGenesisSeats.isEmpty()) {
+            return;
+        }
+
+        var connected = network.connectedPeers();
+
+        List.copyOf(unconfirmedGenesisSeats.keySet()).forEach(seat -> confirmUnconnectedGenesisSeat(seat, connected));
+    }
+
+    private void confirmUnconnectedGenesisSeat(NodeId seat, Set<NodeId> connected) {
+        if (connected.contains(seat) || voters.filter(configuration -> !configuration.contains(seat)).isPresent()) {
+            unconfirmedGenesisSeats.remove(seat);
+
+            return;
+        }
+
+        if (unconfirmedGenesisSeats.merge(seat, 1, Integer::sum) >= GENESIS_SEAT_CONFIRM_TICKS) {
+            unconfirmedGenesisSeats.remove(seat);
+            signalUnreachableSeat(seat);
+        }
+    }
+
     private Unit signalUnreachableSeat(NodeId seat) {
         unreachableGenesisSeats.add(seat);
 
@@ -599,8 +636,8 @@ public class RabiaEngine<C extends Command> {
                                       operatorWarningSink.get(),
                                       OperatorWarningCode.GENESIS_SEAT_UNREACHABLE,
                                       seat.id(),
-                                      "Node {} installs genesis with seat {} not connected: the seat reported the agreed view earlier and is "
-                                     + "unreachable now. Formation is not blocked. {}",
+                                      "Node {} installed genesis with seat {} not connected: the seat reported the agreed view earlier and has "
+                                     + "stayed unreachable since. Formation is not blocked. {}",
                                       self,
                                       seat,
                                       genesisSeatRemedy.get().get());
@@ -610,6 +647,7 @@ public class RabiaEngine<C extends Command> {
     /// or has left the voter roster (replaced). Runs on the phase-stall tick (InPhase) and on the idle slot probe tick (Idle), so a seat
     /// closes within one tick interval whether or not a phase is in progress.
     private void resolveUnreachableGenesisSeats() {
+        confirmUnconnectedGenesisSeats();
         if (unreachableGenesisSeats.isEmpty()) {
             return;
         }
