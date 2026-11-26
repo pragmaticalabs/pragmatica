@@ -213,6 +213,8 @@ public final class NodeDeploymentContext {
     /// `lifetime` is the node deployment manager's one scheduling lifetime (#3754): every timer the node deployment FSM arms goes through it,
     /// entry into `Stopped` ends it, and every consensus write of the FSM goes through a door that refuses once it has ended. It is per
     /// context, not per `Active`: `Active` is rebuilt on every quorum cycle, and the bounded park of a refused start is measured across cycles.
+    /// The one family not on the lifetime is `Promise.timeout` (the activation chain and the consensus-operation bounds in `NodeDeploymentState`): its
+    /// expiry after the stop reaches only local teardown (unregister, unpublish) and writes the gate refuses, so it has no post-stop consensus effect.
     /// Tests pass `OwnerLifetime.ownerLifetime(seam)` with a hand-driven seam.
     public NodeDeploymentContext(Fsm<NodeDeploymentState, ClusterFsmEvent> fsm,
                                  NodeId self,
