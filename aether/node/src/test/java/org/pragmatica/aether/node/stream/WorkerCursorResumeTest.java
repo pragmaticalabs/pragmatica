@@ -455,6 +455,20 @@ class WorkerCursorResumeTest {
             assertThat(applies).describedAs("one read outstanding per node").hasSize(1);
         }
 
+        /// The pass is synchronous and acts on what EARLIER reads answered, never on its own read: a read that answers inside
+        /// the pass is seen by the next pass only.
+        @Test
+        void readAnsweringInsideThePass_isSeenByTheNextPassOnly() {
+            var immediate = CommittedCursorRead.committedEpochs(() -> true,
+                                                                _ -> Option.none(),
+                                                                CommittedCursorRead.consensusReads(_ -> Promise.success(List.<Object> of(Option.some(rewound(LATER))))));
+
+            assertThat(immediate.forPass(List.of(FIRST)).apply(FIRST)).describedAs("a pass never acts on its own read")
+                                                                      .isEqualTo(Option.none());
+            assertThat(immediate.forPass(List.of(FIRST)).apply(FIRST)).describedAs("the next pass acts on the earlier answer")
+                                                                      .isEqualTo(Option.some(LATER));
+        }
+
         @Test
         void failedRead_freesTheSlot() {
             source.forPass(List.of(FIRST));
