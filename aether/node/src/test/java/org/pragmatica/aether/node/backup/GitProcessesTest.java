@@ -16,6 +16,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -23,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
@@ -197,29 +199,78 @@ class GitProcessesTest {
     }
 
     /// A member that joins a root's tree only after the freeze's last read (a fork that completed in the kernel after the read) is killed too, and so
-    /// is one that joins after that sweep's own read: the roots' trees are read again, before the roots are killed, until a read adds nothing (#2979,
-    /// fork-window mechanism). The root reports no child on its first read, one child on its second and two on every later one.
+    /// is one that joins after the sweep's own kill: the roots' trees are read again, before the roots are killed, until a read adds nothing (#2979,
+    /// fork-window mechanism). The invariant is behavioural: every member that joined before the sweep's last read is dead, and that read added nothing.
+    /// The joins are scripted (see [LateJoiners]), so the number of reads follows from the script, not from the host's speed (#3802).
     @Test
     @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void kill_killsTheMembersThatJoinAfterTheFreezesLastRead_untilAReadAddsNothing() {
-        var reads = new AtomicInteger();
-        var first = mortalHandle(0);
-        var second = mortalHandle(0);
-        var root = mortalHandle(0, () -> childrenAtRead(reads.incrementAndGet(), first, second));
-
-        assertThat(GitProcesses.kill(List.of(processOf(root)), 5_000)).as("the whole tree is dead").isTrue();
-        assertThat(first.isAlive()).as("the member found after the freeze is killed").isFalse();
-        assertThat(second.isAlive()).as("the member found after the sweep's first read is killed").isFalse();
-        assertThat(root.isAlive()).as("the root is killed").isFalse();
-        assertThat(reads.get()).as("the sweep read until a read added nothing").isGreaterThanOrEqualTo(4);
+        assertSweepEndsOnAReadThatAddsNothing(0);
     }
 
-    private static Stream<ProcessHandle> childrenAtRead(int read, ProcessHandle first, ProcessHandle second) {
-        return switch (read) {
-            case 1 -> Stream.empty();
-            case 2 -> Stream.of(first);
-            default -> Stream.of(first, second);
-        };
+    /// The same sweep on a host that is slow to read: every read takes a second, which is more than the five-second bound's freeze half allows for the
+    /// whole script. The outcome does not change (#3802: the sweep stopped after three reads on a loaded host).
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_killsTheMembersThatJoinAfterTheFreezesLastRead_whenEveryReadIsSlow() {
+        assertSweepEndsOnAReadThatAddsNothing(1_000);
+    }
+
+    private static void assertSweepEndsOnAReadThatAddsNothing(long readMillis) {
+        var joiners = new LateJoiners(readMillis);
+        var root = mortalHandle(0, joiners::read);
+
+        assertThat(GitProcesses.kill(List.of(processOf(root)), UNHURRIED_BOUND_MILLIS)).as("the whole tree is dead").isTrue();
+        assertThat(joiners.joined()).as("control: the member that joins after the sweep's kill was read").contains(joiners.late);
+        assertThat(joiners.joined()).as("every member that joined before the last read is dead").allMatch(member -> !member.isAlive());
+        assertThat(root.isAlive()).as("the root is killed").isFalse();
+        assertThat(joiners.lastReadAddedNothing()).as("the sweep stopped only after a read that added no member").isTrue();
+    }
+
+    /// A kill's bound that no host reaches: the freeze and the sweep give up at half of it, so a test that must not race the clock passes it.
+    private static final long UNHURRIED_BOUND_MILLIS = 120_000;
+
+    /// The roots' tree as the sweep reads it, scripted: the first read finds nothing, the second one member, the third and later two, and a third joins
+    /// only after the second has been killed (released by its kill, not by time), so it is found by a read that follows the sweep's kill. Each read
+    /// takes `readMillis`, and its result is kept: a read added nothing when it returns only members an earlier read returned.
+    private static final class LateJoiners {
+        private final long readMillis;
+        private final AtomicBoolean secondKilled = new AtomicBoolean();
+        private final List<Set<ProcessHandle>> reads = new CopyOnWriteArrayList<>();
+        final ProcessHandle first = mortalHandle(2_000_000_021L, 0, Stream::empty, GitProcessesTest::nothing);
+        final ProcessHandle second = mortalHandle(2_000_000_022L, 0, Stream::empty, () -> secondKilled.set(true));
+        final ProcessHandle late = mortalHandle(2_000_000_023L, 0, Stream::empty, GitProcessesTest::nothing);
+
+        LateJoiners(long readMillis) {
+            this.readMillis = readMillis;
+        }
+
+        Stream<ProcessHandle> read() {
+            sleepFor(readMillis);
+            var members = membersAtRead(reads.size() + 1);
+
+            reads.add(members);
+
+            return members.stream();
+        }
+
+        private Set<ProcessHandle> membersAtRead(int read) {
+            return switch (read) {
+                case 1 -> Set.of();
+                case 2 -> Set.of(first);
+                default -> secondKilled.get() ? Set.of(first, second, late) : Set.of(first, second);
+            };
+        }
+
+        Set<ProcessHandle> joined() {
+            return reads.stream().flatMap(Set::stream).collect(Collectors.toSet());
+        }
+
+        boolean lastReadAddedNothing() {
+            var earlier = reads.subList(0, Math.max(0, reads.size() - 1)).stream().flatMap(Set::stream).collect(Collectors.toSet());
+
+            return reads.size() > 1 && earlier.containsAll(reads.getLast());
+        }
     }
 
     /// An interrupt that lands while the freeze helper runs does not kill the helper: the freeze completes (the helper leaves its mark), the tree is
