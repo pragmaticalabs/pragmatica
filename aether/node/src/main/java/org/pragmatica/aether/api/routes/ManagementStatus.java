@@ -174,7 +174,10 @@ public final class ManagementStatus {
                                                                                      "CONFLICT"),
                                                                      Listing.listing(API
                                                                                     + "AlertForwarder$AlertForwarderError$WebhookError",
-                                                                                     HttpStatus.BAD_GATEWAY))
+                                                                                     HttpStatus.BAD_GATEWAY),
+                                                                     Listing.listing(API
+                                                                                    + "AlertForwarder$AlertForwarderError$Stopped",
+                                                                                     UNAVAILABLE))
                                                                  .flatMap(Listing::entries)
                                                                  .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
                                                                                                        Map.Entry::getValue));
