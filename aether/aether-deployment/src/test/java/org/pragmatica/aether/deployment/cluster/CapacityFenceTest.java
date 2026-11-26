@@ -166,7 +166,14 @@ class CapacityFenceTest {
         observeNode();
     }
 
-    /// A successful terminate releases the reservation: a test that terminates twice re-arms it with this before the second call.
+    /// A terminable node with ledger room for two releases: a successful terminate releases the reservation and one ledger slot, so a test
+    /// that terminates twice starts here and re-arms the reservation with [#observeNode()] before the second call.
+    private void terminableTwice() {
+        initialize(2);
+        observeNode();
+    }
+
+    /// Seeds the OBSERVED reservation of `NODE`.
     private void observeNode() {
         var key = new AetherKey.CapacityReservationKey(NODE);
 
@@ -281,7 +288,7 @@ class CapacityFenceTest {
     /// the same 6 s is refused (above), and 31 s is refused under the default.
     @Test
     void terminate_underTheDefaultApplyTimeout_acceptsSixSeconds_andRefusesThirtyOne() {
-        terminable();
+        terminableTwice();
         lifecycle = lifecycleWith(ProtocolConfig.DEFAULT_APPLY_TIMEOUT);
         afterWitness = () -> nano.addAndGet(6 * SECOND_NANOS);
 
@@ -300,7 +307,7 @@ class CapacityFenceTest {
     /// that always fires.
     @Test
     void terminate_whenTheElapsedTimeIsWithinOrExactlyAtTheApplyTimeout_callsTheProvider() {
-        terminable();
+        terminableTwice();
         afterWitness = () -> nano.addAndGet(4 * SECOND_NANOS);
         assertThat(terminate().isSuccess()).as("4 s of 5 s").isTrue();
         assertThat(terminates.get()).isEqualTo(1);
