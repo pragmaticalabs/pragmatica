@@ -17,6 +17,7 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
 import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
+import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -45,12 +46,21 @@ final class RouteProbe {
     }
 
     static Result<Object> run(Stream<Route<?>> routes, ManagementRoute which, List<String> pathParams, Map<String, List<String>> query) {
-        var route = routes.filter(candidate -> candidate.name().equals(which.name())).findFirst().orElseThrow();
+        var route = resolved(routes, which);
         var holder = new AtomicReference<Result<Object>>();
 
         route.handler().handle(new Request(pathParams, query, null, INSTANCE)).await().onResult(result -> holder.set(result.map(v -> (Object) v)));
 
         return holder.get();
+    }
+
+    /// The handler a request for `which` reaches: the lookup `ManagementRouter.dispatch` makes ([ManagementRouter#registered]), over a router built from the
+    /// same sources the way production builds it. Not a search of the list: a route registered twice fails the build here, as it
+    /// does at node start, instead of one registration silently hiding the other.
+    private static Route<?> resolved(Stream<Route<?>> routes, ManagementRoute which) {
+        var registered = routes.toList();
+
+        return ManagementRouter.managementRouter((RouteSource) registered::stream).registered(which.name()).unwrap();
     }
 
     static HttpStatus problemStatus(Cause cause) {

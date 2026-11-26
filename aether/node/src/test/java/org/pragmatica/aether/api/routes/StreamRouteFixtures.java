@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
+import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
@@ -69,7 +70,17 @@ final class StreamRouteFixtures {
                                    StreamReadRouter readRouter,
                                    KVStore<AetherKey, AetherValue> store,
                                    StreamNamespacesService namespaces) {
-        var node = node(manager, readRouter, store);
+        return routes(manager, readRouter, StreamWriteRouter.localOnly(manager), store, namespaces);
+    }
+
+    /// The same two route classes over a node whose writes go through `writeRouter`: a publish at a node that is not the
+    /// stream's owner reaches the owner through it, which is the path a publish takes in production.
+    static Stream<Route<?>> routes(StreamPartitionManager manager,
+                                   StreamReadRouter readRouter,
+                                   StreamWriteRouter writeRouter,
+                                   KVStore<AetherKey, AetherValue> store,
+                                   StreamNamespacesService namespaces) {
+        var node = node(manager, readRouter, writeRouter, store);
         var api = StreamApiRoutes.streamApiRoutes(() -> node,
                                                   namespaces,
                                                   ConsumerGroupCoordinator.noOp(),
@@ -82,18 +93,27 @@ final class StreamRouteFixtures {
     }
 
     static ManageableNode node(StreamPartitionManager manager, StreamReadRouter readRouter, KVStore<AetherKey, AetherValue> store) {
+        return node(manager, readRouter, StreamWriteRouter.localOnly(manager), store);
+    }
+
+    static ManageableNode node(StreamPartitionManager manager,
+                               StreamReadRouter readRouter,
+                               StreamWriteRouter writeRouter,
+                               KVStore<AetherKey, AetherValue> store) {
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                        new Class[]{ManageableNode.class},
-                                                       (_, method, _) -> stubbed(method.getName(), manager, readRouter, store));
+                                                       (_, method, _) -> stubbed(method.getName(), manager, readRouter, writeRouter, store));
     }
 
     private static Object stubbed(String method,
                                   StreamPartitionManager manager,
                                   StreamReadRouter readRouter,
+                                  StreamWriteRouter writeRouter,
                                   KVStore<AetherKey, AetherValue> store) {
         return switch (method) {
             case "streamPartitionManager" -> manager;
             case "streamReadRouter" -> readRouter;
+            case "streamWriteRouter" -> writeRouter;
             case "kvStore" -> store;
             default -> throw new UnsupportedOperationException("Not stubbed in test proxy: " + method);
         };
