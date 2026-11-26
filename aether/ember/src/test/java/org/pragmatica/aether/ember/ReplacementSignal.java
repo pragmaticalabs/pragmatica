@@ -20,6 +20,7 @@ final class ReplacementSignal {
     /// True when the leader's own record for `victim` is `DONE`: the state `begin` on that leader checks.
     static boolean settledOnLeader(List<? extends ManageableNode> nodes, NodeId victim) {
         return nodes.stream()
+                    .filter(ManageableNode::isLeader)
                     .anyMatch(node -> isDone(node, victim));
     }
 
