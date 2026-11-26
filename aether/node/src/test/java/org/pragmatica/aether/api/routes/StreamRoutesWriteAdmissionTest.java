@@ -165,6 +165,21 @@ class StreamRoutesWriteAdmissionTest {
         assertThat(serving.streamInfo(engineKey).isEmpty()).as("no default ring fabricated over a registered stream").isTrue();
     }
 
+    /// The node IS the owner (it appends locally) but cannot hold the ring: the stream exists, so the answer is retry (503), never
+    /// "no such stream".
+    @Test
+    void publish_ownerCannotMaterializeTheStream_is503NotNotFound() {
+        var serving = serving(0);
+        var routes = routes(serving, true, StreamNamespacesService.inMemory(), StreamWriteRouter.localOnly(serving));
+
+        var failure = routes.publishEvent(NAMESPACE, STREAM, VERSION, new PublishRequest("x", 0))
+                            .await()
+                            .fold(cause -> cause, _ -> fail("a node that cannot hold the ring cannot append"));
+
+        assertThat(failure).isInstanceOfSatisfying(ManagementServerError.StreamRefused.class,
+                                                   refused -> assertThat(refused.httpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+    }
+
     @Test
     void delete_atNonOwnerWithNoLocalEntry_succeeds_andReleasesTheCatalogEntry() {
         var serving = serving(Long.MAX_VALUE);
@@ -224,10 +239,17 @@ class StreamRoutesWriteAdmissionTest {
     }
 
     private StreamApiRoutes routes(StreamPartitionManager serving, boolean committed, StreamNamespacesService namespaces) {
+        return routes(serving, committed, namespaces, forwardingWriter(serving));
+    }
+
+    private StreamApiRoutes routes(StreamPartitionManager serving,
+                                   boolean committed,
+                                   StreamNamespacesService namespaces,
+                                   StreamWriteRouter writer) {
         var store = committed
                     ? StreamRouteFixtures.storeCommitting(engineKey, config(DECLARED))
                     : StreamRouteFixtures.emptyStore();
-        var node = StreamRouteFixtures.node(serving, StreamReadRouter.localOnly(serving), forwardingWriter(serving), store);
+        var node = StreamRouteFixtures.node(serving, StreamReadRouter.localOnly(serving), writer, store);
 
         return StreamApiRoutes.streamApiRoutes(() -> node,
                                                namespaces,
