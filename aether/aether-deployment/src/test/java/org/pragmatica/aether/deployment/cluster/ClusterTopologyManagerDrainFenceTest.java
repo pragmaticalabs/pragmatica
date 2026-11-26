@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// #3754 lane (b1), the gate, grace and monitor rows (TB4, TB4r, TB4s, TB5', TB5c, TB5d, TB5f, TB5h). Every witness answer is
+/// #3754 lane (b1), the gate, grace and monitor rows (TB4, TB4r, TB4s, TB5', TB5c, TB5d, TB5f, TB5h, TB5m, TB5u) and the ABA rows (TB5l, TB5a). Every witness answer is
 /// driven through a sink double that holds the request open and answers it through the real [DrainSink#synchronous] adapter, or
 /// through a recording answer, so the manager's own gate, entry and grace timer are exercised and the pending map is never read
 /// or written directly. The registry is a set the sink adds to and the DRAIN-command clear removes from, as the production
@@ -69,6 +69,10 @@ class ClusterTopologyManagerDrainFenceTest {
     private final CopyOnWriteArrayList<NodeId> clears = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<NodeId> terminated = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<Boolean> fsmHeldTheMonitor = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Boolean> decisionHeldTheMonitor = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Boolean> writeHeldTheMonitor = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Boolean> gateReportedTheMonitor = new CopyOnWriteArrayList<>();
+    private DrainGate gateUnderTest;
     private ClusterTopologyManager ctm;
 
     @BeforeEach
@@ -79,6 +83,9 @@ class ClusterTopologyManagerDrainFenceTest {
         clears.clear();
         terminated.clear();
         fsmHeldTheMonitor.clear();
+        decisionHeldTheMonitor.clear();
+        writeHeldTheMonitor.clear();
+        gateReportedTheMonitor.clear();
     }
 
     /// TB4: a refused witness leaves no entry and no timer, so the grace expiry reaps nothing; a second drain opens its own request.
@@ -112,33 +119,46 @@ class ClusterTopologyManagerDrainFenceTest {
                                    .isEqualTo(3);
     }
 
-    /// TB4r: the first attempt's gate ran (its timer is armed) and the sink then failed; a re-drain opens a second attempt.
-    /// The first timer fires inside the second attempt's grace and must reap nothing; the reap comes at the second's own expiry.
+    /// TB4r: the first attempt's gate ran (its timer is armed) and the sink then failed; a re-drain opens a second attempt that is
+    /// still unaccepted when the first timer expires. The first timer must find an attempt it does not own and reap nothing.
+    /// The grace timer is the static `SharedScheduler`, so no clock can be injected; instead the order of the expiries is the
+    /// witness. A control drain accepted 300 ms after the first arm (a lower-bound wait: a late wake only moves the control
+    /// later) expires 300 ms after the first timer, so the control's clear proves the first timer has already run. The one
+    /// upper bound, "the second attempt is open before the first timer expires", spans two statements and is asserted, so
+    /// a stalled test thread fails loudly instead of passing without exercising the timer.
     @Test
-    void failedFirstAttempt_itsTimerDoesNotReapTheSecondAttemptBeforeItsOwnFullGrace() {
+    void failedFirstAttempt_itsTimerDoesNotReapTheSecondAttempt() {
         var sink = witnessSink(this::addToRegistry);
-        var grace = Duration.ofMillis(1000);
+        var grace = Duration.ofMillis(500);
 
-        ctm = newCtm(sink, timeSpan(1000).millis());
-        var start = System.nanoTime();
+        ctm = newCtm(sink, timeSpan(500).millis());
         var first = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+        var armedAt = System.nanoTime();
 
         sink.acceptThenFail(0, SINK_FAILED);
         assertThat(first.await()).isEqualTo(SINK_FAILED.<Unit>result());
-        waitUntilElapsed(start, Duration.ofMillis(600));
 
-        var secondStart = System.nanoTime();
         var second = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
 
+        assertThat(Duration.ofNanos(System.nanoTime() - armedAt)).as("the second attempt was open before the first timer could expire")
+                                                                 .isLessThan(grace);
+        waitUntilElapsed(armedAt, Duration.ofMillis(300));
+
+        var control = ctm.drainNode(CONTROL, DrainReason.OPERATOR_COMMAND);
+
+        sink.accept(2);
+        assertThat(control.await().isSuccess()).isTrue();
+        awaitClearedOf(CONTROL);
+
+        assertThat(clears).as("the first timer expired 300 ms before the control's: it reaped nothing of the second attempt")
+                          .containsExactly(CONTROL);
+        assertThat(terminated).doesNotContain(TARGET);
+
         sink.accept(1);
-        assertThat(second.await().isSuccess()).isTrue();
-        awaitCleared();
 
-        var sinceSecondAccepted = Duration.ofNanos(System.nanoTime() - secondStart);
-
-        assertThat(clears).containsExactly(TARGET);
-        assertThat(sinceSecondAccepted).as("the first attempt's timer expired 600 ms before the second attempt's grace; the reap came only at the second's own expiry")
-                                       .isGreaterThanOrEqualTo(grace.minusMillis(100));
+        assertThat(second.await().isSuccess()).as("the second attempt still owned its entry").isTrue();
+        awaitClearedOf(TARGET);
+        assertThat(clears).as("the second attempt's reap came at its own expiry").containsExactly(CONTROL, TARGET);
     }
 
     /// TB4s: a drain of a target already in the registry still arms its grace timer: the arm is not conditioned on the write being fresh.
@@ -243,21 +263,118 @@ class ClusterTopologyManagerDrainFenceTest {
         assertThat(fsmHeldTheMonitor).containsExactly(false);
     }
 
-    /// TB5h: the gate the manager hands to the sink answers `ownerMonitorHeld()` by the calling thread: `true` inside `synchronized (ctm)`, else `false`.
+    /// TB5h: the write of an accepted attempt runs under the manager's monitor, and the gate the manager handed to the sink
+    /// reports it by the calling thread: the probe is the registry write the manager's own accept calls, so it samples the
+    /// monitor from inside the step, never by taking the monitor from the test.
     @Test
-    void gateHandedToTheSink_reportsTheManagersMonitorByTheCallingThread() {
+    void acceptRunsTheWriteUnderTheManagersMonitor_andTheGateReportsItInside() {
+        var sink = witnessSink(this::sampleWrite);
+
+        ctm = newCtm(sink, LONG_GRACE);
+        var outcome = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+
+        gateUnderTest = sink.gate(0);
+        assertThat(gateUnderTest.ownerMonitorHeld()).as("outside the manager's step the calling thread holds nothing").isFalse();
+
+        sink.accept(0);
+
+        assertThat(outcome.await().isSuccess()).isTrue();
+        assertThat(writeHeldTheMonitor).as("the accept ran the write under the manager's monitor").containsExactly(true);
+        assertThat(gateReportedTheMonitor).as("the gate reports the monitor held from inside the write").containsExactly(true);
+    }
+
+    /// TB5m (rule M): the decision of a drain runs under the monitor. The probe is the retirement refusal the decision
+    /// calls synchronously; it records the monitor by the calling thread, from the decision's own frame.
+    @Test
+    void drainDecision_readsItsGatesUnderTheManagersMonitor() {
         var sink = witnessSink(this::addToRegistry);
 
         ctm = newCtm(sink, LONG_GRACE);
         ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
 
-        var gate = sink.gate(0);
+        assertThat(decisionHeldTheMonitor).as("decideDrain consulted the refusal, and held the monitor doing it").containsExactly(true);
+    }
 
-        assertThat(gate.ownerMonitorHeld()).isFalse();
-        synchronized (ctm) {
-            assertThat(gate.ownerMonitorHeld()).isTrue();
-        }
-        assertThat(gate.ownerMonitorHeld()).isFalse();
+    /// TB5u (rule M): the failure row's untrack runs under the monitor. It has no outward call to probe, so the monitor is held
+    /// by the manager's own accept (blocked in its registry write) while the failure of another attempt is delivered: the
+    /// untrack must wait for the monitor, and the failed attempt's entry is gone once it ran.
+    @Test
+    void failedAttempt_untrackWaitsForTheMonitorAnAcceptHolds() throws InterruptedException {
+        var writeEntered = new CountDownLatch(1);
+        var releaseWrite = new CountDownLatch(1);
+        var sink = witnessSink(target -> addAfterLatch(target, writeEntered, releaseWrite));
+
+        ctm = newCtm(sink, LONG_GRACE);
+        var control = ctm.drainNode(CONTROL, DrainReason.OPERATOR_COMMAND);
+
+        ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+
+        var acceptor = startThread(() -> sink.accept(1));
+
+        assertThat(writeEntered.await(5, TimeUnit.SECONDS)).isTrue();
+
+        var failer = startThread(() -> sink.refuse(0, WITNESS_REFUSED));
+
+        PollUntil.pollUntil(failer::getState, state -> state == Thread.State.BLOCKED, DEADLINE)
+                 .assertMet("the untrack is blocked on the manager's monitor");
+
+        releaseWrite.countDown();
+        acceptor.join(5000);
+        failer.join(5000);
+
+        assertThat(acceptor.isAlive() || failer.isAlive()).isFalse();
+        assertThat(control.await()).isEqualTo(WITNESS_REFUSED.<Unit>result());
+        ctm.drainNode(CONTROL, DrainReason.OPERATOR_COMMAND);
+        assertThat(sink.requests()).as("the failed attempt was untracked: the next drain opens its own request").isEqualTo(3);
+    }
+
+    /// TB5l (invariant D, ABA): a join cancels attempt 1, a drain opens attempt 2 on the same target, and then the late
+    /// failure of attempt 1 arrives. It fails attempt 1's own outcome and must not untrack attempt 2.
+    @Test
+    void lateFailureOfACancelledAttempt_leavesTheNextAttemptsEntry() {
+        var sink = witnessSink(this::addToRegistry);
+
+        ctm = newCtm(sink, LONG_GRACE);
+        var first = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+
+        ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(TARGET, "worker", HLC));
+        var second = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+
+        sink.refuse(0, WITNESS_REFUSED);
+
+        assertThat(first.await()).isEqualTo(WITNESS_REFUSED.<Unit>result());
+        ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+        assertThat(sink.requests()).as("attempt 2 kept its entry: the third drain joined it").isEqualTo(2);
+
+        sink.accept(1);
+
+        assertThat(second.await().isSuccess()).isTrue();
+        assertThat(registryAdds).containsExactly(TARGET);
+    }
+
+    /// TB5a (invariant D, ABA), the accept side: the late accept of cancelled attempt 1 meets attempt 2's entry. Its gate must
+    /// answer `false`: no write, no FSM call, nothing armed for attempt 2; attempt 2 then writes once on its own accept.
+    @Test
+    void lateAcceptOfACancelledAttempt_writesNothing_andTheNextAttemptWrites() {
+        var sink = witnessSink(this::addToRegistry);
+
+        ctm = newCtm(sink, LONG_GRACE);
+        var first = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+
+        ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(TARGET, "worker", HLC));
+        var second = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+
+        sink.accept(0);
+
+        assertThat(first.await()).isEqualTo(FenceFailure.AttemptCancelled.attemptCancelled().<Unit>result());
+        assertThat(registryAdds).as("the late accept wrote nothing for attempt 2").isEmpty();
+        assertThat(fsmCalls).isEmpty();
+
+        sink.accept(1);
+
+        assertThat(second.await().isSuccess()).isTrue();
+        assertThat(registryAdds).containsExactly(TARGET);
+        assertThat(fsmCalls).containsExactly(TARGET);
     }
 
     private ClusterTopologyManager newCtm(DrainSink sink, TimeSpan grace) {
@@ -278,7 +395,7 @@ class ClusterTopologyManagerDrainFenceTest {
                                                                     Option::none,
                                                                     MembershipLiveness.UNWIRED);
 
-        manager.setRetirementRefusal(_ -> Option.none());
+        manager.setRetirementRefusal(this::sampleDrainDecision);
         manager.setHierarchyStateWriter(HierarchyStateWriter.unavailable());
         manager.activate();
         return manager;
@@ -286,6 +403,24 @@ class ClusterTopologyManagerDrainFenceTest {
 
     private WitnessSink witnessSink(Consumer<NodeId> registryAdd) {
         return WitnessSink.witnessSink(registryAdd, this::observeFsm);
+    }
+
+    private Option<String> sampleDrainDecision(NodeId target) {
+        if (insideMethod("decideDrain")) {
+            decisionHeldTheMonitor.add(Thread.holdsLock(ctm));
+        }
+
+        return Option.none();
+    }
+
+    private void sampleWrite(NodeId target) {
+        writeHeldTheMonitor.add(Thread.holdsLock(ctm));
+        gateReportedTheMonitor.add(gateUnderTest.ownerMonitorHeld());
+        addToRegistry(target);
+    }
+
+    private static boolean insideMethod(String name) {
+        return StackWalker.getInstance().walk(frames -> frames.anyMatch(frame -> frame.getMethodName().equals(name)));
     }
 
     private void addToRegistry(NodeId target) {
@@ -337,6 +472,11 @@ class ClusterTopologyManagerDrainFenceTest {
     private void awaitCleared() {
         PollUntil.pollUntil(() -> clears.size(), count -> count > 0, DEADLINE)
                  .assertMet("a grace expiry cleared a DRAIN command");
+    }
+
+    private void awaitClearedOf(NodeId target) {
+        PollUntil.pollUntil(() -> clears.contains(target), cleared -> cleared, DEADLINE)
+                 .assertMet("a grace expiry cleared the DRAIN command of " + target.id());
     }
 
     private static MessageRouter.MutableRouter quietRouter() {

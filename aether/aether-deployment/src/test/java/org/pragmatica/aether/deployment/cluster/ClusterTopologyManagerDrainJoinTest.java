@@ -31,10 +31,15 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -71,6 +76,10 @@ class ClusterTopologyManagerDrainJoinTest {
     private static final HlcTimestamp HLC = new HlcTimestamp(HlcTimestamp.pack(1L, 0), SELF);
     private static final String CANCELLED = OperatorWarningCode.NODE_DRAIN_CANCELLED_REJOINED.code();
     private static final String EVICTED = OperatorWarningCode.NODE_RETIRED_IDENTITY_REJOINED.code();
+    private static final String UNRECONCILED = OperatorWarningCode.EXTERNAL_REJOIN_UNRECONCILED.code();
+    private static final String BARRIER = OperatorWarningCode.NODE_NEVER_JOINED.code();
+    private static final Cause READMISSION_REFUSED = new NodeLifecycleManager.ReadmissionRefused("no capacity for the node");
+    private static final Cause LEDGER_UNREADABLE = Causes.cause("the ledger could not be read");
     private static final Cause RETIRED = new NodeLifecycleManager.RetiredIdentityRejoined("rejoined", "its-replacement");
     private static final Cause SUCCEEDED = Causes.cause("the outcome succeeded");
     private static final Cause WITNESS_REFUSED = Causes.cause("witness refused");
@@ -79,7 +88,9 @@ class ClusterTopologyManagerDrainJoinTest {
     private final Set<NodeId> registry = ConcurrentHashMap.newKeySet();
     private final CopyOnWriteArrayList<NodeId> registryWrites = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<String> raised = new CopyOnWriteArrayList<>();
-    private final OperatorWarningSink warningSink = OperatorWarningSink.handingOffTo(warning -> raised.add(warning.code().code()));
+    private final CopyOnWriteArrayList<String> texts = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Boolean> evictionDecisionHeldTheMonitor = new CopyOnWriteArrayList<>();
+    private final OperatorWarningSink warningSink = OperatorWarningSink.handingOffTo(this::recordWarning);
     private WitnessSink sink;
     private RecordingLifecycle lifecycle;
     private ClusterTopologyManager ctm;
@@ -98,6 +109,11 @@ class ClusterTopologyManagerDrainJoinTest {
         ctm.deactivate();
     }
 
+    private void recordWarning(OperatorWarning warning) {
+        texts.add(warning.message());
+        raised.add(warning.code().code());
+    }
+
     private void addToRegistry(NodeId target) {
         registryWrites.add(target);
         registry.add(target);
@@ -107,7 +123,7 @@ class ClusterTopologyManagerDrainJoinTest {
         var self = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("localhost", 5000).unwrap());
         var peer = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("localhost", 5001).unwrap());
         var config = new TopologyConfig(SELF, 5, timeSpan(60).seconds(), timeSpan(1).seconds(), List.of(self, peer));
-        var observer = TopologyObserver.topologyObserver(config, quietRouter(), new EmptySnapshotSource()).unwrap();
+        var observer = monitorProbing(TopologyObserver.topologyObserver(config, quietRouter(), new EmptySnapshotSource()).unwrap());
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), GRACE).unwrap();
         var liveness = MembershipLiveness.membershipLiveness(() -> Set.of(),
                                                              () -> Set.of(),
@@ -132,6 +148,24 @@ class ClusterTopologyManagerDrainJoinTest {
 
         manager.setRetirementRefusal(_ -> Option.none());
         return manager;
+    }
+
+    /// The observer the manager reads its own id from inside `decideEviction`: the probe samples the monitor by the calling thread,
+    /// from the decision's own frame, and the call itself goes on to the real observer.
+    private TopologyObserver monitorProbing(TopologyObserver real) {
+        return (TopologyObserver) Proxy.newProxyInstance(TopologyObserver.class.getClassLoader(),
+                                                         new Class<?>[]{TopologyObserver.class},
+                                                         new SelfProbe(real));
+    }
+
+    private void sampleEvictionDecision(Method method) {
+        if (method.getName().equals("self") && insideMethod("decideEviction")) {
+            evictionDecisionHeldTheMonitor.add(Thread.holdsLock(ctm));
+        }
+    }
+
+    private static boolean insideMethod(String name) {
+        return StackWalker.getInstance().walk(frames -> frames.anyMatch(frame -> frame.getMethodName().equals(name)));
     }
 
     private Option<ClusterConfigValue> clusterConfig() {
@@ -176,6 +210,23 @@ class ClusterTopologyManagerDrainJoinTest {
         return outcome.await();
     }
 
+    private static void awaitResolved(Promise<Unit> promise) {
+        await().atMost(Duration.ofSeconds(5)).until(promise::isResolved);
+    }
+
+    private void awaitRequests(int count) {
+        await().atMost(Duration.ofSeconds(5)).until(() -> sink.requests().size() == count);
+    }
+
+    /// Resolves once every handler attached to `promise` before this call has run: the event handlers of one promise run in
+    /// attach order on one thread. Attach it before the promise resolves, or it runs at once, ahead of the others.
+    private static Promise<Unit> afterHandlers(Promise<Unit> promise) {
+        var done = Promise.<Unit> promise();
+
+        promise.onResultRun(() -> done.resolve(Result.unitResult()));
+        return done;
+    }
+
     private void awaitRaised(String code) {
         await().atMost(Duration.ofSeconds(5)).until(() -> raised.contains(code));
     }
@@ -193,10 +244,10 @@ class ClusterTopologyManagerDrainJoinTest {
     private void awaitWarningBarrier() {
         OperatorWarnings.raise(LoggerFactory.getLogger(ClusterTopologyManagerDrainJoinTest.class),
                                warningSink,
-                               OperatorWarningCode.EXTERNAL_REJOIN_UNRECONCILED,
+                               OperatorWarningCode.NODE_NEVER_JOINED,
                                "barrier",
                                "barrier");
-        awaitRaised(OperatorWarningCode.EXTERNAL_REJOIN_UNRECONCILED.code());
+        awaitRaised(BARRIER);
     }
 
     /// TB6: a second drain of a target that has a pending attempt joins it. One witness request, and the second caller's
@@ -241,10 +292,12 @@ class ClusterTopologyManagerDrainJoinTest {
         lifecycle.readmission.set(() -> readmission);
         join(TARGET);
         var drain = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+        var evictionRan = afterHandlers(readmission);
 
         readmission.resolve(RETIRED.result());
+        awaitResolved(evictionRan);
 
-        assertThat(sink.requests()).as("the eviction joined the drain: no witness request of its own").hasSize(1);
+        assertThat(sink.requests()).as("the eviction ran and joined the drain: no witness request of its own").hasSize(1);
         assertThat(drain.isResolved()).isFalse();
 
         sink.accept(0);
@@ -340,7 +393,7 @@ class ClusterTopologyManagerDrainJoinTest {
 
         sink.refuse(0, APPLY_TIMEOUT);
 
-        assertThat(sink.requests()).as("one retry").hasSize(2);
+        awaitRequests(2);
         awaitWarningBarrier();
         assertThat(raised).as("the outcome is not known yet: no eviction warning").doesNotContain(EVICTED);
 
@@ -389,7 +442,7 @@ class ClusterTopologyManagerDrainJoinTest {
         join(TARGET);
         sink.refuse(0, APPLY_TIMEOUT);
 
-        assertThat(sink.requests()).as("the retry was requested").hasSize(2);
+        awaitRequests(2);
 
         sink.accept(1);
 
@@ -420,6 +473,142 @@ class ClusterTopologyManagerDrainJoinTest {
         awaitRaised(EVICTED);
         assertThat(sink.requests()).as("no witness for the leader's own id").isEmpty();
         assertThat(registryWrites).isEmpty();
+    }
+
+    /// TB5e (rule M): the decision of an eviction runs under the monitor. The probe is the manager's own-id read, made by the decision
+    /// and sampled from its frame.
+    @Test
+    void tb5e_evictionDecisionRunsUnderTheManagersMonitor() {
+        openEvictionWitness();
+
+        assertThat(evictionDecisionHeldTheMonitor).as("decideEviction read the own id, and held the monitor doing it").containsExactly(true);
+    }
+
+    /// TB8: an eviction that lands after `deactivate` is refused by the inactive manager: it asks no witness and leaves no entry, so the
+    /// next activation's drain opens its own attempt instead of joining a dead one.
+    @Test
+    void tb8_evictionLandingAfterDeactivate_asksNoWitness_andLeavesNoEntryForTheNextActivation() {
+        var readmission = Promise.<Unit> promise();
+
+        lifecycle.readmission.set(() -> readmission);
+        join(TARGET);
+        var evictionRan = afterHandlers(readmission);
+
+        ctm.deactivate();
+        readmission.resolve(RETIRED.result());
+        awaitResolved(evictionRan);
+
+        assertThat(sink.requests()).as("an inactive manager asks no witness").isEmpty();
+
+        ctm.activate();
+        var drain = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+
+        assertThat(sink.requests()).as("no entry survived the deactivation: the drain opens its own attempt").hasSize(1);
+
+        sink.accept(0);
+
+        assertThat(settled(drain).isSuccess()).isTrue();
+        assertThat(registryWrites).containsExactly(TARGET);
+    }
+
+    /// TB8, the drain side: a drain of an inactive manager is refused at once and records nothing.
+    @Test
+    void tb8_drainOfAnInactiveManager_isRefused_andRecordsNothing() {
+        ctm.deactivate();
+
+        var outcome = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+
+        assertThat(outcome.isResolved()).as("refused at once, not left pending").isTrue();
+        assertThat(outcome.await().isFailure()).isTrue();
+        assertThat(sink.requests()).as("no witness for an inactive manager").isEmpty();
+
+        ctm.activate();
+        ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+
+        assertThat(sink.requests()).as("the refusal left no entry").hasSize(1);
+    }
+
+    /// TB9: a failed attempt is untracked before its outcome is resolved, so a caller woken by the failure finds the map without it
+    /// and opens a fresh attempt. The woken caller is a joiner's continuation, which runs inline inside the resolution (an event
+    /// handler would race the resolver's thread).
+    @Test
+    void tb9_aCallerWokenByTheFailure_findsNoEntry_andOpensAFreshAttempt() {
+        var first = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+        var joined = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+        var again = joined.fold(_ -> ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND));
+
+        sink.refuse(0, WITNESS_REFUSED);
+
+        assertThat(sink.requests()).as("the woken caller found no entry and asked its own witness").hasSize(2);
+
+        sink.accept(1);
+
+        assertThat(settled(again).isSuccess()).isTrue();
+        assertThat(failureOf(settled(first))).isSameAs(WITNESS_REFUSED);
+        assertThat(failureOf(settled(joined))).isSameAs(WITNESS_REFUSED);
+        assertThat(registryWrites).containsExactly(TARGET);
+    }
+
+    /// TB11: a refused re-admission evicts the node, and the operator warning follows the eviction's outcome, never precedes it.
+    @Test
+    void tb11_refusedReadmission_evicts_andTheWarningFollowsTheOutcome() {
+        lifecycle.readmission.set(() -> READMISSION_REFUSED.promise());
+
+        join(TARGET);
+
+        assertThat(sink.requests()).as("the refusal asked the witness for the eviction").hasSize(1);
+        awaitWarningBarrier();
+        assertThat(raised).as("the outcome is not known yet: no warning").doesNotContain(UNRECONCILED);
+
+        sink.accept(0);
+
+        awaitRaised(UNRECONCILED);
+        assertThat(registryWrites).containsExactly(TARGET);
+        assertThat(texts).as("the warning of a refused node").anyMatch(text -> text.contains("is refused and is being drained"));
+    }
+
+    /// TB11, the other failure: a re-admission that fails for any other reason raises the not-refused warning and evicts nothing.
+    @Test
+    void tb11_otherReadmissionFailure_warnsNotRefused_andEvictsNothing() {
+        lifecycle.readmission.set(() -> LEDGER_UNREADABLE.promise());
+
+        join(TARGET);
+
+        awaitRaised(UNRECONCILED);
+        assertThat(sink.requests()).as("a member whose reservation is unknown is not evicted").isEmpty();
+        assertThat(texts).as("the warning of a node that is not refused").anyMatch(text -> text.contains("could not be reconciled with the ledger"));
+        assertThat(texts).noneMatch(text -> text.contains("is refused and is being drained"));
+    }
+
+    /// TB12: a drain does not retry `ApplyTimeout` (only an eviction does): one request, and the timeout is the outcome.
+    @Test
+    void tb12_drainDoesNotRetryApplyTimeout() {
+        var outcome = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
+
+        sink.refuse(0, APPLY_TIMEOUT);
+
+        assertThat(sink.requests()).as("a drain never retries").hasSize(1);
+        assertThat(outcome.isResolved()).isTrue();
+        assertThat(failureOf(outcome.await())).isSameAs(APPLY_TIMEOUT);
+    }
+
+    /// The observer the manager reads: every call goes to the real observer, `self()` first samples the monitor.
+    private final class SelfProbe implements InvocationHandler {
+        private final TopologyObserver real;
+
+        SelfProbe(TopologyObserver real) {
+            this.real = real;
+        }
+
+        @Override
+        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+            sampleEvictionDecision(method);
+            try {
+                return method.invoke(real, args);
+            } catch (InvocationTargetException e) {
+                throw e.getCause();
+            }
+        }
     }
 
     /// A witness the test answers: `request` records the call and returns a promise that stays in flight until `accept` (the
