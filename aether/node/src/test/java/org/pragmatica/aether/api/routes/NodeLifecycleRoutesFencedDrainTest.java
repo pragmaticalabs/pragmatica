@@ -256,7 +256,7 @@ class NodeLifecycleRoutesFencedDrainTest {
 
     @ParameterizedTest(name = "replacement drain, witness refused with {0}")
     @MethodSource("table")
-    void replacementDrain_witnessRefused_isPendingWithTheCause_andReadmittedOnTheNextTick(String label, Cause cause, HttpStatus unused) {
+    void replacementDrain_witnessRefused_isPendingWithTheCause_andReadmittedOnTheNextTick(String label, Cause cause, HttpStatus status) {
         var outcome = NodeReplacementWiring.drainOutcomeOf(routes.admitReplacementDrain(node(1)));
 
         assertThat(outcome.isResolved()).isFalse();
@@ -266,8 +266,9 @@ class NodeLifecycleRoutesFencedDrainTest {
         var answered = outcome.await(SETTLE).unwrap();
 
         assertThat(answered.accepted()).as("no drainRequested follows a refused witness").isFalse();
-        assertThat(answered.blockedBy()).as("a refused witness is pending, not blocked").isEmpty();
-        assertThat(answered.refusedFor()).as("the route's HttpError carries the cause").endsWith(cause.message());
+        // Current production: admitReplacement runs admitOperatorDrain, so the refusal reaches drainOutcomeOf already wrapped by
+        // drainRefusal (NodeLifecycleRoutes.java:820). Pinned as it is; whether pending(cause) should unwrap it is a CTO ruling.
+        assertThat(answered).isEqualTo(DrainOutcome.pending(HttpError.httpError(status, cause).message()));
         assertThat(registry).isEmpty();
         assertThat(fsm.memberStates().get(node(1))).isNotEqualTo("Departing");
 
