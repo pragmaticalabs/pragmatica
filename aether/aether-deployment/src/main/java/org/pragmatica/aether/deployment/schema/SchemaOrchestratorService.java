@@ -919,13 +919,16 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     ///
     /// #3754 (F): a dispatch already past its scheduler read when [#stop()] ran reaches here with the lifetime ended,
     /// and refuses BEFORE claiming the fence or the lock: past this point migration scripts run on the database and
-    /// cannot be recalled. This only narrows the window — a dispatch that passed this check before the stop still
-    /// runs; the lock claim is VersionFenced against another node, but nothing at the receiver refuses "this node is
-    /// stopping", which is reported as a fence site rather than designed here. The refusal reuses
-    /// `LockAcquisitionFailed`: it fails before `runMigration`, so it records no failure, schedules no retry, writes no KV.
+    /// cannot be recalled. A second check directly before the claim Put (after the fence and the lock read) refuses a
+    /// stop that landed in between, releasing the fence it took. This narrows the window, it does not close it: a stop
+    /// that lands after that check, between it and the Put's submission or after the claim, still lets the script run
+    /// under a lock that is no longer renewed and lapses by TTL. The lock claim is VersionFenced against another node,
+    /// but nothing at the receiver refuses "this node is stopping", which is reported as a fence site rather than
+    /// designed here. The refusal is [SchemaError.OrchestratorStopped], not `LockAcquisitionFailed`: it fails before
+    /// `runMigration`, so it records no failure, schedules no retry, writes no KV, and does not read as a lock conflict.
     private Promise<Unit> acquireLock(String datasourceName, Object attemptToken) {
         if (lifetime.isEnded()) {
-            return SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName).promise();
+            return SchemaError.OrchestratorStopped.orchestratorStopped(datasourceName).promise();
         }
 
         if (inFlightMigrations.putIfAbsent(datasourceName, attemptToken) != null) {
@@ -951,6 +954,12 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                      committed.map(SchemaMigrationLockValue::nextVersion)
                                                               .or(SchemaMigrationLockValue.FIRST_VERSION));
         KVCommand<AetherKey> command = new Put<>(lockKey, lockValue);
+
+        if (lifetime.isEnded()) {
+            return releaseFenceOnLockFailure(datasourceName,
+                                             attemptToken,
+                                             SchemaError.OrchestratorStopped.orchestratorStopped(datasourceName)).promise();
+        }
         // #760/#724 review round 3 BLOCKING 1: bounded the same way as the migration itself
         // (schemaManager.policy().migrationTimeout(), read once per attempt) — before this, a lock Put
         // that failed or never settled left `inFlightMigrations` claimed forever, since `finalizeAttempt`
