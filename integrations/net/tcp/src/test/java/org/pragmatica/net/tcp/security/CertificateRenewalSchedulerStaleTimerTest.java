@@ -8,43 +8,79 @@
 package org.pragmatica.net.tcp.security;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.net.tcp.security.CertificateRenewalScheduler.RenewalEvent;
+import org.pragmatica.net.tcp.security.CertificateRenewalScheduler.SchedulerState;
+import org.pragmatica.statemachine.Fsm;
 
 import java.lang.reflect.Field;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.concurrent.Delayed;
-import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Covers the immediate-renewal branch of `Healthy.onEntry` (`delay <= 0`) and the `Stopped`
-/// drain.
+/// Every timer of the scheduler is armed through the lifetime of the state entry that armed it (#1191), so no timer
+/// outlives its state, whatever order the hooks of two successive winners run in.
 ///
-/// Note on what can and cannot be asserted here. On the immediate branch the tick is scheduled
-/// with a zero delay, so it runs on a scheduler virtual thread and drives
-/// `Healthy -> Renewing -> RetryBackoff` before `start()` returns to the caller. `scheduledTask`
-/// is therefore legitimately `None` immediately after `start()`: `Healthy.onExit` has already
-/// drained it and `Renewing` arms no timer. Measured sequence — `None` at t=0, `Some(...)` from
-/// t=50ms, stable thereafter. Any assertion that the holder is `Some` right after `start()`
-/// pins a transient that no correct implementation can guarantee.
+/// The observable is the entry's own lifetime (`Fsm.entered().lifetime()`): `size()` counts what the entry has live, and a
+/// registration made after the entry ended is refused and is never counted. The race tests drive the overtake rather than
+/// await it: the first winner is parked in the transition action (`renewalCallback`), which the Fsm runs after the CAS and
+/// before the successor's `onEntry`, exactly where the reported interleaving has it.
+///
+/// What each race test pins:
+/// - `healthyEntryOvertakenByTick`: the sibling of the reported shape, and the one a flag set by `Stopped` could not cover.
+///   A stale `Healthy` arm used to look fresh (it drew the newest epoch) and displaced the live retry. Its consequence is
+///   behavioural: a stray tick re-enters `Renewing` and the provider is called a third time.
+/// - `healthyEntryOvertakenByStop`: the reported shape. Nothing is armed on the stopped scheduler.
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
 class CertificateRenewalSchedulerStaleTimerTest {
+    /// How long a leaked `Healthy` tick (armed ~600 ms ahead) would need to fire, with margin.
+    private static final long LEAK_WINDOW_MILLIS = 1_800;
 
-    /// Stub provider whose `issueCertificate` never returns synchronously (returns a perpetual
-    /// failure marker — the scheduler dispatches `RenewalFailed` and goes to `RetryBackoff`).
-    /// We never let it complete; the test only inspects the scheduled future.
-    static final class CountingProvider implements CertificateProvider {
+    /// Call 1 succeeds with a bundle valid for 1.5 s (so a `Healthy` entered on it ticks after 600 ms); every later call
+    /// fails and drives the scheduler to `RetryBackoff`.
+    static final class SequencedProvider implements CertificateProvider {
+        final AtomicInteger calls = new AtomicInteger(0);
+
+        @Override
+        public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
+            return calls.incrementAndGet() == 1
+                   ? Result.success(shortLivedBundle())
+                   : Causes.cause("renewal failed in stub").result();
+        }
+
+        @Override
+        public Result<CertificateBundle> caCertificate() {
+            return Causes.cause("not implemented in stub").result();
+        }
+
+        @Override
+        public Result<GossipKey> currentGossipKey() {
+            return Causes.cause("not implemented in stub").result();
+        }
+
+        @Override
+        public Option<GossipKey> previousGossipKey() {
+            return Option.none();
+        }
+
+        private static CertificateBundle shortLivedBundle() {
+            return CertificateBundle.certificateBundle(new byte[0],
+                                                       new byte[0],
+                                                       new byte[0],
+                                                       Instant.now().plusMillis(1_500));
+        }
+    }
+
+    /// Never succeeds: used where the renewal path is not what is under test.
+    static final class FailingProvider implements CertificateProvider {
         final AtomicInteger calls = new AtomicInteger(0);
 
         @Override
@@ -69,47 +105,217 @@ class CertificateRenewalSchedulerStaleTimerTest {
         }
     }
 
-    /// Reflectively reads the private `ctx.scheduledTask` AtomicReference on the scheduler.
-    /// Necessary because `Context` is package-private (visible to test) but the field on
-    /// `CertificateRenewalScheduler` itself is private.
+    /// A renewal callback that parks the thread that runs the `Renewing -> Healthy` transition action: after that
+    /// transition's CAS, before `Healthy.onEntry`.
+    static final class Parker {
+        final CountDownLatch parked = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+
+        void park(CertificateBundle bundle) {
+            parked.countDown();
+            await(release, "release of the parked renewal callback");
+        }
+    }
+
+    /// Reflectively reads the scheduler's Fsm through its private `ctx` (`Context` is package-private and holds the Fsm).
     @SuppressWarnings("unchecked")
-    private static AtomicReference<Option<ScheduledFuture<?>>> readScheduledTask(CertificateRenewalScheduler s) {
+    private static Fsm<SchedulerState, RenewalEvent> fsmOf(CertificateRenewalScheduler s) {
         try {
             Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
             ctxField.setAccessible(true);
             Object ctx = ctxField.get(s);
-            Field taskField = ctx.getClass().getDeclaredField("scheduledTask");
-            taskField.setAccessible(true);
-            return (AtomicReference<Option<ScheduledFuture<?>>>) taskField.get(ctx);
-        } catch (NoSuchFieldException | IllegalAccessException e) {
+            Field fsmField = ctx.getClass().getDeclaredField("fsm");
+            fsmField.setAccessible(true);
+            return (Fsm<SchedulerState, RenewalEvent>) fsmField.get(ctx);
+        } catch (ReflectiveOperationException e) {
             throw new AssertionError("reflection failed: " + e.getMessage(), e);
         }
     }
 
     @Test
     void immediateRenewalBranch_renewsOnceAndRearmsTheTimer() {
-        var provider = new CountingProvider();
+        var provider = new FailingProvider();
         // Past `notAfter` forces calculateRenewalDelay -> negative -> immediate-renewal branch.
-        var pastInstant = Instant.now().minusSeconds(60);
         var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
                 provider, "node-immediate", "localhost",
-                _ -> {}, pastInstant);
+                _ -> {}, Instant.now().minusSeconds(60));
+        var fsm = fsmOf(scheduler);
 
         try {
             scheduler.start();
 
-            // What the immediate branch promises is not a transient holder value (see class doc)
-            // but that it renews, and that it leaves the scheduler armed rather than silent.
+            // The immediate branch ticks at once and drives Healthy -> Renewing -> RetryBackoff on a scheduler thread. What
+            // it promises is not a transient value but that it renews, and that it leaves the scheduler armed.
             awaitCondition(() -> provider.calls.get() == 1,
                            "immediate-renewal branch must attempt renewal exactly once");
-
-            var holder = readScheduledTask(scheduler);
-
-            awaitCondition(() -> holder.get().isPresent(),
-                           "after the immediate renewal fails, RetryBackoff.onEntry must re-arm the "
-                           + "timer — a scheduler left with no scheduled tick never retries");
+            awaitCondition(() -> fsm.current() instanceof CertificateRenewalScheduler.RetryBackoff
+                                 && fsm.entered().lifetime().size() == 1,
+                           "after the immediate renewal fails, RetryBackoff.onEntry must arm its retry through the "
+                           + "entry's lifetime — a scheduler with nothing armed never retries");
         } finally {
             scheduler.stop();
+        }
+    }
+
+    @Test
+    void futureRenewalBranch_armsATickThroughTheEntryLifetime() {
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                new FailingProvider(), "node-future", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+        var fsm = fsmOf(scheduler);
+
+        try {
+            scheduler.start();
+
+            assertThat(fsm.current()).isInstanceOf(CertificateRenewalScheduler.Healthy.class);
+            assertThat(fsm.entered().lifetime().size())
+                    .as("the long-delay branch arms exactly one tick, through the Healthy entry's lifetime")
+                    .isEqualTo(1);
+        } finally {
+            scheduler.stop();
+        }
+    }
+
+    @Test
+    void stop_endsTheEntryLifetime_andLeavesNothingArmed() {
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                new FailingProvider(), "node-stop", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+        var fsm = fsmOf(scheduler);
+
+        scheduler.start();
+        var healthy = fsm.entered();
+
+        assertThat(healthy.lifetime().size()).as("precondition: Healthy armed one tick").isEqualTo(1);
+
+        scheduler.stop();
+
+        assertThat(healthy.lifetime().isEnded()).as("leaving Healthy ends its lifetime").isTrue();
+        assertThat(healthy.lifetime().size()).as("the armed tick is cancelled with it").isZero();
+        assertThat(fsm.entered().lifetime().size()).as("Stopped arms nothing").isZero();
+    }
+
+    /// #1191, sibling shape. `Healthy` (entered on a renewal success) is parked between its CAS and its `onEntry`; a tick
+    /// wins `Healthy -> Renewing`, the renewal fails, and `RetryBackoff` is entered and armed. Only then does the parked
+    /// `Healthy.onEntry` arm — it must be refused and must leave the live retry alone.
+    @Test
+    void healthyEntryOvertakenByTick_isRefused_andLeavesTheLiveRetryArmed() throws Exception {
+        var provider = new SequencedProvider();
+        var parker = new Parker();
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                provider, "node-overtake-tick", "localhost",
+                parker::park, Instant.now().minusSeconds(60));
+        var fsm = fsmOf(scheduler);
+
+        try {
+            scheduler.start();
+            await(parker.parked, "the renewal callback to park");
+            var healthy = fsm.entered();
+
+            assertThat(healthy.state()).as("precondition: the parked winner's CAS has landed").isInstanceOf(CertificateRenewalScheduler.Healthy.class);
+            assertThat(healthy.lifetime().size()).as("precondition: its onEntry has not armed yet").isZero();
+
+            fsm.dispatch(new RenewalEvent.Tick());
+            var retry = fsm.entered();
+
+            assertThat(retry.state()).as("precondition: the second winner has completed").isInstanceOf(CertificateRenewalScheduler.RetryBackoff.class);
+            assertThat(provider.calls.get()).as("precondition: the second renewal ran").isEqualTo(2);
+            assertThat(retry.lifetime().size()).as("precondition: RetryBackoff armed its retry").isEqualTo(1);
+
+            parker.release.countDown();
+            Thread.sleep(LEAK_WINDOW_MILLIS);
+
+            assertThat(provider.calls.get())
+                    .as("#1191: a stale Healthy arm is refused; had it been kept, its tick (600 ms) would have re-entered Renewing")
+                    .isEqualTo(2);
+            assertThat(healthy.lifetime().size()).as("nothing armed by the exited Healthy entry is live").isZero();
+            assertThat(fsm.entered()).as("the live retry was left alone").isSameAs(retry);
+            assertThat(retry.lifetime().size()).as("the live retry is still armed").isEqualTo(1);
+        } finally {
+            parker.release.countDown();
+            scheduler.stop();
+        }
+    }
+
+    /// #1191, the reported shape. `Healthy` is parked between its CAS and its `onEntry`; `stop()` wins and completes
+    /// (exit of `Healthy`, entry of `Stopped`). Only then does the parked `Healthy.onEntry` arm: it is refused.
+    @Test
+    void healthyEntryOvertakenByStop_isRefused_andNothingIsArmedOnTheStoppedScheduler() throws Exception {
+        var provider = new SequencedProvider();
+        var parker = new Parker();
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                provider, "node-overtake-stop", "localhost",
+                parker::park, Instant.now().minusSeconds(60));
+        var fsm = fsmOf(scheduler);
+
+        try {
+            scheduler.start();
+            await(parker.parked, "the renewal callback to park");
+            var healthy = fsm.entered();
+
+            scheduler.stop();
+            var stopped = fsm.entered();
+
+            assertThat(stopped.state()).as("precondition: the second winner has completed").isInstanceOf(CertificateRenewalScheduler.Stopped.class);
+            assertThat(healthy.lifetime().size()).as("precondition: the parked onEntry has not armed yet").isZero();
+
+            parker.release.countDown();
+            Thread.sleep(LEAK_WINDOW_MILLIS);
+
+            assertThat(healthy.lifetime().size()).as("#1191: a registration after the state's exit is refused").isZero();
+            assertThat(fsm.entered().lifetime().size()).as("#1191: nothing is armed on the stopped scheduler").isZero();
+            assertThat(provider.calls.get()).as("no further renewal ran").isEqualTo(1);
+        } finally {
+            parker.release.countDown();
+        }
+    }
+
+    @Test
+    void configureShortValidity_inHealthy_reEntersHealthyOnAFreshLifetime() {
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                new FailingProvider(), "node-reconfigure", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+        var fsm = fsmOf(scheduler);
+
+        try {
+            scheduler.start();
+            var before = fsm.entered();
+
+            assertThat(before.lifetime().size()).as("precondition: Healthy armed one tick").isEqualTo(1);
+
+            scheduler.configureShortValidity(7200);
+            var after = fsm.entered();
+
+            assertThat(before.lifetime().isEnded()).as("the old entry's lifetime ended: its tick is cancelled").isTrue();
+            assertThat(before.lifetime().size()).isZero();
+            assertThat(after.lifetime()).as("a fresh entry, a fresh lifetime").isNotSameAs(before.lifetime());
+            assertThat(after.state()).isInstanceOf(CertificateRenewalScheduler.Healthy.class);
+            assertThat(after.lifetime().size()).as("the new entry armed exactly one tick").isEqualTo(1);
+        } finally {
+            scheduler.stop();
+        }
+    }
+
+    @Test
+    void configureShortValidity_whenNotHealthy_touchesNoTimer() {
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                new FailingProvider(), "node-reconfigure-idle", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+        var fsm = fsmOf(scheduler);
+        var before = fsm.entered();
+
+        scheduler.configureShortValidity(60);
+
+        assertThat(fsm.entered()).as("Idle is left as it was: no re-entry, no timer").isSameAs(before);
+        assertThat(before.lifetime().size()).isZero();
+    }
+
+    private static void await(CountDownLatch latch, String what) {
+        try {
+            assertThat(latch.await(20, TimeUnit.SECONDS)).as(what).isTrue();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted awaiting " + what, e);
         }
     }
 
@@ -133,311 +339,5 @@ class CertificateRenewalSchedulerStaleTimerTest {
         }
 
         throw new AssertionError("condition never held within 5s: " + description);
-    }
-
-    @Test
-    void stopAfterImmediateRenewal_clearsScheduledTask() {
-        var provider = new CountingProvider();
-        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
-                provider, "node-stop", "localhost",
-                _ -> {}, Instant.now().minusSeconds(60));
-
-        scheduler.start();
-        scheduler.stop();
-
-        var holder = readScheduledTask(scheduler);
-        assertThat(holder.get().isEmpty())
-                .as("Stopped.onEntry → cancelScheduledTask drains the holder to None")
-                .isTrue();
-    }
-
-    /// Invokes the package-private `ctx.armScheduledTask(...)` reflectively with the CURRENT epoch,
-    /// i.e. as a FRESH arm. Same justification as `readScheduledTask`.
-    private static void armScheduledTask(CertificateRenewalScheduler s, ScheduledFuture<?> task) {
-        armScheduledTask(s, task, readEpoch(s));
-    }
-
-    /// As above but with an explicit arming epoch, so a STALE arm can be driven deterministically
-    /// rather than raced for.
-    private static void armScheduledTask(CertificateRenewalScheduler s,
-                                         ScheduledFuture<?> task,
-                                         long armingEpoch) {
-        try {
-            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
-            ctxField.setAccessible(true);
-            Object ctx = ctxField.get(s);
-            var method = ctx.getClass().getDeclaredMethod("armScheduledTask",
-                                                          ScheduledFuture.class,
-                                                          long.class);
-            method.setAccessible(true);
-            method.invoke(ctx, task, armingEpoch);
-        } catch (ReflectiveOperationException e) {
-            throw new AssertionError("reflection failed: " + e.getMessage(), e);
-        }
-    }
-
-    /// Reflectively reads `ctx.epoch`.
-    private static long readEpoch(CertificateRenewalScheduler s) {
-        try {
-            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
-            ctxField.setAccessible(true);
-            Object ctx = ctxField.get(s);
-            Field epochField = ctx.getClass().getDeclaredField("epoch");
-            epochField.setAccessible(true);
-            return ((AtomicLong) epochField.get(ctx)).get();
-        } catch (ReflectiveOperationException e) {
-            throw new AssertionError("reflection failed: " + e.getMessage(), e);
-        }
-    }
-
-    /// Reflectively opens a genuinely-issued arming epoch, so a fixture never drives the guard with
-    /// a value the real path could not produce.
-    private static long openArmingEpoch(CertificateRenewalScheduler s) {
-        try {
-            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
-            ctxField.setAccessible(true);
-            Object ctx = ctxField.get(s);
-            var method = ctx.getClass().getDeclaredMethod("openArmingEpoch");
-            method.setAccessible(true);
-            return (long) method.invoke(ctx);
-        } catch (ReflectiveOperationException e) {
-            throw new AssertionError("reflection failed: " + e.getMessage(), e);
-        }
-    }
-
-    @Test
-    void armScheduledTask_whenTheArmIsStale_cancelsItselfAndLeavesTheResidentTimer() {
-        var provider = new CountingProvider();
-        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
-                provider, "node-stale", "localhost",
-                _ -> {}, Instant.now().plusSeconds(3600));
-
-        var holder = readScheduledTask(scheduler);
-
-        // The #1191 shape, driven rather than raced. `Healthy.onEntry` SCHEDULES a zero-delay tick
-        // and only then arms, so that tick can complete the whole Healthy -> Renewing ->
-        // RetryBackoff round trip — arming the real retry — while the original hook is still
-        // between its schedule and its arm. The original's arm is then STALE.
-        //
-        // Both epochs below are GENUINELY ISSUED by `openArmingEpoch`, never synthesised: a fixture
-        // driving the guard with a value the real path cannot produce can drift from it unnoticed.
-        var staleEpoch = openArmingEpoch(scheduler);
-
-        var resident = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
-        armScheduledTask(scheduler, resident, staleEpoch);
-
-        // A later hook supersedes it, exactly as RetryBackoff.onEntry would.
-        openArmingEpoch(scheduler);
-
-        var stale = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
-        armScheduledTask(scheduler, stale, staleEpoch);
-
-        assertThat(stale.isCancelled())
-                .as("#1191: a STALE arm must cancel ITSELF")
-                .isTrue();
-        assertThat(resident.isCancelled())
-                .as("#1191: a stale arm must NOT cancel the RESIDENT timer. Cancelling it kills the "
-                    + "live retry, renewal stops permanently, and the status surface still reports "
-                    + "FAILED — strictly worse than the orphaned future this guard replaced")
-                .isFalse();
-        assertThat(holder.get().isPresent())
-                .as("the resident timer is still the armed one")
-                .isTrue();
-    }
-
-    @Test
-    void armScheduledTask_afterStop_refusesAndCancelsTheTask() {
-        var provider = new CountingProvider();
-        // Far-future notAfter: `Healthy` arms a real long-delay timer and no tick races us, so the
-        // only concurrency in this test is the one it is about.
-        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
-                provider, "node-late-arm", "localhost",
-                _ -> {}, Instant.now().plusSeconds(3600));
-
-        scheduler.start();
-        scheduler.stop();
-
-        var holder = readScheduledTask(scheduler);
-        assertThat(holder.get().isEmpty())
-                .as("precondition: stop() drains the holder before the late arm is attempted")
-                .isTrue();
-
-        // #1191's interleaving, driven rather than awaited: a losing-path `onEntry` arms AFTER
-        // `Stopped.onEntry` has drained. The natural race is rare — 200 isolated runs of
-        // `stopAfterImmediateRenewal_clearsScheduledTask` reproduced it zero times on an idle
-        // machine, while CI hit it once — so waiting for it would be a lottery, not a regression
-        // pin. Calling the arming seam directly reproduces the CONSEQUENCE every time.
-        var late = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
-
-        armScheduledTask(scheduler, late);
-
-        assertThat(holder.get().isEmpty())
-                .as("#1191: arming after the terminal state must be refused, never stored")
-                .isTrue();
-        assertThat(late.isCancelled())
-                .as("#1191: the refused task must be CANCELLED, not merely dropped — a dropped but "
-                    + "live future still fires its tick on a stopped scheduler, which is the defect")
-                .isTrue();
-    }
-
-    @Test
-    void armScheduledTask_whenAnotherArmDisplacesIt_cancelsTheDisplacedFuture() {
-        var provider = new CountingProvider();
-        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
-                provider, "node-displace", "localhost",
-                _ -> {}, Instant.now().plusSeconds(3600));
-
-        // NOT started: `Idle` arms nothing, so the only futures in play are the two armed below and
-        // the test is about displacement alone.
-        var first = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
-        var second = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
-
-        armScheduledTask(scheduler, first);
-        armScheduledTask(scheduler, second);
-
-        assertThat(first.isCancelled())
-                .as("#1191: an arm that DISPLACES a live future must cancel it. A bare `set` orphans "
-                    + "the displaced future — invisible to every later drain, and still firing its "
-                    + "tick after the scheduler has stopped")
-                .isTrue();
-        assertThat(second.isCancelled())
-                .as("precondition: the displacing future is itself still live, so the assertion "
-                    + "above is about displacement and not about blanket cancellation")
-                .isFalse();
-
-        scheduler.stop();
-
-        assertThat(second.isCancelled())
-                .as("and the surviving future is cancelled by the terminal drain")
-                .isTrue();
-    }
-
-    /// Reflectively reads `ctx.terminated`. Same justification as `readScheduledTask`.
-    private static boolean readTerminated(CertificateRenewalScheduler s) {
-        try {
-            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
-            ctxField.setAccessible(true);
-            Object ctx = ctxField.get(s);
-            Field terminatedField = ctx.getClass().getDeclaredField("terminated");
-            terminatedField.setAccessible(true);
-            return ((AtomicBoolean) terminatedField.get(ctx)).get();
-        } catch (ReflectiveOperationException e) {
-            throw new AssertionError("reflection failed: " + e.getMessage(), e);
-        }
-    }
-
-    /// A `ScheduledFuture` stub that records what `ctx.terminated` held **at the moment it was
-    /// cancelled**. That is the entire instrument: it converts an ORDERING inside `Stopped.onEntry`
-    /// into a value a test can assert on, with no concurrency and no timing involved.
-    static final class OrderRecordingFuture implements ScheduledFuture<Object> {
-        private final Supplier<Boolean> terminatedNow;
-        private final AtomicReference<Boolean> terminatedWhenCancelled = new AtomicReference<>(null);
-        private final AtomicBoolean cancelled = new AtomicBoolean(false);
-
-        OrderRecordingFuture(Supplier<Boolean> terminatedNow) {
-            this.terminatedNow = terminatedNow;
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            // Only the FIRST cancellation is recorded. The arming guard's post-store re-check can
-            // cancel a second time, and it is the first observation that describes the drain.
-            terminatedWhenCancelled.compareAndSet(null, terminatedNow.get());
-            cancelled.set(true);
-            return true;
-        }
-
-        Boolean terminatedWhenCancelled() {
-            return terminatedWhenCancelled.get();
-        }
-
-        @Override
-        public boolean isCancelled() {
-            return cancelled.get();
-        }
-
-        @Override
-        public boolean isDone() {
-            return cancelled.get();
-        }
-
-        @Override
-        public long getDelay(TimeUnit unit) {
-            return 0L;
-        }
-
-        @Override
-        public int compareTo(Delayed other) {
-            return 0;
-        }
-
-        @Override
-        public Object get() {
-            throw new AssertionError("stub future: get() is never called by the code under test");
-        }
-
-        @Override
-        public Object get(long timeout, TimeUnit unit) {
-            throw new AssertionError("stub future: get(timeout) is never called by the code under test");
-        }
-    }
-
-    @Test
-    void stopEntry_raisesTerminatedBeforeDraining_soNoArmCanSlipBetweenThem() {
-        var provider = new CountingProvider();
-        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
-                provider, "node-order", "localhost",
-                _ -> {}, Instant.now().plusSeconds(3600));
-
-        // Deliberately NOT started, and that is the whole design of this test. `transitionTo` runs
-        // the FROM state's `onExit` before the target's `onEntry`, and both `Healthy.onExit` and
-        // `RetryBackoff.onExit` drain the holder themselves. Entered from either, the probe is
-        // cancelled by the EXIT hook while `terminated` is still false, so the test measures a
-        // drain it is not about and fails against correct code — which is precisely what the first
-        // version of this test did. `Idle` declares no exit hook, so the only drain that can reach
-        // the probe is the one inside `Stopped.onEntry`, which is the ordering under test.
-        var holder = readScheduledTask(scheduler);
-        var probe = new OrderRecordingFuture(() -> readTerminated(scheduler));
-
-        holder.set(Option.<ScheduledFuture<?>>some(probe));
-
-        assertThat(readTerminated(scheduler))
-                .as("precondition: the scheduler is not terminal before stop()")
-                .isFalse();
-
-        scheduler.stop();
-
-        assertThat(probe.terminatedWhenCancelled())
-                .as("precondition: Stopped.onEntry actually drained the holder and cancelled the "
-                    + "probe — a null here means the drain never reached it, so the assertion "
-                    + "below would be vacuous")
-                .isNotNull();
-        assertThat(probe.terminatedWhenCancelled())
-                .as("#1191: `terminated` must ALREADY be raised when the drain cancels. If the "
-                    + "drain ran first, a concurrent arm landing between the drain and the flag "
-                    + "would be stored and never cancelled, which is exactly the leaked timer")
-                .isTrue();
-    }
-
-    @Test
-    void futureRenewalBranch_alsoStoresScheduledFuture() {
-        // Sanity: verifies the original (long-delay) branch still stores the future (this branch
-        // was correct before the L3 fix; included to guarantee no regression in that path).
-        var provider = new CountingProvider();
-        var farFutureInstant = Instant.now().plusSeconds(3600);
-        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
-                provider, "node-future", "localhost",
-                _ -> {}, farFutureInstant);
-
-        try {
-            scheduler.start();
-
-            var holder = readScheduledTask(scheduler);
-            assertThat(holder.get().isPresent())
-                    .as("long-delay branch stores the future (regression guard)")
-                    .isTrue();
-        } finally {
-            scheduler.stop();
-        }
     }
 }
