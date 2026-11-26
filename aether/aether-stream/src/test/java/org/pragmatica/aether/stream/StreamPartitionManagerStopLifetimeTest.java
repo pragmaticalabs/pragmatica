@@ -167,6 +167,25 @@ class StreamPartitionManagerStopLifetimeTest {
               .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.OwnerLeaseLapsedBeforeAck.class));
     }
 
+    /// (c) The lifetime ends before the close-time drain: a waiter that joins the park list after the drain has finished, still
+    /// inside `close()`, is answered at once, so every park promise resolves once `close()` returns. Drained first and ended
+    /// after, its expiry would be live when the end cancels it and nobody would answer it. Mutant: `close()` drains the parked
+    /// waiters before it ends the lifetime.
+    @Test
+    void parkExpiry_joiningAfterTheDrainInsideClose_isAnsweredAtOnce() {
+        start(2);
+        var answer = manager.awaitReplication(ORDERS, PARTITION, publish(), 1);
+
+        leaseValid.set(false);
+        manager.afterCloseDrainProbe(() -> ack(0L));
+        assertThat(answer.isResolved()).as("control: awaiting its replicas, unanswered").isFalse();
+        manager.close();
+        assertThat(answer.isResolved()).as("answered once close() returned, not orphaned by the lifetime end").isTrue();
+        answer.await(ANSWER_WAIT)
+              .onSuccess(_ -> fail("a lapsed waiter must not acknowledge"))
+              .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.OwnerLeaseLapsedBeforeAck.class));
+    }
+
     // ---- fixture ------------------------------------------------------------------------------------------------------------
     private void startWithUnsettledRepair() {
         var epoch = Epoch.epoch(1L, 2L, 3L);

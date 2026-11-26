@@ -311,6 +311,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Test seam (#3754), see [#beforeUnsettledReportProbe(Runnable)]; nothing until a test sets it.
     private volatile Runnable beforeUnsettledReportProbe = () -> {};
 
+    /// Test seam (#3754), see [#afterCloseDrainProbe(Runnable)]; nothing until a test sets it.
+    private volatile Runnable afterCloseDrainProbe = () -> {};
+
     /// #2590 P1: where a partition's committed position and its suffix truncations are told, late-bound
     /// ([#partitionLogEvents(PartitionLogEvents)]); nobody until wired.
     private volatile PartitionLogEvents partitionLogEvents = PartitionLogEvents.NONE;
@@ -7151,6 +7154,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void answerParkedAtClose() {
         parkedAcks.forEach(this::expireParked);
+        afterCloseDrainProbe.run();
+    }
+
+    /// Test seam (#3754): runs once the close-time drain has finished, the window in which a waiter can still join the park
+    /// list; it pins that the lifetime is ended before this point, so such a waiter is answered at once.
+    @Contract
+    void afterCloseDrainProbe(Runnable probe) {
+        afterCloseDrainProbe = probe;
     }
 
     private Result<StreamEntry> resolveStreamEntry(String streamName) {
