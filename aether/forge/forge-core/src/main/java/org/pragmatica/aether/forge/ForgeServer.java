@@ -125,7 +125,6 @@ public final class ForgeServer {
 
             return;
         }
-
         // #3806 (CVE-2026-114938): refused before the config is read and before any listener binds, as the node's Main does.
         JvmVulnerabilityGate.enforceForThisProcess(log::warn, ForgeServer::refuseStart);
         var startupConfigResult = StartupConfig.startupConfig(args);
