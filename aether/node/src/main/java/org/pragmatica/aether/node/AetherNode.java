@@ -2073,8 +2073,11 @@ public interface AetherNode extends ManageableNode {
                 // incarnation.
                 quorumLossDetector.stop();
                 // #3754: the schema orchestrator's lease renewals and retry re-dispatches are on the same shared scheduler.
-                // A lease ends at its release or here, never at leader deactivation: the lock stays held for a running script.
-                clusterDeploymentManager.schemaOrchestrator().stop();
+                // Stop ends renewal and releases nothing: a lock held under a running script lapses by its TTL (at most
+                // LOCK_TTL_MS = 5 min), as after a crash. Releasing here would let another node start the same migration while
+                // this node's script may still run. Never at leader deactivation, where the lease keeps renewing for the script.
+                // The stop is the wiring's (engine-neutral, once): this file may not name the cluster manager for it (W-32).
+                deploymentWiring.stopSchemaOrchestrator(schemaOrchestrator());
                 // #642 stop-hook audit — the rest of the SharedScheduler-armed, node-scoped work that
                 // had no reachable cancel path. Each of these was still acting on behalf of a stopped
                 // node: re-announcing a governor roster into consensus, pinging as spokesman, sweeping

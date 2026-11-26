@@ -28,6 +28,7 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterState;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
@@ -680,6 +681,14 @@ public final class DeploymentWiring {
     @Contract
     public void stop() {
         system.onPresent(Fsm2System::stop);
+    }
+
+    /// #3754: ends the schema orchestrator's lifetime, from the node's component stops (after the quiesce and the FSM2 close). The orchestrator
+    /// is engine-neutral: it runs under either deployment engine and no engine marker gates it, so neither does its stop. It ends renewal
+    /// and releases nothing (a held lock lapses by TTL); it is NOT ended by [#deactivateCluster], because a lease outlives leader deactivation.
+    /// Idempotent (the orchestrator's stop is), and called once.
+    public Unit stopSchemaOrchestrator(SchemaOrchestratorService orchestrator) {
+        return orchestrator.stop();
     }
 
     /// B13, the first half of the node's stop (design 7, 2a and 2b): the PASSIVE edge is routed, the FSM2 node interpreter drains (the `SUSPEND`s of the

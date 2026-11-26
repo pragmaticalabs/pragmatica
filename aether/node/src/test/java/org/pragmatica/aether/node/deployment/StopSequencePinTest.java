@@ -30,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// quiesce, FSM2 close, then the components), never in the synchronous part of `stop()` before it.
 class StopSequencePinTest {
     private static final Path NODE_SOURCE = Path.of("src", "main", "java", "org", "pragmatica", "aether", "node", "AetherNode.java");
+    private static final Path WIRING_SOURCE = Path.of("src", "main", "java", "org", "pragmatica", "aether", "node", "deployment", "DeploymentWiring.java");
     private static final Pattern QUIESCE = Pattern.compile("(?:::|\\.)quiesce\\b");
     private static final Pattern THROUGH_THE_WIRING = Pattern.compile("deploymentWiring\\s*\\.leaveQuorum\\(\\s*\\(\\)\\s*->\\s*router\\.route\\(ClusterStateNotification\\.passive\\(\\)\\)\\s*,"
                                                                       + "\\s*\\(\\)\\s*->\\s*leaderDeactivation\\s*\\.delivered\\(\\s*reactors\\.executor\\(\"LeaderManager\"\\)\\s*,"
@@ -205,14 +206,21 @@ class StopSequencePinTest {
     }
 
     /// #3754: the schema orchestrator's renewal and re-dispatch tasks end with the node, after the quiesce and the FSM2 close like every other
-    /// component, and never at leader deactivation (the lease outlives it: the lock stays held for a running script).
+    /// component, and never at leader deactivation (the lease keeps renewing for a running script). The stop is the wiring's, so AetherNode names
+    /// no cluster manager for it (the frozen W-32 list may only shrink): this pins the placement and the count of the one call, and that the
+    /// wiring's method is the one site that stops the orchestrator. The effect (renewal ends, nothing is released) is carried by
+    /// `SchemaOrchestratorLeaseTest$NodeStop`.
     @Test
     void theSchemaOrchestrator_isStoppedOnceInTheComponentsStops_andNotInTheSynchronousStop() {
         var source = read(NODE_SOURCE);
+        var wiring = read(WIRING_SOURCE);
 
-        assertThat(teardownStatements(source)).containsOnlyOnce("clusterDeploymentManager.schemaOrchestrator().stop();");
-        assertThat(stopMethod(source)).doesNotContain("schemaOrchestrator().stop()");
-        assertThat(count(Pattern.compile("schemaOrchestrator\\(\\)\\s*\\.stop\\(\\)"), source)).as("no other site stops it, in particular not the leader deactivation").isEqualTo(1L);
+        assertThat(teardownStatements(source)).containsOnlyOnce("deploymentWiring.stopSchemaOrchestrator(schemaOrchestrator());");
+        assertThat(stopMethod(source)).doesNotContain("stopSchemaOrchestrator");
+        assertThat(count(Pattern.compile("stopSchemaOrchestrator\\("), source)).as("no other site of the node stops it, in particular not the leader deactivation").isEqualTo(1L);
+        assertThat(count(Pattern.compile("schemaOrchestrator\\(\\)\\s*\\.stop\\("), source)).as("the node does not stop it directly").isZero();
+        assertThat(count(Pattern.compile("public Unit stopSchemaOrchestrator\\(SchemaOrchestratorService orchestrator\\) \\{\\s*return orchestrator\\.stop\\(\\);"), wiring)).as("the wiring's stop ends the orchestrator").isEqualTo(1L);
+        assertThat(count(Pattern.compile("\\.stop\\(\\)"), between(wiring, "public Promise<Unit> deactivateCluster", "private Promise<Unit> fsm2Deactivation"))).as("the cluster deactivation does not stop it").isZero();
     }
 
     @Test
