@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 
+
 /// What one read of [CapacityControlledLifecycle#activation] answers: the stored leader this node holds, and the leadership
 /// generation (the count of lose-to-gain edges this instance has observed) that read paired with it. A leader-only external
 /// effect (C1) carries one of these from submit to its continuation, and runs only while a fresh read still pairs "leader

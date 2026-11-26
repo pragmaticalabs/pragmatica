@@ -10,9 +10,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -50,12 +50,11 @@ class CapacityGenerationReaderScanTest {
     }
 
     private static List<Path> mainSources(Path root) {
-        try (Stream<Path> files = Files.walk(root)) {
-            return files.filter(path -> path.toString().endsWith(".java"))
-                        .filter(path -> path.toString().contains("/src/main/"))
-                        .filter(path -> !path.toString().contains("/target/") && !path.toString().contains("/.m2-local/")
-                                        && !path.toString().contains("/.bb/"))
-                        .toList();
+        try {
+            return SourceWalk.files(root).stream()
+                             .filter(path -> path.toString().endsWith(".java"))
+                             .filter(path -> path.toString().contains("/src/main/"))
+                             .toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

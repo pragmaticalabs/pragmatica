@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster;
 import org.pragmatica.cluster.state.kvstore.KVCommand.RefusalKind;
 import org.pragmatica.lang.Cause;
 
+
 /// Why [FencePort#fenced] did not run its effect. Every cause is typed, so a caller can tell a deposed leader from a slow commit.
 public sealed interface FenceFailure extends Cause {
     /// No leader of this node is present at submit.

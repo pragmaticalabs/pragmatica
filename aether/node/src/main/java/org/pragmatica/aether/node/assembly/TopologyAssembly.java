@@ -150,7 +150,8 @@ public sealed interface TopologyAssembly {
                                                                                                                                 () -> config.autoHeal()
                                                                                                                                             .maxNodes()
                                                                                                                                             .or(Integer.MAX_VALUE))
-                                                                                                                      .withApplyTimeout(config.protocol().applyTimeout());
+                                                                                                   .withApplyTimeout(config.protocol()
+                                                                                                                           .applyTimeout());
 
         return lifecycleManager;
     }

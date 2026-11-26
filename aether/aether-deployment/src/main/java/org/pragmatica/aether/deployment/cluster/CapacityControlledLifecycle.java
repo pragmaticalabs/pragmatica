@@ -515,8 +515,10 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                             binding,
                             spec.context().role(),
                             inventoriedUnder).flatMap(committed -> committed.admitted()
-                                                                             .fold(() -> AdmissionFailure.CAPACITY_UNAVAILABLE.promise(),
-                                                                                   reserved -> dispatch(node, spec, reserved)))
+                                                                            .fold(() -> AdmissionFailure.CAPACITY_UNAVAILABLE.promise(),
+                                                                                  reserved -> dispatch(node,
+                                                                                                       spec,
+                                                                                                       reserved)))
                            .timeout(ceiling)
                            .fold(result -> releaseSourceBinding(binding, result));
     }
@@ -731,8 +733,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// Lock order: this monitor, then the KVStore monitor (`getTyped`). Nothing that runs under the KVStore monitor, or under a lock
     /// `activeLeader` takes, calls back into this record (the lock-free `isLeader` reads two atomics).
     synchronized Option<Activation> activation() {
-        return observeLeadership(storedLeader()).map(value -> Activation.activation(value,
-                                                                                    leadershipGeneration.get()));
+        return observeLeadership(storedLeader()).map(value -> Activation.activation(value, leadershipGeneration.get()));
     }
 
     private Option<LeaderValue> storedLeader() {
@@ -1080,12 +1081,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                               mutations);
 
         return apply.apply(List.of(command))
-                    .map(results -> Committed.committed(isAccepted(results, id), used));
+                    .map(results -> Committed.committed(isAccepted(results, id),
+                                                        used));
     }
 
     private static boolean isAccepted(List<Object> results, String id) {
         return resultOf(results, id).filter(KVCommand.TransactionResult::accepted)
-                                    .isPresent();
+                       .isPresent();
     }
 
     private static Option<KVCommand.TransactionResult> resultOf(List<Object> results, String id) {
@@ -1558,8 +1560,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private static Promise<Unit> refusedWitness(Option<KVCommand.TransactionResult> result) {
         return FenceFailure.LeadershipNotWitnessed.leadershipNotWitnessed(result.flatMap(KVCommand.TransactionResult::refusal)
                                                                                 .map(KVCommand.Refusal::kind)
-                                                                                .or(KVCommand.RefusalKind.UNKNOWN))
-                           .promise();
+                                                                                .or(KVCommand.RefusalKind.UNKNOWN)).promise();
     }
 
     /// The continuation's checks, in order: the elapsed time since submit, then the activation re-read.

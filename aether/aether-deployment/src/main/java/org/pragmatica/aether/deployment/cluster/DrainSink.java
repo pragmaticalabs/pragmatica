@@ -9,11 +9,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// The narrowest sink of a DRAIN request: every writer of a DRAIN passes through one implementation.
 public interface DrainSink {
     /// Requests a drain of `target`; `gate` runs once, in the continuation, before the write.
     Promise<Unit> request(NodeId target, DrainGate gate);
-
     /// The request already in flight for `target`, if any.
     Option<Promise<Unit>> inFlight(NodeId target);
 }
