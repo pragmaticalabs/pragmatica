@@ -38,7 +38,8 @@ import org.slf4j.LoggerFactory;
 /// Retries are scheduled on an [OwnerLifetime] that [#close()] ends (#3754), so a retry armed before the close never
 /// runs after it. A send already in flight at the close finishes without a WARN, a retry or a further POST: its
 /// continuation re-reads the lifetime (the second check, class N: this node is the only sender of its webhooks and an
-/// alert POST after close is harmless).
+/// alert POST after close is harmless). The check guards effects, not outcomes: a 2xx that lands after the close
+/// resolves as success.
 ///
 /// A `forward` never dangles across a close: a retry the close cancelled has its promise resolved as
 /// [AlertForwarderError.Stopped] by [#close()], which `forward` reports as a failure naming the stop. A delivery given up
@@ -155,13 +156,22 @@ public class AlertForwarder implements AsyncCloseable {
         return doSend(ops, url, payload).fold(result -> settle(ops, url, payload, attempt, result));
     }
 
-    /// The second check (#3754, class N): a send that was in flight when [#close()] ended the lifetime ends here, before any
-    /// WARN or retry, instead of reporting on a forwarder that has stopped.
+    /// The second check (#3754, class N): it guards EFFECTS (a WARN, a retry, a reschedule), never an outcome the receiver
+    /// already gave. A send in flight when [#close()] ended the lifetime that failed, or was refused with a non-2xx status,
+    /// ends here as stopped before any WARN or retry; a 2xx that lands after the close is a delivery and stays a success.
     private Promise<Unit> settle(HttpOperations ops, String url, String payload, int attempt, Result<Integer> result) {
-        return lifetime.isEnded()
+        return lifetime.isEnded() && !delivered(result)
                ? AlertForwarderError.Stopped.stopped(url).promise()
                : result.fold(cause -> handleTransportFailure(ops, url, payload, attempt, cause),
                              statusCode -> handleStatusCode(ops, url, payload, attempt, statusCode));
+    }
+
+    private static boolean delivered(Result<Integer> result) {
+        return result.fold(_ -> false, AlertForwarder::isSuccessStatus);
+    }
+
+    private static boolean isSuccessStatus(int statusCode) {
+        return statusCode >= 200 && statusCode < 300;
     }
 
     /// A send that failed before any status was read (connection refused or reset, DNS failure, timeout) is retried
@@ -194,7 +204,7 @@ public class AlertForwarder implements AsyncCloseable {
                                            String payload,
                                            int attempt,
                                            int statusCode) {
-        if (statusCode >= 200 && statusCode < 300) {
+        if (isSuccessStatus(statusCode)) {
             log.debug("Alert forwarded to {}", url);
 
             return Promise.success(Unit.unit());
