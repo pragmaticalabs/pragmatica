@@ -37,12 +37,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 sealed interface ApiKeyAuditRetention {
     int MAX_ENTRIES_PER_KEY = 1000;
     int MAX_REMOVALS_PER_SWEEP = 1000;
-
-    Comparator<Entry> NEWEST_FIRST = Comparator.comparingLong(Entry::timestamp)
-                                               .thenComparing(entry -> entry.key()
-                                                                            .entryId())
-                                               .reversed();
-
+    Comparator<Entry> NEWEST_FIRST = Comparator.comparingLong(Entry::timestamp).reversed();
     Comparator<Entry> OLDEST_FIRST = NEWEST_FIRST.reversed();
 
     /// `Remove` commands for the oldest entries beyond the bound of their key, oldest first, at most
