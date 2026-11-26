@@ -171,7 +171,7 @@ class BackupAgreementTest {
                                          .activationGated(true)
                                          .timeouts(TimeoutsConfig.timeoutsConfig())
                                          .workerConfig(Option.none())
-                                         .deploymentDefaults(DeploymentDefaults.DEFAULT)
+                                         .deploymentDefaults(AetherNodeConfig.DeploymentDefaults.DEFAULT)
                                          .clusterFormation(formation);
     }
 
