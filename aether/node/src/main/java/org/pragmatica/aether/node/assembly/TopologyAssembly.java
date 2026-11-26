@@ -149,7 +149,9 @@ public sealed interface TopologyAssembly {
                                                                                                                                 clusterNode.leaderManager()::isLeader,
                                                                                                                                 () -> config.autoHeal()
                                                                                                                                             .maxNodes()
-                                                                                                                                            .or(Integer.MAX_VALUE));
+                                                                                                                                            .or(Integer.MAX_VALUE))
+                                                                                                   .withApplyTimeout(config.protocol()
+                                                                                                                           .applyTimeout());
 
         return lifecycleManager;
     }
