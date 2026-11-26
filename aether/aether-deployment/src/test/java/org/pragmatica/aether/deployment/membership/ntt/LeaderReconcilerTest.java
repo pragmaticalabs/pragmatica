@@ -1650,6 +1650,158 @@ class LeaderReconcilerTest {
         }
 
         @Test
+        void activation_stopLandsBeforeTheReelectionLatch_leavesTheNextTermUnlatched() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            onceAt(LeaderReconciler.Window.ACTIVATE_BEFORE_LATCH, reconciler::deactivate);
+
+            reconciler.activate();
+
+            assertThat(reconciler.isReachedFullMembership()).as("the stale activation must not latch what the stop just reset").isFalse();
+        }
+
+        @Test
+        void trigger_stopLandsBeforeTheLifetimeCheck_flagsNoFollowUpOnTheNextTermsDebounce() {
+            configuredCoreCount.set(5);
+            reconciler.activate();
+            onceAt(LeaderReconciler.Window.TRIGGER_ENTRY, this::restartAndConfigureNextTerm);
+
+            reconciler.onTopologyUnhealthy();
+            liveTaskAt(DEBOUNCE_DELAY).runIfLive();
+
+            assertThat(liveDebounceTasks()).as("the next term's pass ends with no follow-up: the stale trigger flagged none").isZero();
+        }
+
+        private void restartAndConfigureNextTerm() {
+            restartTerm();
+            reconciler.onConfigChange();
+        }
+
+        @Test
+        void debouncedPass_stopLandsAfterTheWrapperRead_carriesNoTriggerOfTheNextTerm() {
+            configuredCoreCount.set(5);
+            reconciler.activate();
+            reconciler.onTopologyUnhealthy();
+            var stale = liveTaskAt(DEBOUNCE_DELAY);
+            onceAt(LeaderReconciler.Window.BODY_START, this::restartAndConfigureNextTerm);
+            listener.clear();
+
+            stale.runIfLive();
+
+            assertThat(listener.events()).as("the stale pass observes under its own label, never the next term's pending trigger")
+                                         .noneMatch(event -> event.trigger() == ReconcileTrigger.CONFIG_CHANGE);
+        }
+
+        @Test
+        void activationBody_stopLandsAfterTheWrapperRead_runsNoPass() {
+            configuredCoreCount.set(5);
+            reconciler.activate();
+            onceAt(LeaderReconciler.Window.BODY_START, reconciler::deactivate);
+            listener.clear();
+
+            liveTaskAt(EXPECTED_ACTIVATION_DELAY).runIfLive();
+
+            assertThat(listener.events()).as("a stopped term's activation runs no pass").isEmpty();
+        }
+
+        /// The tick of term N is past its wrapper read when the stop and the next activation land, and the next term arms its own timer in the
+        /// slot the tick clears: the tick must leave that timer pending, or the next term arms a second one.
+        private void assertStaleTickLeavesTheNextTermsTimer(TimeSpan delay) {
+            var stale = liveTaskAt(delay);
+            var nextTermsTimers = new AtomicLong();
+
+            onceAt(LeaderReconciler.Window.BODY_START, () -> nextTermArmsItsTimers(nextTermsTimers));
+
+            stale.runIfLive();
+
+            assertThat(nextTermsTimers.get()).as("control: the next term armed timers of its own").isPositive();
+            assertThat(reconciler.pendingTimerCount()).as("the next term's own timers are still pending: the stale tick cleared none").isEqualTo(nextTermsTimers.get());
+        }
+
+        private void nextTermArmsItsTimers(AtomicLong armed) {
+            restartTerm();
+            runNextTermActivationPass();
+            armed.set(reconciler.pendingTimerCount());
+        }
+
+        @Test
+        void deficitFollowUpTick_stopLandsAfterTheWrapperRead_leavesTheNextTermsTimer() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertStaleTickLeavesTheNextTermsTimer(FOLLOW_UP_DELAY);
+        }
+
+        @Test
+        void surplusFollowUpTick_stopLandsAfterTheWrapperRead_leavesTheNextTermsTimer() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertStaleTickLeavesTheNextTermsTimer(FOLLOW_UP_DELAY);
+        }
+
+        @Test
+        void drainGraceTick_stopLandsAfterTheWrapperRead_leavesTheNextTermsTimer() {
+            configuredCoreCount.set(2);
+            seedYoung(NodeId.randomNodeId(), NodeId.randomNodeId());
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertStaleTickLeavesTheNextTermsTimer(DRAIN_GRACE_FOLLOW_UP_DELAY);
+        }
+
+        @Test
+        void inFlightSweepTick_stopLandsAfterTheWrapperRead_leavesTheNextTermsTimer() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            var dispatchedNotYetMember = NodeId.randomNodeId();
+            reconciler.setRetainedDispatchedSupplier(() -> Set.of(dispatchedNotYetMember));
+            reconciler.activate();
+
+            assertStaleTickLeavesTheNextTermsTimer(EXPECTED_POLL_INTERVAL);
+        }
+
+        @Test
+        void instanceStateQuery_stopLandsAfterTheSweepTookTheEntry_asksTheProviderNothing() {
+            driveArmedDeficitProvision(() -> {});
+            onceAt(LeaderReconciler.Window.POLL_START, reconciler::deactivate);
+
+            liveTaskAt(EXPECTED_POLL_INTERVAL).runIfLive();
+
+            assertThat(ctm.instanceStateQueries()).as("a stopped term's sweep asks the provider nothing").isEmpty();
+        }
+
+        @Test
+        void drainDispatch_stopLandsAfterTheVictimsWereChosen_drainsNothing() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            onceAt(LeaderReconciler.Window.DRAIN_START, reconciler::deactivate);
+
+            liveTaskAt(EXPECTED_ACTIVATION_DELAY).runIfLive();
+
+            assertThat(ctm.drainNodeCalls()).as("a stopped term drains no node").isEmpty();
+        }
+
+        @Test
+        void holdNote_stopLandsAfterTheAsk_leavesTheNextTermsNoteClear() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+            reconciler.activate();
+            ctm.runOnNextScalingHeldAsk(reconciler::deactivate);
+
+            liveTaskAt(EXPECTED_ACTIVATION_DELAY).runIfLive();
+
+            assertThat(reconciler.isSurplusHoldNoted()).as("the stale pass must not note a hold the stop just reset").isFalse();
+        }
+
+        @Test
         void pendingTrigger_ofTermN_doesNotLeakIntoTheNextTerm() {
             configuredCoreCount.set(5);
             reconciler.activate();
@@ -5783,7 +5935,26 @@ class LeaderReconcilerTest {
                 heldNow.remove(subject);
             }
 
+            runAskHook();
+
             return held;
+        }
+
+        /// Runs once, after the next ask of the hold has been answered and before the answer returns: the stop lands between the ask and the
+        /// reconciler's write of what it was told.
+        private final AtomicReference<Runnable> onNextScalingHeldAsk = new AtomicReference<>();
+
+        @Contract
+        void runOnNextScalingHeldAsk(Runnable hook) {
+            onNextScalingHeldAsk.set(hook);
+        }
+
+        private void runAskHook() {
+            var hook = onNextScalingHeldAsk.getAndSet(null);
+
+            if (hook != null) {
+                hook.run();
+            }
         }
 
         Set<String> heldNow() {

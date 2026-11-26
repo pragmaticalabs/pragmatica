@@ -23,6 +23,7 @@ import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -520,6 +521,7 @@ public final class LeaderReconciler {
 
         var life = lifetime.get();
 
+        probe(Window.ACTIVATE_BEFORE_LATCH);
         if (leaderTermSupplier.get() > 1L && mayAct(life)) {
             reachedFullMembership.set(true);
             log.info("LeaderReconciler re-election activation (leaderTerm={}) — reachedFullMembership pre-latched",
@@ -786,7 +788,18 @@ public final class LeaderReconciler {
         /// `triggerReconcile`: after the lifetime check, before the first read of the debounce state.
         TRIGGER_BEFORE_DEBOUNCE,
         /// `activate`: after the lifetime read, before the activation task is scheduled on it.
-        ACTIVATE_BEFORE_SCHEDULE
+        ACTIVATE_BEFORE_SCHEDULE,
+        /// `activate`: after the lifetime read, before the re-election latch of a new term is written.
+        ACTIVATE_BEFORE_LATCH,
+        /// `triggerReconcile`: after the caller read its lifetime, before the check that the lifetime is live.
+        TRIGGER_ENTRY,
+        /// The first step of a scheduled body (activation, debounced pass, the four follow-up ticks), before its own gate: the body whose
+        /// wrapper read of the lifetime preceded the stop.
+        BODY_START,
+        /// `pollInstanceStateIfDue`: after the sweep took the entry, before the gate of the provider query.
+        POLL_START,
+        /// `dispatchSingleDrain`: after the victims were chosen, before the gate of the drain.
+        DRAIN_START
     }
 
     /// TEST window seam only: production registers no probe, so [`#probe`] is a no-op. A test registers one to end the term, or arm a
@@ -853,6 +866,21 @@ public final class LeaderReconciler {
     /// grace; membership-unification-spec P5).
     public boolean isReachedFullMembership() {
         return reachedFullMembership.get();
+    }
+
+    /// TEST observation only: whether the last ask of the core scaling hold was held (read by the surplus follow-up to name its pass line once).
+    boolean isSurplusHoldNoted() {
+        return surplusHoldNoted.get();
+    }
+
+    /// TEST observation only: how many of the follow-up timers (sweep, deficit, drain grace, surplus) hold a pending handle.
+    long pendingTimerCount() {
+        return Stream.of(inFlightSweepHandleRef,
+                         deficitFollowUpHandleRef,
+                         drainGraceReEvalHandleRef,
+                         surplusFollowUpHandleRef)
+                     .filter(slot -> isPending(slot.get()))
+                     .count();
     }
 
     /// Observability — number of in-flight provisioning records this leader is tracking.
@@ -990,6 +1018,7 @@ public final class LeaderReconciler {
     /// the ended lifetime, which counts as idle: the next term takes it over, so nothing has to release it.
     @Contract
     private void triggerReconcile(OwnerLifetime life, ReconcileTrigger trigger) {
+        probe(Window.TRIGGER_ENTRY);
         if (life.isEnded()) {
             return;
         }
@@ -1025,6 +1054,7 @@ public final class LeaderReconciler {
 
     @Contract
     private void runDebouncedReconcile(OwnerLifetime life) {
+        probe(Window.BODY_START);
         runReconcileBody(life, pendingTriggerOf(life));
         finishDebounce(life);
     }
@@ -1068,6 +1098,7 @@ public final class LeaderReconciler {
 
     @Contract
     private void onActivationDelayFire(OwnerLifetime life) {
+        probe(Window.BODY_START);
         if (!mayAct(life)) {
             return;
         }
@@ -1986,6 +2017,7 @@ public final class LeaderReconciler {
     /// nodes no-op (a deposed leader's follow-up must not act).
     @Contract
     private void runDrainGraceReEval(OwnerLifetime life) {
+        probe(Window.BODY_START);
         if (!mayAct(life)) {
             return;
         }
@@ -2218,6 +2250,7 @@ public final class LeaderReconciler {
     /// term ended drains nothing. It narrows the window only; the receiver's fence is what refuses a stale leader.
     @Contract
     private void dispatchSingleDrain(OwnerLifetime life, NodeId peerId) {
+        probe(Window.DRAIN_START);
         if (!mayAct(life)) {
             return;
         }
@@ -2280,6 +2313,7 @@ public final class LeaderReconciler {
     /// no-ops if a concurrent dispatch already armed.
     @Contract
     private void runInFlightSweep(OwnerLifetime life) {
+        probe(Window.BODY_START);
         if (!mayAct(life)) {
             return;
         }
@@ -2312,6 +2346,7 @@ public final class LeaderReconciler {
     /// the ceiling.
     @Contract
     private void pollInstanceStateIfDue(OwnerLifetime life, NodeId id, InFlightEntry entry) {
+        probe(Window.POLL_START);
         if (!mayAct(life) || entry.isDispatching() || !statusQueriesOutstanding.add(id)) {
             return;
         }
@@ -2441,6 +2476,7 @@ public final class LeaderReconciler {
     /// not act; [`#deactivate`] also cancels the pending future).
     @Contract
     private void runDeficitFollowUp(OwnerLifetime life) {
+        probe(Window.BODY_START);
         if (!mayAct(life)) {
             return;
         }
@@ -2482,6 +2518,7 @@ public final class LeaderReconciler {
     /// must not act; [`#deactivate`] also cancels the pending future).
     @Contract
     private void runSurplusFollowUp(OwnerLifetime life) {
+        probe(Window.BODY_START);
         if (!mayAct(life)) {
             return;
         }
