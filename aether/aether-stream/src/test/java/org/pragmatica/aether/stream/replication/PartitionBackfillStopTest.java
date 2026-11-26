@@ -206,7 +206,7 @@ class PartitionBackfillStopTest {
             backfill.close();
             timer.run();
 
-            assertThat(first.isResolved()).as("the watch's body did not run after the stop").isFalse();
+            assertThat(stoppedFailure(first)).as("the stop resolved the flight its cancelled watch could no longer fail").isTrue();
             assertThat(pulls).as("no re-run after the stop").hasSize(1);
         }
 
@@ -224,6 +224,68 @@ class PartitionBackfillStopTest {
             assertThat(first.isResolved()).as("the body timed the flight out before the stop took effect").isTrue();
             assertThat(pulls).as("the body that was past its lifetime read started no re-run").hasSize(1);
         }
+    }
+
+    /// The stop abandons every flight in the slot (F1): it resolves failed with the stopped cause, never dangles, and a run that
+    /// lands afterwards (the executor is not interrupted by the stop) changes nothing.
+    @Nested
+    class AbandonedFlights {
+        @Test
+        void pendingFlightAtStop_stopped_resolvesWithTheStoppedCause() {
+            var backfill = backfill(HOUR);
+            var first = backfill.backfill(STREAM, PARTITION);
+            var joined = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(first.isResolved()).as("control: the flight is pending before the stop").isFalse();
+
+            backfill.close();
+            backfill.close();
+
+            assertThat(stoppedFailure(first)).as("the flight resolved failed with the stopped cause").isTrue();
+            assertThat(stoppedFailure(joined)).as("the joined call shares that result").isTrue();
+        }
+
+        @Test
+        void abandonedFlight_itsRunLandsAfterTheStop_keepsTheStoppedCause() {
+            var backfill = backfill(HOUR);
+            var landed = new AtomicInteger();
+            var first = backfill.backfill(STREAM, PARTITION);
+
+            backfill.releaseWindowHook(landed::incrementAndGet);
+            backfill.close();
+            pulls.getFirst().fail(ReplicationError.General.REPLICATION_TIMEOUT);
+
+            awaitLanding(landed);
+            assertThat(stoppedFailure(first)).as("the run's own failure did not replace the stop's").isTrue();
+        }
+
+        @Test
+        void callAfterStop_stopped_isRefusedWithoutAPull() {
+            var backfill = backfill(HOUR);
+
+            backfill.close();
+
+            var late = backfill.backfill(STREAM, PARTITION);
+            var later = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(stoppedFailure(late)).as("a flight added after the stop's sweep is refused, not left pending").isTrue();
+            assertThat(stoppedFailure(later)).as("it left the slot, so the next call is refused the same way").isTrue();
+            assertThat(pulls).as("no pull after the stop").isEmpty();
+        }
+
+        private void awaitLanding(AtomicInteger landed) {
+            var deadline = System.nanoTime() + AWAIT.nanos();
+
+            while (landed.get() == 0 && System.nanoTime() < deadline) {
+                LockSupport.parkNanos(1_000_000L);
+            }
+
+            assertThat(landed.get()).as("the run's landing reached the slot's release").isEqualTo(1);
+        }
+    }
+
+    private static boolean stoppedFailure(Promise<Long> flight) {
+        return flight.isResolved() && flight.await(AWAIT).fold(cause -> cause == BackfillError.General.STOPPED, _ -> false);
     }
 
     private static void stopWhileReleasing(PartitionBackfill backfill, AtomicInteger released) {

@@ -42,6 +42,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.FLIGHT_TIMED_OUT;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.INCOMPLETE_BACKFILL;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.SOURCE_STALLED;
+import static org.pragmatica.aether.stream.replication.BackfillError.General.STOPPED;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.MALFORMED_RESPONSE;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.NOT_HIGHEST_WATERMARK;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.NO_SOURCE_REPLICA;
@@ -352,6 +353,10 @@ public final class PartitionBackfill {
         this.oversizedOrder = shared.oversizedOrder;
         this.current = current;
         this.refusalBackoff = shared.refusalBackoff;
+        // #3754 m6: the view shares the lifetime, and nothing a run executes reads it. The reads are in `fly`, `watch`, `holdSlot` and
+        // `close`; their entries are `backfill` (public) and the lifetime's own timer bodies, which run on the shared instance.
+        // `runBackfill` and everything under it never call `backfill`, `fly`, `land`, `release` or `rerun` (grep of this file,
+        // 2026-11-26), so a fresh lifetime here would change no behaviour: the field is copied for the invariant, not for a path.
         this.lifetime = shared.lifetime;
         this.verifyWindowHook = shared.verifyWindowHook;
         this.backfillAckSink = shared.backfillAckSink;
@@ -408,8 +413,9 @@ public final class PartitionBackfill {
     }
 
     /// The bounded test factory above on a given `lifetime` (#3754): a test builds it through [OwnerLifetime#ownerLifetime(OwnerLifetime.Seam)]
-    /// with a scheduler it fires by hand, so the refusal hold and the idle watch run when the test says.
-    static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
+    /// with a scheduler it fires by hand, so the refusal hold and the idle watch run when the test says. Public so that the node
+    /// module's stop test can do the same (#3754 F3); production builds through the factories below, whose lifetime is the shared scheduler's.
+    public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
                                                AlignedRecovery partitionRecovery,
                                                CatchupTransport transport,
                                                ReplicationTransport replicationTransport,
@@ -670,11 +676,36 @@ public final class PartitionBackfill {
                : backfill(streamName, partition);
     }
 
+    /// The one gate of the stop (#3754): a flight is added to the slot BEFORE it reaches here, and [#close] ends the lifetime BEFORE
+    /// it sweeps the slot, so either this read sees the end and abandons its own flight, or the sweep sees the flight. A flight
+    /// added after the sweep therefore never stays unresolved, and none starts a pull once the end is visible. Both entries,
+    /// [#backfill] and [#rerun], reach a pull only through here.
     private Promise<Long> fly(PartitionKey key, Flight flight, String streamName, int partition) {
+        return lifetime.isEnded()
+               ? abandoned(key, flight)
+               : start(key, flight, streamName, partition);
+    }
+
+    private Promise<Long> abandoned(PartitionKey key, Flight flight) {
+        abandon(key, flight);
+
+        return flight.result();
+    }
+
+    private Promise<Long> start(PartitionKey key, Flight flight, String streamName, int partition) {
         forRun(key, flight).runBackfill(streamName, partition).onResult(result -> land(key, flight, result));
         flightBound.onPresent(bound -> watch(key, flight, bound, bound));
 
         return flight.result();
+    }
+
+    /// The stop's end of a flight: it leaves the slot and resolves failed with [BackfillError.General#STOPPED]. The flight's run may
+    /// still land later; [Promise] resolves once, so that landing, a success included, changes nothing, and the run's own writes
+    /// are already dropped because the flight is no longer current ([#isCurrent]).
+    @Contract
+    private void abandon(PartitionKey key, Flight flight) {
+        inFlight.remove(key, flight);
+        flight.result().resolve(STOPPED.result());
     }
 
     /// #1638 B2: wakes after `delay` and fails the flight if it has made no progress for `bound`; otherwise sleeps
@@ -778,11 +809,27 @@ public final class PartitionBackfill {
     }
 
     /// #3754: the stop. Ends the lifetime of the refusal hold and the idle watch, so a timer armed before the stop never runs
-    /// its body after it and none is armed after it. A timer body that was already past the lifetime's read when this runs may
-    /// still reach [#rerun], which re-checks the lifetime before it starts a pull; the run in flight on the backfill executor is
-    /// not interrupted (the executor's own shutdown owns it). Idempotent; never waits.
+    /// its body after it and none is armed after it, then abandons every flight still in the slot: each resolves failed with
+    /// [BackfillError.General#STOPPED], so no waiter dangles on the idle watch this stop cancelled. After it returns no flight in the
+    /// slot is unresolved and none resolves to a success later. A flight added after the sweep is refused by [#fly]'s read of the
+    /// ended lifetime, which is why the end comes first. A timer body past that read when this runs may still pull once; the run
+    /// in flight on the backfill executor is not interrupted (the executor's own shutdown owns it). Idempotent; never waits.
+    ///
+    /// The node stop calls this AFTER the partition manager's close and the sealer's bounded flush (#932, `AetherNode`
+    /// :2117-2118, `closeStreamPartitions`): the order is deliberate, so until this runs a hold or watch body can start a pull
+    /// against the closed manager; nothing refuses it, the lifetime is live. What that pull can reach: the manager's close clears
+    /// its stream table (`StreamPartitionManager` :7101), so a lookup there answers `StreamNotFound` (:7110) instead of writing
+    /// [unverified: the apply path through `AlignedRecovery` was read by name, not run].
     public Unit close() {
-        return lifetime.end();
+        lifetime.end();
+
+        return abandonAll();
+    }
+
+    private Unit abandonAll() {
+        inFlight.forEach(this::abandon);
+
+        return Unit.unit();
     }
 
     @Contract
@@ -805,9 +852,10 @@ public final class PartitionBackfill {
     @Contract
     private void rerun(PartitionKey key) {
         var flight = Flight.flight();
-        // #3754 (N): a timer body that passed the lifetime's read before close() ran reaches here; the pull it would start (a wire
-        // read, in-memory replica rows and the local WAL, no write another node also makes) must not start after the stop.
-        if (!lifetime.isEnded() && inFlight.putIfAbsent(key, flight) == null) {
+
+        // #3754 (N): the pull a timer body past the lifetime's read would start (a wire read, in-memory replica rows and the local
+        // WAL, no write another node also makes) is refused by `fly`, which abandons this flight once the stop is visible.
+        if (inFlight.putIfAbsent(key, flight) == null) {
             log.debug("Backfill of {}[{}] re-runs once: a call joined the flight that landed",
                       key.streamName(),
                       key.partition());
