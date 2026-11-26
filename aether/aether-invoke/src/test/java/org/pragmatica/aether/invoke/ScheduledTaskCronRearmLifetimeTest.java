@@ -81,4 +81,26 @@ class ScheduledTaskCronRearmLifetimeTest {
         assertThat(keysTimer.isCancelled()).as("and did not cancel it as a replaced prior").isFalse();
         assertThat(current.size()).as("the current state's lifetime holds only the timer it had").isEqualTo(1);
     }
+
+    /// The timer map's two writers, driven directly: a store cancels the live timer it replaces, and a per-key cancel
+    /// cancels the registration it removes, so neither leaves a live timer nothing refers to.
+    @Test
+    void replaceTimer_cancelsTheLivePrior_andCancelTimer_cancelsTheRegistrationItRemoves() {
+        var ctx = ((ScheduledTaskManager.ScheduledTaskManagerAdapter) manager).ctx();
+        var current = ctx.fsm.entered().lifetime();
+        var prior = current.schedule(_ -> {}, HOUR);
+        var next = current.schedule(_ -> {}, HOUR);
+
+        ctx.activeTimers.put(key, prior);
+        ScheduledTaskManager.TaskOps.replaceTimer(ctx, key, next);
+
+        assertThat(prior.isCancelled()).as("the replaced timer was cancelled").isTrue();
+        assertThat(ctx.activeTimers.get(key)).as("the new timer is the key's").isSameAs(next);
+        assertThat(next.isCancelled()).isFalse();
+
+        ScheduledTaskManager.TaskOps.cancelTimer(ctx, key);
+
+        assertThat(next.isCancelled()).as("a per-key cancel cancels the registration it removes").isTrue();
+        assertThat(ctx.activeTimers).as("and removes it").doesNotContainKey(key);
+    }
 }
