@@ -40,6 +40,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -568,7 +569,7 @@ class ScheduledTaskManagerTest {
         void eligibleButNoTimerArmed_isTimerArmFailed() {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
-            ((ScheduledTaskManagerAdapter) manager).ctx().activeTimers.values().forEach(future -> future.cancel(false));
+            ((ScheduledTaskManagerAdapter) manager).ctx().activeTimers.values().forEach(OwnerLifetime.Handle::cancel);
             ((ScheduledTaskManagerAdapter) manager).ctx().activeTimers.clear();
 
             assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.TIMER_ARM_FAILED));
@@ -1121,7 +1122,7 @@ class ScheduledTaskManagerTest {
             // delayUntilNext makes waiting on a real timer tick impractically slow for a unit
             // test. The task/timer is never registered, so releasing the gate below settles the
             // invocation without arming a real next-fire timer.
-            ScheduledTaskManager.TaskOps.executeCronTask(ctx, key, task, cron);
+            ScheduledTaskManager.TaskOps.executeCronTask(ctx, key, task, cron, ctx.fsm.entered().lifetime());
             assertThat(manager.tryClaim(key)).as("a cron fire is in flight — a manual trigger must be refused")
                       .isFalse();
             gate.succeed(Unit.unit());

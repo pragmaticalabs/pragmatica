@@ -8,7 +8,6 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -41,7 +40,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmState;
@@ -325,14 +324,20 @@ public interface ScheduledTaskManager {
 
         /// The fire each claimed key is running (#1930), so a skipped tick can say how long it has been in flight.
         final Map<ScheduledTaskKey, FireInFlight> fires = new ConcurrentHashMap<>();
-        final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
+        /// The timer of each key, as the handle of the registration made through the lifetime of the state that armed it
+        /// (#1191). A handle is armed only while it is not cancelled: leaving a state ends its lifetime, which cancels
+        /// every timer that state armed, so an entry the lifetime cancelled is still in this map but no longer counts
+        /// ([TaskOps#isArmed]).
+        final Map<ScheduledTaskKey, OwnerLifetime.Handle> activeTimers = new ConcurrentHashMap<>();
 
         /// D1-react (§3.5.1 rows 25/28, U2): a registry-driven arm is a reaction on this executor; the cancel stays in
-        /// absorb. Every cancel, single or state-level (`cancelAllTimers`, `cancelAllModeTimers`), bumps its key's
-        /// generation inside the key's `compute`; the arm runs inside the same `compute` only if the generation did not
-        /// move since absorb, with eligibility re-read at run time. Whichever runs first, the later one sees the other:
-        /// no armed-after-cancel. A state-level cancel never invalidates a key it does not cancel (v-2653: a SINGLE arm
-        /// survives a drain, which stops only ALL-mode fires).
+        /// absorb. Every per-key cancel (`cancelTimer`, `cancelAllModeTimers`) bumps its key's generation inside the key's
+        /// `compute`; the arm runs inside the same `compute` only if the generation did not move since absorb, with
+        /// eligibility re-read at run time. Whichever runs first, the later one sees the other: a changed, paused or
+        /// removed task never has its superseded arm land after the cancel. That is this generation's whole job; ending a
+        /// state is NOT one of its causes (#1191): every arm goes through the lifetime of the state it read, so a state
+        /// exit refuses the arm itself. A cancel never invalidates a key it does not cancel (v-2653: a SINGLE arm survives
+        /// a drain, which stops only ALL-mode fires).
         final AtomicReference<ReactExecutor> react = new AtomicReference<>(ReactExecutor.inline("ScheduledTaskRegistry"));
 
         final Map<ScheduledTaskKey, Long> timerGenerations = new ConcurrentHashMap<>();
@@ -532,15 +537,12 @@ public interface ScheduledTaskManager {
     record Following(Context ctx) implements SchedulerState {
         private static final Logger log = LoggerFactory.getLogger(Following.class);
 
+        /// The timers are armed through `life`, the lifetime of this entry (#1191): leaving Following ends it, so there is no
+        /// exit hook to cancel them and a hook that runs after the exit arms nothing.
         @Override
-        public void onEntry() {
+        public void onEntry(OwnerLifetime life) {
             log.info("Node {} entering Following — running ALL-mode scheduled tasks", ctx.self);
-            TaskOps.startEligibleTasks(ctx, false);
-        }
-
-        @Override
-        public void onExit() {
-            TaskOps.cancelAllTimers(ctx);
+            TaskOps.startEligibleTasks(ctx, false, life);
         }
 
         @Override
@@ -561,15 +563,17 @@ public interface ScheduledTaskManager {
     record Leading(Context ctx) implements SchedulerState {
         private static final Logger log = LoggerFactory.getLogger(Leading.class);
 
+        /// The timers are armed through `life`, the lifetime of this entry (#1191): leaving Leading ends it, so a hook that
+        /// runs after the exit arms nothing. `onExit` keeps the one job the lifetime does not do: telling the observer which
+        /// SINGLE-mode fires this node no longer runs.
         @Override
-        public void onEntry() {
+        public void onEntry(OwnerLifetime life) {
             log.info("Node {} entering Leading — running ALL + SINGLE mode scheduled tasks", ctx.self);
-            TaskOps.startEligibleTasks(ctx, true);
+            TaskOps.startEligibleTasks(ctx, true, life);
         }
 
         @Override
         public void onExit() {
-            TaskOps.cancelAllTimers(ctx);
             ctx.announceFiresLost(true);
         }
 
@@ -594,7 +598,6 @@ public interface ScheduledTaskManager {
         @Override
         public void onEntry() {
             log.info("Node {} entering Stopped — all scheduled tasks cancelled", ctx.self);
-            TaskOps.cancelAllTimers(ctx);
             ctx.announceFiresLost(false);
         }
 
@@ -628,9 +631,14 @@ public interface ScheduledTaskManager {
             ctx.timerGenerations.compute(key, (_, current) -> armUnderGuard(key, task, keyGeneration, current));
         }
 
+        /// The state and the lifetime of its entry are read ONCE, as one value (#1191): a state read here and a lifetime read
+        /// separately could belong to two different entries, and the timer would be armed for a state that is gone. Armed
+        /// through that entry's lifetime, an arm that loses the race to the state's exit is refused.
         private Long armUnderGuard(ScheduledTaskKey key, ScheduledTask task, long keyGeneration, Long current) {
-            if (current != null && current == keyGeneration && shouldRunInCurrentState(task)) {
-                TaskOps.startTimer(ctx, key, task);
+            var entered = fsm.entered();
+
+            if (current != null && current == keyGeneration && shouldRunIn(entered.state(), task)) {
+                TaskOps.startTimer(ctx, key, task, entered.lifetime());
             }
 
             return current;
@@ -641,9 +649,7 @@ public interface ScheduledTaskManager {
             TaskOps.clearOpenConditions(ctx, key, fsm.current() instanceof Leading);
         }
 
-        private boolean shouldRunInCurrentState(ScheduledTask task) {
-            var state = fsm.current();
-
+        private boolean shouldRunIn(SchedulerState state, ScheduledTask task) {
             if (! (state instanceof Following || state instanceof Leading)) {
                 return false;
             }
@@ -713,9 +719,16 @@ public interface ScheduledTaskManager {
         private static Option<Ineligibility> timerArmed(Context ctx, ScheduledTask task) {
             var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
 
-            return ctx.activeTimers.containsKey(key)
+            return isArmed(ctx, key)
                    ? Option.none()
                    : Option.some(Ineligibility.TIMER_ARM_FAILED);
+        }
+
+        /// The key has a timer its state has not ended: a handle the state's lifetime cancelled does not count (#1191).
+        static boolean isArmed(Context ctx, ScheduledTaskKey key) {
+            return Option.option(ctx.activeTimers.get(key))
+                         .filter(handle -> !handle.isCancelled())
+                         .isPresent();
         }
 
         static boolean hostingAndNotDraining(Context ctx, ScheduledTask task) {
@@ -729,7 +742,7 @@ public interface ScheduledTaskManager {
             return task.executionMode() != ExecutionMode.ALL || hostingAndNotDraining(ctx, task);
         }
 
-        static void startEligibleTasks(Context ctx, boolean leader) {
+        static void startEligibleTasks(Context ctx, boolean leader, OwnerLifetime life) {
             ctx.registry.allTasks()
                         .stream()
                         .filter(task -> eligible(ctx, task, leader))
@@ -738,23 +751,25 @@ public interface ScheduledTaskManager {
                                                                                  task.artifact(),
                                                                                  task.methodName());
 
-                                     if (!ctx.activeTimers.containsKey(key)) {
-                                         startTimer(ctx, key, task);
+                                     if (!isArmed(ctx, key)) {
+                                         startTimer(ctx, key, task, life);
                                      }
                                  });
         }
 
-        static void startTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task) {
+        /// Arms the key's timer through `life`, the lifetime of the state the caller is acting for (#1191). A lifetime that has
+        /// ended refuses the arm and the map is left as it was.
+        static void startTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task, OwnerLifetime life) {
             if (task.isInterval()) {
-                startIntervalTimer(ctx, key, task);
+                startIntervalTimer(ctx, key, task, life);
             } else if (task.isCron()) {
-                startCronTimer(ctx, key, task);
+                startCronTimer(ctx, key, task, life);
             }
         }
 
-        private static void startIntervalTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task) {
+        private static void startIntervalTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task, OwnerLifetime life) {
             IntervalParser.parse(task.interval())
-                          .onSuccess(interval -> scheduleAtFixedRate(ctx, key, task, interval))
+                          .onSuccess(interval -> scheduleAtFixedRate(ctx, key, task, interval, life))
                           .onFailure(cause -> log.warn("Failed to parse interval '{}' for task {}: {}",
                                                        task.interval(),
                                                        key,
@@ -764,14 +779,15 @@ public interface ScheduledTaskManager {
         private static void scheduleAtFixedRate(Context ctx,
                                                 ScheduledTaskKey key,
                                                 ScheduledTask task,
-                                                TimeSpan interval) {
-            var future = SharedScheduler.scheduleAtFixedRate(() -> fireFixedRate(ctx, key, task, interval), interval);
+                                                TimeSpan interval,
+                                                OwnerLifetime life) {
+            var handle = life.scheduleAtFixedRate(_ -> fireFixedRate(ctx, key, task, interval), interval);
 
-            replaceTimer(ctx, key, future);
+            replaceTimer(ctx, key, handle);
             log.info("Started scheduled task {} with interval {}", key, task.interval());
         }
 
-        /// Fixed-rate ticks are wall-clock driven ([SharedScheduler#scheduleAtFixedRate] does not wait
+        /// Fixed-rate ticks are wall-clock driven ([OwnerLifetime#scheduleAtFixedRate] does not wait
         /// for the prior invocation to settle), so a slow invocation can still be running when the next
         /// tick fires. `ctx.inFlight` is an atomic try-claim guard: a tick that finds the key already
         /// claimed skips this fire (recording the skip in state) instead of running concurrently with
@@ -821,9 +837,9 @@ public interface ScheduledTaskManager {
                       task.methodName().name());
         }
 
-        private static void startCronTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task) {
+        private static void startCronTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task, OwnerLifetime life) {
             CronExpression.parse(task.cron())
-                          .onSuccess(cron -> scheduleNextCronFire(ctx, key, task, cron))
+                          .onSuccess(cron -> scheduleNextCronFire(ctx, key, task, cron, life))
                           .onFailure(cause -> log.warn("Failed to parse cron '{}' for task {}: {}",
                                                        task.cron(),
                                                        key,
@@ -833,9 +849,10 @@ public interface ScheduledTaskManager {
         private static void scheduleNextCronFire(Context ctx,
                                                  ScheduledTaskKey key,
                                                  ScheduledTask task,
-                                                 CronExpression cron) {
+                                                 CronExpression cron,
+                                                 OwnerLifetime life) {
             cron.delayUntilNext(Instant.now())
-                .onSuccess(delay -> registerCronFire(ctx, key, task, cron, delay))
+                .onSuccess(delay -> registerCronFire(ctx, key, task, cron, life, delay))
                 .onFailure(cause -> log.warn("Failed to compute next cron fire for task {}: {}",
                                              key,
                                              cause.message()));
@@ -845,10 +862,11 @@ public interface ScheduledTaskManager {
                                              ScheduledTaskKey key,
                                              ScheduledTask task,
                                              CronExpression cron,
+                                             OwnerLifetime life,
                                              TimeSpan delay) {
-            var future = SharedScheduler.schedule(() -> executeCronTask(ctx, key, task, cron), delay);
+            var handle = life.schedule(next -> executeCronTask(ctx, key, task, cron, next), delay);
 
-            replaceTimer(ctx, key, future);
+            replaceTimer(ctx, key, handle);
             log.info("Scheduled cron task {} next fire in {}ms", key, delay.millis());
         }
 
@@ -859,12 +877,21 @@ public interface ScheduledTaskManager {
         /// that guard is accurate for cron tasks: a claim taken here is visible to [#tryClaim], and a
         /// claim taken by a manual trigger is visible here. A skip re-arms immediately (cron has no
         /// other trigger to resume it) and is recorded the same way an overlapping fixed-rate tick is.
+        ///
+        /// Every re-arm goes through `life`, the lifetime this fire was scheduled on and the body received (#1191), never the
+        /// scheduler's current one: a fire that settles after its state ended re-arms nothing, and cannot reach the lifetime
+        /// of a later state. The `isArmed` check stays for its own job: a key cancelled while its fire was in flight (task
+        /// removed or changed) is not re-armed.
         /// Package-private (not `private`) so `ScheduledTaskManagerTest` can drive it directly with a
         /// real `Context` and `CronExpression` — cron's minute-granularity `delayUntilNext` makes
         /// waiting on a real timer tick impractically slow for a unit test.
-        static void executeCronTask(Context ctx, ScheduledTaskKey key, ScheduledTask task, CronExpression cron) {
+        static void executeCronTask(Context ctx,
+                                    ScheduledTaskKey key,
+                                    ScheduledTask task,
+                                    CronExpression cron,
+                                    OwnerLifetime life) {
             if (!shouldFire(ctx, task)) {
-                scheduleNextCronFire(ctx, key, task, cron);
+                scheduleNextCronFire(ctx, key, task, cron, life);
 
                 return;
             }
@@ -872,7 +899,7 @@ public interface ScheduledTaskManager {
             if (!ctx.claim(key)) {
                 ctx.tickSkipped(key);
                 recordSkippedOverlap(ctx, task);
-                scheduleNextCronFire(ctx, key, task, cron);
+                scheduleNextCronFire(ctx, key, task, cron, life);
 
                 return;
             }
@@ -881,8 +908,8 @@ public interface ScheduledTaskManager {
 
             fire(ctx, task, nextFireAt).onResultRun(() -> {
                 ctx.release(key);
-                if (ctx.activeTimers.containsKey(key)) {
-                    scheduleNextCronFire(ctx, key, task, cron);
+                if (isArmed(ctx, key)) {
+                    scheduleNextCronFire(ctx, key, task, cron, life);
                 }
             });
         }
@@ -1226,41 +1253,40 @@ public interface ScheduledTaskManager {
         }
 
         private static Long cancelUnderGuard(Context ctx, ScheduledTaskKey key, Long generation) {
-            Option.option(ctx.activeTimers.remove(key)).onPresent(future -> cancelFuture(key, future));
+            Option.option(ctx.activeTimers.remove(key)).onPresent(handle -> cancelHandle(key, handle));
 
             return generation == null
                    ? 1L
                    : generation + 1;
         }
 
-        private static void cancelFuture(ScheduledTaskKey key, ScheduledFuture<?> future) {
-            future.cancel(false);
+        private static void cancelHandle(ScheduledTaskKey key, OwnerLifetime.Handle handle) {
+            handle.cancel();
             log.debug("Cancelled scheduled task timer: {}", key);
         }
 
-        static void replaceTimer(Context ctx, ScheduledTaskKey key, ScheduledFuture<?> future) {
-            var prior = ctx.activeTimers.put(key, future);
-
-            if (prior != null) {
-                prior.cancel(false);
-                log.debug("Replaced scheduled task timer for key {} (prior future cancelled)", key);
-            }
+        /// Stores the key's new timer and cancels the one it replaces. A handle that is already cancelled was refused by an
+        /// ended lifetime (#1191): the map is left as it was, so a late arm for a state that is gone can neither show as an
+        /// armed timer nor cancel the timer a later state armed for the same key. The check and the store are one `compute`.
+        static void replaceTimer(Context ctx, ScheduledTaskKey key, OwnerLifetime.Handle handle) {
+            ctx.activeTimers.compute(key, (_, prior) -> supersede(key, prior, handle));
         }
 
-        /// U2 for the state-level undo (v-2653 F1): every registry-armed key is cancelled through its own `compute`, which
-        /// bumps its generation, so an arm already inside its key's `compute` (past its generation and state checks)
-        /// completes first and its timer is cancelled here, never stored after the clear below; an arm not yet inside it
-        /// sees the bump. The clear below then covers any timer whose key never went through a `compute` (armed by state
-        /// entry only).
-        static void cancelAllTimers(Context ctx) {
-            var count = ctx.activeTimers.size();
+        private static OwnerLifetime.Handle supersede(ScheduledTaskKey key,
+                                                      OwnerLifetime.Handle prior,
+                                                      OwnerLifetime.Handle handle) {
+            if (handle.isCancelled()) {
+                log.debug("Refused scheduled task timer for key {} (its state's lifetime has ended)", key);
 
-            ctx.timerGenerations.keySet().forEach(key -> cancelTimer(ctx, key));
-            ctx.activeTimers.forEach((_, future) -> future.cancel(false));
-            ctx.activeTimers.clear();
-            if (count > 0) {
-                log.info("Cancelled {} scheduled task timers", count);
+                return prior;
             }
+
+            if (prior != null && prior != handle) {
+                prior.cancel();
+                log.debug("Replaced scheduled task timer for key {} (prior timer cancelled)", key);
+            }
+
+            return handle;
         }
     }
 
@@ -1340,7 +1366,10 @@ public interface ScheduledTaskManager {
 
         @Override
         public int activeTimerCount() {
-            return ctx.activeTimers.size();
+            return (int) ctx.activeTimers.values()
+                                         .stream()
+                                         .filter(handle -> !handle.isCancelled())
+                                         .count();
         }
 
         /// Rows this manager submitted that the commit has not yet caught up with (test seam).
