@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.PrefetchStats;
 import org.pragmatica.storage.StorageInstance.TierInfo;
 import org.pragmatica.storage.TierLevel;
 
@@ -90,25 +91,71 @@ class EmberStoragePrefetchOverSwimTest {
 
         var deadline = System.currentTimeMillis() + PREFETCH_BOUND_MS;
 
-        while (System.currentTimeMillis() < deadline && cachedBytes(peer) == 0) {
+        while (System.currentTimeMillis() < deadline && !prefetchDone(peer)) {
             readRound(reader, id);
             sleep();
         }
 
-        assertThat(cachedBytes(peer)).as("the peer fetched the hot block after hints reached it over SWIM")
+        assertEventChain(reader, peer);
+        assertThat(cachedBytes(peer)).as("the peer holds the hot block in memory once its prefetch is done")
                                      .isEqualTo(content.length);
 
         var record = peer.storageSetups().get(INSTANCE).metadataStore().getLifecycle(id).unwrap();
 
         assertThat(record.cacheOnly()).as("the peer did not write the block, it only caches it").isTrue();
         assertThat(record.presentIn()).contains(TierLevel.MEMORY);
-        assertThat(peer.storageSetups().get(INSTANCE).prefetchManager().stats().warmed()).isPositive();
-        assertThat(reader.storageSetups().get(INSTANCE).prefetchManager().stats().hintsSent()).isPositive();
 
         assertThat(peer.stop().await(STOP_BOUND).isSuccess()).as("the peer stops").isTrue();
         assertThat(peer.storageSetups().get(INSTANCE).prefetchManager().isActive())
             .as("a stopped node neither gossips nor fetches")
             .isFalse();
+    }
+
+    /// The event the wait ends on: the peer's prefetch completed (its `warmed` counter moves after the copy is in the
+    /// cache tier), never the clock.
+    private static boolean prefetchDone(AetherNode peer) {
+        return peer.storageSetups().get(INSTANCE).prefetchManager().stats().warmed() > 0;
+    }
+
+    /// The chain from the hot read to the peer's cache, in causal order. Each link is asserted on its own, so a failure
+    /// names the first link that never happened, with every node's counters, instead of a bare byte count.
+    private static void assertEventChain(AetherNode reader, AetherNode peer) {
+        var trace = trace(reader, peer);
+
+        assertThat(stats(reader).hintsSent()).as("link 1, the reader's hot reads produced a hint (hintsSent). %s", trace)
+                                             .isPositive();
+        assertThat(swimSent(reader)).as("link 2, the reader's SWIM sent application gossip (swim.sent). %s", trace)
+                                    .isPositive();
+        assertThat(swimReceived(peer)).as("link 3, the peer's SWIM delivered application gossip to its channel"
+                                          + " (swim.received). %s",
+                                          trace)
+                                      .isPositive();
+        assertThat(stats(peer).hintsReceived()).as("link 4, the peer's prefetch manager received a hint (hintsReceived). %s",
+                                                    trace)
+                                               .isPositive();
+        assertThat(stats(peer).started()).as("link 5, the peer started a prefetch (started). %s", trace).isPositive();
+        assertThat(stats(peer).warmed()).as("link 6, the peer's prefetch completed a copy (warmed). %s", trace)
+                                        .isPositive();
+    }
+
+    private static PrefetchStats stats(AetherNode node) {
+        return node.storageSetups().get(INSTANCE).prefetchManager().stats();
+    }
+
+    private static long swimSent(AetherNode node) {
+        return node.prefetchGossipStats().map(gossip -> gossip.swim().sent()).or(0L);
+    }
+
+    private static long swimReceived(AetherNode node) {
+        return node.prefetchGossipStats().map(gossip -> gossip.swim().received()).or(0L);
+    }
+
+    private static String trace(AetherNode reader, AetherNode peer) {
+        return "reader: " + describe(reader) + "; peer: " + describe(peer);
+    }
+
+    private static String describe(AetherNode node) {
+        return stats(node) + " " + node.prefetchGossipStats().map(Object::toString).or("swim not running");
     }
 
     private static void readRound(AetherNode reader, BlockId id) {
