@@ -676,6 +676,29 @@ class SchemaOrchestratorLeaseTest {
             assertThat(cluster.lockPuts()).as("no write at any point after the stop").isEqualTo(putsBefore);
         }
 
+        /// A dispatch refused at stop is refused BEFORE it claims the single-flight fence: the refusal leaks no fence entry
+        /// (nothing releases it on that path), so the next dispatch is refused for the same reason, the stop, and not as a
+        /// held fence.
+        @Test
+        void stop_dispatchRefusedAtStop_leavesTheFenceUnclaimed() {
+            var orchestrator = orchestrator(NODE_1, 60_000L);
+
+            orchestrator.stop();
+            var putsBefore = cluster.lockPuts();
+
+            for (var dispatch = 1; dispatch <= 2; dispatch++) {
+                orchestrator.migrateIfNeeded(DATASOURCE)
+                            .await(timeSpan(5).seconds())
+                            .onSuccess(_ -> Assertions.fail("a stopped orchestrator must not run a migration"))
+                            .onFailure(cause -> assertThat(cause).as("every refused dispatch is refused by the stop")
+                                                                 .isInstanceOf(SchemaError.OrchestratorStopped.class));
+            }
+
+            assertThat(schemaManager.invocations).as("no script ran").isEmpty();
+            assertThat(cluster.lockPuts()).as("no lock claim").isEqualTo(putsBefore);
+            assertThat(statusOf(DATASOURCE)).isEqualTo(SchemaStatus.PENDING);
+        }
+
         /// Fails attempt 1 with a fenced-in-the-database outcome, waits until its re-dispatch is scheduled and the attempt
         /// has let go of its lock; returns the lock Puts submitted so far.
         private int failedAttemptAwaitingItsRedispatch(SchemaOrchestratorService orchestrator) {
