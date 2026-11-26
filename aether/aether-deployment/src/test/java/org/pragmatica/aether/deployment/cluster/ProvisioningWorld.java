@@ -461,7 +461,7 @@ final class ProvisioningWorld {
                                                                                     this::commit,
                                                                                     () -> AetherValue.ClusterPhase.NORMAL,
                                                                                     time,
-                                                                                    _ -> {},
+                                                                                    DrainSink.synchronous(_ -> {}, _ -> {}),
                                                                                     _ -> {},
                                                                                     () -> store.getTyped(AetherKey.AutoHealStateKey.SINGLETON, AetherValue.AutoHealStateValue.class),
                                                                                     liveness);

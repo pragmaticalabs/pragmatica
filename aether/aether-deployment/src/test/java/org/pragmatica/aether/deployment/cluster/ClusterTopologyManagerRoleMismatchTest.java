@@ -112,7 +112,7 @@ class ClusterTopologyManagerRoleMismatchTest {
                                                             Option::none,
                                                             ClusterTopologyManagerRoleMismatchTest::applyNothing,
                                                             () -> ClusterPhase.NORMAL,
-                                                            _ -> {},
+                                                            DrainSink.synchronous(_ -> {}, _ -> {}),
                                                             _ -> {},
                                                             Option::none,
                                                             liveness);
