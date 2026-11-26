@@ -244,10 +244,15 @@ public class CstLinter {
         new CstArchUseCaseCouplingRule(),
 
         // JBCT-ARCH-03
-        // A slice must not import another slice's internals
-        new CstArchSliceInternalRule(),
+        // Package tree (JBCT-TREE-*, #2526)
+        // No sideways import inside the package tree
+        new CstTreeImportRule(),
 
-        // JBCT-ARCH-04
+        // JBCT-TREE-01
+        // A main file is declared under [project] basePackage
+        new CstTreeOutsideRootRule(),
+
+        // JBCT-TREE-02
         // Static imports (JBCT-STATIC-*)
         new CstStaticImportRule(),
 

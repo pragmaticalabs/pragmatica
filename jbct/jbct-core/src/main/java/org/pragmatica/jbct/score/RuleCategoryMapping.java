@@ -128,9 +128,12 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-ARCH-03", ScoreCategory.PATTERN_PURITY),
 
     // use case must not call another use case
-    Map.entry("JBCT-ARCH-04", ScoreCategory.PATTERN_PURITY),
+    Map.entry("JBCT-TREE-01", ScoreCategory.PATTERN_PURITY),
 
-    // slice must not import another slice's internals
+    // no sideways import inside the package tree
+    Map.entry("JBCT-TREE-02", ScoreCategory.PATTERN_PURITY),
+
+    // main file declared under [project] basePackage
     Map.entry("JBCT-MUT-01", ScoreCategory.PATTERN_PURITY),
 
     // no parameter reassignment
