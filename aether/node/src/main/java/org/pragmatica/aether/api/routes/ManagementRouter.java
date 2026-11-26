@@ -165,8 +165,6 @@ public final class ManagementRouter {
     }
 
     private void writeSuccess(Object value, ContentType contentType, ResponseWriter response, HttpRequest serverCtx) {
-        var status = successStatus(value);
-
         if (value instanceof Option<?> opt && opt.isEmpty()) {
             response.noContent();
 
@@ -174,14 +172,16 @@ public final class ManagementRouter {
         }
 
         if (value instanceof String json && contentType.category() == ContentCategory.JSON) {
-            response.write(status, json.getBytes(StandardCharsets.UTF_8), contentType);
+            response.write(HttpStatus.OK, json.getBytes(StandardCharsets.UTF_8), contentType);
 
             return;
         }
 
         ResponseSerializer.serialize(value, contentType, jsonCodec)
                           .onFailure(cause -> writeError(response, cause, serverCtx))
-                          .onSuccess(bytes -> response.write(status, bytes, contentType));
+                          .onSuccess(bytes -> response.write(successStatus(value),
+                                                             bytes,
+                                                             contentType));
     }
 
     /// `200` unless the value declares its own status ([StatusBearingResponse], #1354).
