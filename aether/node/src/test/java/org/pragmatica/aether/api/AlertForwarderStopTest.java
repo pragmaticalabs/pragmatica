@@ -30,7 +30,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 /// - (a) a retry armed before the close never posts after it (the wrapper is fired by hand, past the cancel);
 /// - (b) a send in flight at the close ends without a WARN, a retry or a hang: its `forward` promise resolves, which the
-///   unchecked path (a retry onto an ended lifetime) would leave unresolved.
+///   unchecked path (a retry onto an ended lifetime) would leave unresolved;
+/// - (c) a `forward` waiting on a retry the close cancelled does not dangle: the close resolves it as a failure naming the stop.
 class AlertForwarderStopTest {
     private final FakeOwnerSeam seam = new FakeOwnerSeam();
     private final ScriptedHttp http = new ScriptedHttp();
@@ -61,11 +62,26 @@ class AlertForwarderStopTest {
         inFlight.resolve(Causes.cause("connection reset").result());
 
         assertThat(forwarded.isResolved()).as("the send ended on the stopped forwarder instead of retrying into it").isTrue();
+        assertThat(isStopped(forwarded)).isTrue();
         assertThat(seam.enqueued()).isZero();
         assertThat(http.sends).isEqualTo(1);
     }
 
-    /// Control for the test above: the same late failure without a close arms a retry and leaves the forward pending, so the
+    @Test
+    void close_resolvesTheForwardOfACancelledRetry_asStopped() {
+        http.answers.add(Causes.cause("connection refused").promise());
+        var forwarder = forwarderWithRetries(2);
+        var forwarded = forwarder.forward(AlertEvent.AlertResolved.resolved("a-4", "test"));
+
+        assertThat(forwarded.isResolved()).as("control: the retry is armed and the forward waits on it").isFalse();
+        forwarder.close();
+
+        assertThat(forwarded.isResolved()).as("the close resolves the forward it cancelled the retry of").isTrue();
+        assertThat(isStopped(forwarded)).as("as a failure naming the stop").isTrue();
+        assertThat(seam.enqueued()).isEqualTo(1);
+    }
+
+    /// Control for the two tests above: the same failure without a close arms a retry and leaves the forward pending, so the
     /// resolved promise there is the close's doing.
     @Test
     void send_failingWithoutAClose_armsARetryAndStaysPending() {
@@ -78,6 +94,11 @@ class AlertForwarderStopTest {
 
         assertThat(forwarded.isResolved()).isFalse();
         assertThat(seam.enqueued()).isEqualTo(1);
+    }
+
+    private static boolean isStopped(Promise<?> forwarded) {
+        return forwarded.await(timeSpan(1).seconds())
+                        .fold(cause -> cause instanceof AlertForwarder.AlertForwarderError.Stopped, _ -> false);
     }
 
     private AlertForwarder forwarderWithRetries(int retries) {

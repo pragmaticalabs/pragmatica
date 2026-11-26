@@ -8,6 +8,10 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AlertConfig.WebhookConfig;
@@ -34,8 +38,11 @@ import org.slf4j.LoggerFactory;
 /// Retries are scheduled on an [OwnerLifetime] that [#close()] ends (#3754), so a retry armed before the close never
 /// runs after it. A send already in flight at the close finishes without a WARN, a retry or a further POST: its
 /// continuation re-reads the lifetime (the second check, class N: this node is the only sender of its webhooks and an
-/// alert POST after close is harmless). A `forward` promise whose retry the close cancelled stays unresolved: its callers
-/// ([AlertManager] and the message receivers) drop it.
+/// alert POST after close is harmless).
+///
+/// A `forward` never dangles across a close: a retry the close cancelled has its promise resolved as
+/// [AlertForwarderError.Stopped] by [#close()], which `forward` reports as a failure naming the stop. A delivery given up
+/// after `retry_count` still resolves `forward` successfully (#3536).
 @SuppressWarnings("JBCT-RET-01")
 public class AlertForwarder implements AsyncCloseable {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
@@ -46,6 +53,8 @@ public class AlertForwarder implements AsyncCloseable {
     private final Option<HttpOperations> httpOps;
     private final boolean enabled;
     private final OwnerLifetime lifetime;
+    /// The promise of every retry armed and not yet resolved, with its webhook URL: what [#close()] resolves as stopped.
+    private final Map<Promise<Unit>, String> pendingRetries = new ConcurrentHashMap<>();
 
     private AlertForwarder(AlertConfig alertConfig, OwnerLifetime lifetime, Option<HttpOperations> httpOps) {
         this.config = alertConfig.webhook();
@@ -85,11 +94,12 @@ public class AlertForwarder implements AsyncCloseable {
                : Option.none();
     }
 
-    /// Ends the retry lifetime, then releases the webhook client, when there is one. Idempotent: the lifetime's end and the
-    /// client's shutdown are.
+    /// Ends the retry lifetime, resolves every retry it cancelled as stopped, then releases the webhook client, when there is
+    /// one. Idempotent: the lifetime's end, the resolve and the client's shutdown are.
     @Override
     public Promise<Unit> close() {
         lifetime.end();
+        abandonPendingRetries();
 
         return httpOps.filter(AsyncCloseable.class::isInstance)
                       .map(AsyncCloseable.class::cast)
@@ -108,7 +118,22 @@ public class AlertForwarder implements AsyncCloseable {
                   config.urls().size(),
                   event.alertId());
 
-        return Promise.allOf(config.urls().stream().map(url -> sendToWebhook(url, payload)).toList()).map(_ -> Unit.unit());
+        return Promise.allOf(config.urls().stream().map(url -> sendToWebhook(url, payload)).toList()).flatMap(AlertForwarder::stoppedOrDone);
+    }
+
+    private static Promise<Unit> stoppedOrDone(List<Result<Unit>> results) {
+        return results.stream()
+                      .flatMap(result -> result.fold(AlertForwarder::stoppedCause,
+                                                     _ -> Stream.<Cause> empty()))
+                      .findFirst()
+                      .map(Cause::<Unit> promise)
+                      .orElseGet(Promise::unitPromise);
+    }
+
+    private static Stream<Cause> stoppedCause(Cause cause) {
+        return cause instanceof AlertForwarderError.Stopped
+               ? Stream.of(cause)
+               : Stream.empty();
     }
 
     @MessageReceiver
@@ -187,8 +212,15 @@ public class AlertForwarder implements AsyncCloseable {
             log.debug("Retrying webhook {} (attempt {}/{}) after {}ms", url, attempt + 1, config.retryCount(), delayMs);
             var promise = Promise.<Unit> promise();
 
+            pendingRetries.put(promise, url);
+            promise.onResult(_ -> pendingRetries.remove(promise));
             lifetime.schedule(_ -> sendWithRetry(ops, url, payload, attempt + 1).onResult(promise::resolve),
                               TimeSpan.timeSpan(delayMs).millis());
+            // A close between the first read of the flag and the put above swept an empty map: this re-read abandons the
+            // retry it missed.
+            if (lifetime.isEnded()) {
+                abandonPendingRetries();
+            }
 
             return promise;
         }
@@ -196,6 +228,10 @@ public class AlertForwarder implements AsyncCloseable {
         log.error("Failed to send to webhook {} after {} attempts: {}", url, config.retryCount(), error);
 
         return AlertForwarderError.WebhookError.webhookError(url, error).promise();
+    }
+
+    private void abandonPendingRetries() {
+        pendingRetries.forEach((promise, url) -> promise.resolve(AlertForwarderError.Stopped.stopped(url).result()));
     }
 
     static long jitteredBackoff(int attempt) {
