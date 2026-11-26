@@ -60,6 +60,13 @@ public sealed interface MultipartError extends HttpStatusAware {
         static final Fn1<ParseFailed, Cause> FACTORY = Causes.forOneValue("Multipart body could not be parsed",
                                                                           ParseFailed::new);
 
+        /// The message is the fixed client text and never mentions the origin, so the [Cause.Wrapped] default, which derives from
+        /// the origin, would replace it with a hidden origin's text.
+        @Override
+        public String clientMessage() {
+            return message();
+        }
+
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.BAD_REQUEST;
@@ -72,6 +79,13 @@ public sealed interface MultipartError extends HttpStatusAware {
     record ReadFailed(Cause origin, String message) implements MultipartError, Cause.Wrapped {
         static final Fn1<ReadFailed, Cause> FACTORY = Causes.forOneValue("Multipart body could not be read",
                                                                          ReadFailed::new);
+
+        /// The message is the fixed client text and never mentions the origin, so the [Cause.Wrapped] default, which derives from
+        /// the origin, would replace it with a hidden origin's text.
+        @Override
+        public String clientMessage() {
+            return message();
+        }
 
         @Override
         public HttpStatus httpStatus() {

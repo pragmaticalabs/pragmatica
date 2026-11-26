@@ -27,6 +27,16 @@ public interface Cause {
     String message();
 
     /// **[Pure Transform]**
+    /// The text safe to put in a client-facing body, as opposed to [#message()], which is for logs and may carry what a
+    /// client must never read (a caught throwable's stack trace, an origin chain). The default is [#message()]: a cause
+    /// that holds nothing hidden has nothing to hide. A cause that holds another cause derives its client text from the
+    /// held cause's `clientMessage()`, never from its `message()` (#3723): text stays honest only while it never leaves
+    /// the type that knows what is safe, so a wrapper never copies a source's message into its own client text.
+    default String clientMessage() {
+        return message();
+    }
+
+    /// **[Pure Transform]**
     /// True when no retry of the failed operation can change the outcome — the condition this cause
     /// reports is settled (a peer terminally removed, a resource that cannot exist, an argument that
     /// cannot parse). Retry facilities consult this and stop immediately rather than re-driving a
@@ -147,6 +157,21 @@ public interface Cause {
         default boolean isTransient() {
             return source().map(Cause::isTransient)
                          .or(false);
+        }
+
+        /// The client text derives from the origin's: when the origin hides something (its client text differs from its
+        /// message), the wrapper answers the origin's client text, because its own `message()` may have formatted what
+        /// the origin hides; when the origin hides nothing, the wrapper's own `message()` is already safe and stays. A
+        /// wrapper whose `message()` is fixed text that never mentions the origin overrides this with that text; one
+        /// that formats its origin states the format over the origin's client text ([org.pragmatica.lang.utils.Causes#forOneCause]).
+        @Override
+        default String clientMessage() {
+            return source().flatMap(Wrapped::hiddenOriginText)
+                         .or(this::message);
+        }
+
+        private static Option<String> hiddenOriginText(Cause origin) {
+            return Option.some(origin.clientMessage()).filter(text -> !text.equals(origin.message()));
         }
     }
 }
