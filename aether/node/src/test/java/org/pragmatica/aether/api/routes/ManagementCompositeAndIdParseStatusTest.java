@@ -18,7 +18,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue;
-import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -207,14 +207,12 @@ class ManagementCompositeAndIdParseStatusTest {
             .isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
+    /// #1753, #1963: the catalog decides a stream is unknown, so the engine is never asked (an unstubbed `streamPartitionManager`
+    /// would fail the handler with the "reached past the refusal" error).
     @Test
-    void streamGet_answers404_whenTheStreamIsUnknown() {
-        var manager = mock(StreamPartitionManager.class);
-
-        when(manager.streamInfo(org.mockito.ArgumentMatchers.anyString())).thenReturn(Option.none());
-
-        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of("streamPartitionManager", manager)),
-                                                     null,
+    void streamGet_answers404_whenTheCatalogDoesNotKnowTheStream() {
+        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of("kvStore", StreamRouteFixtures.emptyStore())),
+                                                     StreamNamespacesService.inMemory(),
                                                      ConsumerGroupCoordinator.noOp(),
                                                      null);
 

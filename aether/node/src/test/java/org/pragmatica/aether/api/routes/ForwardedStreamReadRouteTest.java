@@ -11,7 +11,6 @@ import java.util.stream.Stream;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.aether.management.route.ManagementRoute;
-import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
@@ -211,17 +210,12 @@ class ForwardedStreamReadRouteTest {
                               Option.none());
     }
 
+    /// #1753, #1963: the routes resolve the stream through the catalog; the registered stream is committed there too.
     private Stream<org.pragmatica.http.routing.Route<?>> routes(StreamReadRouter router) {
         var manager = router == ownerRouter
                       ? owner
                       : caller;
-        var node = (ManageableNode) java.lang.reflect.Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
-                                                                             new Class[]{ManageableNode.class},
-                                                                             (_, method, _) -> switch (method.getName()) {
-                                                                                 case "streamPartitionManager" -> manager;
-                                                                                 case "streamReadRouter" -> router;
-                                                                                 default -> throw new UnsupportedOperationException(method.getName());
-                                                                             });
+        var node = StreamRouteFixtures.node(manager, router, StreamRouteFixtures.storeCommitting(engineKey, config(1)));
 
         return StreamApiRoutes.streamApiRoutes(() -> node, namespaces, ConsumerGroupCoordinator.noOp(), null)
                               .routes();

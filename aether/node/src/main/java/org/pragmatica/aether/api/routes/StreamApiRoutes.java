@@ -230,12 +230,6 @@ public final class StreamApiRoutes implements RouteSource {
 
     public record EventEntry(long offset, Instant timestamp, int partition, String payload) {}
 
-    public record PartitionDetail(int partition, long headOffset, long tailOffset, long eventCount) {
-        static PartitionDetail partitionDetail(StreamPartitionManager.PartitionInfo info) {
-            return new PartitionDetail(info.partition(), info.headOffset(), info.tailOffset(), info.eventCount());
-        }
-    }
-
     /// Legacy CLI-facing read shape (`aether stream read`) — a flat event list, distinct from
     /// [StreamEventsResponse]'s offset-cursor pagination used by the newer polling-tail endpoint.
     /// Kept separate rather than consolidated: unifying them is a CLI-facing contract change outside
@@ -295,13 +289,20 @@ public final class StreamApiRoutes implements RouteSource {
                                   PathParameter.spacer("info"))
                         .to(this::streamInfo)
                         .asJson(),
-                         ManagementRoutes.<PartitionDetail> route(ManagementRoute.STREAM_PARTITION)
+                         ManagementRoutes.<StreamRoutes.PartitionDetail> route(ManagementRoute.STREAM_PARTITION)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
                                                    PathParameter.aString(),
                                                    PathParameter.spacer("partitions"),
                                                    PathParameter.aInteger())
-                                         .toResult(this::partitionDetail)
+                                         .to(this::partitionDetail)
+                                         .asJson(),
+                         ManagementRoutes.<StreamRoutes.StreamConsumersResponse> route(ManagementRoute.STREAM_CONSUMERS)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("consumers"))
+                                         .to(this::streamConsumers)
                                          .asJson(),
                          ManagementRoutes.<StreamReplicasResponse> route(ManagementRoute.STREAM_REPLICAS)
                                          .withPath(PathParameter.aString(),
@@ -519,15 +520,72 @@ public final class StreamApiRoutes implements RouteSource {
     /// §3.2); `RequestContext.matchPath` binds every declared path slot positionally, spacer or real,
     /// so the handler must accept it even though the literal itself (always `"partitions"`) carries
     /// no information here.
-    private Result<PartitionDetail> partitionDetail(String namespace,
-                                                    String stream,
-                                                    String version,
-                                                    String partitionsLiteral,
-                                                    Integer partition) {
+    private Promise<StreamRoutes.PartitionDetail> partitionDetail(String namespace,
+                                                                  String stream,
+                                                                  String version,
+                                                                  String partitionsLiteral,
+                                                                  Integer partition) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                           .flatMap(addr -> StreamErrorStatus.typed(streamManager().partitionInfo(StreamManager.engineKey(addr),
-                                                                                                  partition)))
-                           .map(PartitionDetail::partitionDetail);
+                           .async()
+                           .flatMap(addr -> declaredPartition(StreamManager.engineKey(addr),
+                                                              partition));
+    }
+
+    /// #1753, #1963: STREAM_PARTITION is delegate-routed, so the answering node usually holds no ring for the partition. The
+    /// stream is resolved through [#requireKnown] (the catalog, never this node's engine), the partition is checked against
+    /// the DECLARED count, and the bounds are the owner's ([#ownerPartitionDetail]) -- the same answer whichever node
+    /// received the request. An owner that cannot answer is 503 [ManagementServerError.StreamInfoUnavailable].
+    private Promise<StreamRoutes.PartitionDetail> declaredPartition(String engineKey, int partition) {
+        return knownStream(engineKey).flatMap(partitions -> requireDeclared(partition, partitions))
+                          .async()
+                          .flatMap(_ -> ownerPartitionDetail(engineKey, partition));
+    }
+
+    /// `GET /streams/{namespace}/{stream}/{version}/consumers` -- the route's path carries the whole catalog address, so the
+    /// engine is asked by the key that address maps to, the same one the catalog-scoped stream routes use (#1921).
+    /// `consumersLiteral` binds the trailing `spacer("consumers")` segment, which `RequestContext.matchPath` binds
+    /// positionally like any other slot. #1963: the catalog decides whether the stream exists and each partition is the
+    /// owner's ([#ownerPartitionDetails]); an engine that has not materialized the stream here no longer reads as unknown.
+    private Promise<StreamRoutes.StreamConsumersResponse> streamConsumers(String namespace,
+                                                                          String stream,
+                                                                          String version,
+                                                                          String consumersLiteral) {
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
+                           .async()
+                           .flatMap(addr -> consumersOf(StreamManager.engineKey(addr)));
+    }
+
+    private Promise<StreamRoutes.StreamConsumersResponse> consumersOf(String engineKey) {
+        return knownStream(engineKey).async()
+                          .flatMap(partitions -> ownerPartitionDetails(engineKey, partitions))
+                          .map(details -> StreamRoutes.StreamConsumersResponse.streamConsumersResponse(engineKey,
+                                                                                                       details));
+    }
+
+    /// The ONE answer to "does this stream exist" for every stream route (#1753, #1963): the CLUSTER catalog, never the answering
+    /// node's engine. A stream is known when its registry entry exists or its config is committed (the committed config is the
+    /// only record a `topic:` or `entity:` stream has, #1399). Unknown means neither has it, 404; an engine that
+    /// has not materialized a stream the catalog knows is [#notMaterializedHere], 503, never "no such stream".
+    private Result<String> requireKnown(String engineKey) {
+        return isCommitted(engineKey) || isRegistered(engineKey)
+               ? Result.success(engineKey)
+               : STREAM_NOT_FOUND.result();
+    }
+
+    private boolean isCommitted(String engineKey) {
+        return committedPartitions(engineKey).isPresent();
+    }
+
+    private boolean isRegistered(String engineKey) {
+        return ResourceAddress.resourceAddress(engineKey)
+                              .option()
+                              .flatMap(namespacesService::lookup)
+                              .isPresent();
+    }
+
+    /// [#requireKnown], then the declared partition count ([#declaredPartitions]).
+    private Result<Integer> knownStream(String engineKey) {
+        return requireKnown(engineKey).flatMap(this::declaredPartitions);
     }
 
     /// #260/#261/#333 replica-state observability, catalog-identity variant — see
@@ -569,15 +627,20 @@ public final class StreamApiRoutes implements RouteSource {
     /// `totalBytes` stays this node's own allocation — bytes have no forwarded form — so it is meaningful only on a node that holds the rings. A partition whose owner
     /// cannot answer FAILS the request; it is never rendered as an empty partition.
     private Promise<StreamRoutes.StreamInfoResponse> buildStreamInfoResponse(String engineKey) {
-        return streamManager().streamInfo(engineKey)
-                            .async(STREAM_NOT_FOUND)
-                            .flatMap(info -> withOwnerDetails(engineKey, info));
+        return knownStream(engineKey).async()
+                          .flatMap(partitions -> withOwnerDetails(engineKey, partitions));
     }
 
-    private Promise<StreamRoutes.StreamInfoResponse> withOwnerDetails(String engineKey,
-                                                                      StreamPartitionManager.StreamInfo info) {
-        return ownerPartitionDetails(engineKey, info.partitions()).map(details -> StreamRoutes.StreamInfoResponse.streamInfoResponse(info,
-                                                                                                                                     details));
+    /// #1963: the declared count comes from the catalog ([#knownStream]); a node that has not materialized the stream
+    /// holds no bytes for it, so `totalBytes` is 0 there. `totalEvents` is the sum of the owners' counts, not read from here.
+    private Promise<StreamRoutes.StreamInfoResponse> withOwnerDetails(String engineKey, int partitions) {
+        var localBytes = streamManager().streamInfo(engineKey)
+                                      .map(StreamPartitionManager.StreamInfo::totalBytes)
+                                      .or(0L);
+        var info = StreamPartitionManager.StreamInfo.streamInfo(engineKey, partitions, 0L, localBytes);
+
+        return ownerPartitionDetails(engineKey, partitions).map(details -> StreamRoutes.StreamInfoResponse.streamInfoResponse(info,
+                                                                                                                              details));
     }
 
     private Promise<List<StreamRoutes.PartitionDetail>> ownerPartitionDetails(String engineKey, int partitions) {
@@ -617,20 +680,29 @@ public final class StreamApiRoutes implements RouteSource {
 
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                            .async()
-                           .flatMap(addr -> readEventsAtPartition(addr, partition, fromOpt, max, preference));
+                           .flatMap(addr -> readEventsAtPartition(StreamManager.engineKey(addr),
+                                                                  partition,
+                                                                  fromOpt,
+                                                                  max,
+                                                                  preference));
     }
 
-    private Promise<ReadEventsResponse> readEventsAtPartition(ResourceAddress addr,
+    /// #1963: the catalog decides whether the stream exists ([#requireKnown]); the engine's `StreamNotFound` after that is
+    /// [#notMaterializedHere], 503.
+    private Promise<ReadEventsResponse> readEventsAtPartition(String engineKey,
                                                               Integer partition,
                                                               Option<Long> fromOffset,
                                                               int maxEvents,
                                                               ReadPreference preference) {
-        return readFromRequestedOrEarliest(fromOffset,
-                                           from -> streamReadRouter().read(StreamManager.engineKey(addr),
-                                                                           partition,
-                                                                           from,
-                                                                           maxEvents,
-                                                                           preference)).map(window -> toReadEventsResponse(window.events()));
+        return requireKnown(engineKey).async()
+                           .flatMap(_ -> readFromRequestedOrEarliest(fromOffset,
+                                                                     from -> notMaterializedHere(engineKey,
+                                                                                                 streamReadRouter().read(engineKey,
+                                                                                                                         partition,
+                                                                                                                         from,
+                                                                                                                         maxEvents,
+                                                                                                                         preference))))
+                           .map(window -> toReadEventsResponse(window.events()));
     }
 
     /// Events read from `from`, which is where the caller asked to start or, when it asked for nothing, where the stream
@@ -698,8 +770,7 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     /// Spec event-stream-namespaces §16: paginated event read for polling-based tail subscription.
-    /// Resolves the address, verifies the registry entry exists (404 via [StreamRegistryError.General.NOT_FOUND]
-    /// otherwise), then reads partition 0 starting at `fromOffset` through the owner-routing
+    /// Resolves the address, verifies the catalog knows the stream ([#requireKnown]; 404 otherwise), then reads partition 0 starting at `fromOffset` through the owner-routing
     /// [StreamReadRouter] with [ReadPreference#NEAREST] — local-first, forwarding to the partition owner
     /// when this node is metadata-only (#265) rather than reading its own empty ring. Partition 0 is the
     /// canonical write target for `STREAMS_PUBLISH`/`STREAMS_PUBLISH_BATCH` in this wave; multi-partition
@@ -722,11 +793,9 @@ public final class StreamApiRoutes implements RouteSource {
                                                               int maxEvents) {
         var streamName = StreamManager.engineKey(addr);
 
-        return RequestParse.asNotFound(namespacesService.lookup(addr)
-                                                        .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
-                           .async()
+        return requireKnown(streamName).async()
                            .flatMap(_ -> readFromRequestedOrEarliest(fromOffset,
-                                                                     from -> notMaterializedHere(addr,
+                                                                     from -> notMaterializedHere(streamName,
                                                                                                  streamReadRouter().read(streamName,
                                                                                                                          0,
                                                                                                                          from,
@@ -741,10 +810,10 @@ public final class StreamApiRoutes implements RouteSource {
     /// The catalog has just CONFIRMED this stream exists, so the engine's `StreamNotFound` can only mean it is not materialized on
     /// this node (config committed here, apply lagging; or metadata-only placement): 503, retry. Answering 404 told the caller
     /// that a stream the catalog knows does not exist.
-    private static Promise<List<RawEvent>> notMaterializedHere(ResourceAddress addr, Promise<List<RawEvent>> read) {
+    private static Promise<List<RawEvent>> notMaterializedHere(String engineKey, Promise<List<RawEvent>> read) {
         return read.mapError(cause -> cause instanceof StreamError.StreamNotFound
                                       ? new ManagementServerError.StreamRefused(HttpStatus.SERVICE_UNAVAILABLE,
-                                                                                Causes.cause("Stream " + addr.asString()
+                                                                                Causes.cause("Stream " + engineKey
                                                                                             + " is registered but not materialized on this node yet"))
                                       : cause);
     }
@@ -958,10 +1027,14 @@ public final class StreamApiRoutes implements RouteSource {
                             .map(StreamPartitionManager.StreamInfo::partitions)
                             .toResult(new ManagementServerError.StreamUnavailable(streamName,
                                                                                   "partition count is not known"))
-                            .flatMap(partitionCount -> partition >= 0 && partition < partitionCount
-                                                       ? Result.unitResult()
-                                                       : new ManagementServerError.InvalidPartition(partition,
-                                                                                                    partitionCount).result());
+                            .flatMap(partitionCount -> requireDeclared(partition, partitionCount));
+    }
+
+    /// A partition the stream does not declare is the caller's error (400), at whichever node it asks.
+    private static Result<Unit> requireDeclared(int partition, int partitionCount) {
+        return partition >= 0 && partition < partitionCount
+               ? Result.unitResult()
+               : new ManagementServerError.InvalidPartition(partition, partitionCount).result();
     }
 
     /// Adapter boundary: JSON `data` may legally be absent (null on the wire). Wrap into Option,

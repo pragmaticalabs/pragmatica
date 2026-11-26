@@ -5340,7 +5340,7 @@ is another node, are `409` (with no leader committed yet, an election in progres
 are `400`; the cluster-topology routes answer `503` while the topology manager is not on the node, and the stream tail route answers `501` (deferred) (#954).
 
 A caller-supplied id that cannot be parsed (a blueprint id, an artifact coordinate, a version, a node id) is `400` on every management route, and a refusal that several typed failures funnel into answers their common status when they agree (#1921).
-A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a malformed percent-escape in a topic group name are `400`; an unknown stream or consumer group on the stream routes, and an unknown topic or consumer group on the topic routes, is `404` (read from the answering node's own view: the committed stream config in its KV view or the stream in its engine, so a stream or topic created moments ago elsewhere can read as unknown until its commit applies; a known group whose projection is not hosted on the node stays `409`); a malformed node id, partition or stream address on a route that is forwarded to another node is `400` before anything is forwarded, while a well-formed node id naming no connected node is `503` (#1921).
+A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a malformed percent-escape in a topic group name are `400`; an unknown stream or consumer group on the stream routes, and an unknown topic or consumer group on the topic routes, is `404` (an unknown STREAM is one the answering node's replicated catalog view holds neither a registry entry nor a committed stream config for, never one whose partitions the node does not hold, so the holder and a non-holder answer alike, #1753; an unknown topic or consumer group is read from the answering node's own view: the committed config in its KV view or the object in its engine; either way a stream or topic created moments ago elsewhere can read as unknown until its commit applies on the answering node; a known group whose projection is not hosted on the node stays `409`); a malformed node id, partition or stream address on a route that is forwarded to another node is `400` before anything is forwarded, while a well-formed node id naming no connected node is `503` (#1921).
 
 **Stream engine refusals on the stream read routes** (`STREAM_PARTITION`, `STREAM_READ`, `STREAMS_EVENTS`, `STREAM_CONSUMERS`) answer the status of their class, decided in one exhaustive mapper (`StreamErrorStatus`; a new engine error type does not compile until it is classified) (#1921):
 
@@ -5352,6 +5352,8 @@ A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a m
 | `410` | the cursor's offset was reclaimed by retention (a judgement call: the offset was valid) | `CursorExpired` |
 | `503` | retry later or elsewhere | `PARTITION_NOT_LOCAL`, `PartitionHeldNotMaterialized`, `MaterializeBudgetExceeded`, `ReshufflePaced`, `STREAM_MEMORY_EXCEEDED`, `SEGMENT_TIER_FULL`, `SEALING_BEHIND`, `BUFFER_FULL`, `StreamConfigNotYetVisible`, the ownership and epoch refusals (`NotOwnerAppend`, `OwnerNotActivated`, `NotCurrentOwner`, `StaleEpochAppend`, `StaleEpochRead`, `OwnerCatchupPending`, `LinearizableRoundTimeout`, `ReplicaQuarantined`, `ReplicaNotVerified`, `RepairNotAuthorized`, `RepairWitnessFailed`), the closed and stalled signals, `CONSENSUS_PATH_UNAVAILABLE` |
 | `500` | engine integrity or an internal signal | `WalReplayMismatch`, `WalHeadLost`, `STREAM_CONFIG_COMMIT_FAILED`, `RingIndexCorrupted`, `EventProcessingFailed`, `SeedRejected`, `ProvenanceRegression`, `ProvenanceMismatch`, `ReplicaOffsetGap`, `ReplicaEntryConflict`, `UNREADABLE_CONSISTENCY_MODE`, `BUFFER_EMPTY`, `RUN_DOES_NOT_FIT`, `DivergenceNotEstablished`, `TruncateBelowRetained` |
+
+On `STREAM_PARTITION`, `STREAM_GET`, `STREAM_CONSUMERS`, `STREAM_READ` and `STREAMS_EVENTS` the `404` comes from the catalog alone (registry entry or committed stream config), decided before the engine is asked (#1753, #1963). An engine `StreamNotFound` for a stream the catalog knows means this node has not materialized it yet and answers `503`, retry; a partition the stream does not declare is `400` at whichever node answers.
 
 The publish routes keep their own refusals (#524). A refusal that travels from a remote owner as its message only arrives as an untyped cause and stays `500`.
 
@@ -5779,6 +5781,9 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/info
   so on a node that holds no ring for the stream this is small or zero while `totalEvents` is complete.
 - `503`: a partition owner could not answer (unreachable, still materializing). Retry; the response never
   substitutes an empty partition, so a zero `totalEvents` is a measured zero.
+- `404`: the catalog (registry entry or committed stream config) has no such stream. A node that holds none of the
+  stream's partitions, or has not materialized it yet, answers like the holder (#1753, #1963): the partition count is the
+  declared one, every partition is the owner's.
 
 ### Partition Details
 
@@ -5797,6 +5802,10 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/partitions/{partition}
   "eventCount": 256
 }
 ```
+
+The bounds are the partition OWNER's, whichever node answers (#1753): a node that holds the stream metadata-only, or has not
+materialized it, no longer answers `Stream partition is not owned by this node` or `404`. `404`: the catalog has no such
+stream; `400`: the stream does not declare that partition; `503`: the owner could not answer.
 
 ### Partition Replica State
 
@@ -6404,8 +6413,10 @@ aether streams consumer-group status <group> [<stream>]
 GET /api/v1/streams/{namespace}/{stream}/{version}/consumers
 ```
 
-**Auth:** VIEWER. Per-partition offsets of one stream version, as the receiving stream node holds them. The address is
-validated first (a malformed address is `400`); an unknown stream is refused with the stream-manager's typed status.
+**Auth:** VIEWER. Per-partition offsets of one stream version, as each partition's OWNER reports them (#1753, #1963), so
+the answer does not depend on which node receives the request. The address is validated first (a malformed address is
+`400`); a stream the catalog does not have is `404`; an owner that cannot answer is `503`. Served by `StreamApiRoutes`
+since #1753 (the route and its path are unchanged).
 
 **Response:** `{"name": "<namespace:stream:version>", "partitions": [{"partition": 0, "headOffset": 0, "tailOffset": 41, "eventCount": 42}]}`
 
