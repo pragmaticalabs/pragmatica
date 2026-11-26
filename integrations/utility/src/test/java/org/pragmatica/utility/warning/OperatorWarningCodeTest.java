@@ -56,6 +56,23 @@ class OperatorWarningCodeTest {
         assertThat(rejected.recoveryOf()).isEqualTo(Option.none());
     }
 
+    /// #3525 round 1 (F-E): the wire name, subsystem and level of the label-quorum pair are what operators alert on; the wait is a
+    /// WARNING, its recovery an INFO that closes it.
+    @Test
+    void labelQuorumPair_pinsCodeSubsystemLevelAndRecovery() {
+        var incomplete = OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE;
+        var complete = OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE;
+
+        assertThat(incomplete.code()).isEqualTo("consensus-quorum-incomplete");
+        assertThat(incomplete.subsystem()).isEqualTo("consensus");
+        assertThat(incomplete.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(incomplete.recoveryOf()).isEqualTo(Option.none());
+        assertThat(complete.code()).isEqualTo("consensus-quorum-complete");
+        assertThat(complete.subsystem()).isEqualTo("consensus");
+        assertThat(complete.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(complete.recoveryOf()).isEqualTo(Option.some(incomplete));
+    }
+
     @Test
     void codes_areUnique() {
         var byCode = Arrays.stream(OperatorWarningCode.values())

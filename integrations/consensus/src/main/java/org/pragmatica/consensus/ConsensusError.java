@@ -16,6 +16,7 @@
 package org.pragmatica.consensus;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 
 /// Error types for consensus operations.
@@ -36,6 +37,22 @@ public sealed interface ConsensusError extends Cause {
                  + " runs wire generation " + memberGeneration
                  + ", this node runs " + ownGeneration
                  + "; upgrades are stop-the-world (stop every node, then start every node)";
+        }
+    }
+
+    /// #3525: a core member that has completed its handshake holds a different value of a label every core member must share
+    /// than this node does (an absent label differs from a present one), so the two would run different configurations of one
+    /// cluster. Raised on both sides: the member refuses this node and this node refuses the member.
+    record LabelAgreementRefused(NodeId member, String label, Option<String> memberValue, Option<String> ownValue) implements ConsensusError {
+        @Override
+        public String message() {
+            return "Refusing to start: member " + member.id()
+                 + " has label '" + label
+                 + "' = " + memberValue.map(value -> "'" + value + "'")
+                                       .or("absent")
+                 + ", this node has " + ownValue.map(value -> "'" + value + "'")
+                                                .or("absent")
+                 + "; every core member must run the same setting";
         }
     }
 

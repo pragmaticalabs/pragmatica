@@ -644,6 +644,32 @@ public class RabiaEngine<C extends Command> {
                                       how);
     }
 
+    /// Raises [OperatorWarningCode#CONSENSUS_QUORUM_INCOMPLETE] (#3525): the join guard has waited past its bound with fewer than a
+    /// quorum of core peers handshaken. The guard calls this once per wait episode; the warning names the peers still missing.
+    public Unit raiseJoinQuorumIncomplete(Set<NodeId> missing) {
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE,
+                                      self.id(),
+                                      "Node {} casts no ballot yet: it has not handshaken a quorum of the core that agrees on the "
+                                     + "labels every core member must share. Waiting for core peers {}. Operator action: check that "
+                                     + "those nodes are running and reachable from this node (#3525).",
+                                      self,
+                                      missing.stream().map(NodeId::id).toList());
+    }
+
+    /// Raises [OperatorWarningCode#CONSENSUS_QUORUM_COMPLETE], the recovery of [#raiseJoinQuorumIncomplete] (#3525): the wait that
+    /// raised the warning has ended with a quorum handshaken and agreeing. The guard calls this only after the warning was raised.
+    public Unit raiseJoinQuorumComplete() {
+        return OperatorWarnings.raise(log,
+                                      operatorWarningSink.get(),
+                                      OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE,
+                                      self.id(),
+                                      "Node {} has handshaken a quorum of the core that agrees on the labels every core member must "
+                                     + "share; the wait for core peers is over (#3525).",
+                                      self);
+    }
+
     /// Binds this engine's operator warnings to its node's event log (#1654). Until called, they are logged only.
     @Contract
     public void useOperatorWarningSink(OperatorWarningSink sink) {
@@ -1621,7 +1647,17 @@ public class RabiaEngine<C extends Command> {
         safeExecute(this::doClusterConnected);
     }
 
+    /// The one entry into `Syncing` from a cold start, a paused-before-activation resume or a resync (#3742): a node whose pre-sync check
+    /// has not passed enters no sync round, whoever asks. [#doClusterActive], [#clusterConnected] and [#doResumeFromPause] reach here
+    /// already past the check; [#triggerResync], reachable from any Propose in any engine state, does not, so the check is enforced
+    /// here and not at its callers. A refused entry changes nothing: the check's completion re-enters through [#handleClusterActive].
     private void doClusterConnected() {
+        if (!preSyncDone) {
+            log.debug("Node {}: sync round not started, the pre-sync check has not passed", self);
+
+            return;
+        }
+
         syncRounds.set(0);
         electorateRefusalReported.set(false);
         // Catch-up race fix: broadcast the first SyncRequest IMMEDIATELY instead of waiting a full
@@ -4388,13 +4424,17 @@ public class RabiaEngine<C extends Command> {
     /// Triggers a resync when the node detects it's significantly behind.
     /// No-op when already syncing — doSynchronize() handles retries internally — and while activation is gated and not yet
     /// authorized (A-04): a ballot must not start a sync round, and so a path to serving, on an engine that was never
-    /// allowed to activate. A Paused engine still resyncs (ruling a20d1dbca5).
+    /// allowed to activate. A Paused engine still resyncs (ruling a20d1dbca5). It starts no sync round before the pre-sync check
+    /// has passed (#3742): [#doClusterConnected] refuses, so a far-future Propose cannot move a node that has not yet agreed with a
+    /// quorum into `Syncing` (nor, through it, into a ballot).
     /// ```tla RabiaAdopt:Resync
     /// \* D10. triggerResync re-enters Syncing through doClusterConnected: from Active/Observing, or from Paused of either kind (ruling
     /// \* a20d1dbca5); a Syncing engine is a no-op. Nothing is reset: phases, applied log and durable state stay (phases.clear()
     /// \* runs only in shutdownAndReset). Callers: a far-future Propose or Decision (timer = FALSE: any live peer ahead, from
     /// \* Active or Paused) and decisionGapExpired (timer = TRUE: not Paused, a Decision buffered past the missing slot, so the
     /// \* peer is two or more slots ahead). The distance bound MAX_PHASE_AHEAD and the delay are abstracted away.
+    /// \* Precondition outside the model (#3742): the node's pre-sync check has passed. doClusterConnected, the one entry into
+    /// \* "syncing" for every caller, returns without a state change until it has; the model begins after the check.
     /// Resync(n, timer) ==
     ///   /\ ResyncOn
     ///   /\ st[n] \in IF timer THEN {"active"} ELSE {"active", "paused", "pausedsync"}

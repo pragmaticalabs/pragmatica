@@ -31,6 +31,7 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.JoinGenerationGuard;
+import org.pragmatica.consensus.net.LabelAgreement;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
@@ -83,6 +84,8 @@ import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.SetClusterSize;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -570,7 +573,13 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                           RabiaEngine.DEFAULT_PHASE_STALL_CHECK,
                                           consensusBridge);
 
-        consensus.preSyncCheck(joinGuard(topologyManager, network, config.joinGenerationWait()));
+        consensus.preSyncCheck(joinGuard(topologyManager,
+                                         network,
+                                         config.joinGenerationWait(),
+                                         config.agreeingLabels(),
+                                         consensus::raiseJoinQuorumIncomplete,
+                                         consensus::raiseJoinQuorumComplete,
+                                         consensus::isStopRequested));
         network.setProposalRelayMembership(id -> consensus.voterConfiguration()
                                                           .map(voters -> voters.contains(id))
                                                           .or(false));
@@ -1086,12 +1095,40 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// election cascades retry-loops under chaos.
     TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(8).seconds();
 
-    /// The pre-sync check the engine runs on a cluster ACTIVE edge: the wire-generation join guard (#2981 step 6).
+    /// The pre-sync check the engine runs on a cluster ACTIVE edge: the wire-generation join guard (#2981 step 6), with no label
+    /// agreement.
     static Supplier<Promise<Unit>> joinGuard(TopologyObserver topologyManager, ClusterNetwork network, TimeSpan wait) {
+        return joinGuard(topologyManager, network, wait, Set.of(), _ -> Unit.unit(), Unit::unit, () -> false);
+    }
+
+    /// The pre-sync check with label agreement (#3525): also refuses on a handshaken core peer whose value of an `agreeingLabels`
+    /// label differs from this node's, and passes only once a quorum of the core has handshaken. `onIncomplete` is told the
+    /// peers still missing, once per wait episode, after `wait`; `onComplete` is told when an episode that did so ends with the quorum.
+    /// `ended` is true once the engine that consumes the wait has stopped: the wait then cancels itself and tells neither.
+    static Supplier<Promise<Unit>> joinGuard(TopologyObserver topologyManager,
+                                             ClusterNetwork network,
+                                             TimeSpan wait,
+                                             Set<String> agreeingLabels,
+                                             Fn1<Unit, Set<NodeId>> onIncomplete,
+                                             Fn0<Unit> onComplete,
+                                             Fn0<Boolean> ended) {
         return () -> JoinGenerationGuard.admit(joinDecisionSet(topologyManager),
                                                network::peerHelloLabels,
                                                wait,
-                                               JoinGenerationGuard.ownGeneration(topologyManager.self().labels()));
+                                               JoinGenerationGuard.ownGeneration(topologyManager.self().labels()),
+                                               LabelAgreement.labelAgreement(topologyManager.self().labels(),
+                                                                             agreeingLabels,
+                                                                             quorumPeers(topologyManager),
+                                                                             onIncomplete,
+                                                                             onComplete),
+                                               ended);
+    }
+
+    /// How many core peers must have handshaken for this node plus them to be a quorum of the core: this node is always a
+    /// core member ([TopologyObserver.TopologyError]), so it is one of the quorum.
+    static int quorumPeers(TopologyObserver topologyManager) {
+        return topologyManager.coreNodes()
+                              .size() / 2;
     }
 
     /// The wire-generation join guard decides over the core voters other than this node (#2981 step 6).

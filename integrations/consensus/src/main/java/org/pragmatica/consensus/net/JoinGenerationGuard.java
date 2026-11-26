@@ -21,6 +21,7 @@ import java.util.Set;
 
 import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -97,16 +98,39 @@ public interface JoinGenerationGuard {
     /// Waits until every member in `members` has handshaken or `wait` elapses, whichever is first, failing at
     /// once with [ConsensusError.WireGenerationRefused] as soon as any handshaken member is LOWER than `own`.
     ///
+    /// Without label agreement the wait is bounded by `wait` alone, so it needs no end signal of its own.
+    ///
     /// @param members  the decision set (core voters other than this node)
     /// @param labelsOf Hello labels per member, empty until that member has handshaken
     static Promise<Unit> admit(Set<NodeId> members,
                                Fn1<Option<Map<String, String>>, NodeId> labelsOf,
                                TimeSpan wait,
                                int own) {
+        return admit(members, labelsOf, wait, own, LabelAgreement.none(), () -> false);
+    }
+
+    /// [#admit(Set, Fn1, TimeSpan, int)] that also requires label agreement (#3525): it fails at once with
+    /// [ConsensusError.LabelAgreementRefused] as soon as any handshaken member differs from this node in an agreeing
+    /// label, and it succeeds only when the generation wait has settled AND `agreement` has seen its quorum. The quorum has no
+    /// deadline: past `wait` with the quorum incomplete the guard keeps polling, and tells `agreement` once which members are missing.
+    ///
+    /// The wait lives no longer than the consumer it serves (#3525): `ended` is read at the top of every poll, before it decides,
+    /// notices or reschedules; once it reads true the wait cancels its promise, schedules no further poll and tells `agreement` nothing.
+    ///
+    /// @param ended true once the consumer of this wait (the engine) has stopped; a required argument, because the quorum wait has no
+    ///              deadline of its own
+    static Promise<Unit> admit(Set<NodeId> members,
+                               Fn1<Option<Map<String, String>>, NodeId> labelsOf,
+                               TimeSpan wait,
+                               int own,
+                               LabelAgreement agreement,
+                               Fn0<Boolean> ended) {
         return poll(members,
                     labelsOf,
                     System.nanoTime() + wait.nanos(),
                     own,
+                    agreement.episode(),
+                    ended,
                     Promise.promise());
     }
 
@@ -114,30 +138,62 @@ public interface JoinGenerationGuard {
                                       Fn1<Option<Map<String, String>>, NodeId> labelsOf,
                                       long deadlineNanos,
                                       int own,
+                                      LabelAgreement agreement,
+                                      Fn0<Boolean> ended,
                                       Promise<Unit> promise) {
-        return firstLower(members, labelsOf, own).fold(() -> settleOrWait(members, labelsOf, deadlineNanos, own, promise),
-                                                       promise::fail);
+        return ended.apply()
+               ? promise.cancel()
+               : decide(members, labelsOf, deadlineNanos, own, agreement, ended, promise);
+    }
+
+    private static Promise<Unit> decide(Set<NodeId> members,
+                                        Fn1<Option<Map<String, String>>, NodeId> labelsOf,
+                                        long deadlineNanos,
+                                        int own,
+                                        LabelAgreement agreement,
+                                        Fn0<Boolean> ended,
+                                        Promise<Unit> promise) {
+        return firstLower(members, labelsOf, own).orElse(() -> agreement.firstMismatch(members, labelsOf))
+                         .fold(() -> settleOrWait(members, labelsOf, deadlineNanos, own, agreement, ended, promise),
+                               promise::fail);
     }
 
     private static Promise<Unit> settleOrWait(Set<NodeId> members,
                                               Fn1<Option<Map<String, String>>, NodeId> labelsOf,
                                               long deadlineNanos,
                                               int own,
+                                              LabelAgreement agreement,
+                                              Fn0<Boolean> ended,
                                               Promise<Unit> promise) {
+        var pastDeadline = System.nanoTime() - deadlineNanos >= 0;
         var allHandshaken = members.stream().allMatch(member -> labelsOf.apply(member)
                                                                         .isPresent());
+        var quorumSeen = agreement.reached(members, labelsOf);
 
-        return allHandshaken || System.nanoTime() - deadlineNanos >= 0
-               ? promise.succeed(Unit.unit())
-               : reschedule(members, labelsOf, deadlineNanos, own, promise);
+        return (allHandshaken || pastDeadline) && quorumSeen
+               ? settle(agreement, promise)
+               : reschedule(members, labelsOf, deadlineNanos, own, agreement, ended, promise, pastDeadline);
+    }
+
+    private static Promise<Unit> settle(LabelAgreement agreement, Promise<Unit> promise) {
+        var _ = agreement.noticeComplete();
+
+        return promise.succeed(Unit.unit());
     }
 
     private static Promise<Unit> reschedule(Set<NodeId> members,
                                             Fn1<Option<Map<String, String>>, NodeId> labelsOf,
                                             long deadlineNanos,
                                             int own,
-                                            Promise<Unit> promise) {
-        var _ = SharedScheduler.schedule(() -> poll(members, labelsOf, deadlineNanos, own, promise), POLL_INTERVAL);
+                                            LabelAgreement agreement,
+                                            Fn0<Boolean> ended,
+                                            Promise<Unit> promise,
+                                            boolean pastDeadline) {
+        var _ = pastDeadline
+                ? agreement.noticeIncomplete(members, labelsOf)
+                : Unit.unit();
+        var _ = SharedScheduler.schedule(() -> poll(members, labelsOf, deadlineNanos, own, agreement, ended, promise),
+                                         POLL_INTERVAL);
 
         return promise;
     }
