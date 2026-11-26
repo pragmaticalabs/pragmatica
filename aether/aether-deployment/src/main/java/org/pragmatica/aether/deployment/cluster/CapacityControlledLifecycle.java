@@ -16,7 +16,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
@@ -75,7 +74,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                           ConcurrentHashMap<NodeId, AtomicInteger> dispatchMisses,
                                           ConcurrentHashMap<NodeId, Long> unmatchedSince,
                                           AtomicBoolean leading,
-                                          AtomicLong leadershipGeneration,
+                                          LeadershipGeneration leadershipGeneration,
+                                          Object monitor,
                                           AtomicReference<OperatorWarningSink> warningSink,
                                           LongSupplier clock,
                                           TimeSpan ceiling,
@@ -167,7 +167,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                new ConcurrentHashMap<>(),
                                                new ConcurrentHashMap<>(),
                                                new AtomicBoolean(),
-                                               new AtomicLong(),
+                                               LeadershipGeneration.leadershipGeneration(),
+                                               new Object(),
                                                new AtomicReference<>(OperatorWarningSink.logOnly()),
                                                clock,
                                                ceiling,
@@ -176,7 +177,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     /// The same lifecycle, sharing every piece of state, with the consensus `applyTimeout` the fence's elapsed check uses: the node
-    /// assembly passes the value the engine was built with (read once at boot, on both sides).
+    /// assembly passes the value the engine was built with (read once at boot, on both sides). The `monitor` is shared too, so every
+    /// instance over one store serialises on one lock.
     public CapacityControlledLifecycle withApplyTimeout(TimeSpan timeout) {
         return new CapacityControlledLifecycle(delegate,
                                                self,
@@ -195,6 +197,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                unmatchedSince,
                                                leading,
                                                leadershipGeneration,
+                                               monitor,
                                                warningSink,
                                                clock,
                                                ceiling,
@@ -523,15 +526,19 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                            .fold(result -> releaseSourceBinding(binding, result));
     }
 
-    private synchronized boolean acquireSource(String binding) {
-        return activeSources.size() < 4 && activeSources.add(binding);
+    private boolean acquireSource(String binding) {
+        synchronized (monitor) {
+            return activeSources.size() < 4 && activeSources.add(binding);
+        }
     }
 
     /// As [#releaseInventoryPass]: the binding is free before the create's outcome reaches the caller.
-    private synchronized Promise<InstanceInfo> releaseSourceBinding(String binding, Result<InstanceInfo> result) {
-        activeSources.remove(binding);
+    private Promise<InstanceInfo> releaseSourceBinding(String binding, Result<InstanceInfo> result) {
+        synchronized (monitor) {
+            activeSources.remove(binding);
 
-        return result.async();
+            return result.async();
+        }
     }
 
     private Promise<Unit> existingAttempt(NodeId node) {
@@ -726,14 +733,17 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     /// The ONE accessor of C1: whether this node holds the stored leader, and the leadership generation that read pairs with it. It is
-    /// `synchronized` and covers the store read, the lose-to-gain observation and the read of the generation, so "present" is never
-    /// paired with a generation older than the gain it follows. A fenced effect reads it at submit and again in its continuation; nothing
-    /// else reads the generation (TA8 scans the tree).
+    /// It holds the shared `monitor` and covers the store read, the lose-to-gain observation and the read of the generation, so "present"
+    /// is never paired with a generation older than the gain it follows. A fenced effect reads it at submit and again in its
+    /// continuation. Nothing else reads the generation: [LeadershipGeneration] has no accessor for the count, so a second reader does not
+    /// compile (the one remainder, a second call of its pairing method, is scanned by CapacityGenerationReaderScanTest).
     ///
-    /// Lock order: this monitor, then the KVStore monitor (`getTyped`). Nothing that runs under the KVStore monitor, or under a lock
+    /// Lock order: the `monitor`, then the KVStore monitor (`getTyped`). Nothing that runs under the KVStore monitor, or under a lock
     /// `activeLeader` takes, calls back into this record (the lock-free `isLeader` reads two atomics).
-    synchronized Option<Activation> activation() {
-        return observeLeadership(storedLeader()).map(value -> Activation.activation(value, leadershipGeneration.get()));
+    Option<Activation> activation() {
+        synchronized (monitor) {
+            return leadershipGeneration.pairedWith(observeLeadership(storedLeader()));
+        }
     }
 
     private Option<LeaderValue> storedLeader() {
@@ -747,7 +757,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// with no call to it in between, reads as continuous leadership.]
     private Option<LeaderValue> observeLeadership(Option<LeaderValue> current) {
         if (leading.getAndSet(current.isPresent()) != current.isPresent() && current.isPresent()) {
-            leadershipGeneration.incrementAndGet();
+            leadershipGeneration.gain();
             dispatchMisses.clear();
             unmatchedSince.clear();
         }

@@ -12,12 +12,17 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Promise;
 
 
-/// The one port through which a leader-only external effect (C1) is issued. The port runs the effect itself, so no caller can
-/// skip the re-read of the activation: the effect runs only in the continuation of an accepted leader transaction this node
-/// committed for it.
+/// The one port through which a leader-only external effect (C1) is issued, with ONE exception: the create's dispatch (ruling R-C1). The
+/// port runs the effect itself, so no caller can skip the re-read of the activation: the effect runs only in the continuation of an
+/// accepted leader transaction this node committed for it.
 ///
 /// The port always FAILS with a typed cause ([FenceFailure], or the consensus cause of the commit, for example `ApplyTimeout`);
 /// it never answers `false`. The effect's own failure is passed through.
+///
+/// The create's dispatch does not go through the port, and so has neither the elapsed check nor a typed refusal. Its reserve commit
+/// (a leader transaction carrying the stored leader, committed by this node before the provider is asked) is its witness, and the
+/// dispatch re-reads the activation against the generation that commit was built under. A leadership lost in between leaves a committed
+/// reservation that the refusal path releases once this node leads again, so the caller gets an untyped cause, not a [FenceFailure].
 public interface FencePort {
     /// Commits a leader transaction that carries the stored leader and `guards` as its read witnesses and has an empty mutation list,
     /// then runs `effect` if the commit was accepted in time and the activation is unchanged.
