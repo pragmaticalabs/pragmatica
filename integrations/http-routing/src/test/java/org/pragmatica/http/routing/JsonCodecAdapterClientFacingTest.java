@@ -61,6 +61,28 @@ class JsonCodecAdapterClientFacingTest {
         assertClientText(body(JsonCodecAdapter.forMapper(JsonMapper.valueObjectJsonMapper()), new CauseHolder(aThrowable())));
     }
 
+    /// Jackson reads the accessor, which throws: the mapper's failure message quotes the internal text and the class.
+    record Unserializable(String value) {
+        @Override
+        public String value() {
+            throw new IllegalStateException(SENTINEL);
+        }
+    }
+
+    @Test
+    void serialize_ofAValueTheMapperCannotWrite_failsWithFixedText_andKeepsTheMappersFailureAsSource() {
+        var failure = JsonCodecAdapter.defaultCodec()
+                                      .serialize(new Unserializable("value"))
+                                      .fold(cause -> cause,
+                                            _ -> {
+                                                throw new AssertionError("expected a serialization failure");
+                                            });
+
+        assertThat(failure.message()).isEqualTo("Serialization failed");
+        assertThat(failure.clientMessage()).isEqualTo("Serialization failed");
+        assertThat(failure.source().map(Cause::message).or("")).as("the server-side chain keeps the mapper's detail").contains(SENTINEL);
+    }
+
     @Test
     void forMapper_successResult_isWrittenAsTheMapperWritesIt() {
         assertThat(body(JsonCodecAdapter.forMapper(JsonMapper.defaultJsonMapper()), Result.success("ok"))).contains("\"success\":true")

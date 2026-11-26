@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The Forge API is an HTTP boundary: a body it writes carries a failure's client text, never its `message()`, which for
 /// a caught throwable is the printed stack trace (#3723). Two sites write an error body from a `Cause`: a route handler
 /// that fails (400) and a success value that cannot be serialized (500). Mutation: writing `cause.message()` at either
-/// site turns the matching test red.
+/// site turns the matching test red; the codec copying the mapper's message into its error turns the second red.
 class ForgeApiHandlerClientErrorsTest {
     private static final String INTERNAL_TEXT = "secret-internal-text";
 
@@ -51,7 +51,7 @@ class ForgeApiHandlerClientErrorsTest {
         handler.handle(new StubRequest(HttpMethod.GET, "/api/unserializable"), writer);
 
         assertThat(writer.status).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-        assertThat(writer.body).contains(HttpError.INTERNAL_ERROR_TEXT);
+        assertThat(writer.body).contains("Serialization failed");
         assertThat(writer.body).doesNotContain(INTERNAL_TEXT).doesNotContain("Exception").doesNotContain("\\tat ");
     }
 

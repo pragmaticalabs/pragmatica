@@ -18,3 +18,6 @@
   The general mapper (CLI, cloud clients, state files) is unchanged, so the `Result` round trip keeps the message.
 - **The Forge API error body renders through `HttpError.clientMessage`** at both sites that wrote `Cause.message()` (a failing
   route handler, a success value that cannot be serialized).
+- **A failed serialization carries fixed text.** `JsonCodecAdapter.serialize` no longer copies the mapper's failure message
+  (it quotes the value and the serializer's exception: class names, a reference chain) into its `CodecError`; the error
+  says `Serialization failed` and keeps the mapper's failure as its source, for the server-side cause chain.
