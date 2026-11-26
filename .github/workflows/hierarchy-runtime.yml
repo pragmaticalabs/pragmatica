@@ -57,6 +57,10 @@ jobs:
           java-version: '25'
           distribution: temurin
           cache: maven
+
+      # #3338 / #3765: a failed-download marker saved by an earlier run would make this job skip the retry of that artifact.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
       - name: Record tested merge and PR revisions
         env:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}

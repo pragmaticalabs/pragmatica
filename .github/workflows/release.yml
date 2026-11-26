@@ -36,6 +36,10 @@ jobs:
           distribution: 'zulu'
           cache: 'maven'
 
+      # #3338 / #3765: a failed-download marker saved by an earlier run would make this job skip the retry of that artifact.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
+
       - name: Bootstrap jbct-maven-plugin and slice-processor
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
 
@@ -116,6 +120,10 @@ jobs:
           distribution: 'zulu'
           cache: 'maven'
 
+      # #3338 / #3765: a failed-download marker saved by an earlier run would make this job skip the retry of that artifact.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
+
       - name: Bootstrap jbct-maven-plugin and slice-processor
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
 
@@ -186,6 +194,10 @@ jobs:
           java-version: '25'
           distribution: 'zulu'
           cache: 'maven'
+
+      # #3338 / #3765: a failed-download marker saved by an earlier run would make this job skip the retry of that artifact.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
 
       - name: Extract version from tag
         id: version
@@ -346,6 +358,10 @@ jobs:
           distribution: 'zulu'
           cache: 'maven'
 
+      # #3338 / #3765: a failed-download marker saved by an earlier run would make this job skip the retry of that artifact.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
+
       - name: Bootstrap and build
         run: |
           mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
@@ -408,6 +424,10 @@ jobs:
           java-version: '25'
           distribution: 'zulu'
           cache: 'maven'
+
+      # #3338 / #3765: a failed-download marker saved by an earlier run would make this job skip the retry of that artifact.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
 
       - name: Install all artifacts
         run: mvn install -B -DskipTests
