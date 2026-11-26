@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.Function;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
@@ -226,6 +228,21 @@ class CapacityFenceTest {
         assertThat(ledger()).as("the ledger and its version are unchanged after the refusal").isEqualTo(ledgerBefore);
     }
 
+    /// A lifecycle whose witness transaction is answered by `answer` (given the witness's transaction id) instead of by the store; every
+    /// other command goes to the store as usual.
+    private CapacityControlledLifecycle answeringWitnessWith(Function<String, List<Object>> answer) {
+        return CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, commands -> commands.stream().filter(CapacityFenceTest::isWitness)
+                                                                                                                  .findFirst()
+                                                                                                                  .map(witness -> Promise.success(answer.apply(((KVCommand.LeaderTransaction<?, ?>) witness).transactionId())))
+                                                                                                                  .orElseGet(() -> apply(commands)),
+            leading::get, () -> 5, SourceProfile.DEFAULT_REPLACEMENT_CEILING, epoch::get, nano::get, FIVE_SECONDS);
+    }
+
+    private static void assertRefusedAs(Result<Unit> outcome, RefusalKind kind) {
+        assertFailsWith(outcome, FenceFailure.LeadershipNotWitnessed.class);
+        outcome.onFailure(cause -> assertThat(cause).isEqualTo(FenceFailure.LeadershipNotWitnessed.leadershipNotWitnessed(kind)));
+    }
+
     private Result<Unit> terminate() {
         return lifecycle.terminateNode(NODE, EAST, "binding").await();
     }
@@ -375,6 +392,141 @@ class CapacityFenceTest {
 
         assertThat(outcome.isSuccess()).as("terminate: %s", outcome).isTrue();
         assertThat(terminates.get()).isEqualTo(1);
+    }
+
+    // ---- the witness answer, the port's own entry, the defaults (lane b gaps k12 k41 k19 k26 k33 k35 k36 k38) ----
+
+    /// k12: an accepted answer that carries ANOTHER transaction's id is not this witness's answer: the witness is refused (UNKNOWN: no
+    /// result of this transaction), the provider is never asked.
+    @Test
+    void terminate_whenTheAnswerCarriesAnotherTransactionId_refusesTheWitness_andCallsNoProvider() {
+        terminable();
+        lifecycle = answeringWitnessWith(_ -> List.of(new KVCommand.TransactionResult("another-transaction", true)));
+
+        var outcome = terminate();
+
+        assertRefusedAs(outcome, RefusalKind.UNKNOWN);
+        assertThat(terminates.get()).as("no provider call").isZero();
+    }
+
+    /// k41: an answer without the transaction (and, as the second case, a refused one that carries no kind) gives the UNKNOWN kind, not
+    /// a guessed LEADER.
+    @Test
+    void terminate_whenTheAnswerLacksTheTransactionOrItsRefusalKind_refusesWithUnknown() {
+        terminable();
+        lifecycle = answeringWitnessWith(_ -> List.of());
+        assertRefusedAs(terminate(), RefusalKind.UNKNOWN);
+
+        lifecycle = answeringWitnessWith(id -> List.of(new KVCommand.TransactionResult(id, false)));
+        assertRefusedAs(terminate(), RefusalKind.UNKNOWN);
+        assertThat(terminates.get()).as("no provider call").isZero();
+    }
+
+    /// k19: the stored leader at SUBMIT is another node: the port itself answers NotLeader and the effect never runs. The store accepts
+    /// a witness that names the stored leader, so only the submit-time `equals(self)` stands between the effect and a leader that is not
+    /// this node.
+    @Test
+    void fenced_whenTheStoreNamesAnotherLeaderAtSubmit_failsWithNotLeader_andRunsNoEffect() {
+        terminable();
+        replaceLeader(new LeaderValue(SUCCESSOR, 2));
+        var ran = new AtomicInteger();
+
+        var outcome = lifecycle.fenced(List.of(), () -> {
+            ran.incrementAndGet();
+            return Promise.success("ran");
+        }).await();
+
+        assertThat(outcome.isFailure()).as("fenced: %s", outcome).isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isEqualTo(FenceFailure.NotLeader.notLeader()));
+        assertThat(ran.get()).as("the effect did not run").isZero();
+    }
+
+    /// k26: the public port with NO guards still witnesses the leader: the leader replaced before the witness is applied refuses, and the
+    /// effect does not run. (`terminate` always passes one guard, so only this entry covers an empty guard list.)
+    @Test
+    void fenced_withNoGuards_stillWitnessesTheLeader_andRunsNoEffectWhenItWasReplaced() {
+        terminable();
+        beforeWitness = () -> replaceLeader(new LeaderValue(SUCCESSOR, 2));
+        var ran = new AtomicInteger();
+
+        var outcome = lifecycle.fenced(List.of(), () -> {
+            ran.incrementAndGet();
+            return Promise.success("ran");
+        }).await();
+
+        assertThat(outcome.isFailure()).as("fenced: %s", outcome).isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isEqualTo(FenceFailure.LeadershipNotWitnessed.leadershipNotWitnessed(RefusalKind.LEADER)));
+        assertThat(ran.get()).as("the effect did not run").isZero();
+    }
+
+    /// k33: the continuation's documented order is the elapsed check first, the activation re-read second: with BOTH the timeout passed
+    /// and the activation changed, the refusal is WitnessExpired.
+    @Test
+    void terminate_whenBothTheTimeoutPassedAndTheActivationChanged_failsWithWitnessExpired() {
+        terminable();
+        afterWitness = () -> {
+            observedLossAndRegain();
+            nano.addAndGet(6 * SECOND_NANOS);
+        };
+
+        var outcome = terminate();
+
+        assertFailsWith(outcome, FenceFailure.WitnessExpired.class);
+        assertThat(terminates.get()).as("no provider call").isZero();
+    }
+
+    /// k35: the shorter factories take the engine's default apply timeout (30 s), not another value; the "default" behaviour test above
+    /// passes it explicitly, so only this reads the factories' own default.
+    @Test
+    void theShorterFactories_defaultTheApplyTimeoutToTheEnginesDefault() {
+        var sixArgument = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, this::apply, leading::get, () -> 5);
+        var sevenArgument = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, this::apply, leading::get, () -> 5,
+            SourceProfile.DEFAULT_REPLACEMENT_CEILING);
+        var eightArgument = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, this::apply, leading::get, () -> 5,
+            SourceProfile.DEFAULT_REPLACEMENT_CEILING, epoch::get);
+
+        assertThat(sixArgument.applyTimeout()).isEqualTo(ProtocolConfig.DEFAULT_APPLY_TIMEOUT);
+        assertThat(sevenArgument.applyTimeout()).isEqualTo(ProtocolConfig.DEFAULT_APPLY_TIMEOUT);
+        assertThat(eightArgument.applyTimeout()).isEqualTo(ProtocolConfig.DEFAULT_APPLY_TIMEOUT);
+    }
+
+    /// k36: the default monotonic clock is `System.nanoTime`: a REAL delay over the apply timeout (20 ms timeout, 150 ms delay between
+    /// submit and the continuation) is refused through the default factory. A default of epoch milliseconds would read the delay as 150
+    /// "nanoseconds" and let it pass.
+    @Test
+    void terminate_throughTheDefaultFactory_refusesARealDelayOverTheApplyTimeout() {
+        terminable();
+        lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, this::apply, leading::get, () -> 5,
+            SourceProfile.DEFAULT_REPLACEMENT_CEILING, epoch::get).withApplyTimeout(TimeSpan.timeSpan(20).millis());
+        afterWitness = () -> {
+            var until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(150);
+
+            while (System.nanoTime() < until) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+            }
+        };
+
+        var outcome = terminate();
+
+        assertFailsWith(outcome, FenceFailure.WitnessExpired.class);
+        assertThat(terminates.get()).as("no provider call").isZero();
+    }
+
+    /// k38: `withApplyTimeout` keeps the injected monotonic clock (the golden covers only the timeout): the copy refuses a 3 s elapsed
+    /// on the injected clock under its own 2 s timeout, and accepts 1 s. A copy that took the epoch clock as its monotonic one would see no time pass.
+    @Test
+    void withApplyTimeout_keepsTheInjectedMonotonicClock() {
+        terminableTwice();
+        lifecycle = lifecycle.withApplyTimeout(TimeSpan.timeSpan(2).seconds());
+        afterWitness = () -> nano.addAndGet(SECOND_NANOS);
+        assertThat(terminate().isSuccess()).as("1 s of the copy's 2 s").isTrue();
+
+        observeNode();
+        afterWitness = () -> nano.addAndGet(3 * SECOND_NANOS);
+        var late = terminate();
+
+        assertFailsWith(late, FenceFailure.WitnessExpired.class);
+        assertThat(terminates.get()).as("the late witness issued nothing").isEqualTo(1);
     }
 
     // ---- TA6, TA6c, TA7: the create's dispatch ----
