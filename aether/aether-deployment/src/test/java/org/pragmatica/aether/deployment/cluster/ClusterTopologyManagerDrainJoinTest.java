@@ -33,6 +33,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import java.time.Duration;
 import java.util.List;
@@ -47,6 +48,7 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -64,6 +66,7 @@ class ClusterTopologyManagerDrainJoinTest {
     private static final NodeId PEER_B = nodeId("node-b").unwrap();
     private static final NodeId PEER_C = nodeId("node-c").unwrap();
     private static final NodeId TARGET = nodeId("node-d").unwrap();
+    private static final NodeId CONTROL = nodeId("node-control").unwrap();
     private static final TimeSpan GRACE = timeSpan(300).millis();
     private static final HlcTimestamp HLC = new HlcTimestamp(HlcTimestamp.pack(1L, 0), SELF);
     private static final String CANCELLED = OperatorWarningCode.NODE_DRAIN_CANCELLED_REJOINED.code();
@@ -75,6 +78,7 @@ class ClusterTopologyManagerDrainJoinTest {
     private final Set<NodeId> registry = ConcurrentHashMap.newKeySet();
     private final CopyOnWriteArrayList<NodeId> registryWrites = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<String> raised = new CopyOnWriteArrayList<>();
+    private final OperatorWarningSink warningSink = OperatorWarningSink.handingOffTo(warning -> raised.add(warning.code().code()));
     private WitnessSink sink;
     private RecordingLifecycle lifecycle;
     private ClusterTopologyManager ctm;
@@ -84,7 +88,7 @@ class ClusterTopologyManagerDrainJoinTest {
         lifecycle = new RecordingLifecycle();
         sink = new WitnessSink(this::addToRegistry);
         ctm = manager(sink);
-        ctm.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> raised.add(warning.code().code())));
+        ctm.setOperatorWarningSink(warningSink);
         ctm.activate();
     }
 
@@ -165,12 +169,23 @@ class ClusterTopologyManagerDrainJoinTest {
         await().atMost(Duration.ofSeconds(5)).until(() -> raised.contains(code));
     }
 
-    private static void settleFor(Duration window) {
-        try {
-            Thread.sleep(window.toMillis());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+    /// The positive control of an absence read: a control drain of another target is accepted after the attempt under test,
+    /// with the same grace, so once the control is reaped a timer of the first target (armed earlier, same delay) would
+    /// have fired already.
+    private void awaitControlReap() {
+        ctm.drainNode(CONTROL, DrainReason.OPERATOR_COMMAND);
+        sink.accept(sink.requests().size() - 1);
+        await().atMost(Duration.ofSeconds(5)).until(() -> lifecycle.terminated().contains(CONTROL));
+    }
+
+    /// The warning hand-off is one FIFO queue: once the barrier arrives, every warning raised before it has been delivered.
+    private void awaitWarningBarrier() {
+        OperatorWarnings.raise(LoggerFactory.getLogger(ClusterTopologyManagerDrainJoinTest.class),
+                               warningSink,
+                               OperatorWarningCode.EXTERNAL_REJOIN_UNRECONCILED,
+                               "barrier",
+                               "barrier");
+        awaitRaised(OperatorWarningCode.EXTERNAL_REJOIN_UNRECONCILED.code());
     }
 
     /// TB6: a second drain of a target that has a pending attempt joins it. One witness request, and the second caller's
@@ -265,8 +280,8 @@ class ClusterTopologyManagerDrainJoinTest {
         assertThat(drain.await().fold(cause -> cause, _ -> null)).isInstanceOf(FenceFailure.AttemptCancelled.class);
         assertThat(registryWrites).as("no write for a cancelled attempt").isEmpty();
         assertThat(registry).isEmpty();
-        settleFor(GRACE.duration().multipliedBy(3));
-        assertThat(lifecycle.terminated()).as("no timer was armed: nothing is reaped").isEmpty();
+        awaitControlReap();
+        assertThat(lifecycle.terminated()).as("no timer was armed: only the control is reaped").containsExactly(CONTROL);
         assertThat(registry).as("no DRAIN afterwards").isEmpty();
     }
 
@@ -284,8 +299,8 @@ class ClusterTopologyManagerDrainJoinTest {
         assertThat(drain.await().fold(cause -> cause, _ -> null)).isInstanceOf(FenceFailure.AttemptCancelled.class);
         assertThat(registryWrites).isEmpty();
         assertThat(registry).isEmpty();
-        settleFor(GRACE.duration().multipliedBy(3));
-        assertThat(lifecycle.terminated()).isEmpty();
+        awaitControlReap();
+        assertThat(lifecycle.terminated()).as("only the control is reaped").containsExactly(CONTROL);
         assertThat(registry).as("no DRAIN in the new activation").isEmpty();
     }
 
@@ -315,8 +330,8 @@ class ClusterTopologyManagerDrainJoinTest {
         sink.refuse(0, APPLY_TIMEOUT);
 
         assertThat(sink.requests()).as("one retry").hasSize(2);
-        settleFor(Duration.ofMillis(300));
-        assertThat(raised).as("the outcome is not known yet: no warning").isEmpty();
+        awaitWarningBarrier();
+        assertThat(raised).as("the outcome is not known yet: no eviction warning").doesNotContain(EVICTED);
 
         sink.accept(1);
 
