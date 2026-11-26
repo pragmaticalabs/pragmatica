@@ -34,7 +34,8 @@ class ContentStoreFiveGiBTest {
         var diagnostics = "child output:\n" + outcome.output();
 
         assertThat(outcome.exitCode()).as(diagnostics).isZero();
-        assertThat(Long.parseLong(outcome.get("MAX_HEAP_MB"))).as(diagnostics).isLessThanOrEqualTo(LargeObjectRun.HEAP_MB);
+        assertThat(Long.parseLong(outcome.get("MAX_HEAP_MB"))).as(diagnostics)
+                  .isLessThanOrEqualTo(LargeObjectRun.HEAP_MB);
         assertThat(outcome.get("READ_SHA")).as(diagnostics).isEqualTo(outcome.get("WRITE_SHA"));
         assertThat(outcome.get("STORED_SHA")).as(diagnostics).isEqualTo(outcome.get("WRITE_SHA"));
         assertThat(outcome.get("BYTES_READ")).as(diagnostics).isEqualTo(Long.toString(SIZE));

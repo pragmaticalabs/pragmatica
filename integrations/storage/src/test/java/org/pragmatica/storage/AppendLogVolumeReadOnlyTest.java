@@ -15,15 +15,17 @@ import java.util.TreeMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Stream;
 
-import org.apache.logging.log4j.Level;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.testlogging.LogCapture;
 
+import org.apache.logging.log4j.Level;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import static org.pragmatica.lang.Option.some;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.lang.Option.some;
+
 
 /// #1569 A3/A4/A10 on the storage engine's logs: looking at a volume changes nothing on it, and cutting a
 /// torn tail -- the one place a log discards bytes -- happens only on an explicit open, loudly.
@@ -46,7 +48,6 @@ class AppendLogVolumeReadOnlyTest {
         prepareVolumeWithTornLog();
         leaveAPartialBlock();
         var before = snapshot();
-
         var disk = LocalDiskTier.localDiskTier(volume.resolve("blocks"), 1 << 20).unwrap();
         var unopened = LocalDiskTier.localDiskTier(volume.resolve("missing-blocks"), 1 << 20).unwrap();
         var rootless = StorageInstance.storageInstance("other",
@@ -63,12 +64,12 @@ class AppendLogVolumeReadOnlyTest {
                                                       some(volume.resolve("logs")));
 
         assertThat(storage.listLogs().unwrap()).containsExactly("orders/0");
-
         var extent = storage.inspectLog("orders/0").unwrap();
 
         assertThat(extent.lowOffset()).isZero();
         assertThat(extent.headOffset()).isEqualTo(2L);
-        assertThat(extent.fileBytes() - extent.validBytes()).as("the torn tail is reported, not cut").isEqualTo(TORN.length);
+        assertThat(extent.fileBytes() - extent.validBytes()).as("the torn tail is reported, not cut")
+                  .isEqualTo(TORN.length);
         assertThat(AppendLog.readEpochHistory(logFile()).unwrap()).containsExactly(new AppendLog.EpochStart(EPOCH_ONE, 0));
         assertThat(snapshot()).isEqualTo(before);
     }
@@ -88,18 +89,20 @@ class AppendLogVolumeReadOnlyTest {
         var opener = AppendLog.Opener.storage(storage);
 
         assertThat(storage.readLogRange("orders/0", 0, 2, 0).unwrap().records()).extracting(AppendLog.WalRecord::offset)
-                                                                          .containsExactly(0L, 1L);
+                  .containsExactly(0L, 1L);
         assertThat(opener.readRange("orders/0", 1, 2, 0).unwrap().records()).extracting(AppendLog.WalRecord::offset)
-                                                                       .containsExactly(1L, 2L);
+                  .containsExactly(1L, 2L);
         assertThat(storage.readLogRange("orders/0", 0, 10, 0).unwrap().records()).as("the torn tail ends the log")
-                                                                           .extracting(AppendLog.WalRecord::offset)
-                                                                           .containsExactly(0L, 1L, 2L);
+                  .extracting(AppendLog.WalRecord::offset)
+                  .containsExactly(0L, 1L, 2L);
         assertThat(opener.readRange("orders/0", 0, 10, 0).unwrap().records()).as("through the opener too").hasSize(3);
         assertThat(storage.readLogRange("orders/9", 0, 10, 0).unwrap()).isEqualTo(AppendLog.RangePage.EMPTY);
         var size = Files.size(volume.resolve("logs").resolve("orders/0.wal"));
 
-        assertThat(storage.readLogRange("orders/0", 0, 10, size).unwrap().endPosition()).as("a scan starts where it is told").isEqualTo(size);
-        assertThat(storage.readLogEpochHistory("orders/0").unwrap()).containsExactly(new AppendLog.EpochStart(EPOCH_ONE, 0));
+        assertThat(storage.readLogRange("orders/0", 0, 10, size).unwrap().endPosition()).as("a scan starts where it is told")
+                  .isEqualTo(size);
+        assertThat(storage.readLogEpochHistory("orders/0").unwrap()).containsExactly(new AppendLog.EpochStart(EPOCH_ONE,
+                                                                                                              0));
         assertThat(opener.readEpochHistory("orders/0").unwrap()).containsExactly(new AppendLog.EpochStart(EPOCH_ONE, 0));
         assertThat(snapshot()).isEqualTo(before);
     }
@@ -114,8 +117,9 @@ class AppendLogVolumeReadOnlyTest {
         AppendLog.Opener bare = name -> AppendLog.open(volume.resolve("logs").resolve(name + ".wal"));
 
         assertThat(directory.readRange("orders/0", 0, 3, 0).unwrap().records()).extracting(AppendLog.WalRecord::offset)
-                                                                          .containsExactly(0L, 1L, 2L);
-        assertThat(directory.readEpochHistory("orders/0").unwrap()).containsExactly(new AppendLog.EpochStart(EPOCH_ONE, 0));
+                  .containsExactly(0L, 1L, 2L);
+        assertThat(directory.readEpochHistory("orders/0").unwrap()).containsExactly(new AppendLog.EpochStart(EPOCH_ONE,
+                                                                                                             0));
         assertThat(bare.readRange("orders/0", 0, 3, 0).isFailure()).isTrue();
         assertThat(bare.readEpochHistory("orders/0").isFailure()).isTrue();
         assertThat(snapshot()).isEqualTo(before);
@@ -125,12 +129,13 @@ class AppendLogVolumeReadOnlyTest {
     /// rather than answer an empty page or history (#1759).
     @Test
     void anInstanceWithoutLogs_refusesTheRangeAndTheHistory() {
-        var bare = (StorageInstance) Proxy.newProxyInstance(
-            StorageInstance.class.getClassLoader(),
-            new Class<?>[]{StorageInstance.class},
-            (proxy, method, args) -> "name".equals(method.getName())
-                                     ? "bare"
-                                     : InvocationHandler.invokeDefault(proxy, method, args));
+        var bare = (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
+                                                            new Class<?>[]{StorageInstance.class},
+                                                            (proxy, method, args) -> "name".equals(method.getName())
+                                                                                     ? "bare"
+                                                                                     : InvocationHandler.invokeDefault(proxy,
+                                                                                                                       method,
+                                                                                                                       args));
 
         assertThat(bare.readLogRange("orders/0", 0, 3, 0).isFailure()).isTrue();
         assertThat(bare.readLogEpochHistory("orders/0").isFailure()).isTrue();
@@ -163,10 +168,10 @@ class AppendLogVolumeReadOnlyTest {
                                                                     2L));
         assertThat(Files.size(logFile())).isEqualTo(extent.validBytes());
         assertThat(capture.messages(Level.WARN)).singleElement()
-                                            .asString()
-                                            .contains(logFile().toAbsolutePath().toString())
-                                            .contains("[" + extent.validBytes() + ", " + extent.fileBytes() + ")")
-                                            .contains("offset 2");
+                  .asString()
+                  .contains(logFile().toAbsolutePath().toString())
+                  .contains("[" + extent.validBytes() + ", " + extent.fileBytes() + ")")
+                  .contains("offset 2");
     }
 
     /// What a write the process did not survive leaves behind: a `<hex>.<n>.partial` beside the shards.
@@ -181,13 +186,14 @@ class AppendLogVolumeReadOnlyTest {
         var disk = LocalDiskTier.localDiskTier(volume.resolve("blocks"), 1 << 20).unwrap();
         var block = "sealed segment".getBytes(StandardCharsets.UTF_8);
 
-        disk.put(BlockId.blockId(block).unwrap(), block).await().onFailure(c -> fail(c.message()));
-
+        disk.put(BlockId.blockId(block).unwrap(),
+                 block).await().onFailure(c -> fail(c.message()));
         var wal = AppendLog.open(logFile()).unwrap();
 
         for (var i = 0; i < 3; i++) {
             wal.append(i, ("e" + i).getBytes(StandardCharsets.UTF_8), 1L).await().onFailure(c -> fail(c.message()));
         }
+
         wal.recordEpochStart(EPOCH_ONE, 0, (later, earlier) -> false).onFailure(c -> fail(c.message()));
         wal.close();
         Files.write(logFile(), TORN, StandardOpenOption.APPEND);
@@ -213,7 +219,9 @@ class AppendLogVolumeReadOnlyTest {
     }
 
     private Path logFile() {
-        return volume.resolve("logs").resolve("orders").resolve("0.wal");
+        return volume.resolve("logs")
+                     .resolve("orders")
+                     .resolve("0.wal");
     }
 
     private static Unit record(List<AppendLog.TornTail> reported, AppendLog.TornTail tail) {

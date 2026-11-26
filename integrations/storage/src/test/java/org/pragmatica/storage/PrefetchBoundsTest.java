@@ -5,17 +5,19 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.pragmatica.storage.PrefetchConfig.prefetchConfig;
+import static org.pragmatica.storage.PrefetchHint.prefetchHint;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.storage.PrefetchConfig.prefetchConfig;
-import static org.pragmatica.storage.PrefetchHint.prefetchHint;
+
 
 /// #1325: the manager's bookkeeping is bounded. Observation counters live while they are touched and
 /// are reclaimed after `observationWindowMs` idle; the table holds at most `maxTrackedBlocks`;
@@ -34,7 +36,8 @@ class PrefetchBoundsTest {
     @BeforeEach
     void setUp() {
         durable = new CountingTier(MemoryTier.memoryTier(1024 * 1024, TierLevel.LOCAL_DISK));
-        storage = StorageInstance.storageInstance("prefetch-bounds", List.of(MemoryTier.memoryTier(1024 * 1024), durable));
+        storage = StorageInstance.storageInstance("prefetch-bounds",
+                                                  List.of(MemoryTier.memoryTier(1024 * 1024), durable));
     }
 
     private DefaultPrefetchManager manager(int threshold) {
@@ -48,12 +51,12 @@ class PrefetchBoundsTest {
     }
 
     private static BlockId blockIdOf(int n) {
-        return BlockId.blockId(("prefetch-bounds-" + n).getBytes(StandardCharsets.UTF_8))
-                      .fold(_ -> {
-                                fail("BlockId creation failed");
-                                return null;
-                            },
-                            id -> id);
+        return BlockId.blockId(("prefetch-bounds-" + n).getBytes(StandardCharsets.UTF_8)).fold(_ -> {
+                                                                                                   fail("BlockId creation failed");
+
+                                                                                                   return null;
+                                                                                               },
+                                                                                               id -> id);
     }
 
     @Test
@@ -77,9 +80,9 @@ class PrefetchBoundsTest {
         for (var n = 1; n < 1_000; n++) {
             manager.recordAccess(blockIdOf(n));
         }
-        manager.recordAccess(hot);
-        manager.recordAccess(hot);
 
+        manager.recordAccess(hot);
+        manager.recordAccess(hot);
         assertThat(manager.collectHints()).extracting(PrefetchHint::blockIdHex).containsExactly(hot.hexString());
     }
 
@@ -90,9 +93,9 @@ class PrefetchBoundsTest {
         for (var n = 0; n < CAPACITY; n++) {
             manager.recordAccess(blockIdOf(n));
         }
+
         clock.addAndGet(WINDOW_MS);
         manager.recordAccess(blockIdOf(10_000));
-
         assertThat(manager.trackedBlocks()).isEqualTo(1);
     }
 
@@ -104,7 +107,6 @@ class PrefetchBoundsTest {
         manager.recordAccess(blockIdOf(2));
         clock.addAndGet(WINDOW_MS);
         manager.collectHints();
-
         assertThat(manager.trackedBlocks()).isZero();
     }
 
@@ -118,7 +120,6 @@ class PrefetchBoundsTest {
         manager.recordAccess(id);
         clock.addAndGet(WINDOW_MS - 1);
         manager.recordAccess(id);
-
         assertThat(manager.collectHints()).hasSize(1);
     }
 
@@ -129,10 +130,8 @@ class PrefetchBoundsTest {
 
         manager.processHints(List.of(hint));
         assertThat(manager.cooldownEntries()).as("the attempt recorded a cooldown").isEqualTo(1);
-
         clock.addAndGet(COOLDOWN_MS);
         manager.collectHints();
-
         assertThat(manager.cooldownEntries()).isZero();
     }
 
@@ -143,7 +142,6 @@ class PrefetchBoundsTest {
         manager.processHints(List.of(prefetchHint(blockIdOf(1).hexString(), 10)));
         clock.addAndGet(COOLDOWN_MS);
         manager.processHints(List.of(prefetchHint(blockIdOf(2).hexString(), 10)));
-
         assertThat(manager.cooldownEntries()).as("only the fresh attempt's cooldown remains").isEqualTo(1);
     }
 
@@ -156,7 +154,7 @@ class PrefetchBoundsTest {
         }
 
         assertThat(manager.reclaimPasses()).as("a full table of fresh counters must not be rescanned per access")
-                                           .isLessThanOrEqualTo(1);
+                  .isLessThanOrEqualTo(1);
     }
 
     @Test
@@ -168,7 +166,6 @@ class PrefetchBoundsTest {
         clock.addAndGet(COOLDOWN_MS - 1);
         manager.processHints(List.of(hint));
         assertThat(durable.gets.get()).as("within the cooldown the repeat is suppressed").isEqualTo(1);
-
         clock.addAndGet(1);
         manager.processHints(List.of(hint));
         assertThat(durable.gets.get()).as("once it has elapsed the block is attempted again").isEqualTo(2);
@@ -181,7 +178,6 @@ class PrefetchBoundsTest {
         manager.deactivate();
         manager.recordAccess(blockIdOf(1));
         manager.activate();
-
         assertThat(manager.trackedBlocks()).as("a dormant manager must not accumulate observations").isZero();
     }
 
@@ -191,9 +187,7 @@ class PrefetchBoundsTest {
 
         manager.processHints(List.of(prefetchHint(blockIdOf(1).hexString(), 10)));
         assertThat(manager.cooldownEntries()).as("the attempt recorded a cooldown").isEqualTo(1);
-
         manager.deactivate();
-
         assertThat(manager.cooldownEntries()).isZero();
     }
 
@@ -213,20 +207,24 @@ class PrefetchBoundsTest {
         clock.addAndGet(COOLDOWN_MS - 1);
         drift.set(1);
         manager.processHints(List.of(hint));
-
         assertThat(durable.gets.get()).as("elapsed == cooldownMs allows the repeat").isEqualTo(2);
     }
 
     @Test
     void collectHints_tiesRankDeterministically_byBlockId() {
         var manager = manager(2);
-        var ids = List.of(blockIdOf(1), blockIdOf(2), blockIdOf(3), blockIdOf(4), blockIdOf(5), blockIdOf(6), blockIdOf(7));
+        var ids = List.of(blockIdOf(1),
+                          blockIdOf(2),
+                          blockIdOf(3),
+                          blockIdOf(4),
+                          blockIdOf(5),
+                          blockIdOf(6),
+                          blockIdOf(7));
 
         ids.forEach(id -> {
             manager.recordAccess(id);
             manager.recordAccess(id);
         });
-
         var expected = ids.stream().map(BlockId::hexString).sorted().limit(5).toList();
 
         assertThat(manager.collectHints()).extracting(PrefetchHint::blockIdHex).containsExactlyElementsOf(expected);
@@ -243,10 +241,11 @@ class PrefetchBoundsTest {
         manager.recordAccess(b);
         manager.recordAccess(b);
         manager.recordAccess(b);
-
         assertThat(manager.collectHints()).extracting(PrefetchHint::blockIdHex, PrefetchHint::accessCount)
-                                          .containsExactly(tuple(b.hexString(), 3),
-                                                           tuple(a.hexString(), 2));
+                  .containsExactly(tuple(b.hexString(),
+                                         3),
+                                   tuple(a.hexString(),
+                                         2));
     }
 
     /// A tier that counts reads, over a delegate that holds nothing: every prefetch attempt reaches it once.

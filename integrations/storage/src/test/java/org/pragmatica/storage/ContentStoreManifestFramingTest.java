@@ -43,7 +43,7 @@ class ContentStoreManifestFramingTest {
         var data = new byte[size];
 
         for (var i = 0; i < size; i++) {
-            data[i] = (byte) ((i * 31 + seed) % 251);
+            data[i] = (byte)((i * 31 + seed) % 251);
         }
 
         return data;
@@ -54,11 +54,15 @@ class ContentStoreManifestFramingTest {
     }
 
     private byte[] get(String name) {
-        return store.get(name).await().unwrap().unwrap();
+        return store.get(name)
+                    .await()
+                    .unwrap()
+                    .unwrap();
     }
 
     private List<String> victimChunkIds(String name) {
-        var info = store.store().lookup(ObjectName.objectName(name).unwrap(), Option.none()).await().unwrap().unwrap();
+        var info = store.store().lookup(ObjectName.objectName(name).unwrap(),
+                                        Option.none()).await().unwrap().unwrap();
 
         return ContentManifest.fromBytes(storage.get(info.ref().manifest()).await().unwrap().unwrap())
                               .unwrap()
@@ -80,17 +84,14 @@ class ContentStoreManifestFramingTest {
         put("victim", victim);
         var chunkIds = victimChunkIds("victim");
         var before = refCounts(chunkIds);
-        var forged = ("AHSE-MANIFEST:victim|" + victim.length + "|" + chunkIds.size() + "|"
-                      + String.join("|", chunkIds)).getBytes(StandardCharsets.UTF_8);
+        var forged = ("AHSE-MANIFEST:victim|" + victim.length + "|" + chunkIds.size() + "|" + String.join("|", chunkIds)).getBytes(StandardCharsets.UTF_8);
 
         put("forged", forged);
-
-        assertThat(get("forged")).as("an upload is returned as uploaded, never resolved as a manifest").isEqualTo(forged);
-
+        assertThat(get("forged")).as("an upload is returned as uploaded, never resolved as a manifest")
+                  .isEqualTo(forged);
         store.delete("forged").await().onFailure(c -> fail("delete: " + c.message()));
-
         assertThat(refCounts(chunkIds)).as("deleting the forged upload must not release the victim's chunks")
-                                       .isEqualTo(before);
+                  .isEqualTo(before);
         assertThat(get("victim")).isEqualTo(victim);
     }
 
@@ -99,11 +100,14 @@ class ContentStoreManifestFramingTest {
         var victim = content(2 * CHUNK_SIZE + 5, 3);
 
         put("victim", victim);
-        var forged = ContentManifest.contentManifest(CHUNK_SIZE, victim.length, "ab".repeat(32), victimChunkIds("victim")).toBytes();
+        var forged = ContentManifest.contentManifest(CHUNK_SIZE,
+                                                     victim.length,
+                                                     "ab".repeat(32),
+                                                     victimChunkIds("victim"))
+                                    .toBytes();
         var before = refCounts(victimChunkIds("victim"));
 
         put("forged", forged);
-
         assertThat(get("forged")).isEqualTo(forged);
         store.delete("forged").await().onFailure(c -> fail("delete: " + c.message()));
         assertThat(refCounts(victimChunkIds("victim"))).isEqualTo(before);
@@ -118,9 +122,7 @@ class ContentStoreManifestFramingTest {
         var chunkIds = victimChunkIds(name);
 
         assertThat(get(name)).isEqualTo(data);
-
         store.delete(name).await().onFailure(c -> fail("delete: " + c.message()));
-
         assertThat(refCounts(chunkIds)).as("every chunk's credit is given back").allMatch(count -> count <= 0);
     }
 
@@ -129,7 +131,6 @@ class ContentStoreManifestFramingTest {
         var data = "small|piped|content".getBytes(StandardCharsets.UTF_8);
 
         put("a|b", data);
-
         assertThat(get("a|b")).isEqualTo(data);
     }
 
@@ -141,13 +142,13 @@ class ContentStoreManifestFramingTest {
 
         for (int kind = 0; kind < 256; kind++) {
             var value = new byte[marker.length + 1 + 5];
+
             System.arraycopy(marker, 0, value, 0, marker.length);
             value[marker.length] = (byte) kind;
             System.arraycopy(new byte[]{'h', 'e', 'l', 'l', 'o'}, 0, value, marker.length + 1, 5);
             var name = "upload-" + kind;
 
             put(name, value);
-
             assertThat(get(name)).as("kind byte %d", kind).isEqualTo(value);
         }
     }
@@ -156,15 +157,14 @@ class ContentStoreManifestFramingTest {
     @Test
     void getOfAPipeName_neverReadsAnotherNamesTrustedRef() {
         put("victim", content(3 * CHUNK_SIZE, 11));
-
-        assertThat(store.get("|victim").await().map(Option::isPresent).or(false)).as("|victim was never written").isFalse();
+        assertThat(store.get("|victim").await().map(Option::isPresent).or(false)).as("|victim was never written")
+                  .isFalse();
     }
 
     /// `exists` answers for the name asked, not for the name whose trusted ref it spells.
     @Test
     void existsOfAPipeName_neverSeesAnotherNamesTrustedRef() {
         put("victim", content(100, 12));
-
         assertThat(store.exists("|victim").await().unwrap()).isFalse();
     }
 
@@ -176,7 +176,6 @@ class ContentStoreManifestFramingTest {
 
         put("victim", victim);
         put("|victim", other);
-
         assertThat(get("victim")).isEqualTo(victim);
         assertThat(get("|victim")).isEqualTo(other);
     }
@@ -190,7 +189,6 @@ class ContentStoreManifestFramingTest {
         var before = refCounts(victimChunkIds("victim"));
 
         store.delete("|victim").await().onFailure(c -> fail("delete: " + c.message()));
-
         assertThat(get("victim")).isEqualTo(victim);
         assertThat(refCounts(victimChunkIds("victim"))).isEqualTo(before);
     }
@@ -204,28 +202,33 @@ class ContentStoreManifestFramingTest {
         var digest = MessageDigest.getInstance("SHA-256");
 
         digest.update("ok".getBytes(StandardCharsets.UTF_8));
-        var body = "epoch=1\ntimestamp=1700000000000\nnodeId=legacy-node\ncontentHash="
-                   + HexFormat.of().formatHex(digest.digest())
-                   + "\n\n# Lifecycles\n\n# Refs\n"
-                   + "|victim|" + id.hexString() + "\n"
-                   + "planted|x|" + id.hexString() + "\n"
-                   + "ok|" + id.hexString() + "\n";
+        var body = "epoch=1\ntimestamp=1700000000000\nnodeId=legacy-node\ncontentHash=" + HexFormat.of().formatHex(digest.digest())
+                 + "\n\n# Lifecycles\n\n# Refs\n"
+                 + "|victim|" + id.hexString()
+                 + "\n"
+                 + "planted|x|" + id.hexString()
+                 + "\n"
+                 + "ok|" + id.hexString()
+                 + "\n";
 
         Files.writeString(snapshots.resolve("snapshot-000001.dat"), body);
         Files.writeString(snapshots.resolve("LATEST"), "snapshot-000001.dat");
-
         var restored = SnapshotManager.snapshotManager(MetadataStore.inMemoryMetadataStore("legacy-restore"),
-                                                       SnapshotConfig.snapshotConfig(snapshots, 100, 600_000, 5, "legacy-node"))
+                                                       SnapshotConfig.snapshotConfig(snapshots,
+                                                                                     100,
+                                                                                     600_000,
+                                                                                     5,
+                                                                                     "legacy-node"))
                                       .restoreFromLatest()
                                       .unwrap();
 
         assertThat(restored.isPresent()).as("control: the legacy file restores").isTrue();
         assertThat(restored.unwrap().refs()).containsOnlyKeys("ok");
     }
+
     @Test
     void chunkedPut_recordsItsChunkSizeAndTheDigestOfTheWholeContent() throws Exception {
         var data = content(3 * CHUNK_SIZE + 17, 8);
-
         var manifestId = BlockId.fromHex(store.put("recorded", data).await().unwrap()).unwrap();
         var manifest = ContentManifest.fromBytes(storage.get(manifestId).await().unwrap().unwrap()).unwrap();
 
@@ -247,9 +250,16 @@ class ContentStoreManifestFramingTest {
                                 .putInt(Integer.MAX_VALUE)
                                 .array();
         var manifestBlock = storage.put(ContentEnvelope.wrap(ContentEnvelope.MANIFEST, corrupt)).await().unwrap();
-        var ref = ObjectRef.objectRef("default", ObjectId.objectId(), manifestBlock, 10, new Sha256(new byte[Sha256.LENGTH]));
+        var ref = ObjectRef.objectRef("default",
+                                      ObjectId.objectId(),
+                                      manifestBlock,
+                                      10,
+                                      new Sha256(new byte[Sha256.LENGTH]));
 
-        store.store().open(ref, ByteRange.whole()).await()
+        store.store()
+             .open(ref,
+                   ByteRange.whole())
+             .await()
              .onSuccess(_ -> fail("a manifest naming an id longer than itself must not be read"))
              .onFailure(cause -> assertThat(cause).isEqualTo(ContentStoreError.General.MANIFEST_PARSE_FAILED));
     }

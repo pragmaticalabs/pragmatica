@@ -44,14 +44,17 @@ class ContentStoreConfigBlockLimitTest {
         config.validatedAgainst(StorageInstance.DEFAULT_MAX_BLOCK_BYTES)
               .onSuccess(_ -> fail("a 16 MiB chunk makes 16 MiB + 7 byte blocks, over a 16 MiB cap"))
               .onFailure(cause -> {
-                  assertThat(cause).isInstanceOfSatisfying(ContentStoreError.ChunkSizeExceedsBlockLimit.class, refusal -> {
-                      assertThat(refusal.chunkSizeBytes()).isEqualTo(16_777_216);
-                      assertThat(refusal.requiredBlockBytes()).isEqualTo(16_777_216L + ENVELOPE);
-                      assertThat(refusal.maxBlockBytes()).isEqualTo(16_777_216);
-                      assertThat(refusal.largestChunkSize()).isEqualTo(16_777_216L - ENVELOPE);
-                  });
-                  assertThat(cause.message()).contains("16777216").contains("16777223").contains("16777209");
-              });
+                             assertThat(cause).isInstanceOfSatisfying(ContentStoreError.ChunkSizeExceedsBlockLimit.class,
+                                                                      refusal -> {
+                                                                          assertThat(refusal.chunkSizeBytes()).isEqualTo(16_777_216);
+                                                                          assertThat(refusal.requiredBlockBytes()).isEqualTo(16_777_216L + ENVELOPE);
+                                                                          assertThat(refusal.maxBlockBytes()).isEqualTo(16_777_216);
+                                                                          assertThat(refusal.largestChunkSize()).isEqualTo(16_777_216L - ENVELOPE);
+                                                                      });
+                             assertThat(cause.message()).contains("16777216")
+                                       .contains("16777223")
+                                       .contains("16777209");
+                         });
     }
 
     @Test
@@ -60,9 +63,9 @@ class ContentStoreConfigBlockLimitTest {
                           .validatedAgainst(1_000_000)
                           .onSuccess(_ -> fail("5 MB chunks do not fit a 1 MB cap"))
                           .onFailure(cause -> assertThat(cause.message()).contains("chunkSizeBytes 5000000")
-                                                                         .contains("5000007")
-                                                                         .contains("maximum block size of 1000000")
-                                                                         .contains("at most 999993"));
+                                                        .contains("5000007")
+                                                        .contains("maximum block size of 1000000")
+                                                        .contains("at most 999993"));
     }
 
     /// A zero chunk would make the writer spin on a buffer it can never fill.
@@ -74,10 +77,12 @@ class ContentStoreConfigBlockLimitTest {
 
     @Test
     void largestBlock_isTheFramedChunk() {
-        assertThat(ContentStoreConfig.contentStoreConfig(100_000, Compression.NONE).largestBlockBytes()).as("envelope").isEqualTo(100_007L);
+        assertThat(ContentStoreConfig.contentStoreConfig(100_000, Compression.NONE).largestBlockBytes()).as("envelope")
+                  .isEqualTo(100_007L);
         for (var compression : List.of(Compression.LZ4, Compression.ZSTD)) {
-            assertThat(ContentStoreConfig.contentStoreConfig(100_000, compression).largestBlockBytes())
-                    .as(compression + ": envelope 7 + size header 4 + chunk + chunk / 255 + 64").isEqualTo(100_467L);
+            assertThat(ContentStoreConfig.contentStoreConfig(100_000, compression).largestBlockBytes()).as(compression
+                                                                                                          + ": envelope 7 + size header 4 + chunk + chunk / 255 + 64")
+                      .isEqualTo(100_467L);
         }
     }
 
@@ -102,12 +107,14 @@ class ContentStoreConfigBlockLimitTest {
                               .validatedAgainst(CAP)
                               .onSuccess(_ -> fail("chunkSizeBytes " + chunkSize + " can split nothing"))
                               .onFailure(cause -> {
-                                  assertThat(cause).isInstanceOfSatisfying(ContentStoreError.ChunkSizeNotPositive.class, refusal -> {
-                                      assertThat(refusal.chunkSizeBytes()).isEqualTo(chunkSize);
-                                      assertThat(refusal.maxBlockBytes()).isEqualTo(CAP);
-                                  });
-                                  assertThat(cause.message()).contains("chunkSizeBytes " + chunkSize).contains(Integer.toString(CAP));
-                              });
+                                             assertThat(cause).isInstanceOfSatisfying(ContentStoreError.ChunkSizeNotPositive.class,
+                                                                                      refusal -> {
+                                                                                          assertThat(refusal.chunkSizeBytes()).isEqualTo(chunkSize);
+                                                                                          assertThat(refusal.maxBlockBytes()).isEqualTo(CAP);
+                                                                                      });
+                                             assertThat(cause.message()).contains("chunkSizeBytes " + chunkSize)
+                                                       .contains(Integer.toString(CAP));
+                                         });
         }
     }
 
@@ -118,13 +125,16 @@ class ContentStoreConfigBlockLimitTest {
 
     @Test
     void defaultConfig_fitsTheDefaultCap() {
-        assertThat(ContentStoreConfig.contentStoreConfig().validatedAgainst(StorageInstance.DEFAULT_MAX_BLOCK_BYTES).isSuccess()).isTrue();
+        assertThat(ContentStoreConfig.contentStoreConfig()
+                                     .validatedAgainst(StorageInstance.DEFAULT_MAX_BLOCK_BYTES)
+                                     .isSuccess()).isTrue();
     }
 
     private static int largestFittingChunk(Compression compression) {
-        var refusal = (ContentStoreError.ChunkSizeExceedsBlockLimit) ContentStoreConfig.contentStoreConfig(CAP, compression)
-                                                                                      .validatedAgainst(CAP)
-                                                                                      .fold(cause -> cause, _ -> null);
+        var refusal = (ContentStoreError.ChunkSizeExceedsBlockLimit) ContentStoreConfig.contentStoreConfig(CAP,
+                                                                                                           compression)
+                                                                                       .validatedAgainst(CAP)
+                                                                                       .fold(cause -> cause, _ -> null);
 
         return (int) refusal.largestChunkSize();
     }
@@ -134,10 +144,12 @@ class ContentStoreConfigBlockLimitTest {
         for (var compression : Compression.values()) {
             var largest = largestFittingChunk(compression);
 
-            assertThat(ContentStoreConfig.contentStoreConfig(largest, compression).validatedAgainst(CAP).isSuccess())
-                    .as(compression + ": the largest named chunk fits").isTrue();
-            assertThat(ContentStoreConfig.contentStoreConfig(largest + 1, compression).validatedAgainst(CAP).isFailure())
-                    .as(compression + ": one more does not").isTrue();
+            assertThat(ContentStoreConfig.contentStoreConfig(largest, compression).validatedAgainst(CAP).isSuccess()).as(compression
+                                                                                                                        + ": the largest named chunk fits")
+                      .isTrue();
+            assertThat(ContentStoreConfig.contentStoreConfig(largest + 1, compression).validatedAgainst(CAP).isFailure()).as(compression
+                                                                                                                            + ": one more does not")
+                      .isTrue();
         }
     }
 
@@ -154,7 +166,6 @@ class ContentStoreConfigBlockLimitTest {
 
         store.put("direct", direct).await().onFailure(cause -> fail("direct: " + cause.message()));
         store.put("chunked", chunked).await().onFailure(cause -> fail("chunked: " + cause.message()));
-
         assertThat(store.get("direct").await().unwrap().unwrap()).isEqualTo(direct);
         assertThat(store.get("chunked").await().unwrap().unwrap()).isEqualTo(chunked);
     }
@@ -172,7 +183,6 @@ class ContentStoreConfigBlockLimitTest {
 
             store.put("direct", direct).await().onFailure(cause -> fail(compression + " direct: " + cause.message()));
             store.put("chunked", chunked).await().onFailure(cause -> fail(compression + " chunked: " + cause.message()));
-
             assertThat(store.get("direct").await().unwrap().unwrap()).as(compression + " direct").isEqualTo(direct);
             assertThat(store.get("chunked").await().unwrap().unwrap()).as(compression + " chunked").isEqualTo(chunked);
         }

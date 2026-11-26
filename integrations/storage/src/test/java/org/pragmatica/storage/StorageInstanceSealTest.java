@@ -8,9 +8,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
@@ -19,11 +16,16 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 /// #1567: `StorageInstance.seal` makes the block durable, THEN records the ref, THEN lets the log be
 /// truncated -- and a write succeeds only once every durable tier has it, whatever tier comes last.
@@ -51,14 +53,15 @@ class StorageInstanceSealTest {
             var wal = logWithRecords(storage, 5);
 
             storage.seal(wal, 0, 2, REF, BLOCK).await().onFailure(cause -> fail(cause.message()));
-
             assertThat(forces).extracting(ForceObservation::kind).containsExactly("file", "directory");
             assertThat(forces).as("every force happened before the ref resolved and before the log's bound moved")
-                              .allSatisfy(force -> {
-                                  assertThat(force.refPresent()).isFalse();
-                                  assertThat(force.sealedThrough()).isEqualTo(-1L);
-                              });
-            assertThat(storage.resolveRef(REF).map(BlockId::hexString)).isEqualTo(BlockId.blockId(BLOCK).map(BlockId::hexString).option());
+                      .allSatisfy(force -> {
+                                      assertThat(force.refPresent()).isFalse();
+                                      assertThat(force.sealedThrough()).isEqualTo(-1L);
+                                  });
+            assertThat(storage.resolveRef(REF).map(BlockId::hexString)).isEqualTo(BlockId.blockId(BLOCK)
+                                                                                         .map(BlockId::hexString)
+                                                                                         .option());
             assertThat(wal.sealedThrough()).isEqualTo(2L);
         }
 
@@ -72,7 +75,6 @@ class StorageInstanceSealTest {
             storage.put(BLOCK).await().onFailure(cause -> fail(cause.message()));
             forces.clear();
             storage.seal(wal, 0, 2, REF, BLOCK).await().onFailure(cause -> fail(cause.message()));
-
             assertThat(forces).extracting(ForceObservation::kind).containsExactly("file", "directory");
             assertThat(forces).allSatisfy(force -> assertThat(force.refPresent()).isFalse());
             assertThat(wal.sealedThrough()).isEqualTo(2L);
@@ -88,7 +90,6 @@ class StorageInstanceSealTest {
 
             storage.seal(wal, 0, 2, REF, BLOCK).await().onSuccess(_ -> fail("the block was never made durable"));
             wal.truncate(2L).onFailure(cause -> fail(cause.message()));
-
             assertNothingSealed(storage, wal, 5);
         }
 
@@ -99,7 +100,6 @@ class StorageInstanceSealTest {
 
             storage.seal(wal, 0, 2, REF, BLOCK).await().onSuccess(_ -> fail("the block was never made durable"));
             wal.truncate(2L).onFailure(cause -> fail(cause.message()));
-
             assertNothingSealed(storage, wal, 5);
         }
 
@@ -116,7 +116,6 @@ class StorageInstanceSealTest {
                    .await()
                    .onSuccess(_ -> fail("an instance without a durable tier must not seal"))
                    .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.NoDurableTier.class));
-
             assertNothingSealed(storage, wal, 3);
         }
 
@@ -143,7 +142,6 @@ class StorageInstanceSealTest {
             var storage = dhtLastStorageWith(failingWriter());
 
             storage.putRef(REF, BLOCK).await().onSuccess(_ -> fail("the only durable tier failed"));
-
             assertThat(storage.resolveRef(REF).isPresent()).isFalse();
         }
 
@@ -152,7 +150,6 @@ class StorageInstanceSealTest {
             var storage = dhtLastStorageWith(recordingWriter());
 
             storage.putRef(REF, BLOCK).await().onFailure(cause -> fail(cause.message()));
-
             assertThat(forces).extracting(ForceObservation::kind).containsExactly("file", "directory");
             assertThat(storage.resolveRef(REF).isPresent()).isTrue();
         }
@@ -163,7 +160,6 @@ class StorageInstanceSealTest {
             var wal = logWithRecords(storage, 3);
 
             storage.seal(wal, 0, 2, REF, BLOCK).await().onSuccess(_ -> fail("the only durable tier failed"));
-
             assertNothingSealed(storage, wal, 3);
         }
 
@@ -177,7 +173,6 @@ class StorageInstanceSealTest {
                                                           MetadataStore.inMemoryMetadataStore("cache-fails"));
 
             storage.putRef(REF, BLOCK).await().onFailure(cause -> fail(cause.message()));
-
             assertThat(storage.resolveRef(REF).isPresent()).isTrue();
         }
     }
@@ -190,7 +185,9 @@ class StorageInstanceSealTest {
 
             storage.openLog("orders/0")
                    .onFailure(cause -> fail(cause.message()))
-                   .onSuccess(wal -> assertThat(wal.path()).isEqualTo(dir.resolve("logs").resolve("orders").resolve("0.wal")))
+                   .onSuccess(wal -> assertThat(wal.path()).isEqualTo(dir.resolve("logs")
+                                                                         .resolve("orders")
+                                                                         .resolve("0.wal")))
                    .onSuccess(AppendLog::close);
         }
 
@@ -198,15 +195,16 @@ class StorageInstanceSealTest {
         void openLog_refusesNamesOutsideTheLogRoot() {
             var storage = storageWith(recordingWriter(), recordingForcer());
 
-            List.of("../escape", "/absolute", "", " ", "a/../../escape")
-                .forEach(name -> storage.openLog(name)
-                                        .onSuccess(_ -> fail("accepted log name '" + name + "'"))
-                                        .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.InvalidLogName.class)));
+            List.of("../escape", "/absolute", "", " ", "a/../../escape").forEach(name -> storage.openLog(name)
+                                                                                                .onSuccess(_ -> fail("accepted log name '" + name
+                                                                                                                    + "'"))
+                                                                                                .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.InvalidLogName.class)));
         }
 
         @Test
         void openLog_fails_withoutLogRoot() {
-            var storage = StorageInstance.storageInstance("no-root", List.of(MemoryTier.memoryTier(1 << 20)));
+            var storage = StorageInstance.storageInstance("no-root",
+                                                          List.of(MemoryTier.memoryTier(1 << 20)));
 
             storage.openLog("orders/0")
                    .onSuccess(_ -> fail("an instance without a log root has nowhere to put a log"))
@@ -218,7 +216,7 @@ class StorageInstanceSealTest {
         assertThat(storage.resolveRef(REF).isPresent()).as("no ref names a block that is not durable").isFalse();
         assertThat(wal.sealedThrough()).isEqualTo(-1L);
         assertThat(replayedOffsets(wal)).as("the log kept every record")
-                                        .containsExactlyElementsOf(IntStream.range(0, records).mapToObj(i -> (long) i).toList());
+                  .containsExactlyElementsOf(IntStream.range(0, records).mapToObj(i -> (long) i).toList());
     }
 
     private StorageInstance storageWith(Fn2<Result<Unit>, Path, byte[]> writer, Fn1<Result<Unit>, Path> forcer) {
@@ -227,6 +225,7 @@ class StorageInstanceSealTest {
                                                       MetadataStore.inMemoryMetadataStore("streams"),
                                                       WritePolicy.WRITE_THROUGH,
                                                       some(dir.resolve("logs")));
+
         instance.set(storage);
 
         return storage;
@@ -240,6 +239,7 @@ class StorageInstanceSealTest {
                                                       MetadataStore.inMemoryMetadataStore("streams"),
                                                       WritePolicy.WRITE_THROUGH,
                                                       some(dir.resolve("logs")));
+
         instance.set(storage);
 
         return storage;
@@ -258,8 +258,11 @@ class StorageInstanceSealTest {
     private AppendLog logWithRecords(StorageInstance storage, int records) {
         var wal = storage.openLog("orders/0").unwrap();
 
-        IntStream.range(0, records)
-                 .forEach(i -> wal.append(i, new byte[]{(byte) i}, 1L).await().onFailure(cause -> fail(cause.message())));
+        IntStream.range(0, records).forEach(i -> wal.append(i,
+                                                            new byte[]{(byte) i},
+                                                            1L)
+                                                    .await()
+                                                    .onFailure(cause -> fail(cause.message())));
         log.set(wal);
 
         return wal;
@@ -282,7 +285,8 @@ class StorageInstanceSealTest {
     }
 
     private void observe(String kind) {
-        var refPresent = Option.option(instance.get()).map(storage -> storage.resolveRef(REF).isPresent()).or(false);
+        var refPresent = Option.option(instance.get()).map(storage -> storage.resolveRef(REF)
+                                                                             .isPresent()).or(false);
         var sealedThrough = Option.option(log.get()).map(AppendLog::sealedThrough).or(-1L);
 
         forces.add(new ForceObservation(kind, refPresent, sealedThrough));
@@ -291,7 +295,8 @@ class StorageInstanceSealTest {
     private static List<Long> replayedOffsets(AppendLog wal) {
         var offsets = new ArrayList<Long>();
 
-        wal.replay(-1L, record -> offsets.add(record.offset())).onFailure(cause -> fail(cause.message()));
+        wal.replay(-1L,
+                   record -> offsets.add(record.offset())).onFailure(cause -> fail(cause.message()));
 
         return offsets;
     }

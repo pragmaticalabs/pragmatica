@@ -93,8 +93,7 @@ class CacheTierPartialWriteTest {
         var instance = StorageInstance.storageInstance("full-cache", List.of(cache, durable));
 
         instance.put(content).await().onFailure(cause -> fail("the durable write succeeded: " + cause.message()));
-        assertThat(cache.exists(id).await().unwrap()).as("TierFull wrote nothing; the valid copy must survive")
-                  .isTrue();
+        assertThat(cache.exists(id).await().unwrap()).as("TierFull wrote nothing; the valid copy must survive").isTrue();
         assertThat(cache.get(id).await().unwrap().unwrap()).isEqualTo(content);
     }
 
@@ -118,10 +117,7 @@ class CacheTierPartialWriteTest {
         var id = BlockId.blockId(content).unwrap();
 
         disk.bytesBeforeFailure.set(1024);
-        instance.put(content)
-                .await()
-                .onSuccess(_ -> fail("the only durable tier failed; the put must fail"));
-
+        instance.put(content).await().onSuccess(_ -> fail("the only durable tier failed; the put must fail"));
         assertThat(disk.partialBytesSeen.get()).as("the fixture left N bytes on disk before failing").isEqualTo(1024);
         assertThat(partialFiles(dir)).as("the partial file is discarded").isEmpty();
         assertThat(tier.exists(id).await().unwrap()).isFalse();
@@ -141,7 +137,6 @@ class CacheTierPartialWriteTest {
 
         tier.put(id, content).await().onFailure(cause -> fail("the first write is healthy: " + cause.message()));
         assertThat(tier.usedBytes()).isEqualTo(4096);
-
         for (int bytesBeforeFailure : new int[]{1024, 0}) {
             disk.bytesBeforeFailure.set(bytesBeforeFailure);
             tier.put(id, content).await().onSuccess(_ -> fail("the overwrite must fail"));
@@ -149,7 +144,8 @@ class CacheTierPartialWriteTest {
             assertThat(tier.get(id).await().unwrap().unwrap()).as("previous copy intact after failing at " + bytesBeforeFailure)
                       .isEqualTo(content);
             assertThat(partialFiles(dir)).isEmpty();
-            assertThat(tier.usedBytes()).as("the previous copy stays counted, the reservation is released").isEqualTo(4096);
+            assertThat(tier.usedBytes()).as("the previous copy stays counted, the reservation is released")
+                      .isEqualTo(4096);
         }
     }
 
@@ -191,7 +187,11 @@ class CacheTierPartialWriteTest {
     void localDiskTier_failedWrite_releasesTheReservation_beforeTheFailureIsDelivered() {
         var dir = tempDir.resolve("ordered");
         var carriers = new CarrierStarver();
-        var tier = LocalDiskTier.localDiskTier(dir, 1024 * 1024, timeSpan(30).seconds(), none(), some(carriers::writeThenFail))
+        var tier = LocalDiskTier.localDiskTier(dir,
+                                               1024 * 1024,
+                                               timeSpan(30).seconds(),
+                                               none(),
+                                               some(carriers::writeThenFail))
                                 .unwrap();
         var content = block(2048);
         var id = BlockId.blockId(content).unwrap();
@@ -263,14 +263,13 @@ class CacheTierPartialWriteTest {
 
         Files.createDirectories(path.getParent());
         Files.write(path, content);
-        Files.write(path.resolveSibling(path.getFileName() + ".3.partial"), block(1024));
+        Files.write(path.resolveSibling(path.getFileName() + ".3.partial"),
+                    block(1024));
         var tier = LocalDiskTier.localDiskTier(dir, 1024 * 1024).unwrap();
 
         assertThat(partialFiles(dir)).as("construction leaves the partial in place").hasSize(1);
         assertThat(tier.usedBytes()).as("only the block is counted").isEqualTo(2048);
-
         tier.open().onFailure(cause -> fail(cause.message()));
-
         assertThat(partialFiles(dir)).as("the leftover partial is removed on open").isEmpty();
         assertThat(tier.usedBytes()).as("only the block is counted").isEqualTo(2048);
     }
@@ -298,8 +297,7 @@ class CacheTierPartialWriteTest {
         fullInstance.put(block(64))
                     .await()
                     .onFailure(cause -> fail("a full cache tier must not fail the put: " + cause.message()));
-        assertThat(warnsMentioning("Cache promotion to MEMORY")).as("TierFull is steady state, never WARN")
-                  .isEmpty();
+        assertThat(warnsMentioning("Cache promotion to MEMORY")).as("TierFull is steady state, never WARN").isEmpty();
     }
 
     private static byte[] block(int size) {
@@ -311,17 +309,27 @@ class CacheTierPartialWriteTest {
     }
 
     private static LocalDiskTier diskTier(Path dir, FillingDisk disk) {
-        return LocalDiskTier.localDiskTier(dir, 1024 * 1024, timeSpan(30).seconds(), none(), some(disk::write)).unwrap();
+        return LocalDiskTier.localDiskTier(dir,
+                                           1024 * 1024,
+                                           timeSpan(30).seconds(),
+                                           none(),
+                                           some(disk::write))
+                            .unwrap();
     }
 
     private static Path blockPath(Path dir, BlockId id) {
         var hex = id.hexString();
 
-        return dir.resolve(hex.substring(0, 2)).resolve(hex.substring(2, 4)).resolve(hex);
+        return dir.resolve(hex.substring(0, 2))
+                  .resolve(hex.substring(2, 4))
+                  .resolve(hex);
     }
 
     private static List<Path> partialFiles(Path dir) {
-        return FileOps.walk(dir, path -> Files.isRegularFile(path) && path.getFileName().toString().endsWith(".partial"))
+        return FileOps.walk(dir,
+                            path -> Files.isRegularFile(path) && path.getFileName()
+                                                                     .toString()
+                                                                     .endsWith(".partial"))
                       .unwrap();
     }
 
@@ -339,7 +347,8 @@ class CacheTierPartialWriteTest {
                 return FileOps.writeBytes(partial, content);
             }
 
-            return FileOps.writeBytes(partial, Arrays.copyOf(content, limit))
+            return FileOps.writeBytes(partial,
+                                      Arrays.copyOf(content, limit))
                           .onSuccess(_ -> partialBytesSeen.set(FileOps.size(partial).or(-1L)))
                           .flatMap(_ -> new FileError.WriteFailed(partial, "No space left on device").result());
         }
@@ -354,7 +363,9 @@ class CacheTierPartialWriteTest {
     private static final class CarrierStarver {
         private static final int SPINNERS = 2 * Integer.getInteger("jdk.virtualThreadScheduler.parallelism",
                                                                    Runtime.getRuntime().availableProcessors());
+
         private static final long DEADLINE_NANOS = 5_000_000_000L;
+
         private volatile boolean released;
 
         Result<Unit> writeThenFail(Path partial, byte[] content) {

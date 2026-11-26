@@ -13,11 +13,11 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
+
 /// #253: [EncryptingStorageTier] built through its own production factories (`wrap`/`wrapLocalDisk`)
 /// wrapping a real [LocalDiskTier] -- never a hand-rolled stand-in -- so these tests exercise the
 /// exact object StorageFactory will construct in production.
 class EncryptingStorageTierTest {
-
     private static final byte[] CONTENT = "plaintext-block-content-253".getBytes(StandardCharsets.UTF_8);
     private static final long MAX_BYTES = 10 * 1024 * 1024;
 
@@ -26,26 +26,40 @@ class EncryptingStorageTierTest {
 
     private static byte[] randomKey() {
         var key = new byte[32];
+
         new SecureRandom().nextBytes(key);
+
         return key;
     }
 
     private static BlockEncryptor encryptorOf(String keyId) {
-        return BlockEncryptor.aesGcm(randomKey(), keyId)
-                              .fold(c -> { fail("encryptor creation failed: " + c.message()); return null; },
-                                    e -> e);
+        return BlockEncryptor.aesGcm(randomKey(), keyId).fold(c -> {
+                                                                  fail("encryptor creation failed: " + c.message());
+
+                                                                  return null;
+                                                              },
+                                                              e -> e);
     }
 
     private static BlockId blockIdOf(byte[] content) {
-        return BlockId.blockId(content)
-                      .fold(_ -> { fail("BlockId creation failed"); return null; },
-                            id -> id);
+        return BlockId.blockId(content).fold(_ -> {
+                                                 fail("BlockId creation failed");
+
+                                                 return null;
+                                             },
+                                             id -> id);
     }
 
     private static EncryptionKeyring singleKeyRing(String keyId) {
-        return EncryptionKeyring.encryptionKeyring(Map.of(keyId, encryptorOf(keyId)), keyId)
-                                 .fold(c -> { fail("keyring creation failed: " + c.message()); return null; },
-                                       k -> k);
+        return EncryptionKeyring.encryptionKeyring(Map.of(keyId,
+                                                          encryptorOf(keyId)),
+                                                   keyId)
+                                .fold(c -> {
+                                          fail("keyring creation failed: " + c.message());
+
+                                          return null;
+                                      },
+                                      k -> k);
     }
 
     /// Two ring entries under DIFFERENT key ids but the SAME underlying secret key. This is what
@@ -57,20 +71,36 @@ class EncryptingStorageTierTest {
     /// the AAD (which embeds the key id) no longer matching what was bound at encryption time.
     private static EncryptionKeyring twoKeyRingSharedSecret(String activeId, String otherId) {
         var sharedKey = randomKey();
-        var active = BlockEncryptor.aesGcm(sharedKey, activeId)
-                                    .fold(c -> { fail("encryptor creation failed: " + c.message()); return null; }, e -> e);
-        var other = BlockEncryptor.aesGcm(sharedKey, otherId)
-                                   .fold(c -> { fail("encryptor creation failed: " + c.message()); return null; }, e -> e);
+        var active = BlockEncryptor.aesGcm(sharedKey, activeId).fold(c -> {
+                                                                         fail("encryptor creation failed: " + c.message());
 
-        return EncryptionKeyring.encryptionKeyring(Map.of(activeId, active, otherId, other), activeId)
-                                 .fold(c -> { fail("keyring creation failed: " + c.message()); return null; },
-                                       k -> k);
+                                                                         return null;
+                                                                     },
+                                                                     e -> e);
+        var other = BlockEncryptor.aesGcm(sharedKey, otherId).fold(c -> {
+                                                                       fail("encryptor creation failed: " + c.message());
+
+                                                                       return null;
+                                                                   },
+                                                                   e -> e);
+
+        return EncryptionKeyring.encryptionKeyring(Map.of(activeId, active, otherId, other),
+                                                   activeId)
+                                .fold(c -> {
+                                          fail("keyring creation failed: " + c.message());
+
+                                          return null;
+                                      },
+                                      k -> k);
     }
 
     private LocalDiskTier freshDiskTier() {
-        return LocalDiskTier.localDiskTier(tempDir, MAX_BYTES)
-                             .fold(c -> { fail("disk tier creation failed: " + c.message()); return null; },
-                                   t -> t);
+        return LocalDiskTier.localDiskTier(tempDir, MAX_BYTES).fold(c -> {
+                                                                        fail("disk tier creation failed: " + c.message());
+
+                                                                        return null;
+                                                                    },
+                                                                    t -> t);
     }
 
     /// Mirrors LocalDiskTier's own private `blockPath` layout exactly, so tests can inspect what
@@ -85,89 +115,87 @@ class EncryptingStorageTierTest {
 
     @Nested
     class LocalDiskRoundTrip {
-
         @Test
         void put_get_roundTrip_returnsOriginalPlaintext() {
-            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1"))
-                                             .fold(c -> { fail("wrap failed: " + c.message()); return null; }, t -> t);
+            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1")).fold(c -> {
+                                                                                                                      fail("wrap failed: " + c.message());
+
+                                                                                                                      return null;
+                                                                                                                  },
+                                                                                                                  t -> t);
             var id = blockIdOf(CONTENT);
 
-            tier.put(id, CONTENT).await()
-                .onFailure(c -> fail("put failed: " + c.message()));
-
-            tier.get(id).await()
+            tier.put(id, CONTENT).await().onFailure(c -> fail("put failed: " + c.message()));
+            tier.get(id)
+                .await()
                 .onFailure(c -> fail("get failed: " + c.message()))
                 .onSuccess(opt -> {
-                    assertThat(opt.isPresent()).isTrue();
-                    opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT));
-                });
+                               assertThat(opt.isPresent()).isTrue();
+                               opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT));
+                           });
         }
 
         @Test
         void put_storesFramedCiphertext_notRawPlaintext_onDisk() throws Exception {
-            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1"))
-                                             .fold(c -> { fail("wrap failed: " + c.message()); return null; }, t -> t);
+            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1")).fold(c -> {
+                                                                                                                      fail("wrap failed: " + c.message());
+
+                                                                                                                      return null;
+                                                                                                                  },
+                                                                                                                  t -> t);
             var id = blockIdOf(CONTENT);
 
-            tier.put(id, CONTENT).await()
-                .onFailure(c -> fail("put failed: " + c.message()));
-
+            tier.put(id, CONTENT).await().onFailure(c -> fail("put failed: " + c.message()));
             var raw = Files.readAllBytes(rawBlockPath(id));
 
-            assertThat(java.util.Arrays.copyOfRange(raw, 0, EncryptingStorageTier.MAGIC.length))
-                    .isEqualTo(EncryptingStorageTier.MAGIC);
-            assertThat(new String(raw, StandardCharsets.UTF_8)).doesNotContain(new String(CONTENT, StandardCharsets.UTF_8));
+            assertThat(java.util.Arrays.copyOfRange(raw, 0, EncryptingStorageTier.MAGIC.length)).isEqualTo(EncryptingStorageTier.MAGIC);
+            assertThat(new String(raw, StandardCharsets.UTF_8)).doesNotContain(new String(CONTENT,
+                                                                                          StandardCharsets.UTF_8));
         }
     }
 
     @Nested
     class LegacyPlaintextDetection {
-
         @Test
         void get_blockWithNoHeader_fails_withLegacyPlaintextBlock_namingBlockId() {
             var disk = freshDiskTier();
             var id = blockIdOf(CONTENT);
-
             // written through the RAW (unwrapped) disk tier -- simulates a block that predates
             // encryption being enabled on this instance.
-            disk.put(id, CONTENT).await()
-                .onFailure(c -> fail("raw put failed: " + c.message()));
-
+            disk.put(id, CONTENT).await().onFailure(c -> fail("raw put failed: " + c.message()));
             var tier = EncryptingStorageTier.wrap(disk, singleKeyRing("key-1"));
 
-            tier.get(id).await()
+            tier.get(id)
+                .await()
                 .onSuccess(_ -> fail("read of a headerless block must fail, not return raw bytes"))
                 .onFailure(cause -> {
-                    assertThat(cause).isInstanceOf(EncryptionError.LegacyPlaintextBlock.class);
-                    assertThat(cause.message()).contains(id.hexString());
-                });
+                               assertThat(cause).isInstanceOf(EncryptionError.LegacyPlaintextBlock.class);
+                               assertThat(cause.message()).contains(id.hexString());
+                           });
         }
     }
 
     @Nested
     class BootTimeLegacyGuard {
-
         @Test
         void wrapLocalDisk_refusesBoot_whenDirectoryHoldsPlaintextBlocks_noMarker() {
             var disk = freshDiskTier();
             var id = blockIdOf(CONTENT);
 
-            disk.put(id, CONTENT).await()
-                .onFailure(c -> fail("raw put failed: " + c.message()));
-
-            EncryptingStorageTier.wrapLocalDisk(disk, tempDir, singleKeyRing("key-1"))
-                                  .onSuccess(_ -> fail("boot must refuse enabling encryption over existing plaintext"))
-                                  .onFailure(cause -> {
-                                      assertThat(cause).isInstanceOf(EncryptionError.EnablingOverExistingPlaintext.class);
-                                      assertThat(cause.message()).contains(tempDir.toString());
-                                  });
+            disk.put(id, CONTENT).await().onFailure(c -> fail("raw put failed: " + c.message()));
+            EncryptingStorageTier.wrapLocalDisk(disk,
+                                                tempDir,
+                                                singleKeyRing("key-1"))
+                                 .onSuccess(_ -> fail("boot must refuse enabling encryption over existing plaintext"))
+                                 .onFailure(cause -> {
+                                                assertThat(cause).isInstanceOf(EncryptionError.EnablingOverExistingPlaintext.class);
+                                                assertThat(cause.message()).contains(tempDir.toString());
+                                            });
         }
 
         @Test
         void wrapLocalDisk_succeeds_onFreshEmptyDirectory_andWritesMarker() throws Exception {
-            EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1"))
-                                  .onFailure(c -> fail("wrap on an empty directory must succeed: " + c.message()));
-
+            EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1")).onFailure(c -> fail("wrap on an empty directory must succeed: " + c.message()));
             var markerPath = tempDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME);
 
             assertThat(Files.exists(markerPath)).isTrue();
@@ -182,12 +210,9 @@ class EncryptingStorageTierTest {
             var disk = freshDiskTier();
             var id = blockIdOf(CONTENT);
 
-            disk.put(id, CONTENT).await()
-                .onFailure(c -> fail("raw put failed: " + c.message()));
+            disk.put(id, CONTENT).await().onFailure(c -> fail("raw put failed: " + c.message()));
             Files.createFile(tempDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME));
-
-            EncryptingStorageTier.wrapLocalDisk(disk, tempDir, singleKeyRing("key-1"))
-                                  .onFailure(c -> fail("wrap with the marker already present must succeed: " + c.message()));
+            EncryptingStorageTier.wrapLocalDisk(disk, tempDir, singleKeyRing("key-1")).onFailure(c -> fail("wrap with the marker already present must succeed: " + c.message()));
         }
     }
 
@@ -198,26 +223,23 @@ class EncryptingStorageTierTest {
     /// the primitive itself, including the pre-key-id-persistence fallback string, at the unit level.
     @Nested
     class ReverseDirectionGuard {
-
         @Test
         void refuseIfEncryptedWithoutKeyring_succeeds_whenNoMarkerPresent() {
-            EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(tempDir, "some-instance")
-                                  .onFailure(c -> fail("a directory with no marker must not be refused: " + c.message()));
+            EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(tempDir, "some-instance").onFailure(c -> fail("a directory with no marker must not be refused: " + c.message()));
         }
 
         @Test
         void refuseIfEncryptedWithoutKeyring_fails_namingInstanceAndActiveKeyId_whenMarkerPresent() {
-            EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1"))
-                                  .onFailure(c -> fail("seeding the marker failed: " + c.message()));
-
+            EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1")).onFailure(c -> fail("seeding the marker failed: " + c.message()));
             EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(tempDir, "vault")
-                                  .onSuccessRun(() -> fail("a directory that was previously encrypted must refuse a plain reboot"))
-                                  .onFailure(cause -> {
-                                      assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class);
-                                      var typed = (EncryptionError.EncryptedTierRequiresKeyring) cause;
-                                      assertThat(typed.instanceName()).isEqualTo("vault");
-                                      assertThat(typed.keyId()).isEqualTo("key-1");
-                                  });
+                                 .onSuccessRun(() -> fail("a directory that was previously encrypted must refuse a plain reboot"))
+                                 .onFailure(cause -> {
+                                                assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class);
+                                                var typed = (EncryptionError.EncryptedTierRequiresKeyring) cause;
+
+                                                assertThat(typed.instanceName()).isEqualTo("vault");
+                                                assertThat(typed.keyId()).isEqualTo("key-1");
+                                            });
         }
 
         @Test
@@ -226,36 +248,38 @@ class EncryptingStorageTierTest {
             // the active key id -- the fallback string this asserts is the only way an operator with an
             // old marker on disk learns anything at all from this refusal.
             Files.createFile(tempDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME));
-
             EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(tempDir, "vault")
-                                  .onSuccessRun(() -> fail("a directory carrying even an empty marker must refuse a plain reboot"))
-                                  .onFailure(cause -> assertThat(((EncryptionError.EncryptedTierRequiresKeyring) cause).keyId())
-                                                     .isEqualTo("<unknown -- marker predates key-id persistence>"));
+                                 .onSuccessRun(() -> fail("a directory carrying even an empty marker must refuse a plain reboot"))
+                                 .onFailure(cause -> assertThat(((EncryptionError.EncryptedTierRequiresKeyring) cause).keyId()).isEqualTo("<unknown -- marker predates key-id persistence>"));
         }
     }
 
     @Nested
     class HeaderAuthentication {
-
         @Test
         void tamperedKeyId_swappedToAnotherRingKey_sharingTheSameSecret_stillFailsAuthentication() throws Exception {
             // "key-A"/"key-B" share the SAME underlying AES key (see twoKeyRingSharedSecret) and have
             // the same UTF-8 byte length, so the swap preserves header framing, both ids resolve in
             // the ring, AND decryption uses the objectively correct key either way -- isolating the
             // AAD-over-the-header guarantee from an unrelated "wrong key fails GCM" confound.
-            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, twoKeyRingSharedSecret("key-A", "key-B"))
-                                             .fold(c -> { fail("wrap failed: " + c.message()); return null; }, t -> t);
+            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(),
+                                                           tempDir,
+                                                           twoKeyRingSharedSecret("key-A", "key-B")).fold(c -> {
+                                                                                                              fail("wrap failed: " + c.message());
+
+                                                                                                              return null;
+                                                                                                          },
+                                                                                                          t -> t);
             var id = blockIdOf(CONTENT);
 
-            tier.put(id, CONTENT).await()
-                .onFailure(c -> fail("put failed: " + c.message()));
-
+            tier.put(id, CONTENT).await().onFailure(c -> fail("put failed: " + c.message()));
             var path = rawBlockPath(id);
-            Files.write(path, swapKeyId(Files.readAllBytes(path), "key-B"));
 
-            tier.get(id).await()
+            Files.write(path, swapKeyId(Files.readAllBytes(path), "key-B"));
+            tier.get(id)
+                .await()
                 .onSuccess(_ -> fail("a key-id swapped to a DIFFERENT ring key -- even one sharing the same secret -- "
-                                     + "must fail: the key id is authenticated data, not merely a lookup token"))
+                                    + "must fail: the key id is authenticated data, not merely a lookup token"))
                 .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DecryptionFailed.class));
         }
 
@@ -269,48 +293,53 @@ class EncryptingStorageTierTest {
         @Test
         void blockSwap_ciphertextMovedToAnotherBlocksOnDiskPath_failsAuthentication() throws Exception {
             var keyring = singleKeyRing("key-1");
-            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, keyring)
-                                             .fold(c -> { fail("wrap failed: " + c.message()); return null; }, t -> t);
+            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, keyring).fold(c -> {
+                                                                                                       fail("wrap failed: " + c.message());
+
+                                                                                                       return null;
+                                                                                                   },
+                                                                                                   t -> t);
             var contentA = "block-A-distinct-content-253".getBytes(StandardCharsets.UTF_8);
             var contentB = "block-B-distinct-content-253".getBytes(StandardCharsets.UTF_8);
             var idA = blockIdOf(contentA);
             var idB = blockIdOf(contentB);
 
-            tier.put(idA, contentA).await()
-                .onFailure(c -> fail("put A failed: " + c.message()));
-
+            tier.put(idA, contentA).await().onFailure(c -> fail("put A failed: " + c.message()));
             var framedA = Files.readAllBytes(rawBlockPath(idA));
             var pathB = rawBlockPath(idB);
 
             Files.createDirectories(pathB.getParent());
             Files.write(pathB, framedA);
-
-            tier.get(idB).await()
+            tier.get(idB)
+                .await()
                 .onSuccess(_ -> fail("ciphertext relocated from block A's on-disk path to block B's must not "
-                                     + "decrypt as block B's plaintext -- the block id is authenticated data, "
-                                     + "not merely a lookup key"))
+                                    + "decrypt as block B's plaintext -- the block id is authenticated data, "
+                                    + "not merely a lookup key"))
                 .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DecryptionFailed.class));
         }
 
         @Test
         void unknownKeyId_inHeader_fails_namingTheMissingKeyId() {
             var disk = freshDiskTier();
-            var writingTier = EncryptingStorageTier.wrapLocalDisk(disk, tempDir, singleKeyRing("key-1"))
-                                                    .fold(c -> { fail("wrap failed: " + c.message()); return null; }, t -> t);
+            var writingTier = EncryptingStorageTier.wrapLocalDisk(disk, tempDir, singleKeyRing("key-1")).fold(c -> {
+                                                                                                                  fail("wrap failed: " + c.message());
+
+                                                                                                                  return null;
+                                                                                                              },
+                                                                                                              t -> t);
             var id = blockIdOf(CONTENT);
 
-            writingTier.put(id, CONTENT).await()
-                       .onFailure(c -> fail("put failed: " + c.message()));
-
+            writingTier.put(id, CONTENT).await().onFailure(c -> fail("put failed: " + c.message()));
             // a ring that no longer carries "key-1" -- as if the key had been retired/removed.
             var readingTier = EncryptingStorageTier.wrap(disk, singleKeyRing("key-2"));
 
-            readingTier.get(id).await()
+            readingTier.get(id)
+                       .await()
                        .onSuccess(_ -> fail("read against a ring missing the block's key id must fail"))
                        .onFailure(cause -> {
-                           assertThat(cause).isInstanceOf(EncryptionError.UnknownKeyId.class);
-                           assertThat(cause.message()).contains("key-1");
-                       });
+                                      assertThat(cause).isInstanceOf(EncryptionError.UnknownKeyId.class);
+                                      assertThat(cause.message()).contains("key-1");
+                                  });
         }
 
         /// Overwrites the key-id field of a framed block in place. `toId` MUST be the same UTF-8
@@ -330,35 +359,35 @@ class EncryptingStorageTierTest {
     /// hand-assembled framed bytes rather than through a legitimate `put`.
     @Nested
     class WireFormatValidation {
-
         @Test
         void get_blockWithMismatchedVersionByte_fails_withUnsupportedVersion_namingBothVersions() throws Exception {
-            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1"))
-                                             .fold(c -> { fail("wrap failed: " + c.message()); return null; }, t -> t);
+            var tier = EncryptingStorageTier.wrapLocalDisk(freshDiskTier(), tempDir, singleKeyRing("key-1")).fold(c -> {
+                                                                                                                      fail("wrap failed: " + c.message());
+
+                                                                                                                      return null;
+                                                                                                                  },
+                                                                                                                  t -> t);
             var id = blockIdOf(CONTENT);
 
-            tier.put(id, CONTENT).await()
-                .onFailure(c -> fail("put failed: " + c.message()));
-
+            tier.put(id, CONTENT).await().onFailure(c -> fail("put failed: " + c.message()));
             var path = rawBlockPath(id);
             var framed = Files.readAllBytes(path);
-            var bumpedVersion = (byte) (EncryptingStorageTier.VERSION + 1);
+            var bumpedVersion = (byte)(EncryptingStorageTier.VERSION + 1);
 
             framed[EncryptingStorageTier.MAGIC.length] = bumpedVersion;
             Files.write(path, framed);
-
-            tier.get(id).await()
+            tier.get(id)
+                .await()
                 .onSuccess(_ -> fail("a version byte that doesn't match the reader's supported version must fail "
-                                     + "closed, not be silently (mis)decrypted as the current format"))
+                                    + "closed, not be silently (mis)decrypted as the current format"))
                 .onFailure(cause -> {
-                    assertThat(cause).isInstanceOf(EncryptionError.UnsupportedVersion.class);
+                               assertThat(cause).isInstanceOf(EncryptionError.UnsupportedVersion.class);
+                               var unsupported = (EncryptionError.UnsupportedVersion) cause;
 
-                    var unsupported = (EncryptionError.UnsupportedVersion) cause;
-
-                    assertThat(unsupported.blockId()).isEqualTo(id.hexString());
-                    assertThat(unsupported.actualVersion()).isEqualTo(bumpedVersion & 0xFF);
-                    assertThat(unsupported.expectedVersion()).isEqualTo(EncryptingStorageTier.VERSION & 0xFF);
-                });
+                               assertThat(unsupported.blockId()).isEqualTo(id.hexString());
+                               assertThat(unsupported.actualVersion()).isEqualTo(bumpedVersion & 0xFF);
+                               assertThat(unsupported.expectedVersion()).isEqualTo(EncryptingStorageTier.VERSION & 0xFF);
+                           });
         }
 
         /// The classification boundary the NOTE item calls for: magic present but too short to carry
@@ -373,21 +402,20 @@ class EncryptingStorageTierTest {
             // cannot carry the version/key-id-length fields at all.
             var truncated = java.util.Arrays.copyOf(EncryptingStorageTier.MAGIC, EncryptingStorageTier.MAGIC.length + 1);
 
-            disk.put(id, truncated).await()
-                .onFailure(c -> fail("raw put failed: " + c.message()));
-
+            disk.put(id, truncated).await().onFailure(c -> fail("raw put failed: " + c.message()));
             var tier = EncryptingStorageTier.wrap(disk, singleKeyRing("key-1"));
 
-            tier.get(id).await()
+            tier.get(id)
+                .await()
                 .onSuccess(_ -> fail("a block starting with MAGIC but too short to carry the fixed header is "
-                                     + "corruption, not a legacy plaintext write"))
+                                    + "corruption, not a legacy plaintext write"))
                 .onFailure(cause -> {
-                    assertThat(cause).as("magic present but header incomplete must classify as MalformedHeader, "
-                                        + "never as LegacyPlaintextBlock")
-                                     .isInstanceOf(EncryptionError.MalformedHeader.class)
-                                     .isNotInstanceOf(EncryptionError.LegacyPlaintextBlock.class);
-                    assertThat(cause.message()).contains(id.hexString());
-                });
+                               assertThat(cause).as("magic present but header incomplete must classify as MalformedHeader, "
+                                                   + "never as LegacyPlaintextBlock")
+                                         .isInstanceOf(EncryptionError.MalformedHeader.class)
+                                         .isNotInstanceOf(EncryptionError.LegacyPlaintextBlock.class);
+                               assertThat(cause.message()).contains(id.hexString());
+                           });
         }
 
         @Test
@@ -401,21 +429,19 @@ class EncryptingStorageTierTest {
 
             System.arraycopy(EncryptingStorageTier.MAGIC, 0, header, 0, EncryptingStorageTier.MAGIC.length);
             header[EncryptingStorageTier.MAGIC.length] = EncryptingStorageTier.VERSION;
-            header[EncryptingStorageTier.MAGIC.length + 1] = (byte) ((keyIdBytes.length >> 8) & 0xFF);
-            header[EncryptingStorageTier.MAGIC.length + 2] = (byte) (keyIdBytes.length & 0xFF);
+            header[EncryptingStorageTier.MAGIC.length + 1] = (byte)((keyIdBytes.length >> 8) & 0xFF);
+            header[EncryptingStorageTier.MAGIC.length + 2] = (byte)(keyIdBytes.length & 0xFF);
             System.arraycopy(keyIdBytes, 0, header, EncryptingStorageTier.HEADER_FIXED_LEN, keyIdBytes.length);
-
-            disk.put(id, header).await()
-                .onFailure(c -> fail("raw put failed: " + c.message()));
-
+            disk.put(id, header).await().onFailure(c -> fail("raw put failed: " + c.message()));
             var tier = EncryptingStorageTier.wrap(disk, singleKeyRing("key-1"));
 
-            tier.get(id).await()
+            tier.get(id)
+                .await()
                 .onSuccess(_ -> fail("a header naming a valid key id but carrying no nonce/ciphertext at all is corruption"))
                 .onFailure(cause -> {
-                    assertThat(cause).isInstanceOf(EncryptionError.MalformedHeader.class);
-                    assertThat(cause.message()).contains(id.hexString());
-                });
+                               assertThat(cause).isInstanceOf(EncryptionError.MalformedHeader.class);
+                               assertThat(cause.message()).contains(id.hexString());
+                           });
         }
     }
 }

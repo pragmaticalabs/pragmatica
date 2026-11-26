@@ -6,11 +6,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Option;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The A2b tier contract on [LocalDiskTier]: write time is the block file's modification time.
 class LocalDiskTierScanStatTouchTest extends TierScanStatTouchContract {
@@ -19,7 +21,9 @@ class LocalDiskTierScanStatTouchTest extends TierScanStatTouchContract {
 
     @Override
     protected StorageTier newTier() {
-        return LocalDiskTier.localDiskTier(dir, 1 << 20).flatMap(LocalDiskTier::open).unwrap();
+        return LocalDiskTier.localDiskTier(dir, 1 << 20)
+                            .flatMap(LocalDiskTier::open)
+                            .unwrap();
     }
 
     @Override
@@ -30,7 +34,9 @@ class LocalDiskTierScanStatTouchTest extends TierScanStatTouchContract {
     private Path blockPath(BlockId id) {
         var hex = id.hexString();
 
-        return dir.resolve(hex.substring(0, 2)).resolve(hex.substring(2, 4)).resolve(hex);
+        return dir.resolve(hex.substring(0, 2))
+                  .resolve(hex.substring(2, 4))
+                  .resolve(hex);
     }
 
     private static void setModified(Path path, long millis) {
@@ -46,7 +52,6 @@ class LocalDiskTierScanStatTouchTest extends TierScanStatTouchContract {
         var id = store(bytes("on disk"));
 
         setModified(blockPath(id), 1_234_000L);
-
         var stat = tier.stat(id).await().unwrap().unwrap();
 
         assertThat(stat.size()).isEqualTo(Files.size(blockPath(id)));
@@ -62,13 +67,12 @@ class LocalDiskTierScanStatTouchTest extends TierScanStatTouchContract {
         var shardDirectory = blockPath(id).getParent();
         var other = BlockId.blockId(bytes("misplaced")).unwrap().hexString();
 
-        assertThat(other.substring(0, 4)).as("precondition: belongs to another directory").isNotEqualTo(hex.substring(0, 4));
-
+        assertThat(other.substring(0, 4)).as("precondition: belongs to another directory")
+                  .isNotEqualTo(hex.substring(0, 4));
         Files.write(shardDirectory.resolve(hex + ".7.partial"), bytes("partial"));
         Files.write(shardDirectory.resolve("stray.txt"), bytes("stray"));
         Files.write(shardDirectory.resolve(other), bytes("misplaced"));
         Files.write(dir.resolve(MountClaim.CLAIM_FILE), bytes("claim"));
-
         assertThat(scanAll(KeyShard.all(), 10)).containsExactly(id);
     }
 
@@ -79,7 +83,6 @@ class LocalDiskTierScanStatTouchTest extends TierScanStatTouchContract {
 
         setModified(blockPath(id), 1_000L);
         tier.touch(id).await().unwrap();
-
         assertThat(Files.readAllBytes(blockPath(id))).isEqualTo(content);
         assertThat(Files.getLastModifiedTime(blockPath(id)).toMillis()).isGreaterThan(1_000L);
         assertThat(tier.usedBytes()).isEqualTo(content.length);

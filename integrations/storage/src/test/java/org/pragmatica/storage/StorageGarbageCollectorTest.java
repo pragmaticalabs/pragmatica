@@ -5,21 +5,21 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
 import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 class StorageGarbageCollectorTest {
-
     private static final long MEMORY_MAX = 1024 * 1024;
     private static final long GRACE_PERIOD_MS = 1000;
     private static final int BATCH_SIZE = 500;
@@ -34,6 +34,7 @@ class StorageGarbageCollectorTest {
     @BeforeEach
     void setUp() {
         var memoryTier = MemoryTier.memoryTier(MEMORY_MAX);
+
         metadataStore = MetadataStore.inMemoryMetadataStore("gc-test");
         instance = StorageInstance.storageInstance("gc-test", List.of(memoryTier), metadataStore);
         gc = storageGarbageCollector(instance, metadataStore, garbageCollectorConfig(GRACE_PERIOD_MS, BATCH_SIZE));
@@ -41,44 +42,70 @@ class StorageGarbageCollectorTest {
     }
 
     private BlockId storeBlock(byte[] content) {
-        return instance.put(content).await()
-                       .fold(c -> { fail("put failed: " + c.message()); return null; },
+        return instance.put(content)
+                       .await()
+                       .fold(c -> {
+                                 fail("put failed: " + c.message());
+
+                                 return null;
+                             },
                              id -> id);
     }
 
     private void makeOrphanedPastGrace(BlockId blockId) {
         var expired = System.currentTimeMillis() - GRACE_PERIOD_MS - 100;
-        metadataStore.computeLifecycle(blockId, lc -> new BlockLifecycle(
-            lc.blockId(), lc.presentIn(), 0, expired, lc.createdAt(), lc.accessCount(), expired));
+
+        metadataStore.computeLifecycle(blockId,
+                                       lc -> new BlockLifecycle(lc.blockId(),
+                                                                lc.presentIn(),
+                                                                0,
+                                                                expired,
+                                                                lc.createdAt(),
+                                                                lc.accessCount(),
+                                                                expired));
     }
 
     private void makeOrphanedRecent(BlockId blockId) {
         var now = System.currentTimeMillis();
-        metadataStore.computeLifecycle(blockId, lc -> new BlockLifecycle(
-            lc.blockId(), lc.presentIn(), 0, now, lc.createdAt(), lc.accessCount(), now));
+
+        metadataStore.computeLifecycle(blockId,
+                                       lc -> new BlockLifecycle(lc.blockId(),
+                                                                lc.presentIn(),
+                                                                0,
+                                                                now,
+                                                                lc.createdAt(),
+                                                                lc.accessCount(),
+                                                                now));
     }
 
     /// Backdates lastAccessedAt while leaving refCount/orphanedAt untouched -- simulates a block
     /// that was read a long time ago and has sat referenced (not orphaned) ever since.
     private void backdateLastAccessedAt(BlockId blockId, long millisAgo) {
         var stale = System.currentTimeMillis() - millisAgo;
-        metadataStore.computeLifecycle(blockId, lc -> new BlockLifecycle(
-            lc.blockId(), lc.presentIn(), lc.refCount(), stale, lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+
+        metadataStore.computeLifecycle(blockId,
+                                       lc -> new BlockLifecycle(lc.blockId(),
+                                                                lc.presentIn(),
+                                                                lc.refCount(),
+                                                                stale,
+                                                                lc.createdAt(),
+                                                                lc.accessCount(),
+                                                                lc.orphanedAt()));
     }
 
     @Nested
     class CollectGarbageTests {
-
         @Test
         void collectGarbage_orphanedBlock_collectsAfterGracePeriod() {
             var id = storeBlock(CONTENT_A);
-            makeOrphanedPastGrace(id);
 
+            makeOrphanedPastGrace(id);
             var collected = gc.collectGarbage();
 
             assertThat(collected).isEqualTo(1);
             assertThat(metadataStore.containsBlock(id)).isFalse();
-            instance.get(id).await()
+            instance.get(id)
+                    .await()
                     .onFailure(c -> fail("get failed: " + c.message()))
                     .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
         }
@@ -86,7 +113,6 @@ class StorageGarbageCollectorTest {
         @Test
         void collectGarbage_referencedBlock_skips() {
             var id = storeBlock(CONTENT_A);
-
             var collected = gc.collectGarbage();
 
             assertThat(collected).isZero();
@@ -96,8 +122,8 @@ class StorageGarbageCollectorTest {
         @Test
         void collectGarbage_recentlyOrphaned_skipsBeforeGracePeriod() {
             var id = storeBlock(CONTENT_A);
-            makeOrphanedRecent(id);
 
+            makeOrphanedRecent(id);
             var collected = gc.collectGarbage();
 
             assertThat(collected).isZero();
@@ -111,9 +137,9 @@ class StorageGarbageCollectorTest {
         @Test
         void collectGarbage_orphanedNow_survivesEvenWithStaleLastAccessedAt() {
             var id = storeBlock(CONTENT_A);
+
             backdateLastAccessedAt(id, GRACE_PERIOD_MS * 10);
             metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented);
-
             var collected = gc.collectGarbage();
 
             assertThat(collected).isZero();
@@ -132,11 +158,14 @@ class StorageGarbageCollectorTest {
             var id1 = storeBlock(CONTENT_A);
             var id2 = storeBlock(CONTENT_B);
             var id3 = storeBlock(CONTENT_C);
+
             makeOrphanedPastGrace(id1);
             makeOrphanedPastGrace(id2);
             makeOrphanedPastGrace(id3);
+            var smallBatchGc = storageGarbageCollector(instance,
+                                                       metadataStore,
+                                                       garbageCollectorConfig(GRACE_PERIOD_MS, 2));
 
-            var smallBatchGc = storageGarbageCollector(instance, metadataStore, garbageCollectorConfig(GRACE_PERIOD_MS, 2));
             smallBatchGc.activate();
             var collected = smallBatchGc.collectGarbage();
 
@@ -146,7 +175,6 @@ class StorageGarbageCollectorTest {
 
     @Nested
     class StatsTests {
-
         @Test
         void stats_initiallyEmpty() {
             var stats = gc.stats();
@@ -158,11 +186,11 @@ class StorageGarbageCollectorTest {
         @Test
         void stats_tracksCollectedCount() {
             var id = storeBlock(CONTENT_A);
+
             makeOrphanedPastGrace(id);
-
             gc.collectGarbage();
-
             var stats = gc.stats();
+
             assertThat(stats.blocksCollected()).isEqualTo(1);
             assertThat(stats.lastRunMs()).isGreaterThan(0);
         }
@@ -170,13 +198,13 @@ class StorageGarbageCollectorTest {
         @Test
         void stats_accumulatesAcrossCycles() {
             var id1 = storeBlock(CONTENT_A);
+
             makeOrphanedPastGrace(id1);
             gc.collectGarbage();
-
             var id2 = storeBlock(CONTENT_B);
+
             makeOrphanedPastGrace(id2);
             gc.collectGarbage();
-
             assertThat(gc.stats().blocksCollected()).isEqualTo(2);
         }
     }
@@ -191,7 +219,6 @@ class StorageGarbageCollectorTest {
     /// demotion target, never a demotion source, and needed no change.
     @Nested
     class SharedTierSafetyTests {
-
         private MemoryTier privateTier;
         private TrackingTier sharedTier;
         private MetadataStore sharedMetadataStore;
@@ -214,29 +241,40 @@ class StorageGarbageCollectorTest {
 
         @Test
         void collectGarbage_blockPresentInSharedTier_neverDeletesFromSharedTier() {
-            var id = sharedInstance.put(CONTENT_A).await()
-                                   .fold(c -> { fail("put failed: " + c.message()); return null; },
+            var id = sharedInstance.put(CONTENT_A)
+                                   .await()
+                                   .fold(c -> {
+                                             fail("put failed: " + c.message());
+
+                                             return null;
+                                         },
                                          blockId -> blockId);
-            sharedMetadataStore.computeLifecycle(id, lc -> {
-                var expired = System.currentTimeMillis() - GRACE_PERIOD_MS - 100;
 
-                return new BlockLifecycle(lc.blockId(), lc.presentIn(), 0, expired, lc.createdAt(), lc.accessCount(), expired);
-            });
+            sharedMetadataStore.computeLifecycle(id,
+                                                 lc -> {
+                                                     var expired = System.currentTimeMillis() - GRACE_PERIOD_MS - 100;
 
+                                                     return new BlockLifecycle(lc.blockId(),
+                                                                               lc.presentIn(),
+                                                                               0,
+                                                                               expired,
+                                                                               lc.createdAt(),
+                                                                               lc.accessCount(),
+                                                                               expired);
+                                                 });
             var collected = sharedGc.collectGarbage();
 
             assertThat(collected).isEqualTo(1);
-            assertThat(sharedTier.deleteCount())
-                .as("GC must never delete from a shared tier based on node-local refcounts")
-                .isZero();
-            sharedInstance.get(id).await()
+            assertThat(sharedTier.deleteCount()).as("GC must never delete from a shared tier based on node-local refcounts")
+                      .isZero();
+            sharedInstance.get(id)
+                          .await()
                           .onFailure(c -> fail("get failed: " + c.message()))
                           .onSuccess(opt -> {
-                              assertThat(opt.isPresent())
-                                  .as("block must remain readable from the shared tier after local GC (cache miss, not data loss)")
-                                  .isTrue();
-                              opt.onPresent(content -> assertThat(content).isEqualTo(CONTENT_A));
-                          });
+                                         assertThat(opt.isPresent()).as("block must remain readable from the shared tier after local GC (cache miss, not data loss)")
+                                                   .isTrue();
+                                         opt.onPresent(content -> assertThat(content).isEqualTo(CONTENT_A));
+                                     });
         }
     }
 

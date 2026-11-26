@@ -58,11 +58,13 @@ class PrivateDurableCopyTest {
     @Test
     void aBlockOnlyASharedDurableTierHolds_isNotHeld_althoughItExists() {
         var remote = SharedTestTier.sharedDurableTestTier();
+
         writer = storageOver(remote, "writer");
         reader = storageOver(remote, "reader");
         var id = writer.put(CONTENT).await().unwrap();
 
-        assertThat(reader.exists(id).await().unwrap()).as("control: the shared durable tier answers exists for the cluster").isTrue();
+        assertThat(reader.exists(id).await().unwrap()).as("control: the shared durable tier answers exists for the cluster")
+                  .isTrue();
         assertThat(remote.exists(id).await().unwrap()).as("control: the shared durable tier holds it").isTrue();
         assertThat(reader.holdsPrivateDurableCopy(id).await().unwrap()).isFalse();
     }

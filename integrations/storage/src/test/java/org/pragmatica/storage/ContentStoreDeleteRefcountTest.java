@@ -113,7 +113,14 @@ class ContentStoreDeleteRefcountTest {
     /// consequence (`get` through the surviving name) is ever asserted.
     /// The manifest block of the object `name` is bound to.
     private BlockId manifestOf(String name) {
-        return store.store().lookup(ObjectName.objectName(name).unwrap(), Option.none()).await().unwrap().unwrap().ref().manifest();
+        return store.store()
+                    .lookup(ObjectName.objectName(name).unwrap(),
+                            Option.none())
+                    .await()
+                    .unwrap()
+                    .unwrap()
+                    .ref()
+                    .manifest();
     }
 
     private int refCountOf(BlockId id) {
@@ -140,7 +147,8 @@ class ContentStoreDeleteRefcountTest {
     /// Collects what the setup left behind (the superseded entry versions of its binds) so the step under test is counted
     /// alone.
     private void settle() {
-        assertThat(collectAfterGrace(gc)).as("locator: the setup left only superseded entry versions to collect").isGreaterThanOrEqualTo(0);
+        assertThat(collectAfterGrace(gc)).as("locator: the setup left only superseded entry versions to collect")
+                  .isGreaterThanOrEqualTo(0);
     }
 
     /// Lets the (1ms, floored) grace period elapse before the cycle. A deadline spin rather than
@@ -289,7 +297,8 @@ class ContentStoreDeleteRefcountTest {
             assertThat(collectAfterGrace(gc)).as("the one chunk the failed put stored must be collectable, not leaked, beside the superseded entry versions the first bind left")
                       .isEqualTo(1 + BIND_RESIDUE);
             assertReadable(NAME, first);
-            assertThat(refCountsOf(firstChunks)).as("locator: the first document's chunks are untouched").containsOnly(1);
+            assertThat(refCountsOf(firstChunks)).as("locator: the first document's chunks are untouched")
+                      .containsOnly(1);
         }
 
         /// The over-count the ticket names: a chunk the new content shares with an existing document is
@@ -309,9 +318,7 @@ class ContentStoreDeleteRefcountTest {
             assertThat(failed.isFailure()).isTrue();
             assertThat(refCountOf(firstChunks.getFirst())).as("the shared chunk is back to the one credit its document holds")
                       .isEqualTo(1);
-
             deleteContent(NAME);
-
             assertThat(collectAfterGrace(gc)).as("deleting the only document must free all four of its chunks, the manifest, the entry and the name binding, plus the fresh chunk the failed put stored and the first bind's residue")
                       .isEqualTo(firstChunks.size() + 1 + BOOKKEEPING + 1 + BIND_RESIDUE);
         }
@@ -324,7 +331,8 @@ class ContentStoreDeleteRefcountTest {
             var failed = store.put(NAME, content).await();
 
             assertThat(failed.isFailure()).as("the fixture must fail the manifest swap").isTrue();
-            assertThat(collectAfterGrace(gc)).as("the three chunks and the manifest of the failed put must be collectable").isEqualTo(4);
+            assertThat(collectAfterGrace(gc)).as("the three chunks and the manifest of the failed put must be collectable")
+                      .isEqualTo(4);
         }
     }
 
@@ -516,7 +524,7 @@ class ContentStoreDeleteRefcountTest {
 
             assertReadable(OTHER_NAME, content);
             assertThat(collected).as("only the entry and name binding of the deleted object: the manifest and chunks are shared with the third name")
-                                 .isEqualTo(BOOKKEEPING);
+                      .isEqualTo(BOOKKEEPING);
             assertThat(delete1Parked).as("locator: delete1 must be parked at its ref drop").isTrue();
             assertThat(delete2.isSuccess()).as("locator: delete2 must complete while delete1 is parked").isTrue();
             assertThat(delete1Result.isSuccess()).as("locator: delete1 must complete once released").isTrue();
@@ -551,7 +559,7 @@ class ContentStoreDeleteRefcountTest {
             assertThat(xAfterBoth).as("locator: X's chunks were released once, by the overwrite that displaced X")
                       .containsOnly(1);
             assertThat(collected).as("the entry and name binding of the X object under the name, the name binding Y's bind displaced from Z, and the residue of the two binds; "
-                                     + "X's chunks stay with the third name and Z, unnamed but alive, keeps its own")
+                                    + "X's chunks stay with the third name and Z, unnamed but alive, keeps its own")
                       .isEqualTo(BOOKKEEPING + 1 + 2 * BIND_RESIDUE);
             assertThat(manifestY).as("locator: the name ends at Y").isEqualTo(manifestOf(NAME));
         }
@@ -578,7 +586,7 @@ class ContentStoreDeleteRefcountTest {
             assertThat(afterBoth).as("locator: released once, by the delete whose removal took the name")
                       .containsOnly(1);
             assertThat(collected).as("locator: only the entry and name binding of the deleted object; the manifest is shared with the third name")
-                                 .isEqualTo(BOOKKEEPING);
+                      .isEqualTo(BOOKKEEPING);
         }
     }
 

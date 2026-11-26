@@ -13,13 +13,15 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.stream.Stream;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Option;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import static org.pragmatica.lang.Option.some;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.lang.Option.some;
+
 
 /// #1569 A4 / T27 (storage side): `inspect` reports the inventory a node sends when it is asked what its copy of a
 /// log holds -- `(low, head, lastEpoch, historyDigest, firstStart)` -- read-only. `low` and `head` are the WAL's own
@@ -30,7 +32,9 @@ class AppendLogInventoryTest {
     private static final int RECORDS = 10;
     private static final int PAYLOAD_BYTES = 1 << 20;
     private static final String DIGEST_1_AT_0_2_AT_5 = "2cd2c8250fe587a7e381bfc04041c254ddc3396e5caf33fbf3052d2978a04c8f";
+
     private static final String DIGEST_1_AT_0_2_AT_2_3_AT_3 = "53100b0dde79803ce01f81b27332121bec8a75e01467e23f79b9c6c050a37e09";
+
     private static final String DIGEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     @TempDir
@@ -41,12 +45,13 @@ class AppendLogInventoryTest {
     @Test
     void inspect_sealedAndTruncatedLog_reportsTheWalExtentAndTheWholeHistory() throws Exception {
         writeSealedAndTruncated();
-
         var extent = AppendLog.inspect(file()).unwrap();
 
         assertThat(extent.lowOffset()).as("the WAL's on-disk low after the seal-truncate").isEqualTo(5L);
         assertThat(extent.headOffset()).isEqualTo(9L);
-        assertThat(extent.validBytes()).as("an intact file: all of it is valid").isEqualTo(Files.size(file())).isPositive();
+        assertThat(extent.validBytes()).as("an intact file: all of it is valid")
+                  .isEqualTo(Files.size(file()))
+                  .isPositive();
         assertThat(extent.fileBytes()).isEqualTo(Files.size(file()));
         assertThat(extent.firstStart()).as("the first entry starts below low and still counts").isZero();
         assertThat(extent.lastEpoch()).isEqualTo(Option.some(key(2)));
@@ -61,12 +66,13 @@ class AppendLogInventoryTest {
         var before = AppendLog.inspect(file()).unwrap();
 
         recordGhostAbove();
-
         var after = AppendLog.inspect(file()).unwrap();
 
         assertThat(after.lastEpoch()).as("the ghost is above head 9").isEqualTo(Option.some(key(2)));
         assertThat(after.historyDigest()).isNotEqualTo(before.historyDigest());
-        assertThat(after.historyDigest()).isEqualTo(AppendLog.historyDigestOf(List.of(start(1, 0), start(2, 5), start(3, 20))));
+        assertThat(after.historyDigest()).isEqualTo(AppendLog.historyDigestOf(List.of(start(1, 0),
+                                                                                      start(2, 5),
+                                                                                      start(3, 20))));
     }
 
     @Test
@@ -75,7 +81,6 @@ class AppendLogInventoryTest {
 
         wal.append(0, "a".getBytes(), 1L).await().onFailure(c -> fail(c.message()));
         wal.close();
-
         var extent = AppendLog.inspect(file()).unwrap();
 
         assertThat(extent.headOffset()).isZero();
@@ -93,12 +98,10 @@ class AppendLogInventoryTest {
         wal.append(0, "a".getBytes(), 1L).await().onFailure(c -> fail(c.message()));
         wal.recordEpochStart(key(1), 0, NUMERIC).onFailure(c -> fail(c.message()));
         wal.close();
-
         var damaged = Files.readAllBytes(sidecar());
 
         damaged[damaged.length / 2] ^= 0x5A;
         Files.write(sidecar(), damaged);
-
         AppendLog.inspect(file())
                  .onSuccess(_ -> fail("a damaged sidecar must not read as an inventory"))
                  .onFailure(cause -> assertThat(cause).isInstanceOf(AppendLog.WalError.EpochHistoryCorrupt.class));
@@ -109,11 +112,10 @@ class AppendLogInventoryTest {
     @Test
     void inspect_leavesTheVolumeByteIdentical() throws Exception {
         writeSealedAndTruncated();
-        Files.write(sidecar().resolveSibling("0.epochs.tmp"), new byte[] {1, 2, 3});
+        Files.write(sidecar().resolveSibling("0.epochs.tmp"), new byte[]{1, 2, 3});
         var before = snapshot();
 
         AppendLog.inspect(file()).unwrap();
-
         assertThat(snapshot()).isEqualTo(before);
     }
 
@@ -123,7 +125,6 @@ class AppendLogInventoryTest {
     @Test
     void inspect_fullSealTruncateWithCompaction_reportsTheEmptyWal_andTheWholeHistory() throws Exception {
         writeSealedAndTruncatedThrough(9L);
-
         var extent = AppendLog.inspect(file()).unwrap();
 
         assertThat(extent.lowOffset()).as("the WAL compacted to empty").isEqualTo(-1L);
@@ -143,10 +144,10 @@ class AppendLogInventoryTest {
         for (var offset = 0L; offset < 8; offset++) {
             wal.append(offset, new byte[16], 1L).await().onFailure(c -> fail(c.message()));
         }
+
         wal.markSealed(4L);
         wal.truncate(4L).onFailure(c -> fail(c.message()));
         wal.close();
-
         var extent = storage().inspectLog("0").unwrap();
 
         assertThat(extent.lowOffset()).as("the WAL still holds from 0").isZero();
@@ -165,8 +166,7 @@ class AppendLogInventoryTest {
         wal.close();
         var valid = Files.size(file());
 
-        Files.write(file(), new byte[] {0, 0, 0, 40, 1, 2, 3}, StandardOpenOption.APPEND);
-
+        Files.write(file(), new byte[]{0, 0, 0, 40, 1, 2, 3}, StandardOpenOption.APPEND);
         var extent = AppendLog.inspect(file()).unwrap();
 
         assertThat(extent.validBytes()).isEqualTo(valid);
@@ -186,7 +186,6 @@ class AppendLogInventoryTest {
         wal.append(2, "c".getBytes(), 1L).await().onFailure(c -> fail(c.message()));
         wal.recordEpochStart(key(3), 3, NUMERIC).onFailure(c -> fail(c.message()));
         wal.close();
-
         var extent = AppendLog.inspect(file()).unwrap();
 
         assertThat(extent.headOffset()).isEqualTo(2L);
@@ -201,7 +200,9 @@ class AppendLogInventoryTest {
     void historyDigestOf_isAPinnedSha256_overOldestFirstEntries() {
         assertThat(AppendLog.historyDigestOf(List.of(start(1, 0), start(2, 5)))).isEqualTo(DIGEST_1_AT_0_2_AT_5);
         assertThat(AppendLog.historyDigestOf(List.of(start(1, 0), start(2, 2), start(3, 3)))).isEqualTo(DIGEST_1_AT_0_2_AT_2_3_AT_3);
-        assertThat(AppendLog.historyDigestOf(List.of(start(2, 5), start(1, 0)))).as("order matters").isNotEqualTo(DIGEST_1_AT_0_2_AT_5);
+        assertThat(AppendLog.historyDigestOf(List.of(start(2, 5),
+                                                     start(1, 0)))).as("order matters")
+                  .isNotEqualTo(DIGEST_1_AT_0_2_AT_5);
         assertThat(AppendLog.historyDigestOf(List.of())).as("the empty input").isEqualTo(DIGEST_EMPTY);
     }
 
@@ -232,6 +233,7 @@ class AppendLogInventoryTest {
             if (offset == 5) {
                 wal.recordEpochStart(key(2), 5, NUMERIC).onFailure(c -> fail(c.message()));
             }
+
             wal.append(offset, payload, 1L).await().onFailure(c -> fail(c.message()));
         }
         // Past the 8 MiB compaction threshold, so the truncate rewrites the file and `low` moves on disk.

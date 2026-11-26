@@ -15,9 +15,9 @@ import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// The copy-on-write page tree against a [TreeMap] model: random batches of puts and removes, checked after every batch,
@@ -31,11 +31,10 @@ class PageTreeTest {
         var write = PageTree.write(root, edits, fanout, pages.source()).await().unwrap();
 
         pages.store(write.blocks());
-
         if (fanout < PageTree.DEFAULT_FANOUT) {
             // the large trees skip it: re-reading every page after every batch is what would dominate their run time
             assertThat(reachable(write.root())).as("every page a write returns is part of its tree")
-                                                .containsAll(write.blocks().keySet());
+                      .containsAll(write.blocks().keySet());
         }
 
         return write.root();
@@ -59,10 +58,13 @@ class PageTreeTest {
     private Map<String, String> contents(Option<BlockId> root) {
         var contents = new TreeMap<String, String>();
 
-        PageTree.cells(root, pages.source())
+        PageTree.cells(root,
+                       pages.source())
                 .await()
                 .unwrap()
-                .forEach(cell -> contents.put(cell.key(), new String(cell.value(), StandardCharsets.UTF_8)));
+                .forEach(cell -> contents.put(cell.key(),
+                                              new String(cell.value(),
+                                                         StandardCharsets.UTF_8)));
 
         return contents;
     }
@@ -87,7 +89,9 @@ class PageTreeTest {
 
             for (var batch = 0; batch < 30; batch++) {
                 var edits = new TreeMap<String, Option<byte[]>>();
-                var size = 1 + random.nextInt(random.nextBoolean() ? 3 : 40);
+                var size = 1 + random.nextInt(random.nextBoolean()
+                                              ? 3
+                                              : 40);
 
                 for (var i = 0; i < size; i++) {
                     var key = "k" + random.nextInt(300);
@@ -105,11 +109,15 @@ class PageTreeTest {
 
                 root = written(root, edits, fanout);
                 snapshots.add(new Snapshot(root, new TreeMap<>(model)));
-
                 assertThat(contents(root)).as("seed %d batch %d", seed, batch).isEqualTo(model);
                 for (var probe = 0; probe < 10; probe++) {
                     var key = "k" + random.nextInt(300);
-                    var found = PageTree.get(root, key, pages.source()).await().unwrap().map(bytes -> new String(bytes, StandardCharsets.UTF_8));
+                    var found = PageTree.get(root,
+                                             key,
+                                             pages.source())
+                                        .await()
+                                        .unwrap()
+                                        .map(bytes -> new String(bytes, StandardCharsets.UTF_8));
 
                     assertThat(found).as("get %s", key).isEqualTo(Option.option(model.get(key)));
                 }
@@ -132,7 +140,6 @@ class PageTreeTest {
         var root = written(none(), edits, 3);
 
         edits.replaceAll((_, _) -> none());
-
         var emptied = written(root, edits, 3);
 
         assertThat(emptied.isEmpty()).isTrue();
@@ -151,11 +158,12 @@ class PageTreeTest {
 
         edits.remove("k25");
         edits.replaceAll((_, _) -> none());
-
         var shrunk = written(root, edits, 3);
 
         assertThat(PageTree.depth(root, pages.source()).await().unwrap()).isGreaterThan(1);
-        assertThat(PageTree.depth(shrunk, pages.source()).await().unwrap()).as("a root with one child is replaced by it").isEqualTo(1);
+        assertThat(PageTree.depth(shrunk,
+                                  pages.source()).await().unwrap()).as("a root with one child is replaced by it")
+                  .isEqualTo(1);
         assertThat(contents(shrunk)).isEqualTo(Map.of("k25", "v"));
     }
 
@@ -203,13 +211,13 @@ class PageTreeTest {
         var root = written(none(), edits, PageTree.DEFAULT_FANOUT);
 
         assertThat(PageTree.depth(root, pages.source()).await().unwrap()).isEqualTo(2);
-
         edits.clear();
         edits.put("k9999999", one);
-
         var over = written(root, edits, PageTree.DEFAULT_FANOUT);
 
-        assertThat(PageTree.depth(over, pages.source()).await().unwrap()).as("one key more needs a third level").isEqualTo(3);
+        assertThat(PageTree.depth(over,
+                                  pages.source()).await().unwrap()).as("one key more needs a third level")
+                  .isEqualTo(3);
         assertThat(PageTree.get(over, "k0123456", pages.source()).await().unwrap().isPresent()).isTrue();
     }
 
@@ -234,29 +242,28 @@ class PageTreeTest {
 
     @Test
     void pageCodec_roundTrips_andRefusesWhatItDoesNotKnow() {
-        var leaf = CatalogPage.leaf(List.of(CatalogPage.Cell.cell("a", new byte[]{1, 2}), CatalogPage.Cell.cell("b", new byte[0])));
+        var leaf = CatalogPage.leaf(List.of(CatalogPage.Cell.cell("a", new byte[]{1, 2}),
+                                            CatalogPage.Cell.cell("b", new byte[0])));
         var bytes = leaf.toBytes().unwrap();
         var back = (CatalogPage.Leaf) CatalogPage.fromBytes(bytes).unwrap();
 
         assertThat(back.cells()).hasSize(2);
         assertThat(back.cells().getFirst().key()).isEqualTo("a");
         assertThat(back.cells().getFirst().value()).containsExactly(1, 2);
-
         var branch = CatalogPage.branch(List.of(CatalogPage.Child.child("a", new BlockId(new byte[Sha256.LENGTH]))));
         var branchBack = (CatalogPage.Branch) CatalogPage.fromBytes(branch.toBytes().unwrap()).unwrap();
 
         assertThat(branchBack.children().getFirst().low()).isEqualTo("a");
-
         var unknownFormat = bytes.clone();
 
         unknownFormat[ContentEnvelope.marker().length + 1] = 2;
-
         var trailing = Arrays.copyOf(bytes, bytes.length + 1);
 
         assertThat(CatalogPage.fromBytes(unknownFormat).isFailure()).isTrue();
         assertThat(CatalogPage.fromBytes(trailing).isFailure()).isTrue();
         assertThat(CatalogPage.fromBytes(ContentEnvelope.wrap(ContentEnvelope.ENTRY, new byte[]{1})).isFailure()).isTrue();
-        assertThat(CatalogPage.fromBytes(CatalogPage.leaf(List.of()).toBytes().unwrap()).isFailure()).as("an empty page").isTrue();
+        assertThat(CatalogPage.fromBytes(CatalogPage.leaf(List.of()).toBytes().unwrap()).isFailure()).as("an empty page")
+                  .isTrue();
     }
 
     /// The kind byte is the only thing separating a page from a root: a valid page body under the root kind is refused by
@@ -264,13 +271,18 @@ class PageTreeTest {
     @Test
     void pageAndRootKinds_areNotInterchangeable() {
         var page = CatalogPage.leaf(List.of(CatalogPage.Cell.cell("a", new byte[]{1}))).toBytes().unwrap();
-        var root = CatalogRoot.catalogRoot(5, some(new BlockId(new byte[Sha256.LENGTH])), none(), 77, 3).toBytes().unwrap();
+        var root = CatalogRoot.catalogRoot(5,
+                                           some(new BlockId(new byte[Sha256.LENGTH])),
+                                           none(),
+                                           77,
+                                           3)
+                              .toBytes()
+                              .unwrap();
         var pageAsRoot = page.clone();
         var rootAsPage = root.clone();
 
         pageAsRoot[ContentEnvelope.marker().length] = ContentEnvelope.ROOT;
         rootAsPage[ContentEnvelope.marker().length] = ContentEnvelope.PAGE;
-
         assertThat(ContentEnvelope.PAGE).isNotEqualTo(ContentEnvelope.ROOT);
         assertThat(CatalogPage.fromBytes(pageAsRoot).isFailure()).as("page body under the root kind").isTrue();
         assertThat(CatalogRoot.fromBytes(rootAsPage).isFailure()).as("root body under the page kind").isTrue();

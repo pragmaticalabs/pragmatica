@@ -10,15 +10,17 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
+
 
 /// [LocalDiskTier#scan] while files vanish under it (v2829 FIX 3 and 4). A put renames its `.partial` over the block path
 /// and a delete removes the block, both at any moment of a scan; the scan must neither fail for a file that went away nor
@@ -54,7 +56,8 @@ class LocalDiskTierScanVanishTest {
 
     private static void write(Path path) {
         try {
-            Files.write(path, path.getFileName().toString().getBytes());
+            Files.write(path,
+                        path.getFileName().toString().getBytes());
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -95,6 +98,7 @@ class LocalDiskTierScanVanishTest {
         if (shard.equals(path.getParent()) && fired.compareAndSet(false, true)) {
             doomed.forEach(LocalDiskTierScanVanishTest::delete);
         }
+
         vanishing.filter(path::equals).onPresent(LocalDiskTierScanVanishTest::delete);
 
         return Unit.unit();
@@ -105,7 +109,10 @@ class LocalDiskTierScanVanishTest {
     }
 
     private static List<BlockId> idsOf(Page<BlockStat> page) {
-        return page.items().stream().map(BlockStat::id).toList();
+        return page.items()
+                   .stream()
+                   .map(BlockStat::id)
+                   .toList();
     }
 
     /// A partial renamed away, two blocks deleted and a whole subdirectory removed while the shard is listed: the scan
@@ -118,9 +125,8 @@ class LocalDiskTierScanVanishTest {
         write(partial);
         Files.createDirectories(otherDirectory);
         write(otherDirectory.resolve(DIRECTORY + "ce" + "%060x".formatted(1)));
-
-        var tier = tierRemoving(List.of(partial, pathOf(blocks.get(1)), pathOf(blocks.get(2))), Option.some(otherDirectory));
-
+        var tier = tierRemoving(List.of(partial, pathOf(blocks.get(1)), pathOf(blocks.get(2))),
+                                Option.some(otherDirectory));
         var page = tier.scan(KeyShard.all(), Option.none(), 100).await();
 
         assertThat(page.isSuccess()).as("the scan failed: %s", page).isTrue();
@@ -132,8 +138,8 @@ class LocalDiskTierScanVanishTest {
     /// skips the last two blocks (mutant d8).
     @Test
     void scan_aBlockThatVanishedWhileListed_takesNoPageSlot() {
-        var tier = tierRemoving(List.of(pathOf(blocks.get(0)), pathOf(blocks.get(1))), Option.none());
-
+        var tier = tierRemoving(List.of(pathOf(blocks.get(0)), pathOf(blocks.get(1))),
+                                Option.none());
         var page = tier.scan(KeyShard.all(), Option.none(), 4).await().unwrap();
 
         assertThat(idsOf(page)).containsExactly(blocks.get(2), blocks.get(3), blocks.get(4), blocks.get(5));
@@ -149,7 +155,6 @@ class LocalDiskTierScanVanishTest {
         Files.setPosixFilePermissions(shard, PosixFilePermissions.fromString("---------"));
         try {
             assumeFalse(Files.isReadable(shard), "the user running the test reads any directory (root)");
-
             assertThat(tier.scan(KeyShard.all(), Option.none(), 100).await().isFailure()).isTrue();
         } finally {
             Files.setPosixFilePermissions(shard, PosixFilePermissions.fromString("rwx------"));

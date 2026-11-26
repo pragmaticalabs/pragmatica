@@ -35,7 +35,7 @@ final class TreeCatalog implements Catalog {
     @Override
     public Promise<Option<ObjectInfo>> stat(ObjectId id) {
         return draft().entry(id)
-                      .map(entry -> entry.map(found -> found.info(CatalogFixture.NAMESPACE, id)));
+                    .map(entry -> entry.map(found -> found.info(CatalogFixture.NAMESPACE, id)));
     }
 
     @Override
@@ -61,19 +61,17 @@ final class TreeCatalog implements Catalog {
 
     @Override
     public Promise<Option<ObjectInfo>> remove(ObjectId id) {
-        return commit(List.of(CatalogMutation.remove(id)), 0).map(List::getFirst);
+        return commit(List.of(CatalogMutation.remove(id)),
+                      0).map(List::getFirst);
     }
 
     @Override
     public Promise<Page<ObjectInfo>> list(Option<String> namePrefix, Option<Cursor> after, int limit) {
-        return PageTree.cells(root.get()
-                                  .idTree(),
+        return PageTree.cells(root.get().idTree(),
                               pages.source())
                        .map(cells -> cells.stream()
-                                          .map(cell -> ObjectEntry.fromBytes(cell.value())
-                                                                  .map(entry -> entry.info(CatalogFixture.NAMESPACE,
-                                                                                           ObjectId.objectId(cell.key())
-                                                                                                   .unwrap())))
+                                          .map(cell -> ObjectEntry.fromBytes(cell.value()).map(entry -> entry.info(CatalogFixture.NAMESPACE,
+                                                                                                                   ObjectId.objectId(cell.key()).unwrap())))
                                           .map(info -> info.unwrap())
                                           .toList())
                        .map(infos -> LocalCatalog.pageOf(infos, namePrefix, after, limit));
@@ -94,7 +92,10 @@ final class TreeCatalog implements Catalog {
         return attempt == ATTEMPTS
                ? Causes.cause("catalog contended").promise()
                : CatalogCommit.catalogCommit(mutations)
-                              .onto(seen, CatalogFixture.NAMESPACE, pages.source(), fanout)
+                              .onto(seen,
+                                    CatalogFixture.NAMESPACE,
+                                    pages.source(),
+                                    fanout)
                               .flatMap(write -> published(seen, write, mutations, attempt));
     }
 

@@ -14,14 +14,14 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.storage.InMemoryMetadataStore.inMemoryMetadataStore;
 import static org.pragmatica.storage.MetadataSnapshot.metadataSnapshot;
 import static org.pragmatica.storage.SnapshotConfig.snapshotConfig;
 import static org.pragmatica.storage.SnapshotManager.snapshotManager;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 class SnapshotManagerTest {
-
     private static final byte[] CONTENT_A = "snapshot-alpha".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CONTENT_B = "snapshot-beta".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CONTENT_C = "snapshot-gamma".getBytes(StandardCharsets.UTF_8);
@@ -33,13 +33,11 @@ class SnapshotManagerTest {
 
     @Nested
     class MetadataSnapshotTests {
-
         @Test
         void metadataSnapshot_factory_computesHash() {
             var idA = blockIdOf(CONTENT_A);
             var lifecycle = BlockLifecycle.blockLifecycle(idA, TierLevel.MEMORY);
             var refs = Map.of("ref-a", idA);
-
             var snapshot = metadataSnapshot(1L, NODE_ID, List.of(lifecycle), refs);
 
             assertThat(snapshot.contentHash()).isNotNull();
@@ -52,7 +50,6 @@ class SnapshotManagerTest {
         void metadataSnapshot_isValid_returnsTrueForUnmodified() {
             var idA = blockIdOf(CONTENT_A);
             var lifecycle = BlockLifecycle.blockLifecycle(idA, TierLevel.MEMORY);
-
             var snapshot = metadataSnapshot(1L, NODE_ID, List.of(lifecycle), Map.of("ref-a", idA));
 
             assertThat(snapshot.isValid()).isTrue();
@@ -63,7 +60,6 @@ class SnapshotManagerTest {
             var idA = blockIdOf(CONTENT_A);
             var lifecycle = BlockLifecycle.blockLifecycle(idA, TierLevel.MEMORY);
             var mutableList = new ArrayList<>(List.of(lifecycle));
-
             var snapshot = metadataSnapshot(1L, NODE_ID, mutableList, Map.of());
 
             mutableList.clear();
@@ -74,7 +70,6 @@ class SnapshotManagerTest {
         void metadataSnapshot_contentHash_returnsDefensiveCopy() {
             var idA = blockIdOf(CONTENT_A);
             var snapshot = metadataSnapshot(1L, NODE_ID, List.of(), Map.of("ref-a", idA));
-
             var firstHash = snapshot.contentHash();
             var secondHash = snapshot.contentHash();
 
@@ -85,7 +80,6 @@ class SnapshotManagerTest {
 
     @Nested
     class InMemoryMetadataStoreEpochTests {
-
         private InMemoryMetadataStore store;
 
         @BeforeEach
@@ -101,27 +95,27 @@ class SnapshotManagerTest {
         @Test
         void currentEpoch_incrementsOnCreate() {
             var id = blockIdOf(CONTENT_A);
-            store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
 
+            store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
             assertThat(store.currentEpoch()).isEqualTo(1);
         }
 
         @Test
         void currentEpoch_incrementsOnClaim() {
             var id = blockIdOf(CONTENT_A);
-            store.claimBlock(id, BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
 
+            store.claimBlock(id, BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
             assertThat(store.currentEpoch()).isEqualTo(1);
         }
 
         @Test
         void currentEpoch_incrementsOnCompute() {
             var id = blockIdOf(CONTENT_A);
+
             store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
             var epochAfterCreate = store.currentEpoch();
 
             store.computeLifecycle(id, BlockLifecycle::withRefCountIncremented);
-
             assertThat(store.currentEpoch()).isEqualTo(epochAfterCreate + 1);
         }
 
@@ -129,25 +123,24 @@ class SnapshotManagerTest {
         void listAllLifecycles_returnsAllEntries() {
             var idA = blockIdOf(CONTENT_A);
             var idB = blockIdOf(CONTENT_B);
+
             store.createLifecycle(BlockLifecycle.blockLifecycle(idA, TierLevel.MEMORY));
             store.createLifecycle(BlockLifecycle.blockLifecycle(idB, TierLevel.LOCAL_DISK));
-
             var all = store.listAllLifecycles();
 
             assertThat(all).hasSize(2);
-            assertThat(all.stream().map(BlockLifecycle::blockId))
-                .containsExactlyInAnyOrder(idA, idB);
+            assertThat(all.stream().map(BlockLifecycle::blockId)).containsExactlyInAnyOrder(idA, idB);
         }
 
         @Test
         void restoreLifecycles_replacesExistingEntries() {
             var idA = blockIdOf(CONTENT_A);
-            store.createLifecycle(BlockLifecycle.blockLifecycle(idA, TierLevel.MEMORY));
 
+            store.createLifecycle(BlockLifecycle.blockLifecycle(idA, TierLevel.MEMORY));
             var idB = blockIdOf(CONTENT_B);
             var replacement = BlockLifecycle.blockLifecycle(idB, TierLevel.LOCAL_DISK);
-            store.restoreLifecycles(List.of(replacement));
 
+            store.restoreLifecycles(List.of(replacement));
             assertThat(store.containsBlock(idA)).isFalse();
             assertThat(store.containsBlock(idB)).isTrue();
             assertThat(store.listAllLifecycles()).hasSize(1);
@@ -157,9 +150,9 @@ class SnapshotManagerTest {
         void listAllRefs_returnsAllMappings() {
             var idA = blockIdOf(CONTENT_A);
             var idB = blockIdOf(CONTENT_B);
+
             store.putRef("ref-alpha", idA);
             store.putRef("ref-beta", idB);
-
             var allRefs = store.listAllRefs();
 
             assertThat(allRefs).hasSize(2);
@@ -173,7 +166,6 @@ class SnapshotManagerTest {
         @Test
         void restoreEpoch_raisesEpochToSnapshotValue() {
             store.restoreEpoch(4_200L);
-
             assertThat(store.currentEpoch()).isEqualTo(4_200L);
         }
 
@@ -186,18 +178,17 @@ class SnapshotManagerTest {
 
             store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
             store.restoreEpoch(0L);
-
             assertThat(store.currentEpoch()).isEqualTo(1L);
         }
 
         @Test
         void restoreRefs_replacesExistingMappings() {
             var idA = blockIdOf(CONTENT_A);
+
             store.putRef("old-ref", idA);
-
             var idB = blockIdOf(CONTENT_B);
-            store.restoreRefs(Map.of("new-ref", idB));
 
+            store.restoreRefs(Map.of("new-ref", idB));
             assertThat(store.resolveRef("old-ref").isEmpty()).isTrue();
             assertThat(store.resolveRef("new-ref").isPresent()).isTrue();
         }
@@ -205,7 +196,6 @@ class SnapshotManagerTest {
 
     @Nested
     class SnapshotManagerTests {
-
         @TempDir
         Path tempDir;
 
@@ -220,12 +210,10 @@ class SnapshotManagerTest {
         void maybeSnapshot_belowThreshold_noSnapshot() throws IOException {
             var config = snapshotConfig(tempDir, 100, 600_000, 5, NODE_ID);
             var manager = snapshotManager(store, config);
-
             var id = blockIdOf(CONTENT_A);
+
             store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
-
             manager.maybeSnapshot();
-
             assertThat(snapshotFileCount(tempDir)).isZero();
         }
 
@@ -233,13 +221,11 @@ class SnapshotManagerTest {
         void forceSnapshot_writesFile() throws IOException {
             var config = snapshotConfig(tempDir, 100, 600_000, 5, NODE_ID);
             var manager = snapshotManager(store, config);
-
             var id = blockIdOf(CONTENT_A);
+
             store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
             store.putRef("artifact-1", id);
-
             manager.forceSnapshot();
-
             assertThat(snapshotFileCount(tempDir)).isEqualTo(1);
         }
 
@@ -249,8 +235,8 @@ class SnapshotManagerTest {
             var manager = snapshotManager(store, config);
 
             manager.forceSnapshot();
-
             var latestFile = tempDir.resolve("LATEST");
+
             assertThat(Files.exists(latestFile)).isTrue();
         }
 
@@ -258,16 +244,14 @@ class SnapshotManagerTest {
         void restoreFromLatest_afterSnapshot_returnsSnapshot() {
             var config = snapshotConfig(tempDir, 100, 600_000, 5, NODE_ID);
             var manager = snapshotManager(store, config);
-
             var idA = blockIdOf(CONTENT_A);
+
             store.createLifecycle(BlockLifecycle.blockLifecycle(idA, TierLevel.MEMORY));
             store.putRef("my-ref", idA);
-
             manager.forceSnapshot();
-
             var restored = manager.restoreFromLatest().unwrap();
-
             var snap = restored.unwrap();
+
             assertThat(snap.lifecycles()).hasSize(1);
             assertThat(snap.refs()).containsKey("my-ref");
             assertThat(snap.isValid()).isTrue();
@@ -277,7 +261,6 @@ class SnapshotManagerTest {
         void restoreFromLatest_noSnapshot_returnsNone() {
             var config = snapshotConfig(tempDir, 100, 600_000, 5, NODE_ID);
             var manager = snapshotManager(store, config);
-
             var restored = manager.restoreFromLatest().unwrap();
 
             assertThat(restored.isEmpty()).isTrue();
@@ -292,6 +275,7 @@ class SnapshotManagerTest {
             for (int i = 0; i < 5; i++) {
                 var content = ("prune-content-" + i).getBytes(StandardCharsets.UTF_8);
                 var id = blockIdOf(content);
+
                 store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
                 manager.forceSnapshot();
             }
@@ -303,14 +287,13 @@ class SnapshotManagerTest {
         void maybeSnapshot_epochThresholdExceeded_takesSnapshot() throws IOException {
             var config = snapshotConfig(tempDir, 2, 600_000, 5, NODE_ID);
             var manager = snapshotManager(store, config);
-
             var idA = blockIdOf(CONTENT_A);
+
             store.createLifecycle(BlockLifecycle.blockLifecycle(idA, TierLevel.MEMORY));
             var idB = blockIdOf(CONTENT_B);
+
             store.createLifecycle(BlockLifecycle.blockLifecycle(idB, TierLevel.MEMORY));
-
             manager.maybeSnapshot();
-
             assertThat(snapshotFileCount(tempDir)).isEqualTo(1);
         }
 
@@ -318,33 +301,28 @@ class SnapshotManagerTest {
         void roundTrip_snapshotThenRestore_preservesData() {
             var config = snapshotConfig(tempDir, 100, 600_000, 5, NODE_ID);
             var manager = snapshotManager(store, config);
-
             var idA = blockIdOf(CONTENT_A);
             var idB = blockIdOf(CONTENT_B);
             var idC = blockIdOf(CONTENT_C);
+
             store.createLifecycle(BlockLifecycle.blockLifecycle(idA, TierLevel.MEMORY));
             store.createLifecycle(BlockLifecycle.blockLifecycle(idB, TierLevel.LOCAL_DISK));
             store.createLifecycle(BlockLifecycle.blockLifecycle(idC, TierLevel.MEMORY));
             store.putRef("alpha", idA);
             store.putRef("beta", idB);
-
             manager.forceSnapshot();
-
             var freshStore = inMemoryMetadataStore("restored");
             var freshManager = snapshotManager(freshStore, config);
-
             var restored = freshManager.restoreFromLatest().unwrap();
-
             var snap = restored.unwrap();
+
             assertThat(snap.lifecycles()).hasSize(3);
             assertThat(snap.refs()).hasSize(2);
             assertThat(snap.refs()).containsKey("alpha");
             assertThat(snap.refs()).containsKey("beta");
             assertThat(snap.isValid()).isTrue();
-
             freshStore.restoreLifecycles(snap.lifecycles());
             freshStore.restoreRefs(snap.refs());
-
             assertThat(freshStore.containsBlock(idA)).isTrue();
             assertThat(freshStore.containsBlock(idB)).isTrue();
             assertThat(freshStore.containsBlock(idC)).isTrue();
@@ -360,22 +338,19 @@ class SnapshotManagerTest {
         void roundTrip_snapshotThenRestore_preservesOrphanedAt() {
             var config = snapshotConfig(tempDir, 100, 600_000, 5, NODE_ID);
             var manager = snapshotManager(store, config);
-
             var idA = blockIdOf(CONTENT_A);
+
             store.createLifecycle(BlockLifecycle.blockLifecycle(idA, TierLevel.MEMORY));
             store.computeLifecycle(idA, BlockLifecycle::withRefCountDecremented);
             var expectedOrphanedAt = store.getLifecycle(idA).unwrap().orphanedAt();
 
             assertThat(expectedOrphanedAt).isNotZero();
-
             manager.forceSnapshot();
-
             var freshStore = inMemoryMetadataStore("restored-orphaned-at");
             var freshManager = snapshotManager(freshStore, config);
             var snap = freshManager.restoreFromLatest().unwrap().unwrap();
 
             freshStore.restoreLifecycles(snap.lifecycles());
-
             assertThat(freshStore.getLifecycle(idA).unwrap().orphanedAt()).isEqualTo(expectedOrphanedAt);
         }
 
@@ -402,7 +377,6 @@ class SnapshotManagerTest {
 
             restartedStore.createLifecycle(BlockLifecycle.blockLifecycle(blockIdOf(CONTENT_A), TierLevel.MEMORY));
             afterRestart.forceSnapshot();
-
             assertThat(latestTarget(tempDir)).exists();
             assertThat(afterRestart.restoreFromLatest().unwrap().isPresent()).isTrue();
         }
@@ -421,12 +395,10 @@ class SnapshotManagerTest {
 
             Files.writeString(older, "stale snapshot body");
             Files.writeString(newer, "stale snapshot body");
-
             var manager = snapshotManager(store, config);
 
             store.createLifecycle(BlockLifecycle.blockLifecycle(blockIdOf(CONTENT_A), TierLevel.MEMORY));
             manager.forceSnapshot();
-
             // Deliberately says nothing about the LATEST target: that is
             // forceSnapshot_afterEpochReset_keepsLatestTargetOnDisk's claim, and asserting it here
             // too would make this test redden for the guard as well as for the ordering, so neither
@@ -448,8 +420,12 @@ class SnapshotManagerTest {
             }
 
             try (Stream<Path> files = Files.list(dir)) {
-                return files.filter(p -> p.getFileName().toString().startsWith("snapshot-"))
-                            .filter(p -> p.getFileName().toString().endsWith(".dat"))
+                return files.filter(p -> p.getFileName()
+                                          .toString()
+                                          .startsWith("snapshot-"))
+                            .filter(p -> p.getFileName()
+                                          .toString()
+                                          .endsWith(".dat"))
                             .count();
             }
         }

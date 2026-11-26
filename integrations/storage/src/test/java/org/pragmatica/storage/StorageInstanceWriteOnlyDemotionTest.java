@@ -18,8 +18,9 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.storage.DemotionConfig.demotionConfig;
 import static org.pragmatica.storage.DemotionManager.demotionManager;
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #886: a block that is WRITTEN AND NEVER READ must be visible to demotion.
 ///
@@ -57,18 +58,13 @@ class StorageInstanceWriteOnlyDemotionTest {
     @Test
     void writeOnly_blocksAreListedUnderMemoryTier() {
         var ids = writeBlocksWithoutReading(instance);
-
         // Control: the bytes really are resident in the memory tier.
         assertThat(memoryTier.usedBytes()).isEqualTo((long) BLOCK_COUNT * BLOCK_SIZE);
-
-        var listed = metadataStore.listBlocksByTier(TierLevel.MEMORY)
-                                  .stream()
-                                  .map(BlockLifecycle::blockId)
-                                  .toList();
+        var listed = metadataStore.listBlocksByTier(TierLevel.MEMORY).stream().map(BlockLifecycle::blockId).toList();
 
         assertThat(listed).containsExactlyInAnyOrderElementsOf(ids);
-        ids.forEach(id -> assertThat(metadataStore.getLifecycle(id).unwrap().presentIn())
-                              .containsExactlyInAnyOrder(TierLevel.MEMORY, TierLevel.LOCAL_DISK));
+        ids.forEach(id -> assertThat(metadataStore.getLifecycle(id).unwrap().presentIn()).containsExactlyInAnyOrder(TierLevel.MEMORY,
+                                                                                                                    TierLevel.LOCAL_DISK));
     }
 
     @Test
@@ -81,32 +77,27 @@ class StorageInstanceWriteOnlyDemotionTest {
         dm.activate();
         // Control: no tick has run yet, so the stats this test reads start from zero.
         assertThat(dm.stats().bytesMoved()).isZero();
-
         var demoted = dm.demote();
-
         var stats = dm.stats();
 
         assertThat(demoted).isGreaterThan(0);
         assertThat(stats.blocksDemoted()).isEqualTo(demoted);
         assertThat(stats.bytesMoved()).isEqualTo((long) demoted * BLOCK_SIZE);
         assertThat(memoryTier.usedBytes()).isEqualTo(usedBefore - stats.bytesMoved());
-        assertThat(memoryTier.usedBytes()).isLessThan((long) (MEMORY_MAX * LOW_WATERMARK));
-
+        assertThat(memoryTier.usedBytes()).isLessThan((long)(MEMORY_MAX * LOW_WATERMARK));
         var stillInMemory = metadataStore.listBlocksByTier(TierLevel.MEMORY)
                                          .stream()
                                          .map(BlockLifecycle::blockId)
                                          .toList();
 
         assertThat(stillInMemory).hasSize(BLOCK_COUNT - demoted);
-
         ids.stream()
            .filter(id -> !stillInMemory.contains(id))
            .forEach(id -> {
-               assertThat(metadataStore.getLifecycle(id).unwrap().presentIn())
-                   .containsExactly(TierLevel.LOCAL_DISK);
-               assertThat(memoryTier.get(id).await().unwrap().isEmpty()).isTrue();
-               assertThat(diskTier.get(id).await().unwrap().isPresent()).isTrue();
-           });
+                        assertThat(metadataStore.getLifecycle(id).unwrap().presentIn()).containsExactly(TierLevel.LOCAL_DISK);
+                        assertThat(memoryTier.get(id).await().unwrap().isEmpty()).isTrue();
+                        assertThat(diskTier.get(id).await().unwrap().isPresent()).isTrue();
+                    });
     }
 
     /// The write-behind path was never affected by #886: its record names the fast tier, so the
@@ -133,14 +124,10 @@ class StorageInstanceWriteOnlyDemotionTest {
     }
 
     private static void assertListedOnlyUnderMemory(MetadataStore store, List<BlockId> ids) {
-        var listed = store.listBlocksByTier(TierLevel.MEMORY)
-                          .stream()
-                          .map(BlockLifecycle::blockId)
-                          .toList();
+        var listed = store.listBlocksByTier(TierLevel.MEMORY).stream().map(BlockLifecycle::blockId).toList();
 
         assertThat(listed).containsExactlyInAnyOrderElementsOf(ids);
-        ids.forEach(id -> assertThat(store.getLifecycle(id).unwrap().presentIn())
-                              .containsExactly(TierLevel.MEMORY));
+        ids.forEach(id -> assertThat(store.getLifecycle(id).unwrap().presentIn()).containsExactly(TierLevel.MEMORY));
     }
 
     /// The claim IS the record, so a reference added by a second put of the same content survives
@@ -153,29 +140,25 @@ class StorageInstanceWriteOnlyDemotionTest {
     /// in-flight write and deduplicates onto the finished block; the refCount-2 outcome is unchanged.
     @Test
     void writeThrough_duplicatePutWhileWriteInFlight_refCountSurvivesFinalization() {
-        var gate = Promise.<Unit>promise();
+        var gate = Promise.<Unit> promise();
         var putEntered = new CountDownLatch(1);
         var gatedDisk = GatedPutTier.gatedPutTier(MemoryTier.memoryTier(MEMORY_MAX * 100, TierLevel.LOCAL_DISK),
                                                   gate,
                                                   putEntered);
         var gatedStore = MetadataStore.inMemoryMetadataStore("in-flight-886");
         var gated = StorageInstance.storageInstance("in-flight-886",
-                                                    List.of(MemoryTier.memoryTier(MEMORY_MAX, TierLevel.MEMORY), gatedDisk),
+                                                    List.of(MemoryTier.memoryTier(MEMORY_MAX, TierLevel.MEMORY),
+                                                            gatedDisk),
                                                     gatedStore);
         var content = distinctBlock(0);
-
         var first = gated.put(content);
 
         assertThat(awaitEntered(putEntered)).isTrue();
-
         var pendingDuplicate = gated.put(content);
 
-        assertThat(pendingDuplicate.await(timeSpan(200).millis()).isFailure())
-            .as("the duplicate does not resolve while the durable write is still open")
-            .isTrue();
-
+        assertThat(pendingDuplicate.await(timeSpan(200).millis()).isFailure()).as("the duplicate does not resolve while the durable write is still open")
+                  .isTrue();
         gate.succeed(unit());
-
         var id = first.await().unwrap();
         var duplicate = pendingDuplicate.await().unwrap();
         var lifecycle = gatedStore.getLifecycle(id).unwrap();
@@ -190,6 +173,7 @@ class StorageInstanceWriteOnlyDemotionTest {
             return latch.await(5, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+
             return false;
         }
     }
@@ -241,14 +225,16 @@ class StorageInstanceWriteOnlyDemotionTest {
     private static List<BlockId> writeBlocksWithoutReading(StorageInstance target) {
         return IntStream.range(0, BLOCK_COUNT)
                         .mapToObj(StorageInstanceWriteOnlyDemotionTest::distinctBlock)
-                        .map(content -> target.put(content).await().unwrap())
+                        .map(content -> target.put(content)
+                                              .await()
+                                              .unwrap())
                         .toList();
     }
 
     private static byte[] distinctBlock(int seed) {
         var content = new byte[BLOCK_SIZE];
 
-        Arrays.fill(content, (byte) (seed + 1));
+        Arrays.fill(content, (byte)(seed + 1));
 
         return content;
     }

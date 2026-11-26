@@ -6,12 +6,13 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.storage.AnchorTierTest.assertCorrupt;
 import static org.pragmatica.storage.AnchorTierTest.await;
 import static org.pragmatica.storage.AnchorTierTest.nameOf;
 import static org.pragmatica.storage.AnchorTierTest.valueOf;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// A3-0: [EncryptingStorageTier] forwards the anchor primitive, encrypting the value; the delegate sees only ciphertext.
 @Timeout(30)
@@ -25,7 +26,6 @@ class EncryptingAnchorTest {
         var value = "the-catalog-root-of-namespace-orders".getBytes();
 
         await(tier.putAnchor(NAME, 4, value));
-
         var stored = s3.objects.get("pfx/anchors/" + NAME.storageSegment() + "/" + AnchorFrame.key(4));
 
         assertThat(new String(stored)).doesNotContain("catalog-root");
@@ -39,7 +39,6 @@ class EncryptingAnchorTest {
         var oldKey = randomKey();
 
         await(EncryptingStorageTier.wrap(remote(s3), keyring(Map.of("k1", oldKey), "k1")).putAnchor(NAME, 1, valueOf(1)));
-
         var rotated = EncryptingStorageTier.wrap(remote(s3), keyring(Map.of("k1", oldKey, "k2", randomKey()), "k2"));
 
         assertThat(await(rotated.latestAnchor(NAME)).unwrap().value()).isEqualTo(valueOf(1));
@@ -57,8 +56,8 @@ class EncryptingAnchorTest {
 
         await(tier.putAnchor(NAME, 1, valueOf(1)));
         var ciphertextOfOne = await(plain.latestAnchor(NAME)).unwrap().value();
-        await(plain.putAnchor(NAME, 2, ciphertextOfOne));
 
+        await(plain.putAnchor(NAME, 2, ciphertextOfOne));
         assertCorrupt(tier.latestAnchor(NAME), TierLevel.REMOTE, 2);
     }
 
@@ -72,6 +71,7 @@ class EncryptingAnchorTest {
 
         await(tier.putAnchor(NAME, 3, valueOf(3)));
         var first = await(plain.latestAnchor(NAME)).unwrap().value();
+
         await(tier.putAnchor(NAME, 3, valueOf(3)));
         var second = await(plain.latestAnchor(NAME)).unwrap().value();
 
@@ -87,13 +87,17 @@ class EncryptingAnchorTest {
         for (long version = 0; version <= 5; version++) {
             await(tier.putAnchor(NAME, version, valueOf(version)));
         }
-        await(tier.pruneAnchors(NAME, 4, 100));
 
+        await(tier.pruneAnchors(NAME, 4, 100));
         assertThat(s3.versions("pfx/anchors/" + NAME.storageSegment() + "/")).containsExactlyInAnyOrder(4L, 5L);
     }
 
     private static RemoteTier remote(AnchorTierTest.SortedS3 s3) {
-        return RemoteTier.durableRemoteTier(s3, "pfx", 8, timeSpan(10).seconds()).unwrap();
+        return RemoteTier.durableRemoteTier(s3,
+                                            "pfx",
+                                            8,
+                                            timeSpan(10).seconds())
+                         .unwrap();
     }
 
     private static byte[] randomKey() {
@@ -107,8 +111,11 @@ class EncryptingAnchorTest {
     private static EncryptionKeyring keyring(Map<String, byte[]> keys, String active) {
         var encryptors = new java.util.HashMap<String, BlockEncryptor>();
 
-        keys.forEach((id, key) -> encryptors.put(id, BlockEncryptor.aesGcm(key, id).unwrap()));
+        keys.forEach((id, key) -> encryptors.put(id,
+                                                 BlockEncryptor.aesGcm(key, id).unwrap()));
 
-        return EncryptionKeyring.encryptionKeyring(Map.copyOf(encryptors), active).unwrap();
+        return EncryptionKeyring.encryptionKeyring(Map.copyOf(encryptors),
+                                                   active)
+                                .unwrap();
     }
 }

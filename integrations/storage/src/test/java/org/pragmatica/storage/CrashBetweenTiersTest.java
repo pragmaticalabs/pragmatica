@@ -6,15 +6,17 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.StorageGarbageCollector.SharedDeleteLimits;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// A failure/crash between the shared-tier delete and the private-tier delete.
 class CrashBetweenTiersTest {
@@ -31,23 +33,24 @@ class CrashBetweenTiersTest {
         var priv = new Tier(TierLevel.LOCAL_DISK, false);
         var store = MetadataStore.inMemoryMetadataStore("streams");
         var storage = StorageInstance.storageInstance("streams", List.of(priv, shared), store);
-        var snapshots = SnapshotManager.snapshotManager(store, SnapshotConfig.snapshotConfig(dir.resolve("snapshots"), "streams"));
-        var collector = StorageGarbageCollector.storageGarbageCollector(storage, store, GarbageCollectorConfig.garbageCollectorConfig());
+        var snapshots = SnapshotManager.snapshotManager(store,
+                                                        SnapshotConfig.snapshotConfig(dir.resolve("snapshots"),
+                                                                                      "streams"));
+        var collector = StorageGarbageCollector.storageGarbageCollector(storage,
+                                                                        store,
+                                                                        GarbageCollectorConfig.garbageCollectorConfig());
 
         collector.activate();
-
         var id = storage.putRef("a", bytes("half deleted")).await().unwrap();
 
         storage.deleteRef("a", SharedDelete.AUTHORISED).await();
         priv.failDeletes.set(true);
-
         var crashed = collector.collectSharedDeletes(snapshots, NO_GRACE);
 
         assertThat(crashed.failed()).isEqualTo(1);
         assertThat(shared.holds(id)).as("shared copy already gone").isFalse();
         assertThat(priv.holds(id)).as("private copy still there").isTrue();
         assertThat(storage.resolveRef("a").isPresent()).as("no ref names it").isFalse();
-
         // process death: a new store restored from the snapshot on disk, a new instance over the same tiers
         var restored = snapshots.restoreFromLatest().unwrap().unwrap();
         var store2 = MetadataStore.inMemoryMetadataStore("streams");
@@ -55,14 +58,17 @@ class CrashBetweenTiersTest {
         store2.restoreLifecycles(restored.lifecycles());
         store2.restoreRefs(restored.refs());
         priv.failDeletes.set(false);
-
         var storage2 = StorageInstance.storageInstance("streams", List.of(priv, shared), store2);
-        var snapshots2 = SnapshotManager.snapshotManager(store2, SnapshotConfig.snapshotConfig(dir.resolve("snapshots2"), "streams"));
-        var collector2 = StorageGarbageCollector.storageGarbageCollector(storage2, store2, GarbageCollectorConfig.garbageCollectorConfig());
+        var snapshots2 = SnapshotManager.snapshotManager(store2,
+                                                         SnapshotConfig.snapshotConfig(dir.resolve("snapshots2"),
+                                                                                       "streams"));
+        var collector2 = StorageGarbageCollector.storageGarbageCollector(storage2,
+                                                                         store2,
+                                                                         GarbageCollectorConfig.garbageCollectorConfig());
 
         collector2.activate();
-        assertThat(store2.getLifecycle(id).unwrap().sharedDelete()).as("authority survived the restart").isEqualTo(SharedDelete.AUTHORISED);
-
+        assertThat(store2.getLifecycle(id).unwrap().sharedDelete()).as("authority survived the restart")
+                  .isEqualTo(SharedDelete.AUTHORISED);
         var next = collector2.collectSharedDeletes(snapshots2, NO_GRACE);
 
         assertThat(next.deleted()).isEqualTo(1);
@@ -78,33 +84,34 @@ class CrashBetweenTiersTest {
         var priv = new Tier(TierLevel.LOCAL_DISK, false);
         var store = MetadataStore.inMemoryMetadataStore("streams");
         var storage = StorageInstance.storageInstance("streams", List.of(priv, shared), store);
-        var snapshots = SnapshotManager.snapshotManager(store, SnapshotConfig.snapshotConfig(dir.resolve("snapshots"), "streams"));
-        var collector = StorageGarbageCollector.storageGarbageCollector(storage, store, GarbageCollectorConfig.garbageCollectorConfig());
+        var snapshots = SnapshotManager.snapshotManager(store,
+                                                        SnapshotConfig.snapshotConfig(dir.resolve("snapshots"),
+                                                                                      "streams"));
+        var collector = StorageGarbageCollector.storageGarbageCollector(storage,
+                                                                        store,
+                                                                        GarbageCollectorConfig.garbageCollectorConfig());
 
         collector.activate();
-
         var id = storage.putRef("a", bytes("raced")).await().unwrap();
 
         storage.deleteRef("a", SharedDelete.AUTHORISED).await();
         priv.hold = new CountDownLatch(1);
-
         var run = new Thread(() -> collector.collectSharedDeletes(snapshots, NO_GRACE));
 
         run.start();
         priv.reached.await();
-
         var put = storage.putRef("b", bytes("raced"));
 
         Thread.sleep(200);
         priv.hold.countDown();
         run.join();
-
         var id2 = put.await().unwrap();
         var lc = store.getLifecycle(id).unwrap();
 
         assertThat(id2).as("same content, same block").isEqualTo(id);
         assertThat(storage.resolveRef("b").unwrap()).isEqualTo(id);
-        assertThat(storage.get(id).await().unwrap().isPresent()).as("the new reference stands on readable content").isTrue();
+        assertThat(storage.get(id).await().unwrap().isPresent()).as("the new reference stands on readable content")
+                  .isTrue();
         assertThat(priv.holds(id)).as("private copy written after the delete, not wiped by it").isTrue();
         assertThat(shared.holds(id)).as("shared copy written again").isTrue();
         assertThat(lc.refCount()).isEqualTo(1);
@@ -128,7 +135,9 @@ class CrashBetweenTiersTest {
         }
 
         boolean holds(BlockId id) {
-            return backing.exists(id).await().unwrap();
+            return backing.exists(id)
+                          .await()
+                          .unwrap();
         }
 
         @Override
@@ -145,7 +154,11 @@ class CrashBetweenTiersTest {
         public Promise<Unit> delete(BlockId id) {
             if (hold != null) {
                 reached.countDown();
-                try { hold.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                try {
+                    hold.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
 
             return failDeletes.get()

@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+
 /// The edges of the cache-only marker: a failed put over a warmed block, the marker bound as a hard bound (warm and
 /// a restored snapshot count too), what `exists` means, and what `createRef` refuses.
 class StorageInstanceMarkerHardeningTest {
@@ -111,7 +112,9 @@ class StorageInstanceMarkerHardeningTest {
     }
 
     private BlockId writeElsewhere(String content) {
-        return writer.put(bytes(content)).await().unwrap();
+        return writer.put(bytes(content))
+                     .await()
+                     .unwrap();
     }
 
     private StorageInstance boundedReader(MemoryTier cache, int cap, MetadataStore metadata) {
@@ -128,12 +131,17 @@ class StorageInstanceMarkerHardeningTest {
                                           Option.none(),
                                           AppendLog.TornTailSink.logOnly(),
                                           _ -> {},
-                                          DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(cap, 600_000L, 60_000L),
+                                          DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(cap,
+                                                                                                     600_000L,
+                                                                                                     60_000L),
                                           clock);
     }
 
     private static long markersIn(MetadataStore metadata) {
-        return metadata.listAllLifecycles().stream().filter(BlockLifecycle::cacheOnly).count();
+        return metadata.listAllLifecycles()
+                       .stream()
+                       .filter(BlockLifecycle::cacheOnly)
+                       .count();
     }
 
     @Test
@@ -142,9 +150,8 @@ class StorageInstanceMarkerHardeningTest {
 
         assertThat(reader.warm(id).await().unwrap()).isTrue();
         disk.failPuts.set(true);
-
-        assertThat(reader.put(bytes("warmed-then-put")).await().isFailure()).as("control: the put really failed").isTrue();
-
+        assertThat(reader.put(bytes("warmed-then-put")).await().isFailure()).as("control: the put really failed")
+                  .isTrue();
         var record = store.getLifecycle(id).unwrap();
 
         assertThat(record.cacheOnly()).as("the failed put put the marker back").isTrue();
@@ -156,7 +163,6 @@ class StorageInstanceMarkerHardeningTest {
     @Test
     void put_ofABlockNoCacheTierHolds_whoseRequiredWriteFails_leavesNoRecord() {
         disk.failPuts.set(true);
-
         var content = bytes("never-held-here");
 
         assertThat(reader.put(content).await().isFailure()).isTrue();
@@ -172,8 +178,8 @@ class StorageInstanceMarkerHardeningTest {
         assertThat(reader.warm(id).await().unwrap()).isTrue();
         memory.delete(id).await().unwrap();
         disk.failPuts.set(true);
-
-        assertThat(reader.put(bytes("only-shared-remains")).await().isFailure()).as("control: the put really failed").isTrue();
+        assertThat(reader.put(bytes("only-shared-remains")).await().isFailure()).as("control: the put really failed")
+                  .isTrue();
         assertThat(shared.exists(id).await().unwrap()).as("control: the shared tier still holds it").isTrue();
         assertThat(store.getLifecycle(id).isPresent()).as("no empty marker").isFalse();
     }
@@ -188,7 +194,6 @@ class StorageInstanceMarkerHardeningTest {
         memory.delete(id).await().unwrap();
         disk.put(id, content).await().unwrap();
         disk.failPuts.set(true);
-
         assertThat(reader.put(content).await().isFailure()).as("control: the put really failed").isTrue();
         assertThat(disk.exists(id).await().unwrap()).as("control: the durable copy is there").isTrue();
         assertThat(store.getLifecycle(id).isPresent()).as("a durable copy does not keep a cache marker").isFalse();
@@ -204,9 +209,9 @@ class StorageInstanceMarkerHardeningTest {
         memory.put(id, content).await().unwrap();
         store.createLifecycle(BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(TierLevel.MEMORY, TierLevel.LOCAL_DISK)));
         disk.failPuts.set(true);
-
         assertThat(reader.put(content).await().isFailure()).as("control: the put really failed").isTrue();
-        assertThat(store.getLifecycle(id).unwrap().presentIn()).contains(TierLevel.MEMORY).doesNotContain(TierLevel.LOCAL_DISK);
+        assertThat(store.getLifecycle(id).unwrap().presentIn()).contains(TierLevel.MEMORY)
+                  .doesNotContain(TierLevel.LOCAL_DISK);
     }
 
     /// A read whose marker claim loses to another reader hands back the slot it reserved.
@@ -215,11 +220,11 @@ class StorageInstanceMarkerHardeningTest {
         var lost = boundedReader(memory, 2, swallowingFirstMarkerClaim(), () -> 0L);
         var ids = IntStream.range(0, 4).mapToObj(i -> writeElsewhere("claim-lost-" + i)).toList();
 
-        ids.forEach(id -> lost.get(id).await().unwrap());
-
-        assertThat(store.listAllLifecycles().stream().filter(BlockLifecycle::cacheOnly).count())
-            .as("the first read's slot came back, so two of the other three reads found room")
-            .isEqualTo(2);
+        ids.forEach(id -> lost.get(id)
+                              .await()
+                              .unwrap());
+        assertThat(store.listAllLifecycles().stream().filter(BlockLifecycle::cacheOnly).count()).as("the first read's slot came back, so two of the other three reads found room")
+                  .isEqualTo(2);
     }
 
     /// The marker a warm claimed and then did not need (no cache tier took the copy) is given back WITH its slot. (The
@@ -234,18 +239,17 @@ class StorageInstanceMarkerHardeningTest {
                                                Option.none(),
                                                AppendLog.TornTailSink.logOnly(),
                                                _ -> {},
-                                               DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(1, 600_000L, 60_000L),
+                                               DefaultStorageInstance.CacheMarkerLimits.cacheMarkerLimits(1,
+                                                                                                          600_000L,
+                                                                                                          60_000L),
                                                () -> 0L);
         var refused = writeElsewhere("cache-refuses-this");
         var accepted = writeElsewhere("cache-takes-this");
 
         cache.failPuts.set(true);
-
         assertThat(flaky.warm(refused).await().unwrap()).isFalse();
         assertThat(markersIn(store)).as("the read's claim was lost and warm's own marker was given back").isZero();
-
         cache.failPuts.set(false);
-
         assertThat(flaky.warm(accepted).await().unwrap()).as("the refused warm's slot came back").isTrue();
     }
 
@@ -272,7 +276,6 @@ class StorageInstanceMarkerHardeningTest {
 
         assertThat(bounded.warm(id).await().unwrap()).as("control: it takes the only slot").isTrue();
         cache.delete(id).await().unwrap();
-
         assertThat(bounded.warm(id).await().unwrap()).as("tracking it again needs no new slot").isTrue();
         assertThat(cache.exists(id).await().unwrap()).isTrue();
         assertThat(markersIn(metadata)).isEqualTo(1);
@@ -289,9 +292,7 @@ class StorageInstanceMarkerHardeningTest {
                 var bounded = boundedReader(MemoryTier.memoryTier(MEMORY_MAX * 100, TierLevel.MEMORY), 3, metadata);
                 var ids = IntStream.range(0, 64).mapToObj(i -> writeElsewhere("concurrent-" + tag + "-" + i)).toList();
                 var start = new CountDownLatch(1);
-                var futures = ids.stream()
-                                 .map(id -> pool.submit(() -> warmWhenReleased(bounded, id, start)))
-                                 .toList();
+                var futures = ids.stream().map(id -> pool.submit(() -> warmWhenReleased(bounded, id, start))).toList();
 
                 start.countDown();
                 for (var future : futures) {
@@ -308,7 +309,9 @@ class StorageInstanceMarkerHardeningTest {
     private static boolean warmWhenReleased(StorageInstance instance, BlockId id, CountDownLatch start) throws InterruptedException {
         start.await();
 
-        return instance.warm(id).await().unwrap();
+        return instance.warm(id)
+                       .await()
+                       .unwrap();
     }
 
     @Test
@@ -321,11 +324,10 @@ class StorageInstanceMarkerHardeningTest {
         IntStream.range(0, 40)
                  .mapToObj(i -> writeElsewhere("block-too-big-for-four-bytes-" + i))
                  .forEach(id -> results.add(bounded.warm(id).await().unwrap()));
-
         assertThat(results).containsOnly(false);
         assertThat(markersIn(metadata)).isLessThanOrEqualTo(3);
         assertThat(metadata.listAllLifecycles()).as("no empty marker is left by a warm that no tier accepted")
-                                                .allSatisfy(record -> assertThat(record.presentIn()).isNotEmpty());
+                  .allSatisfy(record -> assertThat(record.presentIn()).isNotEmpty());
     }
 
     @Test
@@ -346,15 +348,18 @@ class StorageInstanceMarkerHardeningTest {
         var metadata = MetadataStore.inMemoryMetadataStore("restored");
         var restored = IntStream.range(0, 10)
                                 .mapToObj(i -> BlockId.blockId(bytes("restored-" + i)).unwrap())
-                                .map(id -> BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.of(TierLevel.REMOTE)))
+                                .map(id -> BlockLifecycle.cacheOnlyLifecycle(id,
+                                                                             EnumSet.of(TierLevel.REMOTE)))
                                 .toList();
 
         metadata.restoreLifecycles(restored);
-
         var bounded = boundedReader(MemoryTier.memoryTier(MEMORY_MAX, TierLevel.MEMORY), 5, metadata);
 
-        IntStream.range(0, 10).mapToObj(i -> writeElsewhere("fresh-" + i)).forEach(id -> bounded.get(id).await().unwrap());
-
+        IntStream.range(0, 10)
+                 .mapToObj(i -> writeElsewhere("fresh-" + i))
+                 .forEach(id -> bounded.get(id)
+                                       .await()
+                                       .unwrap());
         assertThat(markersIn(metadata)).as("the restored markers count; nothing new was admitted").isEqualTo(10);
     }
 
@@ -370,9 +375,11 @@ class StorageInstanceMarkerHardeningTest {
         return (MetadataStore) Proxy.newProxyInstance(MetadataStore.class.getClassLoader(),
                                                       new Class<?>[]{MetadataStore.class},
                                                       (_, method, args) -> {
-                                                          if (method.getName().equals("claimBlock") && swallowed.getAndIncrement() < count) {
+                                                          if (method.getName()
+                                                                    .equals("claimBlock") && swallowed.getAndIncrement() < count) {
                                                               return false;
                                                           }
+
                                                           try {
                                                               return method.invoke(store, args);
                                                           } catch (InvocationTargetException e) {
@@ -387,10 +394,8 @@ class StorageInstanceMarkerHardeningTest {
         var id = writeElsewhere("record-lost-to-a-race");
 
         assertThat(raced.warm(id).await().unwrap()).isTrue();
-        assertThat(raced.warm(writeElsewhere("no-slot-left-for-this-one")).await().unwrap())
-            .as("the marker warm claimed took the only slot")
-            .isFalse();
-
+        assertThat(raced.warm(writeElsewhere("no-slot-left-for-this-one")).await().unwrap()).as("the marker warm claimed took the only slot")
+                  .isFalse();
         var record = store.getLifecycle(id).unwrap();
 
         assertThat(record.cacheOnly()).isTrue();
@@ -415,9 +420,7 @@ class StorageInstanceMarkerHardeningTest {
         reader.get(id).await().unwrap();
         assertThat(store.getLifecycle(id).unwrap().cacheOnly()).as("control: the read left a marker").isTrue();
         assertThat(reader.exists(id).await().unwrap()).as("control: readable while the shared copy is there").isTrue();
-
         shared.delete(id).await().unwrap();
-
         assertThat(reader.exists(id).await().unwrap()).as("the marker alone does not make a block exist").isFalse();
     }
 
@@ -433,7 +436,6 @@ class StorageInstanceMarkerHardeningTest {
         var id = writeElsewhere("only-cached");
 
         reader.get(id).await().unwrap();
-
         var result = reader.createRef("name", id).await();
 
         assertThat(result.isFailure()).isTrue();

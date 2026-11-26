@@ -11,10 +11,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.storage.PromotionConfig.promotionConfig;
 import static org.pragmatica.storage.SnapshotConfig.snapshotConfig;
 import static org.pragmatica.storage.SnapshotManager.snapshotManager;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Spec v2 §9, C-08 under A2 read promotion: a copy promotion makes into the memory tier is tier presence, and tier
 /// presence is not snapshot state. N promoted reads trigger zero snapshots; the control (writes past the threshold)
@@ -42,39 +43,43 @@ class PromotionIsNotSnapshotStateTest {
         var readerStore = MetadataStore.inMemoryMetadataStore("reader");
         var reader = StorageInstance.storageInstance("reader", List.of(memory, shared), readerStore);
         var ids = IntStream.range(0, BLOCKS)
-                           .mapToObj(i -> writer.put(bytes("promoted block " + i)).await().unwrap())
+                           .mapToObj(i -> writer.put(bytes("promoted block " + i))
+                                                .await()
+                                                .unwrap())
                            .toList();
         var manager = snapshotManager(readerStore, snapshotConfig(dir, THRESHOLD, 600_000, 50, "promotion-node"));
 
         manager.snapshotNow().unwrap();
-        ids.forEach(id -> IntStream.range(0, READS_PER_BLOCK).forEach(_ -> reader.get(id).await().unwrap()));
-
+        ids.forEach(id -> IntStream.range(0, READS_PER_BLOCK).forEach(_ -> reader.get(id)
+                                                                                 .await()
+                                                                                 .unwrap()));
         var before = readerStore.currentEpoch();
         var promotion = PromotionManager.promotionManager(List.of(memory, shared),
                                                           readerStore,
                                                           promotionConfig(READS_PER_BLOCK - 1, 300_000L, BLOCKS * 2));
 
         promotion.activate();
-
         assertThat(promotion.promote()).as("every read block was promoted").isEqualTo(BLOCKS);
-        assertThat(ids).allSatisfy(id -> assertThat(memory.exists(id).await().unwrap()).as("copied into memory").isTrue());
+        assertThat(ids).allSatisfy(id -> assertThat(memory.exists(id).await().unwrap()).as("copied into memory")
+                                                   .isTrue());
         assertThat(ids).allSatisfy(id -> assertThat(readerStore.getLifecycle(id).unwrap().presentIn()).as("presence kept")
-                                                                                                    .contains(TierLevel.MEMORY));
+                                                   .contains(TierLevel.MEMORY));
         assertThat(readerStore.currentEpoch() - before).as("promotion moved the epoch").isZero();
-
         manager.maybeSnapshot();
-
         assertThat(snapshotFiles()).as("the promoted reads took no snapshot").isEqualTo(1);
-
-        IntStream.range(0, THRESHOLD).forEach(i -> reader.put(bytes("control " + i)).await().unwrap());
+        IntStream.range(0, THRESHOLD).forEach(i -> reader.put(bytes("control " + i))
+                                                         .await()
+                                                         .unwrap());
         manager.maybeSnapshot();
-
         assertThat(snapshotFiles()).as("control: writes past the threshold take one").isEqualTo(2);
     }
 
     private long snapshotFiles() throws IOException {
         try (var files = Files.list(dir)) {
-            return files.filter(path -> path.getFileName().toString().startsWith("snapshot-")).count();
+            return files.filter(path -> path.getFileName()
+                                            .toString()
+                                            .startsWith("snapshot-"))
+                        .count();
         }
     }
 }

@@ -91,8 +91,7 @@ class LocalDiskTierAtomicReplaceTest {
         var reader = Thread.ofPlatform().start(() -> {
             while (!stop.get()) {
                 reads.incrementAndGet();
-                FileOps.readBytes(path)
-                       .onFailure(_ -> absent.incrementAndGet());
+                FileOps.readBytes(path).onFailure(_ -> absent.incrementAndGet());
             }
         });
 

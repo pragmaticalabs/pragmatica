@@ -4,11 +4,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.storage.StorageReadinessGate.storageReadinessGate;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 class StorageReadinessGateTest {
-
     private StorageReadinessGate gate;
 
     @BeforeEach
@@ -18,7 +18,6 @@ class StorageReadinessGateTest {
 
     @Nested
     class InitialStateTests {
-
         @Test
         void state_initiallyLoadingSnapshot() {
             assertThat(gate.state()).isEqualTo(ReadinessState.LOADING_SNAPSHOT);
@@ -37,18 +36,15 @@ class StorageReadinessGateTest {
 
     @Nested
     class SnapshotLoadedTests {
-
         @Test
         void snapshotLoaded_transitionsToSnapshotLoaded() {
             gate.snapshotLoaded();
-
             assertThat(gate.state()).isEqualTo(ReadinessState.SNAPSHOT_LOADED);
         }
 
         @Test
         void snapshotLoaded_makesReadReady() {
             gate.snapshotLoaded();
-
             assertThat(gate.isReadReady()).isTrue();
         }
 
@@ -56,7 +52,6 @@ class StorageReadinessGateTest {
         void snapshotLoaded_idempotent_secondCallNoOp() {
             gate.snapshotLoaded();
             gate.snapshotLoaded();
-
             assertThat(gate.state()).isEqualTo(ReadinessState.SNAPSHOT_LOADED);
             assertThat(gate.isReadReady()).isTrue();
         }
@@ -64,12 +59,10 @@ class StorageReadinessGateTest {
 
     @Nested
     class ConsensusSyncedTests {
-
         @Test
         void consensusSynced_transitionsToReady() {
             gate.snapshotLoaded();
             gate.consensusSynced();
-
             assertThat(gate.state()).isEqualTo(ReadinessState.READY);
         }
 
@@ -77,7 +70,6 @@ class StorageReadinessGateTest {
         void consensusSynced_makesWriteReady() {
             gate.snapshotLoaded();
             gate.consensusSynced();
-
             assertThat(gate.isWriteReady()).isTrue();
         }
 
@@ -86,7 +78,6 @@ class StorageReadinessGateTest {
             gate.snapshotLoaded();
             gate.consensusSynced();
             gate.consensusSynced();
-
             assertThat(gate.state()).isEqualTo(ReadinessState.READY);
             assertThat(gate.isWriteReady()).isTrue();
         }
@@ -94,11 +85,9 @@ class StorageReadinessGateTest {
 
     @Nested
     class AwaitTests {
-
         @Test
         void awaitReadReady_afterSnapshotLoaded_resolves() {
             gate.snapshotLoaded();
-
             gate.awaitReadReady().await().unwrap();
         }
 
@@ -106,18 +95,15 @@ class StorageReadinessGateTest {
         void awaitWriteReady_afterConsensusSynced_resolves() {
             gate.snapshotLoaded();
             gate.consensusSynced();
-
             gate.awaitWriteReady().await().unwrap();
         }
     }
 
     @Nested
     class OutOfOrderTests {
-
         @Test
         void consensusSynced_beforeSnapshotLoaded_staysLoadingSnapshot() {
             gate.consensusSynced();
-
             assertThat(gate.state()).isEqualTo(ReadinessState.LOADING_SNAPSHOT);
             assertThat(gate.isWriteReady()).isFalse();
         }

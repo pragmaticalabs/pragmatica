@@ -7,14 +7,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.storage.PrefetchConfig.prefetchConfig;
 import static org.pragmatica.storage.PrefetchHint.prefetchHint;
 import static org.pragmatica.storage.PrefetchManager.prefetchManager;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 class PrefetchManagerTest {
-
     private static final byte[] BLOCK_A = "prefetch-alpha-content".getBytes(StandardCharsets.UTF_8);
     private static final byte[] BLOCK_B = "prefetch-bravo-content".getBytes(StandardCharsets.UTF_8);
     private static final byte[] BLOCK_C = "prefetch-charlie-data!".getBytes(StandardCharsets.UTF_8);
@@ -31,24 +31,25 @@ class PrefetchManagerTest {
     }
 
     private static BlockId blockIdOf(byte[] content) {
-        return BlockId.blockId(content)
-                      .fold(_ -> { fail("BlockId creation failed"); return null; },
-                            id -> id);
+        return BlockId.blockId(content).fold(_ -> {
+                                                 fail("BlockId creation failed");
+
+                                                 return null;
+                                             },
+                                             id -> id);
     }
 
     @Nested
     class HintCollectionTests {
-
         @Test
         void recordAccess_belowThreshold_noHints() {
             var pm = prefetchManager(storage, config);
-            pm.activate();
 
+            pm.activate();
             var id = blockIdOf(BLOCK_A);
 
             pm.recordAccess(id);
             pm.recordAccess(id);
-
             var hints = pm.collectHints();
 
             assertThat(hints).isEmpty();
@@ -57,14 +58,13 @@ class PrefetchManagerTest {
         @Test
         void recordAccess_aboveThreshold_generatesHint() {
             var pm = prefetchManager(storage, config);
-            pm.activate();
 
+            pm.activate();
             var id = blockIdOf(BLOCK_A);
 
             pm.recordAccess(id);
             pm.recordAccess(id);
             pm.recordAccess(id);
-
             var hints = pm.collectHints();
 
             assertThat(hints).hasSize(1);
@@ -75,14 +75,13 @@ class PrefetchManagerTest {
         @Test
         void collectHints_resetsCounters() {
             var pm = prefetchManager(storage, config);
-            pm.activate();
 
+            pm.activate();
             var id = blockIdOf(BLOCK_A);
 
             pm.recordAccess(id);
             pm.recordAccess(id);
             pm.recordAccess(id);
-
             pm.collectHints();
             var secondCollection = pm.collectHints();
 
@@ -93,8 +92,8 @@ class PrefetchManagerTest {
         void collectHints_limitsToMaxPerGossip() {
             var limitedConfig = prefetchConfig(1, 2, 0);
             var pm = prefetchManager(storage, limitedConfig);
-            pm.activate();
 
+            pm.activate();
             var idA = blockIdOf(BLOCK_A);
             var idB = blockIdOf(BLOCK_B);
             var idC = blockIdOf(BLOCK_C);
@@ -102,7 +101,6 @@ class PrefetchManagerTest {
             pm.recordAccess(idA);
             pm.recordAccess(idB);
             pm.recordAccess(idC);
-
             var hints = pm.collectHints();
 
             assertThat(hints).hasSize(2);
@@ -112,8 +110,8 @@ class PrefetchManagerTest {
         void collectHints_orderedByAccessCountDescending() {
             var limitedConfig = prefetchConfig(1, 5, 0);
             var pm = prefetchManager(storage, limitedConfig);
-            pm.activate();
 
+            pm.activate();
             var idA = blockIdOf(BLOCK_A);
             var idB = blockIdOf(BLOCK_B);
 
@@ -121,7 +119,6 @@ class PrefetchManagerTest {
             pm.recordAccess(idB);
             pm.recordAccess(idB);
             pm.recordAccess(idB);
-
             var hints = pm.collectHints();
 
             assertThat(hints).hasSize(2);
@@ -132,7 +129,6 @@ class PrefetchManagerTest {
 
     @Nested
     class HintProcessingTests {
-
         /// The block lives only in the cluster-shared tier -- the case this feature exists for. The old version of
         /// this test put it in a node-private "durable" tier and asserted a `get` succeeded, which holds with or
         /// without prefetch; here the assertion is on the cache tier, which only a prefetch can fill.
@@ -143,14 +139,11 @@ class PrefetchManagerTest {
             var id = blockIdOf(BLOCK_A);
 
             shared.put(id, BLOCK_A).await().onFailure(c -> fail("put failed: " + c.message()));
-
             var pm = prefetchManager(sharedOnlyStorage, config);
+
             pm.activate();
-
             assertThat(memoryTier.exists(id).await().unwrap()).as("control: not local before the hint").isFalse();
-
             pm.processHints(List.of(prefetchHint(id.hexString(), 10)));
-
             assertThat(memoryTier.exists(id).await().unwrap()).isTrue();
             assertThat(pm.stats().warmed()).isEqualTo(1);
         }
@@ -158,18 +151,15 @@ class PrefetchManagerTest {
         @Test
         void processHints_existingBlock_noPrefetch() {
             // Store block locally first
-            storage.put(BLOCK_A).await()
-                   .onFailure(c -> fail("put failed: " + c.message()));
-
+            storage.put(BLOCK_A).await().onFailure(c -> fail("put failed: " + c.message()));
             var id = blockIdOf(BLOCK_A);
             var pm = prefetchManager(storage, config);
+
             pm.activate();
-
             var initialUsed = memoryTier.usedBytes();
-
             var hints = List.of(prefetchHint(id.hexString(), 10));
-            pm.processHints(hints);
 
+            pm.processHints(hints);
             // Block already exists, no additional storage activity expected
             assertThat(memoryTier.usedBytes()).isEqualTo(initialUsed);
             assertThat(pm.stats().warmed()).as("started, but nothing was fetched").isZero();
@@ -178,35 +168,30 @@ class PrefetchManagerTest {
         @Test
         void processHints_belowThreshold_ignored() {
             var pm = prefetchManager(storage, config);
+
             pm.activate();
-
             var id = blockIdOf(BLOCK_A);
-
             // Access count 1, threshold is 3 — should be ignored
             var hints = List.of(prefetchHint(id.hexString(), 1));
-            pm.processHints(hints);
 
+            pm.processHints(hints);
             // No prefetch initiated — block still doesn't exist
-            storage.exists(id).await()
-                   .onSuccess(exists -> assertThat(exists).isFalse());
+            storage.exists(id).await().onSuccess(exists -> assertThat(exists).isFalse());
         }
     }
 
     @Nested
     class LifecycleTests {
-
         @Test
         void dormant_noHintsGenerated() {
             var pm = prefetchManager(storage, config);
             // NOT activated — dormant
-
             var id = blockIdOf(BLOCK_A);
 
             pm.recordAccess(id);
             pm.recordAccess(id);
             pm.recordAccess(id);
             pm.recordAccess(id);
-
             var hints = pm.collectHints();
 
             assertThat(hints).isEmpty();
@@ -216,32 +201,26 @@ class PrefetchManagerTest {
         void dormant_processHintsIgnored() {
             var pm = prefetchManager(storage, config);
             // NOT activated — dormant
-
             var id = blockIdOf(BLOCK_A);
             var hints = List.of(prefetchHint(id.hexString(), 100));
 
             pm.processHints(hints);
-
-            storage.exists(id).await()
-                   .onSuccess(exists -> assertThat(exists).isFalse());
+            storage.exists(id).await().onSuccess(exists -> assertThat(exists).isFalse());
         }
 
         @Test
         void activate_deactivate_clearsState() {
             var pm = prefetchManager(storage, config);
+
             pm.activate();
-
             assertThat(pm.isActive()).isTrue();
-
             var id = blockIdOf(BLOCK_A);
-            pm.recordAccess(id);
-            pm.recordAccess(id);
-            pm.recordAccess(id);
 
+            pm.recordAccess(id);
+            pm.recordAccess(id);
+            pm.recordAccess(id);
             pm.deactivate();
-
             assertThat(pm.isActive()).isFalse();
-
             // After reactivation, previous counts should be cleared
             pm.activate();
             var hints = pm.collectHints();
@@ -255,7 +234,6 @@ class PrefetchManagerTest {
 
             assertThat(noop.isActive()).isFalse();
             assertThat(noop.collectHints()).isEmpty();
-
             noop.activate();
             assertThat(noop.isActive()).isFalse();
         }
@@ -263,28 +241,23 @@ class PrefetchManagerTest {
 
     @Nested
     class CooldownTests {
-
         @Test
         void processHints_respectsCooldown() {
             var cooldownConfig = prefetchConfig(1, 5, 60_000);
             var pm = prefetchManager(storage, cooldownConfig);
-            pm.activate();
 
+            pm.activate();
             var id = blockIdOf(BLOCK_A);
             var hints = List.of(prefetchHint(id.hexString(), 10));
-
             // First attempt sets cooldown
             pm.processHints(hints);
-
             // Second attempt within cooldown window should be filtered out
             // (cooldown is 60s, so this will always be within window)
             pm.processHints(hints);
-
             // Block doesn't exist in storage, so each attempt would try to fetch.
             // With cooldown, the second attempt should be suppressed.
             // We verify by checking the block still doesn't exist (no source to fetch from).
-            storage.exists(id).await()
-                   .onSuccess(exists -> assertThat(exists).isFalse());
+            storage.exists(id).await().onSuccess(exists -> assertThat(exists).isFalse());
         }
     }
 }

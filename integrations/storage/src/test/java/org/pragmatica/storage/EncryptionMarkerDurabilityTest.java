@@ -55,8 +55,10 @@ class EncryptionMarkerDurabilityTest {
                                                   .unwrap());
 
         assertThat(forced).as("jdk.FileForce events recorded while commitMarker ran")
-                  .containsSubsequence(new ForcedFile(marker.toAbsolutePath(), true),
-                                       new ForcedFile(tempDir.toAbsolutePath(), true));
+                  .containsSubsequence(new ForcedFile(marker.toAbsolutePath(),
+                                                      true),
+                                       new ForcedFile(tempDir.toAbsolutePath(),
+                                                      true));
     }
 
     /// Plain control, no JFR: the marker exists and carries the active key id once `commitMarker`
@@ -117,7 +119,8 @@ class EncryptionMarkerDurabilityTest {
     }
 
     private static ForcedFile forcedFile(RecordedEvent event) {
-        return new ForcedFile(Path.of(event.getString("path")).toAbsolutePath(), event.getBoolean("metaData"));
+        return new ForcedFile(Path.of(event.getString("path")).toAbsolutePath(),
+                              event.getBoolean("metaData"));
     }
 
     /// One `jdk.FileForce`: what was forced, and whether the force carried the file's metadata
@@ -128,11 +131,11 @@ class EncryptionMarkerDurabilityTest {
         var key = new byte[32];
 
         new SecureRandom().nextBytes(key);
-        var encryptor = BlockEncryptor.aesGcm(key, keyId)
-                                      .fold(c -> fail("encryptor creation failed: " + c.message()),
-                                            e -> e);
+        var encryptor = BlockEncryptor.aesGcm(key, keyId).fold(c -> fail("encryptor creation failed: " + c.message()),
+                                                               e -> e);
 
-        return EncryptionKeyring.encryptionKeyring(Map.of(keyId, encryptor), keyId)
+        return EncryptionKeyring.encryptionKeyring(Map.of(keyId, encryptor),
+                                                   keyId)
                                 .fold(c -> fail("keyring creation failed: " + c.message()),
                                       k -> k);
     }

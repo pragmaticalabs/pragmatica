@@ -7,18 +7,20 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.storage.PromotionConfig.promotionConfig;
 import static org.pragmatica.storage.PromotionManager.promotionManager;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Pins the promotion fixes that wiring the manager into production needs: the target-tier candidate test, the
 /// target watermark, the between-blocks `active` check, the partial-copy discard and the failure counters.
@@ -51,12 +53,11 @@ class PromotionManagerSafetyTest {
             disk.puts.set(0);
             pm.promote();
             pm.promote();
-
             assertThat(disk.puts.get()).as("the block is already on the disk tier; a candidate test that only asks "
-                                           + "'is it in memory' copies it from the remote tier on every cycle")
-                                       .isZero();
+                                          + "'is it in memory' copies it from the remote tier on every cycle")
+                      .isZero();
             assertThat(metadata.getLifecycle(id).unwrap().presentIn()).containsExactlyInAnyOrder(TierLevel.LOCAL_DISK,
-                                                                                                   TierLevel.REMOTE);
+                                                                                                 TierLevel.REMOTE);
         }
     }
 
@@ -72,11 +73,11 @@ class PromotionManagerSafetyTest {
             var pm = promotionManager(List.of(memory, disk, remote), metadata, promotionConfig(5, 300_000L, 10));
 
             pm.activate();
-
             assertThat(pm.promote()).isEqualTo(1);
             assertThat(disk.exists(id).await().unwrap()).as("the copy is in the DISK tier").isTrue();
             assertThat(memory.exists(id).await().unwrap()).as("and not in memory").isFalse();
-            assertThat(metadata.getLifecycle(id).unwrap().presentIn()).containsExactlyInAnyOrder(TierLevel.LOCAL_DISK, TierLevel.REMOTE);
+            assertThat(metadata.getLifecycle(id).unwrap().presentIn()).containsExactlyInAnyOrder(TierLevel.LOCAL_DISK,
+                                                                                                 TierLevel.REMOTE);
         }
     }
 
@@ -89,7 +90,6 @@ class PromotionManagerSafetyTest {
             var pm = promotionManager(List.of(memory, disk), metadata, promotionConfig(5, 300_000L, 10));
 
             pm.activate();
-
             assertThat(pm.promote()).isZero();
             assertThat(disk.gets.get()).as("a target at its watermark must not cost a source read").isZero();
             assertThat(memory.usedBytes()).isEqualTo(1450);
@@ -102,10 +102,9 @@ class PromotionManagerSafetyTest {
             var pm = promotionManager(List.of(memory, disk), metadata, promotionConfig(5, 300_000L, 10));
 
             pm.activate();
-
             assertThat(pm.promote()).isZero();
             assertThat(disk.gets.get()).as("a tier already AT its ceiling has no room for any block: no source read")
-                                       .isZero();
+                      .isZero();
         }
 
         @Test
@@ -115,7 +114,6 @@ class PromotionManagerSafetyTest {
             var pm = promotionManager(List.of(memory, disk), metadata, promotionConfig(5, 300_000L, 10));
 
             pm.activate();
-
             assertThat(pm.promote()).as("1100 + 400 bytes is past the 70% target of 2000").isZero();
             assertThat(memory.usedBytes()).isEqualTo(1100);
             assertThat(pm.stats().failed()).as("a policy skip is not a failed copy").isZero();
@@ -128,9 +126,8 @@ class PromotionManagerSafetyTest {
             var pm = promotionManager(List.of(memory, disk), metadata, promotionConfig(5, 300_000L, 10));
 
             pm.activate();
-
             assertThat(pm.promote()).as("1000 + 400 bytes is exactly the 70% target of 2000: at the ceiling, not past it")
-                                    .isEqualTo(1);
+                      .isEqualTo(1);
             assertThat(memory.exists(id).await().unwrap()).isTrue();
         }
 
@@ -148,16 +145,15 @@ class PromotionManagerSafetyTest {
 
             pm.activate();
             demotion.activate();
-
             for (var cycle = 0; cycle < 5; cycle++) {
                 demotion.demote();
                 pm.promote();
             }
 
             assertThat(demotion.stats().blocksDemoted()).as("promotion stayed under the demotion high watermark, so "
-                                                            + "demotion never had a block to take back")
-                                                        .isZero();
-            assertThat(memory.usedBytes()).isLessThanOrEqualTo((long) (MEMORY_MAX * 0.7));
+                                                           + "demotion never had a block to take back")
+                      .isZero();
+            assertThat(memory.usedBytes()).isLessThanOrEqualTo((long)(MEMORY_MAX * 0.7));
             assertThat(pm.stats().blocksPromoted()).isEqualTo(3);
         }
     }
@@ -167,10 +163,13 @@ class PromotionManagerSafetyTest {
         @Test
         void promote_deactivatedDuringBatch_stopsWithinOneBlock() {
             var pmRef = new AtomicReference<PromotionManager>();
-            var deactivating = new FaultyTier(memory, () -> {
-                pmRef.get().deactivate();
-                return Option.<Cause>none();
-            });
+            var deactivating = new FaultyTier(memory,
+                                              () -> {
+                                                  pmRef.get()
+                                                       .deactivate();
+
+                                                  return Option.<Cause> none();
+                                              });
 
             for (var i = 0; i < 3; i++) {
                 storeHot(disk, EnumSet.of(TierLevel.LOCAL_DISK), block(i));
@@ -180,8 +179,8 @@ class PromotionManagerSafetyTest {
 
             pmRef.set(pm);
             pm.activate();
-
-            assertThat(pm.promote()).as("the first copy lands, the deactivation it triggers ends the batch").isEqualTo(1);
+            assertThat(pm.promote()).as("the first copy lands, the deactivation it triggers ends the batch")
+                      .isEqualTo(1);
         }
     }
 
@@ -196,14 +195,13 @@ class PromotionManagerSafetyTest {
             var pm = promotionManager(List.of(faulty, disk), metadata, promotionConfig(5, 300_000L, 10));
 
             pm.activate();
-
             assertThat(pm.promote()).isZero();
             assertThat(memory.exists(id).await().unwrap()).as("the truncated copy the failed write left behind must "
-                                                              + "be deleted, or it shadows the durable copy")
-                                                          .isFalse();
+                                                             + "be deleted, or it shadows the durable copy")
+                      .isFalse();
             assertThat(pm.stats().failed()).isEqualTo(1);
             assertThat(metadata.getLifecycle(id).unwrap().presentIn()).as("no record of a copy that failed")
-                                                                      .containsExactly(TierLevel.LOCAL_DISK);
+                      .containsExactly(TierLevel.LOCAL_DISK);
         }
 
         @Test
@@ -212,35 +210,29 @@ class PromotionManagerSafetyTest {
 
             storeHot(disk, EnumSet.of(TierLevel.LOCAL_DISK), block(1));
             storeHot(disk, EnumSet.of(TierLevel.LOCAL_DISK), block(2));
-
             var pm = promotionManager(List.of(faulty, disk), metadata, promotionConfig(5, 300_000L, 10));
 
             pm.activate();
             pm.promote();
-
             assertThat(pm.stats().failed()).as("both candidates failed in the one cycle").isEqualTo(2);
-
             pm.promote();
-
             assertThat(pm.stats().failed()).as("the next cycle adds to the running total").isEqualTo(4);
         }
 
         @Test
         void promote_tierFullWrite_keepsTheCopyAlreadyThere() {
             var full = StorageError.TierFull.tierFull(TierLevel.MEMORY, 0, 0);
-            var faulty = new FaultyTier(memory, () -> Option.<Cause>some(full));
+            var faulty = new FaultyTier(memory, () -> Option.<Cause> some(full));
             var id = storeHot(disk, EnumSet.of(TierLevel.LOCAL_DISK), block(1));
 
             memory.put(id, block(1)).await();
-
             var pm = promotionManager(List.of(faulty, disk), metadata, promotionConfig(5, 300_000L, 10));
 
             pm.activate();
             pm.promote();
-
             assertThat(memory.exists(id).await().unwrap()).as("a tier that refused before writing wrote nothing, so a "
-                                                              + "valid copy already there must survive")
-                                                          .isTrue();
+                                                             + "valid copy already there must survive")
+                      .isTrue();
             assertThat(pm.stats().failed()).isEqualTo(1);
         }
     }
@@ -254,7 +246,6 @@ class PromotionManagerSafetyTest {
             var pm = promotionManager(List.of(memory, broken), metadata, promotionConfig(5, 300_000L, 10));
 
             pm.activate();
-
             assertThat(pm.promote()).isZero();
             assertThat(pm.stats().failed()).as("a source that cannot be read is a failed copy").isEqualTo(1);
             assertThat(memory.exists(id).await().unwrap()).isFalse();
@@ -265,13 +256,16 @@ class PromotionManagerSafetyTest {
             var now = System.currentTimeMillis();
             var id = BlockId.blockId(block(1)).unwrap();
 
-            metadata.createLifecycle(BlockLifecycle.blockLifecycle(id, EnumSet.of(TierLevel.LOCAL_DISK), 1, now, now, 100));
+            metadata.createLifecycle(BlockLifecycle.blockLifecycle(id,
+                                                                   EnumSet.of(TierLevel.LOCAL_DISK),
+                                                                   1,
+                                                                   now,
+                                                                   now,
+                                                                   100));
             reads(id, 100);
-
             var pm = promotionManager(List.of(memory, disk), metadata, promotionConfig(5, 300_000L, 10));
 
             pm.activate();
-
             assertThat(pm.promote()).isZero();
             assertThat(pm.stats().failed()).as("an absent source copy is a stale record, not a failing tier").isZero();
         }
@@ -281,11 +275,9 @@ class PromotionManagerSafetyTest {
     class Configuration {
         @Test
         void promotionConfig_defaultTargetWatermark_isTheDemotionLowWatermark() {
-            assertThat(PromotionConfig.promotionConfig().targetWatermark())
-                    .isEqualTo(DemotionConfig.demotionConfig().lowWatermark());
-            assertThat(promotionConfig(5, 300_000L, 10).targetWatermark())
-                    .as("the three-argument factory keeps the default")
-                    .isEqualTo(DemotionConfig.demotionConfig().lowWatermark());
+            assertThat(PromotionConfig.promotionConfig().targetWatermark()).isEqualTo(DemotionConfig.demotionConfig().lowWatermark());
+            assertThat(promotionConfig(5, 300_000L, 10).targetWatermark()).as("the three-argument factory keeps the default")
+                      .isEqualTo(DemotionConfig.demotionConfig().lowWatermark());
         }
 
         @Test
@@ -304,11 +296,9 @@ class PromotionManagerSafetyTest {
 
             pm.promote();
             assertThat(pm.stats().cycles()).as("a dormant manager runs no cycle").isZero();
-
             pm.activate();
             pm.promote();
             pm.promote();
-
             assertThat(pm.stats().cycles()).isEqualTo(2);
             assertThat(pm.stats().blocksPromoted()).isEqualTo(1);
             assertThat(pm.stats().failed()).as("a successful copy is not a failed one").isZero();
@@ -318,7 +308,6 @@ class PromotionManagerSafetyTest {
         @Test
         void noop_neverActivatesAndNeverPromotes() {
             PromotionManager.NOOP.activate();
-
             assertThat(PromotionManager.NOOP.isActive()).isFalse();
             assertThat(PromotionManager.NOOP.promote()).isZero();
             assertThat(PromotionManager.NOOP.stats()).isEqualTo(PromotionManager.PromotionStats.promotionStats());
@@ -328,7 +317,7 @@ class PromotionManagerSafetyTest {
     private static byte[] block(int seed) {
         var content = new byte[BLOCK_BYTES];
 
-        java.util.Arrays.fill(content, (byte) (seed + 1));
+        java.util.Arrays.fill(content, (byte)(seed + 1));
         content[0] = (byte) seed;
 
         return content;
@@ -351,7 +340,8 @@ class PromotionManagerSafetyTest {
         var now = System.currentTimeMillis();
 
         tier.put(id, content).await();
-        List.of(alsoOn).forEach(other -> other.put(id, content).await());
+        List.of(alsoOn).forEach(other -> other.put(id, content)
+                                              .await());
         metadata.createLifecycle(BlockLifecycle.blockLifecycle(id, presentIn, 1, now, now, 100));
         reads(id, 100);
 
@@ -476,7 +466,9 @@ class PromotionManagerSafetyTest {
 
         @Override
         public Promise<Unit> put(BlockId id, byte[] content) {
-            return hook.get().fold(() -> delegate.put(id, content), cause -> fail(id, cause));
+            return hook.get()
+                       .fold(() -> delegate.put(id, content),
+                             cause -> fail(id, cause));
         }
 
         private Promise<Unit> fail(BlockId id, Cause cause) {

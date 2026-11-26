@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+
 /// A delete that runs while a prefetch of the same block is fetching it must win: the prefetch stores nothing, and
 /// leaves no record, so the deleted block does not come back on the node that was warming it.
 class StorageInstanceWarmDeleteRaceTest {
@@ -36,7 +37,6 @@ class StorageInstanceWarmDeleteRaceTest {
             if (!holdGets.get()) {
                 return inner.get(id);
             }
-
             // The bytes are read when the call is made: what a transfer that began before the delete carries.
             var snapshot = inner.get(id).await().unwrap();
             var held = Promise.<Option<byte[]>> promise();
@@ -58,7 +58,8 @@ class StorageInstanceWarmDeleteRaceTest {
 
             var held = Promise.<Unit> promise();
 
-            heldDeletes.add(() -> inner.delete(id).onResult(held::resolve));
+            heldDeletes.add(() -> inner.delete(id)
+                                       .onResult(held::resolve));
 
             return held;
         }
@@ -137,7 +138,9 @@ class StorageInstanceWarmDeleteRaceTest {
     }
 
     private BlockId writeElsewhere(String content) {
-        return writer.put(content.getBytes(StandardCharsets.UTF_8)).await().unwrap();
+        return writer.put(content.getBytes(StandardCharsets.UTF_8))
+                     .await()
+                     .unwrap();
     }
 
     private static void awaitTrue(java.util.function.BooleanSupplier condition, String what) throws InterruptedException {
@@ -147,6 +150,7 @@ class StorageInstanceWarmDeleteRaceTest {
             if (System.nanoTime() > deadline) {
                 throw new AssertionError("timed out waiting for " + what);
             }
+
             Thread.sleep(5);
         }
     }
@@ -156,16 +160,15 @@ class StorageInstanceWarmDeleteRaceTest {
         var id = writeElsewhere("deleted-during-warm");
 
         shared.holdGets.set(true);
-
         var warm = reader.warm(id);
 
         awaitTrue(() -> shared.heldGets() > 0, "the warm's fetch to reach the shared tier");
         reader.delete(id).await().unwrap();
         shared.releaseGets();
-
         assertThat(warm.await().unwrap()).as("the warm did not store the block it was racing a delete for").isFalse();
         assertThat(memory.exists(id).await().unwrap()).as("no cached copy").isFalse();
-        assertThat(store.getLifecycle(id).isPresent()).as("no record, so no marker for a block that no longer exists").isFalse();
+        assertThat(store.getLifecycle(id).isPresent()).as("no record, so no marker for a block that no longer exists")
+                  .isFalse();
         assertThat(reader.exists(id).await().unwrap()).as("the deleted block stays deleted").isFalse();
         assertThat(reader.get(id).await().unwrap().isPresent()).isFalse();
         assertThat(reader.inFlightWarms()).as("the cancelled warm's ticket is gone").isZero();
@@ -176,18 +179,14 @@ class StorageInstanceWarmDeleteRaceTest {
         var id = writeElsewhere("warm-meets-a-delete-in-progress");
 
         shared.holdDeletes.set(true);
-
         var delete = reader.delete(id);
 
         awaitTrue(() -> shared.heldDeletes() > 0, "the delete to reach the shared tier");
-
         assertThat(shared.exists(id).await().unwrap()).as("control: the block is still in the shared tier").isTrue();
         assertThat(reader.warm(id).await().unwrap()).as("a block being deleted is not fetched").isFalse();
         assertThat(memory.exists(id).await().unwrap()).isFalse();
-
         shared.releaseDeletes();
         delete.await().unwrap();
-
         assertThat(store.getLifecycle(id).isPresent()).isFalse();
         assertThat(shared.exists(id).await().unwrap()).isFalse();
     }
@@ -203,30 +202,28 @@ class StorageInstanceWarmDeleteRaceTest {
         var tombstones = DefaultStorageInstance.class.getDeclaredField("deletesInFlight");
 
         tombstones.setAccessible(true);
-
         var hooked = new HookedSet((Set<BlockId>) tombstones.get(reader));
         var warm = new AtomicReference<Promise<Boolean>>();
 
         shared.holdGets.set(true);
         hooked.beforeAdd = () -> beginPrefetchAndAwaitItsFetch(warm, id);
         tombstones.set(reader, hooked);
-
         reader.delete(id).await().unwrap();
         shared.releaseGets();
-
         assertThat(hooked.added.get()).as("control: the interleaving was actually driven").isTrue();
-        assertThat(warm.get().await().unwrap()).as("the prefetch that began during the tombstone was cancelled").isFalse();
+        assertThat(warm.get().await().unwrap()).as("the prefetch that began during the tombstone was cancelled")
+                  .isFalse();
         assertThat(memory.exists(id).await().unwrap()).as("no cached copy").isFalse();
         assertThat(store.getLifecycle(id).isPresent()).as("no record").isFalse();
     }
 
     private void beginPrefetchAndAwaitItsFetch(AtomicReference<Promise<Boolean>> warm, BlockId id) {
         warm.set(reader.warm(id));
-
         try {
             awaitTrue(() -> shared.heldGets() > 0, "the prefetch's fetch to reach the shared tier");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+
             throw new AssertionError("interrupted while driving the interleaving", e);
         }
     }
@@ -235,6 +232,7 @@ class StorageInstanceWarmDeleteRaceTest {
     private static final class HookedSet extends AbstractSet<BlockId> {
         private final Set<BlockId> delegate;
         final AtomicBoolean added = new AtomicBoolean();
+
         volatile Runnable beforeAdd = () -> {};
 
         HookedSet(Set<BlockId> delegate) {
@@ -277,12 +275,12 @@ class StorageInstanceWarmDeleteRaceTest {
         reader.delete(id).await().unwrap();
         // A writer with no record of the block (the first one would deduplicate against its own) puts it back.
         StorageInstance.storageInstance("second-writer",
-                                        List.of(MemoryTier.memoryTier(10_000), shared),
+                                        List.of(MemoryTier.memoryTier(10_000),
+                                                shared),
                                         MetadataStore.inMemoryMetadataStore("second-writer"))
                        .put("deleted-then-written-again".getBytes(StandardCharsets.UTF_8))
                        .await()
                        .unwrap();
-
         assertThat(reader.warm(id).await().unwrap()).as("the tombstone is gone once the delete is").isTrue();
     }
 
@@ -291,10 +289,8 @@ class StorageInstanceWarmDeleteRaceTest {
         var id = writeElsewhere("delete-fails-block-stays");
 
         shared.failDeletes.set(true);
-
         assertThat(reader.delete(id).await().isFailure()).as("control: the delete failed").isTrue();
         shared.failDeletes.set(false);
-
         assertThat(reader.warm(id).await().unwrap()).as("a failed delete leaves no tombstone behind").isTrue();
     }
 
@@ -304,13 +300,11 @@ class StorageInstanceWarmDeleteRaceTest {
         var deleted = writeElsewhere("some-other-block");
 
         shared.holdGets.set(true);
-
         var warm = reader.warm(warmed);
 
         awaitTrue(() -> shared.heldGets() > 0, "the warm's fetch to reach the shared tier");
         reader.delete(deleted).await().unwrap();
         shared.releaseGets();
-
         assertThat(warm.await().unwrap()).as("only a delete of the SAME block cancels a warm").isTrue();
         assertThat(memory.exists(warmed).await().unwrap()).isTrue();
     }

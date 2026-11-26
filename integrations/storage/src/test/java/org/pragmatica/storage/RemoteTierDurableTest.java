@@ -10,9 +10,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.cloud.aws.s3.S3Client;
 import org.pragmatica.cloud.aws.s3.S3Error;
 import org.pragmatica.lang.Cause;
@@ -20,10 +17,15 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.lang.Unit.unit;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 /// #249: the production [RemoteTier] ([RemoteTier#durableRemoteTier]) without a network: durability only on
 /// the production path, shared always, bounded in-flight requests, per-request timeouts, classified failures
@@ -39,8 +41,12 @@ class RemoteTierDurableTest {
     }
 
     private RemoteTier durable(int maxInflight) {
-        return RemoteTier.durableRemoteTier(s3, "cluster-a/", maxInflight, timeSpan(30).seconds())
-                         .fold(cause -> fail(cause.message()), tier -> tier);
+        return RemoteTier.durableRemoteTier(s3,
+                                            "cluster-a/",
+                                            maxInflight,
+                                            timeSpan(30).seconds())
+                         .fold(cause -> fail(cause.message()),
+                               tier -> tier);
     }
 
     private static BlockId idOf(byte[] content) {
@@ -49,7 +55,6 @@ class RemoteTierDurableTest {
 
     @Nested
     class Flags {
-
         /// Mutation that reddens it: hard-code `isDurable` true (then the test factory reports durable).
         @Test
         void isDurable_onlyForTheProductionConstructionPath() {
@@ -65,29 +70,27 @@ class RemoteTierDurableTest {
 
         @Test
         void durableRemoteTier_nonPositiveMaxInflight_isRefused() {
-            RemoteTier.durableRemoteTier(s3, "p", 0, timeSpan(1).seconds())
-                      .onSuccess(_ -> fail("Expected refusal"));
+            RemoteTier.durableRemoteTier(s3, "p", 0, timeSpan(1).seconds()).onSuccess(_ -> fail("Expected refusal"));
         }
     }
 
     @Nested
     class Keys {
-
         @Test
         void keys_liveUnderThePrefix_withOneSeparator() {
             var id = idOf(CONTENT);
 
             durable(4).put(id, CONTENT).await().onFailure(cause -> fail(cause.message()));
             RemoteTier.remoteTier(s3, "legacy", 1024).put(id, CONTENT).await();
-
-            assertThat(s3.objects.keySet()).containsExactlyInAnyOrder("cluster-a/" + id.shardPrefix() + "/" + id.hexString(),
-                                                                      "legacy/" + id.shardPrefix() + "/" + id.hexString());
+            assertThat(s3.objects.keySet()).containsExactlyInAnyOrder("cluster-a/" + id.shardPrefix()
+                                                                     + "/" + id.hexString(),
+                                                                      "legacy/" + id.shardPrefix()
+                                                                     + "/" + id.hexString());
         }
     }
 
     @Nested
     class Bounds {
-
         /// Mutation that reddens it: run requests outside the limiter (`request` calling `call` directly).
         @Test
         void inflight_neverExceedsMaxInflight() {
@@ -97,6 +100,7 @@ class RemoteTierDurableTest {
 
             for (var i = 0; i < 5; i++) {
                 var content = ("block-" + i).getBytes(StandardCharsets.UTF_8);
+
                 puts.add(tier.put(idOf(content), content));
             }
 
@@ -108,7 +112,8 @@ class RemoteTierDurableTest {
             s3.releaseAll();
             settle(() -> s3.started.get() == 5);
             s3.releaseAll();
-            puts.forEach(put -> put.await().onFailure(cause -> fail(cause.message())));
+            puts.forEach(put -> put.await()
+                                   .onFailure(cause -> fail(cause.message())));
             assertThat(s3.maxConcurrent.get()).isEqualTo(2);
             assertThat(s3.started.get()).isEqualTo(5);
         }
@@ -123,7 +128,8 @@ class RemoteTierDurableTest {
             for (var i = 0; i < 5; i++) {
                 var content = ("sequential-" + i).getBytes(StandardCharsets.UTF_8);
 
-                tier.put(idOf(content), content)
+                tier.put(idOf(content),
+                         content)
                     .await(timeSpan(5).seconds())
                     .onFailure(cause -> fail("request beyond max_inflight did not complete: " + cause.message()));
             }
@@ -138,10 +144,11 @@ class RemoteTierDurableTest {
         void put_overflowingTheUsedBytesCounter_isRefusedAsFull() throws ReflectiveOperationException {
             var tier = RemoteTier.remoteTier(s3, "blocks", Long.MAX_VALUE);
             var field = RemoteTier.class.getDeclaredField("usedBytes");
+
             field.setAccessible(true);
             ((AtomicLong) field.get(tier)).set(Long.MAX_VALUE - 1);
-
-            tier.put(idOf(CONTENT), CONTENT)
+            tier.put(idOf(CONTENT),
+                     CONTENT)
                 .await()
                 .onSuccess(_ -> fail("an overflowing reservation must be refused"))
                 .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.TierFull.class));
@@ -152,65 +159,94 @@ class RemoteTierDurableTest {
         @Test
         void request_hangingProvider_timesOutAsUnavailable() {
             s3.holdPuts = true;
-            var tier = RemoteTier.durableRemoteTier(s3, "p", 1, timeSpan(100).millis())
-                                 .fold(cause -> fail(cause.message()), t -> t);
+            var tier = RemoteTier.durableRemoteTier(s3,
+                                                    "p",
+                                                    1,
+                                                    timeSpan(100).millis())
+                                 .fold(cause -> fail(cause.message()),
+                                       t -> t);
 
-            tier.put(idOf(CONTENT), CONTENT)
+            tier.put(idOf(CONTENT),
+                     CONTENT)
                 .await(timeSpan(5).seconds())
                 .onSuccess(_ -> fail("Expected a timeout"))
                 .onFailure(cause -> assertUnavailable(cause));
         }
     }
 
+    /// #3784: the marker PUT of a touch that races a delete of its block is refused by the store. Whatever the
+    /// refusal's status, a block deleted under the touch is an absent block (`false`, as for a touch of an absent
+    /// block), never a [RemoteTierError.Rejected]; a refusal while the block is still held stays a verdict.
+    @Nested
+    class TouchRefusal {
+        @Test
+        void touch_markerRefusedWhileBlockDeletedUnderIt_isFalse_notRejected() {
+            var tier = durable(4);
+            var id = idOf(CONTENT);
+
+            tier.put(id, CONTENT).await();
+            s3.markerRefusal = new S3Error.AccessDenied("raced a delete");
+            s3.blockGoneAtRefusal = true;
+            assertThat(tier.touch(id).await().<Boolean> fold(cause -> fail(cause.message()), touched -> touched)).isFalse();
+        }
+
+        @Test
+        void touch_markerRefusedWhileBlockStillHeld_staysRejected() {
+            var tier = durable(4);
+            var id = idOf(CONTENT);
+
+            tier.put(id, CONTENT).await();
+            s3.markerRefusal = new S3Error.AccessDenied("bad key");
+            tier.touch(id)
+                .await()
+                .onSuccess(touched -> fail("Expected a failure, got " + touched))
+                .onFailure(cause -> assertThat(cause).isInstanceOf(RemoteTierError.Rejected.class));
+        }
+    }
+
     @Nested
     class Classification {
-
         /// An unavailable provider is retriable and never "absent".
         @Test
         void get_providerUnavailable_failsRetriable_notNone() {
             s3.failure = new S3Error.ApiError(503, "SlowDown", "reduce rate");
-
             durable(4).get(idOf(CONTENT))
-                      .await()
-                      .onSuccess(opt -> fail("Expected a failure, got " + opt))
-                      .onFailure(RemoteTierDurableTest::assertUnavailable);
+                   .await()
+                   .onSuccess(opt -> fail("Expected a failure, got " + opt))
+                   .onFailure(RemoteTierDurableTest::assertUnavailable);
         }
 
         @Test
         void put_accessDenied_isRejectedAndTerminal() {
             s3.failure = new S3Error.AccessDenied("bad key");
-
-            durable(4).put(idOf(CONTENT), CONTENT)
-                      .await()
-                      .onSuccess(_ -> fail("Expected a failure"))
-                      .onFailure(cause -> {
-                          assertThat(cause).isInstanceOf(RemoteTierError.Rejected.class);
-                          assertThat(cause.isTerminal()).isTrue();
-                          assertThat(cause.source()).isEqualTo(Option.some(s3.failure));
-                      });
+            durable(4).put(idOf(CONTENT),
+                           CONTENT)
+                   .await()
+                   .onSuccess(_ -> fail("Expected a failure"))
+                   .onFailure(cause -> {
+                                  assertThat(cause).isInstanceOf(RemoteTierError.Rejected.class);
+                                  assertThat(cause.isTerminal()).isTrue();
+                                  assertThat(cause.source()).isEqualTo(Option.some(s3.failure));
+                              });
         }
 
         @Test
         void classify_throttlingAndTimeoutStatuses_areUnavailable() {
             assertUnavailable(RemoteTier.classify("PUT", "k", new S3Error.ApiError(429, "SlowDown", "")));
             assertUnavailable(RemoteTier.classify("PUT", "k", new S3Error.ApiError(408, "RequestTimeout", "")));
-            assertUnavailable(RemoteTier.classify("PUT", "k", new S3Error.NetworkError("refused", Option.none())));
-            assertThat(RemoteTier.classify("PUT", "k", new S3Error.ApiError(400, "InvalidRequest", "")))
-                .isInstanceOf(RemoteTierError.Rejected.class);
-            assertThat(RemoteTier.classify("PUT", "k", new S3Error.ApiError(301, "PermanentRedirect", "wrong region")))
-                .isInstanceOf(RemoteTierError.Rejected.class);
+            assertUnavailable(RemoteTier.classify("PUT",
+                                                  "k",
+                                                  new S3Error.NetworkError("refused", Option.none())));
+            assertThat(RemoteTier.classify("PUT", "k", new S3Error.ApiError(400, "InvalidRequest", ""))).isInstanceOf(RemoteTierError.Rejected.class);
+            assertThat(RemoteTier.classify("PUT", "k", new S3Error.ApiError(301, "PermanentRedirect", "wrong region"))).isInstanceOf(RemoteTierError.Rejected.class);
         }
     }
 
     @Nested
     class Probe {
-
         @Test
         void probe_putGetDelete_leavesNothingBehind() {
-            durable(4).probe("node-1")
-                      .await()
-                      .onFailure(cause -> fail(cause.message()));
-
+            durable(4).probe("node-1").await().onFailure(cause -> fail(cause.message()));
             assertThat(s3.calls).containsExactly("PUT cluster-a/.aether-probe/node-1",
                                                  "GET cluster-a/.aether-probe/node-1",
                                                  "DELETE cluster-a/.aether-probe/node-1");
@@ -220,11 +256,10 @@ class RemoteTierDurableTest {
         @Test
         void probe_readBackDiffers_failsWithMismatch() {
             s3.corruptReads = true;
-
             durable(4).probe("node-1")
-                      .await()
-                      .onSuccess(_ -> fail("Expected a mismatch"))
-                      .onFailure(cause -> assertThat(cause).isInstanceOf(RemoteTierError.ProbeMismatch.class));
+                   .await()
+                   .onSuccess(_ -> fail("Expected a mismatch"))
+                   .onFailure(cause -> assertThat(cause).isInstanceOf(RemoteTierError.ProbeMismatch.class));
         }
 
         /// B23: another node's in-flight probe object is not an existing block, so it never refuses a first encrypted
@@ -232,23 +267,21 @@ class RemoteTierDurableTest {
         @Test
         void existingObjects_skipsEveryNodesProbeObjects() {
             var id = idOf(CONTENT);
+
             s3.objects.put("cluster-a/.aether-probe/other-node", CONTENT);
-
             assertThat(existing(durable(4))).isEmpty();
-
-            s3.objects.put("cluster-a/" + id.shardPrefix() + "/" + id.hexString(), CONTENT);
-
+            s3.objects.put("cluster-a/" + id.shardPrefix() + "/" + id.hexString(),
+                           CONTENT);
             assertThat(existing(durable(4))).containsExactly("cluster-a/" + id.shardPrefix() + "/" + id.hexString());
         }
 
         @Test
         void probe_unreachable_fails() {
             s3.failure = new S3Error.NetworkError("connection refused", Option.none());
-
             durable(4).probe("node-1")
-                      .await()
-                      .onSuccess(_ -> fail("Expected a failure"))
-                      .onFailure(RemoteTierDurableTest::assertUnavailable);
+                   .await()
+                   .onSuccess(_ -> fail("Expected a failure"))
+                   .onFailure(RemoteTierDurableTest::assertUnavailable);
         }
     }
 
@@ -256,18 +289,23 @@ class RemoteTierDurableTest {
     /// after, not inline. Polls up to 5 s, then lets the caller's assertion report the state.
     private static void settle(BooleanSupplier condition) {
         var deadline = System.nanoTime() + 5_000_000_000L;
+
         while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
             Thread.onSpinWait();
         }
         // let any over-limit start that would violate the bound surface before asserting
         var settleUntil = System.nanoTime() + 50_000_000L;
+
         while (System.nanoTime() < settleUntil) {
             Thread.onSpinWait();
         }
     }
 
     private static List<String> existing(RemoteTier tier) {
-        return tier.existingObjects(10).await().fold(cause -> fail(cause.message()), keys -> keys);
+        return tier.existingObjects(10)
+                   .await()
+                   .fold(cause -> fail(cause.message()),
+                         keys -> keys);
     }
 
     private static void assertUnavailable(Cause cause) {
@@ -284,6 +322,10 @@ class RemoteTierDurableTest {
         final AtomicInteger running = new AtomicInteger();
         final AtomicInteger maxConcurrent = new AtomicInteger();
         volatile Cause failure;
+        /// Refuses every touch-marker PUT with this cause; see [#blockGoneAtRefusal].
+        volatile Cause markerRefusal;
+        /// The store removes the block while it refuses the marker PUT: a delete that landed at the touch's write.
+        volatile boolean blockGoneAtRefusal;
         volatile boolean holdPuts;
         volatile boolean corruptReads;
 
@@ -293,15 +335,29 @@ class RemoteTierDurableTest {
             if (failure != null) {
                 return failure.promise();
             }
+
+            if (markerRefusal != null && key.endsWith(".touched")) {
+                if (blockGoneAtRefusal) {
+                    objects.remove(key.substring(0,
+                                                 key.length() - ".touched".length()));
+                }
+
+                return markerRefusal.promise();
+            }
+
             started.incrementAndGet();
             maxConcurrent.accumulateAndGet(running.incrementAndGet(), Math::max);
             if (!holdPuts) {
                 running.decrementAndGet();
                 objects.put(key, content);
+
                 return Promise.success(unit());
             }
-            var gate = Promise.<Unit>promise();
+
+            var gate = Promise.<Unit> promise();
+
             held.add(gate);
+
             return gate.onSuccess(_ -> objects.put(key, content));
         }
 
@@ -327,6 +383,7 @@ class RemoteTierDurableTest {
 
         void releaseAll() {
             var gates = List.copyOf(held);
+
             held.removeAll(gates);
             gates.forEach(this::complete);
         }
@@ -342,14 +399,19 @@ class RemoteTierDurableTest {
             if (failure != null) {
                 return failure.promise();
             }
-            return Promise.success(Option.option(objects.get(key))
-                                         .map(bytes -> corruptReads ? "corrupt".getBytes(StandardCharsets.UTF_8) : bytes));
+
+            return Promise.success(Option.option(objects.get(key)).map(bytes -> corruptReads
+                                                                                ? "corrupt".getBytes(StandardCharsets.UTF_8)
+                                                                                : bytes));
         }
 
         @Override
         public Promise<Boolean> headObject(String key) {
             calls.add("HEAD " + key);
-            return failure != null ? failure.promise() : Promise.success(objects.containsKey(key));
+
+            return failure != null
+                   ? failure.promise()
+                   : Promise.success(objects.containsKey(key));
         }
 
         @Override
@@ -358,7 +420,9 @@ class RemoteTierDurableTest {
             if (failure != null) {
                 return failure.promise();
             }
+
             objects.remove(key);
+
             return Promise.success(unit());
         }
 

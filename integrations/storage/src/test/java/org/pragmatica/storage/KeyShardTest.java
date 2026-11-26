@@ -6,10 +6,12 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.stream.IntStream;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 class KeyShardTest {
     private static final HexFormat HEX = HexFormat.of();
@@ -32,7 +34,9 @@ class KeyShardTest {
             }
 
             assertThat(all).as("count %d", count)
-                           .containsExactlyElementsOf(IntStream.range(0, 256).mapToObj(b -> HEX.toHexDigits((byte) b)).toList());
+                      .containsExactlyElementsOf(IntStream.range(0, 256)
+                                                          .mapToObj(b -> HEX.toHexDigits((byte) b))
+                                                          .toList());
         }
     }
 
@@ -41,7 +45,11 @@ class KeyShardTest {
         var id = BlockId.blockId("which shard".getBytes(StandardCharsets.UTF_8)).unwrap();
 
         for (var count : List.of(1, 3, 4, 256)) {
-            var owners = IntStream.range(0, count).filter(index -> KeyShard.keyShard(index, count).unwrap().contains(id)).count();
+            var owners = IntStream.range(0, count)
+                                  .filter(index -> KeyShard.keyShard(index, count)
+                                                           .unwrap()
+                                                           .contains(id))
+                                  .count();
 
             assertThat(owners).as("count %d", count).isEqualTo(1);
         }

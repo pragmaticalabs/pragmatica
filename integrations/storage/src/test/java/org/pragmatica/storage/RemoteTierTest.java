@@ -8,21 +8,22 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.cloud.aws.s3.S3Client;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 class RemoteTierTest {
-
     private static final byte[] CONTENT_A = "content-alpha".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CONTENT_B = "content-bravo".getBytes(StandardCharsets.UTF_8);
     private static final long MAX_BYTES = 1024 * 1024;
@@ -38,34 +39,36 @@ class RemoteTierTest {
     }
 
     private static BlockId blockIdOf(byte[] content) {
-        return BlockId.blockId(content)
-                      .fold(_ -> { fail("BlockId creation failed"); return null; },
-                            id -> id);
+        return BlockId.blockId(content).fold(_ -> {
+                                                 fail("BlockId creation failed");
+
+                                                 return null;
+                                             },
+                                             id -> id);
     }
 
     @Nested
     class PutGetTests {
-
         @Test
         void put_get_roundTrip() {
             var id = blockIdOf(CONTENT_A);
 
-            tier.put(id, CONTENT_A).await()
-                .onFailure(c -> fail("put failed: " + c.message()));
-
-            tier.get(id).await()
+            tier.put(id, CONTENT_A).await().onFailure(c -> fail("put failed: " + c.message()));
+            tier.get(id)
+                .await()
                 .onFailure(c -> fail("get failed: " + c.message()))
                 .onSuccess(opt -> {
-                    assertThat(opt.isPresent()).isTrue();
-                    opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
-                });
+                               assertThat(opt.isPresent()).isTrue();
+                               opt.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
+                           });
         }
 
         @Test
         void get_nonExistent_returnsNone() {
             var id = blockIdOf(CONTENT_A);
 
-            tier.get(id).await()
+            tier.get(id)
+                .await()
                 .onFailure(c -> fail("get failed: " + c.message()))
                 .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
         }
@@ -73,29 +76,25 @@ class RemoteTierTest {
 
     @Nested
     class DeleteTests {
-
         @Test
         void delete_removesBlock() {
             var id = blockIdOf(CONTENT_A);
 
             tier.put(id, CONTENT_A).await();
             tier.delete(id).await();
-
-            tier.get(id).await()
-                .onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
+            tier.get(id).await().onSuccess(opt -> assertThat(opt.isEmpty()).isTrue());
         }
     }
 
     @Nested
     class ExistsTests {
-
         @Test
         void exists_afterPut_returnsTrue() {
             var id = blockIdOf(CONTENT_A);
 
             tier.put(id, CONTENT_A).await();
-
-            tier.exists(id).await()
+            tier.exists(id)
+                .await()
                 .onFailure(c -> fail("exists failed: " + c.message()))
                 .onSuccess(found -> assertThat(found).isTrue());
         }
@@ -104,7 +103,8 @@ class RemoteTierTest {
         void exists_missing_returnsFalse() {
             var id = blockIdOf(CONTENT_A);
 
-            tier.exists(id).await()
+            tier.exists(id)
+                .await()
                 .onFailure(c -> fail("exists failed: " + c.message()))
                 .onSuccess(found -> assertThat(found).isFalse());
         }
@@ -112,26 +112,23 @@ class RemoteTierTest {
 
     @Nested
     class S3KeyTests {
-
         @Test
         void s3Key_usesShardPrefix() {
             var id = blockIdOf(CONTENT_A);
 
             tier.put(id, CONTENT_A).await();
-
             var expectedKey = PREFIX + "/" + id.shardPrefix() + "/" + id.hexString();
+
             assertThat(mockS3.containsKey(expectedKey)).isTrue();
         }
     }
 
     @Nested
     class CapacityTests {
-
         @Test
         void put_exceedsMaxBytes_returnsFailure() {
             var smallTier = RemoteTier.remoteTier(mockS3, PREFIX, 10);
             var id = blockIdOf(CONTENT_A);
-
             var result = smallTier.put(id, CONTENT_A).await();
 
             result.onSuccess(_ -> fail("Expected failure for exceeding capacity"));
@@ -143,7 +140,6 @@ class RemoteTierTest {
             var id = blockIdOf(CONTENT_A);
 
             assertThat(tier.usedBytes()).isZero();
-
             tier.put(id, CONTENT_A).await();
             assertThat(tier.usedBytes()).isEqualTo(CONTENT_A.length);
         }
@@ -151,7 +147,6 @@ class RemoteTierTest {
 
     @Nested
     class MetadataTests {
-
         @Test
         void level_returnsRemote() {
             assertThat(tier.level()).isEqualTo(TierLevel.REMOTE);
@@ -181,6 +176,7 @@ class RemoteTierTest {
             putKeys.add(key);
             store.put(key, content.clone());
             modified.put(key, clock.get());
+
             return Promise.success(unit());
         }
 
@@ -198,34 +194,42 @@ class RemoteTierTest {
         public Promise<Unit> deleteObject(String key) {
             store.remove(key);
             modified.remove(key);
+
             return Promise.success(unit());
         }
 
         @Override
         public Promise<List<String>> listObjects(String prefix, int maxKeys) {
-            var keys = store.keySet().stream()
-                            .filter(k -> k.startsWith(prefix))
-                            .limit(maxKeys)
-                            .toList();
+            var keys = store.keySet().stream().filter(k -> k.startsWith(prefix)).limit(maxKeys).toList();
+
             return Promise.success(keys);
         }
 
         @Override
         public Promise<Option<ObjectStat>> statObject(String key) {
-            return Promise.success(option(store.get(key)).map(bytes -> ObjectStat.objectStat(key, bytes.length, modified.get(key))));
+            return Promise.success(option(store.get(key)).map(bytes -> ObjectStat.objectStat(key,
+                                                                                             bytes.length,
+                                                                                             modified.get(key))));
         }
 
         @Override
         public Promise<ObjectListing> listObjectStats(String prefix, Option<String> startAfter, int maxKeys) {
-            var keys = store.keySet().stream()
+            var keys = store.keySet()
+                            .stream()
                             .filter(k -> k.startsWith(prefix))
-                            .filter(k -> startAfter.fold(() -> true, after -> k.compareTo(after) > 0))
+                            .filter(k -> startAfter.fold(() -> true,
+                                                         after -> k.compareTo(after) > 0))
                             .toList();
             var page = keys.stream()
-                           .limit(Math.min(maxKeys, listPageCap.get()))
-                           .map(k -> ObjectStat.objectStat(k, store.get(k).length, modified.get(k)))
+                           .limit(Math.min(maxKeys,
+                                           listPageCap.get()))
+                           .map(k -> ObjectStat.objectStat(k,
+                                                           store.get(k).length,
+                                                           modified.get(k)))
                            .toList();
-            return Promise.success(ObjectListing.objectListing(page, keys.size() > page.size()));
+
+            return Promise.success(ObjectListing.objectListing(page,
+                                                               keys.size() > page.size()));
         }
 
         boolean containsKey(String key) {
@@ -239,7 +243,9 @@ class RemoteTierTest {
 
         /// The PUTs of keys that are not touch markers: the block writes.
         long blockPuts() {
-            return putKeys.stream().filter(key -> !key.endsWith(".touched")).count();
+            return putKeys.stream()
+                          .filter(key -> !key.endsWith(".touched"))
+                          .count();
         }
     }
 }

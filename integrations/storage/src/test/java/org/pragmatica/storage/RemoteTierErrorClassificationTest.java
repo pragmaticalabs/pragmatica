@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+
 /// #2103: the remote tier's failures. A rejection is a verdict, terminal and never transient, even over a transient origin;
 /// an unavailable provider follows its origin.
 class RemoteTierErrorClassificationTest {

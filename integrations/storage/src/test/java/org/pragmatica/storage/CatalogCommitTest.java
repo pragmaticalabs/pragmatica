@@ -11,12 +11,12 @@ import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.storage.CatalogFixture.NAMESPACE;
 import static org.pragmatica.storage.CatalogFixture.entry;
 import static org.pragmatica.storage.CatalogFixture.name;
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// The pure catalog core: one commit is one new root holding every mutation of it or none, and a commit rebuilt on a newer
@@ -27,7 +27,13 @@ class CatalogCommitTest {
     private final CatalogFixture.Pages pages = new CatalogFixture.Pages();
 
     private CatalogDraft.CatalogWrite built(CatalogRoot root, CatalogMutation... mutations) {
-        var write = CatalogCommit.catalogCommit(List.of(mutations)).onto(root, NAMESPACE, pages.source(), FANOUT).await().unwrap();
+        var write = CatalogCommit.catalogCommit(List.of(mutations))
+                                 .onto(root,
+                                       NAMESPACE,
+                                       pages.source(),
+                                       FANOUT)
+                                 .await()
+                                 .unwrap();
 
         pages.store(write.blocks());
 
@@ -43,29 +49,49 @@ class CatalogCommitTest {
     }
 
     private Option<ObjectId> holder(CatalogRoot root, String value) {
-        return draft(root).holder(name(value)).await().unwrap();
+        return draft(root).holder(name(value))
+                    .await()
+                    .unwrap();
     }
 
     private Option<ObjectEntry> entryOf(CatalogRoot root, ObjectId id) {
-        return draft(root).entry(id).await().unwrap();
+        return draft(root).entry(id)
+                    .await()
+                    .unwrap();
     }
 
     /// Everything a root says: each object's name, size and content type, and each name's object.
     private Map<String, String> state(CatalogRoot root) {
         var state = new TreeMap<String, String>();
 
-        PageTree.cells(root.idTree(), pages.source()).await().unwrap()
-                .forEach(cell -> state.put("o:" + cell.key(), describe(ObjectEntry.fromBytes(cell.value()).unwrap())));
-        PageTree.cells(root.nameTree(), pages.source()).await().unwrap()
-                .forEach(cell -> state.put("n:" + cell.key(), new ObjectId(cell.value()).asString()));
-        state.put("count", Long.toString(root.objectCount()));
-        state.put("bytes", Long.toString(root.committedBytes()));
+        PageTree.cells(root.idTree(),
+                       pages.source())
+                .await()
+                .unwrap()
+                .forEach(cell -> state.put("o:" + cell.key(),
+                                           describe(ObjectEntry.fromBytes(cell.value()).unwrap())));
+        PageTree.cells(root.nameTree(),
+                       pages.source())
+                .await()
+                .unwrap()
+                .forEach(cell -> state.put("n:" + cell.key(),
+                                           new ObjectId(cell.value()).asString()));
+        state.put("count",
+                  Long.toString(root.objectCount()));
+        state.put("bytes",
+                  Long.toString(root.committedBytes()));
 
         return state;
     }
 
     private static String describe(ObjectEntry entry) {
-        return entry.name().map(ObjectName::value).or("-") + "/" + entry.meta().size() + "/" + entry.meta().contentType();
+        return entry.name()
+                    .map(ObjectName::value)
+                    .or("-")
+             + "/" + entry.meta()
+                          .size()
+             + "/" + entry.meta()
+                          .contentType();
     }
 
     @Test
@@ -81,7 +107,9 @@ class CatalogCommitTest {
         assertThat(write.root().committedBytes()).isEqualTo(10);
         assertThat(holder(write.root(), "a")).isEqualTo(some(id));
         assertThat(entryOf(write.root(), id).flatMap(ObjectEntry::name)).isEqualTo(some(name("a")));
-        assertThat(entryOf(write.root(), id).map(ObjectEntry::catalogVersion)).as("entries carry the commit's version").isEqualTo(some(1L));
+        assertThat(entryOf(write.root(),
+                           id).map(ObjectEntry::catalogVersion)).as("entries carry the commit's version")
+                  .isEqualTo(some(1L));
         assertThat(write.outcomes()).hasSize(2);
         assertThat(CatalogRoot.fromBytes(write.rootBlock()).unwrap()).isEqualTo(write.root());
         assertThat(BlockId.blockId(write.rootBlock()).unwrap()).isEqualTo(write.rootId());
@@ -93,12 +121,14 @@ class CatalogCommitTest {
         var before = committed(CatalogRoot.empty(),
                                CatalogMutation.create(id, entry(1, 1)),
                                CatalogMutation.bind(name("old"), id, Precondition.nameFree()));
-        var after = committed(before, CatalogMutation.bind(name("new"), id, Precondition.nameFree()));
+        var after = committed(before,
+                              CatalogMutation.bind(name("new"), id, Precondition.nameFree()));
 
         assertThat(holder(after, "new")).isEqualTo(some(id));
         assertThat(holder(after, "old").isEmpty()).isTrue();
         assertThat(entryOf(after, id).flatMap(ObjectEntry::name)).isEqualTo(some(name("new")));
-        assertThat(entryOf(after, id).flatMap(ObjectEntry::alsoBound).isEmpty()).as("no second name is ever recorded").isTrue();
+        assertThat(entryOf(after, id).flatMap(ObjectEntry::alsoBound).isEmpty()).as("no second name is ever recorded")
+                  .isTrue();
         assertThat(holder(before, "old")).as("the root before is unchanged").isEqualTo(some(id));
         assertThat(holder(before, "new").isEmpty()).isTrue();
     }
@@ -111,7 +141,8 @@ class CatalogCommitTest {
                              CatalogMutation.create(first, entry(1, 1)),
                              CatalogMutation.create(second, entry(1, 2)),
                              CatalogMutation.bind(name("a"), first, Precondition.nameFree()));
-        var after = committed(root, CatalogMutation.bind(name("a"), second, Precondition.boundTo(first)));
+        var after = committed(root,
+                              CatalogMutation.bind(name("a"), second, Precondition.boundTo(first)));
 
         assertThat(holder(after, "a")).isEqualTo(some(second));
         assertThat(entryOf(after, first).flatMap(ObjectEntry::name).isEmpty()).isTrue();
@@ -121,9 +152,15 @@ class CatalogCommitTest {
     @Test
     void aFailingMutation_failsTheWholeCommit() {
         var id = ObjectId.objectId();
-        var attempt = CatalogCommit.catalogCommit(List.of(CatalogMutation.create(id, entry(1, 1)),
-                                                          CatalogMutation.bind(name("a"), ObjectId.objectId(), Precondition.unconditional())))
-                                   .onto(CatalogRoot.empty(), NAMESPACE, pages.source(), FANOUT)
+        var attempt = CatalogCommit.catalogCommit(List.of(CatalogMutation.create(id,
+                                                                                 entry(1, 1)),
+                                                          CatalogMutation.bind(name("a"),
+                                                                               ObjectId.objectId(),
+                                                                               Precondition.unconditional())))
+                                   .onto(CatalogRoot.empty(),
+                                         NAMESPACE,
+                                         pages.source(),
+                                         FANOUT)
                                    .await();
 
         assertThat(attempt.isFailure()).isTrue();
@@ -134,11 +171,17 @@ class CatalogCommitTest {
     void createOfAnExistingId_isRefused() {
         var id = ObjectId.objectId();
         var root = committed(CatalogRoot.empty(), CatalogMutation.create(id, entry(1, 1)));
-        var again = CatalogCommit.catalogCommit(List.of(CatalogMutation.create(id, entry(2, 2))))
-                                 .onto(root, NAMESPACE, pages.source(), FANOUT)
+        var again = CatalogCommit.catalogCommit(List.of(CatalogMutation.create(id,
+                                                                               entry(2, 2))))
+                                 .onto(root,
+                                       NAMESPACE,
+                                       pages.source(),
+                                       FANOUT)
                                  .await();
 
-        again.onSuccess(_ -> { throw new AssertionError("a second create of one id was accepted"); })
+        again.onSuccess(_ -> {
+                 throw new AssertionError("a second create of one id was accepted");
+             })
              .onFailure(cause -> assertThat(cause).isInstanceOf(ContentStoreError.PreconditionFailed.class));
     }
 
@@ -146,13 +189,19 @@ class CatalogCommitTest {
     void aFailedGroup_leavesTheDraftBeforeIt_andTheNextGroupGoesOn() {
         var first = ObjectId.objectId();
         var third = ObjectId.objectId();
-        var draft = draft(CatalogRoot.empty()).apply(List.of(CatalogMutation.create(first, entry(1, 1)))).await().unwrap();
-        var failed = draft.apply(List.of(CatalogMutation.patch(ObjectId.objectId(), MetaPatch.metaPatch(none(), some("x"), none())))).await();
+        var draft = draft(CatalogRoot.empty()).apply(List.of(CatalogMutation.create(first,
+                                                                                    entry(1, 1))))
+                         .await()
+                         .unwrap();
+        var failed = draft.apply(List.of(CatalogMutation.patch(ObjectId.objectId(),
+                                                               MetaPatch.metaPatch(none(),
+                                                                                   some("x"),
+                                                                                   none()))))
+                          .await();
         var next = draft.apply(List.of(CatalogMutation.create(third, entry(3, 3)))).await().unwrap();
         var write = next.write(FANOUT).await().unwrap();
 
         pages.store(write.blocks());
-
         assertThat(failed.isFailure()).isTrue();
         assertThat(write.root().objectCount()).isEqualTo(2);
         assertThat(write.outcomes()).hasSize(2);
@@ -166,9 +215,12 @@ class CatalogCommitTest {
         var root = committed(CatalogRoot.empty(),
                              CatalogMutation.create(id, entry(7, 1)),
                              CatalogMutation.bind(name("a"), id, Precondition.nameFree()));
-        var write = built(root, CatalogMutation.remove(id), CatalogMutation.remove(ObjectId.objectId()));
+        var write = built(root,
+                          CatalogMutation.remove(id),
+                          CatalogMutation.remove(ObjectId.objectId()));
 
-        assertThat(write.outcomes().getFirst().map(info -> info.ref().id())).isEqualTo(some(id));
+        assertThat(write.outcomes().getFirst().map(info -> info.ref()
+                                                               .id())).isEqualTo(some(id));
         assertThat(write.outcomes().get(1).isEmpty()).as("removing an unknown id reports nothing").isTrue();
         assertThat(write.root().objectCount()).isZero();
         assertThat(write.root().committedBytes()).isZero();
@@ -182,9 +234,11 @@ class CatalogCommitTest {
         var root = committed(CatalogRoot.empty(),
                              CatalogMutation.create(id, entry(7, 1)),
                              CatalogMutation.bind(name("a"), id, Precondition.nameFree()));
-        var after = committed(root, CatalogMutation.patch(id, MetaPatch.metaPatch(none(), some("text/plain"), none())));
+        var after = committed(root,
+                              CatalogMutation.patch(id, MetaPatch.metaPatch(none(), some("text/plain"), none())));
 
-        assertThat(entryOf(after, id).map(found -> found.meta().contentType())).isEqualTo(some("text/plain"));
+        assertThat(entryOf(after, id).map(found -> found.meta()
+                                                        .contentType())).isEqualTo(some("text/plain"));
         assertThat(entryOf(after, id).flatMap(ObjectEntry::name)).isEqualTo(some(name("a")));
         assertThat(after.committedBytes()).isEqualTo(7);
     }
@@ -195,10 +249,13 @@ class CatalogCommitTest {
     void rebase_rechecksThePrecondition_onTheNewerRoot() {
         var a = ObjectId.objectId();
         var b = ObjectId.objectId();
-        var v1 = committed(CatalogRoot.empty(), CatalogMutation.create(a, entry(1, 1)), CatalogMutation.create(b, entry(1, 2)));
+        var v1 = committed(CatalogRoot.empty(),
+                           CatalogMutation.create(a, entry(1, 1)),
+                           CatalogMutation.create(b, entry(1, 2)));
         var commitOfB = CatalogCommit.catalogCommit(List.of(CatalogMutation.bind(name("x"), b, Precondition.nameFree())));
         var preparedOnV1 = commitOfB.onto(v1, NAMESPACE, pages.source(), FANOUT).await();
-        var v2 = committed(v1, CatalogMutation.bind(name("x"), a, Precondition.nameFree()));
+        var v2 = committed(v1,
+                           CatalogMutation.bind(name("x"), a, Precondition.nameFree()));
         var rebased = commitOfB.onto(v2, NAMESPACE, pages.source(), FANOUT).await();
 
         assertThat(preparedOnV1.isSuccess()).as("on v1 the name was free").isTrue();
@@ -253,8 +310,12 @@ class CatalogCommitTest {
 
         for (var i = 0; i < 12; i++) {
             var id = ObjectId.objectId();
-            var side = i % 2 == 0 ? left : right;
-            var prefix = i % 2 == 0 ? "l" : "r";
+            var side = i % 2 == 0
+                       ? left
+                       : right;
+            var prefix = i % 2 == 0
+                         ? "l"
+                         : "r";
 
             side.add(id);
             mutations.add(CatalogMutation.create(id, entry(1 + random.nextInt(50), i)));
@@ -263,12 +324,16 @@ class CatalogCommitTest {
             }
         }
 
-        return new Seeded(committed(CatalogRoot.empty(), mutations.toArray(CatalogMutation[]::new)), left, right);
+        return new Seeded(committed(CatalogRoot.empty(), mutations.toArray(CatalogMutation[]::new)),
+                          left,
+                          right);
     }
 
     /// Random creates, patches, binds, renames and removes, touching only `prefix`'s side of `base`.
     private CatalogMutation[] randomCommit(SplittableRandom random, Seeded base, String prefix) {
-        var ids = new ArrayList<>(prefix.equals("l") ? base.left() : base.right());
+        var ids = new ArrayList<>(prefix.equals("l")
+                                  ? base.left()
+                                  : base.right());
         var mutations = new ArrayList<CatalogMutation>();
 
         for (var i = 0; i < 1 + random.nextInt(8); i++) {
@@ -281,8 +346,13 @@ class CatalogCommitTest {
                     ids.add(created);
                     mutations.add(CatalogMutation.create(created, entry(1 + random.nextInt(50), 200 + i)));
                 }
-                case 1 -> mutations.add(CatalogMutation.patch(id, MetaPatch.metaPatch(none(), some(prefix + "/type" + i), none())));
-                case 2 -> mutations.add(CatalogMutation.bind(name(prefix + random.nextInt(12)), id, Precondition.unconditional()));
+                case 1 -> mutations.add(CatalogMutation.patch(id,
+                                                              MetaPatch.metaPatch(none(),
+                                                                                  some(prefix + "/type" + i),
+                                                                                  none())));
+                case 2 -> mutations.add(CatalogMutation.bind(name(prefix + random.nextInt(12)),
+                                                             id,
+                                                             Precondition.unconditional()));
                 case 3 -> mutations.add(CatalogMutation.bind(name(prefix + "new" + i), id, Precondition.unconditional()));
                 default -> {
                     ids.remove(id);
@@ -291,7 +361,6 @@ class CatalogCommitTest {
                 }
             }
         }
-
         // patches of removed objects would fail the commit; keep only mutations whose object is still there when applied
         return applicable(base.root(), mutations);
     }
@@ -319,7 +388,6 @@ class CatalogCommitTest {
         var unknownFormat = bytes.clone();
 
         unknownFormat[ContentEnvelope.marker().length + 1] = 9;
-
         assertThat(CatalogRoot.fromBytes(bytes).unwrap()).isEqualTo(root);
         assertThat(CatalogRoot.fromBytes(unknownFormat).isFailure()).isTrue();
         assertThat(CatalogRoot.fromBytes(Arrays.copyOf(bytes, bytes.length + 1)).isFailure()).isTrue();

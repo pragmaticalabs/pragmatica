@@ -13,10 +13,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.LongStream;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.cloud.aws.s3.S3Client;
 import org.pragmatica.cloud.aws.s3.S3Error;
 import org.pragmatica.lang.Cause;
@@ -26,11 +22,17 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 /// A3-0: the durable-anchor primitive on the two durable tiers ([LocalDiskTier], [RemoteTier] over an S3 simulator that
 /// lists keys in ascending order and counts its requests, as S3 does), plus the key and frame codec they share.
@@ -50,9 +52,12 @@ class AnchorTierTest {
             var keys = new ArrayList<>(versions.stream().map(AnchorFrame::key).toList());
 
             Collections.sort(keys);
-
-            assertThat(keys.stream().map(key -> AnchorFrame.versionOf(key).unwrap()).toList())
-                .containsExactly(Long.MAX_VALUE - 1, 100L, 99L, 10L, 9L, 0L);
+            assertThat(keys.stream().map(key -> AnchorFrame.versionOf(key).unwrap()).toList()).containsExactly(Long.MAX_VALUE - 1,
+                                                                                                               100L,
+                                                                                                               99L,
+                                                                                                               10L,
+                                                                                                               9L,
+                                                                                                               0L);
             assertThat(keys).allMatch(key -> key.length() == 20 && key.startsWith("v"));
         }
 
@@ -60,7 +65,8 @@ class AnchorTierTest {
         void aNameThatIsNotAKey_hasNoVersion() {
             assertThat(AnchorFrame.versionOf(AnchorFrame.key(5) + ".1.partial").isEmpty()).isTrue();
             assertThat(AnchorFrame.versionOf("123").isEmpty()).isTrue();
-            assertThat(AnchorFrame.versionOf(AnchorFrame.key(5).substring(1)).isEmpty()).as("no marker, no key").isTrue();
+            assertThat(AnchorFrame.versionOf(AnchorFrame.key(5).substring(1)).isEmpty()).as("no marker, no key")
+                      .isTrue();
         }
 
         /// 19 digits above `Long.MAX_VALUE` name no version: not a key, rather than a parse failure that reads as I/O.
@@ -84,6 +90,7 @@ class AnchorTierTest {
             for (var bad : List.of("", "..", "a/..", "./a", "A", "a/b/c/d", "a//b", "a b", "a~b", "x".repeat(129))) {
                 assertThat(AnchorName.anchorName(bad).isFailure()).as("'%s' is refused", bad).isTrue();
             }
+
             for (var good : List.of("ahse-dir/content", "a", "a/b/c", "ns.v1_x-y", "x".repeat(128))) {
                 assertThat(AnchorName.anchorName(good).isSuccess()).as("'%s' is accepted", good).isTrue();
             }
@@ -109,18 +116,18 @@ class AnchorTierTest {
         void aWriteThatFailsBeforeResolving_leavesThePreviousLatest() {
             var failNext = new AtomicBoolean();
             var tier = disk((path, bytes) -> failNext.get()
-                                             ? FileOps.writeBytes(path, java.util.Arrays.copyOf(bytes, bytes.length / 2))
+                                             ? FileOps.writeBytes(path,
+                                                                  java.util.Arrays.copyOf(bytes, bytes.length / 2))
                                                       .flatMap(_ -> new StorageError.WriteError("disk full").<Unit> result())
                                              : FileOps.writeBytes(path, bytes),
                             _ -> Result.unitResult());
 
             await(tier.putAnchor(NAME, 1, valueOf(1)));
             failNext.set(true);
-
             assertThat(tier.putAnchor(NAME, 2, valueOf(2)).await().isFailure()).isTrue();
             assertLatest(tier, NAME, 1);
             assertThat(listing(anchorDir(NAME))).as("the failed write leaves no partial behind")
-                                                .containsExactly(AnchorFrame.key(1));
+                      .containsExactly(AnchorFrame.key(1));
         }
 
         /// The anchor's directory is forced after the rename and before the put resolves: without it, the renamed
@@ -128,14 +135,11 @@ class AnchorTierTest {
         @Test
         void aPutForcesItsFileAndThenItsDirectoryBeforeResolving() {
             var events = new CopyOnWriteArrayList<String>();
-            var tier = disk((path, bytes) -> FileOps.writeBytesForced(path, bytes)
-                                                    .onSuccess(_ -> events.add("file " + path.getFileName())),
-                            directory -> FileOps.forceDirectory(directory)
-                                                .onSuccess(_ -> events.add("dir " + directory)));
+            var tier = disk((path, bytes) -> FileOps.writeBytesForced(path, bytes).onSuccess(_ -> events.add("file " + path.getFileName())),
+                            directory -> FileOps.forceDirectory(directory).onSuccess(_ -> events.add("dir " + directory)));
 
             await(tier.putAnchor(NAME, 7, valueOf(7)));
             events.add("resolved");
-
             assertThat(events).hasSize(3);
             assertThat(events.get(0)).startsWith("file " + AnchorFrame.key(7)).endsWith(".partial");
             assertThat(events.get(1)).isEqualTo("dir " + anchorDir(NAME));
@@ -149,7 +153,6 @@ class AnchorTierTest {
             await(tier.putAnchor(NAME, 1, valueOf(1)));
             await(tier.putAnchor(NAME, 2, valueOf(2)));
             flipLastByte(anchorDir(NAME).resolve(AnchorFrame.key(2)));
-
             assertCorrupt(tier.latestAnchor(NAME), TierLevel.LOCAL_DISK, 2);
         }
 
@@ -159,8 +162,8 @@ class AnchorTierTest {
             var tier = fastDisk();
 
             await(tier.putAnchor(NAME, 1, valueOf(1)));
-            Files.copy(anchorDir(NAME).resolve(AnchorFrame.key(1)), anchorDir(NAME).resolve(AnchorFrame.key(2)));
-
+            Files.copy(anchorDir(NAME).resolve(AnchorFrame.key(1)),
+                       anchorDir(NAME).resolve(AnchorFrame.key(2)));
             assertCorrupt(tier.latestAnchor(NAME), TierLevel.LOCAL_DISK, 2);
         }
 
@@ -170,7 +173,6 @@ class AnchorTierTest {
 
             await(tier.putAnchor(NAME, 1, valueOf(1)));
             await(tier.put(blockIdOf(new byte[]{1, 2, 3}), new byte[]{1, 2, 3}));
-
             var reopened = LocalDiskTier.localDiskTier(tempDir, 1 << 20).unwrap().open().unwrap();
 
             assertThat(reopened.usedBytes()).isEqualTo(3);
@@ -183,7 +185,6 @@ class AnchorTierTest {
 
             LongStream.rangeClosed(0, 20).forEach(version -> await(tier.putAnchor(NAME, version, valueOf(version))));
             await(tier.pruneAnchors(NAME, 12, 1));
-
             assertThat(versionsIn(listing(anchorDir(NAME)))).containsExactlyInAnyOrderElementsOf(range(12, 20));
             assertLatest(tier, NAME, 20);
         }
@@ -221,9 +222,9 @@ class AnchorTierTest {
 
             LongStream.range(0, 50).forEach(version -> await(tier.putAnchor(NAME, version, valueOf(version))));
             s3.requests.clear();
-
             assertLatest(tier, NAME, 49);
-            assertThat(s3.requests).containsExactly("LIST " + anchorPrefix(NAME) + "v 1", "GET " + anchorPrefix(NAME) + AnchorFrame.key(49));
+            assertThat(s3.requests).containsExactly("LIST " + anchorPrefix(NAME) + "v 1",
+                                                    "GET " + anchorPrefix(NAME) + AnchorFrame.key(49));
         }
 
         @Test
@@ -233,7 +234,6 @@ class AnchorTierTest {
 
             await(tier.putAnchor(NAME, 1, valueOf(1)));
             s3.failPuts.set(true);
-
             assertThat(tier.putAnchor(NAME, 2, valueOf(2)).await().isFailure()).isTrue();
             s3.failPuts.set(false);
             assertLatest(tier, NAME, 1);
@@ -247,7 +247,6 @@ class AnchorTierTest {
             await(tier.putAnchor(NAME, 1, valueOf(1)));
             await(tier.putAnchor(NAME, 2, valueOf(2)));
             s3.flipLastByte(anchorPrefix(NAME) + AnchorFrame.key(2));
-
             assertCorrupt(tier.latestAnchor(NAME), TierLevel.REMOTE, 2);
         }
 
@@ -261,7 +260,6 @@ class AnchorTierTest {
 
             await(tier.putAnchor(parent, 5, valueOf(5)));
             await(tier.putAnchor(child, 9, valueOf(9)));
-
             assertLatest(tier, parent, 5);
             assertLatest(tier, child, 9);
         }
@@ -275,11 +273,10 @@ class AnchorTierTest {
 
             await(tier.putAnchor(NAME, 3, valueOf(3)));
             await(tier.put(blockIdOf(block), block));
-
             assertThat(s3.objects.keySet()).filteredOn(key -> key.contains(AnchorFrame.DIRECTORY))
-                                           .allMatch(key -> key.startsWith("pfx/anchors/"));
+                      .allMatch(key -> key.startsWith("pfx/anchors/"));
             assertThat(s3.objects.keySet()).filteredOn(key -> key.matches("pfx/[0-9a-f]{2}/.*"))
-                                           .noneMatch(key -> key.contains(AnchorFrame.DIRECTORY));
+                      .noneMatch(key -> key.contains(AnchorFrame.DIRECTORY));
             assertThat(tier.usedBytes()).as("anchors reserve no block capacity").isEqualTo(3);
         }
 
@@ -291,10 +288,9 @@ class AnchorTierTest {
 
             LongStream.rangeClosed(0, 30).forEach(version -> await(tier.putAnchor(NAME, version, valueOf(version))));
             await(tier.pruneAnchors(NAME, 25, 10));
-
             assertThat(s3.versions(anchorPrefix(NAME))).as("the page held 30..21: 24..21 deleted, older ones wait")
-                                                       .containsExactlyInAnyOrderElementsOf(concat(range(0, 20),
-                                                                                                   range(25, 30)));
+                      .containsExactlyInAnyOrderElementsOf(concat(range(0, 20),
+                                                                  range(25, 30)));
             await(tier.pruneAnchors(NAME, 25, 30));
             assertThat(s3.versions(anchorPrefix(NAME))).containsExactlyInAnyOrderElementsOf(range(25, 30));
         }
@@ -313,7 +309,6 @@ class AnchorTierTest {
 
             await(tier.putAnchor(NAME, 7, valueOf(7)));
             s3.objects.put(anchorPrefix(NAME), new byte[0]);
-
             assertLatest(tier, NAME, 7);
         }
 
@@ -326,9 +321,8 @@ class AnchorTierTest {
 
             await(tier.putAnchor(NAME, 7, valueOf(7)));
             s3.objects.put(anchorPrefix(NAME) + "v.keep", new byte[0]);
-
             assertThat(causeOf(tier.latestAnchor(NAME))).isInstanceOfSatisfying(AnchorError.AnchorKeyMalformed.class,
-                                                                                 malformed -> assertThat(malformed.key()).endsWith("v.keep"));
+                                                                                malformed -> assertThat(malformed.key()).endsWith("v.keep"));
         }
 
         @Test
@@ -336,7 +330,6 @@ class AnchorTierTest {
             var s3 = new SortedS3();
 
             s3.objects.put(anchorPrefix(NAME) + "v.keep", new byte[0]);
-
             assertThat(causeOf(remote(s3).latestAnchor(NAME))).isInstanceOf(AnchorError.AnchorKeyMalformed.class);
         }
 
@@ -348,7 +341,6 @@ class AnchorTierTest {
 
             await(tier.putAnchor(NAME, 7, valueOf(7)));
             s3.missingGets.add(anchorPrefix(NAME) + AnchorFrame.key(7));
-
             assertCorrupt(tier.latestAnchor(NAME), TierLevel.REMOTE, 7);
         }
 
@@ -360,7 +352,6 @@ class AnchorTierTest {
 
             await(tier.putAnchor(nameOf("a/b"), 5, valueOf(5)));
             await(tier.putAnchor(nameOf("a_b"), 9, valueOf(9)));
-
             assertLatest(tier, nameOf("a/b"), 5);
             assertLatest(tier, nameOf("a_b"), 9);
         }
@@ -379,8 +370,8 @@ class AnchorTierTest {
             var tier = fastDisk();
 
             await(tier.putAnchor(NAME, 3, valueOf(3)));
-            rewriteWithValidCrc(anchorDir(NAME).resolve(AnchorFrame.key(3)), frame -> frame.putInt(9, 1));
-
+            rewriteWithValidCrc(anchorDir(NAME).resolve(AnchorFrame.key(3)),
+                                frame -> frame.putInt(9, 1));
             assertCorrupt(tier.latestAnchor(NAME), TierLevel.LOCAL_DISK, 3);
         }
 
@@ -389,8 +380,8 @@ class AnchorTierTest {
             var tier = fastDisk();
 
             await(tier.putAnchor(NAME, 3, valueOf(3)));
-            rewriteWithValidCrc(anchorDir(NAME).resolve(AnchorFrame.key(3)), frame -> frame.put(0, (byte) 2));
-
+            rewriteWithValidCrc(anchorDir(NAME).resolve(AnchorFrame.key(3)),
+                                frame -> frame.put(0, (byte) 2));
             assertCorrupt(tier.latestAnchor(NAME), TierLevel.LOCAL_DISK, 3);
         }
 
@@ -422,13 +413,11 @@ class AnchorTierTest {
             var tier = MemoryTier.memoryTier(1 << 20);
 
             await(tier.putAnchor(NAME, 1, valueOf(1)));
-
             assertThat(tier.latestAnchor(NAME).await().unwrap().isEmpty()).isTrue();
         }
     }
 
     // --- fixtures ---
-
     private LocalDiskTier fastDisk() {
         return disk(FileOps::writeBytes, _ -> Result.unitResult());
     }
@@ -445,11 +434,17 @@ class AnchorTierTest {
     }
 
     private static RemoteTier remote(SortedS3 s3) {
-        return RemoteTier.durableRemoteTier(s3, "pfx", 8, timeSpan(10).seconds()).unwrap();
+        return RemoteTier.durableRemoteTier(s3,
+                                            "pfx",
+                                            8,
+                                            timeSpan(10).seconds())
+                         .unwrap();
     }
 
     private Path anchorDir(AnchorName name) {
-        return tempDir.resolve(AnchorFrame.DIRECTORY).resolve(name.storageSegment()).toAbsolutePath();
+        return tempDir.resolve(AnchorFrame.DIRECTORY)
+                      .resolve(name.storageSegment())
+                      .toAbsolutePath();
     }
 
     private static String anchorPrefix(AnchorName name) {
@@ -472,7 +467,8 @@ class AnchorTierTest {
 
     static Cause causeOf(Promise<?> promise) {
         return promise.await(timeSpan(30).seconds())
-                      .fold(cause -> cause, value -> fail("expected a failure, got " + value));
+                      .fold(cause -> cause,
+                            value -> fail("expected a failure, got " + value));
     }
 
     static void assertLatest(StorageTier tier, AnchorName name, long version) {
@@ -483,10 +479,12 @@ class AnchorTierTest {
     }
 
     static void assertCorrupt(Promise<Option<Anchor>> latest, TierLevel tier, long version) {
-        assertThat(causeOf(latest)).isInstanceOfSatisfying(AnchorError.AnchorCorrupt.class, corrupt -> {
-            assertThat(corrupt.tier()).isEqualTo(tier);
-            assertThat(corrupt.version()).as("the newest version is named; no older one is returned").isEqualTo(version);
-        });
+        assertThat(causeOf(latest)).isInstanceOfSatisfying(AnchorError.AnchorCorrupt.class,
+                                                           corrupt -> {
+                                                               assertThat(corrupt.tier()).isEqualTo(tier);
+                                                               assertThat(corrupt.version()).as("the newest version is named; no older one is returned")
+                                                                         .isEqualTo(version);
+                                                           });
     }
 
     private static List<Long> shuffled(int count) {
@@ -498,7 +496,9 @@ class AnchorTierTest {
     }
 
     private static List<Long> range(long from, long to) {
-        return LongStream.rangeClosed(from, to).boxed().toList();
+        return LongStream.rangeClosed(from, to)
+                         .boxed()
+                         .toList();
     }
 
     private static List<Long> concat(List<Long> first, List<Long> second) {
@@ -510,11 +510,18 @@ class AnchorTierTest {
     }
 
     private static List<String> listing(Path directory) {
-        return FileOps.list(directory).unwrap().stream().map(path -> path.getFileName().toString()).toList();
+        return FileOps.list(directory)
+                      .unwrap()
+                      .stream()
+                      .map(path -> path.getFileName()
+                                       .toString())
+                      .toList();
     }
 
     private static List<Long> versionsIn(List<String> names) {
-        return names.stream().flatMap(name -> AnchorFrame.versionOf(name).stream()).toList();
+        return names.stream()
+                    .flatMap(name -> AnchorFrame.versionOf(name).stream())
+                    .toList();
     }
 
     private static void flipLastByte(Path file) throws Exception {
@@ -540,7 +547,6 @@ class AnchorTierTest {
         @Override
         public Promise<Unit> putObject(String key, byte[] content, String contentType) {
             requests.add("PUT " + key);
-
             if (failPuts.get()) {
                 return new S3Error.ApiError(503, "SlowDown", "injected").promise();
             }
@@ -602,13 +608,14 @@ class AnchorTierTest {
         }
 
         void flipLastByte(String key) {
-            objects.computeIfPresent(key, (_, bytes) -> {
-                var copy = bytes.clone();
+            objects.computeIfPresent(key,
+                                     (_, bytes) -> {
+                                         var copy = bytes.clone();
 
-                copy[copy.length - 1] ^= 0x01;
+                                         copy[copy.length - 1] ^= 0x01;
 
-                return copy;
-            });
+                                         return copy;
+                                     });
         }
 
         List<Long> versions(String prefix) {

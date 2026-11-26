@@ -10,9 +10,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -21,11 +18,16 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 /// #1602 (review of #1567): what a write that fails part-way, a retry of it, and demotion must leave behind.
 /// P1, P1b, P2 and P3 are the verifier's probes (v1602), kept verbatim in substance.
@@ -51,10 +53,12 @@ class StorageInstanceFailedWriteTest {
                                                           store);
             var id = BlockId.blockId(CONTENT).unwrap();
 
-            assertThat(storage.putRef("cursor", CONTENT).await().isFailure()).as("first put fails: last tier full").isTrue();
+            assertThat(storage.putRef("cursor", CONTENT).await().isFailure()).as("first put fails: last tier full")
+                      .isTrue();
             assertThat(disk.exists(id).await().unwrap()).as("compensation removed the disk copy").isFalse();
             assertThat(store.getLifecycle(id).isPresent()).as("no record for a block stored nowhere").isFalse();
-            assertThat(storage.put(CONTENT).await().isFailure()).as("the second put fails too: nothing is stored").isTrue();
+            assertThat(storage.put(CONTENT).await().isFailure()).as("the second put fails too: nothing is stored")
+                      .isTrue();
         }
 
         @Test
@@ -67,9 +71,9 @@ class StorageInstanceFailedWriteTest {
             storage.putRef("cursor", CONTENT).await();
             storage.putRef("cursor", CONTENT)
                    .await()
-                   .onSuccess(id -> assertThat(storage.get(id).await().unwrap().isPresent())
-                                        .as("putRef reported success for %s; the block must be readable", id)
-                                        .isTrue());
+                   .onSuccess(id -> assertThat(storage.get(id).await().unwrap().isPresent()).as("putRef reported success for %s; the block must be readable",
+                                                                                                id)
+                                              .isTrue());
         }
 
         /// B1, the retry a caller actually makes: disk ok, the last tier fails once and then recovers. The
@@ -80,10 +84,11 @@ class StorageInstanceFailedWriteTest {
             var storage = StorageInstance.storageInstance("retry",
                                                           List.of(MemoryTier.memoryTier(1 << 20),
                                                                   disk,
-                                                                  new FailingFirstPuts(MemoryTier.memoryTier(1 << 20, TierLevel.REMOTE), 1)));
+                                                                  new FailingFirstPuts(MemoryTier.memoryTier(1 << 20,
+                                                                                                             TierLevel.REMOTE),
+                                                                                       1)));
 
             storage.putRef("cursor", CONTENT).await().onSuccess(_ -> fail("the last tier was injected to fail once"));
-
             var id = storage.putRef("cursor", CONTENT).await().onFailure(cause -> fail(cause.message())).unwrap();
 
             assertThat(storage.get(id).await().unwrap().unwrap()).isEqualTo(CONTENT);
@@ -107,11 +112,9 @@ class StorageInstanceFailedWriteTest {
             assertThat(gate.entered.await(5, TimeUnit.SECONDS)).isTrue();
             assertThat(storage.get(id).await().unwrap().isPresent()).as("the read finds the disk copy").isTrue();
             assertThat(store.getLifecycle(id).unwrap().presentIn()).as("and recorded it on the claim")
-                                                                   .contains(TierLevel.LOCAL_DISK);
-
+                      .contains(TierLevel.LOCAL_DISK);
             gate.fail.countDown();
             write.await().onSuccess(_ -> fail("the last tier was injected to fail"));
-
             assertThat(store.getLifecycle(id).isPresent()).as("no record survives the failed write").isFalse();
         }
 
@@ -123,7 +126,6 @@ class StorageInstanceFailedWriteTest {
             var id = BlockId.blockId(CONTENT).unwrap();
 
             disk.put(id, CONTENT).await().unwrap();
-
             var storage = StorageInstance.storageInstance("p2",
                                                           List.of(MemoryTier.memoryTier(1 << 20),
                                                                   disk,
@@ -145,7 +147,11 @@ class StorageInstanceFailedWriteTest {
             var disk = LocalDiskTier.localDiskTier(dir.resolve("blocks"), block.length + 1).unwrap();
             var dht = MemoryTier.memoryTier(1 << 20, TierLevel.REMOTE);
             var tiers = List.<StorageTier> of(MemoryTier.memoryTier(1 << 20), disk, dht);
-            var storage = StorageInstance.storageInstance("p3", tiers, store, WritePolicy.WRITE_THROUGH, some(dir.resolve("logs")));
+            var storage = StorageInstance.storageInstance("p3",
+                                                          tiers,
+                                                          store,
+                                                          WritePolicy.WRITE_THROUGH,
+                                                          some(dir.resolve("logs")));
             var wal = storage.openLog("orders/0").unwrap();
 
             for (long offset = 0; offset < 5; offset++) {
@@ -156,13 +162,14 @@ class StorageInstanceFailedWriteTest {
 
             wal.truncate(2).unwrap();
             var remaining = new ArrayList<Long>();
-            wal.replay(-1, record -> remaining.add(record.offset())).unwrap();
-            assertThat(remaining).as("WAL truncated through 2").containsExactly(3L, 4L);
 
+            wal.replay(-1,
+                       record -> remaining.add(record.offset())).unwrap();
+            assertThat(remaining).as("WAL truncated through 2").containsExactly(3L, 4L);
             var demotion = DemotionManager.demotionManager(tiers, store, DemotionConfig.demotionConfig());
+
             demotion.activate();
             demotion.demote();
-
             assertThat(disk.exists(id).await().unwrap()).as("the block keeps its durable copy").isTrue();
             assertThat(dht.exists(id).await().unwrap()).isTrue();
             assertThat(store.getLifecycle(id).unwrap().presentIn()).contains(TierLevel.LOCAL_DISK);
@@ -183,7 +190,6 @@ class StorageInstanceFailedWriteTest {
 
             demotion.activate();
             demotion.demote();
-
             assertThat(small.exists(id).await().unwrap()).as("demoted off the full disk").isFalse();
             assertThat(big.exists(id).await().unwrap()).as("onto the next DURABLE tier").isTrue();
         }
@@ -206,7 +212,6 @@ class StorageInstanceFailedWriteTest {
             var wal = storage.openLog("orders/0").unwrap();
 
             wal.append(0, new byte[]{1}, 1L).await().unwrap();
-
             assertThat(encryptedDisk.isDurable()).isTrue();
             assertThat(encryptedMemory.isDurable()).isFalse();
             storage.seal(wal, 0, 0, "streams/orders/0/0-0", CONTENT).await().onFailure(cause -> fail(cause.message()));
@@ -223,7 +228,12 @@ class StorageInstanceFailedWriteTest {
                                                                           ? FileOps.writeBytesForced(path, bytes)
                                                                           : Causes.cause("disk failed on the rewrite").result();
             var store = MetadataStore.inMemoryMetadataStore("rewrite");
-            var disk = LocalDiskTier.localDiskTier(dir.resolve("blocks"), 1 << 20, timeSpan(30).seconds(), none(), some(failSecond), none())
+            var disk = LocalDiskTier.localDiskTier(dir.resolve("blocks"),
+                                                   1 << 20,
+                                                   timeSpan(30).seconds(),
+                                                   none(),
+                                                   some(failSecond),
+                                                   none())
                                     .unwrap();
             var storage = StorageInstance.storageInstance("rewrite",
                                                           List.of(MemoryTier.memoryTier(1 << 20), disk),
@@ -234,8 +244,9 @@ class StorageInstanceFailedWriteTest {
             var wal = storage.openLog("orders/0").unwrap();
 
             wal.append(0, new byte[]{1}, 1L).await().unwrap();
-            storage.seal(wal, 0, 0, "streams/orders/0/0-0", CONTENT).await().onSuccess(_ -> fail("the rewrite was injected to fail"));
-
+            storage.seal(wal, 0, 0, "streams/orders/0/0-0", CONTENT)
+                   .await()
+                   .onSuccess(_ -> fail("the rewrite was injected to fail"));
             assertThat(store.getLifecycle(id).unwrap().refCount()).as("the seal's credit was given back").isEqualTo(1);
             assertThat(storage.resolveRef("streams/orders/0/0-0").isPresent()).isFalse();
             wal.close();
@@ -243,7 +254,9 @@ class StorageInstanceFailedWriteTest {
     }
 
     private LocalDiskTier diskTier() {
-        return LocalDiskTier.localDiskTier(dir.resolve("blocks"), 1 << 20).unwrap();
+        return LocalDiskTier.localDiskTier(dir.resolve("blocks"),
+                                           1 << 20)
+                            .unwrap();
     }
 
     private static EncryptionKeyring keyring() {
@@ -252,7 +265,8 @@ class StorageInstanceFailedWriteTest {
         new SecureRandom().nextBytes(key);
 
         return BlockEncryptor.aesGcm(key, "k1")
-                             .flatMap(encryptor -> EncryptionKeyring.encryptionKeyring(Map.of("k1", encryptor), "k1"))
+                             .flatMap(encryptor -> EncryptionKeyring.encryptionKeyring(Map.of("k1", encryptor),
+                                                                                       "k1"))
                              .unwrap();
     }
 
@@ -267,8 +281,7 @@ class StorageInstanceFailedWriteTest {
 
         @Override
         public Promise<Unit> put(BlockId id, byte[] content) {
-            return Promise.lift(Causes::fromThrowable, this::awaitRelease)
-                          .flatMap(_ -> Causes.cause("injected last-tier failure").<Unit> promise());
+            return Promise.lift(Causes::fromThrowable, this::awaitRelease).flatMap(_ -> Causes.cause("injected last-tier failure").<Unit> promise());
         }
 
         private Unit awaitRelease() throws InterruptedException {

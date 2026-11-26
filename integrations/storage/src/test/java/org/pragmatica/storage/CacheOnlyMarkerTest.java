@@ -7,9 +7,10 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
 import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The cache-only marker as a record: what it is, what ends it, what a claim does to it, and that GC leaves
 /// it alone.
@@ -27,7 +28,8 @@ class CacheOnlyMarkerTest {
     }
 
     private BlockLifecycle marker(TierLevel... tiers) {
-        return BlockLifecycle.cacheOnlyLifecycle(id, EnumSet.copyOf(List.of(tiers)));
+        return BlockLifecycle.cacheOnlyLifecycle(id,
+                                                 EnumSet.copyOf(List.of(tiers)));
     }
 
     @Test
@@ -54,8 +56,7 @@ class CacheOnlyMarkerTest {
         var marker = marker(TierLevel.REMOTE);
 
         assertThat(marker.withRefCountIncrementedIfOwned()).isEqualTo(marker);
-        assertThat(BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK).withRefCountIncrementedIfOwned().refCount())
-            .isEqualTo(2);
+        assertThat(BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK).withRefCountIncrementedIfOwned().refCount()).isEqualTo(2);
     }
 
     @Test
@@ -72,14 +73,16 @@ class CacheOnlyMarkerTest {
     @Test
     void claimBlock_forARealBlock_replacesAMarkerAndKeepsItsTiers() {
         store.claimBlock(id, marker(TierLevel.REMOTE, TierLevel.MEMORY));
-
         var claimed = store.claimBlock(id, BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK));
 
         assertThat(claimed).isTrue();
         var record = store.getLifecycle(id).unwrap();
+
         assertThat(record.cacheOnly()).isFalse();
         assertThat(record.refCount()).isEqualTo(1);
-        assertThat(record.presentIn()).containsExactlyInAnyOrder(TierLevel.REMOTE, TierLevel.MEMORY, TierLevel.LOCAL_DISK);
+        assertThat(record.presentIn()).containsExactlyInAnyOrder(TierLevel.REMOTE,
+                                                                 TierLevel.MEMORY,
+                                                                 TierLevel.LOCAL_DISK);
     }
 
     @Test
@@ -87,7 +90,6 @@ class CacheOnlyMarkerTest {
         var owned = BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK);
 
         store.claimBlock(id, owned);
-
         assertThat(store.claimBlock(id, marker(TierLevel.REMOTE))).isFalse();
         assertThat(store.getLifecycle(id).unwrap()).isEqualTo(owned);
     }
@@ -97,7 +99,6 @@ class CacheOnlyMarkerTest {
         var first = marker(TierLevel.REMOTE);
 
         store.claimBlock(id, first);
-
         assertThat(store.claimBlock(id, marker(TierLevel.MEMORY))).isFalse();
         assertThat(store.getLifecycle(id).unwrap()).isEqualTo(first);
     }
@@ -107,7 +108,6 @@ class CacheOnlyMarkerTest {
         var owned = BlockLifecycle.blockLifecycle(id, TierLevel.LOCAL_DISK);
 
         store.claimBlock(id, owned);
-
         assertThat(store.claimBlock(id, BlockLifecycle.blockLifecycle(id, TierLevel.REMOTE))).isFalse();
         assertThat(store.getLifecycle(id).unwrap()).isEqualTo(owned);
     }
@@ -125,7 +125,6 @@ class CacheOnlyMarkerTest {
         memory.put(orphanId, "orphan".getBytes(StandardCharsets.UTF_8)).await();
         store.createLifecycle(new BlockLifecycle(id, EnumSet.of(TierLevel.MEMORY), 0, longAgo, longAgo, 0, 0L, true));
         store.createLifecycle(new BlockLifecycle(orphanId, EnumSet.of(TierLevel.MEMORY), 0, longAgo, longAgo, 0, longAgo));
-
         var collected = gc.collectGarbage();
 
         assertThat(collected).as("only the orphan is collected").isEqualTo(1);

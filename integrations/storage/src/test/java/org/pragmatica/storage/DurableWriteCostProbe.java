@@ -6,19 +6,21 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
 
-import static org.junit.jupiter.api.Assertions.fail;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 /// #1567 cost measurement, not a gate: `putRef` throughput on a `[memory, local disk]` instance with the
 /// pre-#1567 local-disk write (`FileOps.writeBytes`, no directory force) against the durable one (file force,
@@ -68,13 +70,20 @@ class DurableWriteCostProbe {
                                 Fn2<Result<Unit>, Path, byte[]> writer,
                                 Fn1<Result<Unit>, Path> forcer) {
         var root = dir.resolve(label + "-" + arm + "-" + round);
-        var disk = LocalDiskTier.localDiskTier(root, Long.MAX_VALUE, timeSpan(30).seconds(), none(), some(writer), some(forcer))
+        var disk = LocalDiskTier.localDiskTier(root,
+                                               Long.MAX_VALUE,
+                                               timeSpan(30).seconds(),
+                                               none(),
+                                               some(writer),
+                                               some(forcer))
                                 .unwrap();
-        var storage = StorageInstance.storageInstance(label, List.of(MemoryTier.memoryTier(1 << 20), disk));
+        var storage = StorageInstance.storageInstance(label,
+                                                      List.of(MemoryTier.memoryTier(1 << 20), disk));
         var started = System.nanoTime();
 
         for (var i = 0; i < WRITES; i++) {
-            storage.putRef("cursor/" + (i % 16), block(blockBytes, round, i))
+            storage.putRef("cursor/" + (i % 16),
+                           block(blockBytes, round, i))
                    .await()
                    .onFailure(cause -> fail(cause.message()));
         }
@@ -82,8 +91,14 @@ class DurableWriteCostProbe {
         var elapsed = System.nanoTime() - started;
         var rate = WRITES / (elapsed / 1e9);
 
-        System.out.printf(Locale.ROOT, "S8-COST %s round=%d arm=%s writes=%d ms=%.1f ops/s=%.1f%n",
-                          label, round, arm, WRITES, elapsed / 1e6, rate);
+        System.out.printf(Locale.ROOT,
+                          "S8-COST %s round=%d arm=%s writes=%d ms=%.1f ops/s=%.1f%n",
+                          label,
+                          round,
+                          arm,
+                          WRITES,
+                          elapsed / 1e6,
+                          rate);
 
         return rate;
     }

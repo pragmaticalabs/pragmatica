@@ -9,14 +9,16 @@ import java.util.Map;
 import java.util.function.UnaryOperator;
 import java.util.stream.IntStream;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.pragmatica.storage.DemotionConfig.demotionConfig;
 import static org.pragmatica.storage.SnapshotConfig.snapshotConfig;
 import static org.pragmatica.storage.SnapshotManager.snapshotManager;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// C-08: a read is not a metadata mutation. Before this, every successful `get` advanced the epoch twice
 /// (the access stamp, then the tier presence the read found), so 500 reads forced a full snapshot at the
@@ -50,13 +52,10 @@ class StorageInstanceReadsAreNotMutationsTest {
 
         node.get(id).await().unwrap();
         assertThat(store.currentEpoch() - before).as("get, hit").isZero();
-
         node.get(missing).await().unwrap();
         assertThat(store.currentEpoch() - before).as("get, miss").isZero();
-
         node.exists(id).await().unwrap();
         assertThat(store.currentEpoch() - before).as("exists").isZero();
-
         node.resolveRef("no-such-ref");
         assertThat(store.currentEpoch() - before).as("resolveRef").isZero();
     }
@@ -78,9 +77,9 @@ class StorageInstanceReadsAreNotMutationsTest {
 
         reader.get(id).await().unwrap();
         reader.get(id).await().unwrap();
-
         assertThat(readerStore.getLifecycle(id).unwrap().cacheOnly()).as("the marker was made").isTrue();
-        assertThat(readerStore.accessTracker().of(id).map(AccessTracker.Access::count).or(0)).as("and the reads counted").isEqualTo(2);
+        assertThat(readerStore.accessTracker().of(id).map(AccessTracker.Access::count).or(0)).as("and the reads counted")
+                  .isEqualTo(2);
         assertThat(readerStore.getLifecycle(id).unwrap().accessCount()).as("but not in the record").isZero();
         assertThat(readerStore.currentEpoch() - before).isZero();
     }
@@ -99,7 +98,6 @@ class StorageInstanceReadsAreNotMutationsTest {
 
         store.missNextObservation();
         node.get(id).await().unwrap();
-
         assertThat(store.missed()).as("the read took the lost-race path").isTrue();
         assertThat(inner.currentEpoch() - before).isZero();
     }
@@ -111,20 +109,21 @@ class StorageInstanceReadsAreNotMutationsTest {
         var store = MetadataStore.inMemoryMetadataStore("trigger");
         var node = twoTier(store);
         var manager = snapshotManager(store, snapshotConfig(dir, THRESHOLD, 600_000, 50, NODE_ID));
-        var ids = IntStream.range(0, 3).mapToObj(i -> node.put(bytes("block " + i)).await().unwrap()).toList();
+        var ids = IntStream.range(0, 3).mapToObj(i -> node.put(bytes("block " + i))
+                                                          .await()
+                                                          .unwrap()).toList();
 
         manager.snapshotNow().unwrap();
-
         assertThat(snapshotFiles()).isEqualTo(1);
-
-        IntStream.range(0, 100).forEach(i -> node.get(ids.get(i % ids.size())).await().unwrap());
+        IntStream.range(0, 100).forEach(i -> node.get(ids.get(i % ids.size()))
+                                                 .await()
+                                                 .unwrap());
         manager.maybeSnapshot();
-
         assertThat(snapshotFiles()).as("a hundred reads took no snapshot").isEqualTo(1);
-
-        IntStream.range(0, 3).forEach(i -> node.put(bytes("control " + i)).await().unwrap());
+        IntStream.range(0, 3).forEach(i -> node.put(bytes("control " + i))
+                                               .await()
+                                               .unwrap());
         manager.maybeSnapshot();
-
         assertThat(snapshotFiles()).as("control: writes past the threshold take one").isEqualTo(2);
     }
 
@@ -139,8 +138,9 @@ class StorageInstanceReadsAreNotMutationsTest {
         var hot = node.put(bytes("hot block content")).await().unwrap();
         var cold = node.put(bytes("cold block content")).await().unwrap();
 
-        IntStream.range(0, 20).forEach(_ -> node.get(hot).await().unwrap());
-
+        IntStream.range(0, 20).forEach(_ -> node.get(hot)
+                                                .await()
+                                                .unwrap());
         var before = store.currentEpoch();
         var manager = DemotionManager.demotionManager(List.of(memory, disk),
                                                       store,
@@ -148,8 +148,8 @@ class StorageInstanceReadsAreNotMutationsTest {
 
         manager.activate();
         manager.demote();
-
-        assertThat(store.accessTracker().of(hot).map(AccessTracker.Access::count).or(0)).as("the reads were tracked").isEqualTo(20);
+        assertThat(store.accessTracker().of(hot).map(AccessTracker.Access::count).or(0)).as("the reads were tracked")
+                  .isEqualTo(20);
         assertThat(store.getLifecycle(hot).unwrap().accessCount()).as("outside the record").isZero();
         assertThat(store.getLifecycle(hot).unwrap().presentIn()).contains(TierLevel.MEMORY);
         assertThat(store.getLifecycle(cold).unwrap().presentIn()).doesNotContain(TierLevel.MEMORY);
@@ -158,7 +158,10 @@ class StorageInstanceReadsAreNotMutationsTest {
 
     private long snapshotFiles() throws IOException {
         try (var files = Files.list(dir)) {
-            return files.filter(p -> p.getFileName().toString().startsWith("snapshot-")).count();
+            return files.filter(p -> p.getFileName()
+                                      .toString()
+                                      .startsWith("snapshot-"))
+                        .count();
         }
     }
 
