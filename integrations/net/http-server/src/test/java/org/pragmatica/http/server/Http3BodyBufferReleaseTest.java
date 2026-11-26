@@ -82,6 +82,7 @@ class Http3BodyBufferReleaseTest {
 
         server = Http3Server.create(config,
                                     QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
+                                                         .flatMap(LiveTls::liveQuicTls)
                                                          .unwrap(),
                                     (request, writer) -> {
                                         dispatchedBodyBytes.set(request.body().length);

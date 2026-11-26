@@ -24,6 +24,10 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// absent type is never compared — `[unverified: not detectable at provisioning]` for those sections.
 /// The value type is recorded only for strategies that STORE the method's result: a `WRITE_AROUND`
 /// invalidator never puts a value, so its return type says nothing about what the shared cache holds.
+///
+/// The backend is not compared: with `memory` and `dht` the mode admits exactly one backend ([CacheBackends]
+/// refuses any other pairing), so equal modes mean equal backends. A second shared backend (Redis, #3658 Part 4)
+/// breaks that and must be compared here.
 record CacheShape(CacheMode mode, int ttlSeconds, int maxEntries, Option<Type> keyType, Option<Type> valueType) {
     static CacheShape cacheShape(CacheConfig config, ProvisioningContext context) {
         var tokens = context.typeTokens();

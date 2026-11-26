@@ -60,6 +60,11 @@ import static org.awaitility.Awaitility.await;
 /// through the cluster KV, every node's `OwnershipEpochHighWater` observes the resulting `ValuePut`
 /// and advances `StreamPartition(FENCE_STREAM, 0)` to `epoch1` — not a hand-injected high-water.
 ///
+/// The deposed owner presents `epoch0 = (incarnation, 7, 0)`: a REAL epoch strictly below `epoch1`, and not [Epoch#ZERO]
+/// (its term is 7). That is why this gate is unchanged by #2755: a real older epoch stays a [StreamError.StaleEpochAppend],
+/// and only a presented [Epoch#ZERO] (no owner's epoch) is refused the transient [StreamError.OwnershipNotApplied] instead —
+/// see `StreamOwnershipDriverFenceTest`, which pins both.
+///
 /// Determinism comes from using pure primitives rather than a racy kill-based handover:
 ///
 ///   - [`ReplicaPlacement#place`] is a PURE HRW function: the same member set always yields the

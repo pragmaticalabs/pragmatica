@@ -5,6 +5,8 @@ package org.pragmatica.aether.pg.schema.model;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Option;
 
@@ -25,7 +27,13 @@ public record Table(String name,
     }
 
     public static Table table(String name, String schema, List<Column> columns, List<Constraint> constraints) {
-        return new Table(name, schema, columns, constraints, List.of(), Option.empty(), Option.empty());
+        return new Table(name,
+                         schema,
+                         withKeyColumnsNotNull(columns, constraints),
+                         constraints,
+                         List.of(),
+                         Option.empty(),
+                         Option.empty());
     }
 
     public Option<Column> column(String columnName) {
@@ -66,9 +74,16 @@ public record Table(String name,
 
         newConstraints.add(constraint);
 
-        return new Table(name, schema, columns, List.copyOf(newConstraints), indexes, partitioning, comment);
+        return new Table(name,
+                         schema,
+                         withKeyColumnsNotNull(columns, List.of(constraint)),
+                         List.copyOf(newConstraints),
+                         indexes,
+                         partitioning,
+                         comment);
     }
 
+    /// Removing a primary key leaves its columns NOT NULL, as PostgreSQL 17 does: only DROP NOT NULL relaxes a column.
     public Table withoutConstraint(String constraintName) {
         var newConstraints = constraints.stream()
                                         .filter(c -> !c.name()
@@ -94,5 +109,26 @@ public record Table(String name,
 
     public Table renamed(String newName) {
         return new Table(newName, schema, columns, constraints, indexes, partitioning, comment);
+    }
+
+    /// PostgreSQL makes every column of a primary key NOT NULL when the key is declared (#2795), whatever its definition
+    /// says. Applied once per added constraint, so a later DROP NOT NULL holds. No other constraint changes nullability.
+    private static List<Column> withKeyColumnsNotNull(List<Column> columns, List<Constraint> added) {
+        var keyColumns = added.stream()
+                              .filter(Constraint.PrimaryKey.class::isInstance)
+                              .map(Constraint.PrimaryKey.class::cast)
+                              .flatMap(key -> key.columns()
+                                                 .stream())
+                              .collect(Collectors.toSet());
+
+        return columns.stream()
+                      .map(column -> withKeyNullability(column, keyColumns))
+                      .toList();
+    }
+
+    private static Column withKeyNullability(Column column, Set<String> keyColumns) {
+        return keyColumns.contains(column.name())
+               ? column.withNullable(false)
+               : column;
     }
 }

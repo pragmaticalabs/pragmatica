@@ -67,6 +67,7 @@ B11.PlacementRedrive -> fsm2:MembershipInputs.onWorkerJoin
 B12.DrainReport -> fsm2:Fsm2System.onNodeDraining
 B13.Stop -> fsm2:Fsm2System.deactivateCluster
 B13.StopDrain -> fsm2:Fsm2System.drainNode
+B13.ndm.Stop -> dropped
 B14.StateRestored -> fsm2:Fsm2System.onStateRestored
 B15.construction -> fsm2:Fsm2System
 B16.Seams -> fsm2:SeamPoller

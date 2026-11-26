@@ -30,6 +30,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The production incarnation reader of the commit ring (W-OBS W2, section 2.1 R-02): the tag is the committed
 /// `(incarnation, incarnationId)`, `NONE` while nothing is committed, and a restore or re-genesis in one batch clears the ring under the new tag.
 class ReplicaIncarnationSourceTest {
+    private static final String LINEAGE = "lineage";
+
     private static final Serializer NO_BYTES = new Serializer() {
         @Override
         public <T> void write(ByteBuf buffer, T value) {}
@@ -76,7 +78,7 @@ class ReplicaIncarnationSourceTest {
 
         assertThat(source.read(_ -> null)).as("absent").isEqualTo(IncarnationTag.NONE);
         assertThat(source.read(_ -> "not an incarnation")).as("a value of another type under the key is no incarnation").isEqualTo(IncarnationTag.NONE);
-        assertThat(source.read(_ -> ClusterIncarnationValue.clusterIncarnationValue("lineage", 4L, "id-4"))).isEqualTo(IncarnationTag.incarnationTag(4L, "id-4"));
+        assertThat(source.read(_ -> ClusterIncarnationValue.clusterIncarnationValue(LINEAGE, 4L, "id-4"))).isEqualTo(IncarnationTag.incarnationTag(4L, "id-4", LINEAGE));
     }
 
     /// Mutation: `isIncarnationKey` answers true for every key (every write clears the ring) or false for all (a restore never bumps).
@@ -108,14 +110,14 @@ class ReplicaIncarnationSourceTest {
         var store = store();
         var closed = new AtomicReference<CloseReason>();
 
-        commit(store, 0, genesis("lineage", "id-A"));
+        commit(store, 0, genesis(LINEAGE, "id-A"));
         commit(store, 1, log("INFO"));
         store.replicaRing().subscribeLive(IncarnationTag.NONE, CommitRing.subscription(closed::set));
         commit(store, 2,
                new KVCommand.Remove<>(ClusterIncarnationKey.SINGLETON),
-               genesis("lineage", "id-B"));
+               genesis(LINEAGE, "id-B"));
 
-        assertThat(store.replicaRing().tag()).as("incarnation 1 again, under another id").isEqualTo(IncarnationTag.incarnationTag(1L, "id-B"));
+        assertThat(store.replicaRing().tag()).as("incarnation 1 again, under another id").isEqualTo(IncarnationTag.incarnationTag(1L, "id-B", LINEAGE));
         assertThat(store.replicaRing().entries()).as("the bump batch is not delivered and the old entries are gone").isEmpty();
         assertThat(closed.get()).isEqualTo(CloseReason.INCARNATION_MISMATCH);
 
@@ -130,11 +132,11 @@ class ReplicaIncarnationSourceTest {
         var store = store();
         var tags = new ArrayList<IncarnationTag>();
 
-        commit(store, 0, genesis("lineage", "id-A"));
+        commit(store, 0, genesis(LINEAGE, "id-A"));
         tags.add(store.replicaRing().tag());
-        commit(store, 1, new KVCommand.Put<>(ClusterIncarnationKey.SINGLETON, ClusterIncarnationValue.genesis("lineage", "id-A").next("id-B")));
+        commit(store, 1, new KVCommand.Put<>(ClusterIncarnationKey.SINGLETON, ClusterIncarnationValue.genesis(LINEAGE, "id-A").next("id-B")));
         tags.add(store.replicaRing().tag());
 
-        assertThat(tags).containsExactly(IncarnationTag.incarnationTag(1L, "id-A"), IncarnationTag.incarnationTag(2L, "id-B"));
+        assertThat(tags).containsExactly(IncarnationTag.incarnationTag(1L, "id-A", LINEAGE), IncarnationTag.incarnationTag(2L, "id-B", LINEAGE));
     }
 }

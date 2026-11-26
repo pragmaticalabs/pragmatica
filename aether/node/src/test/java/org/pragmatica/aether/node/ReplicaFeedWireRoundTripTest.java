@@ -46,8 +46,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// aggregated `NodeCodecs`, including the effects a ring entry carries (plain `Put`/`Remove` of real keys and values) and the directory.
 /// Mutation: drop the `ReplicaCodecs` line of `NodeCodecs` (every feed message fails to resolve).
 class ReplicaFeedWireRoundTripTest {
+    private static final String LINEAGE = "lineage-1";
+
     private static final NodeId SENDER = new NodeId("core-1");
-    private static final IncarnationTag TAG = IncarnationTag.incarnationTag(3L, "01J-incarnation");
+    private static final IncarnationTag TAG = IncarnationTag.incarnationTag(3L, "01J-incarnation", LINEAGE);
     private static final List<AnchorPair> ANCHOR = List.of(new AnchorPair(7L, "batch-7"), new AnchorPair(9L, "batch-9"));
 
     private static <T> T roundTrip(T message) {
@@ -113,6 +115,15 @@ class ReplicaFeedWireRoundTripTest {
         var message = new ReplicaHeartbeat(SENDER, 42L, 6L, TAG, 13L, true, 13L);
 
         assertThat(roundTrip(message)).isEqualTo(message);
+    }
+
+    @Test
+    void tagLineageId_survivesTheWire() {
+        var back = roundTrip(new ReplicaHeartbeat(SENDER, 42L, 6L, TAG, 13L, true, 13L));
+
+        assertThat(back.tag().lineageId()).as("#3359: the lineage is part of the tag on the wire (mutation: codec drops the field or fixes it to a constant)").isEqualTo(LINEAGE);
+        assertThat(back.tag().incarnation()).isEqualTo(3L);
+        assertThat(back.tag().incarnationId()).isEqualTo("01J-incarnation");
     }
 
     private static ClusterDirectory directory() {

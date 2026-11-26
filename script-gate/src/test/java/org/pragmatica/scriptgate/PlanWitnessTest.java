@@ -41,14 +41,6 @@ class PlanWitnessTest {
     private static final String MARKER_SUFFIX = ".plan-incomplete";
     private static final Path WITNESS_DIR = Path.of("target", "test-plan-witness");
 
-    /// A class the mechanism test plans. Its binary name `PlanWitnessTest$PlannedFixture` matches none of
-    /// surefire's default patterns (`Test*`, `*Test`, `*Tests`, `*TestCase`), so surefire never runs it
-    /// itself - which is why the outer class is not named `Test...`.
-    static class PlannedFixture {
-        @Test
-        void planned() {}
-    }
-
     @Test
     void marker_existsWhilePlanIsOpen_namesThePlan_andIsGoneOnceFinished(@TempDir Path module) {
         var witness = TestPlanWitness.rootedAt(module);
@@ -115,4 +107,12 @@ class PlanWitnessTest {
     private static List<String> lines(Path file) {
         return Result.lift(() -> Files.readAllLines(file)).or(List.of());
     }
+}
+
+/// A class the mechanism test plans. Its binary name `PlannedFixture` matches none of surefire's default patterns
+/// (`Test*`, `*Test`, `*Tests`, `*TestCase`), so surefire never runs it itself. It is top-level, not nested: a nested class
+/// with test methods is dropped by surefire's `**/*$*` exclude and `NestedTestScanTest` (#3688) refuses one.
+class PlannedFixture {
+    @Test
+    void planned() {}
 }

@@ -47,7 +47,8 @@ class DdlAnalyzerIdentityTest {
         var bCol = schema.table("t").unwrap().column("b").unwrap();
         assertThat(bCol.generatedExpr().isPresent()).as("b column generated expression").isTrue();
         assertThat(bCol.identity().isPresent()).isFalse();
-        assertThat(bCol.nullable()).isFalse();
+        // PostgreSQL allows NULL in a stored generated column that does not say NOT NULL (#2795).
+        assertThat(bCol.nullable()).isTrue();
     }
 
     @Test

@@ -4299,6 +4299,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return Option.option(peers.get(peerId)).map(PeerState::phase);
     }
 
+    /// Package-private test seam (#1749) — the reconciler-clock time of the last dial the per-peer backoff allowed for a
+    /// peer (0 when none). Set synchronously on the tick's thread, before the dial's CONNECTING begins on the resolver
+    /// thread, so a test reads the dial DECISION instead of timing the dial.
+    long reconcileLastAttemptMsForTests(NodeId peerId) {
+        return Option.option(peers.get(peerId))
+                     .map(PeerState::reconcileLastAttemptMs)
+                     .or(0L);
+    }
+
     /// Package-private test seam (#3033) — the dial client, so a test can run a dial that is not attached by this network.
     QuicClusterClient clientForTests() {
         return client;

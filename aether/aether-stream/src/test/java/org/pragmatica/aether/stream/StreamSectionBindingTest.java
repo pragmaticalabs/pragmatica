@@ -200,7 +200,7 @@ class StreamSectionBindingTest {
         @Test
         void declarationRetentionAndHotKeys_areRefused_namingThem() {
             assertRefused("[streams.orders]\n[streams.orders.retention]\nmax_bytes = \"2GB\"\n", "retention.max_bytes");
-            assertRefused("[streams.orders]\n[streams.orders.hot]\nmax_count = 100\n", "hot.max_count");
+            assertRefused("[streams.orders]\n[streams.orders.hot]\nmax_count = 10000\n", "hot.max_count");
         }
 
         /// #3520: a `[hot]` or `[retention]` key supplied by a layer that is not a TOML file (environment, system property, KV) is
@@ -208,7 +208,7 @@ class StreamSectionBindingTest {
         /// control proves the overlay layer reaches the binder at all.
         @Test
         void declarationKeysFromAnOverlayLayer_areRefused_namingThem() {
-            assertRefusedWithOverlay("[streams.orders]\n", Map.of("streams.orders.hot.max_count", "100"), "hot.max_count");
+            assertRefusedWithOverlay("[streams.orders]\n", Map.of("streams.orders.hot.max_count", "10000"), "hot.max_count");
             assertRefusedWithOverlay("[streams.orders]\n", Map.of("streams.orders.retention.max_bytes", "2GB"), "retention.max_bytes");
             assertRefusedWithOverlay("[streams.orders]\n[streams.orders.retention]\nmax_age = \"1h\"\n",
                                      Map.of("streams.orders.retention.max_bytes", "2GB"),
@@ -229,7 +229,7 @@ class StreamSectionBindingTest {
         @Disabled("S2a3 wires [retention] and S2b wires [hot]: enable and delete the tripwire above")
         @Test
         void declarationRetentionAndHotKeys_bind_onceWired() {
-            var toml = "[streams.orders]\n[streams.orders.retention]\nmax_bytes = \"2GB\"\n[streams.orders.hot]\nmax_count = 100\n";
+            var toml = "[streams.orders]\n[streams.orders.retention]\nmax_bytes = \"2GB\"\n[streams.orders.hot]\nmax_count = 10000\n";
 
             assertThat(StreamSectionBinding.bindStreamSection(providerOf(toml), SECTION, BINDING_CONTEXT).isSuccess()).isTrue();
         }

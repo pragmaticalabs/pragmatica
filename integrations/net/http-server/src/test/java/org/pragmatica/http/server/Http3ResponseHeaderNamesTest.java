@@ -62,6 +62,7 @@ class Http3ResponseHeaderNamesTest {
         port = freeUdpPort();
         server = Http3Server.create(HttpServerConfig.httpServerConfig("h3-header-names", port),
                                     QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
+                                                         .flatMap(LiveTls::liveQuicTls)
                                                          .unwrap(),
                                     (_, writer) -> writer.header("X-Request-Id", "req-upper").header("Content-Type", "application/json; charset=UTF-8")
                                                   .header("X-Trace-Id", "abc").header("X-Other", "v").ok("{}"))

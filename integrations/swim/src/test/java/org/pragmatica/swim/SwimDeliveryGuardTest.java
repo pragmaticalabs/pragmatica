@@ -26,6 +26,7 @@ import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -237,13 +238,11 @@ class SwimDeliveryGuardTest {
         var examined = new ArrayList<String>();
         var violations = new ArrayList<String>();
 
-        try (var files = Files.walk(root)) {
-            for (var file : files.filter(Files::isRegularFile).toList()) {
-                var relative = root.relativize(file).toString().replace('\\', '/');
+        for (var file : SourceWalk.files(root)) {
+            var relative = root.relativize(file).toString().replace('\\', '/');
 
-                if (isTestSource(relative)) {
-                    scanFile(relative, file, examined, violations);
-                }
+            if (isTestSource(relative)) {
+                scanFile(relative, file, examined, violations);
             }
         }
         return new Scan(examined, violations);
@@ -260,18 +259,16 @@ class SwimDeliveryGuardTest {
         var factorySeam = new ArrayList<String>();
         var testFactory = new ArrayList<String>();
 
-        try (var files = Files.walk(root)) {
-            for (var file : files.filter(Files::isRegularFile).toList()) {
-                var relative = root.relativize(file).toString().replace('\\', '/');
+        for (var file : SourceWalk.files(root)) {
+            var relative = root.relativize(file).toString().replace('\\', '/');
 
-                if (isProductionSource(relative)) {
-                    var text = Files.readString(file);
+            if (isProductionSource(relative)) {
+                var text = Files.readString(file);
 
-                    examined.add(relative);
-                    addIf(!relative.equals(QUIESCING_OWNER) && text.contains(QUIESCING), relative, quiescing);
-                    addIf(!relative.equals(FACTORY_SEAM_OWNER) && text.contains(FACTORY_SEAM), relative, factorySeam);
-                    addIf(TEST_FACTORY_NAMES.stream().anyMatch(text::contains), relative, testFactory);
-                }
+                examined.add(relative);
+                addIf(!relative.equals(QUIESCING_OWNER) && text.contains(QUIESCING), relative, quiescing);
+                addIf(!relative.equals(FACTORY_SEAM_OWNER) && text.contains(FACTORY_SEAM), relative, factorySeam);
+                addIf(TEST_FACTORY_NAMES.stream().anyMatch(text::contains), relative, testFactory);
             }
         }
         return new ProductionScan(examined, quiescing, factorySeam, testFactory);

@@ -20,6 +20,7 @@ import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTError;
 import org.pragmatica.dht.Partition;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -338,6 +339,16 @@ class ArtifactStoreTest {
     class WriteIndeterminateTests {
         @Test
         void deploy_metadataPutIndeterminateOnce_isRetriedAndSucceeds() {
+            assertDeployRetriedOver(DHTError.writeIndeterminate(2, 1, 1));
+        }
+
+        /// #3720: the put a node stamped before it applied the ownership record is the same unknown outcome, and retried the same way.
+        @Test
+        void deploy_metadataPutOwnershipNotAppliedOnce_isRetriedAndSucceeds() {
+            assertDeployRetriedOver(DHTError.ownershipNotApplied(2, 1, 1));
+        }
+
+        private void assertDeployRetriedOver(Cause refusal) {
             var delegate = testDht();
             var indeterminateLeft = new AtomicInteger(1);
             DHTClient fencedOnce = new DHTClient() {
@@ -349,7 +360,7 @@ class ArtifactStoreTest {
                 @Override
                 public Promise<Unit> put(byte[] key, byte[] value) {
                     return indeterminateLeft.getAndDecrement() > 0
-                           ? DHTError.writeIndeterminate(2, 1, 1).promise()
+                           ? refusal.promise()
                            : delegate.put(key, value);
                 }
 

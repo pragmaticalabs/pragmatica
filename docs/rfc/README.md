@@ -29,6 +29,7 @@ RFCs document design decisions affecting multiple projects in the Pragmatica eco
 | [RFC-0016](RFC-0016-full-major-cloud-support.md) | Full Major-Cloud Support | Draft (W1-W4, W6, W10 landed) | aether |
 | [RFC-0017](RFC-0017-cluster-owned-provisioning.md) | Cluster-Owned Provisioning | Draft | aether |
 | [RFC-0018](RFC-0018-kv-lost-update-fence.md) | Lost-update fence for KV read-modify-write | Accepted (implemented on `release-1.0.0-rc3`) | integrations/cluster |
+| [RFC-0020](RFC-0020-terra-streams-and-entities.md) | Streams and durable entities in Terra | Draft (partly superseded by #2099 and #2100) | terra, aether-stream |
 
 ## Process
 

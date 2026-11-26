@@ -22,6 +22,7 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.CircuitBreaker.CircuitBreakerError.CircuitBreakerOpenError;
@@ -68,11 +69,39 @@ public interface CircuitBreaker {
         HALF_OPEN
     }
 
+    /// Receives each state change the breaker makes, exactly once per change.
+    ///
+    /// Called from [#execute] on the calling thread, or from the shared scheduler thread for the open to half-open
+    /// change, after the breaker's own bookkeeping for the change is done. Listeners must be total (a counter
+    /// increment, a log line): the breaker does not guard against a listener that throws.
+    @FunctionalInterface
+    interface StateListener {
+        @Contract
+        void stateChanged(State from, State to);
+
+        /// A listener that ignores every change.
+        static StateListener none() {
+            return StateListener::ignore;
+        }
+
+        @Contract
+        private static void ignore(State from, State to) {}
+    }
+
     static CircuitBreaker circuitBreaker(int failureThreshold,
                                          TimeSpan resetTimeout,
                                          int testAttempts,
                                          Predicate<Cause> shouldTrip,
                                          org.pragmatica.lang.utils.TimeSource timeSource) {
+        return circuitBreaker(failureThreshold, resetTimeout, testAttempts, shouldTrip, timeSource, StateListener.none());
+    }
+
+    static CircuitBreaker circuitBreaker(int failureThreshold,
+                                         TimeSpan resetTimeout,
+                                         int testAttempts,
+                                         Predicate<Cause> shouldTrip,
+                                         org.pragmatica.lang.utils.TimeSource timeSource,
+                                         StateListener listener) {
         record circuitBreaker(int failureThreshold,
                               TimeSpan resetTimeout,
                               int testAttempts,
@@ -81,7 +110,8 @@ public interface CircuitBreaker {
                               AtomicLong failureCountRef,
                               AtomicLong lastStateChangeTimestamp,
                               AtomicLong testSuccessCount,
-                              org.pragmatica.lang.utils.TimeSource timeSource) implements CircuitBreaker {
+                              org.pragmatica.lang.utils.TimeSource timeSource,
+                              StateListener listener) implements CircuitBreaker {
             private static final Logger log = LoggerFactory.getLogger(CircuitBreaker.class);
 
             @Override
@@ -156,6 +186,8 @@ public interface CircuitBreaker {
                         case HALF_OPEN -> testSuccessCount.set(0);
                         case CLOSED -> failureCountRef.set(0);
                     }
+
+                    listener.stateChanged(oldState, newState);
                 }
             }
 
@@ -181,7 +213,8 @@ public interface CircuitBreaker {
                                   new AtomicLong(0),
                                   new AtomicLong(timeSource.nanoTime()),
                                   new AtomicLong(0),
-                                  timeSource);
+                                  timeSource,
+                                  listener);
     }
 
     sealed interface CircuitBreakerError extends Cause {
@@ -201,11 +234,12 @@ public interface CircuitBreaker {
     ///
     /// @return A new builder
     static StageFailureThreshold builder() {
-        return failureThreshold -> resetTimeout -> testAttempts -> shouldTrip -> timeSource -> circuitBreaker(failureThreshold,
-                                                                                                              resetTimeout,
-                                                                                                              testAttempts,
-                                                                                                              shouldTrip,
-                                                                                                              timeSource);
+        return failureThreshold -> resetTimeout -> testAttempts -> shouldTrip -> (timeSource, listener) -> circuitBreaker(failureThreshold,
+                                                                                                                          resetTimeout,
+                                                                                                                          testAttempts,
+                                                                                                                          shouldTrip,
+                                                                                                                          timeSource,
+                                                                                                                          listener);
     }
 
     interface StageFailureThreshold {
@@ -233,7 +267,12 @@ public interface CircuitBreaker {
     }
 
     interface StateTimeSource {
-        CircuitBreaker timeSource(org.pragmatica.lang.utils.TimeSource value);
+        /// Builds the breaker and reports each of its state changes to `listener`.
+        CircuitBreaker timeSource(org.pragmatica.lang.utils.TimeSource value, StateListener listener);
+
+        default CircuitBreaker timeSource(org.pragmatica.lang.utils.TimeSource value) {
+            return timeSource(value, StateListener.none());
+        }
 
         default CircuitBreaker withDefaultTimeSource() {
             return timeSource(org.pragmatica.lang.utils.TimeSource.system());

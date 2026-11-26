@@ -38,8 +38,9 @@ import org.slf4j.LoggerFactory;
 /// authoritative diff. The burst stays open until the next input that is not replay-flagged or the next entry snapshot. A later install signal at
 /// the revision of the last install read (or of the entry snapshot) is that install again and changes nothing; a replay-flagged input outside an
 /// open burst is judged by the watermark like any other. Named limits: a different install at the same revision as the last one read is taken for
-/// it, because the signal carries no incarnation tag; and a same-incarnation install below what the worker already stepped (a lagging core) steps a
-/// regressed burst, #2776, as LEGACY does.
+/// it, because the signal carries no incarnation tag; and a worker whose process restarted holds nothing for `ReplicaApplier.admits` to order against.
+/// Within one process and one lineage a snapshot below what the replica holds (a lagging core, #2776) is refused before it reaches the store, so no
+/// regressed burst is stepped from it (#3359).
 abstract class FsmRuntime<I, K, A> {
     private static final Logger log = LoggerFactory.getLogger(FsmRuntime.class);
     /// How long a stop waits for an interpreter (design 7, 2b; the cluster's stop bound): `[guess: 10 s; settled by E-07]`.

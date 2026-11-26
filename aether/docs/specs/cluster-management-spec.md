@@ -55,7 +55,7 @@ Same logical cluster can deploy to any supported environment without changing th
 |-------|----------|--------|
 | Phase 1 (this spec) | Cloud deployment (Hetzner first), bootstrap, apply, scale, status, export, destroy | 0.22.0 |
 | Phase 2 | Kubernetes deployment type, on-premises (SSH-based), config inheritance | 0.23.0 |
-| Phase 3 | Forge/Ember as embedded deployment type | 0.24.0 |
+| Phase 3 | ~~Forge/Ember as embedded deployment type~~ Superseded (product ruling 2026-11-06): Forge and Ember are dev and test tools only, not a deployment type | 0.24.0 |
 
 ### 1.4 Design Principles
 

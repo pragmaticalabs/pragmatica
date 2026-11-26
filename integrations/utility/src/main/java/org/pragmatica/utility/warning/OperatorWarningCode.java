@@ -34,7 +34,7 @@ import org.pragmatica.lang.Option;
 /// conflict with any other PR adding a code (this file merges with `merge=union`, see `.gitattributes`).
 ///
 /// Never rename the string of a shipped code, because anything
-/// that matches on it (alert rules, scripts, a future server-side filter) depends on it.
+/// that matches on it (alert rules, scripts, the `code` filter of `GET /api/v1/events`, #1631) depends on it.
 public enum OperatorWarningCode {
     /// SWIM's #336 co-confirmation kill-gate is holding the death of a long-healthy peer. This node
     /// alone judged the peer FAULTY, with no transport corroboration.
@@ -660,10 +660,28 @@ public enum OperatorWarningCode {
     /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
     OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
-    /// Genesis formed with a seat of the agreed roster that was not a connected, authenticated peer when the roster was installed
-    /// (#1654): the view agreement counts each member's last two reports with no freshness, so a member that reported the view and
-    /// then died is still agreed. Formation is not blocked; auto-heal is expected to replace the seat. Raised once per seat by the node
-    /// that installed the roster; the subject is the seat's node id. Closed by [#GENESIS_SEAT_REACHABLE].
+    /// A core voter stayed in one SYNCING episode for the stuck bound (5 minutes) while the leader led without interruption, its own
+    /// consensus was active and the voter's reports kept arriving (#2136). From now on the leader counts it as failed evidence for the
+    /// core voter reconciler: at most one such voter, only while no voter of the roster has other failure evidence, and it is replaced
+    /// only by an admitted READY candidate, one seat per settled roster change; with no candidate nothing is removed. Raised once per
+    /// episode by the leader; subject is the voter; the message names it and the elapsed time. Closed by [#CORE_VOTER_SYNCING_ENDED].
+    /// Recovery action: none needed when a candidate exists (the seat is healed); otherwise restart or replace the voter, or add capacity.
+    CORE_VOTER_SYNCING_STUCK("core-voter-syncing-stuck", "consensus", WarningLevel.WARNING),
+    /// The recovery of [#CORE_VOTER_SYNCING_STUCK], same subject (#2136): the voter's SYNCING episode ended (a READY, missing or stale
+    /// report, the raising node lost leadership (#3743: raised by that node on the loss itself) or its own consensus went inactive,
+    /// the voter left the roster, for example by being healed, or the raising node did not evaluate for more than 5 seconds, for example
+    /// during a reconfiguration: then the voter may still be stuck and a new episode starts from zero). Exactly one per stuck warning,
+    /// from the node that raised it. INFO, published only after a published stuck warning for the voter (#752 mechanism).
+    CORE_VOTER_SYNCING_ENDED("core-voter-syncing-ended", "consensus", WarningLevel.INFO, CORE_VOTER_SYNCING_STUCK),
+    /// Genesis formed with a seat of the agreed roster that was not a connected, authenticated peer when the roster was installed and
+    /// was still not connected when the installing node checked once, 5 seconds after the install (#1654, #3774, #3785): the view
+    /// agreement counts each member's last two reports with no freshness, so a member that reported the view and then died is still
+    /// agreed. A seat that is connected at that check (it can be mid-handshake at the install) is never named, and the check is the one
+    /// read: a seat that connected and dropped again before it is judged by it alone. The check needs no activation, so the node names its
+    /// dead seat whatever state it is in after the install. Formation is not blocked; auto-heal is expected to replace the seat. Raised
+    /// at most once per seat by the node that installed the roster; the subject is the seat's node id. Closed by [#GENESIS_SEAT_REACHABLE],
+    /// which the node publishes when a consensus tick sees the seat connected or out of the roster; an engine that never activates runs
+    /// no such tick, so there the warning is not closed.
     GENESIS_SEAT_UNREACHABLE("genesis-seat-unreachable", "consensus", WarningLevel.WARNING),
     /// The recovery of [#GENESIS_SEAT_UNREACHABLE], same subject (#1654): the seat is a connected peer again, or it left the voter
     /// roster (replaced); the message says which. INFO, published only after a published unreachable event for the seat (#752 mechanism).
@@ -768,10 +786,16 @@ public enum OperatorWarningCode {
     /// committed value still equals it, the subject is held, and so is the autonomous correction of a loss. A configuration commit that leaves the
     /// value unchanged (another subject's, or an unrelated setting) releases nothing. A value an operator commits WHILE auto-heal is disabled differs:
     /// that is explicit intent, the subject is released and acted on from then on, its loss correction included. An operator-directed retirement is
-    /// not held. Subject is the source/role or the community. Raised once per subject for the run of holds. Closed by [#AUTO_HEAL_SCALING_RESUMED].
+    /// not held. A hold describes a change being held back: a worker source/role closes too when its deficit is filled or its surplus removed
+    /// by an explicit drain, and the core surplus closes when no core member is left to drain, at the next reconcile pass, with auto-heal still
+    /// disabled (#3358). The core surplus has two askers (the leader's surplus drain and the voter-excluded core retirement); it closes only
+    /// when both have nothing pending. A subject whose committed value changed, or whose entry left the configuration, is released at the next
+    /// ask for any subject (the core is asked on every quorum-safe pass). Subject is the source/role, the community or `core`. Raised once per subject for the run of holds.
+    /// Closed by [#AUTO_HEAL_SCALING_RESUMED].
     AUTO_HEAL_SCALING_HELD("auto-heal-scaling-held", "deployment", WarningLevel.WARNING),
-    /// The recovery of [#AUTO_HEAL_SCALING_HELD], same subject: auto-heal is enabled again, or the subject was released by a new committed value, and
-    /// the worker or community path acts on it again. INFO, published only after a published held event for the subject (#752 mechanism). Raised by
+    /// The recovery of [#AUTO_HEAL_SCALING_HELD], same subject: auto-heal is enabled again, the subject was released by a new committed value, or
+    /// nothing is waiting to change any more (#3358: every asker of the subject has nothing pending); the worker, community or core path acts on
+    /// it again when there is something to do. INFO, published only after a published held event for the subject (#752 mechanism). Raised by
     /// the leader that held it.
     AUTO_HEAL_SCALING_RESUMED("auto-heal-scaling-resumed", "deployment", WarningLevel.INFO, AUTO_HEAL_SCALING_HELD),
     /// An upload was refused 429 because this node's `[app-http.upload] max_concurrent` was reached (#2410): the node is holding
@@ -1262,6 +1286,17 @@ public enum OperatorWarningCode {
     /// (#3174, H3b): the removal's cluster write may still land late and delete the fresh routes. Raised once per unsettled removal, on the
     /// transition, however many publishes wait on it. Subject is the node and the artifact. Closed by [#ROUTE_UNPUBLISH_AWAIT_SETTLED].
     ROUTE_UNPUBLISH_AWAIT_EXPIRED("route-unpublish-await-expired", "deployment", WarningLevel.WARNING),
+    /// A node waits to start consensus because fewer core peers than a quorum have completed their handshake with it (#3525): the join
+    /// guard casts no ballot until a quorum has handshaken and agrees on every label the cluster requires to agree, and it waits
+    /// without a deadline, because without a quorum there is no election to delay. Raised once per wait episode, when the join wait
+    /// bound has passed with the quorum still incomplete. Subject is the waiting node; the message names the core peers not yet
+    /// handshaken. A peer whose label differs is not waited for: the node refuses to start and says so. Closed by
+    /// [#CONSENSUS_QUORUM_COMPLETE].
+    CONSENSUS_QUORUM_INCOMPLETE("consensus-quorum-incomplete", "consensus", WarningLevel.WARNING),
+    /// The recovery of [#CONSENSUS_QUORUM_INCOMPLETE], same subject (#3525): the wait that raised the warning ended because a quorum of
+    /// the core has now handshaken and agrees on every label the cluster requires to agree, so the node goes on to sync. Raised only
+    /// after the warning was, once per wait episode.
+    CONSENSUS_QUORUM_COMPLETE("consensus-quorum-complete", "consensus", WarningLevel.INFO, CONSENSUS_QUORUM_INCOMPLETE),
     /// The recovery of [#ROUTE_UNPUBLISH_AWAIT_EXPIRED], same subject: the removal that outlived the bound has settled (success or failure).
     /// Published by the node that raised the warning, only after its published warning.
     ROUTE_UNPUBLISH_AWAIT_SETTLED("route-unpublish-await-settled",

@@ -180,7 +180,7 @@ class BootstrapPhaseDeployFormationLabelsTest {
         var result = BootstrapPhaseDeploy.pollFormedLabels(filter -> Result.success(1), 3, clusterName("prod").unwrap(), sourceNameOrDefault("eu"), 60, 10);
 
         assertThat(result.isFailure()).isTrue();
-        result.onFailure(cause -> assertThat(cause.message()).contains("1 of 3", "aether-formed", "cloud-init"));
+        result.onFailure(cause -> assertThat(cause.message()).contains("1 of 3", "aether-formed"));
     }
 
     /// A transient provider-API failure must not abort the wait — the poll keeps the last good

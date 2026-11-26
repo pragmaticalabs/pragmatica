@@ -17,7 +17,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.stream.Stream;
 
 import com.sun.source.tree.AnnotatedTypeTree;
 import com.sun.source.tree.ArrayTypeTree;
@@ -40,6 +39,7 @@ import com.sun.source.util.SourcePositions;
 import com.sun.source.util.TreePathScanner;
 import com.sun.source.util.Trees;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -71,12 +71,10 @@ class ReadAsCensusTest {
 
     @Test
     void readAs_overTheMainSources_isConstructedTwiceAndHeldNowhere() throws IOException {
-        List<Path> sources;
-
-        try (Stream<Path> files = Files.walk(AETHER_ROOT)) {
-            sources = files.filter(RingHeaderCensusTest::isAetherMainJava).toList();
-        }
-
+        var sources = SourceWalk.files(AETHER_ROOT)
+                                .stream()
+                                .filter(RingHeaderCensusTest::isAetherMainJava)
+                                .toList();
         var census = censusOfFiles(sources);
 
         assertThat(census.parsed()).as("main sources the census parsed == main sources under the claimed root, walked independently")
@@ -89,11 +87,11 @@ class ReadAsCensusTest {
     /// The second instrument of the reach check: a plain walk of the claimed root, sharing nothing with the census's own file filter.
     /// A reach that silently drops modules (a narrowed root, a filter that skips a directory) makes the two counts disagree.
     private static long mainSourcesUnderClaimedRoot() throws IOException {
-        try (Stream<Path> files = Files.walk(CLAIMED_ROOT)) {
-            return files.filter(path -> path.getFileName().toString().endsWith(".java"))
-                        .filter(ReadAsCensusTest::isUnderMainJava)
-                        .count();
-        }
+        return SourceWalk.files(CLAIMED_ROOT)
+                         .stream()
+                         .filter(path -> path.getFileName().toString().endsWith(".java"))
+                         .filter(ReadAsCensusTest::isUnderMainJava)
+                         .count();
     }
 
     private static boolean isUnderMainJava(Path path) {

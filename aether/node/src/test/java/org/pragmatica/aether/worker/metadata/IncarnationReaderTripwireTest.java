@@ -13,6 +13,7 @@ import java.util.stream.Collectors;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -34,6 +35,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// store was built with `IncarnationSource.none()`, so the production ring recorded nothing, pinned by this class's ENABLED tripwire). W2 adds
 /// `ReplicaIncarnationSource` and wires it into the store `AetherNode` builds; this class now pins THAT wiring and the ring's behavior under it.
 class IncarnationReaderTripwireTest {
+    private static final String LINEAGE = "lineage-1";
+
     /// The trailing argument is the notification delivery (D1, #2648); `AetherNodeKvDispatcherWiringBootTest` pins that it is dispatched.
     private static final String PRODUCTION_CONSTRUCTION = "newKVStore<AetherKey,AetherValue>(delegateRouter,serializer,deserializer,ReplicaFilter.replicaFilter(),ReplicaIncarnationSource.replicaIncarnationSource(),CommitRing.DEFAULT_BUDGET_BYTES,kvDelivery(config,dispatcherSink,kvDispatchEvents))";
 
@@ -59,7 +62,7 @@ class IncarnationReaderTripwireTest {
                                                         ReplicaIncarnationSource.replicaIncarnationSource(),
                                                         CommitRing.DEFAULT_BUDGET_BYTES);
 
-        commit(store, 0, AetherKey.ClusterIncarnationKey.SINGLETON, ClusterIncarnationValue.genesis("lineage-1", "incarnation-id-1"));
+        commit(store, 0, AetherKey.ClusterIncarnationKey.SINGLETON, ClusterIncarnationValue.genesis(LINEAGE, "incarnation-id-1"));
         commit(store, 1, new AetherKey.LogLevelKey("org.example"), AetherValue.LogLevelValue.logLevelValue("org.example", "DEBUG"));
 
         return store;
@@ -94,10 +97,12 @@ class IncarnationReaderTripwireTest {
     /// Main sources under `aether/` that mention `IncarnationSource`. Search space: every `.java` file under a `src/main/java` directory of the
     /// `aether` tree that contains this module.
     private static List<Path> aetherMainSourcesNamingAnIncarnationSource() {
-        try (var paths = Files.walk(nodeModule().getParent())) {
-            return paths.filter(path -> path.toString().contains("/src/main/java/") && path.toString().endsWith(".java"))
-                        .filter(IncarnationReaderTripwireTest::mentionsIncarnationSource)
-                        .toList();
+        try {
+            return SourceWalk.files(nodeModule().getParent())
+                             .stream()
+                             .filter(path -> path.toString().contains("/src/main/java/") && path.toString().endsWith(".java"))
+                             .filter(IncarnationReaderTripwireTest::mentionsIncarnationSource)
+                             .toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -122,7 +127,7 @@ class IncarnationReaderTripwireTest {
         var store = productionStoreAfterGenesis();
 
         assertThat(store.replicaRing().tag()).as("the ring's tag is the committed (incarnation, incarnationId)")
-                                             .isEqualTo(IncarnationTag.incarnationTag(ClusterIncarnationValue.GENESIS, "incarnation-id-1"));
+                                             .isEqualTo(IncarnationTag.incarnationTag(ClusterIncarnationValue.GENESIS, "incarnation-id-1", LINEAGE));
         assertThat(store.replicaRing().entries()).extracting(entry -> entry.slot())
                                                  .as("the genesis batch is a bump (not delivered); the write after it is")
                                                  .containsExactly(1L);

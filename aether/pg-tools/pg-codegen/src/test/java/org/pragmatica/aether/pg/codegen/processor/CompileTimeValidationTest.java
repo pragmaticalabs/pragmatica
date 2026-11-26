@@ -227,6 +227,23 @@ class CompileTimeValidationTest {
             assertThat(missing).containsExactly("amount");
         }
 
+        /// A primary key declared at table level makes its columns NOT NULL (#2795), so an insert must supply them.
+        @Test
+        void tableLevelPrimaryKeyColumn_requiredForInsert() {
+            var keyDdl = """
+                CREATE TABLE memberships (
+                    group_id BIGINT,
+                    user_id BIGINT,
+                    note TEXT,
+                    PRIMARY KEY (group_id, user_id)
+                );
+                """;
+            var keySchema = SchemaLoader.loadFromScripts(List.of(keyDdl)).unwrap();
+            var table = keySchema.table("memberships").unwrap();
+            var missing = MethodAnalyzer.findMissingRequiredColumns(table, List.of("note"));
+            assertThat(missing).containsExactly("group_id", "user_id");
+        }
+
         @Test
         void generatedStoredColumn_notRequiredForInsert() {
             var generatedDdl = """

@@ -1,0 +1,4 @@
+### Changed (2026-11-24 — #2788, #2790, #2801, #2802: Terra docs state per-instance state and connection sizing; the streams proposal becomes RFC-0020; Ember and Forge are dev tools)
+- **New `terra/INSTANCES.md`** states what is per instance (`LOCAL` cache, in-process pub-sub), what an operator sees when two instances disagree, and the PostgreSQL connection sum across instances with a two-instance sizing example (#2788, #2790). [mechanism: each statement traced to a source line, cited in the page]
+- **`terra/STREAMS-AND-ENTITIES.md` moved to `docs/rfc/RFC-0020-terra-streams-and-entities.md`** with a per-part status table marking what #2099 and #2100 supersede (#2801).
+- **Root README** presents Terra in the family framing and Ember and Forge as dev tools; the migration guide, feature catalog row 73 and the cluster-management spec phase 3 no longer present Ember or Forge as an embeddable production runtime (#2802).

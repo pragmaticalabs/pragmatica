@@ -267,6 +267,7 @@ class Http3ResponseFailureTest {
 
         server = Http3Server.bind(HttpServerConfig.httpServerConfig("h3-failure", port),
                                   QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
+                                                       .flatMap(LiveTls::liveQuicTls)
                                                        .unwrap(),
                                   handler,
                                   group,

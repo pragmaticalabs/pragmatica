@@ -162,6 +162,36 @@ class RemoteTierDurableTest {
         }
     }
 
+    /// #3784: the marker PUT of a touch that races a delete of its block is refused by the store. Whatever the
+    /// refusal's status, a block deleted under the touch is an absent block (`false`, as for a touch of an absent
+    /// block), never a [RemoteTierError.Rejected]; a refusal while the block is still held stays a verdict.
+    @Nested
+    class TouchRefusal {
+        @Test
+        void touch_markerRefusedWhileBlockDeletedUnderIt_isFalse_notRejected() {
+            var tier = durable(4);
+            var id = idOf(CONTENT);
+
+            tier.put(id, CONTENT).await();
+            s3.markerRefusal = new S3Error.AccessDenied("raced a delete");
+            s3.blockGoneAtRefusal = true;
+            assertThat(tier.touch(id).await().<Boolean> fold(cause -> fail(cause.message()), touched -> touched)).isFalse();
+        }
+
+        @Test
+        void touch_markerRefusedWhileBlockStillHeld_staysRejected() {
+            var tier = durable(4);
+            var id = idOf(CONTENT);
+
+            tier.put(id, CONTENT).await();
+            s3.markerRefusal = new S3Error.AccessDenied("bad key");
+            tier.touch(id)
+                .await()
+                .onSuccess(touched -> fail("Expected a failure, got " + touched))
+                .onFailure(cause -> assertThat(cause).isInstanceOf(RemoteTierError.Rejected.class));
+        }
+    }
+
     @Nested
     class Classification {
 
@@ -284,6 +314,10 @@ class RemoteTierDurableTest {
         final AtomicInteger running = new AtomicInteger();
         final AtomicInteger maxConcurrent = new AtomicInteger();
         volatile Cause failure;
+        /// Refuses every touch-marker PUT with this cause; see [#blockGoneAtRefusal].
+        volatile Cause markerRefusal;
+        /// The store removes the block while it refuses the marker PUT: a delete that landed at the touch's write.
+        volatile boolean blockGoneAtRefusal;
         volatile boolean holdPuts;
         volatile boolean corruptReads;
 
@@ -292,6 +326,12 @@ class RemoteTierDurableTest {
             calls.add("PUT " + key);
             if (failure != null) {
                 return failure.promise();
+            }
+            if (markerRefusal != null && key.endsWith(".touched")) {
+                if (blockGoneAtRefusal) {
+                    objects.remove(key.substring(0, key.length() - ".touched".length()));
+                }
+                return markerRefusal.promise();
             }
             started.incrementAndGet();
             maxConcurrent.accumulateAndGet(running.incrementAndGet(), Math::max);

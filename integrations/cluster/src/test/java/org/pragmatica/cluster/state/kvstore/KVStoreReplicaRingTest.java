@@ -33,7 +33,7 @@ import static org.pragmatica.cluster.state.kvstore.RingFixtures.store;
 /// The store's use of the commit ring: what each of its storage writers records or invalidates, the incarnation rule, the filter, the replica
 /// write path (`applyEffects`), the snapshot capture and the phase hook. The ring on its own is `CommitRingTest`.
 class KVStoreReplicaRingTest {
-    private static final IncarnationTag TAG_A = IncarnationTag.incarnationTag(1, "A");
+    private static final IncarnationTag TAG_A = IncarnationTag.incarnationTag(1, "A", RingFixtures.LINEAGE);
 
     private static List<String> effectsOf(KVStore<StructuredKey, Object> store) {
         return store.replicaRing().entries().stream()
@@ -175,7 +175,7 @@ class KVStoreReplicaRingTest {
         store.replicaRing().subscribeFrom(TAG_A, 2, store.replicaRing().anchor(), CommitRing.subscription(closed::add));
         commit(store, 2, new KVCommand.Remove<>(IncKey.INSTANCE), putIncarnation(2, "B"));
 
-        assertThat(store.replicaRing().tag()).isEqualTo(IncarnationTag.incarnationTag(2, "B"));
+        assertThat(store.replicaRing().tag()).isEqualTo(IncarnationTag.incarnationTag(2, "B", RingFixtures.LINEAGE));
         assertThat(store.replicaRing().entries()).as("the bump batch is not delivered").isEmpty();
         assertThat(store.replicaRing().floor()).isEqualTo(3L);
         assertThat(closed).containsExactly(CloseReason.INCARNATION_MISMATCH);
@@ -202,7 +202,7 @@ class KVStoreReplicaRingTest {
         commit(store, 1, put("a", "1"));
         commit(store, 2, putIncarnation(1, "B"));
 
-        assertThat(store.replicaRing().tag()).as("NT-O36, re-genesis: same number, new id (mutation: compare by number only, the ring is not cleared)").isEqualTo(IncarnationTag.incarnationTag(1, "B"));
+        assertThat(store.replicaRing().tag()).as("NT-O36, re-genesis: same number, new id (mutation: compare by number only, the ring is not cleared)").isEqualTo(IncarnationTag.incarnationTag(1, "B", RingFixtures.LINEAGE));
         assertThat(store.replicaRing().entries()).isEmpty();
     }
 

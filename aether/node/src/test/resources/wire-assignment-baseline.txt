@@ -21,7 +21,7 @@
 # no skip metadata, so an old reader desynchronises rather than ignoring the change).
 # Rename only, same type and position = byte-neutral, pinned so a same-typed name swap is
 # visible in this diff. See WireAssignmentTripwireTest for the derivation from the generator.
-GENERATION 13
+GENERATION 14
 ENUM org.pragmatica.aether.api.ClusterEvent$Severity INFO=0,WARNING=1,CRITICAL=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$NotAppliedReason ROUTE_NOT_FOUND=0,BUDGET_EXHAUSTED=1,UNDECODABLE_REQUEST=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$Pipeline APP=0,MANAGEMENT=1,UNKNOWN=2
@@ -432,7 +432,7 @@ SHAPE org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaSnapshotChunk (se
 SHAPE org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaSnapshotRequest (sender:org.pragmatica.consensus.NodeId,requestId:long,tag:org.pragmatica.cluster.state.kvstore.IncarnationTag,revision:long,hash:java.lang.String,offset:long)
 SHAPE org.pragmatica.cluster.replica.ReplicaFeedMessage$ReplicaSubscribe (sender:org.pragmatica.consensus.NodeId,requestId:long,tag:org.pragmatica.cluster.state.kvstore.IncarnationTag,applied:long,anchor:java.util.List<org.pragmatica.cluster.state.kvstore.AnchorPair>,mode:org.pragmatica.cluster.replica.ReplicaFeedMessage$SubscribeMode)
 SHAPE org.pragmatica.cluster.state.kvstore.AnchorPair (slot:long,batchId:java.lang.String)
-SHAPE org.pragmatica.cluster.state.kvstore.IncarnationTag (incarnation:long,incarnationId:java.lang.String)
+SHAPE org.pragmatica.cluster.state.kvstore.IncarnationTag (incarnation:long,incarnationId:java.lang.String,lineageId:java.lang.String)
 SHAPE org.pragmatica.cluster.state.kvstore.KVCommand$Get (key:K)
 SHAPE org.pragmatica.cluster.state.kvstore.KVCommand$LeaderTransaction (key:K,transactionId:java.lang.String,leader:org.pragmatica.cluster.state.kvstore.LeaderValue,guards:java.util.List<org.pragmatica.cluster.state.kvstore.KVCommand$ReadWitness<K>>,mutations:java.util.List<org.pragmatica.cluster.state.kvstore.KVCommand$Mutation<K, V>>)
 SHAPE org.pragmatica.cluster.state.kvstore.KVCommand$Mutation (key:K,expected:org.pragmatica.lang.Option<V>,replacement:org.pragmatica.lang.Option<V>)

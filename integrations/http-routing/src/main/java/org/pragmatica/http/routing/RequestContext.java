@@ -208,8 +208,7 @@ public interface RequestContext extends HttpRequest {
 
         @Override
         public org.pragmatica.http.HttpMethod method() {
-            return org.pragmatica.http.HttpMethod.httpMethod(request.method().name())
-                                                 .or(org.pragmatica.http.HttpMethod.GET);
+            return route.method();
         }
 
         @Override

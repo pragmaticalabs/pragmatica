@@ -3,6 +3,7 @@ package org.pragmatica.jbct.init;
 import java.io.IOException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
@@ -23,77 +24,104 @@ import org.pragmatica.lang.utils.Causes;
 
 
 /// Installs AI tools (Claude Code skills and agents) to project's .claude/ directory.
-/// Uses an offline cache at ~/.jbct/cache/ai-tools/ for faster installs, refreshing it
-/// whenever the latest commit on the source repository differs from the cached one.
+/// The tools are fetched at the tag `ai-tools-v<jbct version>` of the running build (#2363), never `main`
+/// ([AiToolsRef]). Uses an offline cache at ~/.jbct/cache/ai-tools/ for faster installs, refreshing it
+/// whenever the commit the tag points at, or the tag itself, differs from the cached one; the cache records the
+/// ref it holds in `.ref` and is reused offline only when it holds this build's ref. A refresh removes the stamp,
+/// then the cached `skills/` and `agents/`, before the first file is written, so the cache never mixes refs.
 /// Files already present in the user's global ~/.claude/ are skipped (resolved globally).
 public final class AiToolsInstaller {
     private static final Path CACHE_DIR = Path.of(System.getProperty("user.home"), ".jbct", "cache", "ai-tools");
 
     private static final Path GLOBAL_CLAUDE_DIR = Path.of(System.getProperty("user.home"), ".claude");
-    private static final String VERSION_FILE = ".sha";
-    private static final String REPO = "siy/coding-technology";
-    private static final String BRANCH = "main";
+    private static final String VERSION_FILE = ".ref";
     private static final String AI_TOOLS_PREFIX = "ai-tools/";
 
     private final Path claudeDir;
+    private final HttpOperations http;
+    private final Path cacheDir;
+    private final Result<AiToolsRef> ref;
 
-    private AiToolsInstaller(Path claudeDir) {
+    private AiToolsInstaller(Path claudeDir, HttpOperations http, Path cacheDir, Result<AiToolsRef> ref) {
         this.claudeDir = claudeDir;
+        this.http = http;
+        this.cacheDir = cacheDir;
+        this.ref = ref;
     }
 
     /// Create installer for project directory.
     /// AI tools will be installed to projectDir/.claude/
     public static AiToolsInstaller aiToolsInstaller(Path projectDir) {
-        return new AiToolsInstaller(projectDir.resolve(".claude"));
+        return new AiToolsInstaller(projectDir.resolve(".claude"),
+                                    HttpClients.httpOperations(),
+                                    CACHE_DIR,
+                                    AiToolsRef.aiToolsRef());
     }
 
-    /// Install AI tools from cache (refreshed to the latest commit) into the project.
+    // Test seam: inject the HTTP seam, the cache directory and the ref (the running build's version is fixed by the jar).
+    static AiToolsInstaller aiToolsInstaller(Path projectDir,
+                                             HttpOperations http,
+                                             Path cacheDir,
+                                             Result<AiToolsRef> ref) {
+        return new AiToolsInstaller(projectDir.resolve(".claude"), http, cacheDir, ref);
+    }
+
+    /// Install AI tools from cache (refreshed to this build's tag) into the project.
     ///
-    /// @return Outcome listing installed files and files skipped as already-global
+    /// @return Outcome listing installed files, files skipped as already-global and the ref installed
     public Result<AiToolsOutcome> install() {
-        return ensureCachePopulated().flatMap(_ -> copyFromCache());
+        return ref.flatMap(this::installAt);
     }
 
-    private Result<Unit> ensureCachePopulated() {
-        var http = HttpClients.httpOperations();
-
-        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH).fold(this::useExistingCache,
-                                                                                latestSha -> refreshCacheIfStale(http,
-                                                                                                                 latestSha));
+    private Result<AiToolsOutcome> installAt(AiToolsRef pinned) {
+        return ensureCachePopulated(pinned).flatMap(_ -> copyFromCache(pinned));
     }
 
-    private Result<Unit> refreshCacheIfStale(HttpOperations http, String latestSha) {
-        return isCacheCurrent(latestSha)
+    private Result<Unit> ensureCachePopulated(AiToolsRef pinned) {
+        return pinned.resolveSha(http)
+                     .fold(cause -> useExistingCache(pinned, cause),
+                           latestSha -> refreshCacheIfStale(pinned, latestSha));
+    }
+
+    private Result<Unit> refreshCacheIfStale(AiToolsRef pinned, String latestSha) {
+        return isCacheCurrent(pinned, latestSha)
                ? Result.unitResult()
-               : downloadToCache(http, latestSha);
+               : downloadToCache(pinned, latestSha);
     }
 
-    private Result<Unit> useExistingCache(Cause cause) {
-        return isCacheValid()
+    // A tag the repository does not carry is never papered over by a cache; any other failure (offline) may reuse
+    // a cache that holds this build's own ref, never one of another ref.
+    private Result<Unit> useExistingCache(AiToolsRef pinned, Cause cause) {
+        return ! (cause instanceof AiToolsRef.AiToolsRefError.TagNotFound) && isCacheOf(pinned)
                ? Result.unitResult()
                : cause.result();
     }
 
-    private boolean isCacheCurrent(String latestSha) {
-        return isCacheValid() && readCachedSha().filter(sha -> sha.equals(latestSha))
-                                              .isPresent();
+    private boolean isCacheCurrent(AiToolsRef pinned, String latestSha) {
+        return isCacheValid() && readCachedStamp().filter(stamp -> stamp.equals(pinned.stamp(latestSha)))
+                                                .isPresent();
+    }
+
+    private boolean isCacheOf(AiToolsRef pinned) {
+        return isCacheValid() && readCachedStamp().filter(pinned::isStampOfThisRef)
+                                                .isPresent();
     }
 
     private boolean isCacheValid() {
-        var versionFile = CACHE_DIR.resolve(VERSION_FILE);
+        var versionFile = cacheDir.resolve(VERSION_FILE);
 
         if (!Files.exists(versionFile)) {
             return false;
         }
         // Check if at least one skill and one agent exists
-        var skillsDir = CACHE_DIR.resolve("skills");
-        var agentsDir = CACHE_DIR.resolve("agents");
+        var skillsDir = cacheDir.resolve("skills");
+        var agentsDir = cacheDir.resolve("agents");
 
         return Files.exists(skillsDir) && Files.exists(agentsDir);
     }
 
-    private Option<String> readCachedSha() {
-        var versionFile = CACHE_DIR.resolve(VERSION_FILE);
+    private Option<String> readCachedStamp() {
+        var versionFile = cacheDir.resolve(VERSION_FILE);
 
         if (!Files.exists(versionFile)) {
             return Option.none();
@@ -106,33 +134,59 @@ public final class AiToolsInstaller {
         }
     }
 
-    private Result<Unit> downloadToCache(HttpOperations http, String sha) {
-        return GitHubContentFetcher.discoverFiles(http, REPO, BRANCH, AI_TOOLS_PREFIX)
-                                   .flatMap(files -> downloadAllFiles(http, files))
-                                   .flatMap(_ -> saveVersion(sha));
+    // Fetched at the commit the tag resolved to, so the content is exactly what the recorded ref names. The files are
+    // listed first (a ref that cannot be listed leaves the cache untouched); then the stamp goes FIRST, so a refresh
+    // that dies half-way leaves a cache no ref claims, and skills/ and agents/ are emptied, so a file the ref does
+    // not carry (left by another ref, or by main) cannot survive under this ref's stamp.
+    private Result<Unit> downloadToCache(AiToolsRef pinned, String sha) {
+        return GitHubContentFetcher.discoverFiles(http, AiToolsRef.REPO, sha, AI_TOOLS_PREFIX)
+                                   .flatMap(files -> clearCache().flatMap(_ -> downloadAllFiles(sha, files)))
+                                   .flatMap(_ -> saveVersion(pinned.stamp(sha)));
     }
 
-    private Result<List<Path>> downloadAllFiles(HttpOperations http, List<String> remotePaths) {
+    private Result<Unit> clearCache() {
+        return Result.lift(AiToolsInstaller::clearFailure,
+                           () -> Files.deleteIfExists(cacheDir.resolve(VERSION_FILE)))
+                     .flatMap(_ -> deleteTree(cacheDir.resolve("skills")))
+                     .flatMap(_ -> deleteTree(cacheDir.resolve("agents")));
+    }
+
+    // A symbolic link is deleted itself, never followed: walkFileTree does not follow links unless asked to.
+    private static Result<Unit> deleteTree(Path root) {
+        return Files.exists(root, LinkOption.NOFOLLOW_LINKS)
+               ? Result.lift(AiToolsInstaller::clearFailure,
+                             () -> Files.walkFileTree(root,
+                                                      new DeleteTreeVisitor()))
+                       .mapToUnit()
+               : Result.unitResult();
+    }
+
+    private static Cause clearFailure(Throwable throwable) {
+        return Causes.cause("Failed to clear the AI tools cache: " + throwable.getMessage(),
+                            Option.some(Causes.fromThrowable(throwable)));
+    }
+
+    private Result<List<Path>> downloadAllFiles(String sha, List<String> remotePaths) {
         var downloads = remotePaths.stream()
                                    .map(remotePath -> remotePath.substring(AI_TOOLS_PREFIX.length()))
-                                   .map(relativePath -> PathValidation.validateRelativePath(relativePath, CACHE_DIR).flatMap(targetPath -> downloadFile(http,
-                                                                                                                                                        AI_TOOLS_PREFIX + relativePath,
-                                                                                                                                                        targetPath)))
+                                   .map(relativePath -> PathValidation.validateRelativePath(relativePath, cacheDir).flatMap(targetPath -> downloadFile(sha,
+                                                                                                                                                       AI_TOOLS_PREFIX + relativePath,
+                                                                                                                                                       targetPath)))
                                    .toList();
 
         return Result.allOf(downloads);
     }
 
-    private Result<Path> downloadFile(HttpOperations http, String remotePath, Path targetPath) {
-        return GitHubContentFetcher.downloadFile(http, REPO, BRANCH, remotePath, targetPath).map(_ -> targetPath);
+    private Result<Path> downloadFile(String sha, String remotePath, Path targetPath) {
+        return GitHubContentFetcher.downloadFile(http, AiToolsRef.REPO, sha, remotePath, targetPath).map(_ -> targetPath);
     }
 
-    private Result<Unit> saveVersion(String sha) {
+    private Result<Unit> saveVersion(String stamp) {
         try {
-            Files.createDirectories(CACHE_DIR);
-            var versionFile = CACHE_DIR.resolve(VERSION_FILE);
+            Files.createDirectories(cacheDir);
+            var versionFile = cacheDir.resolve(VERSION_FILE);
 
-            Files.writeString(versionFile, sha);
+            Files.writeString(versionFile, stamp);
 
             return Result.unitResult();
         } catch (IOException e) {
@@ -140,8 +194,8 @@ public final class AiToolsInstaller {
         }
     }
 
-    private Result<AiToolsOutcome> copyFromCache() {
-        if (!Files.exists(CACHE_DIR)) {
+    private Result<AiToolsOutcome> copyFromCache(AiToolsRef pinned) {
+        if (!Files.exists(cacheDir)) {
             return Causes.cause("AI tools cache not found. Run 'jbct update' with network access first.").result();
         }
 
@@ -150,15 +204,17 @@ public final class AiToolsInstaller {
 
         return Result.lift(AiToolsInstaller::copyFailure,
                            () -> Files.createDirectories(claudeDir))
-                     .flatMap(_ -> copyTree(CACHE_DIR.resolve("skills"),
+                     .flatMap(_ -> copyTree(cacheDir.resolve("skills"),
                                             claudeDir.resolve("skills"),
                                             installed,
                                             skipped))
-                     .flatMap(_ -> copyTree(CACHE_DIR.resolve("agents"),
+                     .flatMap(_ -> copyTree(cacheDir.resolve("agents"),
                                             claudeDir.resolve("agents"),
                                             installed,
                                             skipped))
-                     .map(_ -> AiToolsOutcome.aiToolsOutcome(installed, skipped));
+                     .map(_ -> AiToolsOutcome.aiToolsOutcome(installed,
+                                                             skipped,
+                                                             pinned.tag()));
     }
 
     private static Cause copyFailure(Throwable throwable) {
@@ -214,6 +270,26 @@ public final class AiToolsInstaller {
 
             Files.copy(file, targetFile, StandardCopyOption.REPLACE_EXISTING);
             installed.add(targetFile);
+
+            return FileVisitResult.CONTINUE;
+        }
+    }
+
+    /// Deletes a directory tree bottom-up. The `throws IOException` signatures are dictated by [java.nio.file.FileVisitor];
+    /// [#deleteTree] lifts them.
+    private static final class DeleteTreeVisitor extends SimpleFileVisitor<Path> {
+        @Contract
+        @Override
+        public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+            Files.delete(file);
+
+            return FileVisitResult.CONTINUE;
+        }
+
+        @Contract
+        @Override
+        public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+            Files.delete(dir);
 
             return FileVisitResult.CONTINUE;
         }

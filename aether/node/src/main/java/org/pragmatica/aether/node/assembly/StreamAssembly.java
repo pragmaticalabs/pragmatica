@@ -1134,16 +1134,28 @@ public sealed interface StreamAssembly {
         // #932: one thread each per node, both daemon and neither closed on stop — nine of each survived a
         // nine-node stop. The controller's close() is shutdownNow on the executor it owns; the backfill
         // executor is this method's own. Controller first: its reconcile is what submits to the backfill.
-        Runnable streamReplicationShutdown = () -> {
-            streamReplicaSetController.close();
-            streamBackfillExecutor.shutdownNow();
-        };
+        Runnable streamReplicationShutdown = () -> stopStreamReplication(streamReplicaSetController,
+                                                                         streamPartitionBackfill,
+                                                                         streamBackfillExecutor);
 
         return new StreamOwnershipOutputs(streamOwnershipViews,
                                           streamPartitionBackfill,
                                           streamBackfillExecutor,
                                           streamReplicaSetController,
                                           streamReplicationShutdown);
+    }
+
+    /// The node stop's end of the stream replication: the controller (its reconcile is what submits to the backfill), then the
+    /// backfill's own timers (#3754: the refusal hold and the idle watch must not start a re-run after the stop), then the
+    /// backfill executor.
+    static Unit stopStreamReplication(ReplicaSetController streamReplicaSetController,
+                                      PartitionBackfill streamPartitionBackfill,
+                                      ExecutorService streamBackfillExecutor) {
+        streamReplicaSetController.close();
+        streamPartitionBackfill.close();
+        streamBackfillExecutor.shutdownNow();
+
+        return Unit.unit();
     }
 
     /// What `streamBackfillTick` reads from the assembly built so far.
@@ -1459,6 +1471,10 @@ public sealed interface StreamAssembly {
         // that consumer on the next pass, now rather than on the 5s tick. The manager filters the key type.
         allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                                  streamConsumerManager::onCheckpointPut));
+        // #1400: every ACCEPTED checkpoint, whichever node committed it, reaches the group's projection hosted here,
+        // so a node whose assignment moved away mid-rebuild leaves REBUILDING on the new assignee's committed cursor.
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                                 streamClusterCursorStore::onCheckpointPut));
         // A rebuild's rewind record counts as committed once its accepted-put notification is seen here; a
         // read-back alone is overtaken by the restarted consumer's first checkpoint at the same epoch.
         var rewindWitness = CommitWitness.commitWitness();

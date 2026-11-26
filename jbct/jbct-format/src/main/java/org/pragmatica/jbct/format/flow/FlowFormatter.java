@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.format.flow;
 
+import org.pragmatica.jbct.format.ContentGuard;
 import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.format.FormattingError;
 import org.pragmatica.jbct.parser.Cursor;
@@ -43,14 +44,22 @@ public class FlowFormatter {
     /// This method has no internal size cap — passing a multi-MB source will parse and
     /// format that source.
     public Result<SourceFile> format(SourceFile source) {
-        return parse(source).map(cst -> formatParsed(cst, source));
+        return parse(source).flatMap(cst -> formatParsed(cst, source));
     }
 
     /// Format an already-parsed CST. Single-pass orchestrators (e.g. ProcessMojo) call
     /// this to avoid re-parsing when the parse tree is already in hand.
     /// Caller is responsible for size limits — this entry point performs no size check.
-    public SourceFile formatParsed(Cursor tree, SourceFile source) {
-        return source.withContent(formatCst(tree, source.content()));
+    ///
+    /// The one place every formatted text passes before it is returned: [ContentGuard] compares its comments and
+    /// tokens with the input's and refuses the file ([FormattingError.ContentChanged]) on the first difference.
+    public Result<SourceFile> formatParsed(Cursor tree, SourceFile source) {
+        var formatted = formatCst(tree, source.content());
+
+        return ContentGuard.verify(source.fileName(),
+                                   source.content(),
+                                   formatted)
+                           .map(_ -> source.withContent(formatted));
     }
 
     /// Check if a source file is already formatted.

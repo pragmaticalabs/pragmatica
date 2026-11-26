@@ -7,11 +7,8 @@ package org.pragmatica.aether.node;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +21,7 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -531,56 +529,32 @@ class TransportOutcomeDisciplineTest {
                               .toList();
     }
 
+    /// The modules (repository-relative) holding a `src/main/java` file that names a transport type.
     private static Set<String> modulesNamingATransport(Path root) {
         var modules = new TreeSet<String>();
 
-        mainSourceRoots(root).forEach(sources -> {
-            var named = javaFiles(sources).stream()
-                                          .anyMatch(file -> TRANSPORT_TYPE.matcher(SendScanner.stripCommentsAndStrings(read(file))).find());
+        for (var file : sourceFiles(root)) {
+            var relative = root.relativize(file).toString().replace('\\', '/');
+            var sources = relative.indexOf(MAIN_SOURCES);
 
-            if (named) {
-                modules.add(root.relativize(sources.getParent().getParent().getParent()).toString().replace('\\', '/'));
+            if (sources >= 0 && relative.endsWith(".java")
+                && TRANSPORT_TYPE.matcher(SendScanner.stripCommentsAndStrings(read(file))).find()) {
+                modules.add(relative.substring(0, sources));
             }
-        });
+        }
 
         return modules;
     }
 
-    private static final Set<String> PRUNED = Set.of(".git", ".m2-local", "target", "node_modules", ".bb", ".idea");
-
-    private static List<Path> mainSourceRoots(Path root) {
-        var roots = new ArrayList<Path>();
-
-        walk(root, new SimpleFileVisitor<>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                if (PRUNED.contains(dir.getFileName().toString())) {
-                    return FileVisitResult.SKIP_SUBTREE;
-                }
-                if (dir.endsWith("src/main/java")) {
-                    roots.add(dir);
-
-                    return FileVisitResult.SKIP_SUBTREE;
-                }
-
-                return FileVisitResult.CONTINUE;
-            }
-        });
-
-        return roots;
-    }
+    private static final String MAIN_SOURCES = "/src/main/java/";
 
     private static List<Path> javaFiles(Path dir) {
-        try (var files = Files.walk(dir)) {
-            return files.filter(file -> file.toString().endsWith(".java")).sorted().toList();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+        return sourceFiles(dir).stream().filter(file -> file.toString().endsWith(".java")).toList();
     }
 
-    private static void walk(Path root, SimpleFileVisitor<Path> visitor) {
+    private static List<Path> sourceFiles(Path dir) {
         try {
-            Files.walkFileTree(root, visitor);
+            return SourceWalk.files(dir);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

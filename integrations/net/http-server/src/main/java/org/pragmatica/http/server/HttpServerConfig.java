@@ -15,14 +15,21 @@
  */
 package org.pragmatica.http.server;
 
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.SocketOptions;
 import org.pragmatica.net.tcp.TlsConfig;
+
+import io.netty.handler.ssl.SslContext;
 
 
 /// Configuration for HTTP server.
@@ -48,6 +55,15 @@ import org.pragmatica.net.tcp.TlsConfig;
 ///                             (see `ResponseSequence`), and the connection is closed once the earlier responses are
 ///                             written; without a bound one stuck handler stalls every response pipelined behind it.
 ///                             Zero or negative disables the bound.
+/// @param bindHost             the local host (name or address literal) the listening socket binds to, on both
+///                             protocols: none binds every interface (the wildcard address), the default. A host that
+///                             does not resolve to an address, or a blank one, fails the start with
+///                             `HttpServerError.BindHostUnresolved`; one that resolves to an address this machine does not
+///                             own fails in the bind with `HttpServerError.BindFailed` naming the host.
+/// @param liveTls              #2032: an HTTP/1.1 TLS context holder the server reads once per new connection, so a
+///                             [LiveTls#swap] changes the certificate without a listener gap (see [LiveTls]). Set
+///                             through [#withLiveTls]; [#withTls] and [#withLiveTls] each clear the other. Should both be
+///                             present, the holder is used and `tls` is ignored.
 public record HttpServerConfig(String name,
                                int port,
                                Option<TlsConfig> tls,
@@ -58,7 +74,9 @@ public record HttpServerConfig(String name,
                                TimeSpan readTimeout,
                                BodyRateLimit bodyRateLimit,
                                Option<RequestClassifier> classifier,
-                               TimeSpan responseTimeout) {
+                               TimeSpan responseTimeout,
+                               Option<String> bindHost,
+                               Option<LiveTls<SslContext>> liveTls) {
     private static final int DEFAULT_MAX_CONTENT_LENGTH = 65536;
     /// 60 s mirrors nginx's `client_body_timeout` default. It is a guess, not a measurement: long enough for a
     /// client on a slow link to send a 10 MiB body over HTTP/3 (about 1.4 Mbit/s), short enough that a stalled
@@ -93,7 +111,9 @@ public record HttpServerConfig(String name,
              readTimeout,
              bodyRateLimit,
              Option.empty(),
-             DEFAULT_RESPONSE_TIMEOUT);
+             DEFAULT_RESPONSE_TIMEOUT,
+             Option.empty(),
+             Option.empty());
     }
 
     public static HttpServerConfig httpServerConfig(String name, int port) {
@@ -107,9 +127,14 @@ public record HttpServerConfig(String name,
                                     DEFAULT_READ_TIMEOUT,
                                     BodyRateLimit.DEFAULT,
                                     Option.empty(),
-                                    DEFAULT_RESPONSE_TIMEOUT);
+                                    DEFAULT_RESPONSE_TIMEOUT,
+                                    Option.empty(),
+                                    Option.empty());
     }
 
+    /// TLS built from `tls` when the server binds; a configuration that does not build refuses startup. The server
+    /// wraps the built context in a [LiveTls] of its own, so the listener behaves as one given [#withLiveTls], but
+    /// nothing outside the server can swap it.
     public HttpServerConfig withTls(TlsConfig tls) {
         return new HttpServerConfig(name,
                                     port,
@@ -121,7 +146,27 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    bindHost,
+                                    Option.empty());
+    }
+
+    /// #2032: TLS from `liveTls`, read once per new connection; the caller keeps the holder and swaps the certificate
+    /// through it (see [LiveTls]).
+    public HttpServerConfig withLiveTls(LiveTls<SslContext> liveTls) {
+        return new HttpServerConfig(name,
+                                    port,
+                                    Option.empty(),
+                                    maxContentLength,
+                                    webSocketEndpoints,
+                                    chunkedWriteEnabled,
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit,
+                                    classifier,
+                                    responseTimeout,
+                                    bindHost,
+                                    Option.some(liveTls));
     }
 
     public HttpServerConfig withMaxContentLength(int maxContentLength) {
@@ -135,7 +180,9 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    bindHost,
+                                    liveTls);
     }
 
     public HttpServerConfig withWebSocket(WebSocketEndpoint endpoint) {
@@ -153,7 +200,9 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    bindHost,
+                                    liveTls);
     }
 
     public HttpServerConfig withChunkedWrite() {
@@ -167,7 +216,9 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    bindHost,
+                                    liveTls);
     }
 
     public HttpServerConfig withBodyRateLimit(BodyRateLimit bodyRateLimit) {
@@ -181,7 +232,9 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    bindHost,
+                                    liveTls);
     }
 
     public HttpServerConfig withReadTimeout(TimeSpan readTimeout) {
@@ -195,7 +248,9 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    bindHost,
+                                    liveTls);
     }
 
     /// How long a dispatched HTTP/1.1 request may wait for its response before it is answered 504 (see
@@ -211,7 +266,9 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     classifier,
-                                    responseTimeout);
+                                    responseTimeout,
+                                    bindHost,
+                                    liveTls);
     }
 
     /// Classify every request on its HEADERS (see [RequestClassifier]).
@@ -226,7 +283,46 @@ public record HttpServerConfig(String name,
                                     readTimeout,
                                     bodyRateLimit,
                                     Option.some(classifier),
-                                    responseTimeout);
+                                    responseTimeout,
+                                    bindHost,
+                                    liveTls);
+    }
+
+    /// Bind the listening socket to `bindHost` only (see [#bindHost]) instead of every interface.
+    public HttpServerConfig withBindHost(String bindHost) {
+        return new HttpServerConfig(name,
+                                    port,
+                                    tls,
+                                    maxContentLength,
+                                    webSocketEndpoints,
+                                    chunkedWriteEnabled,
+                                    socketOptions,
+                                    readTimeout,
+                                    bodyRateLimit,
+                                    classifier,
+                                    responseTimeout,
+                                    Option.some(bindHost),
+                                    liveTls);
+    }
+
+    /// The socket address the listener binds: the wildcard address when no bind host is configured, else the
+    /// configured host resolved now. A blank host would resolve to loopback, so it is refused rather than read as one.
+    Result<InetSocketAddress> bindAddress() {
+        return bindHost.map(this::resolveBindHost)
+                       .or(() -> Result.success(new InetSocketAddress(port)));
+    }
+
+    private Result<InetSocketAddress> resolveBindHost(String host) {
+        var blank = new HttpServerError.BindHostUnresolved(name, host, Causes.cause("the host is blank"));
+
+        return Verify.ensure(host, Verify.Is::notBlank, blank)
+                     .flatMap(this::lookup)
+                     .map(address -> new InetSocketAddress(address, port));
+    }
+
+    private Result<InetAddress> lookup(String host) {
+        return Result.lift(thrown -> new HttpServerError.BindHostUnresolved(name, host, Causes.fromThrowable(thrown)),
+                           () -> InetAddress.getByName(host));
     }
 
     /// The classifier in force: the configured one, else one that aggregates every request up to `maxContentLength`.

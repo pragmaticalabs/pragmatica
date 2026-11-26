@@ -363,7 +363,7 @@ class StreamResourceValidatorTest {
                     [streams.orders.retention]
                     max_bytes = "2GB"
                     [streams.orders.hot]
-                    max_count = 100
+                    max_count = 10000
                     """;
 
             StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT)
@@ -373,7 +373,7 @@ class StreamResourceValidatorTest {
                                                                .allSatisfy(failure -> assertThat(failure.field()).isEqualTo("[streams.orders]"))
                                                                .extracting(StreamValidationFailure::message)
                                                                .containsExactlyInAnyOrder("retention.max_bytes = '2GB' has no runtime effect yet — " + RETENTION_CLAUSE,
-                                                                                          "hot.max_count = '100' has no runtime effect yet — " + HOT_CLAUSE));
+                                                                                          "hot.max_count = '10000' has no runtime effect yet — " + HOT_CLAUSE));
         }
 
         /// Item 1 design assertion, beside the tripwire: accepted once S2a3 / S2b wire the tables.
@@ -386,7 +386,7 @@ class StreamResourceValidatorTest {
                     [streams.orders.retention]
                     max_bytes = "2GB"
                     [streams.orders.hot]
-                    max_count = 100
+                    max_count = 10000
                     """;
 
             assertThat(StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT).isSuccess()).isTrue();
@@ -727,6 +727,29 @@ class StreamResourceValidatorTest {
         @Test
         void untilConsumed_reportsNotYetAvailable() {
             assertRuleFor("[streams.orders.truncation]\npolicy = \"until_consumed\"\n", StreamResourceValidator.RULE_NOT_YET_AVAILABLE);
+        }
+
+        @Test
+        void hotWindowBelowSealRuns_reportsItsOwnRule() {
+            assertRuleFor("[streams.orders.hot]\nmax_bytes = \"1MB\"\n", StreamResourceValidator.RULE_HOT_WINDOW_BELOW_SEAL_RUNS);
+        }
+
+        @Test
+        void hotWindowBelowMaxEvent_reportsItsOwnRule() {
+            assertRuleFor("max_event_size = \"8MB\"\n\n[streams.orders.hot]\nmax_bytes = \"4MB\"\n",
+                          StreamResourceValidator.RULE_HOT_WINDOW_BELOW_MAX_EVENT);
+        }
+
+        @Test
+        void retentionShareTooSmall_reportsItsOwnRule() {
+            assertRuleFor("partitions = 1024\n\n[streams.orders.retention]\nmax_bytes = \"1GB\"\n",
+                          StreamResourceValidator.RULE_RETENTION_SHARE_TOO_SMALL);
+        }
+
+        @Test
+        void retentionCountUnindexable_reportsItsOwnRule() {
+            assertRuleFor("max_event_size = \"1MB\"\n\n[streams.orders.hot]\nmax_count = 9000000000000000000\n",
+                          StreamResourceValidator.RULE_RETENTION_COUNT_UNINDEXABLE);
         }
 
         private void assertRuleFor(String sections, String rule) {

@@ -236,6 +236,7 @@ public final class EmberCluster {
     private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
     /// Opt-in restart-stable consensus state for recovery tests; retained across stop/start.
     private final AtomicReference<Option<KvBackup>> kvBackup = new AtomicReference<>(Option.none());
+    private volatile Set<String> kvBackupOff = Set.of();
     /// #1212 — where this instance's nodes keep their durable first-boot markers when the test did
     /// not opt into [#withDataBaseDir]. Created ONCE per `EmberCluster` instance and deliberately
     /// NOT cleaned by [#stop], because that is exactly what gives the marker its meaning here:
@@ -555,8 +556,19 @@ public final class EmberCluster {
 
     private record KvBackup(Path baseDir, String remote, BackupConfig.RestoreMode restore) {}
 
+    /// TEST SEAM (#3525 L2) — the nodes named here run with `[backup]` OFF whatever [#withKvBackup] says: the one-node-disagrees core
+    /// the cluster's label agreement must refuse. Applies to nodes created from now on; empty (the default) = every node follows
+    /// [#withKvBackup]. Harness-scoped.
+    @Contract
+    public Unit withoutKvBackupOn(Set<String> nodeIds) {
+        kvBackupOff = Set.copyOf(nodeIds);
+
+        return Unit.unit();
+    }
+
     private Option<BackupConfig> kvBackupConfig(NodeId nodeId) {
         return kvBackup.get()
+                       .filter(_ -> !kvBackupOff.contains(nodeId.id()))
                        .map(backup -> BackupConfig.backupConfig(true,
                                                                 backup.baseDir().resolve(nodeId.id()).toString(),
                                                                 backup.remote(),

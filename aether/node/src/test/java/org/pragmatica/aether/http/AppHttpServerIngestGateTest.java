@@ -1520,7 +1520,10 @@ class AppHttpServerIngestGateTest {
         start(protocol, defaults(), 10 * MIB);
         failDispatch = true;
 
-        assertThat(statusOf(protocol, "/api/files/", multipart(Part.file("a", 10)))).isEqualTo(500);
+        var refused = client(protocol).postBody("/api/files/", KEY_A, MULTIPART, multipart(Part.file("a", 10)));
+
+        assertThat(refused.status()).isEqualTo(500);
+        assertThat(refused.text()).as("#2791: the worker's 500 is a problem document, not the {\"error\"} envelope").contains("\"status\":500").doesNotContain("\"error\"");
         failDispatch = false;
         assertThat(statusOf(protocol, "/api/files/", multipart(Part.file("a", 10)))).as("the worker lives on").isEqualTo(200);
     }

@@ -7,11 +7,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -25,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue.PartitionState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -47,7 +45,6 @@ class StreamPartitionStateValueTest {
     private static final NodeId NODE_B = NodeId.nodeId("node-b").unwrap();
     private static final Election ELECTION = Election.election(Epoch.epoch(2L, 6L, 1L), NODE_B, false, List.of(NODE_A, NODE_B));
     private static final String TRIPWIRE = "SP3b-1 writes this in S4: delete this half";
-    private static final Set<String> SKIPPED_DIRECTORIES = Set.of(".git", ".bb", ".m2-local", "target", "node_modules");
     private static final Pattern WRITE_CALL = Pattern.compile("\\bstreamPartitionStateValue\\(|\\bnew\\s+StreamPartitionStateValue\\(");
     /// The carry sites: the unqualified accessor, or `this.`'s. A read through any other receiver (a Put's, another row's) is
     /// not a carry and is flagged.
@@ -431,23 +428,11 @@ class StreamPartitionStateValueTest {
         var files = new ArrayList<Path>();
 
         try {
-            Files.walkFileTree(root, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attributes) {
-                    return SKIPPED_DIRECTORIES.contains(String.valueOf(dir.getFileName()))
-                           ? FileVisitResult.SKIP_SUBTREE
-                           : FileVisitResult.CONTINUE;
+            for (var file : SourceWalk.files(root)) {
+                if (file.toString().endsWith(".java") && isMainSource(root.relativize(file))) {
+                    files.add(file);
                 }
-
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
-                    if (file.toString().endsWith(".java") && isMainSource(root.relativize(file))) {
-                        files.add(file);
-                    }
-
-                    return FileVisitResult.CONTINUE;
-                }
-            });
+            }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

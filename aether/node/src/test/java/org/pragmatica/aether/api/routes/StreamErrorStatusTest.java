@@ -99,6 +99,7 @@ class StreamErrorStatusTest {
         all.put(new StreamError.StreamStorageUnknown("s"), HttpStatus.CONFLICT);
         all.put(new StreamError.PartitionCapExceeded("s", 1, 1, 1, 1), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.StaleEpochAppend("s", 0, EPOCH, EPOCH), HttpStatus.SERVICE_UNAVAILABLE);
+        all.put(new StreamError.OwnershipNotApplied("s", 0, EPOCH), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.ProvenanceRegression("s", 0, EPOCH, EPOCH), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.ProvenanceMismatch("s", 0, 1), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.ReplicaOffsetGap("s", 0, 1, 2), HttpStatus.INTERNAL_SERVER_ERROR);

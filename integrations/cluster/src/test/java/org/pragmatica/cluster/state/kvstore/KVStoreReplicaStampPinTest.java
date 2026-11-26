@@ -19,7 +19,7 @@ class KVStoreReplicaStampPinTest {
     private record Key(String id) implements StructuredKey {}
 
     private static final Key FIRST = new Key("first");
-    private static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "A");
+    private static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "A", RingFixtures.LINEAGE);
 
     private final MessageRouter.MutableRouter router = MessageRouter.mutable();
     private final KVStore<Key, String> store = new KVStore<>(router, new Serializer() {

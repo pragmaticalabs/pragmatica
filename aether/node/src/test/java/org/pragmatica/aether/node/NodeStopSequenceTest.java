@@ -32,6 +32,8 @@ class NodeStopSequenceTest {
     private static final Cause STOP_TIMED_OUT = Causes.cause("listener termination timed out");
     private static final Cause QUORUM_NOT_LEFT = Causes.cause("leader deactivation not delivered");
     private static final Cause LATER_FAILURE = Causes.cause("later step failed too");
+    private static final RuntimeException BOOM = new IllegalStateException("suspendSlices failed");
+    private static final String STEP_THREW = BOOM.toString();
     private static final List<String> EVERY_STEP = List.of("leaveQuorum",
                                                            "deploymentWiring",
                                                            "nodeComponents",
@@ -160,6 +162,33 @@ class NodeStopSequenceTest {
                                                        "Cluster node did not stop cleanly; continuing node shutdown: " + LATER_FAILURE.message());
     }
 
+    /// Finding 6 of the #3776 review: the FSM2 close dispatches the node deployment FSM's `Shutdown`, which from `Active` can reach `suspendSlices` and the route
+    /// publisher. A throw there used to end the run at step 2, so the components' stops, the schema orchestrator, the listeners and the cluster node never ran.
+    @Test
+    void run_theFsm2CloseThrows_everyLaterStepStillRuns_isLoggedAtErrorUnderItsName_andReported() {
+        var outcome = NodeStopSequence.run(stepsWhereThrows("deploymentWiring")).await();
+
+        assertThat(ran).containsExactlyElementsOf(EVERY_STEP);
+        assertThat(outcome.isSuccess()).as("the stop completed: the node is stopped").isTrue();
+        assertThat(failuresOf(outcome)).containsExactly("Deployment wiring: " + STEP_THREW);
+        assertThat(capture.entries()).containsExactly(new LogCapture.Entry(Level.ERROR,
+                                                                          "Deployment wiring threw; continuing node shutdown: " + STEP_THREW));
+    }
+
+    /// The invariant is the runner's, so it holds for every step, whatever its type: a throw from any one of them skips nothing and repeats nothing.
+    @Test
+    void run_anyOneStepThrows_everyStepStillRunsExactlyOnce_andTheReportCarriesThatStepOnly() {
+        for (var thrower : EVERY_STEP) {
+            ran.clear();
+
+            var outcome = NodeStopSequence.run(stepsWhereThrows(thrower)).await();
+
+            assertThat(ran).as("steps run with %s throwing", thrower).containsExactlyElementsOf(EVERY_STEP);
+            assertThat(outcome.isSuccess()).as("the stop completed with %s throwing", thrower).isTrue();
+            assertThat(failuresOf(outcome)).as("report with %s throwing", thrower).hasSize(1).allMatch(failure -> failure.endsWith(STEP_THREW));
+        }
+    }
+
     /// No step starts before the previous one has settled, a failed one included.
     @Test
     void run_aStepSettlesLater_theNextOneWaitsForIt_thenTheRestRun() {
@@ -209,6 +238,36 @@ class NodeStopSequenceTest {
                                             record("sharedResources", outcome(failing, "sharedResources")),
                                             storage("storage"),
                                             record("clusterNode", outcome(failing, "clusterNode")));
+    }
+
+    /// The steps of the list, each recording that it ran, with the one named `thrower` throwing instead of returning.
+    private NodeStopSequence.Steps stepsWhereThrows(String thrower) {
+        return NodeStopSequence.Steps.steps(() -> promiseStep("leaveQuorum", thrower),
+                                            () -> unitStep("deploymentWiring", thrower),
+                                            () -> promiseStep("nodeComponents", thrower),
+                                            () -> promiseStep("deactivate", thrower),
+                                            () -> promiseStep("management", thrower),
+                                            () -> promiseStep("appHttp", thrower),
+                                            () -> promiseStep("sliceInvoker", thrower),
+                                            () -> promiseStep("sharedResources", thrower),
+                                            () -> unitStep("storage", thrower),
+                                            () -> promiseStep("clusterNode", thrower));
+    }
+
+    private Promise<Unit> promiseStep(String step, String thrower) {
+        unitStep(step, thrower);
+
+        return Promise.unitPromise();
+    }
+
+    private Unit unitStep(String step, String thrower) {
+        ran.add(step);
+
+        if (step.equals(thrower)) {
+            throw BOOM;
+        }
+
+        return Unit.unit();
     }
 
     private static Promise<Unit> outcome(Map<String, Cause> failing, String step) {

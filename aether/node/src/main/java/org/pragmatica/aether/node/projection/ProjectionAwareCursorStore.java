@@ -10,7 +10,10 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -30,6 +33,17 @@ import org.slf4j.LoggerFactory;
 /// the acknowledged or dead-lettered event either way, which is the fact the skip signal states, and the
 /// cluster checkpoint's retry is the runtime's business. It is never issued for a FAILED commit, nor for
 /// a `Fenced` one (#1271: the assignment moved away, this node's projection is no longer the consumer).
+///
+/// **The cluster's committed cursor is reported too (#1400).** [#onCheckpointPut] reports every checkpoint the
+/// applier ACCEPTED, whichever node committed it, stamped with the record's own rewind epoch. A node whose
+/// assignment moved away mid-rebuild commits nothing more, so local commits alone left its store REBUILDING
+/// forever; the new assignee resumes under the rewind's epoch, so its accepted checkpoints are honoured and the
+/// old store leaves REBUILDING once the group's committed cursor passes the captured head. A refused put (a stale
+/// token, an older epoch) emits no notification, so a zombie is never reported this way.
+///
+/// **Limit (#3736):** LIVE here means the rebuild is over for the group, not that this node's model is complete. The old
+/// store goes LIVE over a model the rebuild's reset cleared, and leaving REBUILDING is not model completeness (`read()`
+/// never gates); nothing in this change fixes that, #3736 tracks it.
 ///
 /// The hook never fails, delays or reorders the commit: the report hangs off the commit's own promise,
 /// its failure is absorbed — logged once per `(group, partition)`, counted on [#reportFailures] — and the
@@ -132,6 +146,33 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
         if (! (outcome instanceof CommitOutcome.Fenced)) {
             report(consumerGroup, streamName, partition, offset, epoch);
         }
+    }
+
+    /// #1400: routed every `ValuePut`; anything that is not a cursor checkpoint is ignored. The applier emits a
+    /// `ValuePut` only for a put it accepted, so what is reported here is the group's COMMITTED cursor. The rewind
+    /// record itself is reported too and moves nothing: its offset equals the replay's `fromOffset`, and
+    /// `cursorCommitted` moves a store only on a cursor ABOVE the partition's next offset. Total, like [#reportGuarded]: a throwing report would break the apply that observes it.
+    @Contract
+    public void onCheckpointPut(ValuePut<?, ?> put) {
+        if (put.cause().key() instanceof StreamCursorCheckpointKey key && put.cause().value() instanceof StreamCursorCheckpointValue value) {
+            reportCommitted(key, value);
+        }
+    }
+
+    /// FER (degrade forward): a refused or throwing report is absorbed, counted and logged once, never propagated into
+    /// the apply that observes it. The guarantee earned: the store keeps its state and the group's next accepted checkpoint
+    /// reports a cursor at or past this one, so nothing is lost but promptness. Pinned by
+    /// `onCheckpointPut_countsAThrowingProjection_andNeverPropagates`.
+    @Contract
+    private void reportCommitted(StreamCursorCheckpointKey key, StreamCursorCheckpointValue value) {
+        Result.lift(() -> report(key.consumerGroup(),
+                                 key.streamName(),
+                                 key.partitionIndex(),
+                                 value.committedOffset(),
+                                 value.rewindEpoch())).onFailure(cause -> countFailure(HOOK,
+                                                                                       key.consumerGroup(),
+                                                                                       key.partitionIndex(),
+                                                                                       cause));
     }
 
     @Contract

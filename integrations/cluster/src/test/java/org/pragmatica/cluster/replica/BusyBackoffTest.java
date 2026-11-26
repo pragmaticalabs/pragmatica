@@ -43,4 +43,13 @@ class BusyBackoffTest {
         assertThat(delays).as("fifty nodes at the same attempt spread over the range").isGreaterThan(25);
         assertThat(BusyBackoff.delayMillis("node-7", 3)).as("the same node and attempt draw the same delay").isEqualTo(BusyBackoff.delayMillis("node-7", 3));
     }
+
+    /// Full jitter is also per attempt: at the cap, where the ceiling no longer moves, one node's successive delays still differ, so a replica
+    /// that keeps refusing snapshots (#3359) does not retry on a fixed period. Mutation: ignore the attempt in the seed.
+    @Test
+    void delay_differsAcrossAttempts_atTheCap() {
+        var delays = IntStream.rangeClosed(6, 25).mapToObj(attempt -> BusyBackoff.delayMillis("worker-1", attempt)).distinct().count();
+
+        assertThat(delays).as("twenty attempts at the cap spread over the range").isGreaterThan(10);
+    }
 }

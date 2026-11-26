@@ -13,6 +13,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -76,14 +77,13 @@ class StagedSeamCallerCensusTest {
 
         assertThat(root.resolve("aether/ember/src/main/java")).isDirectory();
 
-        try (var paths = Files.walk(root)) {
-            return paths.map(Path::toString)
-                        .filter(path -> path.endsWith(".java") && path.contains("/src/main/java/"))
-                        .filter(path -> !path.contains("/target/") && !path.contains("/.m2-local/"))
-                        .map(Path::of)
-                        .collect(Collectors.toMap(path -> path.getFileName().toString(),
-                                                  StagedSeamCallerCensusTest::strippedContent,
-                                                  (first, second) -> first + "\n" + second));
+        try {
+            return SourceWalk.files(root)
+                             .stream()
+                             .filter(path -> path.toString().endsWith(".java") && path.toString().contains("/src/main/java/"))
+                             .collect(Collectors.toMap(path -> path.getFileName().toString(),
+                                                       StagedSeamCallerCensusTest::strippedContent,
+                                                       (first, second) -> first + "\n" + second));
         } catch (IOException e) {
             throw new AssertionError("Cannot walk main sources under " + root, e);
         }

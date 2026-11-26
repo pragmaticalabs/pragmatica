@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.AuditLog;
@@ -54,7 +55,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.utils.OwnerLifetime;
+import org.pragmatica.lang.utils.OwnerLifetime.Handle;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -95,6 +97,18 @@ public interface SchemaOrchestratorService {
     /// Binds the node's operator-warning sink (the sink exists only after the orchestrator is assembled). Until bound,
     /// a warning is a log line only. Implementations that raise no warnings ignore it.
     default Unit setOperatorWarningSink(OperatorWarningSink sink) {
+        return unit();
+    }
+
+    /// #3754: ends the orchestrator's lifetime at node stop: no scheduled lease renewal or retry re-dispatch runs
+    /// after it, and a dispatch or renewal already past its scheduler read refuses its side effect (the lock claim, the
+    /// renewal Put). Stop ends RENEWAL and releases NOTHING: it writes no tombstone and does not recall a running
+    /// migration, so a lock held under a running script is no longer renewed and lapses by its TTL (at most
+    /// [#LOCK_TTL_MS], 5 minutes), as after a crash. Releasing at stop would free the lock while the script may still
+    /// run on the database and let another node start the same migration. A script that completes after the stop still
+    /// releases its own lock by tombstone. A lease also does not end at leader deactivation, where it keeps renewing for
+    /// the running script; its renewal ends at its own release or here. Implementations that schedule nothing ignore it.
+    default Unit stop() {
         return unit();
     }
 
@@ -149,6 +163,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private final NodeId self;
     private final Option<MessageRouter> router;
     private final LeaseTiming timing;
+    /// #3754: ONE lifetime for the node's run (this instance is built once per node and never re-activated); every
+    /// scheduled task of the orchestrator (lease renewal, retry re-dispatch) goes through it and [#stop()] ends it.
+    private final OwnerLifetime lifetime;
 
     private final AtomicReference<OperatorWarningSink> warningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
 
@@ -201,6 +218,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                       Option<MessageRouter> router,
                                       LeaseTiming timing) {
         this.timing = timing;
+        this.lifetime = timing.lifetimes().get();
         this.cluster = cluster;
         this.kvStore = kvStore;
         this.artifactStore = artifactStore;
@@ -216,6 +234,11 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         warningSink.set(sink);
 
         return unit();
+    }
+
+    @Override
+    public Unit stop() {
+        return lifetime.end();
     }
 
     @Override
@@ -753,10 +776,11 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         scheduleDispatch(datasourceName, nextRetryMs);
     }
 
-    /// Re-dispatches the datasource after `delayMs`, on the injected scheduler; a manual re-dispatch cancels it.
+    /// Re-dispatches the datasource after `delayMs`, on the node's lifetime; a manual re-dispatch cancels it and
+    /// [#stop()] ends it.
     private Unit scheduleDispatch(String datasourceName, long delayMs) {
         scheduledRetries.put(datasourceName,
-                             timing.scheduler().schedule(() -> migrateIfNeeded(datasourceName), delayMs));
+                             lifetime.schedule(_ -> migrateIfNeeded(datasourceName), timeSpan(delayMs).millis()));
 
         return unit();
     }
@@ -866,8 +890,14 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private final ConcurrentHashMap<String, Object> inFlightMigrations = new ConcurrentHashMap<>();
-    /// The cancel handle of each datasource's scheduled re-dispatch ([LeaseScheduler]).
-    private final ConcurrentHashMap<String, Runnable> scheduledRetries = new ConcurrentHashMap<>();
+
+    // --- package-private test seam (inert read: no state change, no side effect) ---
+    boolean fenceHeldForTest(String datasourceName) {
+        return inFlightMigrations.containsKey(datasourceName);
+    }
+
+    /// The cancel handle of each datasource's scheduled re-dispatch (on [#lifetime]).
+    private final ConcurrentHashMap<String, Handle> scheduledRetries = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Object, Lease> leases = new ConcurrentHashMap<>();
 
     /// Single-flight fence across BOTH dispatch paths (the backoff timer in [#scheduleRetry] and any
@@ -895,7 +925,21 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     /// specifically because the lock Put below is now bounded by a timeout: a lock write that fails or
     /// never settles must still release the fence, and doing so unconditionally (bare `remove(key)`)
     /// would risk tearing down a fresh attempt's fence if that cleanup ever ran late.
+    ///
+    /// #3754 (F): a dispatch already past its scheduler read when [#stop()] ran reaches here with the lifetime ended,
+    /// and refuses BEFORE claiming the fence or the lock: past this point migration scripts run on the database and
+    /// cannot be recalled. A second check directly before the claim Put (after the fence and the lock read) refuses a
+    /// stop that landed in between, releasing the fence it took. This narrows the window, it does not close it: a stop
+    /// that lands after that check, between it and the Put's submission or after the claim, still lets the script run
+    /// under a lock that is no longer renewed and lapses by TTL. The lock claim is VersionFenced against another node,
+    /// but nothing at the receiver refuses "this node is stopping", which is reported as a fence site rather than
+    /// designed here. The refusal is [SchemaError.OrchestratorStopped], not `LockAcquisitionFailed`: it fails before
+    /// `runMigration`, so it records no failure, schedules no retry, writes no KV, and does not read as a lock conflict.
     private Promise<Unit> acquireLock(String datasourceName, Object attemptToken) {
+        if (lifetime.isEnded()) {
+            return SchemaError.OrchestratorStopped.orchestratorStopped(datasourceName).promise();
+        }
+
         if (inFlightMigrations.putIfAbsent(datasourceName, attemptToken) != null) {
             return SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName).promise();
         }
@@ -919,6 +963,12 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                      committed.map(SchemaMigrationLockValue::nextVersion)
                                                               .or(SchemaMigrationLockValue.FIRST_VERSION));
         KVCommand<AetherKey> command = new Put<>(lockKey, lockValue);
+
+        if (lifetime.isEnded()) {
+            return releaseFenceOnLockFailure(datasourceName,
+                                             attemptToken,
+                                             SchemaError.OrchestratorStopped.orchestratorStopped(datasourceName)).promise();
+        }
         // #760/#724 review round 3 BLOCKING 1: bounded the same way as the migration itself
         // (schemaManager.policy().migrationTimeout(), read once per attempt) — before this, a lock Put
         // that failed or never settled left `inFlightMigrations` claimed forever, since `finalizeAttempt`
@@ -951,7 +1001,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private void cancelScheduledRetry(String datasourceName) {
-        Option.option(scheduledRetries.remove(datasourceName)).onPresent(Runnable::run);
+        Option.option(scheduledRetries.remove(datasourceName)).onPresent(Handle::cancel);
     }
 
     private Option<SchemaMigrationLockValue> committedLock(SchemaMigrationLockKey lockKey) {
@@ -974,7 +1024,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         final SchemaMigrationLockValue claimed;
         boolean released;
         boolean lost;
-        Runnable next;
+        Handle next;
         Promise<Unit> renewing = Promise.unitPromise();
 
         Lease(SchemaMigrationLockKey key, SchemaMigrationLockValue claimed) {
@@ -1002,7 +1052,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private void scheduleRenewal(Lease lease) {
         synchronized (lease) {
             if (!lease.released && !lease.lost) {
-                lease.next = timing.scheduler().schedule(() -> renew(lease), timing.ttlMs() / 3);
+                lease.next = lifetime.schedule(_ -> renew(lease),
+                                               timeSpan(timing.ttlMs() / 3).millis());
             }
         }
     }
@@ -1043,10 +1094,15 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                          timing.clock().getAsLong() + timing.ttlMs()))
                                .unwrap();
         KVCommand<AetherKey> command = new Put<>(lease.key, renewed);
-
-        return cluster.apply(List.of(command))
-                      .timeout(timeSpan(timing.renewalTimeoutMs()).millis())
-                      .fold(_ -> Promise.unitPromise());
+        // #3754 (F, receiver fence already present): other nodes write this key after a lapse, and `SchemaMigrationLockValue`
+        // is VersionFenced, so the applier refuses a non-successor write; that fence stays the enforcer. This check only
+        // narrows the window left by a tick whose wrapper read preceded [#stop()]: a renewal Put after the node stopped
+        // would keep a lock alive that nobody renews or releases once the node is gone.
+        return lifetime.isEnded()
+               ? Promise.unitPromise()
+               : cluster.apply(List.of(command))
+                        .timeout(timeSpan(timing.renewalTimeoutMs()).millis())
+                        .fold(_ -> Promise.unitPromise());
     }
 
     private SchemaMigrationLockValue successor(SchemaMigrationLockValue current, long expiresAt) {
@@ -1085,7 +1141,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
         synchronized (lease) {
             lease.released = true;
-            Option.option(lease.next).onPresent(Runnable::run);
+            Option.option(lease.next).onPresent(Handle::cancel);
             inFlight = lease.renewing;
         }
 
@@ -1331,23 +1387,14 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 /// #806: the lease's sources of time, injectable so a test steps them by hand instead of sleeping.
 /// `renewalTimeoutMs` bounds one renewal Put; a renewal that exceeds it is abandoned by its submitter but
 /// may still be decided later, which the ownership rule on [SchemaOrchestratorServiceInstance] tolerates.
-record LeaseTiming(long ttlMs, long renewalTimeoutMs, LongSupplier clock, LeaseScheduler scheduler) {
+/// #3754: `lifetimes` makes the instance's one [OwnerLifetime]; production schedules on the shared scheduler, a test
+/// supplies `OwnerLifetime.ownerLifetime(seam)` over a hand-stepped seam.
+record LeaseTiming(long ttlMs, long renewalTimeoutMs, LongSupplier clock, Supplier<OwnerLifetime> lifetimes) {
     static LeaseTiming standard() {
         return withTtl(SchemaOrchestratorService.LOCK_TTL_MS);
     }
 
     static LeaseTiming withTtl(long ttlMs) {
-        return new LeaseTiming(ttlMs, ttlMs, System::currentTimeMillis, LeaseTiming::schedule);
+        return new LeaseTiming(ttlMs, ttlMs, System::currentTimeMillis, OwnerLifetime::ownerLifetime);
     }
-
-    private static Runnable schedule(Runnable task, long delayMs) {
-        var future = SharedScheduler.schedule(task, timeSpan(delayMs).millis());
-
-        return () -> future.cancel(false);
-    }
-}
-
-/// Runs `task` once after `delayMs`; the returned handle cancels it.
-interface LeaseScheduler {
-    Runnable schedule(Runnable task, long delayMs);
 }

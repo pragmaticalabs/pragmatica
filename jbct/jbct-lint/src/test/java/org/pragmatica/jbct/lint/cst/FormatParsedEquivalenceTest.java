@@ -58,7 +58,7 @@ class FormatParsedEquivalenceTest {
     /// `formatParsed(parse(s)) == s` has the same truth value as `isFormatted(s)`.
     private boolean parsedEquivalent(String content) {
         var viaParsed = new Java25Parser().parse(content)
-                                          .map(tree -> formatter.formatParsed(tree, source(content)).content().equals(content))
+                                          .flatMap(tree -> formatter.formatParsed(tree, source(content)).map(formatted -> formatted.content().equals(content)))
                                           .or(false);
         var viaCheck = formatter.isFormatted(source(content)).or(false);
 

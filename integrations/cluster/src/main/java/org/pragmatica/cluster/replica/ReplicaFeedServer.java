@@ -467,18 +467,28 @@ public final class ReplicaFeedServer<K extends StructuredKey, V> {
                            () -> HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)));
     }
 
+    /// The next chunk of the transfer this request continues; any request that names no live transfer of the same image answers `EVICTED`.
     private void continueTransfer(ReplicaSnapshotRequest request) {
         var key = new TransferKey(request.sender(), request.requestId());
 
         option(transfers.get(key)).filter(transfer -> sameImage(transfer, request))
-              .filter(transfer -> request.offset() < transfer.image.snapshot()
-                                                                   .bytes().length)
-              .onPresent(transfer -> sendChunk(key,
-                                               transfer,
-                                               (int) request.offset()))
+              .onPresent(transfer -> continueOrRelease(key,
+                                                       transfer,
+                                                       request.offset()))
               .onEmpty(() -> refuse(request.sender(),
                                     request.requestId(),
                                     RefusalReason.EVICTED));
+    }
+
+    /// A request at or past the end asks for no more bytes (#3359: the replica refused the snapshot on its first chunk): the transfer is
+    /// finished and its serve slot freed at once, and nothing is sent back. The key holds sender and request id, so no other transfer is freed.
+    /// If that one request is lost, the slot is held until `transferIdleMillis`, as for any client that stops pulling.
+    private void continueOrRelease(TransferKey key, Transfer transfer, long offset) {
+        if (offset < transfer.image.snapshot().bytes().length) {
+            sendChunk(key, transfer, (int) offset);
+        } else {
+            finish(key, transfer);
+        }
     }
 
     private static boolean sameImage(Transfer transfer, ReplicaSnapshotRequest request) {

@@ -164,7 +164,7 @@ public final class DdlAnalyzer {
         var pgType = !dataTypes.isEmpty()
                      ? resolveType(CstExtractor.extractDataType(dataTypes.getFirst()))
                      : new PgType.BuiltinType("text", PgType.TypeCategory.STRING);
-        boolean nullable = true;
+        boolean nullable = !pgType.isSerial();
         Option<String> defaultExpr = Option.empty();
         Option<String> generatedExpr = Option.empty();
         Option<Column.IdentitySpec> identity = Option.empty();
@@ -182,8 +182,8 @@ public final class DdlAnalyzer {
                 identity = Option.present(extractIdentitySpec(cc));
                 nullable = false;
             } else if (!cc.findAll("GeneratedClause").isEmpty()) {
+                // A stored generated column is nullable unless it says NOT NULL: its expression may yield NULL.
                 generatedExpr = Option.present(extractExprText(cc));
-                nullable = false;
             } else if (!cc.findAll("NotNullConstraint").isEmpty()) {
                 nullable = false;
             } else if (!cc.findAll("NullConstraint").isEmpty()) {

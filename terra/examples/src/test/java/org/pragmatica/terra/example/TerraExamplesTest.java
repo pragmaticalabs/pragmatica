@@ -5,15 +5,22 @@ package org.pragmatica.terra.example;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.ServiceLoader;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.example.catalog.Catalog;
 import org.pragmatica.aether.example.catalog.CatalogRoutes;
 import org.pragmatica.aether.example.pricing.PricingService;
 import org.pragmatica.aether.example.shared.Money;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.resource.SpiResourceProvider;
+import org.pragmatica.aether.resource.interceptor.CacheBackendError.BackendUnavailable;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.terra.TerraApplication;
 import org.pragmatica.terra.TerraBlueprint;
+import org.pragmatica.terra.TerraFactory;
 import org.pragmatica.terra.example.shop.Shop;
 import org.pragmatica.terra.example.sink.Sink;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,9 +39,9 @@ class TerraExamplesTest {
         var config = ConfigurationProvider.builder().withDefaults(Map.of(
             "cache.calls.cache_name", "calls", "cache.calls.strategy", "CACHE_ASIDE",
             "cache.calls.ttl_seconds", "60", "cache.calls.max_entries", "100", "cache.calls.mode", "LOCAL")).build();
-        var provider = org.pragmatica.aether.resource.SpiResourceProvider.spiResourceProvider();
-        var factories = java.util.ServiceLoader.load(org.pragmatica.terra.TerraFactory.class).stream()
-            .<org.pragmatica.terra.TerraFactory<?>>map(java.util.ServiceLoader.Provider::get).toList();
+        var provider = SpiResourceProvider.spiResourceProvider();
+        var factories = ServiceLoader.load(TerraFactory.class).stream()
+            .<TerraFactory<?>>map(ServiceLoader.Provider::get).toList();
         var app = TerraApplication.start(TerraBlueprint.parse(toml).unwrap(), factories, _ -> config, provider.facade())
                                   .await(timeSpan(10).seconds()).unwrap();
         try {
@@ -62,5 +69,45 @@ class TerraExamplesTest {
         } finally {
             app.close().await(timeSpan(5).seconds()).unwrap();
         }
+    }
+
+    /// #3658: a DISTRIBUTED cache section names (implicitly) the dht backend, which Terra does not have. The slice
+    /// that declares it must fail to START with a typed refusal naming the section, the backend and the runtime,
+    /// never with a missing-extension error and never by starting with a silently weaker cache.
+    @Test void start_distributedCacheSection_refusedAtSliceStartNamingSectionBackendAndRuntime() throws Exception {
+        String toml;
+        try (var input = getClass().getResourceAsStream("/blueprint.toml")) {
+            toml = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        var config = ConfigurationProvider.builder().withDefaults(Map.of(
+            "cache.calls.cache_name", "calls", "cache.calls.strategy", "CACHE_ASIDE",
+            "cache.calls.ttl_seconds", "60", "cache.calls.max_entries", "100", "cache.calls.mode", "DISTRIBUTED")).build();
+        var provider = SpiResourceProvider.spiResourceProvider();
+        var factories = ServiceLoader.load(TerraFactory.class).stream()
+            .<TerraFactory<?>>map(ServiceLoader.Provider::get).toList();
+        var started = TerraApplication.start(TerraBlueprint.parse(toml).unwrap(), factories, _ -> config, provider.facade())
+                                      .await(timeSpan(10).seconds());
+        started.onSuccess(app -> app.close().await(timeSpan(5).seconds()));
+        assertThat(started.isFailure()).as("start must refuse the dht-backed cache section").isTrue();
+        var cause = started.fold(c -> c, _ -> null);
+        assertThat(chain(cause)).contains("cache.calls", "'dht'", "'calls'", "TERRA");
+        assertThat(anyInChain(cause, BackendUnavailable.class)).as("chain types: " + chainTypes(cause)).isTrue();
+    }
+
+    private static String chain(Cause cause) {
+        return cause.message() + cause.source().map(TerraExamplesTest::chain).map(next -> " <- " + next).or("");
+    }
+
+    private static Stream<Cause> descendants(Cause cause) {
+        return Stream.concat(cause.source().stream(), cause.stream().filter(member -> member != cause))
+                     .flatMap(next -> Stream.concat(Stream.of(next), descendants(next)));
+    }
+
+    private static String chainTypes(Cause cause) {
+        return Stream.concat(Stream.of(cause), descendants(cause)).map(c -> c.getClass().getName()).collect(Collectors.joining(" > "));
+    }
+
+    private static boolean anyInChain(Cause cause, Class<?> type) {
+        return Stream.concat(Stream.of(cause), descendants(cause)).anyMatch(type::isInstance);
     }
 }

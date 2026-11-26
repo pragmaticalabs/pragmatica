@@ -60,7 +60,8 @@ public sealed interface ReplicaFeedMessage extends ProtocolMessage {
     record ReplicaRefused(NodeId sender, long requestId, RefusalReason reason, long floor, IncarnationTag tag) implements ReplicaFeedMessage {}
 
     /// `revision` and `hash` are zero and empty on the first request of a snapshot; the answering chunk fixes them, and every further
-    /// request of that transfer repeats them with the next `offset`.
+    /// request of that transfer repeats them with the next `offset`. A request at `offset == total` asks for no more bytes: it releases the
+    /// transfer (#3359, a replica that refuses the snapshot on its first chunk).
     record ReplicaSnapshotRequest(NodeId sender,
                                   long requestId,
                                   IncarnationTag tag,

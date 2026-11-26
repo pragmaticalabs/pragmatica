@@ -1,0 +1,2 @@
+### Fixed
+- postgres-async reads `float8[]` into `Double[]`, `float4[]` into `Float[]` (or `Double[]`) and `timestamp[]` into `LocalDateTime[]`, in text and binary result format, instead of failing with an `ArrayStoreException`; `NaN` and `Infinity` elements read too. Untyped reads and `BigDecimal[]`/`Instant[]` targets are unchanged, primitive targets (`double[]`, `float[]`) stay rejected because an element may be NULL, and `float8[]` into `Float[]` stays refused, as the scalar `float8` into `Float` read is (#2035).

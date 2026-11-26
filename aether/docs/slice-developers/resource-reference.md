@@ -937,6 +937,7 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 | `ttl_seconds` | `int` | `300` | Time-to-live for cached entries — honoured by the local store (`LOCAL`, and the L1 of `TIERED`) only. The DHT has no expiry primitive, so `DISTRIBUTED` entries (and `TIERED`'s L2) do not expire; tracked in #279 |
 | `max_entries` | `int` | `10000` | Maximum number of entries in the local store — a hard cap with least-recently-used eviction (#279); `DISTRIBUTED` storage is bounded by the DHT, not by this field |
 | `mode` | `CacheMode` | `LOCAL` | Cache storage mode |
+| `backend` | `String` | follows `mode` | The store behind the mode: `memory` or `dht` (see Cache Backends). Absent, `LOCAL` uses `memory` and `DISTRIBUTED`/`TIERED` use `dht`, so a section without the key behaves as before. `[guess: key name and values, #3658]` |
 
 ### Cache Strategies
 
@@ -955,6 +956,27 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 | `LOCAL` | In-memory on local node | Fastest, no network overhead |
 | `DISTRIBUTED` | DHT across the cluster | Shared cache, survives node loss. A backend failure reads as a miss and the method runs — the cache is fail-open, so a DHT outage slows the slice rather than failing it (#279) |
 | `TIERED` | Local L1 + distributed L2 | Best of both: fast local reads, falls back to the distributed L2 on a local miss [gap: no cross-node invalidation yet, so a write on one node can leave a stale L1 entry on another — tracked in #279; don't rely on cross-node consistency] |
+
+### Cache Backends
+
+The cache and the idempotency store (`[idempotency.*]` sections take the same `mode` and `backend` keys) obtain
+their store through one selection seam (`CacheBackends`, #3658). `mode` is the topology; `backend` is the store.
+
+| Backend | Fits mode | Aether | Terra | What it promises |
+|---------|-----------|--------|-------|------------------|
+| `memory` | `LOCAL` (and the L1 of every `TIERED`) | yes | yes | Per instance: each node, or each Terra process, holds its own entries; nothing is shared and everything is lost on restart `[mechanism: InMemoryCache is a per-factory heap map]` |
+| `dht` | `DISTRIBUTED`, `TIERED` (as L2) | yes | **no** | As the `DISTRIBUTED` row above for a cache. An idempotency store writes the replicated DHT at the committed `[replication]` factors, not the cache namespace (#1777) |
+
+Refusals are typed, terminal, and raised when the resource is provisioned (slice start); the provisioning
+wrapper adds the section, and each cause text names: for an unknown `backend` (`UnknownBackend`) the backend and the store;
+for a `backend` that does not fit `mode` (`ModeConflict`: `LOCAL` with `dht`, `DISTRIBUTED`/`TIERED` with `memory`)
+the store, the mode and the backend; for `dht` on Terra, which has no cluster (`BackendUnavailable`, whether `dht`
+is named or implied by `DISTRIBUTED`/`TIERED`) the backend, the store and the runtime. Only `BackendUnavailable`
+names the runtime. The Terra refusal
+at a real application start is `[verified: terra/examples/src/test/java/org/pragmatica/terra/example/TerraExamplesTest.java]`;
+the unknown and conflict refusals are `[mechanism: CacheBackends selects before any backend is built; both factories call only it]`.
+Recovery: set `mode = "LOCAL"` (and `backend = "memory"` or no `backend`) for that section on Terra, or fix the
+named key. `terra:assemble --check` does not yet report these; the refusal is at slice start.
 
 ### TOML Example
 
@@ -1037,6 +1059,23 @@ reset_timeout = "60s"
 test_attempts = 5
 ```
 
+**Scope.** The breaker is **per node and per provision**: each node hosting the slice keeps its own failure count and
+state, and nodes open and close independently. `failure_threshold` is therefore a per-node threshold: a cluster of N
+nodes hosting the slice trips after up to `failure_threshold x N` failures cluster-wide.
+
+**Metrics** (#280 R27). Registered when the node has a metrics registry (`management_port > 0`) and the slice is
+attributed; otherwise the breaker runs unmetered and provisioning still succeeds. Tags: `slice`, `section`. Nothing is
+tagged per method, because one breaker serves every method that names the section; two sections of one slice have
+separate series. The meters are removed when the slice unloads; a new instance of the same slice and section provisioned before the old one is closed takes over the series, and the old close leaves them alone.
+
+| Meter | Type | Tags | Meaning |
+|-------|------|------|---------|
+| `aether.interceptor.circuit_breaker.state` | gauge | `slice`, `section` | `0` closed, `1` open, `2` half-open (a fixed mapping, independent of the order of the core enum); read live from the breaker |
+| `aether.interceptor.circuit_breaker.transitions` | counter | `slice`, `section`, `from`, `to` | Every state change, counted by the breaker's own listener when it makes the change (the open to half-open change after the reset timeout included): none missed, merged or invented |
+| `aether.interceptor.circuit_breaker.rejected` | counter | `slice`, `section` | Calls refused while open; the method did not run |
+
+[verified: `CircuitBreakerMetersTest`, #280]
+
 ### Rate Limit
 
 **Resource type:** `RateLimitMethodInterceptor`
@@ -1057,6 +1096,21 @@ max_requests = 200
 window = "1m"
 burst = 50
 ```
+
+**Scope.** The limiter is **per node and per provision**: each node hosting the slice keeps its own token bucket. A
+cluster of N nodes hosting the slice admits up to `max_requests x N` calls per window cluster-wide (`burst x N` of burst
+capacity). The distributed limiter is #144.
+
+**Metrics** (#280 R27). Registered when the node has a metrics registry (`management_port > 0`) and the slice is
+attributed; otherwise the limiter runs unmetered and provisioning still succeeds. Tags: `slice`, `section` (nothing per
+method: one bucket serves every method naming the section). The meters are removed when the slice unloads; a new instance of the same slice and section provisioned before the old one is closed takes over the series, and the old close leaves them alone.
+
+| Meter | Type | Tags | Meaning |
+|-------|------|------|---------|
+| `aether.interceptor.rate_limit.admitted` | counter | `slice`, `section` | Calls the limiter let through |
+| `aether.interceptor.rate_limit.rejected` | counter | `slice`, `section` | Calls the limiter refused; the method did not run |
+
+[verified: `RateLimitMetersTest`, #280]
 
 ### Rate Guard (author-invoked SPI)
 
