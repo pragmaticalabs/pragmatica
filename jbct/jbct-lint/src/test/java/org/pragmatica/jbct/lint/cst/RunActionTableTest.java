@@ -311,6 +311,9 @@ class RunActionTableTest {
     private static final String LOSES_A_COMMENT = "package com.example;\n\nclass Plain {\n    int f(boolean c) {\n"
                                                   + "        return c // POS4\n               ? 1\n               : 2;\n    }\n}\n";
 
+    private static final String PRINTS_THE_COMMENT = "package com.example;\n\nclass Plain {\n    int f(boolean c) {\n"
+                                                     + "        return c\n        // POS4\n               ? 1\n               : 2;\n    }\n}\n";
+
     /// TRIPWIRE (#3698): the printer keeps the comment of `LOSES_A_COMMENT`, so the file is rewritten and nothing is
     /// refused. When this goes red the printer loses a comment again: enable rows G1, G2 and G3 below (and
     /// `ContentGuardTest.isFormatted_ofARefusedFile_isAFailureNotFalse` in jbct-format) and re-pin.
@@ -323,7 +326,8 @@ class RunActionTableTest {
 
         assertFalse(outcome.format() instanceof Refused,
                     "the printer lost the comment again: enable rows G1-G3 and ContentGuardTest.isFormatted_ofARefusedFile_isAFailureNotFalse");
-        assertTrue(Files.readString(file).contains("// POS4"), "the printer lost the comment again: enable rows G1-G3");
+        assertEquals(PRINTS_THE_COMMENT, Files.readString(file),
+                     "the printer changed where it prints the comment: if it is lost, enable rows G1-G3 and ContentGuardTest.isFormatted_ofARefusedFile_isAFailureNotFalse; otherwise re-pin");
     }
 
     @Disabled("Needs a printer gap or a formatter seam: the printer keeps the comment since #3698. Enable when row G0 goes red.")

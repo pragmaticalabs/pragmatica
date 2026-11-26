@@ -21,6 +21,7 @@ import static org.pragmatica.jbct.format.JbctFormatter.jbctFormatter;
 /// comment is kept; a refusal can no longer be driven through the formatter (see the tripwire row).
 class ContentGuardTest {
     private static final String OK = "OK";
+    private static final String POS4_FORMATTED = "class A {\n    int f(boolean c) {\n        return c\n        // POS4\n               ? 1\n               : 2;\n    }\n}\n";
     private static final String POS4_SOURCE = "class A {\n    int f(boolean c) {\n        return c // POS4\n               ? 1 : 2;\n    }\n}\n";
 
     // --- unit rows: what the guard accepts
@@ -242,8 +243,8 @@ class ContentGuardTest {
         var result = jbctFormatter().format(file(POS4_SOURCE));
 
         assertThat(result.isSuccess()).as("the printer lost the comment again: enable the refusal rows named in this javadoc: " + message(result)).isTrue();
-        assertThat(result.unwrap().content()).as("the printer lost the comment again: enable the refusal rows named in this javadoc")
-                                             .contains("// POS4");
+        assertThat(result.unwrap().content()).as("the printer changed where it prints the POS4 comment: if the comment is lost, enable the refusal rows named in this javadoc; otherwise re-pin")
+                                             .isEqualTo(POS4_FORMATTED);
     }
 
     @Disabled("Needs a printer gap: the formatter keeps POS4 since #3698. Enable when the tripwire row goes red.")
