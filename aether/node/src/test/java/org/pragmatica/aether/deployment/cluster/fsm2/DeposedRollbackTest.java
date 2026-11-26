@@ -4,12 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRoute;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
@@ -35,14 +38,18 @@ class DeposedRollbackTest {
 
     /// FIRST deployed and settled, SECOND published over it with FIRST as its previous value, the node loading SECOND.
     private static NodeSim republished(FsmHarness h) {
+        return republished(h, FIRST);
+    }
+
+    private static NodeSim republished(FsmHarness h, AppBlueprintValue first) {
         var node = node(h, CORE_1, 11);
 
-        publish(h, FIRST);
+        publish(h, first);
         node.follows(ORDERS);
         h.drain();
         node.follows(ORDERS);
         h.drain();
-        publish(h, SECOND, Option.some(FIRST));
+        publish(h, SECOND, Option.some(first));
         node.writes(ORDERS_V2, SliceObservedState.LOADING);
         h.drain();
 
@@ -81,6 +88,20 @@ class DeposedRollbackTest {
                                                            .loadOrder())).as("the previous blueprint is restored")
                   .isEqualTo(Option.some(FIRST.blueprint()
                                               .loadOrder()));
+    }
+
+    // #3389 A1: the restored blueprint is the previous value whole, its declared routes included
+    // Red when: the rollback rebuilds the previous AppBlueprintValue without its declaredRoutes.
+    @Test
+    void aFatalFailureWhileLeading_restoresThePreviousBlueprintWithItsDeclaredRoutes() {
+        var routes = Map.of(ORDERS, List.of(DeclaredRoute.declaredRoute("GET", "/orders/{id}")));
+        var first = AppBlueprintValue.appBlueprintValue(FIRST.blueprint(), false, "attempt-1", routes);
+        var h = active();
+
+        republished(h, first).fails(ORDERS_V2, true);
+        h.drain();
+
+        assertThat(committedBlueprint(h).map(AppBlueprintValue::declaredRoutes)).isEqualTo(Option.some(routes));
     }
 
     // CF-1, #2593 committedLeaderRecordNamesAnotherNode_noRollbackIsSubmitted
