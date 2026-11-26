@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -42,6 +43,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.testing.PollUntil.pollUntil;
 
 /// #3754 C1, lane (a): a leader-only external effect (terminate, and the create's dispatch) is issued only in the continuation of an
 /// accepted leader transaction this node committed for it, and only while ONE accessor, [CapacityControlledLifecycle#activation],
@@ -618,12 +620,8 @@ class CapacityFenceTest {
 
     /// Waits for the EVENT that decides the interleaving: `thread` is blocked (on a monitor) or has finished. A bounded poll of the
     /// thread's own state, so no assertion rests on a sleep.
-    private static void awaitBlockedOrDone(Thread thread, CountDownLatch done) throws InterruptedException {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-
-        while (thread.getState() != Thread.State.BLOCKED && done.getCount() > 0 && System.nanoTime() < deadline) {
-            Thread.sleep(1);
-        }
+    private static void awaitBlockedOrDone(Thread thread, CountDownLatch done) {
+        pollUntil(thread::getState, state -> state == Thread.State.BLOCKED || done.getCount() == 0, Duration.ofSeconds(5));
     }
 
     /// TA9, deterministic interleaving: thread A takes the lose-to-gain edge and is parked inside the accessor, after the gain is counted
