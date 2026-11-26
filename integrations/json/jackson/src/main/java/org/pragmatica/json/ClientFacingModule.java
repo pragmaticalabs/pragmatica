@@ -44,11 +44,9 @@ public class ClientFacingModule extends SimpleModule {
         @Override
         public void serialize(Cause value, JsonGenerator gen, SerializationContext provider) throws JacksonException {
             gen.writeStartObject();
-            gen.writeStringProperty("message",
-                                    value.clientMessage());
+            gen.writeStringProperty("message", value.clientMessage());
             gen.writeStringProperty("type",
-                                    value.getClass()
-                                         .getSimpleName());
+                                    value.getClass().getSimpleName());
             gen.writeEndObject();
         }
     }
