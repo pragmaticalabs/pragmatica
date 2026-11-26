@@ -194,6 +194,19 @@ class StreamRoutesWriteAdmissionTest {
         assertThat(namespaces.lookup(address()).isEmpty()).as("catalog reference released").isTrue();
     }
 
+    /// A config committed but not yet registered is as known as a registered one: the delete is answered at a node with no ring.
+    @Test
+    void delete_streamCommittedButNotRegistered_atNonOwnerWithNoLocalEntry_succeeds() {
+        var serving = serving(Long.MAX_VALUE);
+
+        var response = routes(serving, true, StreamNamespacesService.inMemory()).deleteStream(NAMESPACE, STREAM, VERSION)
+                                                                              .await()
+                                                                              .onFailure(cause -> fail("the committed config knows the stream, so the delete is answered: " + cause.message()))
+                                                                              .unwrap();
+
+        assertThat(response.status()).isEqualTo("deleted");
+    }
+
     /// The delete retires the catalog entry once: after it, the catalog no longer knows the stream, so a second delete at the
     /// same node answers "not found", as it would at the owner.
     @Test
