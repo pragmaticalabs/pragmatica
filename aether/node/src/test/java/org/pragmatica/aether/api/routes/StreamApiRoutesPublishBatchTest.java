@@ -203,16 +203,29 @@ class StreamApiRoutesPublishBatchTest {
         assertThat(wire.body()).contains("\"published\":0").contains("\"notPublished\":0");
     }
 
+    /// The default stays `200`: a route value that declares no status (the single `publish`) is not touched by #1354.
+    @Test
+    void singlePublish_overHttpDispatch_stillAnswers200() throws InterruptedException {
+        var wire = dispatch(ManagementRoute.STREAMS_PUBLISH, ConsistencyMode.EVENTUAL, "{\"data\":\"a\",\"partition\":0}");
+
+        assertThat(wire.status()).isEqualTo(HttpStatus.OK);
+        assertThat(wire.body()).contains("\"offset\":0");
+    }
+
     private record Wire(HttpStatus status, String body) {}
 
     private static Wire dispatch(ConsistencyMode mode, String json) throws InterruptedException {
+        return dispatch(ManagementRoute.STREAMS_PUBLISH_BATCH, mode, json);
+    }
+
+    private static Wire dispatch(ManagementRoute route, ConsistencyMode mode, String json) throws InterruptedException {
         var manager = streamPartitionManager(Long.MAX_VALUE);
 
         try {
             createStream(manager, mode);
             var router = ManagementRouter.managementRouter(routesFor(manager));
             var recorder = new RecordingResponseWriter();
-            var path = ManagementRoute.STREAMS_PUBLISH_BATCH.assemble(NAMESPACE, STREAM, VERSION).unwrap();
+            var path = route.assemble(NAMESPACE, STREAM, VERSION).unwrap();
 
             assertThat(router.handle(new PostRequest(path, json), recorder)).as("route matched and dispatched").isTrue();
             assertThat(recorder.written.await(5, TimeUnit.SECONDS)).as("a response was written").isTrue();
