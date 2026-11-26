@@ -18,7 +18,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.OwnerLifetime;
+import org.pragmatica.testlogging.LogCapture;
 
+import org.apache.logging.log4j.Level;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,6 +39,17 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class AlertForwarderStopTest {
     private final FakeOwnerSeam seam = new FakeOwnerSeam();
     private final ScriptedHttp http = new ScriptedHttp();
+    private LogCapture capture;
+
+    @BeforeEach
+    void setUp() {
+        capture = LogCapture.capture(AlertForwarder.class, Level.WARN, false);
+    }
+
+    @AfterEach
+    void tearDown() {
+        capture.close();
+    }
 
     @Test
     void close_endsARetryArmedBefore_soItNeverPostsAfterTheClose() {
@@ -65,6 +80,7 @@ class AlertForwarderStopTest {
         assertThat(isStopped(forwarded)).isTrue();
         assertThat(seam.enqueued()).isZero();
         assertThat(http.sends).isEqualTo(1);
+        assertThat(capture.messages(Level.WARN)).as("the outcome was not reported on the stopped forwarder").isEmpty();
     }
 
     @Test
@@ -81,8 +97,8 @@ class AlertForwarderStopTest {
         assertThat(seam.enqueued()).isEqualTo(1);
     }
 
-    /// Control for the two tests above: the same failure without a close arms a retry and leaves the forward pending, so the
-    /// resolved promise there is the close's doing.
+    /// Control for the two tests above: the same failure without a close arms a retry, leaves the forward pending and logs one
+    /// WARN, so the resolved promise there and the missing WARN above are the close's doing.
     @Test
     void send_failingWithoutAClose_armsARetryAndStaysPending() {
         var inFlight = Promise.<HttpResult<String>> promise();
@@ -94,6 +110,7 @@ class AlertForwarderStopTest {
 
         assertThat(forwarded.isResolved()).isFalse();
         assertThat(seam.enqueued()).isEqualTo(1);
+        assertThat(capture.messages(Level.WARN)).as("the failure is reported when the forwarder is live").hasSize(1);
     }
 
     private static boolean isStopped(Promise<?> forwarded) {
