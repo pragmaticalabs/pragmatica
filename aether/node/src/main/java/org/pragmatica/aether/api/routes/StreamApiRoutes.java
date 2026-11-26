@@ -368,6 +368,20 @@ public final class StreamApiRoutes implements RouteSource {
                         .to(this::streamEvents)
                         .asJson(),
 
+        // ---------- #1399: raw engine-key reads for the reserved-kind (`topic:`, `entity:`) streams ----------
+        ManagementRoutes.<StreamEventsResponse> route(ManagementRoute.STREAM_ENGINE_EVENTS)
+                        .withPath(PathParameter.aString(),
+                                  PathParameter.spacer("events"))
+                        .withQuery(QueryParameter.aLong("fromOffset"),
+                                   QueryParameter.aInteger("maxEvents"))
+                        .to(this::streamEngineEvents)
+                        .asJson(),
+                         ManagementRoutes.<StreamRoutes.StreamConsumersResponse> route(ManagementRoute.STREAM_ENGINE_CONSUMERS)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.spacer("consumers"))
+                                         .to(this::streamEngineConsumers)
+                                         .asJson(),
+
         // ---------- Write routes (OPERATOR_AND_ABOVE for /api/streams) ----------
         // #968: the legacy body-carried create, moved here from StreamRoutes so it shares the
         // catalog-registering chain below (createAtAddress) instead of minting rings under a name no
@@ -785,14 +799,29 @@ public final class StreamApiRoutes implements RouteSource {
 
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                            .async()
-                           .flatMap(addr -> readEventsAtAddress(addr, fromOffset, limit));
+                           .flatMap(addr -> readEventsOf(StreamManager.engineKey(addr),
+                                                         fromOffset,
+                                                         limit));
     }
 
-    private Promise<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr,
-                                                              Option<Long> fromOffset,
-                                                              int maxEvents) {
-        var streamName = StreamManager.engineKey(addr);
+    /// #1399: [#streamEvents] for a stream whose engine key the `(namespace, stream, version)` grammar cannot carry (the
+    /// reserved-kind `topic:` and `entity:` keys). The key is taken raw; it is resolved by the same catalog lookup and
+    /// read the same way, so a stream the cluster knows answers alike on every node. `eventsLiteral` binds the trailing
+    /// `spacer("events")` segment.
+    private Promise<StreamEventsResponse> streamEngineEvents(String engineKey,
+                                                             String eventsLiteral,
+                                                             Option<Long> fromOffset,
+                                                             Option<Integer> maxEvents) {
+        return readEventsOf(engineKey, fromOffset, clampMaxEvents(maxEvents.or(DEFAULT_MAX_EVENTS)));
+    }
 
+    /// #1399: [#streamConsumers] for a raw engine key; `consumersLiteral` binds the trailing `spacer("consumers")` segment.
+    private Promise<StreamRoutes.StreamConsumersResponse> streamEngineConsumers(String engineKey,
+                                                                                String consumersLiteral) {
+        return consumersOf(engineKey);
+    }
+
+    private Promise<StreamEventsResponse> readEventsOf(String streamName, Option<Long> fromOffset, int maxEvents) {
         return requireKnown(streamName).async()
                            .flatMap(_ -> readFromRequestedOrEarliest(fromOffset,
                                                                      from -> notMaterializedHere(streamName,
@@ -801,7 +830,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                                                                                          from,
                                                                                                                          maxEvents,
                                                                                                                          ReadPreference.NEAREST))))
-                           .map(window -> buildEventsResponse(addr,
+                           .map(window -> buildEventsResponse(streamName,
                                                               window.events(),
                                                               window.from(),
                                                               maxEvents));
@@ -818,7 +847,7 @@ public final class StreamApiRoutes implements RouteSource {
                                       : cause);
     }
 
-    private static StreamEventsResponse buildEventsResponse(ResourceAddress addr,
+    private static StreamEventsResponse buildEventsResponse(String address,
                                                             List<org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent> events,
                                                             long fromOffset,
                                                             int maxEvents) {
@@ -828,7 +857,7 @@ public final class StreamApiRoutes implements RouteSource {
                          : events.getLast().offset() + 1;
         var hasMore = events.size() >= maxEvents;
 
-        return new StreamEventsResponse(addr.asString(), entries, nextOffset, hasMore);
+        return new StreamEventsResponse(address, entries, nextOffset, hasMore);
     }
 
     private static EventEntry toEventEntry(org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent raw) {

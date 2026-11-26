@@ -6420,6 +6420,20 @@ since #1753 (the route and its path are unchanged).
 
 **Response:** `{"name": "<namespace:stream:version>", "partitions": [{"partition": 0, "headOffset": 0, "tailOffset": 41, "eventCount": 42}]}`
 
+### Raw Engine-Key Reads (reserved-kind streams)
+
+```
+GET /api/v1/engine-streams/{engineKey}/events?fromOffset={n}&maxEvents={k}
+GET /api/v1/engine-streams/{engineKey}/consumers
+```
+
+**Auth:** VIEWER. The streams the runtime provisions under a reserved kind prefix (`topic:<ns>:<topic>:<ver>` for durable topics,
+`entity:...`) have a four-part engine key, which the `{namespace}/{stream}/{version}` form of the routes above cannot
+carry (#1399). These two routes take the key raw, as ONE path segment, and answer exactly as `.../events` and `.../consumers` do: the same catalog lookup (a key the catalog
+does not hold is `404`), the same owner-reported bounds and the same `503` when the owner cannot answer, on whichever node
+receives the request. The event response's `address` is the engine key. Any engine key the catalog holds is accepted,
+including a three-part catalog address. Read-only: there is no raw-key write route.
+
 ---
 
 ## Stream Namespaces

@@ -102,7 +102,9 @@ class StreamApiRoutesEventsTest {
                                                                         ManagementRoute.STREAMS_PUBLISH_BATCH.name(),
                                                                         ManagementRoute.STREAMS_GROUP_CREATE.name(),
                                                                         ManagementRoute.STREAMS_GROUP_DELETE.name(),
-                                                                        ManagementRoute.STREAMS_DELETE.name());
+                                                                        ManagementRoute.STREAMS_DELETE.name(),
+                                                                        ManagementRoute.STREAM_ENGINE_EVENTS.name(),
+                                                                        ManagementRoute.STREAM_ENGINE_CONSUMERS.name());
 
         @Test
         void routes_enumerateEverySpecRequiredVerb_asExactNameSet() {

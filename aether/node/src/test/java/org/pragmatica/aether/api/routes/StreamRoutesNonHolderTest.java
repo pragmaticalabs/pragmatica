@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -193,6 +194,17 @@ class StreamRoutesNonHolderTest {
     @EnumSource(Probe.class)
     void catalogKnowsStream_ownerCannotBeAsked_answers503NotNotFound(Probe probe) {
         assertThat(statusOf(probe, isolatedRoutes(true))).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    /// The owner-asking routes name the stream and partition whose owner did not answer ([ManagementServerError.StreamInfoUnavailable]),
+    /// not the bare transport cause: the 503 status alone cannot tell the caller which owner to retry.
+    @ParameterizedTest
+    @EnumSource(value = Probe.class, names = {"PARTITION", "CONSUMERS", "INFO"})
+    void ownerCannotBeAsked_failureNamesTheStreamAndPartitionWhoseOwnerDidNotAnswer(Probe probe) {
+        var failure = RouteProbe.failureOf(isolatedRoutes(true), probe.route, probe.path(), Map.of());
+
+        assertThat(failure).isInstanceOfSatisfying(ManagementServerError.StreamInfoUnavailable.class,
+                                                   unavailable -> assertThat(unavailable.streamName()).isEqualTo(engineKey));
     }
 
     /// The same request at the node that DOES hold every partition: the catalog is what decides unknown, so a request for a
