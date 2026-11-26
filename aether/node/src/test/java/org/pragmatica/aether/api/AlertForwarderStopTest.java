@@ -4,10 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandler;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AlertConfig.EventConfig;
@@ -16,6 +18,7 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.testlogging.LogCapture;
@@ -35,7 +38,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// - (a) a retry armed before the close never posts after it (the wrapper is fired by hand, past the cancel);
 /// - (b) a send in flight at the close ends without a WARN, a retry or a hang: its `forward` promise resolves, which the
 ///   unchecked path (a retry onto an ended lifetime) would leave unresolved;
-/// - (c) a `forward` waiting on a retry the close cancelled does not dangle: the close resolves it as a failure naming the stop.
+/// - (c) a `forward` waiting on a retry the close cancelled does not dangle: the close resolves it as a failure naming the stop;
+/// - (d) the second check guards effects, never an outcome the receiver already gave: a 2xx that lands after the close resolves
+///   as success, with nothing logged.
 class AlertForwarderStopTest {
     private final FakeOwnerSeam seam = new FakeOwnerSeam();
     private final ScriptedHttp http = new ScriptedHttp();
@@ -97,6 +102,23 @@ class AlertForwarderStopTest {
         assertThat(seam.enqueued()).isEqualTo(1);
     }
 
+    @Test
+    void close_duringASend_thatThenAnswers2xx_resolvesAsSuccessWithNothingLogged() {
+        var inFlight = Promise.<HttpResult<String>> promise();
+
+        http.answers.add(inFlight);
+        var forwarder = forwarderWithRetries(2);
+        var forwarded = forwarder.forward(AlertEvent.AlertResolved.resolved("a-5", "test"));
+
+        forwarder.close();
+        inFlight.resolve(Result.success(okReply()));
+
+        assertThat(forwarded.isResolved()).isTrue();
+        assertThat(isSuccess(forwarded)).as("the receiver got the alert: the outcome is not rewritten as 'not sent'").isTrue();
+        assertThat(capture.messages()).as("no WARN or ERROR for a delivered alert").isEmpty();
+        assertThat(http.sends).isEqualTo(1);
+    }
+
     /// Control for the two tests above: the same failure without a close arms a retry, leaves the forward pending and logs one
     /// WARN, so the resolved promise there and the missing WARN above are the close's doing.
     @Test
@@ -111,6 +133,14 @@ class AlertForwarderStopTest {
         assertThat(forwarded.isResolved()).isFalse();
         assertThat(seam.enqueued()).isEqualTo(1);
         assertThat(capture.messages(Level.WARN)).as("the failure is reported when the forwarder is live").hasSize(1);
+    }
+
+    private static HttpResult<String> okReply() {
+        return new HttpResult<>(200, HttpHeaders.of(Map.of(), (_, _) -> true), "");
+    }
+
+    private static boolean isSuccess(Promise<?> forwarded) {
+        return forwarded.await(timeSpan(1).seconds()).isSuccess();
     }
 
     private static boolean isStopped(Promise<?> forwarded) {
