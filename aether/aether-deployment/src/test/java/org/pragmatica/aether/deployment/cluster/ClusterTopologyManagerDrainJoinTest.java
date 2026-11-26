@@ -170,6 +170,12 @@ class ClusterTopologyManagerDrainJoinTest {
         return outcome.fold(cause -> cause, _ -> SUCCEEDED);
     }
 
+    /// The outcome of an attempt, read after a bounded wait: a resolution that never arrives fails the test instead of hanging it.
+    private static Result<Unit> settled(Promise<Unit> outcome) {
+        await().atMost(Duration.ofSeconds(5)).until(outcome::isResolved);
+        return outcome.await();
+    }
+
     private void awaitRaised(String code) {
         await().atMost(Duration.ofSeconds(5)).until(() -> raised.contains(code));
     }
@@ -205,8 +211,8 @@ class ClusterTopologyManagerDrainJoinTest {
 
         sink.accept(0);
 
-        assertThat(first.await().isSuccess()).isTrue();
-        assertThat(second.await().isSuccess()).isTrue();
+        assertThat(settled(first).isSuccess()).isTrue();
+        assertThat(settled(second).isSuccess()).isTrue();
         assertThat(registryWrites).as("one registry write for the one attempt").containsExactly(TARGET);
     }
 
@@ -220,8 +226,8 @@ class ClusterTopologyManagerDrainJoinTest {
 
         sink.refuse(0, WITNESS_REFUSED);
 
-        assertThat(failureOf(first.await())).isSameAs(WITNESS_REFUSED);
-        assertThat(failureOf(second.await())).isSameAs(WITNESS_REFUSED);
+        assertThat(failureOf(settled(first))).isSameAs(WITNESS_REFUSED);
+        assertThat(failureOf(settled(second))).isSameAs(WITNESS_REFUSED);
         assertThat(sink.requests()).hasSize(1);
         assertThat(registryWrites).isEmpty();
     }
@@ -263,7 +269,7 @@ class ClusterTopologyManagerDrainJoinTest {
 
         sink.accept(0);
 
-        assertThat(drain.await().isSuccess()).isTrue();
+        assertThat(settled(drain).isSuccess()).isTrue();
         assertThat(registry).containsExactly(TARGET);
         await().atMost(Duration.ofSeconds(5)).until(() -> lifecycle.terminated().contains(TARGET));
         awaitRaised(EVICTED);
@@ -282,7 +288,7 @@ class ClusterTopologyManagerDrainJoinTest {
         awaitRaised(CANCELLED);
         sink.accept(0);
 
-        assertThat(failureOf(drain.await())).isInstanceOf(FenceFailure.AttemptCancelled.class);
+        assertThat(failureOf(settled(drain))).isInstanceOf(FenceFailure.AttemptCancelled.class);
         assertThat(registryWrites).as("no write for a cancelled attempt").isEmpty();
         assertThat(registry).isEmpty();
         awaitControlReap();
@@ -301,7 +307,7 @@ class ClusterTopologyManagerDrainJoinTest {
         ctm.activate();
         sink.accept(0);
 
-        assertThat(failureOf(drain.await())).isInstanceOf(FenceFailure.AttemptCancelled.class);
+        assertThat(failureOf(settled(drain))).isInstanceOf(FenceFailure.AttemptCancelled.class);
         assertThat(registryWrites).isEmpty();
         assertThat(registry).isEmpty();
         awaitControlReap();
@@ -396,7 +402,7 @@ class ClusterTopologyManagerDrainJoinTest {
     /// TB10: a drain of the leader's own id is refused before any round: the witness is never asked and nothing is recorded.
     @Test
     void tb10_selfDrainIsRefusedBeforeAnyRound() {
-        var outcome = ctm.drainNode(SELF, DrainReason.OPERATOR_COMMAND).await();
+        var outcome = settled(ctm.drainNode(SELF, DrainReason.OPERATOR_COMMAND));
 
         assertThat(failureOf(outcome)).isEqualTo(new ClusterTopologyManager.LeaderCannotDrainItself(SELF));
         assertThat(sink.requests()).as("no witness for a self-drain").isEmpty();
