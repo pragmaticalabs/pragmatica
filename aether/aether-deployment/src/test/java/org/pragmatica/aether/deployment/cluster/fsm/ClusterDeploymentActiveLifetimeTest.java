@@ -21,12 +21,16 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -303,6 +307,11 @@ class ClusterDeploymentActiveLifetimeTest {
         var failing = expanded(V2);
 
         kvStore.put(AppBlueprintKey.appBlueprintKey(failing.id()), AppBlueprintValue.appBlueprintValue(failing));
+        // The success continuation runs only once the rollback has landed: the committed leader record names this node (so the
+        // fenced write is issued) and the rollback's own terminal for the in-flight attempt is already committed (so the
+        // confirmation reads it as landed, and `onLanded` runs the continuation that arms the 5 s clear).
+        kvStore.commitLeader(SELF);
+        kvStore.put(DeploymentOutcomeKey.deploymentOutcomeKey(failing.id()), DeploymentOutcomeValue.rolledBack(List.of(), "boom", 0L));
         active.restorePreviousBlueprintForTest(ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(),
                                                                                                                  failing,
                                                                                                                  Option.some(prior)),
@@ -328,6 +337,11 @@ class ClusterDeploymentActiveLifetimeTest {
 
         void put(AetherKey key, AetherValue value) {
             process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        void commitLeader(NodeId leader) {
+            process(createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(leader, 1)))));
         }
     }
 
