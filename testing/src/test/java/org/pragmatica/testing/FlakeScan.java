@@ -57,24 +57,17 @@ import org.pragmatica.testlogging.SourceWalk;
 /// entries. It does not see a walk through another API (`File.listFiles` recursion, `Files.newDirectoryStream`, a library walker), a
 /// walk in `src/main`, or a declared root that is later changed; those are left to review. The fix it asks for is `SourceWalk`.
 ///
-/// `PICK_THEN_REBIND` is a hazard in a socket's lifetime (#1826), found by [PickThenRebind] over the statements of the trees in
-/// `PICK_THEN_REBIND_SCOPE`, not by a line regex: it enforces WHERE a port-0 socket is built (the shared helper, or a line marked
-/// `// port0-held: <reason>`), not where the port goes afterwards. It is never an allow-list entry and never declared: a hit is fixed.
+/// The port rules narrowed with #3801: the build-time `port-bind-gate` (a bytecode scan of every test class) owns every socket-bind and
+/// port-allocation call, whatever its argument, so `PICK_THEN_REBIND` (a port-0 construction outside the shared helper or without a
+/// `// port0-held:` marker) and the literal-port constructor form of `FIXED_PORT` are retired. `FIXED_PORT` keeps what bytecode cannot
+/// see: a port constant (`int httpPort = 8080`) and a literal handed to `bind`, `listen` or a config setter.
 final class FlakeScan {
     private static final List<String> SCANNED_SOURCES = List.of("/src/test/java/", "/src/it/java/");
-    /// The trees the `PICK_THEN_REBIND` pass examines. TODO(#1826): aether/node only (part a); widen to `integrations/consensus/` (part b) and
-    /// `integrations/net/http-server/` (part c), then to the other trees holding port-0 sockets: `aether/cli/`, `aether/ember/`,
-    /// `aether/forge/forge-tests/`, `aether/resource/db-async/`, `aether/resource/notification/`, `integrations/db/postgres-async/`,
-    /// `integrations/net/http-client/`, `integrations/net/redis/`, `integrations/net/smtp/`, `integrations/net/tcp/` and `integrations/swim/`,
-    /// each in the lane that converts or marks its sites: a tree listed before its sites are converted fails the build.
-    private static final List<String> PICK_THEN_REBIND_SCOPE = List.of("aether/node/");
-
     /// A pattern with a fixed flake behind it, and the fix the failure message points at.
     enum Kind {
         SLEEP("\\bThread\\s*\\.\\s*sleep\\s*\\(|\\bTimeUnit\\s*\\.\\s*[A-Z]+\\s*\\.\\s*sleep\\s*\\(",
               "wait for the condition with org.pragmatica.testing.PollUntil.pollUntil(supplier, predicate, deadline): a bounded poll that reports first and final value, elapsed time and margin; a fixed sleep guesses how long the work takes"),
         FIXED_PORT("(?i)\\b(static\\s+final\\s+int|int|long|Integer)\\s+\\w*port\\w*\\s*=\\s*[0-9][0-9_]{3,5}\\b"
-                   + "|new\\s+(ServerSocket|DatagramSocket)\\s*\\(\\s*[0-9]{4,5}\\b"
                    + "|\\.\\s*(bind|listen|withPort|port|udpPort|tcpPort|httpPort)\\s*\\(\\s*[0-9][0-9_]{3,5}\\b",
                    "take a free or held port at bind time (the module's ClusterTestPorts/EmberTestPorts helper, or a port-0 bind) instead of a literal: a literal collides under the module-parallel build"),
         WALL_CLOCK_BOUND("(?i)\\b\\w*(elapsed|took|returnedAfter)\\w*\\s*(\\(\\))?\\s*\\)?\\s*\\.\\s*(isLessThan|isLessThanOrEqualTo|isBetween|isGreaterThan|isGreaterThanOrEqualTo|isCloseTo)\\s*\\("
@@ -83,9 +76,7 @@ final class FlakeScan {
         SHORT_AWAIT("\\batMost\\s*\\(\\s*(Duration\\s*\\.\\s*ofMillis\\s*\\(|Duration\\s*\\.\\s*ofSeconds\\s*\\(\\s*[1-4]\\s*\\)|[0-9_]+\\s*,\\s*TimeUnit\\s*\\.\\s*MILLISECONDS|[1-4]\\s*,\\s*(TimeUnit\\s*\\.\\s*)?SECONDS)",
                     "give the wait a deadline of at least 5 s (PollUntil.pollUntil(..., Duration.ofSeconds(10)) or atMost(Duration.ofSeconds(10))): the deadline bounds only the failure, a pass returns at once"),
         REPO_WALK("\\bFiles\\s*\\.\\s*(walk|walkFileTree|find)\\s*\\(",
-                  "scan source files with org.pragmatica.testlogging.SourceWalk.files(root): the java.nio walks (walk, walkFileTree, find) list and stat every entry before any filter runs, so a walk from a repository or multi-module root visits other modules' target/ while a parallel build rewrites it and fails with NoSuchFileException. A walk of a directory nothing else writes (a directory the test creates, the module's own fixed source path, a class directory complete before the forks start) is declared in RepoWalkExceptions with its reason (#3703)"),
-        PICK_THEN_REBIND("(?!)",
-                         "a port-0 socket is built only by the shared helper (HeldPort, which returns it open) or on a line marked `// port0-held: <reason>`, the reason saying the socket stays open for as long as its port is used (an empty reason does not count). A port read from a socket that is then closed can be taken by another process before the real bind: take such a port from the module's ClusterTestPorts (its reservation holds until the real bind) or bind port 0 in the server itself and read the bound port back (#1826)");
+                  "scan source files with org.pragmatica.testlogging.SourceWalk.files(root): the java.nio walks (walk, walkFileTree, find) list and stat every entry before any filter runs, so a walk from a repository or multi-module root visits other modules' target/ while a parallel build rewrites it and fails with NoSuchFileException. A walk of a directory nothing else writes (a directory the test creates, the module's own fixed source path, a class directory complete before the forks start) is declared in RepoWalkExceptions with its reason (#3703)");
 
         private final Pattern pattern;
         private final String fix;
@@ -164,9 +155,6 @@ final class FlakeScan {
                     hits.add(Hit.hit(relative, statement.line(), kind, String.join(" ", statement.text().split("\\s+"))));
                 }
             }
-        }
-        if (PICK_THEN_REBIND_SCOPE.stream().anyMatch(relative::startsWith)) {
-            hits.addAll(PickThenRebind.hits(relative, lines, statements));
         }
     }
 
@@ -306,10 +294,9 @@ final class FlakeScan {
         return problems;
     }
 
-    /// Whether the allow-list or the declared walks excuse `hit`, consuming the entry it uses. A `PICK_THEN_REBIND` hit is never excused: it is fixed.
+    /// Whether the allow-list or the declared walks excuse `hit`, consuming the entry it uses.
     private static boolean excused(Hit hit, Map<String, Integer> remaining, Map<String, Integer> walksLeft) {
         return switch (hit.kind()) {
-            case PICK_THEN_REBIND -> false;
             case REPO_WALK -> walksLeft.merge(hit.file(), -1, Integer::sum) >= 0;
             default -> remaining.merge(hit.key(), -1, Integer::sum) >= 0;
         };

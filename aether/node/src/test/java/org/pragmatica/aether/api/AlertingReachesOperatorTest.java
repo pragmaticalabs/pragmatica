@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import com.sun.net.httpserver.HttpServer;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -196,7 +197,7 @@ class AlertingReachesOperatorTest {
     void raisedThresholdAlertReachesARealWebhook() throws IOException, InterruptedException {
         var received = new AtomicReference<String>();
         var arrived = new CountDownLatch(1);
-        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var server = HeldPort.httpServer();
 
         server.createContext("/hook", exchange -> {
             received.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
@@ -233,7 +234,7 @@ class AlertingReachesOperatorTest {
     @Test
     void subThresholdValueSendsNothingToTheWebhook() throws IOException, InterruptedException {
         var arrived = new CountDownLatch(1);
-        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var server = HeldPort.httpServer();
 
         server.createContext("/hook", exchange -> {
             exchange.sendResponseHeaders(204, -1);

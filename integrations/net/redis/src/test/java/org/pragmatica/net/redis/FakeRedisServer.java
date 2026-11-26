@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.pragmatica.portbind.HeldPort;
 
 /// A scripted RESP server over a plain socket: each accepted connection runs the given session on its
 /// own thread. Test-only, so blocking I/O and checked exceptions are fine here.
@@ -86,7 +87,7 @@ final class FakeRedisServer implements AutoCloseable {
     private final List<List<String>> received = new CopyOnWriteArrayList<>();
 
     static FakeRedisServer start(Session session) throws IOException {
-        var fake = new FakeRedisServer(new ServerSocket(0, 50, InetAddress.getLoopbackAddress()));
+        var fake = new FakeRedisServer(HeldPort.tcp(50, InetAddress.getLoopbackAddress()));
 
         Thread.ofVirtual()
               .start(() -> fake.acceptLoop(session));

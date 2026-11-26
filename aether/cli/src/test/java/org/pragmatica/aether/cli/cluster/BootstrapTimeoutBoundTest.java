@@ -25,6 +25,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import org.junit.jupiter.api.Test;
 import picocli.CommandLine;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -126,7 +127,7 @@ class BootstrapTimeoutBoundTest {
     @Test
     @Timeout(value = 45, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void formation_appliesTheCap_toTheQuorumWait() throws Exception {
-        var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        var server = HeldPort.httpServer();
 
         server.createContext("/", exchange -> {
             var body = "{\"quorum\":false,\"nodeCount\":1,\"status\":\"healthy\"}".getBytes(StandardCharsets.UTF_8);

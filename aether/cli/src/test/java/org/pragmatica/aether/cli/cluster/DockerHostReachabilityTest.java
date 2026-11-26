@@ -22,6 +22,7 @@ import org.pragmatica.lang.Result;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -45,7 +46,7 @@ class DockerHostReachabilityTest {
     }
 
     private HttpServer node(AtomicInteger hits, String healthBody) throws IOException {
-        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var server = HeldPort.httpServer();
 
         server.createContext("/", exchange -> {
             hits.incrementAndGet();

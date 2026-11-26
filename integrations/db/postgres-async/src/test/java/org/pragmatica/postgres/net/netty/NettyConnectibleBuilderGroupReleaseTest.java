@@ -36,6 +36,7 @@ import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -333,7 +334,7 @@ class NettyConnectibleBuilderGroupReleaseTest {
 
     /// Accepts TCP connections and never answers the startup message: the connect never completes.
     private int silentServerPort() throws IOException {
-        var server = new ServerSocket(0);
+        var server = HeldPort.tcp();
 
         servers.add(server);
         Thread.ofVirtual().start(() -> acceptOne(server));

@@ -21,6 +21,7 @@ import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.json.JsonMapper;
 
 import picocli.CommandLine;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -44,7 +45,7 @@ class ClusterNodeIdsReserveCommandTest {
 
     @BeforeEach
     void start() throws Exception {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server = HeldPort.httpServer();
         server.createContext("/", exchange -> {
             requestLine.set(exchange.getRequestMethod() + " " + exchange.getRequestURI().getPath());
             requestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));

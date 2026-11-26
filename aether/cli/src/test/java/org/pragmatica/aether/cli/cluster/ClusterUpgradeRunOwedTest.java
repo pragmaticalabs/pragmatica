@@ -16,6 +16,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -32,7 +33,7 @@ class ClusterUpgradeRunOwedTest {
 
     @BeforeEach
     void start() throws Exception {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server = HeldPort.httpServer();
         server.createContext("/api/v1/upgrade/status", exchange -> reply(exchange, statusBody));
         server.createContext("/api/v1/cluster/upgrade", exchange -> {
             posts.incrementAndGet();

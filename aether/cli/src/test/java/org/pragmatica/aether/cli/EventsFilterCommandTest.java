@@ -17,6 +17,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import picocli.CommandLine;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -31,7 +32,7 @@ class EventsFilterCommandTest {
 
     @BeforeEach
     void listener() throws IOException {
-        node = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        node = HeldPort.httpServer();
         node.createContext("/",
                            exchange -> {
                                rawQueries.add(String.valueOf(exchange.getRequestURI().getRawQuery()));

@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -103,7 +104,7 @@ class TerraMetricsTest {
 
     @Test void otlp_configured_collectorReceivesTheMetersWithResourceAttributes() throws Exception {
         var received = new CompletableFuture<byte[]>();
-        var collector = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var collector = HeldPort.httpServer();
 
         collector.createContext("/v1/metrics", exchange -> receive(exchange, received));
         collector.start();
@@ -128,7 +129,7 @@ class TerraMetricsTest {
 
     @Test void otlp_shortStep_pushesWithoutCloseAtTheConfiguredInterval() throws Exception {
         var received = new CompletableFuture<byte[]>();
-        var collector = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var collector = HeldPort.httpServer();
 
         collector.createContext("/v1/metrics", exchange -> receiveContaining(exchange, "terra.otlp.step", received));
         collector.start();

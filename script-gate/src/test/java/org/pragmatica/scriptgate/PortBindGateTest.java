@@ -1,6 +1,7 @@
 package org.pragmatica.scriptgate;
 
 import java.net.DatagramSocket;
+import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -184,23 +185,45 @@ class PortBindGateTest {
     /// also gives the wiring test a real allowed site to find in the stamp.
     @Test
     void heldPort_holdsItsPort_whileOpen_andReleasesItOnClose() {
-        try (var held = HeldPort.udp()) {
-            assertThat(held.isBound()).isTrue();
-            assertThat(held.isClosed()).isFalse();
-            assertThat(held.getLocalPort()).isPositive();
-            assertThat(Result.lift(() -> new DatagramSocket(held.getLocalPort())).isFailure()).as("another socket cannot take a held port")
-                      .isTrue();
-        }
+        var held = Result.lift(HeldPort::udp).unwrap();
+
+        assertThat(held.isBound()).isTrue();
+        assertThat(held.isClosed()).isFalse();
+        assertThat(held.getLocalPort()).isPositive();
+        assertThat(Result.lift(() -> new DatagramSocket(held.getLocalPort())).isFailure()).as("another socket cannot take a held port")
+                  .isTrue();
+        held.close();
+        assertThat(held.isClosed()).isTrue();
     }
 
     @Test
     void heldPortTcp_isOpenAndBound() {
-        var held = HeldPort.tcp();
+        var held = Result.lift(HeldPort::tcp).unwrap();
 
         assertThat(held.isBound()).isTrue();
         assertThat(held.isClosed()).isFalse();
         assertThat(held.getLocalPort()).isPositive();
         assertThat(Result.lift(held::close).isSuccess()).isTrue();
+    }
+
+    @Test
+    void heldPortHttpServer_holdsItsOwnPort_andReadsItBack() {
+        var server = Result.lift(HeldPort::httpServer).unwrap();
+
+        assertThat(server.getAddress().getPort()).isPositive();
+        server.stop(0);
+    }
+
+    @Test
+    void heldPortLoopbackVariants_bindOnTheRequestedAddress() {
+        var loopback = InetAddress.getLoopbackAddress();
+        var udp = Result.lift(() -> HeldPort.udp(loopback)).unwrap();
+        var tcp = Result.lift(() -> HeldPort.tcp(5, loopback)).unwrap();
+
+        assertThat(udp.getLocalAddress()).isEqualTo(loopback);
+        assertThat(tcp.getInetAddress()).isEqualTo(loopback);
+        udp.close();
+        assertThat(Result.lift(tcp::close).isSuccess()).isTrue();
     }
 
     @Test
