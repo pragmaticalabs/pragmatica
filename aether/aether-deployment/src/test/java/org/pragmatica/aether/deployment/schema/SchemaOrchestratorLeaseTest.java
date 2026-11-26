@@ -18,6 +18,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.LongStream;
 import java.util.zip.ZipEntry;
@@ -53,6 +54,8 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.db.migration.MigrationError;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -699,6 +702,79 @@ class SchemaOrchestratorLeaseTest {
             assertThat(statusOf(DATASOURCE)).isEqualTo(SchemaStatus.PENDING);
         }
 
+        /// #3754 F4: a stop that lands between the entry check and the claim Put (the lock read lies between them) is
+        /// refused by the second check, which also gives back the fence it took: no lock claim, no script, and the fence entry
+        /// is not left behind.
+        @Test
+        void stop_landingBetweenTheEntryCheckAndTheClaim_refusesTheClaim_andReleasesTheFence() {
+            var orchestrator = orchestrator(NODE_1, 60_000L);
+            var refusal = new AtomicReference<Cause>();
+
+            kvStore.holdNextReadOf(LOCK_KEY);
+            var dispatch = fireInBackground(() -> orchestrator.migrateIfNeeded(DATASOURCE)
+                                                              .await(timeSpan(5).seconds())
+                                                              .onFailure(refusal::set));
+
+            kvStore.awaitHeld();
+            assertThat(fenceHeld(orchestrator)).as("control: the dispatch past the entry check holds the fence").isTrue();
+            orchestrator.stop();
+            kvStore.release();
+            joinOrFail(dispatch);
+
+            assertTheOrchestratorStoppedCause(refusal.get());
+            assertThat(cluster.lockPuts()).as("no lock claim after the second check").isZero();
+            assertThat(schemaManager.invocations).as("no migration script ran").isEmpty();
+            assertThat(fenceHeld(orchestrator)).as("the refusal gave back the fence it took").isFalse();
+            assertThat(statusOf(DATASOURCE)).isEqualTo(SchemaStatus.PENDING);
+        }
+
+        /// #3754 F5: every refusal at stop (dispatch, undo, baseline) is [SchemaError.OrchestratorStopped], with its own
+        /// 503 and a message naming the datasource, never a lock conflict ([SchemaError.LockAcquisitionFailed]).
+        @Test
+        void stop_refusal_isTheOrchestratorStoppedCause_notALockConflict() {
+            var orchestrator = orchestrator(NODE_1, 60_000L);
+
+            orchestrator.stop();
+
+            var refusals = List.of(orchestrator.migrateIfNeeded(DATASOURCE).await(timeSpan(5).seconds()),
+                                   orchestrator.undoTo(DATASOURCE, 1).await(timeSpan(5).seconds()),
+                                   orchestrator.baseline(DATASOURCE, 1).await(timeSpan(5).seconds()));
+
+            assertThat(refusals).hasSize(3).allSatisfy(NodeStop::assertRefusedByTheStop);
+            assertThat(schemaManager.invocations).as("no script ran").isEmpty();
+        }
+
+        private static void assertRefusedByTheStop(Result<Unit> refusal) {
+            assertTheOrchestratorStoppedCause(refusal.fold(failure -> failure, _ -> Causes.cause("a stopped orchestrator must refuse")));
+        }
+
+        private static void assertTheOrchestratorStoppedCause(Cause cause) {
+            assertThat(cause).isInstanceOf(SchemaError.OrchestratorStopped.class)
+                             .isNotInstanceOf(SchemaError.LockAcquisitionFailed.class);
+            assertThat(cause.message()).contains(DATASOURCE);
+            assertThat(((HttpStatusAware) cause).httpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        }
+
+        /// #3754 F6: stop is idempotent. A second stop, as from a stop sequence plus a shutdown hook, neither throws nor
+        /// changes anything: the armed lease stays unrenewed and unreleased, and the refusal stays the stop's.
+        @Test
+        void stop_calledTwice_isHarmless_changesNothingTheFirstDidNot() {
+            var orchestrator = orchestrator(NODE_1, 60_000L);
+
+            orchestrator.migrateIfNeeded(DATASOURCE);
+            var claim = committedLock();
+            var putsBefore = cluster.lockPuts();
+
+            orchestrator.stop();
+            orchestrator.stop();
+            time.advance(2 * TICK_MS);
+
+            assertThat(time.pending()).as("both stops left no armed tick").isZero();
+            assertThat(cluster.lockPuts()).as("neither stop wrote").isEqualTo(putsBefore);
+            assertThat(committedLock()).as("the lock is untouched").isEqualTo(claim);
+            assertRefusedByTheStop(orchestrator.migrateIfNeeded(DATASOURCE).await(timeSpan(5).seconds()));
+        }
+
         /// Fails attempt 1 with a fenced-in-the-database outcome, waits until its re-dispatch is scheduled and the attempt
         /// has let go of its lock; returns the lock Puts submitted so far.
         private int failedAttemptAwaitingItsRedispatch(SchemaOrchestratorService orchestrator) {
@@ -731,6 +807,45 @@ class SchemaOrchestratorLeaseTest {
         }
     }
 
+    /// #3754 F6: the PRODUCTION [LeaseTiming] seam (`standard`, `withTtl`): every other test here hands the orchestrator a
+    /// hand-built timing over a fake scheduler, so none of them reaches the wiring that production uses. These run on the real
+    /// clock and the real shared scheduler, with a short TTL (a renewal every third of it).
+    @Nested
+    class ProductionTiming {
+        private static final long SHORT_TTL_MS = 300L;
+
+        @Test
+        void standard_carriesTheLockTtlForBothBounds_onTheSystemClock_withALiveLifetime() {
+            var timing = LeaseTiming.standard();
+            var before = System.currentTimeMillis();
+            var lifetime = timing.lifetimes().get();
+
+            assertThat(timing.ttlMs()).isEqualTo(SchemaOrchestratorService.LOCK_TTL_MS);
+            assertThat(timing.renewalTimeoutMs()).isEqualTo(SchemaOrchestratorService.LOCK_TTL_MS);
+            assertThat(timing.clock().getAsLong()).as("the system clock").isBetween(before, System.currentTimeMillis());
+            assertThat(lifetime.isEnded()).as("a fresh lifetime is live").isFalse();
+        }
+
+        @Test
+        void withTtl_theRealSchedulerRenewsTheLease_andStopEndsTheRenewal() {
+            var orchestrator = orchestrator(NODE_1, _ -> POSTGRES_VERSION, LeaseTiming.withTtl(SHORT_TTL_MS));
+
+            orchestrator.migrateIfNeeded(DATASOURCE);
+            var claimPuts = cluster.lockPuts();
+
+            awaitEvent("the real scheduler renewed the lease", () -> cluster.lockPuts() > claimPuts);
+            orchestrator.stop();
+            awaitEvent("the unrenewed lock lapsed by its expiry", () -> committedLock().expiresAt() <= System.currentTimeMillis());
+
+            var lapsed = committedLock();
+            var putsAtLapse = cluster.lockPuts();
+
+            awaitEvent("a renewal period passed on the real clock after the lapse", () -> System.currentTimeMillis() > lapsed.expiresAt() + SHORT_TTL_MS);
+            assertThat(committedLock()).as("nothing renewed or released it after the stop").isEqualTo(lapsed);
+            assertThat(cluster.lockPuts()).as("no write after the lapse").isEqualTo(putsAtLapse);
+        }
+    }
+
     /// The warnings delivered through `sink` so far. The hand-off delivers in order on one thread, so once a sentinel
     /// offered now has arrived, every warning raised before it has too.
     private static List<OperatorWarning> delivered(OperatorWarningSink sink, List<OperatorWarning> received) {
@@ -740,6 +855,20 @@ class SchemaOrchestratorLeaseTest {
         awaitEvent("the sentinel warning was delivered", () -> received.contains(sentinel));
 
         return List.copyOf(received).stream().filter(warning -> !SENTINEL.equals(warning.subject())).toList();
+    }
+
+    /// Whether the orchestrator's single-flight fence holds an entry for [#DATASOURCE] (`inFlightMigrations`, private state
+    /// with no other observer once a stop makes every later dispatch fail at the entry check).
+    private static boolean fenceHeld(SchemaOrchestratorService orchestrator) {
+        try {
+            var field = SchemaOrchestratorServiceInstance.class.getDeclaredField("inFlightMigrations");
+
+            field.setAccessible(true);
+
+            return ((Map<?, ?>) field.get(orchestrator)).containsKey(DATASOURCE);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("the single-flight fence field is not readable", e);
+        }
     }
 
     private List<Long> redispatchDelays() {
@@ -838,6 +967,12 @@ class SchemaOrchestratorLeaseTest {
     /// `engineOf` answers, per datasource and per call, the server version the fence-tier probe reads, so a test can
     /// change a datasource's engine between two operations of one orchestrator.
     private SchemaOrchestratorService orchestrator(NodeId self, long renewalTimeoutMs, Function<String, String> engineOf) {
+        return orchestrator(self,
+                            engineOf,
+                            new LeaseTiming(TTL_MS, renewalTimeoutMs, time::now, () -> OwnerLifetime.ownerLifetime(time.seam())));
+    }
+
+    private SchemaOrchestratorService orchestrator(NodeId self, Function<String, String> engineOf, LeaseTiming timing) {
         Repository repository = _ -> NOT_IN_REPOSITORY.promise();
 
         return new SchemaOrchestratorServiceInstance(cluster,
@@ -848,7 +983,7 @@ class SchemaOrchestratorLeaseTest {
                                                      stubConnectionProvider(engineOf),
                                                      self,
                                                      Option.<MessageRouter> none(),
-                                                     new LeaseTiming(TTL_MS, renewalTimeoutMs, time::now, () -> OwnerLifetime.ownerLifetime(time.seam())));
+                                                     timing);
     }
 
     /// A hand-stepped clock and scheduler: `advance` moves time forward one tick at a time and runs each
