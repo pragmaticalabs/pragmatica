@@ -16,6 +16,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.OwnerLifetime;
 
@@ -102,5 +104,80 @@ class ScheduledTaskCronRearmLifetimeTest {
 
         assertThat(next.isCancelled()).as("a per-key cancel cancels the registration it removes").isTrue();
         assertThat(ctx.activeTimers).as("and removes it").doesNotContainKey(key);
+    }
+
+    /// The other two re-arm sites of `executeCronTask`, on a lifetime that has ended: a fire whose claim is refused (an
+    /// invocation of the key is still in flight) and a fire that settles. Each leaves the key's armed timer alone.
+    @Test
+    void cronClaimRefusedOnAnEndedLifetime_rearmsNothing_andLeavesTheKeysTimerAlone() {
+        var ctx = ((ScheduledTaskManager.ScheduledTaskManagerAdapter) manager).ctx();
+        var current = ctx.fsm.entered().lifetime();
+        var keysTimer = current.schedule(_ -> {}, HOUR);
+        var endedLifetime = OwnerLifetime.ownerLifetime();
+        var task = cronTask();
+
+        endedLifetime.end();
+        ctx.activeTimers.put(key, keysTimer);
+        assertThat(ctx.claim(key)).as("control: the claim is taken, so the fire's own claim is refused").isTrue();
+        ScheduledTaskManager.TaskOps.executeCronTask(ctx, key, task, cronOf(task), endedLifetime);
+
+        assertThat(ctx.activeTimers.get(key)).as("the refused re-arm left the key's armed timer in place").isSameAs(keysTimer);
+        assertThat(keysTimer.isCancelled()).as("and did not cancel it as a replaced prior").isFalse();
+        assertThat(current.size()).as("the current state's lifetime holds only the timer it had").isEqualTo(1);
+        ctx.release(key);
+    }
+
+    @Test
+    void cronFireSettlingOnAnEndedLifetime_rearmsNothing_andLeavesTheKeysTimerAlone() {
+        var ctx = ((ScheduledTaskManager.ScheduledTaskManagerAdapter) manager).ctx();
+        var current = ctx.fsm.entered().lifetime();
+        var keysTimer = current.schedule(_ -> {}, HOUR);
+        var endedLifetime = OwnerLifetime.ownerLifetime();
+        var task = cronTask();
+        var gate = Promise.<Unit> promise();
+
+        endedLifetime.end();
+        invoker.holdNextInvocation(gate);
+        ctx.activeTimers.put(key, keysTimer);
+        ScheduledTaskManager.TaskOps.executeCronTask(ctx, key, task, cronOf(task), endedLifetime);
+        gate.succeed(Unit.unit());
+        awaitReleased(ctx);
+
+        assertThat(ctx.activeTimers.get(key)).as("the settled fire re-armed nothing over the key's armed timer").isSameAs(keysTimer);
+        assertThat(keysTimer.isCancelled()).as("and did not cancel it as a replaced prior").isFalse();
+        assertThat(current.size()).as("the current state's lifetime holds only the timer it had").isEqualTo(1);
+    }
+
+    /// The `isArmed` check on the settle route keeps its own job: a key cancelled (task removed or changed) while its fire was in
+    /// flight is not re-armed, even on a lifetime that is still live.
+    @Test
+    void cronFireSettlingAfterTheKeyWasCancelled_rearmsNothing() {
+        var ctx = ((ScheduledTaskManager.ScheduledTaskManagerAdapter) manager).ctx();
+        var task = cronTask();
+        var gate = Promise.<Unit> promise();
+
+        invoker.holdNextInvocation(gate);
+        ScheduledTaskManager.TaskOps.executeCronTask(ctx, key, task, cronOf(task), ctx.fsm.entered().lifetime());
+        gate.succeed(Unit.unit());
+        awaitReleased(ctx);
+
+        assertThat(ctx.activeTimers).as("no timer was armed for a key with none when its fire settled").doesNotContainKey(key);
+    }
+
+    private ScheduledTaskRegistry.ScheduledTask cronTask() {
+        return new ScheduledTaskRegistry.ScheduledTask("cache", artifact, method, self, "", "0 * * * *", ExecutionMode.ALL, false);
+    }
+
+    private static CronExpression cronOf(ScheduledTaskRegistry.ScheduledTask task) {
+        return CronExpression.parse(task.cron()).unwrap();
+    }
+
+    private void awaitReleased(ScheduledTaskManager.Context ctx) {
+        var deadline = System.currentTimeMillis() + 3_000;
+
+        while (ctx.inFlight.contains(key) && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(ctx.inFlight).as("the fire settled and released its claim").doesNotContain(key);
     }
 }

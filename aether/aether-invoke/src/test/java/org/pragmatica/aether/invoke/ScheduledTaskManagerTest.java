@@ -575,6 +575,16 @@ class ScheduledTaskManagerTest {
             assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.TIMER_ARM_FAILED));
         }
 
+        /// A timer its state's lifetime cancelled is still in the map but is not armed (#1191): the diagnosis says so.
+        @Test
+        void eligibleButTimerCancelledByItsLifetime_isTimerArmFailed() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+            ((ScheduledTaskManagerAdapter) manager).ctx().activeTimers.values().forEach(OwnerLifetime.Handle::cancel);
+
+            assertThat(reasonOf()).isEqualTo(Option.some(ScheduledTaskManager.Ineligibility.TIMER_ARM_FAILED));
+        }
+
         /// A Dormant scheduler used to log nothing on any path. Losing quorum now says so, from the state and from the
         /// notification handler (a stale or non-ACTIVE notification is the other way to sit in Dormant unannounced).
         @Test
