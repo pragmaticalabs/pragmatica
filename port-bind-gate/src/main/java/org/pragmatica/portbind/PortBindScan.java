@@ -98,7 +98,7 @@ public final class PortBindScan {
         var result = scan(module, directory, PortBindScan.class.getClassLoader(), bundledAllowList());
 
         System.out.println(summary(module, result));
-        writeStamp(directory, module, result);
+        writeStamp(directory, module, mode, result);
         if (mode.equals(REPORT)) {
             reportLines(module, result).forEach(System.out::println);
         } else if (!result.clean()) {
@@ -114,12 +114,12 @@ public final class PortBindScan {
                            .toList();
     }
 
-    /// The scan's own evidence, next to the classes it read: the summary line, then every bind call site with its verdict. A test
+    /// The scan's own evidence, next to the classes it read: the summary line (with the mode the build ran it in), then every bind call site with its verdict. A test
     /// in the same module reads it, which is how "the gate ran here, over these classes" is pinned from inside the fork.
-    private static void writeStamp(Path classes, String module, Findings result) throws IOException {
+    private static void writeStamp(Path classes, String module, String mode, Findings result) throws IOException {
         var lines = new ArrayList<String>();
 
-        lines.add(summary(module, result));
+        lines.add(summary(module, result) + ", mode=" + mode);
         lines.addAll(reportLines(module, result));
         Files.write(classes.toAbsolutePath().getParent().resolve(STAMP),
                     lines);

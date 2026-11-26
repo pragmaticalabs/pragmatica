@@ -239,6 +239,8 @@ class PortBindGateTest {
 
         assertThat(lines).isNotEmpty();
         assertThat(lines.getFirst()).contains("script-gate: scanned").doesNotContain("scanned 0 test class file(s)");
+        assertThat(lines.getFirst()).as("the build runs the gate in enforce mode: a raw bind fails the module (the root pom's port.bind.gate.mode, passed through the antrun execution)")
+                  .endsWith(", mode=enforce");
         assertThat(lines.stream()
                         .filter(line -> line.contains(PortBindGateTest.class.getName()) && line.endsWith(" allowed"))
                         .collect(Collectors.toList())).as("the stamp lists this class's allowed bind: the scan read this module's real test classes")
