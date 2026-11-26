@@ -42,6 +42,12 @@ import static org.pragmatica.lang.Option.some;
 /// is not the leader, liveness is unwired, or there is no roster). The route is LEADER-targeted so a
 /// normal request lands where it can be observed.
 ///
+/// ## What the two fields promise (#3812)
+/// `state` is the COMMITTED community row; `liveMembers` is the leader's live observation at answer time. They are read from different
+/// sources at different instants, and the committed state follows the evaluation by a consensus round, so one response can
+/// carry a pair that disagrees for a moment (for example DEGRADED with the full count, while the recovery edge is still being committed).
+/// Each field reaches its value eventually; no relation between the two in one response is promised, and a caller must not wait on or assert a pair.
+///
 /// A worker that loses the core fences itself locally and writes nothing, so this route never shows a
 /// community DISSOLVED on that account; the core shows it DEGRADED once its members stop answering.
 public final class CommunityRoutes implements RouteSource {
