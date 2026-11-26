@@ -5772,8 +5772,8 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/info
 }
 ```
 
-- `totalEvents`: sum of the per-partition `eventCount` values, each reported by the partition's ring holder
-  (the answering node's own ring when it holds one, otherwise the owner). Reflects visible events only.
+- `totalEvents`: sum of the per-partition `eventCount` values, each reported by the partition's owner (the answering
+  node's own ring only when that node IS the owner). Reflects visible events only.
 - `partitionDetails[]`: `headOffset` is the owner's visible head and `eventCount` the span from `tailOffset` to it,
   as the partition OWNER reports them — never a replica ring on the answering node, which may not have
   backfilled yet. An empty partition reads `-1 / -1 / 0`.
@@ -5784,6 +5784,13 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/info
 - `404`: the catalog (registry entry or committed stream config) has no such stream. A node that holds none of the
   stream's partitions, or has not materialized it yet, answers like the holder (#1753, #1963): the partition count is the
   declared one, every partition is the owner's.
+- **Lag window after a stream is created (same read as `.../consumers`).** `/info` and `.../consumers` read the same thing:
+  each partition's bounds from its owner (`ownerBounds`, one ask per partition), after the same catalog lookup. They are not
+  two views that can disagree; two requests in the window between creation and the owner's promotion are two samples of one
+  moving state. A sample taken while the owner is not yet promoted (or its answer times out) is `503`; a later one reads the
+  empty partition (`-1 / -1 / 0`). Neither is ever `404` for a stream the catalog holds. Retry on `503`. `[unverified: the
+  probe of #3796 saw /info answer 503 while /consumers answered 200 a moment later; both sampled one owner at different
+  instants, which the code supports but no test pins]`
 
 ### Partition Details
 
@@ -6280,6 +6287,11 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/read/{partition}?from={offset
 - `max` (optional, default 100) -- Maximum number of events to return
 - `readPreference` (optional) -- Replica read preference hint
 
+**Statuses:** `404` the catalog has no such stream; `400` the stream does not declare `{partition}` (a negative number, or the
+declared count or more), as on `.../partitions/{partition}`; `503` the owner could not answer (retry). The declared-partition
+check runs when a partition count is known (committed config, else the answering node's ring); in the window where a stream is
+registered but its config is not yet committed and the node has no ring, the read goes to the owner unchecked.
+
 **CLI:**
 ```bash
 aether streams read <name> <partition> [--since <offset>] [--limit <count>]
@@ -6416,7 +6428,9 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/consumers
 **Auth:** VIEWER. Per-partition offsets of one stream version, as each partition's OWNER reports them (#1753, #1963), so
 the answer does not depend on which node receives the request. The address is validated first (a malformed address is
 `400`); a stream the catalog does not have is `404`; an owner that cannot answer is `503`. Served by `StreamApiRoutes`
-since #1753 (the route and its path are unchanged).
+since #1753 (the route and its path are unchanged). In the window right after a stream is created it can answer `503` or an
+empty partition for the same reason `/info` does (see the lag-window note under [Stream Info](#stream-info)); both read the
+owner's bounds.
 
 **Response:** `{"name": "<namespace:stream:version>", "partitions": [{"partition": 0, "headOffset": 0, "tailOffset": 41, "eventCount": 42}]}`
 
@@ -6429,10 +6443,14 @@ GET /api/v1/engine-streams/{engineKey}/consumers
 
 **Auth:** VIEWER. The streams the runtime provisions under a reserved kind prefix (`topic:<ns>:<topic>:<ver>` for durable topics,
 `entity:...`) have a four-part engine key, which the `{namespace}/{stream}/{version}` form of the routes above cannot
-carry (#1399). These two routes take the key raw, as ONE path segment, and answer exactly as `.../events` and `.../consumers` do: the same catalog lookup (a key the catalog
-does not hold is `404`), the same owner-reported bounds and the same `503` when the owner cannot answer, on whichever node
-receives the request. The event response's `address` is the engine key. Any engine key the catalog holds is accepted,
-including a three-part catalog address. Read-only: there is no raw-key write route.
+carry (#1399). These two routes take the key raw, as ONE path segment, and answer as `.../events` and `.../consumers` do: the same catalog lookup (a key the catalog
+does not hold is `404`) and the same `503` when the owner cannot answer, on whichever node receives the request.
+`/events` returns the window the partition owner's ring serves for `fromOffset` and `maxEvents` (`maxEvents` is clamped to
+1000 per page; `hasMore` says whether more follow), and `/consumers` the owner's `(head, tail, count)` per partition. The
+event response's `address` is the engine key. Any engine key the catalog holds is accepted, including a three-part catalog
+address. Read-only: there is no raw-key write route, and a write verb on these paths is `405` with `Allow: GET`.
+
+**CLI:** none. These routes are reachable over HTTP only; the `aether streams` commands address a stream by catalog name.
 
 ---
 
