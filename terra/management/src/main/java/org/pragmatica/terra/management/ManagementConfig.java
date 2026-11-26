@@ -5,6 +5,7 @@ package org.pragmatica.terra.management;
 
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -71,11 +72,21 @@ public record ManagementConfig(Set<String> include,
                                                     "management.server.port",
                                                     "management.info.env.enabled");
 
-    /// `keys` holds the `management.*` and `info.*` settings; any other key is ignored.
+    // The metric sink namespaces belong to terra-runtime's TerraMetrics.Settings, which reads them from the same
+    // terra.toml and refuses its own unknown keys (#3650); this record neither reads nor refuses them. terra-management
+    // does not depend on terra-runtime, so the prefixes are named here; a launcher test (TerraConfigurationTest) loads
+    // every supported sink key beside a management key, so a prefix added there and missing here fails that test.
+    private static final List<String> METRIC_SINKS = List.of("management.prometheus.metrics.export.",
+                                                             "management.otlp.metrics.export.",
+                                                             "management.opentelemetry.resource-attributes.");
+
+    /// `keys` holds the `management.*` and `info.*` settings; any other key is ignored, and so is a metric sink key
+    /// (the metric sink settings are validated by their own owner).
     public static Result<ManagementConfig> managementConfig(Map<String, String> keys) {
         var unknown = keys.keySet()
                           .stream()
                           .filter(key -> key.startsWith("management."))
+                          .filter(key -> METRIC_SINKS.stream().noneMatch(key::startsWith))
                           .filter(key -> !FIXED.contains(key) && !isEndpointEnabled(key))
                           .sorted()
                           .findFirst();

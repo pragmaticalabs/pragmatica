@@ -69,6 +69,26 @@ class TerraConfigurationTest {
         }
     }
 
+    /// #3651 + #3650 share terra.toml's management section: the Actuator keys (ManagementConfig) and the metric sink keys
+    /// (TerraMetrics.Settings) each refuse their own unknown keys and neither may refuse the other's.
+    @Test void load_managementKeysBesideEverySupportedMetricSinkKey_loads() throws Exception {
+        Files.writeString(directory.resolve("blueprint.toml"), "[[slices]]\nartifact = \"test:starting:1\"\n");
+        Files.writeString(directory.resolve("terra.toml"),
+                          "[management.prometheus.metrics.export]\nenabled = true\n"
+                          + "[management.otlp.metrics.export]\nurl = \"http://localhost:4318/v1/metrics\"\nstep = \"30s\"\n"
+                          + "[management.opentelemetry.resource-attributes]\nservice = \"demo\"\n"
+                          + "[management.endpoints.web.exposure]\ninclude = \"health,info\"\n");
+
+        assertThat(TerraLaunchPlan.load(directory).await(timeSpan(5).seconds()).isSuccess()).isTrue();
+    }
+
+    @Test void load_unknownKeyUnderTheMetricSinkNamespace_isStillRefused() throws Exception {
+        Files.writeString(directory.resolve("blueprint.toml"), "[[slices]]\nartifact = \"test:starting:1\"\n");
+        Files.writeString(directory.resolve("terra.toml"), "[management.prometheus.metrics.export]\nstep = \"30s\"\n");
+
+        assertThat(TerraLaunchPlan.load(directory).await(timeSpan(5).seconds()).isFailure()).isTrue();
+    }
+
     @Test void load_noManagementSection_startsWithNoPrometheusSink() throws Exception {
         Files.writeString(directory.resolve("blueprint.toml"), "[[slices]]\nartifact = \"test:starting:1\"\n");
         var app = TerraLaunchPlan.load(directory).flatMap(TerraLaunchPlan::startApplication).await(timeSpan(5).seconds()).unwrap();
