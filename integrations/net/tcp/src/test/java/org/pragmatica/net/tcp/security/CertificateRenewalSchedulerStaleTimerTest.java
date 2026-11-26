@@ -12,7 +12,9 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler.RenewalEvent;
+import org.pragmatica.net.tcp.security.CertificateRenewalScheduler.RetryBackoff;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler.SchedulerState;
 import org.pragmatica.statemachine.Fsm;
 
@@ -125,6 +127,17 @@ class CertificateRenewalSchedulerStaleTimerTest {
         assertThat(parker.parkedThread.get().join(Duration.ofSeconds(20)))
                 .as("the released winner's thread runs its late onEntry to the end")
                 .isTrue();
+    }
+
+    /// Reflectively reads the scheduler's private `ctx` (`Context` is package-private).
+    private static CertificateRenewalScheduler.Context ctxOf(CertificateRenewalScheduler s) {
+        try {
+            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
+            ctxField.setAccessible(true);
+            return (CertificateRenewalScheduler.Context) ctxField.get(s);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("reflection failed: " + e.getMessage(), e);
+        }
     }
 
     /// Reflectively reads the scheduler's Fsm through its private `ctx` (`Context` is package-private and holds the Fsm).
@@ -276,6 +289,49 @@ class CertificateRenewalSchedulerStaleTimerTest {
         }
     }
 
+    /// Direct hook calls, the only way to overtake `RetryBackoff.onEntry` (its transition action cannot be parked): a hook
+    /// arms through the lifetime it is HANDED, so a late one is refused, and it never reads the Fsm's current entry instead.
+    @Test
+    void healthyOnEntry_armsThroughTheHandedLifetime_andIsRefusedOnAnEndedOne() {
+        var scheduler = idleScheduler("node-hook-healthy");
+        var ctx = ctxOf(scheduler);
+        var fsm = fsmOf(scheduler);
+        var live = OwnerLifetime.ownerLifetime();
+        var ended = OwnerLifetime.ownerLifetime();
+
+        ended.end();
+        ctx.healthy.onEntry(live);
+        ctx.healthy.onEntry(ended);
+
+        assertThat(live.size()).as("a live handed lifetime carries the tick").isEqualTo(1);
+        assertThat(ended.size()).as("an ended handed lifetime refuses the late arm").isZero();
+        assertThat(fsm.entered().lifetime().size()).as("the Fsm's own current entry is never armed by a hook").isZero();
+        live.end();
+    }
+
+    @Test
+    void retryBackoffOnEntry_armsThroughTheHandedLifetime_andIsRefusedOnAnEndedOne() {
+        var scheduler = idleScheduler("node-hook-retry");
+        var ctx = ctxOf(scheduler);
+        var fsm = fsmOf(scheduler);
+        var live = OwnerLifetime.ownerLifetime();
+        var ended = OwnerLifetime.ownerLifetime();
+
+        ended.end();
+        new RetryBackoff(ctx, 1).onEntry(live);
+        new RetryBackoff(ctx, 1).onEntry(ended);
+
+        assertThat(live.size()).as("a live handed lifetime carries the retry").isEqualTo(1);
+        assertThat(ended.size()).as("an ended handed lifetime refuses the late arm").isZero();
+        assertThat(fsm.entered().lifetime().size()).as("the Fsm's own current entry is never armed by a hook").isZero();
+        live.end();
+    }
+
+    private static CertificateRenewalScheduler idleScheduler(String nodeId) {
+        return CertificateRenewalScheduler.certificateRenewalScheduler(
+                new FailingProvider(), nodeId, "localhost", _ -> {}, Instant.now().plusSeconds(3600));
+    }
+
     @Test
     void configureShortValidity_inHealthy_reEntersHealthyOnAFreshLifetime() {
         var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
@@ -297,6 +353,27 @@ class CertificateRenewalSchedulerStaleTimerTest {
             assertThat(after.lifetime()).as("a fresh entry, a fresh lifetime").isNotSameAs(before.lifetime());
             assertThat(after.state()).isInstanceOf(CertificateRenewalScheduler.Healthy.class);
             assertThat(after.lifetime().size()).as("the new entry armed exactly one tick").isEqualTo(1);
+        } finally {
+            scheduler.stop();
+        }
+    }
+
+    @Test
+    void configureShortValidity_inHealthy_armsTheNewEntryAtTheRecomputedRenewalPoint() {
+        var provider = new FailingProvider();
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                provider, "node-reconfigure-tick", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+
+        try {
+            scheduler.start();
+
+            var newNotAfter = scheduler.configureShortValidity(1);
+
+            assertThat(scheduler.currentNotAfter()).as("the reconfigured notAfter is the one in force").isEqualTo(newNotAfter);
+            // 40% of a 1 s window ticks after ~400 ms; the 3600 s timer it replaced would not tick within the test.
+            awaitCondition(() -> provider.calls.get() == 1,
+                           "the re-entered Healthy ticks at the recomputed point and renews");
         } finally {
             scheduler.stop();
         }
