@@ -23,6 +23,7 @@ import org.pragmatica.lang.utils.OwnerLifetime;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -142,6 +143,7 @@ class ScheduledTaskCronRearmLifetimeTest {
         ScheduledTaskManager.TaskOps.executeCronTask(ctx, key, task, cronOf(task), endedLifetime);
         gate.succeed(Unit.unit());
         awaitReleased(ctx);
+        lingerWhile(() -> ctx.activeTimers.get(key) == keysTimer);
 
         assertThat(ctx.activeTimers.get(key)).as("the settled fire re-armed nothing over the key's armed timer").isSameAs(keysTimer);
         assertThat(keysTimer.isCancelled()).as("and did not cancel it as a replaced prior").isFalse();
@@ -160,6 +162,7 @@ class ScheduledTaskCronRearmLifetimeTest {
         ScheduledTaskManager.TaskOps.executeCronTask(ctx, key, task, cronOf(task), ctx.fsm.entered().lifetime());
         gate.succeed(Unit.unit());
         awaitReleased(ctx);
+        lingerWhile(() -> !ctx.activeTimers.containsKey(key));
 
         assertThat(ctx.activeTimers).as("no timer was armed for a key with none when its fire settled").doesNotContainKey(key);
     }
@@ -170,6 +173,16 @@ class ScheduledTaskCronRearmLifetimeTest {
 
     private static CronExpression cronOf(ScheduledTaskRegistry.ScheduledTask task) {
         return CronExpression.parse(task.cron()).unwrap();
+    }
+
+    /// The settle callback releases the claim and THEN decides on the re-arm, so seeing the claim released says nothing yet about
+    /// the re-arm. A negative assertion on it waits for the re-arm to show, up to a bound a re-arm (microseconds) cannot miss.
+    private static void lingerWhile(BooleanSupplier unchanged) {
+        var deadline = System.currentTimeMillis() + 250;
+
+        while (unchanged.getAsBoolean() && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
     }
 
     private void awaitReleased(ScheduledTaskManager.Context ctx) {
