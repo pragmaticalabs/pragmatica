@@ -21,7 +21,8 @@ import static org.pragmatica.consensus.NodeId.nodeId;
 
 /// #3754 (b1): the drain sink's FSM call. `fsmDrainRequested` is the `Consumer` the leader's drain reaches the membership state
 /// machine through (`DrainSink.synchronous` calls it after the gate). The state machine is the real one; an observer counts every
-/// `DrainRequested` event it was handed, handled or ignored, so a call made twice or not at all is seen.
+/// delivery of a `DrainRequested`: the transition it causes (the first delivery moves MEMBER to DEPARTING, and the transition
+/// callback does not carry the event) and any handled or ignored delivery after it, so a call made twice or not at all is seen.
 class TopologyAssemblyDrainFsmRouteTest {
     private static final NodeId TARGET = nodeId("node-a").unwrap();
 
@@ -51,7 +52,11 @@ class TopologyAssemblyDrainFsmRouteTest {
 
     private record CountingObserver(CopyOnWriteArrayList<String> seen) implements FsmObserver<MembershipState, MembershipEvent> {
         @Override
-        public void onTransition(FsmTags tags, MembershipState from, MembershipState to) {}
+        public void onTransition(FsmTags tags, MembershipState from, MembershipState to) {
+            if (to instanceof MembershipState.Departing) {
+                seen.add("DrainRequested");
+            }
+        }
 
         @Override
         public void onCasLost(FsmTags tags, MembershipState expected, MembershipState actual) {}
