@@ -23,6 +23,7 @@ import org.pragmatica.aether.forge.simulator.ChaosEvent;
 import org.pragmatica.aether.forge.simulator.SimulatorConfig;
 import org.pragmatica.aether.forge.simulator.SimulatorMode;
 import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Option;
 import org.pragmatica.http.JsonCodec;
@@ -154,7 +155,7 @@ public final class ForgeApiHandler {
              .onSuccess(result -> sendSuccessResponse(response, route, result))
              .onFailure(cause -> sendError(response,
                                            HttpStatus.BAD_REQUEST,
-                                           cause.message()));
+                                           HttpError.clientMessage(cause)));
     }
 
     private DefaultFullHttpRequest createNettyRequest(HttpRequest request, String routePath) {
@@ -219,7 +220,7 @@ public final class ForgeApiHandler {
                           .onSuccess(bytes -> response.write(HttpStatus.OK, bytes, serverContentType))
                           .onFailure(cause -> sendError(response,
                                                         HttpStatus.INTERNAL_SERVER_ERROR,
-                                                        cause.message()));
+                                                        HttpError.clientMessage(cause)));
     }
 
     private org.pragmatica.http.ContentType toServerContentType(org.pragmatica.http.ContentType routingContentType) {
