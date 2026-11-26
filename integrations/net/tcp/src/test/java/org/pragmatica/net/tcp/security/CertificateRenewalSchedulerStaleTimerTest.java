@@ -22,6 +22,7 @@ import java.time.Instant;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,16 +35,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// await it: the first winner is parked in the transition action (`renewalCallback`), which the Fsm runs after the CAS and
 /// before the successor's `onEntry`, exactly where the reported interleaving has it.
 ///
+/// The parked winner's thread is joined rather than the test sleeping: once it has returned, the late `Healthy.onEntry` has
+/// run to its end, so what the assertions read is settled, not a guess about how long a leaked timer would take.
+///
 /// What each race test pins:
 /// - `healthyEntryOvertakenByTick`: the sibling of the reported shape, and the one a flag set by `Stopped` could not cover.
-///   A stale `Healthy` arm used to look fresh (it drew the newest epoch) and displaced the live retry. Its consequence is
-///   behavioural: a stray tick re-enters `Renewing` and the provider is called a third time.
+///   A stale `Healthy` arm used to look fresh (it drew the newest epoch) and displaced the live retry.
 /// - `healthyEntryOvertakenByStop`: the reported shape. Nothing is armed on the stopped scheduler.
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class CertificateRenewalSchedulerStaleTimerTest {
-    /// How long a leaked `Healthy` tick (armed ~600 ms ahead) would need to fire, with margin.
-    private static final long LEAK_WINDOW_MILLIS = 1_800;
-
     /// Call 1 succeeds with a bundle valid for 1.5 s (so a `Healthy` entered on it ticks after 600 ms); every later call
     /// fails and drives the scheduler to `RetryBackoff`.
     static final class SequencedProvider implements CertificateProvider {
@@ -110,11 +110,21 @@ class CertificateRenewalSchedulerStaleTimerTest {
     static final class Parker {
         final CountDownLatch parked = new CountDownLatch(1);
         final CountDownLatch release = new CountDownLatch(1);
+        final AtomicReference<Thread> parkedThread = new AtomicReference<>();
 
         void park(CertificateBundle bundle) {
+            parkedThread.set(Thread.currentThread());
             parked.countDown();
             await(release, "release of the parked renewal callback");
         }
+    }
+
+    /// Releases the parked winner and waits for its thread to finish: the late `onEntry` has then run to its end.
+    private void releaseAndSettle(Parker parker) throws InterruptedException {
+        parker.release.countDown();
+        assertThat(parker.parkedThread.get().join(Duration.ofSeconds(20)))
+                .as("the released winner's thread runs its late onEntry to the end")
+                .isTrue();
     }
 
     /// Reflectively reads the scheduler's Fsm through its private `ctx` (`Context` is package-private and holds the Fsm).
@@ -222,13 +232,10 @@ class CertificateRenewalSchedulerStaleTimerTest {
             assertThat(provider.calls.get()).as("precondition: the second renewal ran").isEqualTo(2);
             assertThat(retry.lifetime().size()).as("precondition: RetryBackoff armed its retry").isEqualTo(1);
 
-            parker.release.countDown();
-            Thread.sleep(LEAK_WINDOW_MILLIS);
+            releaseAndSettle(parker);
 
-            assertThat(provider.calls.get())
-                    .as("#1191: a stale Healthy arm is refused; had it been kept, its tick (600 ms) would have re-entered Renewing")
-                    .isEqualTo(2);
-            assertThat(healthy.lifetime().size()).as("nothing armed by the exited Healthy entry is live").isZero();
+            assertThat(healthy.lifetime().isEnded()).as("the overtaken Healthy entry's lifetime ended with its successor's CAS").isTrue();
+            assertThat(healthy.lifetime().size()).as("#1191: a stale Healthy arm is refused, nothing it armed is live").isZero();
             assertThat(fsm.entered()).as("the live retry was left alone").isSameAs(retry);
             assertThat(retry.lifetime().size()).as("the live retry is still armed").isEqualTo(1);
         } finally {
@@ -259,12 +266,11 @@ class CertificateRenewalSchedulerStaleTimerTest {
             assertThat(stopped.state()).as("precondition: the second winner has completed").isInstanceOf(CertificateRenewalScheduler.Stopped.class);
             assertThat(healthy.lifetime().size()).as("precondition: the parked onEntry has not armed yet").isZero();
 
-            parker.release.countDown();
-            Thread.sleep(LEAK_WINDOW_MILLIS);
+            releaseAndSettle(parker);
 
             assertThat(healthy.lifetime().size()).as("#1191: a registration after the state's exit is refused").isZero();
             assertThat(fsm.entered().lifetime().size()).as("#1191: nothing is armed on the stopped scheduler").isZero();
-            assertThat(provider.calls.get()).as("no further renewal ran").isEqualTo(1);
+            assertThat(fsm.entered()).as("the stopped scheduler stayed in its Stopped entry").isSameAs(stopped);
         } finally {
             parker.release.countDown();
         }
