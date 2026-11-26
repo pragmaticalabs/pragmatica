@@ -97,7 +97,7 @@ class ScheduledTaskManagerStaleTimerTest {
         loseQuorum();
 
         assertThat(manager.activeTimerCount())
-                .as("Following.onExit cancels all timers on QuorumDisappeared")
+                .as("leaving Following ends its lifetime, which cancels every timer it armed")
                 .isZero();
     }
 
