@@ -15,12 +15,14 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterStateKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeclaredRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.RuntimeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
@@ -173,6 +175,19 @@ class DeploymentFsmKvMarkersTest {
                              new ArtifactJudgmentValue(true,
                                                        Map.of(NODE, 3),
                                                        Map.of(OTHER_NODE, new UnresponsiveEntry(new Generation(5L, 2L), SliceGoal.ACTIVE, 1L)), Set.of()));
+        }
+
+        /// #3389: a plain, non-leader Put of a declared-route row is dropped, so a node can never publish or fail a route; only the
+        /// leader's transaction writes it, and its CAS keeps a late Published from overwriting Failed.
+        @Test
+        void declaredRoute_enforcedByTheApplier() {
+            var key = DeclaredRouteKey.declaredRouteKey(ARTIFACT, "GET", "/orders/{id}").unwrap();
+
+            assertThat(DeclaredRouteValue.declaredRouteValue("org.example:orders-app:1.2.3", "a-1", RouteState.Declared.declared()))
+                .isInstanceOf(LeaderAuthorized.class);
+            assertLeaderOnly(key,
+                             DeclaredRouteValue.declaredRouteValue("org.example:orders-app:1.2.3", "a-1", RouteState.Declared.declared()),
+                             DeclaredRouteValue.declaredRouteValue("org.example:orders-app:1.2.3", "a-1", RouteState.Failed.failed("load failed")));
         }
 
         @Test

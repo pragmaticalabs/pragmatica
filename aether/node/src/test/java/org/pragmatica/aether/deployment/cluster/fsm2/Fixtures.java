@@ -175,7 +175,7 @@ final class Fixtures {
     static AppBlueprintValue blueprint(String id, boolean registerOnly, String attempt, ResolvedSlice... slices) {
         var expanded = ExpandedBlueprint.expandedBlueprint(blueprintId(id), List.of(slices));
 
-        return new AppBlueprintValue(expanded, registerOnly, attempt);
+        return AppBlueprintValue.appBlueprintValue(expanded, registerOnly, attempt);
     }
 
     static ActivationDirectiveValue worker(String community) {

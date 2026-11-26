@@ -885,6 +885,13 @@ public interface SystemTags {
         pin(table, 3071, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue.Election");
         pin(table, 3072, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue.PartitionState");
         pin(table, 3073, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionStateKey");
+        // #3389: the declared-route table -- scanned free across every origin branch on 2026-11-26, reserved 3110..3119 in the ledger
+        pin(table, 3110, "org.pragmatica.aether.slice.kvstore.AetherKey.DeclaredRouteKey");
+        pin(table, 3111, "org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRouteValue");
+        pin(table, 3112, "org.pragmatica.aether.slice.kvstore.RouteState.Declared");
+        pin(table, 3113, "org.pragmatica.aether.slice.kvstore.RouteState.Published");
+        pin(table, 3114, "org.pragmatica.aether.slice.kvstore.RouteState.Failed");
+        pin(table, 3115, "org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRoute");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 
