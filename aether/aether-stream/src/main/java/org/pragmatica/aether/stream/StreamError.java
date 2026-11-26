@@ -305,15 +305,19 @@ public sealed interface StreamError extends Cause {
         }
     }
 
-    /// This node holds records at or above the start of the committed owner's current epoch that it has not compared with the
-    /// owner (it was demoted, or the epoch advanced while it was away): it serves nothing from there and acknowledges nothing,
-    /// until a backfill has verified it for the epoch (#1730 phase 2). Retriable: the backfill redrive verifies it.
+    /// This node's copy cannot answer the read: the current owner has not confirmed it. Two cases, both retriable:
+    ///   - this node holds records at or above the start of the committed owner's current epoch (`startOffset`) that it has not
+    ///     compared with the owner (it was demoted, or the epoch advanced while it was away): it serves nothing from there and
+    ///     acknowledges nothing, until a backfill has verified it for the epoch (#1730 phase 2). The backfill redrive verifies it;
+    ///   - the mark this copy serves `GOVERNOR` reads from was announced by an owner life that has ended
+    ///     ([ReplicaStaleness#VOID_OWNER_MARK]), and the read, from `startOffset`, could not be forwarded to the current owner, or
+    ///     the node asked does not hold the partition (#3325). The current owner's first announcement ends it.
     record ReplicaNotVerified(String streamName, int partition, long startOffset) implements StreamError, Cause.Transient {
         @Override
         public String message() {
-            return "Replica %s[%d] has not been verified against the owner's epoch starting at offset %d".formatted(streamName,
-                                                                                                                    partition,
-                                                                                                                    startOffset);
+            return "Replica %s[%d] cannot serve this read at or above offset %d: the current owner has not confirmed this copy".formatted(streamName,
+                                                                                                                                          partition,
+                                                                                                                                          startOffset);
         }
     }
 
