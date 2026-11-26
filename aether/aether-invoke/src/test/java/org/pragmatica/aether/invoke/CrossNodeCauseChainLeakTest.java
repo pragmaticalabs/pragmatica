@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -21,6 +23,7 @@ import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.aether.slice.SliceDefect;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.consensus.NodeId;
@@ -212,5 +215,151 @@ class CrossNodeCauseChainLeakTest {
             assertThat(body).doesNotContain(THROWN).doesNotContain("IllegalStateException").doesNotContain("at java").doesNotContain("\\tat ");
             assertThat(String.join("\n", calleeLog.messages())).contains(THROWN).contains("\tat ");
         }
+    }
+
+    // ---- #3794 fix round: the origin of a throwable survives no wrapper and no writer ----
+    private static final String SECRET = "SENTINEL-3723-wrapper-secret";
+
+    private static void assertNoLeak(String body) {
+        assertThat(body).doesNotContain(SECRET)
+                        .doesNotContain("IllegalStateException")
+                        .doesNotContain("\\tat ")
+                        .doesNotContain("\tat ")
+                        .doesNotContain("at java");
+    }
+
+    private static Cause thrownSecret() {
+        return Causes.fromThrowable(new IllegalStateException(SECRET));
+    }
+
+    private static ErrorMapper statusMapper() {
+        return cause -> cause instanceof HttpError he
+                        ? he
+                        : HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
+    }
+
+    private static <T> String routerBody(Promise<T> handlerResult) {
+        Route<T> route = Route.route(HttpMethod.GET,
+                                     "/boom",
+                                     _ -> handlerResult,
+                                     CommonContentType.APPLICATION_JSON,
+                                     List.of(),
+                                     "boom");
+        RouteSource source = () -> Stream.of(route);
+        var request = HttpRequestContext.httpRequestContext("/boom", "GET", Map.of(), Map.of(), "req_p");
+        var response = SliceRouter.sliceRouter(source, statusMapper(), JsonMapper.defaultJsonMapper())
+                                  .handle(request)
+                                  .await(TimeSpan.timeSpan(10).seconds())
+                                  .unwrap();
+
+        return new String(response.body(), StandardCharsets.UTF_8);
+    }
+
+    private static String direct(Cause failure) {
+        return routerBody(failure.<String> promise());
+    }
+
+    @Test
+    void control_methodThrewMessageCarriesTheTrace() {
+        assertThat(SliceDefect.MethodThrew.FACTORY.apply(thrownSecret()).message()).contains(SECRET).contains("\tat ");
+    }
+
+    @Test
+    void sliceThrow_methodThrew_isAbsentFromTheRouterBody() {
+        var body = direct(SliceDefect.MethodThrew.FACTORY.apply(thrownSecret()));
+
+        assertNoLeak(body);
+        assertThat(body).contains(HttpError.INTERNAL_ERROR_TEXT);
+    }
+
+    @Test
+    void sliceCodecFailure_codecFailed_isAbsentFromTheRouterBody() {
+        var body = direct(SliceDefect.CodecFailed.FACTORY.apply(thrownSecret()));
+
+        assertNoLeak(body);
+        assertThat(body).contains(HttpError.INTERNAL_ERROR_TEXT);
+    }
+
+    @Test
+    void sliceThrowOnNodeB_methodThrew_isAbsentFromNodeAClientBody() {
+        var body = clientBodyOnA(SliceDefect.MethodThrew.FACTORY.apply(thrownSecret()));
+
+        assertNoLeak(body);
+        assertThat(body).contains(HttpError.INTERNAL_ERROR_TEXT);
+    }
+
+    @Test
+    void throwableWrappedTwice_isAbsentFromTheRouterBody() {
+        var twice = SliceDefect.CodecFailed.FACTORY.apply(SliceDefect.MethodThrew.FACTORY.apply(thrownSecret()));
+        var body = direct(twice);
+
+        assertNoLeak(body);
+        assertThat(body).contains(HttpError.INTERNAL_ERROR_TEXT);
+    }
+
+    @Test
+    void throwableWrappedTwice_isAbsentFromNodeAClientBody() {
+        var twice = SliceDefect.CodecFailed.FACTORY.apply(SliceDefect.MethodThrew.FACTORY.apply(thrownSecret()));
+        var body = clientBodyOnA(twice);
+
+        assertNoLeak(body);
+        assertThat(body).contains(HttpError.INTERNAL_ERROR_TEXT);
+    }
+
+    /// A wrapper no one thought about: its message formats the origin's message, and it declares nothing of its own for
+    /// the client. The type's default must derive the client text from the origin's client text.
+    record UnthoughtWrapper(Cause origin, String message) implements Cause.Wrapped {}
+
+    @Test
+    void unthoughtWrapperFormattingItsOrigin_isAbsentFromTheRouterBody() {
+        var origin = thrownSecret();
+        var body = direct(new UnthoughtWrapper(origin, "wrapped: " + origin.message()));
+
+        assertNoLeak(body);
+        assertThat(body).contains(HttpError.INTERNAL_ERROR_TEXT);
+    }
+
+    @Test
+    void compositeDepthTwo_hidesOnlyTheThrowable() {
+        var inner = Causes.composite(Causes.cause("inner-plain").result(), thrownSecret().result());
+        var outer = Causes.composite(inner.result(), Causes.cause("outer-plain").result());
+        var body = direct(outer);
+
+        assertNoLeak(body);
+        assertThat(body).contains("inner-plain").contains("outer-plain").contains(HttpError.INTERNAL_ERROR_TEXT);
+    }
+
+    @Test
+    void httpErrorOverAThrowable_isAbsentFromTheRouterBody() {
+        var body = direct(HttpError.httpError(HttpStatus.BAD_GATEWAY, thrownSecret()));
+
+        assertNoLeak(body);
+        assertThat(body).contains(HttpError.INTERNAL_ERROR_TEXT);
+    }
+
+    @Test
+    void messageOfAThrowableCause_isUnchanged() {
+        var thrown = new IllegalStateException(SECRET, new RuntimeException("root"));
+        var printed = new StringWriter();
+
+        thrown.printStackTrace(new PrintWriter(printed));
+
+        var cause = Causes.fromThrowable(thrown);
+
+        assertThat(cause.message()).isEqualTo(printed.toString());
+        assertThat(cause.toString()).isEqualTo(Causes.cause(printed.toString()).toString());
+        assertThat(cause.source().isPresent()).isFalse();
+        assertThat(cause.isTerminal()).isFalse();
+        assertThat(cause.isTransient()).isFalse();
+    }
+
+    @Test
+    void otherCauses_clientTextIsUnchanged() {
+        assertThat(HttpError.clientMessage(Causes.cause("plain-x"))).isEqualTo("plain-x");
+        assertThat(HttpError.clientMessage(Causes.validation("v-y"))).isEqualTo("v-y");
+        assertThat(HttpError.clientMessage(HttpError.httpError(HttpStatus.NOT_FOUND, Causes.cause("o-z"))))
+            .isEqualTo(HttpStatus.NOT_FOUND.message() + ": o-z");
+        assertThat(HttpError.clientMessage(Causes.composite(Causes.cause("a").result(), Causes.cause("b").result())))
+            .isEqualTo("Composite:\n  a\n  b");
     }
 }
