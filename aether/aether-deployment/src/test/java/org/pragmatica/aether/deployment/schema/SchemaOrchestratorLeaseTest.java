@@ -645,6 +645,37 @@ class SchemaOrchestratorLeaseTest {
             assertThat(statusOf(DATASOURCE)).isEqualTo(SchemaStatus.COMPLETED);
         }
 
+        /// Stop ends RENEWAL and releases NOTHING (CTO ruling, #3754): a script already running keeps its lock, no release
+        /// write is submitted, and the lock lapses only by its TTL, as after a crash. Releasing at stop would free the lock
+        /// while the script may still run on the database and let another node start the same migration.
+        @Test
+        void stop_runningScript_releasesNothing_theLockLapsesOnlyByTtl() {
+            var orchestrator = orchestrator(NODE_1, 60_000L);
+
+            orchestrator.migrateIfNeeded(DATASOURCE);
+            var claim = committedLock();
+            var putsBefore = cluster.lockPuts();
+
+            orchestrator.stop();
+            time.advance(claim.expiresAt() - time.now() - 1);
+
+            assertThat(cluster.lockPuts()).as("stop submitted no release write").isEqualTo(putsBefore);
+            assertThat(committedLock()).as("the lock is still the running script's claim, unrenewed and unreleased").isEqualTo(claim);
+
+            seedPendingSchema();
+            orchestrator(NODE_2).migrateIfNeeded(DATASOURCE)
+                                .await(timeSpan(5).seconds())
+                                .onSuccess(_ -> Assertions.fail("another node must not start the migration while the lock is unexpired"))
+                                .onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.LockAcquisitionFailed.class));
+            assertThat(schemaManager.invocations).as("only the stopped node's script is running").containsExactly(NODE_1.id());
+
+            time.advanceWithoutFiring(2);
+
+            assertThat(committedLock()).as("nothing was written: the lock lapses by its expiry alone").isEqualTo(claim);
+            assertThat(committedLock().expiresAt()).as("the TTL has passed").isLessThanOrEqualTo(time.now());
+            assertThat(cluster.lockPuts()).as("no write at any point after the stop").isEqualTo(putsBefore);
+        }
+
         /// Fails attempt 1 with a fenced-in-the-database outcome, waits until its re-dispatch is scheduled and the attempt
         /// has let go of its lock; returns the lock Puts submitted so far.
         private int failedAttemptAwaitingItsRedispatch(SchemaOrchestratorService orchestrator) {
