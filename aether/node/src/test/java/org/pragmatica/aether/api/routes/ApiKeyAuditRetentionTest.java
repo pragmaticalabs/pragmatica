@@ -38,7 +38,9 @@ import static org.mockito.Mockito.when;
 /// submits is applied to all three stores), so "every node" is checked against real stores, not
 /// against the sweeper's own view.
 class ApiKeyAuditRetentionTest {
-    private static final int BOUND = ApiKeyAuditRetention.MAX_ENTRIES_PER_KEY;
+    // Literals on purpose: the ruling's numbers, not the production constants, so a changed constant goes red.
+    private static final int BOUND = 1000;
+    private static final int REMOVALS_PER_SWEEP = 1000;
     private static final int NODES = 3;
     private static final String KEY_A = "key-a";
     // Its entry ids ("key-a-b-<ts>") start with KEY_A's ("key-a-"): a prefix match on the id would mix them up.
@@ -92,14 +94,16 @@ class ApiKeyAuditRetentionTest {
 
     @Test
     void sweep_restoredUnboundedBackup_drainsInCappedSweepsAndOtherKeyUntouched() {
-        var excess = 2 * ApiKeyAuditRetention.MAX_REMOVALS_PER_SWEEP + 500;
+        var excess = 2 * REMOVALS_PER_SWEEP + 500;
 
         writeAudits(KEY_B, 1, 5);
         writeAudits(KEY_A, 1, BOUND + excess);
 
         routes.getFirst()
               .sweepExpiredKeys();
-        assertThat(timestampsOf(stores.getFirst(), KEY_A)).hasSize(BOUND + excess - ApiKeyAuditRetention.MAX_REMOVALS_PER_SWEEP);
+        // the capped sweep drains OLDEST first: what remains is the newest contiguous run
+        assertThat(timestampsOf(stores.getFirst(), KEY_A)).containsExactlyElementsOf(range(REMOVALS_PER_SWEEP + 1,
+                                                                                          BOUND + excess));
 
         sweepOnEveryNode();
         sweepOnEveryNode();
