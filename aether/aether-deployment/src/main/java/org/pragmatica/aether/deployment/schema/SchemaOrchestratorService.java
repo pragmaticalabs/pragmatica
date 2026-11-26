@@ -102,9 +102,12 @@ public interface SchemaOrchestratorService {
 
     /// #3754: ends the orchestrator's lifetime at node stop: no scheduled lease renewal or retry re-dispatch runs
     /// after it, and a dispatch or renewal already past its scheduler read refuses its side effect (the lock claim, the
-    /// renewal Put). It does NOT release a held lock or recall a running migration: a lease ends at its release, never
-    /// at leader deactivation or here, because the lock must stay held for a script already running on the database.
-    /// Implementations that schedule nothing ignore it.
+    /// renewal Put). Stop ends RENEWAL and releases NOTHING: it writes no tombstone and does not recall a running
+    /// migration, so a lock held under a running script is no longer renewed and lapses by its TTL (at most
+    /// [#LOCK_TTL_MS], 5 minutes), as after a crash. Releasing at stop would free the lock while the script may still
+    /// run on the database and let another node start the same migration. A script that completes after the stop still
+    /// releases its own lock by tombstone. A lease also does not end at leader deactivation, where it keeps renewing for
+    /// the running script; its renewal ends at its own release or here. Implementations that schedule nothing ignore it.
     default Unit stop() {
         return unit();
     }

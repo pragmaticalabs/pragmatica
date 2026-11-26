@@ -554,8 +554,8 @@ class SchemaOrchestratorLeaseTest {
     /// #3754: the orchestrator's scheduled work (lease renewal, retry re-dispatch) belongs to the node's lifetime, which
     /// `stop()` ends. Each site is tested twice: a task scheduled before the stop never runs its body after it, and a body
     /// already past its scheduler read when the stop runs (held here on a read of the KV store) does not produce its side
-    /// effect: the renewal Put, or the lock claim that precedes migration scripts on the database. A lease still ends at
-    /// its release, not at the stop: the lock stays held for a script already running.
+    /// effect: the renewal Put, or the lock claim that precedes migration scripts on the database. Stop ends renewal and
+    /// releases nothing: the lock of a script already running is not renewed and lapses by its TTL.
     @Nested
     class NodeStop {
         private final Cause held = MigrationError.MigrationFencedInDatabase.migrationFencedInDatabase(DATASOURCE,
