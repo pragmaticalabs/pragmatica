@@ -102,6 +102,27 @@ public sealed interface SchemaError extends Cause {
         }
     }
 
+    /// #3754: surfaces as HTTP 503 — the orchestrator was stopped with its node, so the dispatch, undo or baseline is
+    /// refused before it claims the single-flight fence or the migration lock and before any database script runs. It
+    /// is not a lock conflict ([LockAcquisitionFailed]) and not a migration failure: nothing was attempted, so no
+    /// failure is recorded and no retry is scheduled. Recovery: none on this node; a PENDING record is re-dispatched
+    /// when a leader rebuilds (`PendingMigrationRecovery`).
+    record OrchestratorStopped(String datasource) implements SchemaError, HttpStatusAware {
+        public static OrchestratorStopped orchestratorStopped(String datasource) {
+            return new OrchestratorStopped(datasource);
+        }
+
+        @Override
+        public String message() {
+            return "Schema orchestrator is stopped; nothing was attempted for datasource '" + datasource + "'";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+    }
+
     /// #217: surfaces as HTTP 409 on `/baseline` — the record's migration is in flight (PENDING or MIGRATING,
     /// or UNKNOWN on a node that cannot read the status). Baseline writes COMPLETED, and only a PENDING record
     /// is ever dispatched, so the in-flight migration would silently never run. Raised by the route's early

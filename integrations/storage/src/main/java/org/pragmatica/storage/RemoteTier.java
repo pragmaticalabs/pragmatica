@@ -190,7 +190,8 @@ public final class RemoteTier implements StorageTier {
     /// touch marker `{blockKey}.touched`, whose `Last-Modified` [#stat] and [#scan] report when it is the later time. The
     /// block object itself is never written, copied or created, so a touch racing a delete of the block cannot bring
     /// it back: at worst the marker outlives the block as an orphan (see [#delete]). True means the block was held at
-    /// the HEAD and the marker PUT was answered; a delete landing after the HEAD can still remove the block, which is
+    /// the HEAD and the marker PUT was answered; false means the block was absent, at the HEAD or when a refused marker PUT
+    /// found it deleted under the touch (see [#absentUnderTouch]); a delete landing after the HEAD can still remove the block, which is
     /// why the reclaim phase (A4) reads the marker time as last access with a grace window longer than a touch takes.
     /// The marker's content is this node's clock at the touch, in epoch milliseconds, for diagnosis only.
     @Override
@@ -206,7 +207,25 @@ public final class RemoteTier implements StorageTier {
         var marker = markerKey(key);
         var touchedAt = Long.toString(System.currentTimeMillis()).getBytes(StandardCharsets.UTF_8);
 
-        return request("PUT", marker, () -> s3Client.putObject(marker, touchedAt, MARKER_CONTENT_TYPE)).map(_ -> true);
+        return request("PUT",
+                       marker,
+                       () -> s3Client.putObject(marker, touchedAt, MARKER_CONTENT_TYPE)).map(_ -> true)
+                      .fold(result -> result.fold(refusal -> absentUnderTouch(key, refusal),
+                                                  _ -> Promise.success(true)));
+    }
+
+    /// FER (degrade forward), #3784: a refused marker PUT is not read from the store's status, which a write racing a
+    /// delete of its block can answer with any refusal. The block is looked at again: gone means a delete landed under
+    /// the touch, and the touch of an absent block is `false` (as at the first HEAD); still held means the refusal was
+    /// about the request, so it stays the verdict. A failing second HEAD leaves the refusal as the answer. The guarantee
+    /// is only this classification; the marker is never retried, and a block can still vanish after the second HEAD.
+    private Promise<Boolean> absentUnderTouch(String key, Cause refusal) {
+        return request("HEAD",
+                       key,
+                       () -> s3Client.headObject(key)).flatMap(held -> held
+                                                                       ? refusal.<Boolean> promise()
+                                                                       : Promise.success(false))
+                      .orElse(refusal.<Boolean> promise());
     }
 
     private Promise<List<BlockStat>> collect(List<String> prefixes,

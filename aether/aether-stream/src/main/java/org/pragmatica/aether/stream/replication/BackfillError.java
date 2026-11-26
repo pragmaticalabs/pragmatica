@@ -15,7 +15,8 @@ public sealed interface BackfillError extends Cause {
         UNREACHABLE_REPLICA_BLOCKS_PROMOTION("Cold-start self-promotion blocked: a co-replica is unreachable and may hold newer state"),
         NOT_HIGHEST_WATERMARK("Cold-start self-promotion declined: another reachable replica holds a higher watermark or wins the tie-break"),
         SOURCE_STALLED("Catch-up source keeps answering short without progress; demoted for this round"),
-        FLIGHT_TIMED_OUT("Backfill did not settle within its flight bound; the partition's single-flight slot is released and the run counts as failed");
+        FLIGHT_TIMED_OUT("Backfill did not settle within its flight bound; the partition's single-flight slot is released and the run counts as failed"),
+        STOPPED("Backfill stopped: the node is shutting down and the partition's flight is abandoned");
         private final String message;
         General(String message) {
             this.message = message;

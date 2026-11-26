@@ -14,7 +14,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -24,6 +23,7 @@ import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -45,6 +45,7 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.utility.ULID;
@@ -54,6 +55,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.utils.OwnerLifetime.ownerLifetime;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
@@ -160,7 +162,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// once elapsed). The follow-up self-rearms from each still-deficient pass until the
 /// confirmed count converges to the configured target: a bounded convergence loop, not a
 /// periodic tick. At most one is pending at a time (deduped via
-/// [`#deficitFollowUpFutureRef`]); it does not busy-loop (delay floor = [`#DEBOUNCE_DELAY`],
+/// [`#deficitFollowUpHandleRef`]); it does not busy-loop (delay floor = [`#DEBOUNCE_DELAY`],
 /// steady spacing = the deficit-debounce window).
 ///
 /// **Concurrency.** `isLeader`, `reconcileInFlight`, `rescheduleRequested` are
@@ -175,6 +177,8 @@ public final class LeaderReconciler {
     private static final String REFUSAL_FORMAT = "owner=%s, artifact=%s, remainingActive=%d, minAvailable=%d";
 
     private static final Consumer<ReconcileIntent> NOOP_LISTENER = intent -> {};
+
+    private static final Consumer<Window> NOOP_PROBE = _ -> {};
 
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
     /// Sentinel for "not yet recorded" on the two single-shot/edge-triggered nanosecond
@@ -276,10 +280,18 @@ public final class LeaderReconciler {
     private final AtomicReference<BiFunction<NodeId, Set<NodeId>, Option<DrainRefusal>>> sliceDrainGuard = new AtomicReference<>(LeaderReconciler::permitsEveryDrain);
 
     private final TimeSource timeSource;
-    private final NttTimerScheduler scheduler;
+    /// Every task of this reconciler is a one-shot scheduled through [`#lifetime`], over this seam.
+    private final OwnerLifetime.Seam lifetimeSeam;
+    /// The lifetime of the current term: every scheduled task goes through it, and [`#deactivate`] ends it and swaps in a fresh
+    /// one (publish the new lifetime, then end the old one it got back). A non-leader keeps a live lifetime, so an ingress that
+    /// reconciles without leadership (a quorum-loss intent) still schedules; what a stop ends is the tasks of the term that stopped.
+    /// A body receives the lifetime it was scheduled on and re-arms and checks on that one, never on the field.
+    private final AtomicReference<OwnerLifetime> lifetime;
     private final AtomicBoolean isLeader = new AtomicBoolean(false);
-    private final AtomicBoolean reconcileInFlight = new AtomicBoolean(false);
-    private final AtomicBoolean rescheduleRequested = new AtomicBoolean(false);
+    /// The debounce state, carried per term: a pending debounce is owned by the lifetime that scheduled it, and every transition
+    /// is a compare-and-set on the state that body read, so a body of an ended term can neither clear nor extend what the next
+    /// term holds. A state whose owner has ended counts as idle: the next term takes it over.
+    private final AtomicReference<Debounce> debounce = new AtomicReference<>(Debounce.IDLE);
     private final AtomicBoolean armedForProvisioning = new AtomicBoolean(false);
     /// One-way latch: `true` once the cluster has been OBSERVED at full configured membership
     /// (`clusterMembershipCount >= configuredCoreCount`, `configuredCoreCount >= 1`), or pre-set on
@@ -314,8 +326,9 @@ public final class LeaderReconciler {
     /// the last [`#LEADERSHIP_LOSS_WARN_WINDOW_NANOS`]. Feeds the churn WARN in [`#recordLeadershipLoss`]; guarded
     /// by its own monitor. Observability only — never read by the decision logic.
     private final ArrayDeque<Long> deficitLeadershipLossNanos = new ArrayDeque<>();
-    private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
-    private final AtomicReference<ScheduledFuture<?>> inFlightSweepFutureRef = new AtomicReference<>();
+
+    private final AtomicReference<Option<OwnerLifetime.Handle>> inFlightSweepHandleRef = new AtomicReference<>(none());
+
     /// At most one pending deficit-convergence follow-up (H1 / #257 completion — generalizes
     /// the former Fix-2 `WITHIN_DEBOUNCE`-only re-evaluation). ANY reconcile pass that ends
     /// with an UNRESOLVED confirmed-member deficit (`coreCountedMembers().size() <
@@ -331,16 +344,18 @@ public final class LeaderReconciler {
     /// event ever re-poked the reconciler and the deficit sat past the 600s window. Deduped
     /// (a non-null ref short-circuits the schedule, CAS-arm cancels a lost race) with a hard
     /// delay floor of [`#DEBOUNCE_DELAY`], so the arm path can never loop hot.
-    private final AtomicReference<ScheduledFuture<?>> deficitFollowUpFutureRef = new AtomicReference<>();
+    private final AtomicReference<Option<OwnerLifetime.Handle>> deficitFollowUpHandleRef = new AtomicReference<>(none());
+
     /// At most one pending drain-grace re-evaluation follow-up (drain-safety grace, Wave 2). A
     /// pass that DEFERS part of a surplus drain because every remaining candidate is younger than
     /// [`#drainSafetyGraceWindow`] schedules one follow-up reconcile after the oldest young
     /// candidate matures — surplus is stable-state (no SWIM edge re-fires the reconciler while
     /// membership sits unchanged in surplus), so without this the deferred drain would silently
-    /// never re-evaluate. Same dedupe/CAS-arm discipline as [`#deficitFollowUpFutureRef`].
-    private final AtomicReference<ScheduledFuture<?>> drainGraceReEvalFutureRef = new AtomicReference<>();
+    /// never re-evaluate. Same dedupe/CAS-arm discipline as [`#deficitFollowUpHandleRef`].
+    private final AtomicReference<Option<OwnerLifetime.Handle>> drainGraceReEvalHandleRef = new AtomicReference<>(none());
+
     /// At most one pending surplus-convergence follow-up (#331 — the symmetric counterpart of
-    /// [`#deficitFollowUpFutureRef`] for OVER-provisioning). ANY reconcile pass that ends with an
+    /// [`#deficitFollowUpHandleRef`] for OVER-provisioning). ANY reconcile pass that ends with an
     /// UNRESOLVED surplus (`effectiveCapacity > configuredCoreCount` after the drain dispatch — a
     /// drain was dispatched but the victims have not yet left membership, OR the per-pass quorum
     /// floor capped the drainable count below the surplus) arms one follow-up reconcile
@@ -352,18 +367,17 @@ public final class LeaderReconciler {
     /// drain does not re-fire the surplus-detecting `MEMBER_APPEARED` ingress — so without this the
     /// leader drains a single batch and then never re-checks, leaving the cluster over-provisioned
     /// past the settle window (the 02-chaos 6-where-5-expected convergence gap). Distinct from
-    /// [`#drainGraceReEvalFutureRef`], which fires only when a drain was DEFERRED (young
+    /// [`#drainGraceReEvalHandleRef`], which fires only when a drain was DEFERRED (young
     /// candidates); this one fires whenever the surplus simply has not yet CLOSED, covering the
     /// dispatched-but-not-yet-departed and floor-capped cases that the deferral path misses. Same
     /// dedupe/CAS-arm discipline (a non-null ref short-circuits, CAS-arm cancels a lost race) with
     /// a hard delay floor of [`#DEBOUNCE_DELAY`], so the arm path can never loop hot.
-    private final AtomicReference<ScheduledFuture<?>> surplusFollowUpFutureRef = new AtomicReference<>();
+    private final AtomicReference<Option<OwnerLifetime.Handle>> surplusFollowUpHandleRef = new AtomicReference<>(none());
+
     /// #3324: whether the last pass held the core surplus drain back (auto-heal disabled). The follow-up loop keeps running while held
     /// (re-enabling must take effect), so its pass line is logged only on the edges: the first held pass logs it, later held
     /// follow-ups stay silent, and the HELD / RESUMED operator warnings name the begin and the end. Per-leader memory, cleared on deactivate.
     private final AtomicBoolean surplusHoldNoted = new AtomicBoolean();
-
-    private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
 
     /// Generation of a provision dispatched as a substitute for a discounted entry (#1786). Such an entry is
     /// never itself discounted, which bounds one missing slot to an original plus one substitute in flight.
@@ -401,6 +415,7 @@ public final class LeaderReconciler {
     private final AtomicReference<Option<Supplier<Set<NodeId>>>> installedVotersSupplier = new AtomicReference<>(none());
 
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
+    private volatile Consumer<Window> windowProbe = NOOP_PROBE;
 
     private LeaderReconciler(MembershipConfig membershipConfig,
                              PresenceSampler presenceSampler,
@@ -438,7 +453,13 @@ public final class LeaderReconciler {
         this.ctm = ctm;
         this.clusterNameSupplier = clusterNameSupplier;
         this.timeSource = timeSource;
-        this.scheduler = scheduler;
+        this.lifetimeSeam = oneShotSeam(scheduler);
+        this.lifetime = new AtomicReference<>(ownerLifetime(lifetimeSeam));
+    }
+
+    // Nothing here is periodic, so the seam drops the period and hands the one-shot to the injected scheduler.
+    private static OwnerLifetime.Seam oneShotSeam(NttTimerScheduler scheduler) {
+        return (wrapper, initialDelay, _) -> scheduler.schedule(wrapper, initialDelay);
     }
 
     /// Production factory bound to the process-wide [`SharedScheduler`] and the system clock.
@@ -498,16 +519,18 @@ public final class LeaderReconciler {
             return;
         }
 
-        if (leaderTermSupplier.get() > 1L) {
+        var life = lifetime.get();
+
+        probe(Window.ACTIVATE_BEFORE_LATCH);
+        if (leaderTermSupplier.get() > 1L && mayAct(life)) {
             reachedFullMembership.set(true);
             log.info("LeaderReconciler re-election activation (leaderTerm={}) — reachedFullMembership pre-latched",
                      leaderTermSupplier.get());
         }
 
-        seedInFlightFromRetainedDispatched();
-        var future = scheduler.schedule(this::onActivationDelayFire, leaderActivationDelay);
-
-        activationFutureRef.set(future);
+        seedInFlightFromRetainedDispatched(life);
+        probe(Window.ACTIVATE_BEFORE_SCHEDULE);
+        life.schedule(this::onActivationDelayFire, leaderActivationDelay);
     }
 
     /// Provisioning-stickiness fix — on leadership GAIN, seed `inFlightProvisioning` from the prior
@@ -525,7 +548,7 @@ public final class LeaderReconciler {
     /// runs from the replacement's mint time where the node id carries one, so a leader change does not
     /// restart it; its absence count and first-listing floor start at inheritance — see [`#inheritedEntry`].
     @Contract
-    private void seedInFlightFromRetainedDispatched() {
+    private void seedInFlightFromRetainedDispatched(OwnerLifetime life) {
         var retained = retainedDispatchedSupplier.get().get();
 
         if (retained.isEmpty()) {
@@ -540,7 +563,7 @@ public final class LeaderReconciler {
         var unjoinedMints = unjoinedMintTimes(retained, currentMembers);
 
         for (var id : retained) {
-            if (currentMembers.contains(id)) {
+            if (currentMembers.contains(id) || !mayAct(life)) {
                 continue;
             }
 
@@ -555,7 +578,7 @@ public final class LeaderReconciler {
                  retained.size(),
                  inFlightProvisioning.size());
         if (!inFlightProvisioning.isEmpty()) {
-            armInFlightSweep();
+            armInFlightSweep(life);
         }
     }
 
@@ -623,21 +646,19 @@ public final class LeaderReconciler {
                          .or(0L);
     }
 
-    /// Deactivate the leader-pinned reconciler. Idempotent. Cancels the pending one-shot
-    /// activation reconcile and clears the in-flight provisioning map (the new leader
-    /// will rebuild it from observed state).
+    /// Deactivate the leader-pinned reconciler. Idempotent. Ends the term's lifetime (every pending
+    /// task of the term is cancelled, and no body whose wrapper has not yet read the flag runs) and clears the in-flight
+    /// provisioning map (the new leader will rebuild it from observed state). The lifetime ends BEFORE the clearing,
+    /// so a body that finds the lifetime ended has nothing left to act on. The debounce state needs no reset: it is owned by
+    /// the lifetime that ended, and the next term takes it over.
     @Contract
     public void deactivate() {
         if (!isLeader.compareAndSet(true, false)) {
             return;
         }
 
-        cancelPendingActivation();
-        cancelInFlightSweep();
-        cancelDeficitFollowUp();
-        cancelSurplusFollowUp();
+        lifetime.getAndSet(ownerLifetime(lifetimeSeam)).end();
         surplusHoldNoted.set(false);
-        cancelDrainGraceReEval();
         inFlightProvisioning.clear();
         pairedDeparted.clear();
         statusQueriesOutstanding.clear();
@@ -760,6 +781,40 @@ public final class LeaderReconciler {
         reconcileListener = newListener;
     }
 
+    /// The windows between a read and the act that follows it, where a stop of the term can land concurrently.
+    enum Window {
+        /// `armOnce`: after the slot read and the schedule, before the compare-and-set of the slot.
+        ARM_BEFORE_SLOT_CAS,
+        /// `triggerReconcile`: after the lifetime check, before the first read of the debounce state.
+        TRIGGER_BEFORE_DEBOUNCE,
+        /// `activate`: after the lifetime read, before the activation task is scheduled on it.
+        ACTIVATE_BEFORE_SCHEDULE,
+        /// `activate`: after the lifetime read, before the re-election latch of a new term is written.
+        ACTIVATE_BEFORE_LATCH,
+        /// `triggerReconcile`: after the caller read its lifetime, before the check that the lifetime is live.
+        TRIGGER_ENTRY,
+        /// The first step of a scheduled body (activation, debounced pass, the four follow-up ticks), before its own gate: the body whose
+        /// wrapper read of the lifetime preceded the stop.
+        BODY_START,
+        /// `pollInstanceStateIfDue`: after the sweep took the entry, before the gate of the provider query.
+        POLL_START,
+        /// `dispatchSingleDrain`: after the victims were chosen, before the gate of the drain.
+        DRAIN_START
+    }
+
+    /// TEST window seam only: production registers no probe, so [`#probe`] is a no-op. A test registers one to end the term, or arm a
+    /// competing task, between the two steps of a window, which a single-threaded fake scheduler cannot otherwise interleave.
+    /// Package-private so no production caller can mistake it for a wiring point.
+    @Contract
+    void setWindowProbe(Consumer<Window> newProbe) {
+        windowProbe = newProbe;
+    }
+
+    @Contract
+    private void probe(Window window) {
+        windowProbe.accept(window);
+    }
+
     /// Verified consensus authority, independent of desired provider capacity. Empty means no evidence.
     public org.pragmatica.lang.Unit setInstalledVotersSupplier(Supplier<Set<NodeId>> supplier) {
         installedVotersSupplier.set(some(supplier));
@@ -811,6 +866,21 @@ public final class LeaderReconciler {
     /// grace; membership-unification-spec P5).
     public boolean isReachedFullMembership() {
         return reachedFullMembership.get();
+    }
+
+    /// TEST observation only: whether the last ask of the core scaling hold was held (read by the surplus follow-up to name its pass line once).
+    boolean isSurplusHoldNoted() {
+        return surplusHoldNoted.get();
+    }
+
+    /// TEST observation only: how many of the follow-up timers (sweep, deficit, drain grace, surplus) hold a pending handle.
+    long pendingTimerCount() {
+        return Stream.of(inFlightSweepHandleRef,
+                         deficitFollowUpHandleRef,
+                         drainGraceReEvalHandleRef,
+                         surplusFollowUpHandleRef)
+                     .filter(slot -> isPending(slot.get()))
+                     .count();
     }
 
     /// Observability — number of in-flight provisioning records this leader is tracking.
@@ -935,40 +1005,108 @@ public final class LeaderReconciler {
                     .sinceNanos();
     }
 
-    /// CAS-debounce entry point. First trigger schedules a short-debounced reconcile;
-    /// concurrent triggers during reconcile-in-flight flag a single follow-up pass.
+    /// CAS-debounce entry point for an ingress (an event, or a provider answer): schedules on the lifetime of the current term.
     @Contract
     private void triggerReconcile(ReconcileTrigger trigger) {
-        if (!reconcileInFlight.compareAndSet(false, true)) {
-            rescheduleRequested.set(true);
+        triggerReconcile(lifetime.get(), trigger);
+    }
+
+    /// CAS-debounce entry point. First trigger schedules a short-debounced reconcile;
+    /// concurrent triggers during reconcile-in-flight flag a single follow-up pass. A body re-arms on the lifetime it
+    /// received, and a trigger of an ended lifetime does nothing: the check is immediately before the first write of the debounce
+    /// state, which a stale body therefore never reaches. A stop that lands between the check and the schedule leaves a state owned by
+    /// the ended lifetime, which counts as idle: the next term takes it over, so nothing has to release it.
+    @Contract
+    private void triggerReconcile(OwnerLifetime life, ReconcileTrigger trigger) {
+        probe(Window.TRIGGER_ENTRY);
+        if (life.isEnded()) {
+            return;
+        }
+
+        probe(Window.TRIGGER_BEFORE_DEBOUNCE);
+        var seen = debounce.get();
+
+        switch (seen) {
+            case Debounce.Pending pending when pending.isLive() -> requestFollowUp(life, trigger, pending);
+            case Debounce.Pending _, Debounce.Idle _ -> startDebounce(life, trigger, seen);
+        }
+    }
+
+    @Contract
+    private void requestFollowUp(OwnerLifetime life, ReconcileTrigger trigger, Debounce.Pending seen) {
+        if (!debounce.compareAndSet(seen, seen.withFollowUp())) {
+            triggerReconcile(life, trigger);
+        }
+    }
+
+    @Contract
+    private void startDebounce(OwnerLifetime life, ReconcileTrigger trigger, Debounce seen) {
+        var next = Debounce.Pending.pending(life, trigger);
+
+        if (!debounce.compareAndSet(seen, next)) {
+            triggerReconcile(life, trigger);
 
             return;
         }
 
-        pendingTriggerRef.set(some(trigger));
-        scheduler.schedule(this::runDebouncedReconcile, DEBOUNCE_DELAY);
+        life.schedule(this::runDebouncedReconcile, DEBOUNCE_DELAY);
     }
 
     @Contract
-    private void runDebouncedReconcile() {
-        var trigger = pendingTriggerRef.getAndSet(none()).or(ReconcileTrigger.NTT_FIRE);
-
-        runReconcileBody(trigger);
-        reconcileInFlight.set(false);
-        if (rescheduleRequested.compareAndSet(true, false)) {
-            triggerReconcile(ReconcileTrigger.NTT_FIRE);
-        }
+    private void runDebouncedReconcile(OwnerLifetime life) {
+        probe(Window.BODY_START);
+        runReconcileBody(life, pendingTriggerOf(life));
+        finishDebounce(life);
     }
 
+    private ReconcileTrigger pendingTriggerOf(OwnerLifetime life) {
+        return switch (debounce.get()) {
+            case Debounce.Pending pending when pending.owner() == life -> pending.trigger();
+            case Debounce.Pending _, Debounce.Idle _ -> ReconcileTrigger.NTT_FIRE;
+        };
+    }
+
+    /// A body only releases the state its own lifetime owns: a state taken over by the next term is left alone, so no stale
+    /// body clears the next term's flag. A follow-up requested during the pass starts the next debounce.
     @Contract
-    private void onActivationDelayFire() {
-        if (!isLeader.get()) {
+    private void finishDebounce(OwnerLifetime life) {
+        var seen = debounce.get();
+
+        if (! (seen instanceof Debounce.Pending pending) || pending.owner() != life) {
             return;
         }
 
-        activationFutureRef.set(null);
+        if (!debounce.compareAndSet(pending, Debounce.IDLE)) {
+            finishDebounce(life);
+
+            return;
+        }
+
+        if (pending.followUpRequested()) {
+            triggerReconcile(life, ReconcileTrigger.NTT_FIRE);
+        }
+    }
+
+    /// The one gate of an effect of a body (a write to a field another term reads, a call into the manager that writes, an arm of the
+    /// scheduler, a dispatch): the body acts only while its OWN term is live and this node leads. Read immediately before the effect, with
+    /// nothing effectful between the read and the effect. A body of an ended term finds its own lifetime ended whatever a later term
+    /// has set; a body on the non-leader lifetime (a quorum-loss intent reconciles without leadership) finds no leadership. Effects
+    /// that pass through this gate are refused to such a body. Three term-scoped writes do not pass through it yet (#3777): the
+    /// `pairedDeparted` removal in `departedVoters`, the `durableConfirmedSince` stamps in `countedDurable` (written by the non-leader
+    /// pass too), and the `armOnce` slot compare-and-set after the schedule.
+    private boolean mayAct(OwnerLifetime life) {
+        return ! life.isEnded() && isLeader.get();
+    }
+
+    @Contract
+    private void onActivationDelayFire(OwnerLifetime life) {
+        probe(Window.BODY_START);
+        if (!mayAct(life)) {
+            return;
+        }
+
         log.info("LeaderReconciler activated (leadership gained) at nanoTime={}", timeSource.nanoTime());
-        runReconcileBody(ReconcileTrigger.LEADER_ACTIVATION);
+        runReconcileBody(life, ReconcileTrigger.LEADER_ACTIVATION);
     }
 
     /// Single reconcile pass. Derives `clusterMembershipCount` and the current member set
@@ -984,10 +1122,10 @@ public final class LeaderReconciler {
     /// requested-but-not-joined replacement) can never trigger a quorum-dissolving drain of a
     /// healthy core node.
     @Contract
-    private void runReconcileBody(ReconcileTrigger trigger) {
+    private void runReconcileBody(OwnerLifetime life, ReconcileTrigger trigger) {
         var now = timeSource.nanoTime();
 
-        evictInFlightPastCeiling(now);
+        evictInFlightPastCeiling(life, now);
         // Core-scoped membership (Wave 2 / W2): only CORE-role counted members enter every
         // count below (deficit vs configuredCoreCount, quorum-safety, drain-victim pool,
         // in-flight fulfillment). A worker can neither fill a core deficit arithmetically nor
@@ -1002,7 +1140,7 @@ public final class LeaderReconciler {
         // signal; the provider-state poll and the per-source ceiling eviction above (#1049) remain the
         // backstop for provisions that never arrive (failed boot). This runs BEFORE computing `effective`/effectiveCapacity
         // so a fulfilled id is never double-counted in the union.
-        currentMembers.forEach(this::settleJoinedPlaceholder);
+        currentMembers.forEach(member -> settleJoinedPlaceholder(life, member));
         var clusterMembershipCount = currentMembers.size();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
         var authorityEvidence = quorumEvidence(currentMembers, configuredCoreCount);
@@ -1027,7 +1165,7 @@ public final class LeaderReconciler {
         // provisioning window is bounded by the leader-activation reconcile delay
         // (nttDepartureTimeout × 1.5), by which time formation has completed. configuredCoreCount
         // must be >= 1 to be armable.
-        if (configuredCoreCount >= 1 && authorityEvidence.safe()) {
+        if (mayAct(life) && configuredCoreCount >= 1 && authorityEvidence.safe()) {
             if (armedForProvisioning.compareAndSet(false, true)) {
                 log.info("Provisioning ARMED at nanoTime={} (clusterMembershipCount={}, configuredCoreCount={}, quorumThreshold={})",
                          now,
@@ -1042,7 +1180,7 @@ public final class LeaderReconciler {
         // formation when target updates coalesce before any pass observes the old desired count.
         // Sampled history still covers departure before
         // the first reconcile. OBSERVED/unknown-role peers contribute to neither current core count.
-        if (configuredCoreCount >= 1 && (authorityEvidence.fullyObserved() || clusterMembershipCount >= configuredCoreCount || presenceSampler.peakMembershipCount() >= configuredCoreCount)) {
+        if (mayAct(life) && configuredCoreCount >= 1 && (authorityEvidence.fullyObserved() || clusterMembershipCount >= configuredCoreCount || presenceSampler.peakMembershipCount() >= configuredCoreCount)) {
             if (reachedFullMembership.compareAndSet(false, true)) {
                 log.info("Reached full membership at nanoTime={} (peakMembershipCount={}, configuredCoreCount={})",
                          now,
@@ -1066,7 +1204,7 @@ public final class LeaderReconciler {
         // gate sees the freshest run-length: set the leading-edge timestamp when a deficit first
         // appears, clear it the moment the deficit resolves. A transient reconnect dip clears the
         // anchor; a genuine departure lets it age.
-        updateDeficitAnchor(now, effective, configuredCoreCount);
+        updateDeficitAnchor(life, now, effective, configuredCoreCount);
         // #578-review Issue 9: read the operator's kill switch ONCE per pass and thread it through —
         // it is the one flippable input to this decision (the two latches below are monotonic, so
         // re-reading them can't disagree with themselves mid-pass). Re-querying ctm.isAutoHealEnabled()
@@ -1087,30 +1225,31 @@ public final class LeaderReconciler {
                                 quorumSafe,
                                 provisioningPermitted,
                                 autoHealEnabled);
-        captureProvisioningDecision(now,
+        captureProvisioningDecision(life,
+                                    now,
                                     trigger,
                                     effective,
                                     configuredCoreCount,
                                     quorumSafe,
                                     provisioningPermitted,
                                     autoHealEnabled);
-        trackDurableStall(now, currentMembers, effective, configuredCoreCount, provisioningPermitted);
+        trackDurableStall(life, now, currentMembers, effective, configuredCoreCount, provisioningPermitted);
         var peersToProvision = provisioningPermitted
                                ? computePeersToProvision(configuredCoreCount, effective)
                                : Set.<NodeId> of();
         var peersToDrain = quorumSafe
-                           ? computePeersToDrain(currentMembers, configuredCoreCount, effective)
+                           ? computePeersToDrain(life, currentMembers, configuredCoreCount, effective)
                            : Set.<NodeId> of();
 
-        dispatchProvisionActions(now, peersToProvision, currentMembers);
-        dispatchDrainActions(peersToDrain);
+        dispatchProvisionActions(life, now, peersToProvision, currentMembers);
+        dispatchDrainActions(life, peersToDrain);
         // Restart the debounce clock once we ACT on a deficit. The just-dispatched in-flight
         // placeholder makes `effective` meet target on the next pass (anchor would reset anyway),
         // but if the placeholder dies and the raw deficit re-opens with NO intervening at-target
         // pass to reset the anchor, a stale anchor would let the re-opened deficit provision
         // instantly — re-introducing the storm the debounce guards against. Resetting here forces
         // every fresh deficit run to re-age past the debounce window before the next provision.
-        if (!peersToProvision.isEmpty()) {
+        if (!peersToProvision.isEmpty() && mayAct(life)) {
             deficitSinceNanos = UNSET_NANOS;
         }
         // Deficit-convergence follow-up (H1 / #257 completion — generalizes Fix 2). Armed off the
@@ -1122,7 +1261,7 @@ public final class LeaderReconciler {
         // configured size never re-poke the reconciler (live-gate: a deficit sat past the 600s
         // window, then healed in 13s once poked). Runs AFTER the anchor reset above so a
         // just-dispatched pass arms on the full-window branch.
-        armDeficitFollowUpIfNeeded(now, currentMembers.size(), configuredCoreCount);
+        armDeficitFollowUpIfNeeded(life, now, currentMembers.size(), configuredCoreCount);
         // Surplus-convergence follow-up (#331 — symmetric with the deficit follow-up above). Armed
         // off the post-dispatch effective surplus: a pass that dispatched a drain is only
         // PENDING-resolved (the victims leave membership asynchronously via the DRAIN command +
@@ -1133,7 +1272,7 @@ public final class LeaderReconciler {
         // configured target. Bounded: it arms only while a surplus persists and stops the moment it
         // closes. Runs alongside the deficit follow-up; the two are mutually exclusive per pass
         // (a cluster is either over- or under-target, never both).
-        armSurplusFollowUpIfNeeded(effective, configuredCoreCount);
+        armSurplusFollowUpIfNeeded(life, effective, configuredCoreCount);
         var intent = ReconcileIntent.reconcileIntent(now,
                                                      trigger,
                                                      clusterMembershipCount,
@@ -1150,7 +1289,11 @@ public final class LeaderReconciler {
     /// deficit is absent (`effective >= configuredCoreCount`), reset to [`#UNSET_NANOS`] so a
     /// transient dip never accumulates debounce age across an intervening recovery.
     @Contract
-    private void updateDeficitAnchor(long now, int effective, int configuredCoreCount) {
+    private void updateDeficitAnchor(OwnerLifetime life, long now, int effective, int configuredCoreCount) {
+        if (!mayAct(life)) {
+            return;
+        }
+
         if (effective < configuredCoreCount) {
             if (deficitSinceNanos == UNSET_NANOS) {
                 deficitSinceNanos = now;
@@ -1239,12 +1382,19 @@ public final class LeaderReconciler {
     /// join grace: a provider-confirmed allocation stops counting then, so only an uncertain create can still hold it, and nothing but the
     /// operator resolves that one. Raised once per run and closed by the recovery when durable allocations no longer cover the deficit. The
     /// state is per reconciler instance: a new leader starts a new run, and re-raises if the stall is still there.
+    /// The second check of the warning effect: a body already past its wrapper's read when the term ended raises nothing, and leaves
+    /// the raised-state the stop reset alone (a warning raised after the reset would stay latched into the next term).
     @Contract
-    private void trackDurableStall(long now,
+    private void trackDurableStall(OwnerLifetime life,
+                                   long now,
                                    Set<NodeId> currentMembers,
                                    int effective,
                                    int configuredCoreCount,
                                    boolean provisioningPermitted) {
+        if (!mayAct(life)) {
+            return;
+        }
+
         var awaiting = !provisioningPermitted && effective >= configuredCoreCount && durableCoversDeficit(currentMembers,
                                                                                                           configuredCoreCount);
 
@@ -1340,13 +1490,18 @@ public final class LeaderReconciler {
     /// reusing the existing helpers (no divergent re-derivation). Pure side-effect setter: written
     /// once per pass, read by no decision logic, alters no control flow.
     @Contract
-    private void captureProvisioningDecision(long now,
+    private void captureProvisioningDecision(OwnerLifetime life,
+                                             long now,
                                              ReconcileTrigger trigger,
                                              int effective,
                                              int configuredCoreCount,
                                              boolean quorumSafe,
                                              boolean provisioningPermitted,
                                              boolean autoHealEnabled) {
+        if (!mayAct(life)) {
+            return;
+        }
+
         lastProvisioningDecision = new ProvisioningDecisionSnapshot(trigger,
                                                                     configuredCoreCount,
                                                                     membershipFsm.coreCountedMembers().size(),
@@ -1512,7 +1667,8 @@ public final class LeaderReconciler {
     /// young ages + one scheduled follow-up reconcile via [`#armDrainGraceReEval`]) rather than
     /// silently dropped. Internal — observers see only the count via
     /// [`ReconcileIntent#drainCount`].
-    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers,
+    private Set<NodeId> computePeersToDrain(OwnerLifetime life,
+                                            Set<NodeId> currentMembers,
                                             int configuredCoreCount,
                                             int effectiveWithSurge) {
         var surge = surgeReplacements.get().get().size();
@@ -1525,11 +1681,18 @@ public final class LeaderReconciler {
         // with or without a surplus. This is the reconciler's own answer (drain room, surge replacements counted): the voter-excluded
         // retirement answers for its own victims, and `core` closes only when both say nothing is pending. A quorum-unsafe pass does
         // not reach here: it cannot judge a surplus, so its last answer stands until the next quorum-safe pass answers.
+        if (!mayAct(life)) {
+            return Set.of();
+        }
+
         var held = ctm.scalingHeld(ClusterTopologyManager.coreSubject(),
                                    ClusterTopologyManager.ScalingAsker.RECONCILER,
                                    drainCount > 0);
 
-        surplusHoldNoted.set(held);
+        if (mayAct(life)) {
+            surplusHoldNoted.set(held);
+        }
+
         if (drainCount == 0 || held) {
             return Set.of();
         }
@@ -1538,7 +1701,7 @@ public final class LeaderReconciler {
         var victims = selectDrainVictims(currentMembers, drainCount, refusals);
 
         if (victims.size() < drainCount) {
-            deferYoungSurplusDrain(currentMembers, drainCount - victims.size(), refusals);
+            deferYoungSurplusDrain(life, currentMembers, drainCount - victims.size(), refusals);
         }
 
         return victims;
@@ -1759,13 +1922,16 @@ public final class LeaderReconciler {
     /// back, the ACTIVE instances that slice would keep on the remaining nodes, and its `minAvailable`,
     /// so an operator can see which slice to add capacity to or lower `minAvailable` for.
     @Contract
-    private void deferYoungSurplusDrain(Set<NodeId> currentMembers, int deferredCount, List<DrainRefusal> refusals) {
+    private void deferYoungSurplusDrain(OwnerLifetime life,
+                                        Set<NodeId> currentMembers,
+                                        int deferredCount,
+                                        List<DrainRefusal> refusals) {
         log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or slice owners whose removal would drop a hosted slice below minAvailable, or only the leader remains (the leader is never a drain victim, #1089); youngAgesMs={}, minAvailableRefusals=[{}]",
                  deferredCount,
                  drainSafetyGraceWindow.millis(),
                  youngMemberAgesMs(currentMembers),
                  describeRefusals(refusals));
-        armDrainGraceReEval(currentMembers);
+        armDrainGraceReEval(life, currentMembers);
     }
 
     /// One `owner=…, artifact=…, remainingActive=…, minAvailable=…` entry per refusal, `; `-separated,
@@ -1803,20 +1969,38 @@ public final class LeaderReconciler {
     }
 
     /// Arm a single drain-grace re-evaluation follow-up (deferred-surplus re-trigger). Deduped:
-    /// a non-null [`#drainGraceReEvalFutureRef`] short-circuits (at most one pending), the
+    /// a non-null [`#drainGraceReEvalHandleRef`] short-circuits (at most one pending), the
     /// CAS-arm cancels a lost race — same discipline as [`#armDeficitFollowUpIfNeeded`] /
     /// [`#armInFlightSweep`]; no new timer machinery, the shared scheduler is reused.
     @Contract
-    private void armDrainGraceReEval(Set<NodeId> currentMembers) {
-        if (drainGraceReEvalFutureRef.get() != null) {
+    private void armDrainGraceReEval(OwnerLifetime life, Set<NodeId> currentMembers) {
+        armOnce(life, drainGraceReEvalHandleRef, this::runDrainGraceReEval, drainGraceReEvalDelay(currentMembers));
+    }
+
+    /// The one dedupe-and-arm of the follow-up timers: a slot holding a pending (not cancelled) handle short-circuits, and a
+    /// lost CAS cancels the handle it just scheduled. A cancelled handle left in the slot is a task its lifetime ended, so it
+    /// counts as empty: the next term arms over it.
+    private void armOnce(OwnerLifetime life,
+                         AtomicReference<Option<OwnerLifetime.Handle>> slot,
+                         Consumer<OwnerLifetime> body,
+                         TimeSpan delay) {
+        var current = slot.get();
+
+        if (!mayAct(life) || isPending(current)) {
             return;
         }
 
-        var future = scheduler.schedule(this::runDrainGraceReEval, drainGraceReEvalDelay(currentMembers));
+        var handle = life.schedule(body, delay);
 
-        if (!drainGraceReEvalFutureRef.compareAndSet(null, future)) {
-            future.cancel(false);
+        probe(Window.ARM_BEFORE_SLOT_CAS);
+        if (!slot.compareAndSet(current, some(handle))) {
+            handle.cancel();
         }
+    }
+
+    private static boolean isPending(Option<OwnerLifetime.Handle> slot) {
+        return slot.map(handle -> !handle.isCancelled())
+                   .or(false);
     }
 
     /// Remaining grace for the OLDEST still-young candidate (it matures first, unblocking at
@@ -1834,26 +2018,21 @@ public final class LeaderReconciler {
     /// deferred surplus is re-evaluated now that the youngest victims have aged. Non-leader
     /// nodes no-op (a deposed leader's follow-up must not act).
     @Contract
-    private void runDrainGraceReEval() {
-        drainGraceReEvalFutureRef.set(null);
-        if (!isLeader.get()) {
+    private void runDrainGraceReEval(OwnerLifetime life) {
+        probe(Window.BODY_START);
+        if (!mayAct(life)) {
             return;
         }
 
-        triggerReconcile(ReconcileTrigger.NTT_FIRE);
+        drainGraceReEvalHandleRef.set(none());
+        triggerReconcile(life, ReconcileTrigger.NTT_FIRE);
     }
 
     @Contract
-    private void cancelDrainGraceReEval() {
-        var prev = drainGraceReEvalFutureRef.getAndSet(null);
-
-        if (prev != null) {
-            prev.cancel(false);
-        }
-    }
-
-    @Contract
-    private void dispatchProvisionActions(long nowNanos, Set<NodeId> peersToProvision, Set<NodeId> currentMembers) {
+    private void dispatchProvisionActions(OwnerLifetime life,
+                                          long nowNanos,
+                                          Set<NodeId> peersToProvision,
+                                          Set<NodeId> currentMembers) {
         if (!peersToProvision.isEmpty()) {
             log.info("LeaderReconciler dispatching provision for {} peer(s): {}",
                      peersToProvision.size(),
@@ -1863,7 +2042,8 @@ public final class LeaderReconciler {
         var generation = substituteGeneration(nowNanos);
         var departed = departedVoters(currentMembers).iterator();
 
-        peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos,
+        peersToProvision.forEach(placeholder -> dispatchSingleProvision(life,
+                                                                        nowNanos,
                                                                         placeholder,
                                                                         currentMembers,
                                                                         generation,
@@ -1897,7 +2077,11 @@ public final class LeaderReconciler {
 
     /// A joined placeholder leaves the in-flight map; the departed node it replaced stays "already paired" while it is an installed voter.
     @Contract
-    private void settleJoinedPlaceholder(NodeId member) {
+    private void settleJoinedPlaceholder(OwnerLifetime life, NodeId member) {
+        if (!mayAct(life)) {
+            return;
+        }
+
         Option.option(inFlightProvisioning.remove(member)).onPresent(entry -> entry.departed()
                                                                                    .onPresent(pairedDeparted::add));
     }
@@ -1930,11 +2114,15 @@ public final class LeaderReconciler {
     }
 
     @Contract
-    private void dispatchSingleProvision(long nowNanos,
+    private void dispatchSingleProvision(OwnerLifetime life,
+                                         long nowNanos,
                                          NodeId placeholder,
                                          Set<NodeId> currentMembers,
                                          int generation,
                                          Option<NodeId> departed) {
+        if (!mayAct(life)) {
+            return;
+        }
         // #2811: this ceiling only bounds the create call while it is in flight; once the provision is Dispatched the entry takes the
         // ceiling the disposition carries (markDispatched), so a placement or config commit between this read and the dispatch cannot
         // leave the entry with another source's ceiling.
@@ -1945,7 +2133,7 @@ public final class LeaderReconciler {
                                                              nowNanos,
                                                              generation,
                                                              departed));
-        armInFlightSweep();
+        armInFlightSweep(life);
         // Pass the SAME minted placeholder as the new node's intended identity: the provisioned
         // node boots under exactly this id (CTM threads it into ProvisionContext.nodeId()), so the
         // in-flight key equals the booted node's id and membership presence is the authoritative
@@ -1963,6 +2151,23 @@ public final class LeaderReconciler {
         //     placeholder would mask the deficit and permanently wedge auto-heal once the breaker
         //     trips). A deferral is NOT a failure — no provisioning failure is recorded.
         //   - failure (genuine boot failure) → REMOVE it (the CTM already recorded the failure).
+        provisionUnlessEnded(life, placeholder, departed, currentMembers);
+    }
+
+    /// The second check of the provisioning effect (cloud provisioning, money): a body already past its wrapper's read when the
+    /// term ended asks the manager for nothing and takes its placeholder back. This narrows the window, it does not close it: the
+    /// stop can still land between this check and the call, so a stale leader is refused only by a fence at the receiver.
+    @Contract
+    private void provisionUnlessEnded(OwnerLifetime life,
+                                      NodeId placeholder,
+                                      Option<NodeId> departed,
+                                      Set<NodeId> currentMembers) {
+        if (!mayAct(life)) {
+            inFlightProvisioning.remove(placeholder);
+
+            return;
+        }
+
         ctm.provisionReplacement(placeholder, departed, currentMembers, NodeRole.CORE)
            .withSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
            .withFailure(cause -> reapFailedProvision(placeholder, cause));
@@ -2039,12 +2244,19 @@ public final class LeaderReconciler {
     }
 
     @Contract
-    private void dispatchDrainActions(Set<NodeId> peersToDrain) {
-        peersToDrain.forEach(this::dispatchSingleDrain);
+    private void dispatchDrainActions(OwnerLifetime life, Set<NodeId> peersToDrain) {
+        peersToDrain.forEach(peerId -> dispatchSingleDrain(life, peerId));
     }
 
+    /// The second check of the drain effect (a drain cannot be undone once delivered): a body already past its wrapper's read when the
+    /// term ended drains nothing. It narrows the window only; the receiver's fence is what refuses a stale leader.
     @Contract
-    private void dispatchSingleDrain(NodeId peerId) {
+    private void dispatchSingleDrain(OwnerLifetime life, NodeId peerId) {
+        probe(Window.DRAIN_START);
+        if (!mayAct(life)) {
+            return;
+        }
+
         ctm.drainNode(peerId, DrainReason.OVERPROVISION_PARTITION_HEAL);
     }
 
@@ -2053,7 +2265,11 @@ public final class LeaderReconciler {
     /// cannot answer holds a slot forever. Cheap (no provider call), so it runs on every reconcile pass
     /// as well as on the sweep tick.
     @Contract
-    private void evictInFlightPastCeiling(long nowNanos) {
+    private void evictInFlightPastCeiling(OwnerLifetime life, long nowNanos) {
+        if (!mayAct(life)) {
+            return;
+        }
+
         inFlightProvisioning.entrySet()
                             .removeIf(entry -> isPastCeilingLogged(nowNanos,
                                                                    entry.getKey(),
@@ -2088,16 +2304,8 @@ public final class LeaderReconciler {
     /// [`#inFlightPollInterval`] spacing. Idempotent: at most one outstanding sweep future via the
     /// null-check + CAS guard, so a concurrent `dispatchSingleProvision` cannot orphan a timer.
     @Contract
-    private void armInFlightSweep() {
-        if (inFlightSweepFutureRef.get() != null) {
-            return;
-        }
-
-        var future = scheduler.schedule(this::runInFlightSweep, inFlightPollInterval);
-
-        if (!inFlightSweepFutureRef.compareAndSet(null, future)) {
-            future.cancel(false);
-        }
+    private void armInFlightSweep(OwnerLifetime life) {
+        armOnce(life, inFlightSweepHandleRef, this::runInFlightSweep, inFlightPollInterval);
     }
 
     /// Sweep tick: evict entries past their ceiling (re-triggering reconcile if a slot was reclaimed,
@@ -2106,22 +2314,23 @@ public final class LeaderReconciler {
     /// future is never orphaned — the ref is nulled at the top, then `armInFlightSweep` arms cleanly or
     /// no-ops if a concurrent dispatch already armed.
     @Contract
-    private void runInFlightSweep() {
-        inFlightSweepFutureRef.set(null);
-        if (!isLeader.get()) {
+    private void runInFlightSweep(OwnerLifetime life) {
+        probe(Window.BODY_START);
+        if (!mayAct(life)) {
             return;
         }
 
+        inFlightSweepHandleRef.set(none());
         var before = inFlightProvisioning.size();
 
-        evictInFlightPastCeiling(timeSource.nanoTime());
+        evictInFlightPastCeiling(life, timeSource.nanoTime());
         if (inFlightProvisioning.size() < before) {
-            triggerReconcile(ReconcileTrigger.NTT_FIRE);
+            triggerReconcile(life, ReconcileTrigger.NTT_FIRE);
         }
 
-        pollInFlightInstanceStates();
+        pollInFlightInstanceStates(life);
         if (!inFlightProvisioning.isEmpty()) {
-            armInFlightSweep();
+            armInFlightSweep(life);
         }
     }
 
@@ -2129,8 +2338,8 @@ public final class LeaderReconciler {
     /// DISPATCHING entry is skipped (its create may not have happened yet, so an empty listing would
     /// say nothing), and so is an entry whose previous query is still outstanding (single-flight).
     @Contract
-    private void pollInFlightInstanceStates() {
-        inFlightProvisioning.forEach(this::pollInstanceStateIfDue);
+    private void pollInFlightInstanceStates(OwnerLifetime life) {
+        inFlightProvisioning.forEach((id, entry) -> pollInstanceStateIfDue(life, id, entry));
     }
 
     /// The query's failure channel is not observed here: [`ClusterTopologyManager#replacementInstanceState`]
@@ -2138,8 +2347,9 @@ public final class LeaderReconciler {
     /// so a failure that escaped that contract leaves the entry exactly as UNKNOWN would, bounded by
     /// the ceiling.
     @Contract
-    private void pollInstanceStateIfDue(NodeId id, InFlightEntry entry) {
-        if (entry.isDispatching() || !statusQueriesOutstanding.add(id)) {
+    private void pollInstanceStateIfDue(OwnerLifetime life, NodeId id, InFlightEntry entry) {
+        probe(Window.POLL_START);
+        if (!mayAct(life) || entry.isDispatching() || !statusQueriesOutstanding.add(id)) {
             return;
         }
 
@@ -2218,25 +2428,24 @@ public final class LeaderReconciler {
     /// regardless of WHY it went unresolved — debounce-suppressed, quorum-unsafe, cold-start
     /// latched, or masked by in-flight placeholders. Converged passes
     /// (`confirmedCoreMembers >= configuredCoreCount`) arm NOTHING, terminating the loop.
-    /// Hot-loop safety: deduped (a non-null [`#deficitFollowUpFutureRef`] short-circuits — at
+    /// Hot-loop safety: deduped (a non-null [`#deficitFollowUpHandleRef`] short-circuits — at
     /// most one pending; the CAS-arm cancels a lost race) and delay-floored (see
     /// [`#deficitFollowUpDelay`]: never below [`#DEBOUNCE_DELAY`], full debounce window once
     /// the anchor has elapsed or is unset) — the same dedupe/CAS-arm discipline as
     /// [`#armDrainGraceReEval`] / [`#armInFlightSweep`]; no new timer machinery, the shared
     /// scheduler is reused.
     @Contract
-    private void armDeficitFollowUpIfNeeded(long now, int confirmedCoreMembers, int configuredCoreCount) {
+    private void armDeficitFollowUpIfNeeded(OwnerLifetime life,
+                                            long now,
+                                            int confirmedCoreMembers,
+                                            int configuredCoreCount) {
         var unresolvedDeficit = configuredCoreCount - confirmedCoreMembers > 0;
 
-        if (!unresolvedDeficit || deficitFollowUpFutureRef.get() != null) {
+        if (!unresolvedDeficit) {
             return;
         }
 
-        var future = scheduler.schedule(this::runDeficitFollowUp, deficitFollowUpDelay(now));
-
-        if (!deficitFollowUpFutureRef.compareAndSet(null, future)) {
-            future.cancel(false);
-        }
+        armOnce(life, deficitFollowUpHandleRef, this::runDeficitFollowUp, deficitFollowUpDelay(now));
     }
 
     /// Delay for the deficit-convergence follow-up. While the deficit-debounce anchor is set
@@ -2268,43 +2477,31 @@ public final class LeaderReconciler {
     /// terminates on convergence. Non-leader nodes no-op (a deposed leader's follow-up must
     /// not act; [`#deactivate`] also cancels the pending future).
     @Contract
-    private void runDeficitFollowUp() {
-        deficitFollowUpFutureRef.set(null);
-        if (!isLeader.get()) {
+    private void runDeficitFollowUp(OwnerLifetime life) {
+        probe(Window.BODY_START);
+        if (!mayAct(life)) {
             return;
         }
 
-        triggerReconcile(ReconcileTrigger.DEFICIT_FOLLOW_UP);
-    }
-
-    @Contract
-    private void cancelDeficitFollowUp() {
-        var prev = deficitFollowUpFutureRef.getAndSet(null);
-
-        if (prev != null) {
-            prev.cancel(false);
-        }
+        deficitFollowUpHandleRef.set(none());
+        triggerReconcile(life, ReconcileTrigger.DEFICIT_FOLLOW_UP);
     }
 
     /// Arm a single surplus-convergence follow-up (#331) iff a surplus is unresolved
-    /// (`effective > configuredCoreCount`). Deduped: a non-null [`#surplusFollowUpFutureRef`]
+    /// (`effective > configuredCoreCount`). Deduped: a non-null [`#surplusFollowUpHandleRef`]
     /// short-circuits (at most one pending), the CAS-arm cancels a lost race — the same discipline
     /// as [`#armDeficitFollowUpIfNeeded`] / [`#armDrainGraceReEval`]; no new timer machinery, the
     /// shared scheduler is reused. Spaced at the deficit-debounce window plus the short margin so
     /// the loop never runs hot.
     @Contract
-    private void armSurplusFollowUpIfNeeded(int effective, int configuredCoreCount) {
+    private void armSurplusFollowUpIfNeeded(OwnerLifetime life, int effective, int configuredCoreCount) {
         var unresolvedSurplus = effective - configuredCoreCount > 0;
 
-        if (!unresolvedSurplus || surplusFollowUpFutureRef.get() != null) {
+        if (!unresolvedSurplus) {
             return;
         }
 
-        var future = scheduler.schedule(this::runSurplusFollowUp, surplusFollowUpDelay());
-
-        if (!surplusFollowUpFutureRef.compareAndSet(null, future)) {
-            future.cancel(false);
-        }
+        armOnce(life, surplusFollowUpHandleRef, this::runSurplusFollowUp, surplusFollowUpDelay());
     }
 
     /// Delay for the surplus-convergence follow-up: the full deficit-debounce window plus the
@@ -2322,40 +2519,14 @@ public final class LeaderReconciler {
     /// — the loop terminates on convergence. Non-leader nodes no-op (a deposed leader's follow-up
     /// must not act; [`#deactivate`] also cancels the pending future).
     @Contract
-    private void runSurplusFollowUp() {
-        surplusFollowUpFutureRef.set(null);
-        if (!isLeader.get()) {
+    private void runSurplusFollowUp(OwnerLifetime life) {
+        probe(Window.BODY_START);
+        if (!mayAct(life)) {
             return;
         }
 
-        triggerReconcile(ReconcileTrigger.SURPLUS_FOLLOW_UP);
-    }
-
-    @Contract
-    private void cancelSurplusFollowUp() {
-        var prev = surplusFollowUpFutureRef.getAndSet(null);
-
-        if (prev != null) {
-            prev.cancel(false);
-        }
-    }
-
-    @Contract
-    private void cancelPendingActivation() {
-        var prev = activationFutureRef.getAndSet(null);
-
-        if (prev != null) {
-            prev.cancel(false);
-        }
-    }
-
-    @Contract
-    private void cancelInFlightSweep() {
-        var sweep = inFlightSweepFutureRef.getAndSet(null);
-
-        if (sweep != null) {
-            sweep.cancel(false);
-        }
+        surplusFollowUpHandleRef.set(none());
+        triggerReconcile(life, ReconcileTrigger.SURPLUS_FOLLOW_UP);
     }
 
     private static TimeSpan computeQuiesceDelay(TimeSpan splitTimeout) {
@@ -2462,6 +2633,30 @@ public final class LeaderReconciler {
                                                 quorumSafe,
                                                 deficitAgeMs(now),
                                                 captured.map(ProvisioningDecisionSnapshot::reason).or("NOT_EVALUATED"));
+    }
+
+    /// The debounce state of a term: nothing pending, or a pending debounce owned by the lifetime that scheduled it, with the trigger
+    /// that started it and whether a follow-up pass was requested while it ran. Immutable, replaced by compare-and-set.
+    private sealed interface Debounce {
+        Debounce IDLE = Idle.IDLE;
+
+        enum Idle implements Debounce {
+            IDLE
+        }
+
+        record Pending(OwnerLifetime owner, ReconcileTrigger trigger, boolean followUpRequested) implements Debounce {
+            static Pending pending(OwnerLifetime owner, ReconcileTrigger trigger) {
+                return new Pending(owner, trigger, false);
+            }
+
+            Pending withFollowUp() {
+                return new Pending(owner, trigger, true);
+            }
+
+            boolean isLive() {
+                return ! owner.isEnded();
+            }
+        }
     }
 
     /// #1049 — lifecycle of one in-flight auto-heal replacement. Advanced only by guarded transitions

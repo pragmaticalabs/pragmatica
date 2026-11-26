@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -13,6 +14,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Acti
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SchemaVersionPutReceived;
+import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -40,10 +42,12 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
@@ -802,6 +806,30 @@ class ClusterDeploymentStateActiveTest {
                     .isEmpty();
         }
 
+        /// #3754 F5: a dispatch refused because the orchestrator is stopped with its node is the shutdown working, logged at
+        /// INFO and never at ERROR; a genuine migration failure stays at ERROR (the control, so the INFO case cannot pass by
+        /// logging nothing).
+        @Test
+        void refusalAtStop_isLoggedAtInfoNotError_whileAMigrationFailureStaysError() {
+            try (var capture = LogCapture.capture(ClusterDeploymentState.Active.class, Level.INFO, false)) {
+                activeWithSchemaRecord(SchemaStatus.PENDING,
+                                       new RecordingSchemaOrchestrator(SchemaError.OrchestratorStopped.orchestratorStopped(DATASOURCE)));
+
+                assertThat(capture.messages(Level.ERROR)).as("a refusal at stop is no failed migration").isEmpty();
+                assertThat(capture.messages(Level.INFO)).anyMatch(message -> message.contains("not started")
+                                                                             && message.contains(DATASOURCE));
+            }
+
+            try (var capture = LogCapture.capture(ClusterDeploymentState.Active.class, Level.INFO, false)) {
+                activeWithSchemaRecord(SchemaStatus.PENDING,
+                                       new RecordingSchemaOrchestrator(SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(DATASOURCE)));
+
+                assertThat(capture.messages(Level.ERROR)).as("control: a genuine failure is logged at ERROR")
+                                                         .hasSize(1)
+                                                         .allMatch(message -> message.contains("Schema migration failed"));
+            }
+        }
+
         @Test
         void pendingRecord_isStillReDispatched_provingTheTestCanTellTheDifference() {
             var orchestrator = new RecordingSchemaOrchestrator();
@@ -1182,10 +1210,23 @@ class ClusterDeploymentStateActiveTest {
     /// [SchemaRecoveryDispatch] can assert an undo-produced COMPLETED record never triggers one.
     private static final class RecordingSchemaOrchestrator implements SchemaOrchestratorService {
         final List<String> migrateIfNeededCalls = Collections.synchronizedList(new ArrayList<>());
+        private final Option<Cause> failure;
+
+        RecordingSchemaOrchestrator() {
+            this(Option.none());
+        }
+
+        RecordingSchemaOrchestrator(Cause failure) {
+            this(Option.some(failure));
+        }
+
+        private RecordingSchemaOrchestrator(Option<Cause> failure) {
+            this.failure = failure;
+        }
 
         @Override public Promise<Unit> migrateIfNeeded(String datasourceName) {
             migrateIfNeededCalls.add(datasourceName);
-            return Promise.success(Unit.unit());
+            return failure.map(Cause::<Unit> promise).or(() -> Promise.success(Unit.unit()));
         }
 
         @Override public Promise<Unit> undoTo(String datasourceName, int targetVersion) {

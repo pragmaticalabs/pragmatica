@@ -30,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// quiesce, FSM2 close, then the components), never in the synchronous part of `stop()` before it.
 class StopSequencePinTest {
     private static final Path NODE_SOURCE = Path.of("src", "main", "java", "org", "pragmatica", "aether", "node", "AetherNode.java");
+    private static final Path WIRING_SOURCE = Path.of("src", "main", "java", "org", "pragmatica", "aether", "node", "deployment", "DeploymentWiring.java");
     private static final Pattern QUIESCE = Pattern.compile("(?:::|\\.)quiesce\\b");
     private static final Pattern THROUGH_THE_WIRING = Pattern.compile("deploymentWiring\\s*\\.leaveQuorum\\(\\s*\\(\\)\\s*->\\s*router\\.route\\(ClusterStateNotification\\.passive\\(\\)\\)\\s*,"
                                                                       + "\\s*\\(\\)\\s*->\\s*leaderDeactivation\\s*\\.delivered\\(\\s*reactors\\.executor\\(\"LeaderManager\"\\)\\s*,"
@@ -184,6 +185,19 @@ class StopSequencePinTest {
         assertThat(fsm2Close(source)).isEqualTo(FSM2_CLOSE + " deploymentWiring.stop(); return Unit.unit(); }");
     }
 
+    /// b06 (#3776 review): `deploymentWiring.stop()` ends the FSM2 interpreters and runs the legacy node FSM's stop, and the ruled order puts it AFTER `leaveQuorum` (R-3776-1):
+    /// the FSM must be left Dormant by the quorum leave before `Shutdown` reaches it. The call appears exactly once in the node, in the FSM2 close, which
+    /// `theWholeStop_runsInTheRuledOrder...` places after the quiesce; a second call anywhere else (before `leaveQuorum`, say) is not that order. Mutant: an extra
+    /// `deploymentWiring.stop();` ahead of `leaveQuorum` goes red here.
+    @Test
+    void theWiringsStop_isCalledOnce_andOnlyByTheFsm2Close() {
+        var source = read(NODE_SOURCE);
+        var calls = Pattern.compile(Pattern.quote("deploymentWiring.stop()"));
+
+        assertThat(count(calls, source)).as("the node calls the wiring's stop once").isEqualTo(1L);
+        assertThat(count(calls, fsm2Close(source))).as("and that call is the FSM2 close, which the stop sequence runs after leaveQuorum").isEqualTo(1L);
+    }
+
     /// #3557: the node's stop closes the membership FSM, once, among the components' stops. Without it the FSM's per-member timers
     /// outlive the node on the JVM-global scheduler. Mutant: delete the `membershipFsm.close();` statement and this goes red.
     @Test
@@ -202,6 +216,24 @@ class StopSequencePinTest {
 
         assertThat(count(Pattern.compile(Pattern.quote(COMPONENTS_END)), source)).isEqualTo(1L);
         assertThat(tail).startsWith(COMPONENTS_END + " }");
+    }
+
+    /// #3754: the schema orchestrator's renewal and re-dispatch tasks end with the node, after the quiesce and the FSM2 close like every other
+    /// component, and never at leader deactivation (the lease keeps renewing for a running script). The stop is the wiring's, so AetherNode names
+    /// no cluster manager for it (the frozen W-32 list may only shrink): this pins the placement and the count of the one call, and that the
+    /// wiring's method is the one site that stops the orchestrator. The effect (renewal ends, nothing is released) is carried by
+    /// `SchemaOrchestratorLeaseTest$NodeStop`.
+    @Test
+    void theSchemaOrchestrator_isStoppedOnceInTheComponentsStops_andNotInTheSynchronousStop() {
+        var source = read(NODE_SOURCE);
+        var wiring = read(WIRING_SOURCE);
+
+        assertThat(teardownStatements(source)).containsOnlyOnce("deploymentWiring.stopSchemaOrchestrator(schemaOrchestrator());");
+        assertThat(stopMethod(source)).doesNotContain("stopSchemaOrchestrator");
+        assertThat(count(Pattern.compile("stopSchemaOrchestrator\\("), source)).as("no other site of the node stops it, in particular not the leader deactivation").isEqualTo(1L);
+        assertThat(count(Pattern.compile("schemaOrchestrator\\(\\)\\s*\\.stop\\("), source)).as("the node does not stop it directly").isZero();
+        assertThat(count(Pattern.compile("public Unit stopSchemaOrchestrator\\(SchemaOrchestratorService orchestrator\\) \\{\\s*return orchestrator\\.stop\\(\\);"), wiring)).as("the wiring's stop ends the orchestrator").isEqualTo(1L);
+        assertThat(count(Pattern.compile("\\.stop\\(\\)"), between(wiring, "public Promise<Unit> deactivateCluster", "private Promise<Unit> fsm2Deactivation"))).as("the cluster deactivation does not stop it").isZero();
     }
 
     @Test

@@ -100,7 +100,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -302,6 +302,17 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// Test seam (#2981 S12), see [#beforeParkJoinProbe(Runnable)]; nothing until a test sets it.
     private volatile Runnable beforeParkJoinProbe = () -> {};
+
+    /// #3754: the lifetime of this manager's scheduled tasks (the unsettled-repair report, the park expiry). [#close()] ends it, so
+    /// no timer fires a body after the stop. Volatile only so a test can substitute a fake seam ([#schedulingSeam]); never swapped
+    /// in production, because a closed manager is not re-activated.
+    private volatile OwnerLifetime lifetime = OwnerLifetime.ownerLifetime();
+
+    /// Test seam (#3754), see [#beforeUnsettledReportProbe(Runnable)]; nothing until a test sets it.
+    private volatile Runnable beforeUnsettledReportProbe = () -> {};
+
+    /// Test seam (#3754), see [#afterCloseDrainProbe(Runnable)]; nothing until a test sets it.
+    private volatile Runnable afterCloseDrainProbe = () -> {};
 
     /// #2590 P1: where a partition's committed position and its suffix truncations are told, late-bound
     /// ([#partitionLogEvents(PartitionLogEvents)]); nobody until wired.
@@ -4429,14 +4440,26 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void scheduleUnsettledReport(String streamName, int partition, long generation, PartitionRef ref) {
         repairEpisode(streamName).repairGenerationOf().put(partition, generation);
-        repairReportBound.onPresent(bound -> SharedScheduler.schedule(() -> reportUnsettled(streamName,
-                                                                                            partition,
-                                                                                            generation),
-                                                                      bound));
+        repairReportBound.onPresent(bound -> lifetime.schedule(_ -> reportUnsettled(streamName, partition, generation),
+                                                               bound));
+    }
+
+    /// Test seam (#3754): the scheduling seam of this manager's lifetime, so a test fires the scheduled bodies by hand.
+    @Contract
+    void schedulingSeam(OwnerLifetime.Seam seam) {
+        lifetime = OwnerLifetime.ownerLifetime(seam);
+    }
+
+    /// Test seam (#3754): runs when an unsettled-report body has started, after the lifetime wrapper read the flag and before
+    /// the body reaches the operator warning, the window in which [#close()] can end the lifetime under a body in flight.
+    @Contract
+    void beforeUnsettledReportProbe(Runnable probe) {
+        beforeUnsettledReportProbe = probe;
     }
 
     @Contract
     private void reportUnsettled(String streamName, int partition, long generation) {
+        beforeUnsettledReportProbe.run();
         existingRepairEpisode(streamName).onPresent(episode -> reportUnsettledIn(episode,
                                                                                  streamName,
                                                                                  partition,
@@ -4464,6 +4487,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private void reportCut(String streamName, int partition, TailCut cut, int confirmationFactor, boolean settled) {
+        // #3754 (N): this node is the sole raiser of its own operator warning, and a stopped manager must not warn. The lifetime
+        // wrapper only stops bodies that had not started when close() ran; a report already in flight re-reads the flag here,
+        // immediately before the effect (after close() cleared `streams` the factor reads 0, which warns).
+        if (lifetime.isEnded()) {
+            return;
+        }
+
         if (confirmationFactor <= 1) {
             var epoch = cut.epoch().map(Epoch::toString).or("unknown");
             var range = cut.firstRemoved() < 0
@@ -5291,10 +5321,19 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         beforeParkJoinProbe.run();
         parkedAcks.add(parked);
-        SharedScheduler.schedule(() -> expireParked(parked), remainingParkBudget(waiter));
+        answerAtOnceIfStopped(lifetime.schedule(_ -> expireParked(parked), remainingParkBudget(waiter)), parked);
         recheckParked(parked);
 
         return parked.answer();
+    }
+
+    // #3754: a waiter joining after close() ended the lifetime gets a cancelled expiry and was missed by the close-time drain,
+    // so it is answered here; removal from the list still decides who answers.
+    @Contract
+    private void answerAtOnceIfStopped(OwnerLifetime.Handle expiry, ParkedAck parked) {
+        if (expiry.isCancelled()) {
+            expireParked(parked);
+        }
     }
 
     /// Test seam (#2981 S12): runs between the lapsed verdict and the waiter joining the park list, the window in which a
@@ -7096,6 +7135,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     @Override
     public void close() {
+        lifetime.end();
+        answerParkedAtClose();
         flushAckedMarkers();
         streams.values().forEach(StreamEntry::close);
         streams.clear();
@@ -7105,6 +7146,22 @@ public final class StreamPartitionManager implements AutoCloseable {
         // one-shot flush per batch (#1246) on the process-wide SharedScheduler. Nothing else called its
         // close(), so a stopped node kept flushing replication batches at its peers.
         replicationManager.close();
+    }
+
+    // #3754: ending the lifetime cancels every park expiry, so a waiter parked at the stop would never be answered. Answer it
+    // now with what its expiry would have answered (the lease did lapse). Removal from the list decides who answers, so a
+    // waiter is answered once whether this, an in-flight expiry or a renewal edge reaches it first (design-out of the orphan).
+    @Contract
+    private void answerParkedAtClose() {
+        parkedAcks.forEach(this::expireParked);
+        afterCloseDrainProbe.run();
+    }
+
+    /// Test seam (#3754): runs once the close-time drain has finished, the window in which a waiter can still join the park
+    /// list; it pins that the lifetime is ended before this point, so such a waiter is answered at once.
+    @Contract
+    void afterCloseDrainProbe(Runnable probe) {
+        afterCloseDrainProbe = probe;
     }
 
     private Result<StreamEntry> resolveStreamEntry(String streamName) {
