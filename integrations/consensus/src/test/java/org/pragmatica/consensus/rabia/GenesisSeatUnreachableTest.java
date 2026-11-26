@@ -274,7 +274,10 @@ class GenesisSeatUnreachableTest {
         assertThat(engine.genesisSeatConfirmWindowForTesting()).isEqualTo(timeSpan(5).seconds());
     }
 
-    /// Never decided after stop: a stop between the install and the deadline cancels the deadline, and nothing is named afterwards.
+    /// Never decided after stop: a stop between the install and the deadline names nothing, even when the deadline fires afterwards.
+    /// The outcome is held by `safeExecute`'s `stopping` guard (it refuses a task once the engine stops), so this test does not claim the
+    /// timer was cancelled: a 200 ms window has fired and is done by the time of the read, cancelled or not. Cancellation is pinned by
+    /// [#stop_cancelsTheArmedDeadline].
     @Test
     void stoppedBeforeTheDeadline_namesNothing() {
         engine = pendingB();
@@ -285,8 +288,21 @@ class GenesisSeatUnreachableTest {
         engine.stop().await();
         LockSupport.parkNanos(1_000_000_000L);
 
-        assertThat(engine.genesisSeatConfirmationPendingForTesting()).as("stop cancelled the deadline").isFalse();
         assertThat(seatWarnings()).as("nothing decided after stop").isEmpty();
+    }
+
+    /// Stop releases the install's deadline: with a window the timer cannot reach during the test, only the cancel in `performStop` can
+    /// leave it not pending (a stopped engine must not stay referenced by the shared scheduler for the rest of the window).
+    @Test
+    void stop_cancelsTheArmedDeadline() {
+        engine = pendingB();
+        engine.useGenesisSeatConfirmWindowForTesting(timeSpan(1).hours());
+        formWithYGoneOn(engine);
+        assertThat(engine.genesisSeatConfirmationPendingForTesting()).as("precondition: the deadline is armed").isTrue();
+
+        engine.stop().await();
+
+        assertThat(engine.genesisSeatConfirmationPendingForTesting()).as("stop cancelled the deadline").isFalse();
     }
 
     private void adoptRosterWithoutY() {
