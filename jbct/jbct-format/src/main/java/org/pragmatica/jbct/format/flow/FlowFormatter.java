@@ -54,12 +54,24 @@ public class FlowFormatter {
     /// The one place every formatted text passes before it is returned: [ContentGuard] compares its comments and
     /// tokens with the input's and refuses the file ([FormattingError.ContentChanged]) on the first difference.
     public Result<SourceFile> formatParsed(Cursor tree, SourceFile source) {
-        var formatted = formatCst(tree, source.content());
+        var printed = new FlowPrinter(config, source.content()).print(tree);
 
+        return printed.commentOrder()
+                      .<Result<SourceFile>> fold(() -> guarded(printed.formatted(),
+                                                               source),
+                                                 order -> orderRefusal(source, order).result());
+    }
+
+    private static Result<SourceFile> guarded(String formatted, SourceFile source) {
         return ContentGuard.verify(source.fileName(),
                                    source.content(),
                                    formatted)
                            .map(_ -> source.withContent(formatted));
+    }
+
+    /// The printer printed a comment before an earlier one: the comment cursor's runtime check, ahead of the guard.
+    private static FormattingError orderRefusal(SourceFile source, CommentCursor.Violation order) {
+        return FormattingError.contentChanged(source.fileName(), order.line(), order.details());
     }
 
     /// Check if a source file is already formatted.
@@ -76,14 +88,5 @@ public class FlowFormatter {
                                                                     1,
                                                                     1,
                                                                     cause.message()));
-    }
-
-    private String formatCst(Cursor root, String source) {
-        // Under v6 the CST is already flat — no nested same-rule wrappers, no need for
-        // `flattenZomWrappers`. Each node carries its own leadingTrivia natively.
-        var printer = new FlowPrinter(config, source);
-        var flowResult = printer.print(root);
-
-        return flowResult.formatted();
     }
 }

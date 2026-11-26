@@ -61,13 +61,14 @@ final class FlowPrinter {
     private int tokenIndex;
     private final Map<Integer, Integer> tokenLineMap = new HashMap<>();
     private int currentLine;
-    // Track trivia tokens we've already emitted as comments (prevents double-emit when
-    // an outer node and its first CST child share leading trivia under v6 attribution).
-    private final Set<Integer> emittedTriviaTokens = new HashSet<>();
-    // The comment invariant (#3698, #3691), held in ONE place: `claimCommentsBefore`. The printer emits the code
-    // tokens in source order; before each one, every comment of the source that precedes it and that no placement
-    // rule has printed yet is printed there. So no comment is lost, none is printed twice (`emittedTriviaTokens`),
-    // and each keeps its position among the code tokens. `sourceCursor` is the index of the next code token.
+    // The comment invariant (#3698, #3691): comments are printed in source order, each exactly once, through ONE
+    // operation, `CommentCursor.print`, which first prints every earlier unprinted comment. The printer never holds
+    // the text of a comment: every rule that prints one passes the cursor a layout (see `printComment`). Which
+    // comments are printed (so none is printed twice) is the cursor's state too.
+    // The printer also emits the code tokens in source order; before each one, `claimCommentsBefore` prints every
+    // comment of the source that precedes it and that no placement rule has printed yet. So no comment is lost, and
+    // each keeps its position among the code tokens. `sourceCursor` is the index of the next code token.
+    private CommentCursor comments;
     private TokenArray sourceTokens;
     private int sourceCursor;
     // Alignment tracking
@@ -145,7 +146,9 @@ final class FlowPrinter {
     }
 
     /// Result of flow printing: formatted text and token-to-line mapping.
-    record FlowResult(String formatted, Map<Integer, Integer> tokenLineMap) {}
+    record FlowResult(String formatted,
+                      Map<Integer, Integer> tokenLineMap,
+                      Option<CommentCursor.Violation> commentOrder) {}
 
     /// Pre-computed info about an operand in an additive expression.
     record OperandInfo(boolean startsWithString, int width) {}
@@ -154,6 +157,7 @@ final class FlowPrinter {
     FlowResult print(Cursor root) {
         sourceTokens = root.cst().tokens();
         sourceCursor = 0;
+        comments = CommentCursor.commentCursor(sourceTokens, source, this::writeCommentText, this::catchUpLayout);
         printNode(root);
         // Comments after the last code token (after the last type of the file) follow no token: print them here.
         claimCommentsThrough(sourceTokens.count() - 1);
@@ -164,7 +168,7 @@ final class FlowPrinter {
                            .stripTrailing()
                    + "\n";
 
-        return new FlowResult(result, Map.copyOf(tokenLineMap));
+        return new FlowResult(result, Map.copyOf(tokenLineMap), comments.violation());
     }
 
     // ===== Measurement =====
@@ -216,7 +220,7 @@ final class FlowPrinter {
                               int forcedIndentCol,
                               int sourceCursor,
                               Map<Integer, Integer> tokenLineMap,
-                              Set<Integer> emittedTriviaTokens,
+                              CommentCursor.Snapshot comments,
                               AlignmentContext.Snapshot alignment) {}
 
     private SavedState saveState() {
@@ -236,7 +240,7 @@ final class FlowPrinter {
                               forcedIndentCol,
                               sourceCursor,
                               new HashMap<>(tokenLineMap),
-                              new HashSet<>(emittedTriviaTokens),
+                              comments.snapshot(),
                               alignment.snapshot());
     }
 
@@ -258,8 +262,7 @@ final class FlowPrinter {
         sourceCursor = saved.sourceCursor();
         tokenLineMap.clear();
         tokenLineMap.putAll(saved.tokenLineMap());
-        emittedTriviaTokens.clear();
-        emittedTriviaTokens.addAll(saved.emittedTriviaTokens());
+        comments.restore(saved.comments());
         alignment.restore(saved.alignment());
     }
 
@@ -352,36 +355,23 @@ final class FlowPrinter {
                 continue;
             }
 
-            int kind = tokens.kindAt(t);
-            boolean isLine = kind == 1 || kind == 3;  // LINE_COMMENT / DOC_LINE_COMMENT
-            boolean isBlock = kind == 2 || kind == 4;  // BLOCK_COMMENT / DOC_BLOCK_COMMENT
-            if (measuringMode || (!isLine && !isBlock) || t >= lastBrace || emittedTriviaTokens.contains(t)) {
+            if (measuringMode || !comments.isComment(t) || t >= lastBrace || comments.isPrinted(t)) {
                 continue;
             }
             // Orphan comment enclosed before a `}` in this bare-leaf body — emit so it is not
             // silently deleted (bug B2 / report mechanism C). A single-line block comment stays
             // inline (`{ /* note */ }`); line comments and multi-line block comments go own-line.
-            var text = tokens.textAt(t).toString().stripTrailing();
-            boolean sameLine = precedingContentOnSameLine(tokens.startAt(t)) && currentColumn > 0;
+            boolean sameLine = precedingContentOnSameLine(comments.startOf(t)) && currentColumn > 0;
 
-            if (isBlock && sameLine && text.indexOf('\n') < 0) {
-                emit(" " + text + " ");
-            } else if (isLine && sameLine) {
+            if (!comments.isLine(t) && sameLine && !comments.isMultiLine(t)) {
+                printComment(t, this::inlineBlockThenSpaceLayout);
+            } else if (comments.isLine(t) && sameLine) {
                 // A trailing line comment ends its line, so the `}` cannot follow it here: the claim before the `}`
                 // prints it and breaks the line (`claimCommentsBefore`, #3698).
                 continue;
             } else {
-                if (currentColumn > 0) {
-                    newline();
-                }
-
-                printIndent();
-                emit(text);
-                newline();
-                printIndent();
+                printComment(t, this::ownLineThenIndentLayout);
             }
-
-            emittedTriviaTokens.add(t);
         }
     }
 
@@ -462,9 +452,7 @@ final class FlowPrinter {
                     // (flushInSpanTrailingComment) or as a gap token after it (the while-scan).
                     flushInSpanTrailingComment(kid);
                     while (t <= end && tokens.isTrivia(t)) {
-                        int kind = tokens.kindAt(t);
-
-                        if (kind >= 1 && kind <= 4 && !emitTrailingOrphanComment(tokens, t)) {
+                        if (comments.isComment(t) && !emitTrailingOrphanComment(t)) {
                             break;
                         }
 
@@ -484,7 +472,7 @@ final class FlowPrinter {
                 if (!tokens.isTrivia(t)) {
                     emitToken(tokens.textAt(t).toString());
                 } else {
-                    emitInlineBlockComment(tokens, t);
+                    emitInlineBlockComment(t);
                 }
 
                 t++;
@@ -535,7 +523,7 @@ final class FlowPrinter {
                     walker.onToken(tokens.kindAt(t),
                                    tokens.textAt(t).toString());
                 } else {
-                    emitInlineBlockComment(tokens, t);
+                    emitInlineBlockComment(t);
                 }
 
                 t++;
@@ -985,38 +973,29 @@ final class FlowPrinter {
             return;
         }
 
-        var tokens = block.cst().tokens();
         int open = block.firstTokenIdx();
         int close = block.lastTokenIdx();
-        var comments = new ArrayList<Integer>();
+        var pending = new ArrayList<Integer>();
         boolean needsOwnLines = false;  // a line comment or a multi-line block comment forces expansion
         for (int t = open + 1; t < close; t++) {
-            if (!tokens.isTrivia(t)) {
+            if (!comments.isComment(t) || comments.isPrinted(t)) {
                 continue;
             }
 
-            int kind = tokens.kindAt(t);
-            boolean isLine = kind == 1 || kind == 3;  // LINE_COMMENT / DOC_LINE_COMMENT
-            boolean isBlock = kind == 2 || kind == 4;  // BLOCK_COMMENT / DOC_BLOCK_COMMENT
-            if ((!isLine && !isBlock) || emittedTriviaTokens.contains(t)) {
-                continue;
-            }
-
-            comments.add(t);
-            if (isLine || tokens.textAt(t).toString().indexOf('\n') >= 0) {
+            pending.add(t);
+            if (comments.isLine(t) || comments.isMultiLine(t)) {
                 needsOwnLines = true;
             }
         }
 
-        if (comments.isEmpty()) {
+        if (pending.isEmpty()) {
             return;
         }
 
         if (!needsOwnLines) {
             // Only single-line block comments: keep them inline so `{ /* note */ }` stays one line.
-            for (int t : comments) {
-                emit(" " + tokens.textAt(t).toString().stripTrailing());
-                emittedTriviaTokens.add(t);
+            for (int t : pending) {
+                printComment(t, this::inlineBlockLayout);
             }
 
             emit(" ");
@@ -1025,11 +1004,8 @@ final class FlowPrinter {
         }
         // A line comment (or multi-line block comment) can't share the `}` line — expand the body.
         indentLevel++;
-        for (int t : comments) {
-            newline();
-            printIndent();
-            emit(tokens.textAt(t).toString().stripTrailing());
-            emittedTriviaTokens.add(t);
+        for (int t : pending) {
+            printComment(t, this::newLineThenIndentLayout);
         }
 
         indentLevel--;
@@ -1054,33 +1030,24 @@ final class FlowPrinter {
         for (int t = lastNonTrivia + 1; t <= closingBrace; t++) {
             if (!tokens.isTrivia(t)) break;
 
-            int kind = tokens.kindAt(t);
-
-            if (kind != 1 && kind != 3) {
+            if (!comments.isLine(t)) {
                 // LINE_COMMENT or DOC_LINE_COMMENT only
                 continue;
             }
 
-            if (emittedTriviaTokens.contains(t)) {
+            if (comments.isPrinted(t)) {
                 continue;
             }
 
-            int commentStart = tokens.startAt(t);
-            var text = tokens.textAt(t).toString().stripTrailing();
-
-            if (precedingContentOnSameLine(commentStart) && currentColumn > 0) {
+            if (precedingContentOnSameLine(comments.startOf(t)) && currentColumn > 0) {
                 // Trailing comment on the same source line as the preceding stmt.
-                emit("  " + text);
+                printComment(t, this::trailingLayout);
             } else {
                 // Comment on its OWN line before `}` — emit it on a fresh indented line instead
                 // of dropping it. The `}` is emitted via emitBare, which never runs the
                 // leading-comment path, so without this the comment is lost (bug B2).
-                newline();
-                printIndent();
-                emit(text);
+                printComment(t, this::newLineThenIndentLayout);
             }
-
-            emittedTriviaTokens.add(t);
         }
     }
 
@@ -1091,22 +1058,13 @@ final class FlowPrinter {
     private void emitTrailingCommentsFrom(Cursor nextNode) {
         if (measuringMode) return;
 
-        var tokens = nextNode.cst().tokens();
-
         for (int tokIdx : nextNode.leadingTriviaTokens().toArray()) {
-            if (emittedTriviaTokens.contains(tokIdx)) continue;
+            if (comments.isPrinted(tokIdx)) continue;
 
-            int kind = tokens.kindAt(tokIdx);
+            if (!comments.isLine(tokIdx)) continue;  // LINE_COMMENT or DOC_LINE_COMMENT only
+            if (!precedingContentOnSameLine(comments.startOf(tokIdx))) break;
 
-            if (kind != 1 && kind != 3) continue;  // LINE_COMMENT or DOC_LINE_COMMENT only
-            int commentStart = tokens.startAt(tokIdx);
-
-            if (!precedingContentOnSameLine(commentStart)) break;
-
-            var text = tokens.textAt(tokIdx).toString().stripTrailing();
-
-            emit("  " + text);
-            emittedTriviaTokens.add(tokIdx);
+            printComment(tokIdx, this::trailingLayout);
         }
     }
 
@@ -1136,31 +1094,20 @@ final class FlowPrinter {
     /// true when it emitted a comment. Own-line comments return false and are left for the
     /// leading-comment machinery. No-op in measuring mode, for non-comments, for already-emitted
     /// tokens, and for multi-line block comments (which cannot be inlined as a trailing comment).
-    private boolean emitTrailingOrphanComment(TokenArray tokens, int t) {
-        if (measuringMode || emittedTriviaTokens.contains(t)) {
+    private boolean emitTrailingOrphanComment(int t) {
+        if (measuringMode || comments.isPrinted(t) || !comments.isComment(t)) {
             return false;
         }
 
-        int kind = tokens.kindAt(t);
-        boolean isLine = kind == 1 || kind == 3;
-        boolean isBlock = kind == 2 || kind == 4;
-
-        if (!isLine && !isBlock) {
+        if (currentColumn == 0 || !precedingContentOnSameLine(comments.startOf(t))) {
             return false;
         }
 
-        if (currentColumn == 0 || !precedingContentOnSameLine(tokens.startAt(t))) {
+        if (!comments.isLine(t) && comments.isMultiLine(t)) {
             return false;
         }
 
-        var text = tokens.textAt(t).toString().stripTrailing();
-
-        if (isBlock && text.indexOf('\n') >= 0) {
-            return false;
-        }
-
-        emit("  " + text);
-        emittedTriviaTokens.add(t);
+        printComment(t, this::trailingLayout);
 
         return true;
     }
@@ -1172,26 +1119,18 @@ final class FlowPrinter {
     /// skipping walk would otherwise delete (bug report mechanism E1). No-op for line comments,
     /// multi-line block comments, start-of-line positions, measuring mode, and already-emitted
     /// tokens.
-    private void emitInlineBlockComment(TokenArray tokens, int t) {
-        if (measuringMode || emittedTriviaTokens.contains(t) || currentColumn == 0) {
-            return;
-        }
-
-        int kind = tokens.kindAt(t);
-
-        if (kind != 2 && kind != 4) {
+    private void emitInlineBlockComment(int t) {
+        if (measuringMode || comments.isPrinted(t) || currentColumn == 0 || !comments.isComment(t) || comments.isLine(t)) {
             return;
         }
         // Only inline a block comment that was a same-line trailing comment in the source. An
         // own-line standalone block comment (`\n/* note */\n`) belongs to the leading-comment
         // machinery and must NOT be pulled up onto the previous token's line.
-        if (!precedingContentOnSameLine(tokens.startAt(t))) {
+        if (!precedingContentOnSameLine(comments.startOf(t))) {
             return;
         }
 
-        var text = tokens.textAt(t).toString().stripTrailing();
-
-        if (text.indexOf('\n') >= 0) {
+        if (comments.isMultiLine(t)) {
             return;
         }
         // Printed by the claim point's rule: on an aligned continuation it starts at the column, not one past it (#3698).
@@ -1203,7 +1142,7 @@ final class FlowPrinter {
     /// cannot corrupt following tokens; it rescues `x /* note */ y` comments that the parser places
     /// inside a child expression span where the trivia-skipping walk never visits them (bug report
     /// mechanism E1). No-op for comment-free spans and for comments already emitted by their own
-    /// node's leading-trivia handling (deduped via emittedTriviaTokens).
+    /// node's leading-trivia handling (deduped by the comment cursor).
     private void flushInSpanBlockComments(Cursor node) {
         if (measuringMode) {
             return;
@@ -1213,7 +1152,7 @@ final class FlowPrinter {
 
         for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) {
-                emitInlineBlockComment(tokens, t);
+                emitInlineBlockComment(t);
             }
         }
     }
@@ -1232,10 +1171,9 @@ final class FlowPrinter {
                 continue;
             }
 
-            int kind = tokens.kindAt(t);
-            boolean wasLine = kind == 1 || kind == 3;
+            boolean wasLine = comments.isLine(t);
 
-            if (emitTrailingOrphanComment(tokens, t) && wasLine) {
+            if (emitTrailingOrphanComment(t) && wasLine) {
                 lineEmitted = true;
             }
         }
@@ -1271,24 +1209,11 @@ final class FlowPrinter {
         }
 
         for (int t = afterToken; t < close; t++) {
-            if (!tokens.isTrivia(t)) {
+            if (!comments.isComment(t) || comments.isPrinted(t)) {
                 continue;
             }
 
-            int kind = tokens.kindAt(t);
-
-            if (kind < 1 || kind > 4 || emittedTriviaTokens.contains(t)) {
-                continue;
-            }
-
-            if (currentColumn > 0) {
-                newline();
-            }
-
-            printIndent();
-            emit(tokens.textAt(t).toString().stripTrailing());
-            newline();
-            emittedTriviaTokens.add(t);
+            printComment(t, this::ownLineLayout);
         }
     }
 
@@ -1305,21 +1230,12 @@ final class FlowPrinter {
         boolean any = false;
 
         for (int t = args.firstTokenIdx(); t <= args.lastTokenIdx(); t++) {
-            if (!tokens.isTrivia(t)) {
+            if (!comments.isComment(t) || comments.isPrinted(t) || precedingContentOnSameLine(comments.startOf(t))) {
                 continue;
             }
 
-            int kind = tokens.kindAt(t);
-
-            if (kind < 1 || kind > 4 || emittedTriviaTokens.contains(t) || precedingContentOnSameLine(tokens.startAt(t))) {
-                continue;
-            }
-
-            newline();
-            printAlignedTo(alignCol);
-            emit(tokens.textAt(t).toString().stripTrailing());
+            printComment(t, slot -> alignedLineLayout(slot, alignCol));
             any = true;
-            emittedTriviaTokens.add(t);
         }
 
         return any;
@@ -1335,11 +1251,9 @@ final class FlowPrinter {
         var tokens = node.cst().tokens();
 
         for (int tokIdx : node.leadingTriviaTokens().toArray()) {
-            if (emittedTriviaTokens.contains(tokIdx)) continue;
+            if (comments.isPrinted(tokIdx)) continue;
 
-            int kind = tokens.kindAt(tokIdx);
-
-            if (kind >= 1 && kind <= 4) return true;  // any comment kind (1=LINE, 2=BLOCK, 3=DOC_LINE, 4=DOC_BLOCK)
+            if (comments.isComment(tokIdx)) return true;  // any comment kind (LINE, BLOCK, DOC_LINE, DOC_BLOCK)
         }
 
         return false;
@@ -2928,10 +2842,8 @@ final class FlowPrinter {
         var tokens = node.cst().tokens();
 
         for (int idx = node.firstTokenIdx(); idx <= node.lastTokenIdx(); idx++) {
-            int kind = tokens.kindAt(idx);
-
-            if (kind >= 1 && kind <= 4 && !emittedTriviaTokens.contains(idx)) {
-                emitOwnLineComment(tokens, idx);
+            if (comments.isComment(idx) && !comments.isPrinted(idx)) {
+                emitOwnLineComment(idx);
             }
         }
     }
@@ -2939,47 +2851,8 @@ final class FlowPrinter {
     /// Emit one comment token on its own line at the current indent, then a newline. Mirrors the
     /// per-token emission in [#emitLeadingComments] for comments that are not any node's leading
     /// trivia.
-    private void emitOwnLineComment(TokenArray tokens, int tokIdx) {
-        int kind = tokens.kindAt(tokIdx);
-        boolean isLine = kind == 1 || kind == 3;
-        boolean isBlock = kind == 2 || kind == 4;
-
-        if (!isLine && !isBlock) {
-            return;
-        }
-
-        if (currentColumn > 0) {
-            newline();
-        }
-
-        if (isLine) {
-            printIndent();
-            var text = tokens.textAt(tokIdx).toString().stripTrailing();
-
-            output.append(text);
-            currentColumn += text.length();
-        } else {
-            var lines = tokens.textAt(tokIdx).toString().split("\n", -1);
-
-            for (int i = 0; i < lines.length; i++) {
-                if (i == 0) {
-                    printIndent();
-                }
-
-                var line = lines[i].stripTrailing();
-
-                output.append(line);
-                currentColumn += line.length();
-                if (i < lines.length - 1) {
-                    output.append("\n");
-                    currentColumn = 0;
-                    currentLine++;
-                }
-            }
-        }
-
-        newline();
-        emittedTriviaTokens.add(tokIdx);
+    private void emitOwnLineComment(int tokIdx) {
+        printComment(tokIdx, this::ownLineLayout);
     }
 
     private void emitLeadingComments(Cursor node) {
@@ -2988,66 +2861,21 @@ final class FlowPrinter {
         // attributed to both the outer node and its first CST child — emit each token at
         // most once across the whole format pass).
         var triviaTokenIdxs = node.leadingTriviaTokens().toArray();
-        var tokens = node.cst().tokens();
 
         for (int tokIdx : triviaTokenIdxs) {
-            if (emittedTriviaTokens.contains(tokIdx)) {
+            if (comments.isPrinted(tokIdx) || !comments.isComment(tokIdx)) {
+                // Whitespace trivia ignored — flow formatter controls all whitespace
                 continue;
             }
 
-            int kind = tokens.kindAt(tokIdx);
-            boolean isLine = kind == 1 || kind == 3;  // LINE_COMMENT or DOC_LINE_COMMENT
-            boolean isBlock = kind == 2 || kind == 4;  // BLOCK_COMMENT or DOC_BLOCK_COMMENT
-            if ((isLine || isBlock) && !measuringMode && currentColumn > 0 && onPaddedBlankLine()) {
+            if (!measuringMode && currentColumn > 0 && onPaddedBlankLine()) {
                 // The output already stands where the node goes (an aligned continuation): print the comment there
                 // by the claim point's rule, so the node keeps its column and no blank line appears (#3698).
                 emitClaimedComment(tokIdx, false);
-            } else if (isLine) {
-                if (currentColumn > 0) {
-                    newline();
-                }
-
-                if (forcedIndentCol >= 0) {
-                    printAlignedTo(forcedIndentCol);
-                } else {
-                    printIndent();
-                }
-
-                var text = tokens.textAt(tokIdx).toString().stripTrailing();
-
-                output.append(text);
-                currentColumn += text.length();
-                newline();
+            } else {
+                printComment(tokIdx, this::leadingLayout);
                 emittedAny = true;
-                emittedTriviaTokens.add(tokIdx);
-            } else if (isBlock) {
-                if (currentColumn > 0) {
-                    newline();
-                }
-
-                var lines = tokens.textAt(tokIdx).toString().split("\n", -1);
-
-                for (int i = 0; i < lines.length; i++) {
-                    if (i == 0) {
-                        printIndent();
-                    }
-
-                    var line = lines[i].stripTrailing();
-
-                    output.append(line);
-                    currentColumn += line.length();
-                    if (i < lines.length - 1) {
-                        output.append("\n");
-                        currentColumn = 0;
-                        currentLine++;
-                    }
-                }
-
-                newline();
-                emittedAny = true;
-                emittedTriviaTokens.add(tokIdx);
             }
-            // Whitespace trivia ignored — flow formatter controls all whitespace
         }
 
         if (emittedAny && currentColumn == 0) {
@@ -3090,9 +2918,10 @@ final class FlowPrinter {
         emit(raw);
     }
 
-    /// The single enforcement point of the comment invariant (#3698, #3691): before the code token `token` is
-    /// printed, print every comment of the source that precedes it and is not printed yet, in source order. Layout
-    /// rules may print a comment earlier, at a better place (they mark it in `emittedTriviaTokens`); none may skip
+    /// The code-token side of the comment invariant (#3698, #3691): before the code token `token` is printed, print
+    /// every comment of the source that precedes it and is not printed yet, in source order (each through
+    /// `printComment`, which keeps the order whatever rule printed a comment before). Layout
+    /// rules may print a comment earlier, at a better place (the comment cursor records it as printed); none may skip
     /// one, because the comment is printed here at the latest. The token is found from `sourceCursor` as the first
     /// code token with this text within `CATCH_UP_WINDOW` code tokens: a custom printer that emits a token without
     /// this call leaves the cursor behind, and the next token catches it up, so the comment is printed at most a few
@@ -3144,9 +2973,7 @@ final class FlowPrinter {
 
     private void claimComments(int last, boolean beforeCloser) {
         for (int t = sourceCursor; t <= last; t++) {
-            int kind = sourceTokens.kindAt(t);
-
-            if (sourceTokens.isTrivia(t) && kind >= 1 && kind <= 4 && !emittedTriviaTokens.contains(t)) {
+            if (comments.isComment(t) && !comments.isPrinted(t)) {
                 emitClaimedComment(t, beforeCloser);
             }
         }
@@ -3158,17 +2985,17 @@ final class FlowPrinter {
     /// comment stays on its line; anything else goes on its own line. The next token resumes at the line's indent
     /// before a closer (`}`, `)`, `]`, `;`) and at a double-indent continuation otherwise.
     private void emitClaimedComment(int t, boolean beforeCloser) {
-        var text = sourceTokens.textAt(t).toString().stripTrailing();
-        int kind = sourceTokens.kindAt(t);
-        boolean selfClosing = (kind == 2 || kind == 4) && text.indexOf('\n') < 0;
+        printComment(t, slot -> claimedLayout(slot, beforeCloser));
+    }
+
+    private void claimedLayout(CommentCursor.Slot slot, boolean beforeCloser) {
+        int t = slot.index();
+        boolean selfClosing = !comments.isLine(t) && !comments.isMultiLine(t);
         int lineStart = output.lastIndexOf("\n") + 1;
         boolean blankLine = output.substring(lineStart).isBlank();
 
         if (selfClosing) {
-            emit(blankLine
-                 ? text + " "
-                 : " " + text);
-            emittedTriviaTokens.add(t);
+            inlineBlockClaimedLayout(slot, blankLine);
 
             return;
         }
@@ -3183,16 +3010,105 @@ final class FlowPrinter {
         if (blankLine) {
             output.setLength(lineStart);
             currentColumn = 0;
-            emitOwnLineComment(sourceTokens, t);
-        } else if ((kind == 1 || kind == 3) && precedingContentOnSameLine(sourceTokens.startAt(t))) {
-            emit("  " + text);
+            ownLineLayout(slot);
+        } else if (comments.isLine(t) && precedingContentOnSameLine(comments.startOf(t))) {
+            trailingLayout(slot);
             newline();
-            emittedTriviaTokens.add(t);
         } else {
-            emitOwnLineComment(sourceTokens, t);
+            ownLineLayout(slot);
         }
 
         printAlignedTo(resume);
+    }
+
+    private void inlineBlockClaimedLayout(CommentCursor.Slot slot, boolean blankLine) {
+        if (blankLine) {
+            slot.write("");
+            emit(" ");
+        } else {
+            slot.write(" ");
+        }
+    }
+
+    /// The layout of a comment printed ahead of a later one that a placement rule asked for (`CommentCursor.print`):
+    /// the claim point's layout, then the padding that waits for a code token is dropped, because the rule that asked
+    /// for the later comment places it itself.
+    private void catchUpLayout(CommentCursor.Slot slot) {
+        claimedLayout(slot, false);
+        if (onPaddedBlankLine()) {
+            output.setLength(output.lastIndexOf("\n") + 1);
+            currentColumn = 0;
+        }
+    }
+
+    /// Print comment `t` by `layout` (see `CommentCursor.print`): the one way a comment reaches the output. Comments
+    /// never influence layout decisions, so nothing is printed while measuring.
+    private void printComment(int t, CommentCursor.Layout layout) {
+        if (!measuringMode) {
+            comments.print(t, layout);
+        }
+    }
+
+    /// The cursor's sink: the text of one comment, lines already stripped of trailing whitespace.
+    private void writeCommentText(String text) {
+        emit(text);
+        currentLine += (int) text.chars().filter(c -> c == '\n').count();
+    }
+
+    // ===== Comment layouts: where the output stands before and after one comment text =====
+    private void trailingLayout(CommentCursor.Slot slot) {
+        slot.write("  ");
+    }
+
+    private void inlineBlockLayout(CommentCursor.Slot slot) {
+        slot.write(" ");
+    }
+
+    private void inlineBlockThenSpaceLayout(CommentCursor.Slot slot) {
+        slot.write(" ");
+        emit(" ");
+    }
+
+    private void newLineThenIndentLayout(CommentCursor.Slot slot) {
+        newline();
+        printIndent();
+        slot.write("");
+    }
+
+    private void alignedLineLayout(CommentCursor.Slot slot, int alignCol) {
+        newline();
+        printAlignedTo(alignCol);
+        slot.write("");
+    }
+
+    private void ownLineLayout(CommentCursor.Slot slot) {
+        if (currentColumn > 0) {
+            newline();
+        }
+
+        printIndent();
+        slot.write("");
+        newline();
+    }
+
+    private void ownLineThenIndentLayout(CommentCursor.Slot slot) {
+        ownLineLayout(slot);
+        printIndent();
+    }
+
+    private void leadingLayout(CommentCursor.Slot slot) {
+        if (currentColumn > 0) {
+            newline();
+        }
+        // Only a line comment starts at the forced column; a block comment's first line keeps the plain indent.
+        if (forcedIndentCol >= 0 && comments.isLine(slot.index())) {
+            printAlignedTo(forcedIndentCol);
+        } else {
+            printIndent();
+        }
+
+        slot.write("");
+        newline();
     }
 
     /// The current output line holds nothing but the padding to the column where the next token goes.

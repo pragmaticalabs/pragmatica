@@ -18,9 +18,10 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Comment-preservation sweep (#3698, #1718). For EVERY gap between two tokens of each construct, it inserts each
-/// comment form (own-line `//`, trailing `//`, `/* */`, own-line `///`, `/** */`), formats, and checks the invariant the formatter owes:
-/// the comment appears in the output exactly once, between the same two non-comment tokens, the non-comment tokens
-/// are unchanged, and formatting the output again changes nothing. A failing (construct, gap, form) is a cell of the
+/// comment form (own-line `//`, trailing `//`, `/* */`, own-line `///`, `/** */`, and four PAIRS of comments in one gap),
+/// formats, and checks the invariant the formatter owes: each comment appears in the output exactly once, between the same
+/// two non-comment tokens, a pair in source order, the non-comment tokens are unchanged, and formatting the output again
+/// changes nothing. A failing (construct, gap, form) is a cell of the
 /// table printed to stdout and written to `target/comment-gap-sweep.txt`.
 ///
 /// Instrument control: at 93185e1151 (rc6 tip) the `)`/`;` gap of a chained statement fails (#3698); with that commit's
@@ -28,6 +29,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// enabled tripwire: it asserts today's failure count, and its entry says what to fix before setting it to zero.
 class FlowCommentGapSweepTest {
     private static final String MARK = "C7Q";
+    /// The second comment of a pair form.
+    private static final String MARK2 = "D8R";
     private static final String MEMBER_PREFIX = "class X {\n    ";
     private static final String MEMBER_SUFFIX = "\n}\n";
     private static final String STMT_PREFIX = "class X {\n    void f() {\n        ";
@@ -43,7 +46,11 @@ class FlowCommentGapSweepTest {
         TRAILING(" // " + MARK + "\n"),
         BLOCK(" /* " + MARK + " */ "),
         DOC_OWN_LINE("\n/// " + MARK + "\n"),
-        DOC_BLOCK(" /** " + MARK + " */ ");
+        DOC_BLOCK(" /** " + MARK + " */ "),
+        PAIR_TRAIL_OWN(" // " + MARK + "\n// " + MARK2 + "\n"),
+        PAIR_OWN_OWN("\n// " + MARK + "\n// " + MARK2 + "\n"),
+        PAIR_BLOCK_TRAIL(" /* " + MARK + " */ // " + MARK2 + "\n"),
+        PAIR_BLOCK_OWN(" /* " + MARK + " */\n// " + MARK2 + "\n");
 
         private final String text;
 
@@ -169,14 +176,17 @@ class FlowCommentGapSweepTest {
         }
 
         var out = formatted.get();
-        int occurrences = out.split(MARK, -1).length - 1;
 
-        if (occurrences == 0) {
-            return Optional.of("DROPPED" + shown(out));
-        }
+        for (var mark : marksOf(input)) {
+            int occurrences = out.split(mark, -1).length - 1;
 
-        if (occurrences > 1) {
-            return Optional.of("DUPLICATED" + shown(out));
+            if (occurrences == 0) {
+                return Optional.of("DROPPED " + mark + shown(out));
+            }
+
+            if (occurrences > 1) {
+                return Optional.of("DUPLICATED " + mark + shown(out));
+            }
         }
 
         var outTokens = tokens(out);
@@ -191,10 +201,16 @@ class FlowCommentGapSweepTest {
             return Optional.of("CODE-TOKENS-CHANGED" + shown(out));
         }
 
-        int codeBefore = codeTokensBeforeMark(outTokens.get());
+        for (var mark : marksOf(input)) {
+            int codeBefore = codeTokensBeforeMark(outTokens.get(), mark);
 
-        if (codeBefore != k + 1) {
-            return Optional.of("MOVED(after code token " + (codeBefore - 1) + ")" + shown(out));
+            if (codeBefore != k + 1) {
+                return Optional.of("MOVED " + mark + "(after code token " + (codeBefore - 1) + ")" + shown(out));
+            }
+        }
+
+        if (out.indexOf(MARK2) >= 0 && out.indexOf(MARK2) < out.indexOf(MARK)) {
+            return Optional.of("REORDERED" + shown(out));
         }
 
         var second = format(out);
@@ -274,11 +290,18 @@ class FlowCommentGapSweepTest {
                      .toList();
     }
 
-    private static int codeTokensBeforeMark(List<Tok> tokens) {
+    /// The marks the input carries: one for a single comment, two for a pair.
+    private static List<String> marksOf(String input) {
+        return input.contains(MARK2)
+               ? List.of(MARK, MARK2)
+               : List.of(MARK);
+    }
+
+    private static int codeTokensBeforeMark(List<Tok> tokens, String mark) {
         int code = 0;
 
         for (var tok : tokens) {
-            if (tok.comment() && tok.text().contains(MARK)) {
+            if (tok.comment() && tok.text().contains(mark)) {
                 return code;
             }
 
