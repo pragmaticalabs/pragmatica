@@ -13,6 +13,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -89,9 +90,10 @@ class ReplacementSignalFenceTest {
     }
 
     private static List<Path> emberTestSources() throws IOException {
-        try (var walk = Files.walk(EMBER_TESTS)) {
-            return walk.filter(path -> path.toString().endsWith(".java")).toList();
-        }
+        return SourceWalk.files(EMBER_TESTS)
+                         .stream()
+                         .filter(path -> path.toString().endsWith(".java"))
+                         .toList();
     }
 
     private static String read(Path path) {
