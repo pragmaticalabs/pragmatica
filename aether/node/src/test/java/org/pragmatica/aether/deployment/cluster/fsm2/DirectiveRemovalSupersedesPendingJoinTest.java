@@ -98,7 +98,7 @@ class DirectiveRemovalSupersedesPendingJoinTest {
         var w = world();
 
         w.admit(WORKER, 21L);
-        w.h.seedQuietly(new NodeDepartureKey(WORKER), admitted(w));
+        w.h.seed(new NodeDepartureKey(WORKER), admitted(w));
         thenAssertNotCreatedAgain(removedBeforeTheFirstPass(w, m -> m.h.seedRemove(new NodeDepartureKey(WORKER))));
     }
 }
