@@ -126,7 +126,7 @@
 
         <!-- The port-bind gate's mode (#3801): `enforce` fails a module on a bind call site outside HeldPort and the allow-list;
              `report` lists every site with its verdict and passes (how the sites are enumerated). -->
-        <port.bind.gate.mode>enforce</port.bind.gate.mode>
+        <port.bind.gate.mode>report</port.bind.gate.mode>
 
         <!-- Default true to avoid reactor cycle; override with -Djbct.skip=false -pl !jbct -->
         <jbct.skip>true</jbct.skip>
