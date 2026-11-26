@@ -767,7 +767,10 @@ public interface ScheduledTaskManager {
             }
         }
 
-        private static void startIntervalTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task, OwnerLifetime life) {
+        private static void startIntervalTimer(Context ctx,
+                                               ScheduledTaskKey key,
+                                               ScheduledTask task,
+                                               OwnerLifetime life) {
             IntervalParser.parse(task.interval())
                           .onSuccess(interval -> scheduleAtFixedRate(ctx, key, task, interval, life))
                           .onFailure(cause -> log.warn("Failed to parse interval '{}' for task {}: {}",
