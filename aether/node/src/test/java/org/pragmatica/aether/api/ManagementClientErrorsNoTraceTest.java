@@ -74,6 +74,81 @@ class ManagementClientErrorsNoTraceTest {
                            });
     }
 
+    private static Cause aThrowable() {
+        return Causes.fromThrowable(new IllegalStateException(SENTINEL));
+    }
+
+    private static void assertHidesAThrowableAndKeepsLiteralText(Cause holdingAThrowable,
+                                                                 Cause literal,
+                                                                 String text,
+                                                                 HttpStatus status) {
+        var hidden = written(holdingAThrowable);
+
+        assertNoTrace(hidden.body());
+        assertThat(hidden.status()).isEqualTo(status);
+        assertThat(written(literal).body()).contains(text);
+    }
+
+    @Test
+    void invalidRequest_holdingAThrowable_hidesItAndKeepsLiteralText() {
+        assertHidesAThrowableAndKeepsLiteralText(new ManagementServerError.InvalidRequest(aThrowable()),
+                                                 ManagementServerError.InvalidRequest.literal("literal-invalid-text"),
+                                                 "literal-invalid-text",
+                                                 HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void notFound_holdingAThrowable_hidesItAndKeepsLiteralText() {
+        assertHidesAThrowableAndKeepsLiteralText(new ManagementServerError.NotFound(aThrowable()),
+                                                 ManagementServerError.NotFound.literal("literal-not-found-text"),
+                                                 "literal-not-found-text",
+                                                 HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void serviceUnavailable_holdingAThrowable_hidesItAndKeepsLiteralText() {
+        assertHidesAThrowableAndKeepsLiteralText(new ManagementServerError.ServiceUnavailable(aThrowable()),
+                                                 ManagementServerError.ServiceUnavailable.literal("literal-unavailable-text"),
+                                                 "literal-unavailable-text",
+                                                 HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    @Test
+    void notImplemented_holdingAThrowable_hidesItAndKeepsLiteralText() {
+        assertHidesAThrowableAndKeepsLiteralText(new ManagementServerError.NotImplemented(aThrowable()),
+                                                 ManagementServerError.NotImplemented.literal("literal-deferred-text"),
+                                                 "literal-deferred-text",
+                                                 HttpStatus.NOT_IMPLEMENTED);
+    }
+
+    @Test
+    void conflict_holdingAThrowable_hidesItAndKeepsLiteralText() {
+        assertHidesAThrowableAndKeepsLiteralText(new ManagementServerError.Conflict(aThrowable()),
+                                                 ManagementServerError.Conflict.literal("literal-conflict-text"),
+                                                 "literal-conflict-text",
+                                                 HttpStatus.CONFLICT);
+    }
+
+    @Test
+    void streamUnavailable_holdingAThrowable_hidesItAndKeepsStreamNameAndLiteralText() {
+        var hidden = written(new ManagementServerError.StreamUnavailable("orders", aThrowable()));
+
+        assertNoTrace(hidden.body());
+        assertThat(hidden.status()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(hidden.body()).contains("orders");
+        assertThat(written(ManagementServerError.StreamUnavailable.literal("orders", "literal-stream-text")).body()).contains("orders")
+                  .contains("literal-stream-text");
+    }
+
+    @Test
+    void invalidRequestBecause_aThrowableReason_keepsThePrefixAndHidesTheThrowable() {
+        var hidden = written(ManagementServerError.InvalidRequest.because("Invalid value 'x'", aThrowable()));
+
+        assertNoTrace(hidden.body());
+        assertThat(hidden.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(hidden.body()).contains("Invalid value 'x'");
+    }
+
     @Test
     void malformedArtifactVersion_inManagementParse_carriesNoTrace() {
         assertNoTrace(body(failureOf(RequestParse.asRequest(Artifact.artifact("org.example:foo:1.x.0")))));
