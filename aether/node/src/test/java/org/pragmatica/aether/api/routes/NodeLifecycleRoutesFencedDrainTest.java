@@ -28,6 +28,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.cluster.DrainGate;
 import org.pragmatica.aether.deployment.cluster.FenceFailure.ActivationChanged;
@@ -71,6 +72,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -94,7 +96,11 @@ class NodeLifecycleRoutesFencedDrainTest {
     private static final TimeSpan SETTLE = timeSpan(5).seconds();
 
     private final List<String> routedEvents = new CopyOnWriteArrayList<>();
+    private final List<Object> routedObjects = new CopyOnWriteArrayList<>();
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+    private final OperatorWarningSink warningSink = OperatorWarningSink.handingOffTo(warnings::add);
+    private final AtomicInteger flushes = new AtomicInteger();
+    private final Set<NodeId> notReady = ConcurrentHashMap.newKeySet();
     private final Set<NodeId> registry = ConcurrentHashMap.newKeySet();
     private final ScriptedPort scripted = new ScriptedPort();
 
@@ -266,8 +272,8 @@ class NodeLifecycleRoutesFencedDrainTest {
         var answered = outcome.await(SETTLE).unwrap();
 
         assertThat(answered.accepted()).as("no drainRequested follows a refused witness").isFalse();
-        // Current production: admitReplacement runs admitOperatorDrain, so the refusal reaches drainOutcomeOf already wrapped by
-        // drainRefusal (NodeLifecycleRoutes.java:820). Pinned as it is; whether pending(cause) should unwrap it is a CTO ruling.
+        // R-B2-1: an opened replacement drain runs admitOperatorDrain, so its refusal reaches drainOutcomeOf wrapped by drainRefusal
+        // as an HttpError; a joined one is wrapped the same way (see replacementDrain_joinedWitnessRefused_...).
         assertThat(answered).isEqualTo(DrainOutcome.pending(HttpError.httpError(status, cause).message()));
         assertThat(registry).isEmpty();
         assertThat(fsm.memberStates().get(node(1))).isNotEqualTo("Departing");
@@ -295,7 +301,7 @@ class NodeLifecycleRoutesFencedDrainTest {
 
         var answered = outcome.await(SETTLE).unwrap();
 
-        assertThat(answered).isEqualTo(DrainOutcome.pending(cause.message()));
+        assertThat(answered).isEqualTo(DrainOutcome.pending(HttpError.httpError(HttpStatus.GATEWAY_TIMEOUT, cause).message()));
         assertThat(answered.accepted()).isFalse();
         assertThat(failureOf(operator)).isInstanceOf(HttpError.class);
         assertThat(registry).isEmpty();
@@ -313,7 +319,7 @@ class NodeLifecycleRoutesFencedDrainTest {
 
         var answered = outcome.await(SETTLE).unwrap();
 
-        assertThat(answered).isEqualTo(DrainOutcome.pending(AttemptCancelled.attemptCancelled().message()));
+        assertThat(answered).isEqualTo(DrainOutcome.pending(HttpError.httpError(HttpStatus.CONFLICT, AttemptCancelled.attemptCancelled()).message()));
         assertThat(answered.accepted()).isFalse();
         assertThat(failureOf(other)).isInstanceOf(AttemptCancelled.class);
         assertThat(registry).isEmpty();
@@ -357,6 +363,155 @@ class NodeLifecycleRoutesFencedDrainTest {
         assertThat(answered.accepted()).isFalse();
         assertThat(answered.refusedFor()).contains("Disruption budget exceeded");
         assertThat(scripted.submitted()).isZero();
+    }
+
+    // ---- #3780 edit round ----
+
+    /// A5: a replacement that joined another caller's witness is refused with the same `HttpError` an opened one gets (R-B2-1): the
+    /// table's status and the cause's text, not the raw cause. Red mutant: the joined promise handed out as it is.
+    @Test
+    void replacementDrain_joinedWitnessRefused_answersTheSameHttpErrorAsAnOpenedOne() {
+        var cause = new ConsensusError.ApplyTimeout(APPLY_TIMEOUT_MILLIS);
+
+        routes.drainNodeForTest(node(1).id());
+        var joined = routes.admitReplacementDrain(node(1));
+
+        assertThat(scripted.submitted()).as("the replacement joined, it opened no witness").isEqualTo(1);
+        scripted.refuse(0, cause);
+
+        var refusal = failureOf(joined);
+
+        assertThat(refusal).as("an explicit HttpError, never the raw cause").isInstanceOf(HttpError.class);
+        assertThat(((HttpStatusAware) refusal).httpStatus()).isEqualTo(HttpStatus.GATEWAY_TIMEOUT);
+        assertThat(refusal.message()).isEqualTo(HttpError.httpError(HttpStatus.GATEWAY_TIMEOUT, cause).message());
+    }
+
+    /// A2 (P2): another caller's witness is accepted and its gate writes: the replacement that joined it is admitted. Red mutant: the
+    /// accepted continuation reads the registry before the gates ran (the joined row answers `AttemptCancelled`).
+    @Test
+    void replacementDrain_joinsAnotherCallersAcceptedWitness_whoseGateWrote_isAdmitted() {
+        var operator = routes.drainNodeForTest(node(1).id());
+        var outcome = NodeReplacementWiring.drainOutcomeOf(routes.admitReplacementDrain(node(1)));
+
+        assertThat(scripted.submitted()).isEqualTo(1);
+        assertThat(outcome.isResolved()).isFalse();
+        scripted.accept(0);
+
+        assertThat(outcome.await(SETTLE).unwrap()).as("expected: admitted, the witness's gate registered the target").isEqualTo(DrainOutcome.admitted());
+        assertThat(operator.await(SETTLE).isSuccess()).isTrue();
+        assertThat(registry).containsExactly(node(1));
+    }
+
+    /// Lane (b), replacement-admission-skips-ready: a replacement drain of a node that is not READY is refused for readiness, and no
+    /// witness is submitted. Red mutant: `admitReplacement` passes `requireReady = false`.
+    @Test
+    void replacementDrain_ofANodeThatIsNotReady_isRefusedForReadiness_andSubmitsNoWitness() {
+        notReady.add(node(1));
+
+        var answered = NodeReplacementWiring.drainOutcomeOf(routes.admitReplacementDrain(node(1))).await(SETTLE).unwrap();
+
+        assertThat(answered.accepted()).isFalse();
+        assertThat(answered.refusedFor()).contains("must be READY");
+        assertThat(scripted.submitted()).as("a replacement of a node that is not READY submits no witness").isZero();
+    }
+
+    /// Lane (b), success-audit-state-swapped: the emitted `NodeLifecycleChanged` carries the target state of the operation: DRAINING for
+    /// a drain, STOPPED for a shutdown. Red mutant: the two states swapped at `auditAndEmitLifecycleTransition`.
+    @Test
+    void drainRoute_witnessAccepted_emitsNodeLifecycleChangedWithTheDrainingState() {
+        var drain = routes.drainNodeForTest(node(1).id());
+
+        scripted.accept(0);
+
+        assertThat(drain.await(SETTLE).isSuccess()).isTrue();
+        assertThat(emittedTransition()).isEqualTo("DRAINING");
+    }
+
+    @Test
+    void shutdownRoute_witnessAccepted_emitsNodeLifecycleChangedWithTheStoppedState() {
+        var shutdown = routes.shutdownNodeForTest(node(1).id());
+
+        scripted.accept(0);
+
+        assertThat(shutdown.await(SETTLE).isSuccess()).isTrue();
+        assertThat(emittedTransition()).isEqualTo("STOPPED");
+    }
+
+    private String emittedTransition() {
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !routedObjects.isEmpty());
+
+        return ((OperationalEvent.NodeLifecycleChanged) routedObjects.getFirst()).transition();
+    }
+
+    // ---- A3: the floor's warnings belong to an accepted request ----
+
+    /// Every warning raised so far has been handed off: a marker sent through the same FIFO sink has arrived behind them.
+    private List<OperatorWarningCode> warningCodesAfterFlush() {
+        var marker = OperatorWarning.operatorWarning(OperatorWarningCode.DEPLOY_WARNING, "flush-" + flushes.incrementAndGet(), "flush");
+
+        warningSink.accept(marker);
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.contains(marker));
+
+        return warnings.stream().map(OperatorWarning::code).toList();
+    }
+
+    /// A3, forced breach: the operator's warning for a drain forced past the floor is raised with the response of an accepted request.
+    /// A refused request raises none (the node is still drained by nobody), and the retry that the commit accepts raises exactly one.
+    /// Red mutant: the warning raised in the admission, before the commit answers.
+    @Test
+    void drainRoute_forcedPastTheFloor_witnessRefused_raisesNoBreachWarning_andTheAcceptedRetryRaisesOne() {
+        host(slice("a", 2, 2), node(1), node(2));
+        var refused = routes.drainNodeForTest(node(1).id(), true);
+
+        scripted.refuse(0, NotLeader.notLeader());
+        assertRefusal(refused, NotLeader.notLeader(), HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(warningCodesAfterFlush()).as("a refused drain raises no breach warning").doesNotContain(OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE);
+
+        awaitNoneInFlight(node(1));
+        var retried = routes.drainNodeForTest(node(1).id(), true);
+
+        scripted.accept(1);
+        assertThat(retried.await(SETTLE).isSuccess()).isTrue();
+        assertThat(warningCodesAfterFlush()).as("the accepted retry raises the breach warning once")
+                                            .containsOnlyOnce(OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE);
+    }
+
+    /// A3, recovery: the "admitted that the floor had refused" warning follows the same rule. The floor refused the target, then
+    /// cleared; the first admission's commit is refused and raises no recovery; the retry's accepted commit raises it, once.
+    /// Red mutant: the recovery raised in the admission.
+    @Test
+    void drainRoute_floorRecovery_witnessRefused_raisesNoRecoveryWarning_andTheAcceptedRetryRaisesOne() {
+        var a = slice("a", 2, 2);
+
+        host(a, node(1), node(2));
+        assertFloorRefusal(routes.drainNodeForTest(node(1).id()));
+        host(a, node(3));
+        var refused = routes.drainNodeForTest(node(1).id());
+
+        scripted.refuse(0, NotLeader.notLeader());
+        assertRefusal(refused, NotLeader.notLeader(), HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(warningCodesAfterFlush()).as("a refused drain raises no recovery warning").doesNotContain(OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+
+        awaitNoneInFlight(node(1));
+        var retried = routes.drainNodeForTest(node(1).id());
+
+        scripted.accept(1);
+        assertThat(retried.await(SETTLE).isSuccess()).isTrue();
+        assertThat(warningCodesAfterFlush()).as("the accepted retry raises the recovery once")
+                                            .containsOnlyOnce(OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+    }
+
+    /// A3, the control for both: while the commit is in flight nothing is raised either; the warnings come with the response.
+    @Test
+    void drainRoute_forcedPastTheFloor_whileTheWitnessIsInFlight_raisesNoBreachWarning_yet() {
+        host(slice("a", 2, 2), node(1), node(2));
+        var drain = routes.drainNodeForTest(node(1).id(), true);
+
+        assertThat(drain.isResolved()).isFalse();
+        assertThat(warningCodesAfterFlush()).doesNotContain(OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE);
+        scripted.accept(0);
+        assertThat(drain.await(SETTLE).isSuccess()).isTrue();
+        assertThat(warningCodesAfterFlush()).containsOnlyOnce(OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE);
     }
 
     // ---- assertions ----
@@ -448,7 +603,7 @@ class NodeLifecycleRoutesFencedDrainTest {
                                                  port,
                                                  NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore,
                                                                                                                                          SliceRowSource.legacy()),
-                                                                                           OperatorWarningSink.handingOffTo(warnings::add)));
+                                                                                           warningSink));
     }
 
     /// A witness port that holds every witness until the test accepts it (the effect runs) or refuses it with a cause.
@@ -527,7 +682,11 @@ class NodeLifecycleRoutesFencedDrainTest {
 
     /// Every present member reports READY, so the readiness gate passes and a refusal is the witness's or the guards'.
     private ClusterSyncCollector metricsCollector() {
-        var states = presentMembers().stream().collect(Collectors.toMap(peer -> peer, _ -> NodeReportedState.READY));
+        var states = presentMembers().stream()
+                                     .collect(Collectors.toMap(peer -> peer,
+                                                               peer -> notReady.contains(peer)
+                                                                       ? NodeReportedState.SYNCING
+                                                                       : NodeReportedState.READY));
 
         return (ClusterSyncCollector) Proxy.newProxyInstance(ClusterSyncCollector.class.getClassLoader(),
                                                              new Class[]{ClusterSyncCollector.class},
@@ -555,6 +714,7 @@ class NodeLifecycleRoutesFencedDrainTest {
 
     private Object recordRoute(Object[] args) {
         routedEvents.add(String.valueOf(args[0]));
+        routedObjects.add(args[0]);
 
         return null;
     }

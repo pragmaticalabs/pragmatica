@@ -72,7 +72,7 @@ final class FencedDrainSink implements DrainSink {
     }
 
     /// One caller of a witness: its own gate, and the promise this sink resolves after that gate returned.
-    private record Joined(DrainGate gate, Promise<Unit> caller) {
+    record Joined(DrainGate gate, Promise<Unit> caller) {
         static Joined joined(DrainGate gate) {
             return new Joined(gate, Promise.promise());
         }
@@ -80,7 +80,7 @@ final class FencedDrainSink implements DrainSink {
 
     /// The witness in flight for one target. `outcome` resolves after every joined gate ran: success if the target is then
     /// registered, [AttemptCancelled] if not, the witness's own cause if it was refused.
-    private static final class Intent {
+    static final class Intent {
         private final Promise<Unit> outcome = Promise.promise();
         private List<Joined> joined = new ArrayList<>();
         private boolean closed;
