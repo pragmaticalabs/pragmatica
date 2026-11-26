@@ -176,6 +176,7 @@ public final class LeaderReconciler {
     private static final String REFUSAL_FORMAT = "owner=%s, artifact=%s, remainingActive=%d, minAvailable=%d";
 
     private static final Consumer<ReconcileIntent> NOOP_LISTENER = intent -> {};
+
     private static final Consumer<Window> NOOP_PROBE = _ -> {};
 
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
@@ -413,7 +414,6 @@ public final class LeaderReconciler {
     private final AtomicReference<Option<Supplier<Set<NodeId>>>> installedVotersSupplier = new AtomicReference<>(none());
 
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
-
     private volatile Consumer<Window> windowProbe = NOOP_PROBE;
 
     private LeaderReconciler(MembershipConfig membershipConfig,
@@ -995,7 +995,6 @@ public final class LeaderReconciler {
         }
 
         probe(Window.TRIGGER_BEFORE_DEBOUNCE);
-
         var seen = debounce.get();
 
         switch (seen) {
@@ -1961,7 +1960,6 @@ public final class LeaderReconciler {
         var handle = life.schedule(body, delay);
 
         probe(Window.ARM_BEFORE_SLOT_CAS);
-
         if (!slot.compareAndSet(current, some(handle))) {
             handle.cancel();
         }
