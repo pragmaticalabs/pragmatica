@@ -14,12 +14,24 @@ import java.util.function.Function;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.utils.OwnerLifetime;
+
+import static org.pragmatica.lang.utils.OwnerLifetime.ownerLifetime;
 
 
 /// GoF-style state machine with CAS-guarded transitions. Dispatch runs on the caller thread; no
-/// executor, no queue. Concurrent dispatches are serialized via `AtomicReference.compareAndSet`
-/// on the state reference: only the thread that wins the CAS runs the transition action and
-/// entry/exit hooks.
+/// executor, no queue. Concurrent dispatches race on `AtomicReference.compareAndSet` over the
+/// state reference: the CAS decides WHICH transition wins, and only the winner runs the transition action and
+/// entry/exit hooks. Nothing serialises the hooks of two successive winners: a winner's `onEntry` may still be
+/// running when the next winner's `onExit` starts on another thread.
+///
+/// What bounds an effect to its state is the state's lifetime, not hook ordering. Every entered state owns one
+/// [OwnerLifetime]; the winner of a CAS ends the predecessor's lifetime before it runs the predecessor's `onExit`.
+/// A hook that arms a timer arms it through the lifetime it is handed ([`FsmState#onEntry(OwnerLifetime)`]); a
+/// registration made after that state has been left is refused (nothing is enqueued, the handle comes back
+/// cancelled), whatever thread order the hooks ran in. A resource armed by a state's `onEntry` therefore never
+/// outlives that state's exit. A resource the hook keeps outside the lifetime (a raw handle in a field) has no such
+/// bound.
 ///
 /// A hook ([`FsmState#onEntry`], [`FsmState#onExit`]) never dispatches; a follow-up event it decides goes through
 /// [`#followUp`]. GUARANTEE: a dispatch returns only after every follow-up queued by its completed transition is
@@ -47,7 +59,7 @@ import org.pragmatica.lang.Option;
 /// @param <E> The event type accepted by the FSM.
 public final class Fsm<S extends FsmState<S, E>, E> {
     private final FsmTags tags;
-    private final AtomicReference<S> currentState;
+    private final AtomicReference<Entered<S>> currentState;
     private final FsmObserver<S, E> observer;
     private final ThreadLocal<Option<Queue<E>>> followUps = ThreadLocal.withInitial(Option::none);
 
@@ -59,7 +71,18 @@ public final class Fsm<S extends FsmState<S, E>, E> {
 
     private Fsm(FsmTags tags, S initial, FsmObserver<S, E> observer) {
         this(tags, observer);
-        this.currentState.set(initial);
+        this.currentState.set(Entered.entered(initial));
+    }
+
+    /// A state together with the lifetime that bounds what its entry armed. The pair is replaced as one value by every
+    /// transition, so a reader never sees a state with the lifetime of another entry.
+    ///
+    /// @param state the state reference
+    /// @param lifetime the lifetime of this entry into `state`; ended when a successor's CAS wins
+    public record Entered<S>(S state, OwnerLifetime lifetime) {
+        static <S> Entered<S> entered(S state) {
+            return new Entered<>(state, ownerLifetime());
+        }
     }
 
     public static <S extends FsmState<S, E>, E> Fsm<S, E> fsm(String kind, String instance, S initial) {
@@ -96,7 +119,7 @@ public final class Fsm<S extends FsmState<S, E>, E> {
                                                               FsmObserver<S, E> observer) {
         var fsm = new Fsm<S, E>(new FsmTags(kind, instance), observer);
 
-        fsm.currentState.set(initialStateFactory.apply(fsm));
+        fsm.currentState.set(Entered.entered(initialStateFactory.apply(fsm)));
 
         return fsm;
     }
@@ -141,6 +164,14 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     }
 
     public S current() {
+        return currentState.get()
+                           .state();
+    }
+
+    /// The current state with the lifetime of its entry, read as one value. Code that arms a timer outside a hook
+    /// (a registry callback, say) arms it through this lifetime and checks eligibility against this state, never
+    /// against a separate [#current()] read.
+    public Entered<S> entered() {
         return currentState.get();
     }
 
@@ -175,7 +206,7 @@ public final class Fsm<S extends FsmState<S, E>, E> {
 
         followUps.set(Option.some(pending));
         try {
-            var state = currentState.get();
+            var state = current();
 
             state.handle(event, new TransitionRequest<>(this, state, event));
         } finally {
@@ -252,21 +283,46 @@ public final class Fsm<S extends FsmState<S, E>, E> {
     /// Returns `true` if the CAS succeeded (and all hooks fired); `false` if another thread
     /// advanced the state first.
     ///
-    /// Action ordering on CAS success: `onExit(from) → transitionAction → onEntry(target) →
-    /// observer.onTransition`.
+    /// Action ordering on CAS success: `end(from's lifetime) -> onExit(from) -> transitionAction -> onEntry(target) ->
+    /// observer.onTransition`. The lifetime ends first, before any hook: from that moment nothing can be armed
+    /// against `from`, including by a hook of an earlier winner that has not yet run.
     boolean tryAdvance(S expected, S target, Runnable transitionAction) {
-        if (!currentState.compareAndSet(expected, target)) {
-            observer.onCasLost(tags, expected, currentState.get());
-            target.onCasLost();
+        var next = Entered.entered(target);
 
-            return false;
-        }
+        return replaceExpected(expected, next).fold(() -> casLost(expected, target),
+                                                    left -> advanced(left, next, transitionAction));
+    }
 
+    private boolean casLost(S expected, S target) {
+        observer.onCasLost(tags, expected, current());
+        target.onCasLost();
+
+        return false;
+    }
+
+    private boolean advanced(Entered<S> left, Entered<S> next, Runnable transitionAction) {
+        var expected = left.state();
+        var target = next.state();
+
+        left.lifetime().end();
         expected.onExit();
         transitionAction.run();
-        target.onEntry();
+        target.onEntry(next.lifetime());
         observer.onTransition(tags, expected, target);
 
         return true;
+    }
+
+    /// The CAS of the state reference, which is by identity of the STATE: a state re-entered since the dispatcher read
+    /// it (a data-free singleton) still matches, as it always did. The pair's CAS can fail only because another
+    /// transition replaced it, so the read is repeated.
+    private Option<Entered<S>> replaceExpected(S expected, Entered<S> next) {
+        for (var seen = currentState.get(); seen.state() == expected; seen = currentState.get()) {
+            if (currentState.compareAndSet(seen, next)) {
+                return Option.some(seen);
+            }
+        }
+
+        return Option.none();
     }
 }
