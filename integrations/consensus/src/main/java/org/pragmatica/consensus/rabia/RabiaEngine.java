@@ -590,7 +590,10 @@ public class RabiaEngine<C extends Command> {
     private void signalUnreachableSeats(VoterConfiguration configuration) {
         var reachable = connectedSeats();
 
-        configuration.members().stream().filter(seat -> !reachable.contains(seat)).forEach(seat -> unconfirmedGenesisSeats.put(seat, 0));
+        configuration.members()
+                     .stream()
+                     .filter(seat -> !reachable.contains(seat))
+                     .forEach(seat -> unconfirmedGenesisSeats.put(seat, 0));
     }
 
     /// Connectivity only, not discovery: with `cluster.genesis_voters` a seat can be connected before membership counts it,
