@@ -27,6 +27,7 @@ import org.pragmatica.aether.ember.EmberCluster.StartFailure;
 import org.pragmatica.aether.ember.EmberConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.JvmVulnerabilityGate;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
@@ -103,6 +104,12 @@ public final class ForgeServer {
                      .or("(dev)");
     }
 
+    @Contract
+    private static void refuseStart(Cause cause) {
+        log.error("FATAL: {}", cause.message());
+        System.exit(1);
+    }
+
     public static void main(String[] args) {
         // KVStore dispatcher design 8.1 / #2652: first statement, so an Error escaping a continuation anywhere in this JVM
         // stops it (flush, then halt) exactly as an OOM does.
@@ -119,6 +126,8 @@ public final class ForgeServer {
             return;
         }
 
+        // #3806 (CVE-2026-114938): refused before the config is read and before any listener binds, as the node's Main does.
+        JvmVulnerabilityGate.enforceForThisProcess(log::warn, ForgeServer::refuseStart);
         var startupConfigResult = StartupConfig.startupConfig(args);
 
         startupConfigResult.onFailure(cause -> {

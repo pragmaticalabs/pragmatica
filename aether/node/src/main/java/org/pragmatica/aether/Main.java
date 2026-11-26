@@ -30,6 +30,7 @@ import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.config.ClusterConfig;
 import org.pragmatica.aether.config.ClusterSizeGate;
+import org.pragmatica.aether.config.JvmVulnerabilityGate;
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
@@ -107,6 +108,9 @@ public record Main(String[] args) {
         var dispatcherSink = DispatcherFailureSink.once(kvDispatcherSink(Main::flushLogs, Runtime.getRuntime()::halt));
 
         installFatalEscapeRelay(dispatcherSink).expect("unreachable: Main installs the fatal-escape hook first");
+        // #3806 (CVE-2026-114938): before the config is read and long before any listener binds, a JVM vulnerable to Java4Shell on an
+        // AVX-512 VBMI host refuses to start (abortBoot: FATAL + exit 1); with -XX:-UseBASE64Intrinsics, or CPU flags that cannot be read, it warns.
+        JvmVulnerabilityGate.enforceForThisProcess(log::warn, this::abortBoot);
         publishConfigPath();
         var aetherConfig = loadConfig();
 
