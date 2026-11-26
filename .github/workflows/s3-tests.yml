@@ -43,6 +43,10 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
+      # #3338 / #3765: a failed-download marker saved by an earlier run would make this job skip the retry of that artifact.
+      - name: Drop failed-download markers from the restored repository
+        run: .github/scripts/drop-failed-download-markers.sh
+
       - name: Bootstrap annotation processors and Maven plugins
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 

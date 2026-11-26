@@ -137,8 +137,12 @@ jobs:
       - name: Drop failed-download markers from the restored repository
         run: .github/scripts/drop-failed-download-markers.sh
 
-      - name: Mark the restored repository
-        run: touch "$RUNNER_TEMP/m2-marker"
+      # #3765: the baseline is the list of file NAMES, never a timestamp. Maven stamps a downloaded jar or pom with the server's
+      # Last-Modified (peglib-runtime-0.7.5.jar: 2026-11-25 19:31, days before the job ran), so `find -newer <marker>` kept only the
+      # .sha1 and _remote.repositories files written at download time and packed no artifact at all (run 45728825982: 1658
+      # entries, 0 .jar, 0 .pom); the shards then went to Central for the missing pom and met its 429.
+      - name: List the restored repository
+        run: ( cd "$HOME/.m2/repository" && find . -type f | sort ) > "$RUNNER_TEMP/m2-before.list"
 
       # Resolves the dependencies and plugins of every module. Retry budget: 15 attempts, 15 s doubling to 120 s, about 25 min
       # per request at worst (the step's timeout bounds it). Failures are tolerated: whatever was fetched is still handed on.
@@ -155,9 +159,11 @@ jobs:
         run: |
           repo="$HOME/.m2/repository"
           mkdir -p "$RUNNER_TEMP/m2-delta"
-          ( cd "$repo" && find . -type f -newer "$RUNNER_TEMP/m2-marker" ! -name '*.lastUpdated' ! -name resolver-status.properties | sed 's|^\./||' ) > "$RUNNER_TEMP/m2-delta.list"
+          ( cd "$repo" && find . -type f ! -name '*.lastUpdated' ! -name resolver-status.properties | sort ) > "$RUNNER_TEMP/m2-after.list"
+          comm -13 "$RUNNER_TEMP/m2-before.list" "$RUNNER_TEMP/m2-after.list" | sed 's|^\./||' > "$RUNNER_TEMP/m2-delta.list"
           n=$(wc -l < "$RUNNER_TEMP/m2-delta.list")
-          echo "::notice::deps-prime fetched $n file(s) the restored cache lacked"
+          a=$(grep -c -E '\.(jar|pom)$' "$RUNNER_TEMP/m2-delta.list" || true)
+          echo "::notice::deps-prime fetched $n file(s) the restored cache lacked, $a of them .jar/.pom"
           head -20 "$RUNNER_TEMP/m2-delta.list"
           if [ "$n" -gt 0 ]; then tar -czf "$RUNNER_TEMP/m2-delta/m2-delta.tgz" -C "$repo" -T "$RUNNER_TEMP/m2-delta.list"; fi
 
