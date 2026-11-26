@@ -185,6 +185,19 @@ class StopSequencePinTest {
         assertThat(fsm2Close(source)).isEqualTo(FSM2_CLOSE + " deploymentWiring.stop(); return Unit.unit(); }");
     }
 
+    /// b06 (#3776 review): `deploymentWiring.stop()` ends the FSM2 interpreters and runs the legacy node FSM's stop, and the ruled order puts it AFTER `leaveQuorum` (R-3776-1):
+    /// the FSM must be left Dormant by the quorum leave before `Shutdown` reaches it. The call appears exactly once in the node, in the FSM2 close, which
+    /// `theWholeStop_runsInTheRuledOrder...` places after the quiesce; a second call anywhere else (before `leaveQuorum`, say) is not that order. Mutant: an extra
+    /// `deploymentWiring.stop();` ahead of `leaveQuorum` goes red here.
+    @Test
+    void theWiringsStop_isCalledOnce_andOnlyByTheFsm2Close() {
+        var source = read(NODE_SOURCE);
+        var calls = Pattern.compile(Pattern.quote("deploymentWiring.stop()"));
+
+        assertThat(count(calls, source)).as("the node calls the wiring's stop once").isEqualTo(1L);
+        assertThat(count(calls, fsm2Close(source))).as("and that call is the FSM2 close, which the stop sequence runs after leaveQuorum").isEqualTo(1L);
+    }
+
     /// #3557: the node's stop closes the membership FSM, once, among the components' stops. Without it the FSM's per-member timers
     /// outlive the node on the JVM-global scheduler. Mutant: delete the `membershipFsm.close();` statement and this goes red.
     @Test
