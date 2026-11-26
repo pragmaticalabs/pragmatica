@@ -145,11 +145,27 @@ public sealed interface Causes {
     }
 
     static Cause fromThrowable(Throwable throwable) {
-        var sw = new StringWriter();
+        return ThrowableCause.throwableCause(throwable);
+    }
 
-        throwable.printStackTrace(new PrintWriter(sw));
+    /// The cause [#fromThrowable] answers: its [#message()] is the throwable's printed stack trace, unchanged, for logs and
+    /// every existing caller. The type is the marker (#3723): a client-body renderer answers a fixed text for it, because
+    /// that message carries class names, file paths and line numbers that belong in a server log only.
+    ///
+    /// @param message the throwable's printed stack trace
+    record ThrowableCause(String message) implements SimpleCause {
+        public static ThrowableCause throwableCause(Throwable throwable) {
+            var sw = new StringWriter();
 
-        return cause(sw.toString());
+            throwable.printStackTrace(new PrintWriter(sw));
+
+            return new ThrowableCause(sw.toString());
+        }
+
+        @Override
+        public String toString() {
+            return completeMessage();
+        }
     }
 
     /// Create a mapper which will map a single value into a formatted message.

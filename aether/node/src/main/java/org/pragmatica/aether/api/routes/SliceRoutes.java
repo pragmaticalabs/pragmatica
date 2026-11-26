@@ -51,6 +51,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.LayeredConfigProvider;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -649,7 +650,7 @@ public final class SliceRoutes implements RouteSource {
         return new BlueprintValidationResponse(false,
                                                "",
                                                0,
-                                               List.of(cause.message()),
+                                               List.of(HttpError.clientMessage(cause)),
                                                warnings);
     }
 

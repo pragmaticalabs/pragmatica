@@ -80,4 +80,64 @@ class HttpErrorClientMessageTest {
 
         assertThat(detail).contains("top").doesNotContain(SENTINEL);
     }
+
+    private static final String THROWN = "SENTINEL-3723-throwable-text";
+
+    private static Cause thrown() {
+        return Causes.fromThrowable(new IllegalStateException(THROWN));
+    }
+
+    /// #3723 control: the throwable cause's `message()` is unchanged, a stack trace with the sentinel, for logs and callers.
+    @Test
+    void throwableCause_messageStaysTheStackTrace_control() {
+        assertThat(thrown()).isInstanceOf(Causes.ThrowableCause.class);
+        assertThat(thrown().message()).contains(THROWN).contains("IllegalStateException").contains("\tat ");
+    }
+
+    @Test
+    void clientMessage_ofThrowableCause_isTheFixedText() {
+        assertThat(HttpError.clientMessage(thrown())).isEqualTo("Internal error");
+    }
+
+    @Test
+    void clientMessage_ofHttpErrorOverThrowable_isStatusAndFixedText() {
+        var wrapped = HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, thrown());
+
+        assertThat(wrapped.message()).contains(THROWN);
+        assertThat(wrapped.clientMessage()).isEqualTo("Internal Server Error: Internal error");
+        assertThat(HttpError.clientMessage(wrapped)).isEqualTo("Internal Server Error: Internal error");
+    }
+
+    @Test
+    void clientMessage_ofCompositeWithThrowableMember_hidesOnlyTheThrowable() {
+        var composite = Causes.composite(Causes.cause("plain-member").result(), thrown().result());
+
+        assertThat(composite.message()).contains(THROWN);
+        assertThat(HttpError.clientMessage(composite)).isEqualTo("Composite:\n  plain-member\n  Internal error");
+    }
+
+    @Test
+    void clientMessage_ofHttpErrorOverCompositeWithThrowable_hidesTheThrowable() {
+        var wrapped = HttpError.httpError(HttpStatus.SERVICE_UNAVAILABLE,
+                                          Causes.composite(thrown().result(), Causes.cause("plain-member").result()));
+
+        assertThat(HttpError.clientMessage(wrapped)).doesNotContain(THROWN).doesNotContain("\tat ").contains("plain-member");
+    }
+
+    @Test
+    void problemDetail_ofThrowableCause_carriesTheFixedTextOnly() {
+        var detail = ProblemDetail.fromCause(thrown(), "/x", "req").detail().or("");
+
+        assertThat(detail).isEqualTo("Internal error");
+    }
+
+    @Test
+    void throwableCause_rendersAndClassifiesLikeABareCause() {
+        var one = Causes.ThrowableCause.throwableCause(new IllegalStateException(THROWN));
+
+        assertThat(one.toString()).startsWith("Cause: \n  ").contains(THROWN);
+        assertThat(one.source().isPresent()).isFalse();
+        assertThat(one.isTerminal()).isFalse();
+        assertThat(one.isTransient()).isFalse();
+    }
 }

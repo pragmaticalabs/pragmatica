@@ -57,6 +57,7 @@ class CrossNodeCauseChainLeakTest {
     private static final MethodName METHOD = MethodName.methodName("processRequest").unwrap();
     private static final String HIDDEN = "SENTINEL-deep-origin-detail";
     private static final String VISIBLE = "top-level-slice-failure";
+    private static final String THROWN = "SENTINEL-3723-callee-throwable";
 
     record Chained(String message, Cause origin) implements Cause {
         @Override
@@ -194,6 +195,22 @@ class CrossNodeCauseChainLeakTest {
 
             assertThat(String.join("\n", calleeLog.messages())).contains(HIDDEN)
                                                                 .containsPattern("requestId=\\S+\\] Failed to complete invocation \\[[^\\]]+\\]");
+        }
+    }
+
+    /// #3723: a slice on node B fails with a caught throwable. The callee renders the wire text, so its message (a stack
+    /// trace) must not travel: A's client body carries the fixed text, B's log carries the sentinel and the trace.
+    @Test
+    void throwableOnNodeB_isAbsentFromNodeAClientBody_andInNodeBLog() {
+        var thrown = Causes.fromThrowable(new IllegalStateException(THROWN));
+
+        try (var calleeLog = LogCapture.capture(InvocationHandlerImpl.class, Level.ERROR, true)) {
+            var body = clientBodyOnA(thrown);
+
+            assertThat(body).as("the call must have failed through the remote path, not vanished")
+                            .contains(HttpError.INTERNAL_ERROR_TEXT);
+            assertThat(body).doesNotContain(THROWN).doesNotContain("IllegalStateException").doesNotContain("at java").doesNotContain("\\tat ");
+            assertThat(String.join("\n", calleeLog.messages())).contains(THROWN).contains("\tat ");
         }
     }
 }

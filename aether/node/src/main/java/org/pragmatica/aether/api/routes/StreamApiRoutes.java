@@ -852,11 +852,11 @@ public final class StreamApiRoutes implements RouteSource {
             case PublishOutcome.OutcomeUnknown(var cause) -> new PublishItemOutcome(index,
                                                                                     PublishItemStatus.OUTCOME_UNKNOWN,
                                                                                     Option.none(),
-                                                                                    Option.some(cause.message()));
+                                                                                    Option.some(HttpError.clientMessage(cause)));
             case PublishOutcome.NotAttempted(var cause) -> new PublishItemOutcome(index,
                                                                                   PublishItemStatus.NOT_ATTEMPTED,
                                                                                   Option.none(),
-                                                                                  Option.some(cause.message()));
+                                                                                  Option.some(HttpError.clientMessage(cause)));
         };
     }
 
@@ -1016,7 +1016,7 @@ public final class StreamApiRoutes implements RouteSource {
     private Result<Unit> materializeForPublish(String streamName, StreamConfig config) {
         return streamManager().ensureStreamMaterialized(config)
                             .mapError(cause -> new ManagementServerError.StreamUnavailable(streamName,
-                                                                                           cause.message()));
+                                                                                           HttpError.clientMessage(cause)));
     }
 
     /// #968: `POST /streams` with a body-carried `name`. Before this the handler (in `StreamRoutes`)

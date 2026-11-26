@@ -76,7 +76,33 @@ class CauseShapeClientBodyMatrixTest {
                                  Causes.composite(Causes.cause("V5a-plain").result(),
                                                   chainedHttp(HttpStatus.BAD_GATEWAY, "V5b-top", "H5b-deep").result()),
                                  List.of("V5a-plain", "V5b-top"),
-                                 List.of("H5b-deep")));
+                                 List.of("H5b-deep")),
+                       new Shape("throwable cause (#3723)",
+                                 thrown(),
+                                 List.of(HttpError.INTERNAL_ERROR_TEXT),
+                                 THROWN_HIDDEN),
+                       new Shape("HttpError over a throwable cause (#3723)",
+                                 HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, thrown()),
+                                 List.of(HttpError.INTERNAL_ERROR_TEXT),
+                                 THROWN_HIDDEN),
+                       new Shape("composite with a throwable member (#3723)",
+                                 Causes.composite(Causes.cause("V6a-plain").result(), thrown().result()),
+                                 List.of("V6a-plain", HttpError.INTERNAL_ERROR_TEXT),
+                                 THROWN_HIDDEN),
+                       new Shape("HttpError over a composite with a throwable member (#3723)",
+                                 HttpError.httpError(HttpStatus.SERVICE_UNAVAILABLE,
+                                                     Causes.composite(Causes.cause("V7a-plain").result(), thrown().result())),
+                                 List.of("V7a-plain", HttpError.INTERNAL_ERROR_TEXT),
+                                 THROWN_HIDDEN));
+    }
+
+    private static final String THROWN_SENTINEL = "SENTINEL-3723-throwable-text";
+    private static final List<String> THROWN_HIDDEN = List.of(THROWN_SENTINEL,
+                                                              "IllegalStateException",
+                                                              "CauseShapeClientBodyMatrixTest");
+
+    private static Cause thrown() {
+        return Causes.fromThrowable(new IllegalStateException(THROWN_SENTINEL));
     }
 
     private static String chainWalkingMessage(Cause failure) {

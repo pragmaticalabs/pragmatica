@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
@@ -41,7 +42,7 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     record StreamRefused(HttpStatus status, Cause refusal) implements ManagementServerError {
         @Override
         public String message() {
-            return refusal.message();
+            return HttpError.clientMessage(refusal);
         }
 
         @Override
@@ -55,7 +56,7 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     record KeylessPublishOutcomeUnknown(Cause origin) implements ManagementServerError {
         @Override
         public String message() {
-            return "Publish outcome unknown: the event may already be in the log, and this endpoint takes no message ID, so a retry may write a duplicate (" + origin.message()
+            return "Publish outcome unknown: the event may already be in the log, and this endpoint takes no message ID, so a retry may write a duplicate (" + HttpError.clientMessage(origin)
                  + ")";
         }
     }
@@ -163,7 +164,8 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     record PublishRetryable(String streamName, Cause cause) implements ManagementServerError {
         @Override
         public String message() {
-            return "Publish to stream '" + streamName + "' refused before writing, retry: " + cause.message();
+            return "Publish to stream '" + streamName
+                 + "' refused before writing, retry: " + HttpError.clientMessage(cause);
         }
 
         @Override
@@ -180,7 +182,7 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         public String message() {
             return "Stream '" + streamName
                  + "' partition " + partition
-                 + " owner did not answer, retry: " + cause.message();
+                 + " owner did not answer, retry: " + HttpError.clientMessage(cause);
         }
 
         @Override

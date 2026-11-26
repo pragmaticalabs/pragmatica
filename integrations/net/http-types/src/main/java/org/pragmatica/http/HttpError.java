@@ -23,6 +23,8 @@ import org.pragmatica.lang.utils.Causes;
 
 
 public interface HttpError extends Cause, HttpStatusAware {
+    /// The client text for a cause that is a caught throwable: no class name, no trace, no message of the throwable.
+    String INTERNAL_ERROR_TEXT = "Internal error";
     HttpStatus status();
 
     @Override
@@ -45,12 +47,14 @@ public interface HttpError extends Cause, HttpStatusAware {
 
     /// The one renderer of a [Cause] into client-facing text (#2101). Every client-body producer calls this and
     /// never `Cause::message` directly: an [HttpError] gives its [#clientMessage()], a composite joins its members'
-    /// client text (recursively), any other cause gives its own top-level message. The origin chain is left to the
-    /// server log.
+    /// client text (recursively), a [Causes.ThrowableCause] (a caught throwable, whose message is its stack trace) gives
+    /// the fixed [#INTERNAL_ERROR_TEXT] and nothing of the throwable (#3723), any other cause gives its own top-level
+    /// message. The origin chain is left to the server log.
     static String clientMessage(Cause cause) {
         return switch (cause) {
             case HttpError error -> error.clientMessage();
             case Causes.CompositeCause composite -> compositeClientMessage(composite);
+            case Causes.ThrowableCause _ -> INTERNAL_ERROR_TEXT;
             default -> cause.message();
         };
     }
