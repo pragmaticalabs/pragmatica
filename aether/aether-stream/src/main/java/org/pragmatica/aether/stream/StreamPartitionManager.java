@@ -2133,6 +2133,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         clusterNode.onPresent(node -> inLane(streamName, () -> applyRemoveCommand(node, streamName)));
     }
 
+    /// #3796: a destroy at a node that holds no ring for the stream. The caller has established, from the catalog, that the stream
+    /// exists, so the answer is the owner's: the config removal is submitted and every node that applies it tears its own rings
+    /// down ([#onStreamConfigRemove], which also drops the applied life). Without a cluster node (minimal runtime) no removal is
+    /// submitted, as in [#destroyStream].
+    public Result<Unit> destroyUnmaterialized(String streamName) {
+        publishStreamConfigRemoval(streamName);
+
+        return Result.unitResult();
+    }
+
     /// #2627: per-name commit lane. Every `StreamConfigKey` submission for one name (create `Put`, publish-path
     /// auto-create `Put`, destroy `Remove`) starts only after the previous submission for that name has SETTLED
     /// (committed, or failed/timed out), so the order the callers issued is the order the engine receives. Rabia

@@ -581,7 +581,7 @@ public final class StreamApiRoutes implements RouteSource {
     /// only record a `topic:` or `entity:` stream has, #1399). Unknown means neither has it, 404; an engine that
     /// has not materialized a stream the catalog knows is [#notMaterializedHere], 503, never "no such stream".
     private Result<String> requireKnown(String engineKey) {
-        return isCommitted(engineKey) || isRegistered(engineKey)
+        return isKnown(engineKey)
                ? Result.success(engineKey)
                : STREAM_NOT_FOUND.result();
     }
@@ -840,11 +840,17 @@ public final class StreamApiRoutes implements RouteSource {
     /// this node (config committed here, apply lagging; or metadata-only placement): 503, retry. Answering 404 told the caller
     /// that a stream the catalog knows does not exist.
     private static Promise<List<RawEvent>> notMaterializedHere(String engineKey, Promise<List<RawEvent>> read) {
-        return read.mapError(cause -> cause instanceof StreamError.StreamNotFound
-                                      ? new ManagementServerError.StreamRefused(HttpStatus.SERVICE_UNAVAILABLE,
-                                                                                Causes.cause("Stream " + engineKey
-                                                                                            + " is registered but not materialized on this node yet"))
-                                      : cause);
+        return read.mapError(cause -> notMaterializedIfNotFound(engineKey, cause));
+    }
+
+    /// The same convention for a write: this node appends locally, the catalog admitted the stream, and the engine holds no ring
+    /// for it here (not applied yet, or the node could not materialize it, [#admitStream]): 503, retry; never 404.
+    private static Cause notMaterializedIfNotFound(String engineKey, Cause cause) {
+        return cause instanceof StreamError.StreamNotFound
+               ? new ManagementServerError.StreamRefused(HttpStatus.SERVICE_UNAVAILABLE,
+                                                         Causes.cause("Stream " + engineKey
+                                                                     + " is registered but not materialized on this node yet"))
+               : cause;
     }
 
     private static StreamEventsResponse buildEventsResponse(String address,
@@ -918,8 +924,8 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private Promise<PublishBatchResponse> ensureThenPublishEach(ResourceAddress addr, PublishRequest[] requests) {
-        return ensureStreamExists(StreamManager.engineKey(addr)).async()
-                                 .flatMap(_ -> publishEach(addr, requests));
+        return admitStream(StreamManager.engineKey(addr)).async()
+                          .flatMap(_ -> publishEach(addr, requests));
     }
 
     private Promise<PublishBatchResponse> publishEach(ResourceAddress addr, PublishRequest[] requests) {
@@ -991,14 +997,38 @@ public final class StreamApiRoutes implements RouteSource {
     /// The pre-write admission checks, separated from the write so the batch form can tell "rejected before
     /// writing" from "refused after possibly writing" (#1342).
     private Result<Unit> admit(String streamName, int partition) {
-        return ensureStreamExists(streamName).flatMap(_ -> validatePartition(streamName, partition));
+        return admitStream(streamName).flatMap(_ -> validatePartition(streamName, partition));
+    }
+
+    /// #3796: STREAM-level write admission answers from the catalog, as every read does, so a publish gets the same answer at
+    /// whichever node receives it; the receiving node's own ring decides nothing.
+    ///   - committed config: the stream exists and its count is declared. The local ring is materialized so a publish that
+    ///     lands on the OWNER before it applied the config can append at once ([#ensureStreamExists] adopts the committed
+    ///     config, never a default), but a node that cannot hold it (capacity) does not refuse what the owner would accept.
+    ///     Absorbing that failure is FER (degrade forward): the owner's own refusal reaches the caller through the write
+    ///     (a local append without a ring answers [#notMaterializedHere]); pinned by
+    ///     `StreamRoutesWriteAdmissionTest#publish_nonOwnerCannotMaterializeTheStream_stillAnswersWithTheOwnersOffset`.
+    ///   - registered only: the count is not declared yet, so nothing is created over it; [#validatePartition] answers
+    ///     from [#declaredPartitions].
+    ///   - unknown to the catalog: a management stream, created by this publish ([#ensureStreamExists]).
+    private Result<Unit> admitStream(String streamName) {
+        return isCommitted(streamName)
+               ? ensureStreamExists(streamName).recover(_ -> Unit.unit())
+               : admitUncommitted(streamName);
+    }
+
+    private Result<Unit> admitUncommitted(String streamName) {
+        return isRegistered(streamName)
+               ? Result.unitResult()
+               : ensureStreamExists(streamName);
     }
 
     private Promise<Long> write(String streamName, int partition, PublishRequest request) {
         return streamWriteRouter().publish(streamName,
                                            partition,
                                            decodePayload(request.data()),
-                                           System.currentTimeMillis());
+                                           System.currentTimeMillis())
+                                .mapError(cause -> notMaterializedIfNotFound(streamName, cause));
     }
 
     /// #1564: a single publish refused before the append for want of registered peers answers 503 (retryable), not
@@ -1045,18 +1075,12 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     /// #524 guard: an out-of-range `partition` on a Management-API publish must fail 4xx naming the
-    /// valid range — never a silent write to partition 0, never a 500. Reads the committed config's
-    /// DECLARED partition count (`StreamInfo#partitions`, backed by `declaredPartitions()` — the
-    /// committed `StreamConfig`'s count, not the partition rings actually materialized locally).
-    /// `ensureStreamExists` (run first in [#publishOne]) guarantees this entry is present on success,
-    /// so an empty `streamInfo()` here means that guarantee did not hold; never guess a count in that
-    /// case — report the stream unavailable instead of validating against a fabricated default.
+    /// valid range — never a silent write to partition 0, never a 500. #3796: the bound is the DECLARED
+    /// count ([#declaredPartitions]: the committed config first, as every read), never this node's ring, so the
+    /// answer is the same at the owner and at a node that holds no entry. A count nobody declares is reported
+    /// unavailable, never validated against a fabricated default.
     private Result<Unit> validatePartition(String streamName, int partition) {
-        return streamManager().streamInfo(streamName)
-                            .map(StreamPartitionManager.StreamInfo::partitions)
-                            .toResult(new ManagementServerError.StreamUnavailable(streamName,
-                                                                                  "partition count is not known"))
-                            .flatMap(partitionCount -> requireDeclared(partition, partitionCount));
+        return declaredPartitions(streamName).flatMap(partitionCount -> requireDeclared(partition, partitionCount));
     }
 
     /// A partition the stream does not declare is the caller's error (400), at whichever node it asks.
@@ -1428,11 +1452,30 @@ public final class StreamApiRoutes implements RouteSource {
     private Promise<DeleteResponse> destroyAtAddress(ResourceAddress addr) {
         var streamName = StreamManager.engineKey(addr);
 
+        return retire(streamName).async()
+                     .flatMap(_ -> releaseCatalogEntry(addr))
+                     .map(_ -> new DeleteResponse(addr.asString(),
+                                                  "deleted"));
+    }
+
+    /// #3796: the physical teardown answers from the catalog too. A node holding no ring for a stream the catalog knows is not the
+    /// owner, and the owner's answer is "deleted": the committed config's removal is what tears the rings down on every node
+    /// that applies it ([StreamPartitionManager#destroyUnmaterialized]). A stream neither this node nor the catalog knows
+    /// stays [StreamError.StreamNotFound] at every node.
+    private Result<Unit> retire(String streamName) {
         return streamManager().destroyStream(streamName)
-                            .async()
-                            .flatMap(_ -> releaseCatalogEntry(addr))
-                            .map(_ -> new DeleteResponse(addr.asString(),
-                                                         "deleted"));
+                            .fold(cause -> retireUnmaterialized(streamName, cause),
+                                  _ -> Result.unitResult());
+    }
+
+    private Result<Unit> retireUnmaterialized(String streamName, Cause cause) {
+        return cause instanceof StreamError.StreamNotFound && isKnown(streamName)
+               ? streamManager().destroyUnmaterialized(streamName)
+               : cause.result();
+    }
+
+    private boolean isKnown(String engineKey) {
+        return isCommitted(engineKey) || isRegistered(engineKey);
     }
 
     private Promise<Unit> releaseCatalogEntry(ResourceAddress addr) {
