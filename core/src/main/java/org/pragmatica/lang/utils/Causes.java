@@ -319,8 +319,18 @@ public sealed interface Causes {
                 return builder.toString();
             }
 
+            /// A composite of ONE member (what `Result.all` yields for a single failure, e.g. one bad query parameter) is that
+            /// member: there is no list to introduce, and the `Composite:` header plus indent would be noise in the body of a
+            /// `400`. `message()` keeps the header: it is for logs and is pinned by existing callers.
             @Override
             public String clientMessage() {
+                return causes().size() == 1
+                       ? causes().getFirst()
+                                 .clientMessage()
+                       : listedClientMessage();
+            }
+
+            private String listedClientMessage() {
                 var builder = new StringBuilder("Composite:");
 
                 stream().forEach(issue -> builder.append("\n  ")

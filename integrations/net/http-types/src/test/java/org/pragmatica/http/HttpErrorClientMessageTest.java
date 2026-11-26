@@ -49,6 +49,23 @@ class HttpErrorClientMessageTest {
         assertThat(HttpError.clientMessage(Causes.cause("plain"))).isEqualTo("plain");
     }
 
+    /// `Result.all` over one failing input is a composite of ONE member (a single bad query parameter): its client text is the
+    /// member's, with no `Composite:` header or indent in front of it.
+    @Test
+    void clientMessage_ofSingleMemberComposite_isTheMembersMessage() {
+        var composite = Causes.composite(Causes.cause("only member").result());
+
+        assertThat(HttpError.clientMessage(composite)).isEqualTo("only member");
+    }
+
+    /// The control: two failures are a list, and the header and indent still introduce it.
+    @Test
+    void clientMessage_ofSeveralMemberComposite_listsEachMember() {
+        var composite = Causes.composite(Causes.cause("first").result(), Causes.cause("second").result());
+
+        assertThat(HttpError.clientMessage(composite)).isEqualTo("Composite:\n  first\n  second");
+    }
+
     /// An implementer that walks a chain in `message()` and does not opt in to a wider client text.
     record Walker(HttpStatus status, Cause origin) implements HttpError {
         @Override

@@ -98,6 +98,18 @@ class CauseClientMessageTest {
         assertThat(composite.message()).contains(SECRET);
     }
 
+    /// `Result.all` over one failing input is a composite of ONE member: its client text is the member's own, with no
+    /// `Composite:` header or indent, and the member's own client text still hides a throwable. `message()` keeps the header.
+    @Test
+    void composite_ofOneMember_isThatMembersClientText() {
+        var plain = Causes.composite(Causes.cause("only member").result());
+        var hidden = Causes.composite(thrown().result());
+
+        assertThat(plain.clientMessage()).isEqualTo("only member");
+        assertThat(plain.message()).isEqualTo("Composite:\n  only member");
+        assertThat(hidden.clientMessage()).isEqualTo("Internal error");
+    }
+
     @Test
     void composite_depthTwo_hidesTheThrowable() {
         var inner = Causes.composite(Causes.cause("inner-plain").result(), thrown().result());
