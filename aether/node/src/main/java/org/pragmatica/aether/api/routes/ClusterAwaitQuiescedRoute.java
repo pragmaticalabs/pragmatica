@@ -39,13 +39,13 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     private static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final TimeSpan MAX_TIMEOUT = TimeSpan.timeSpan(120).seconds();
 
-    private static final Fn1<Cause, String> INVALID_EPOCH = raw -> new ManagementServerError.InvalidRequest("Invalid epoch parameter [" + raw
-                                                                                                           + "] (expected incarnation:term:counter)");
+    private static final Fn1<Cause, String> INVALID_EPOCH = raw -> ManagementServerError.InvalidRequest.literal("Invalid epoch parameter [" + raw
+                                                                                                               + "] (expected incarnation:term:counter)");
 
-    private static final Fn1<Cause, String> INVALID_TIMEOUT = raw -> new ManagementServerError.InvalidRequest("Invalid timeout parameter [" + raw
-                                                                                                             + "]");
+    private static final Fn1<Cause, String> INVALID_TIMEOUT = raw -> ManagementServerError.InvalidRequest.literal("Invalid timeout parameter [" + raw
+                                                                                                                 + "]");
 
-    private static final Cause MISSING_EPOCH = new ManagementServerError.InvalidRequest("Missing required query parameter: epoch");
+    private static final Cause MISSING_EPOCH = ManagementServerError.InvalidRequest.literal("Missing required query parameter: epoch");
 
     private final Supplier<ManageableNode> nodeSupplier;
 

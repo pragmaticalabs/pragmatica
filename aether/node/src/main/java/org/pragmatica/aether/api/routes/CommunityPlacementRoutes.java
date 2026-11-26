@@ -64,7 +64,7 @@ public final class CommunityPlacementRoutes implements RouteSource {
         var reason = Option.option(request.reason()).map(String::trim).filter(value -> !value.isEmpty());
 
         return reason.isEmpty()
-               ? new ManagementServerError.InvalidRequest("reason is required: say what you checked on the nodes before clearing").promise()
+               ? ManagementServerError.InvalidRequest.literal("reason is required: say what you checked on the nodes before clearing").promise()
                : clearOn(community, operator, reason.unwrap());
     }
 
@@ -98,8 +98,8 @@ public final class CommunityPlacementRoutes implements RouteSource {
     /// A refusal is a statement about the request or the cluster's state, not a server fault: 404 for no operation, 409 for the rest.
     static Cause asManagementError(Cause cause) {
         return switch (cause) {
-            case ParkedClearRefusal.NoOperation refusal -> new ManagementServerError.NotFound(refusal.message());
-            case ParkedClearRefusal refusal -> new ManagementServerError.Conflict(refusal.message());
+            case ParkedClearRefusal.NoOperation refusal -> new ManagementServerError.NotFound(refusal);
+            case ParkedClearRefusal refusal -> new ManagementServerError.Conflict(refusal);
             default -> cause;
         };
     }

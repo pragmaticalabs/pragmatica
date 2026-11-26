@@ -36,11 +36,11 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 
 
 public final class AbTestRoutes implements RouteSource {
-    private static final Cause MISSING_ARTIFACT_BASE = new ManagementServerError.InvalidRequest("Missing artifactBase");
+    private static final Cause MISSING_ARTIFACT_BASE = ManagementServerError.InvalidRequest.literal("Missing artifactBase");
 
-    private static final Cause MISSING_VARIANTS = new ManagementServerError.InvalidRequest("Missing or empty variants");
+    private static final Cause MISSING_VARIANTS = ManagementServerError.InvalidRequest.literal("Missing or empty variants");
 
-    private static final Cause TEST_NOT_FOUND = new ManagementServerError.NotFound("A/B test not found");
+    private static final Cause TEST_NOT_FOUND = ManagementServerError.NotFound.literal("A/B test not found");
 
     private final Supplier<ManageableNode> nodeSupplier;
 
@@ -130,7 +130,7 @@ public final class AbTestRoutes implements RouteSource {
         }
 
         return ArtifactBase.artifactBase(request.artifactBase())
-                           .mapError(cause -> new ManagementServerError.InvalidRequest(cause.message()))
+                           .mapError(cause -> new ManagementServerError.InvalidRequest(cause))
                            .async()
                            .flatMap(artifactBase -> parseVariants(request.variants()).async()
                                                                  .map(variants -> new ParsedAbTestRequest(artifactBase,
@@ -145,8 +145,8 @@ public final class AbTestRoutes implements RouteSource {
             var result = Version.version(entry.getValue());
 
             if (result.isFailure()) {
-                return new ManagementServerError.InvalidRequest("Invalid version for variant " + entry.getKey()
-                                                               + ": " + entry.getValue()).result();
+                return ManagementServerError.InvalidRequest.literal("Invalid version for variant " + entry.getKey()
+                                                                   + ": " + entry.getValue()).result();
             }
 
             result.onSuccess(v -> parsed.put(entry.getKey(), v));
