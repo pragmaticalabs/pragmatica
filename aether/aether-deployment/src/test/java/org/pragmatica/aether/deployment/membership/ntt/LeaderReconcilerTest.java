@@ -1584,12 +1584,12 @@ class LeaderReconcilerTest {
 
         /// Registers a probe that fires once, on the first hit of `window`: the stop (or a competing arm) lands concurrently there.
         private void onceAt(LeaderReconciler.Window window, Runnable concurrent) {
-            var fired = new java.util.concurrent.atomic.AtomicBoolean();
+            var fired = new AtomicBoolean();
 
             reconciler.setWindowProbe(hit -> runOnceAt(fired, hit, window, concurrent));
         }
 
-        private void runOnceAt(java.util.concurrent.atomic.AtomicBoolean fired,
+        private void runOnceAt(AtomicBoolean fired,
                                LeaderReconciler.Window hit,
                                LeaderReconciler.Window window,
                                Runnable concurrent) {
