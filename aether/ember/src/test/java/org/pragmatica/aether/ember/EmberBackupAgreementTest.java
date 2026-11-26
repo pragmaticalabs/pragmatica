@@ -14,6 +14,7 @@ import java.util.function.BooleanSupplier;
 
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.BackupAgreement;
 import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
@@ -21,12 +22,14 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.testing.PollUntil;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -134,32 +137,82 @@ class EmberBackupAgreementTest {
         startCluster(temp.resolve("remote.git"), false, Set.of(), Set.of());
 
         assertThat(cluster.allNodes()).hasSize(CLUSTER_SIZE);
-        assertThat(cluster.allNodes()).allSatisfy(node -> assertThat(decisionOf(node)).isEqualTo(Option.none()));
+        awaitTrue("every node holds the DISABLED decision",
+                  () -> cluster.allNodes()
+                               .stream()
+                               .allMatch(node -> decisionOf(node).equals(Option.some(BackupRestoreOutcome.DISABLED))));
+    }
+
+    /// TRIPWIRE for #3781 (rc7): today a SIMULTANEOUS start of two `[backup]` nodes and one without forms NO cluster. The join guard's
+    /// refusal is symmetric (L1 `LabelAgreement`), so the matching nodes refuse the odd one and the odd one refuses them, and the
+    /// start fails with `ConsensusError.LabelAgreementRefused` naming the `backup` label. Safety holds (no node runs beside a
+    /// disagreeing core peer); availability does not (one misconfigured node stops a simultaneous bring-up). The outcome depends on
+    /// start order: a held-back odd node is refused alone, see the first test. When rc7 lands, this test goes red.
+    @Test
+    @Timeout(420)
+    void simultaneousStart_twoOnOneOff_formsNoClusterToday() {
+        var failure = startFailure(temp.resolve("remote.git"), Set.of(ODD_ONE));
+
+        assertThat(failure).as("#3781 (rc7, label agreement by core majority) changed this behaviour: a simultaneous start of two "
+                               + "[backup] nodes and one without used to form no cluster and fail with LabelAgreementRefused. "
+                               + "Delete this test and enable simultaneousStart_twoOnOneOff_theMatchingNodesFormAQuorum.")
+                           .isInstanceOf(ConsensusError.LabelAgreementRefused.class);
+        assertThat(((ConsensusError.LabelAgreementRefused) failure).label()).isEqualTo(BackupAgreement.LABEL_BACKUP);
+        assertThat(cluster.allNodes()).as("no node of a refused start stays running").isEmpty();
+    }
+
+    /// The assertion #3781 (rc7) must make true, disabled until it lands: the two matching nodes form a quorum whatever the start
+    /// order, and the odd node is refused. What start outcome rc7 gives the odd node's refusal is rc7's to define, so the outcome
+    /// of the start is not asserted here, only the running set.
+    @Test
+    @Disabled("#3781 (rc7): label agreement by core majority; today the symmetric refusal forms no cluster, pinned by"
+              + " simultaneousStart_twoOnOneOff_formsNoClusterToday")
+    @Timeout(420)
+    void simultaneousStart_twoOnOneOff_theMatchingNodesFormAQuorum() {
+        startFailure(temp.resolve("remote.git"), Set.of(ODD_ONE));
+
+        awaitTrue("the two matching nodes elect a leader",
+                  () -> cluster.currentLeader()
+                               .isPresent());
+        assertThat(cluster.allNodes()).as("the matching nodes keep running").hasSize(CLUSTER_SIZE - 1);
+        assertThat(cluster.getNode(ODD_ONE)
+                          .isPresent()).as("the mismatched node is refused").isFalse();
     }
 
     // --- helpers ---
     private void startCluster(Path remote, boolean backup, Set<String> heldBack, Set<String> backupOff) {
-        cluster = EmberTestPorts.startedCluster(PORTS, basePort -> {
-                                                    var attempt = emberCluster(CLUSTER_SIZE,
-                                                                               basePort,
-                                                                               basePort + MGMT_OFFSET,
-                                                                               basePort + APP_HTTP_OFFSET,
-                                                                               PREFIX);
-
-                                                    if (backup) {
-                                                        attempt.withKvBackup(temp.resolve("nodes"),
-                                                                             remote.toString(),
-                                                                             RestoreMode.AUTO);
-                                                        attempt.withoutKvBackupOn(backupOff);
-                                                    }
-                                                    return attempt;
-                                                },
+        cluster = EmberTestPorts.startedCluster(PORTS,
+                                                basePort -> clusterAt(basePort, remote, backup, backupOff),
                                                 attempt -> attempt.start(heldBack),
                                                 EmberCluster::stop,
                                                 START_BOUND);
         awaitTrue("a leader is elected",
                   () -> cluster.currentLeader()
                                .isPresent());
+        awaitTrue("every started node is consensus-active",
+                  () -> cluster.allNodes()
+                               .stream()
+                               .allMatch(AetherNode::isReady));
+    }
+
+    /// One start, no retry: the failure of the start itself is the thing under test. The cluster is kept in `cluster` before it
+    /// starts, so [#tearDown] stops it whether or not the start succeeded. The failure, or `null` when the cluster started.
+    private Cause startFailure(Path remote, Set<String> backupOff) {
+        cluster = clusterAt(EmberTestPorts.freeBase(PORTS), remote, true, backupOff);
+
+        return cluster.start()
+                      .await(START_BOUND)
+                      .fold(cause -> cause, _ -> null);
+    }
+
+    private EmberCluster clusterAt(int basePort, Path remote, boolean backup, Set<String> backupOff) {
+        var attempt = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, PREFIX);
+
+        if (backup) {
+            attempt.withKvBackup(temp.resolve("nodes"), remote.toString(), RestoreMode.AUTO);
+            attempt.withoutKvBackupOn(backupOff);
+        }
+        return attempt;
     }
 
     private static Option<BackupRestoreOutcome> decisionOf(AetherNode node) {
