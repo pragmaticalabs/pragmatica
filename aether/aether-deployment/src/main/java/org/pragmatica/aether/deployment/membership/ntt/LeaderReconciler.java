@@ -176,6 +176,7 @@ public final class LeaderReconciler {
     private static final String REFUSAL_FORMAT = "owner=%s, artifact=%s, remainingActive=%d, minAvailable=%d";
 
     private static final Consumer<ReconcileIntent> NOOP_LISTENER = intent -> {};
+    private static final Consumer<Window> NOOP_PROBE = _ -> {};
 
     private static final TimeSpan DEBOUNCE_DELAY = timeSpan(100L).millis();
     /// Sentinel for "not yet recorded" on the two single-shot/edge-triggered nanosecond
@@ -413,6 +414,8 @@ public final class LeaderReconciler {
 
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
+    private volatile Consumer<Window> windowProbe = NOOP_PROBE;
+
     private LeaderReconciler(MembershipConfig membershipConfig,
                              PresenceSampler presenceSampler,
                              MembershipFsm membershipFsm,
@@ -524,6 +527,7 @@ public final class LeaderReconciler {
         }
 
         seedInFlightFromRetainedDispatched(life);
+        probe(Window.ACTIVATE_BEFORE_SCHEDULE);
         life.schedule(this::onActivationDelayFire, leaderActivationDelay);
     }
 
@@ -775,6 +779,29 @@ public final class LeaderReconciler {
         reconcileListener = newListener;
     }
 
+    /// The windows between a read and the act that follows it, where a stop of the term can land concurrently.
+    enum Window {
+        /// `armOnce`: after the slot read and the schedule, before the compare-and-set of the slot.
+        ARM_BEFORE_SLOT_CAS,
+        /// `triggerReconcile`: after the lifetime check, before the first read of the debounce state.
+        TRIGGER_BEFORE_DEBOUNCE,
+        /// `activate`: after the lifetime read, before the activation task is scheduled on it.
+        ACTIVATE_BEFORE_SCHEDULE
+    }
+
+    /// TEST window seam only: production registers no probe, so [`#probe`] is a no-op. A test registers one to end the term, or arm a
+    /// competing task, between the two steps of a window, which a single-threaded fake scheduler cannot otherwise interleave.
+    /// Package-private so no production caller can mistake it for a wiring point.
+    @Contract
+    void setWindowProbe(Consumer<Window> newProbe) {
+        windowProbe = newProbe;
+    }
+
+    @Contract
+    private void probe(Window window) {
+        windowProbe.accept(window);
+    }
+
     /// Verified consensus authority, independent of desired provider capacity. Empty means no evidence.
     public org.pragmatica.lang.Unit setInstalledVotersSupplier(Supplier<Set<NodeId>> supplier) {
         installedVotersSupplier.set(some(supplier));
@@ -966,6 +993,8 @@ public final class LeaderReconciler {
         if (life.isEnded()) {
             return;
         }
+
+        probe(Window.TRIGGER_BEFORE_DEBOUNCE);
 
         var seen = debounce.get();
 
@@ -1930,6 +1959,8 @@ public final class LeaderReconciler {
         }
 
         var handle = life.schedule(body, delay);
+
+        probe(Window.ARM_BEFORE_SLOT_CAS);
 
         if (!slot.compareAndSet(current, some(handle))) {
             handle.cancel();

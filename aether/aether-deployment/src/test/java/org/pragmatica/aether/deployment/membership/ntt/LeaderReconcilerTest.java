@@ -1582,6 +1582,73 @@ class LeaderReconcilerTest {
             assertThat(liveDebounceTasks()).as("the next term schedules its own pass").isEqualTo(1);
         }
 
+        /// Registers a probe that fires once, on the first hit of `window`: the stop (or a competing arm) lands concurrently there.
+        private void onceAt(LeaderReconciler.Window window, Runnable concurrent) {
+            var fired = new java.util.concurrent.atomic.AtomicBoolean();
+
+            reconciler.setWindowProbe(hit -> runOnceAt(fired, hit, window, concurrent));
+        }
+
+        private void runOnceAt(java.util.concurrent.atomic.AtomicBoolean fired,
+                               LeaderReconciler.Window hit,
+                               LeaderReconciler.Window window,
+                               Runnable concurrent) {
+            if (hit == window && fired.compareAndSet(false, true)) {
+                concurrent.run();
+            }
+        }
+
+        private void competingPass() {
+            reconciler.onTopologyUnhealthy();
+            liveTaskAt(DEBOUNCE_DELAY).runIfLive();
+        }
+
+        @Test
+        void armOnce_lostSlotRace_cancelsTheHandleItScheduled() {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.activate();
+            onceAt(LeaderReconciler.Window.ARM_BEFORE_SLOT_CAS, this::competingPass);
+
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(scheduler.tasksByDelay(FOLLOW_UP_DELAY).stream().filter(task -> !task.isDone()).count())
+                .as("two passes armed the same follow-up slot at once: the loser cancelled its own handle, so one task is live")
+                .isEqualTo(1);
+        }
+
+        @Test
+        void trigger_stopLandsAfterTheLifetimeCheck_armsNothingOnTheNextTerm() {
+            configuredCoreCount.set(5);
+            reconciler.activate();
+            onceAt(LeaderReconciler.Window.TRIGGER_BEFORE_DEBOUNCE, this::restartTerm);
+
+            reconciler.onTopologyUnhealthy();
+
+            assertThat(liveDebounceTasks()).as("the trigger of the ended term scheduled on its own ended lifetime: nothing is live").isZero();
+
+            reconciler.onTopologyUnhealthy();
+
+            assertThat(liveDebounceTasks()).as("the state it left is owned by the ended term, so the next term schedules its own pass").isEqualTo(1);
+        }
+
+        @Test
+        void activation_stopAndRestartLandAfterTheLifetimeRead_armsOnlyTheNextTermsTask() {
+            configuredCoreCount.set(5);
+            onceAt(LeaderReconciler.Window.ACTIVATE_BEFORE_SCHEDULE, this::restartTerm);
+
+            reconciler.activate();
+
+            assertThat(scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).stream().filter(task -> !task.isDone()).count())
+                .as("the stale activation scheduled on its own ended lifetime: only the next term's task is live")
+                .isEqualTo(1);
+
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).forEach(ManualTask::runIfLive);
+
+            assertThat(listener.events()).as("one activation pass in the next term").hasSize(1);
+        }
+
         @Test
         void pendingTrigger_ofTermN_doesNotLeakIntoTheNextTerm() {
             configuredCoreCount.set(5);
