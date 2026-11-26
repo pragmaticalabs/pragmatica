@@ -233,11 +233,17 @@ class ClusterTopologyManagerDrainJoinTest {
 
     /// The positive control of an absence read: a control drain of another target is accepted after the attempt under test,
     /// with the same grace, so once the control is reaped a timer of the first target (armed earlier, same delay) would
-    /// have fired already.
+    /// have fired already. The reap's last step is the clear of the registry (`reapOwned` clears after the terminate), so the
+    /// control is reaped only once it has left the registry: a registry read after this call holds no reap in flight.
     private void awaitControlReap() {
         ctm.drainNode(CONTROL, DrainReason.OPERATOR_COMMAND);
         sink.accept(sink.requests().size() - 1);
         await().atMost(Duration.ofSeconds(5)).until(() -> lifecycle.terminated().contains(CONTROL));
+        awaitLeftRegistry(CONTROL);
+    }
+
+    private void awaitLeftRegistry(NodeId target) {
+        await().atMost(Duration.ofSeconds(5)).until(() -> !registry.contains(target));
     }
 
     /// The warning hand-off is one FIFO queue: once the barrier arrives, every warning raised before it has been delivered.
@@ -326,7 +332,8 @@ class ClusterTopologyManagerDrainJoinTest {
         assertThat(registry).containsExactly(TARGET);
         await().atMost(Duration.ofSeconds(5)).until(() -> lifecycle.terminated().contains(TARGET));
         awaitRaised(EVICTED);
-        assertThat(registry).as("the grace reap cleared the command last").isEmpty();
+        awaitLeftRegistry(TARGET);
+        assertThat(registry).as("the grace reap cleared the command").isEmpty();
     }
 
     /// TB6c, the join case: a drain raised an eviction, then the id joins (a new incarnation, readmitted). The attempt is
