@@ -10,6 +10,7 @@ import java.net.http.HttpResponse.BodyHandler;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AlertConfig.EventConfig;
@@ -117,6 +118,27 @@ class AlertForwarderStopTest {
         assertThat(isSuccess(forwarded)).as("the receiver got the alert: the outcome is not rewritten as 'not sent'").isTrue();
         assertThat(capture.messages()).as("no WARN or ERROR for a delivered alert").isEmpty();
         assertThat(http.sends).isEqualTo(1);
+    }
+
+    /// The close lands between the settle check (the first read of the flag) and the `pendingRetries.put`: the WARN that
+    /// `handleTransportFailure` writes sits exactly there, so a log observer that calls `close()` builds the interleaving in
+    /// production order. The close sweeps an empty map and the schedule lands on an ended lifetime, so only the re-read after
+    /// the put can resolve the retry's promise.
+    @Test
+    void close_betweenTheFirstFlagReadAndThePut_stillResolvesTheForwardAsStopped() {
+        http.answers.add(Causes.cause("connection refused").promise());
+        var forwarder = new AtomicReference<AlertForwarder>();
+
+        try (var closing = LogCapture.capture(AlertForwarder.class.getName(), Level.WARN, false, _ -> forwarder.get().close())) {
+            forwarder.set(forwarderWithRetries(2));
+
+            var forwarded = forwarder.get().forward(AlertEvent.AlertResolved.resolved("a-6", "test"));
+
+            assertThat(closing.messages(Level.WARN)).as("control: the close ran from inside the WARN, after the first read").hasSize(1);
+            assertThat(forwarded.isResolved()).as("the retry the close could not see is abandoned by the re-read").isTrue();
+            assertThat(isStopped(forwarded)).isTrue();
+            assertThat(seam.enqueued()).as("nothing was enqueued on the ended lifetime").isZero();
+        }
     }
 
     /// Control for the two tests above: the same failure without a close arms a retry, leaves the forward pending and logs one
