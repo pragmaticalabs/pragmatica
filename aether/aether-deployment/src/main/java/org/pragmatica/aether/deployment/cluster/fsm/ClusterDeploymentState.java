@@ -3234,8 +3234,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.error("Failed to issue ACTIVATE command for {} (attempt {}): {}", sliceKey, attempt + 1, cause.message());
             activateRetryDelay(attempt,
                                () -> ThreadLocalRandom.current().nextDouble()).onPresent(delay -> scheduleInTerm(() -> retryActivateIfStillLoaded(sliceKey,
-                                                                                                                                                            attempt + 1),
-                                                                                                                           delay))
+                                                                                                                                                  attempt + 1),
+                                                                                                                 delay))
                               .onEmpty(() -> log.warn("ACTIVATE for {} not retried after {} attempts; the reconcile backstop re-issues it after {} ms in LOADED",
                                                       sliceKey,
                                                       attempt + 1,
@@ -4417,7 +4417,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                            () -> {
                                abandoned.forEach(this::issueDeallocationCommands);
                                scheduleInTerm(() -> restoringBlueprints.remove(previous.id()),
-                                                        timeSpan(5).seconds());
+                                              timeSpan(5).seconds());
                            },
                            () -> restoringBlueprints.remove(previous.id()),
                            0);
