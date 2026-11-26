@@ -103,7 +103,7 @@ class ClusterTopologyManagerClearUnconfirmedFenceTest {
                                                                     Option::none,
                                                                     commandApplier,
                                                                     () -> ClusterPhase.NORMAL,
-                                                                    _ -> {},
+                                                                    DrainSink.synchronous(_ -> {}, _ -> {}),
                                                                     _ -> {},
                                                                     Option::none,
                                                                     Option::none,

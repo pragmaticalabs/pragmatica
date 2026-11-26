@@ -196,7 +196,7 @@ class ClusterTopologyManagerActuatorTest {
                                                              clusterStore::apply,
                                                              () -> ClusterPhase.NORMAL,
                                                              clock,
-                                                             drainSink,
+                                                             DrainSink.synchronous(drainSink, _ -> {}),
                                                              drainCommandClearCalls::add,
                                                              clusterStore::autoHealState,
                                                              liveness);

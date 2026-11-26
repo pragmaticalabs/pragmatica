@@ -30,6 +30,7 @@ import org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
+import org.pragmatica.aether.deployment.cluster.DrainSink;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
@@ -110,7 +111,6 @@ import static org.pragmatica.aether.node.AetherNode.installedVoterIds;
 import static org.pragmatica.aether.node.AetherNode.readyCoreCandidates;
 import static org.pragmatica.aether.node.AetherNode.retirementEligibleCore;
 import static org.pragmatica.aether.node.AetherNode.swimAliveForCoConfirmation;
-import static org.pragmatica.aether.node.assembly.DrainAssembly.requestDrainThroughFsm;
 
 
 /// The topology unit of the node assembly: the node source lifecycle, the community-retirement, node-replacement and
@@ -273,9 +273,8 @@ public sealed interface TopologyAssembly {
                                                                                    clusterConfigReader,
                                                                                    clusterCommandApplier,
                                                                                    effectivePhaseSupplier,
-                                                                                   target -> requestDrainThroughFsm(drainCommandRegistry,
-                                                                                                                    membershipFsmRef,
-                                                                                                                    target),
+                                                                                   DrainSink.synchronous(drainCommandRegistry::requestDrain,
+                                                                                                         fsmDrainRequested(membershipFsmRef)),
                                                                                    drainCommandRegistry::clearDrain,
                                                                                    resolvedLocalConfig::get,
                                                                                    () -> kvStore.getTyped(AetherKey.AutoHealStateKey.SINGLETON,
@@ -732,6 +731,14 @@ public sealed interface TopologyAssembly {
         if (previous != current) {
             ctm.onClusterPhaseChanged(current);
         }
+    }
+
+    /// The FSM half of the cluster topology manager's synchronous drain sink (#3754): the leader's drain command is routed through
+    /// the authoritative `MembershipFsm` as a `DrainRequested` event, so the target moves to DEPARTING instead of the drain bypassing
+    /// the FSM. The holder is deref'd lazily: the sink is wired before the FSM exists, and before it the registry add alone applies
+    /// (boot window only). `DrainSink.synchronous` calls it after the gate returned, never under the manager's monitor.
+    static Consumer<NodeId> fsmDrainRequested(AtomicReference<MembershipFsm> membershipFsmRef) {
+        return target -> Option.option(membershipFsmRef.get()).onPresent(fsm -> fsm.onDrainRequested(target));
     }
 
     static Set<NodeId> bootstrapIdentities(Set<NodeId> configuredCores, Set<NodeId> voterHistory) {

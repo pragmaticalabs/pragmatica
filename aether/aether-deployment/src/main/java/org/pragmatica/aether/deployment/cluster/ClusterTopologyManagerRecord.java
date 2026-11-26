@@ -41,6 +41,9 @@ import org.pragmatica.aether.config.cluster.SourceCloudBindings;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshDeploymentConfig;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.cluster.DrainDecision.Join;
+import org.pragmatica.aether.deployment.cluster.DrainDecision.Open;
+import org.pragmatica.aether.deployment.cluster.DrainDecision.Refused;
 import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
@@ -60,6 +63,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
@@ -113,7 +117,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicLong formationAnchorMs,
                                     Supplier<Option<AutoHealStateValue>> autoHealStateReader,
                                     LongSupplier clock,
-                                    Consumer<NodeId> drainCommandSink,
+                                    DrainSink drainSink,
                                     Consumer<NodeId> drainCommandClear,
                                     Supplier<Option<TomlDocument>> resolvedLocalConfig,
                                     AtomicBoolean workerReconcileInFlight,
@@ -132,7 +136,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicReference<Function<NodeId, Option<String>>> retirementRefusal,
                                     AtomicReference<NodeReplacementIndex> nodeReplacements,
                                     AtomicReference<HierarchyStateWriter> hierarchyWriter,
-                                    ConcurrentHashMap<NodeId, Long> pendingDrains,
+                                    ConcurrentHashMap<NodeId, DrainAttempt> pendingDrains,
+                                    AtomicLong drainSeq,
                                     AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> warningSink,
                                     AtomicBoolean admissionDeferred,
                                     AtomicLong inventoryWaitCount,
@@ -192,14 +197,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                             commandApplier,
                                             phaseSupplier,
                                             clock,
-                                            _ -> {},
+                                            DrainSink.synchronous(_ -> {},
+                                                                  _ -> {}),
                                             _ -> {},
                                             Option::none,
                                             MembershipLiveness.UNWIRED);
     }
 
     /// Membership v2 / B5b — production factory wiring the leader's DRAIN command channel.
-    /// `drainCommandSink` enqueues the target into the `DrainCommandRegistry` (so the leader's
+    /// `drainSink` enqueues the target into the `DrainCommandRegistry` and routes the drain through the FSM (so the leader's
     /// outbound ping carries the target in its global `drainNodes` set and the target self-drains via its
     /// `DrainProcedure`); `drainCommandClear` removes the target when the grace-terminate
     /// backstop fires, whether or not it reaps (#1050).
@@ -218,7 +224,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      Supplier<ClusterPhase> phaseSupplier,
                                                                      LongSupplier clock,
-                                                                     Consumer<NodeId> drainCommandSink,
+                                                                     DrainSink drainSink,
                                                                      Consumer<NodeId> drainCommandClear,
                                                                      Supplier<Option<AutoHealStateValue>> autoHealStateReader,
                                                                      MembershipLiveness liveness) {
@@ -231,7 +237,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                             commandApplier,
                                             phaseSupplier,
                                             clock,
-                                            drainCommandSink,
+                                            drainSink,
                                             drainCommandClear,
                                             Option::none,
                                             autoHealStateReader,
@@ -252,7 +258,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      Supplier<ClusterPhase> phaseSupplier,
                                                                      LongSupplier clock,
-                                                                     Consumer<NodeId> drainCommandSink,
+                                                                     DrainSink drainSink,
                                                                      Consumer<NodeId> drainCommandClear,
                                                                      Supplier<Option<TomlDocument>> resolvedLocalConfig,
                                                                      Supplier<Option<AutoHealStateValue>> autoHealStateReader,
@@ -274,7 +280,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicLong(clock.getAsLong()),
                                                 Option.option(autoHealStateReader).or((Supplier<Option<AutoHealStateValue>>) Option::none),
                                                 clock,
-                                                Option.option(drainCommandSink).or(_ -> {}),
+                                                Option.option(drainSink).or(() -> DrainSink.synchronous(_ -> {},
+                                                                                                        _ -> {})),
                                                 Option.option(drainCommandClear).or(_ -> {}),
                                                 Option.option(resolvedLocalConfig).or((Supplier<Option<TomlDocument>>) Option::none),
                                                 new AtomicBoolean(false),
@@ -294,6 +301,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(NodeReplacementIndex.nodeReplacementIndex()),
                                                 new AtomicReference<>(HierarchyStateWriter.unavailable()),
                                                 new ConcurrentHashMap<>(),
+                                                new AtomicLong(0L),
                                                 new AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly()),
                                                 new AtomicBoolean(false),
                                                 new AtomicLong(0L),
@@ -2404,7 +2412,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     /// Membership v2 / B5b — drain a specific node via the graceful v2 DRAIN-command path.
     ///
-    /// Enqueues `targetNodeId` into the leader's `DrainCommandRegistry` (`drainCommandSink`) so
+    /// Enqueues `targetNodeId` into the leader's `DrainCommandRegistry` (through `drainSink`) so
     /// the leader's outbound cluster-sync ping carries the target in its global `drainNodes` set,
     /// which self-drains (finishes in-flight requests) via its `DrainProcedure`. A grace-terminate
     /// backstop is scheduled after `autoHealConfig.provisioningTimeout()`: it calls
@@ -2419,54 +2427,165 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// reasons are not gated by the pairing: a never-joined zombie (`JOIN_GRACE_REAP`) has no other reaper.
     ///
     /// #3626: the refusals are one table, ordered by specificity: the voter-handoff refusal (it resolves itself), then the
-    /// replacement pairing, then, at [#writeDrainCommand], the leader's own id. A leader that is still a voter is therefore told
+    /// replacement pairing, then, in [#decideDrain], the leader's own id. A leader that is still a voter is therefore told
     /// that its retirement awaits the voter handoff, never told to stop its process. Nothing is recorded as pending, no DEPARTING
     /// is raised and no grace-terminate backstop is scheduled for a refused target.
     @Override
-    public synchronized Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
+    public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
+        return actOn(decideDrain(targetNodeId, reason), targetNodeId, false);
+    }
+
+    /// Rule M (#3754): the decision of a drain, one step under the monitor that returns a value and calls nothing out. The gates
+    /// are read, a self-drain is refused before any round, an existing DRAIN entry is joined (the first call's reason stands),
+    /// an EVICTION entry is raised to DRAIN with this call's reason and joined, and otherwise a new DRAIN attempt is put.
+    private synchronized DrainDecision decideDrain(NodeId targetNodeId, DrainReason reason) {
         if (!active.get() || retirementRefusal.get().apply(targetNodeId).isPresent()) {
-            return org.pragmatica.lang.utils.Causes.cause("Node retirement awaits certified voter handoff")
-                                                   .promise();
+            return Refused.refused(Causes.cause("Node retirement awaits certified voter handoff"));
         }
 
         if (reason.isSurplusTrim() && nodeReplacements.get().retirementProtected().contains(targetNodeId)) {
-            return org.pragmatica.lang.utils.Causes.cause("Node is paired in an in-flight node replacement")
-                                                   .promise();
+            return Refused.refused(Causes.cause("Node is paired in an in-flight node replacement"));
         }
 
-        if (pendingDrains.containsKey(targetNodeId)) {
-            return Promise.unitPromise();
+        if (targetNodeId.equals(observer.self().id())) {
+            return Refused.refused(new LeaderCannotDrainItself(targetNodeId));
         }
 
-        log.info("CTM v2: drainNode requested (target={}, reason={}) — enqueuing DRAIN command", targetNodeId, reason);
-
-        return writeDrainCommand(targetNodeId).map(_ -> trackPendingDrain(targetNodeId, reason))
-                                .async();
+        return joinOrPutDrain(targetNodeId, reason);
     }
 
-    /// The pending entry is recorded only once the DRAIN command is written, so a refused target never reads as pending (a
-    /// second request is refused again, not short-cut as a duplicate). `drainNode`'s monitor makes the presence check and this
-    /// record one step: it is the only writer that adds to `pendingDrains`.
-    private Unit trackPendingDrain(NodeId targetNodeId, DrainReason reason) {
-        var epoch = activationEpoch.get();
+    private DrainDecision joinOrPutDrain(NodeId targetNodeId, DrainReason reason) {
+        return Option.option(pendingDrains.get(targetNodeId))
+                     .<DrainDecision> map(existing -> joinDrain(targetNodeId, existing, reason))
+                     .or(() -> putAttempt(targetNodeId,
+                                          DrainAttempt.Kind.DRAIN,
+                                          Option.some(reason)));
+    }
 
-        pendingDrains.put(targetNodeId, epoch);
-        scheduleGraceTerminate(targetNodeId, reason, epoch);
+    private DrainDecision joinDrain(NodeId targetNodeId, DrainAttempt existing, DrainReason reason) {
+        return Join.join(existing.kind() == DrainAttempt.Kind.EVICTION
+                         ? raiseToDrain(targetNodeId, existing, reason)
+                         : existing);
+    }
+
+    /// The only change of an entry's kind, and it goes one way: same `seq`, `epoch` and `outcome`, so the opener's gate, failure
+    /// untrack and grace timer still own the entry. Called under the monitor.
+    private DrainAttempt raiseToDrain(NodeId targetNodeId, DrainAttempt eviction, DrainReason reason) {
+        var raised = eviction.withKind(DrainAttempt.Kind.DRAIN).withReason(reason);
+
+        pendingDrains.put(targetNodeId, raised);
+
+        return raised;
+    }
+
+    /// Puts a new attempt: the map is the only place a pending drain or eviction exists. Called under the monitor.
+    private DrainDecision putAttempt(NodeId targetNodeId, DrainAttempt.Kind kind, Option<DrainReason> reason) {
+        var entry = DrainAttempt.drainAttempt(kind,
+                                              reason,
+                                              activationEpoch.get(),
+                                              drainSeq.incrementAndGet(),
+                                              Promise.promise());
+
+        pendingDrains.put(targetNodeId, entry);
+
+        return Open.open(entry);
+    }
+
+    /// The action a decision names, after the monitor is released. R6-1: every `sink.request` this manager makes is the one of
+    /// an attempt its own decision put, and carries that attempt's gate; nothing here calls `drainNode` or `evict`.
+    private Promise<Unit> actOn(DrainDecision decision, NodeId targetNodeId, boolean retryable) {
+        return switch (decision) {
+            case Refused refused -> refused.cause().promise();
+            case Join join -> join.entry().outcome();
+            case Open open -> runAttempt(targetNodeId, open.entry(), retryable);
+        };
+    }
+
+    private Promise<Unit> runAttempt(NodeId targetNodeId, DrainAttempt entry, boolean retryable) {
+        log.info("CTM v2: {} requested (target={}, reason={}) — enqueuing DRAIN command",
+                 entry.kind(),
+                 targetNodeId,
+                 entry.reason());
+
+        return requestDrain(targetNodeId, entry.seq(), retryable).fold(result -> resolveAttempt(targetNodeId,
+                                                                                                entry,
+                                                                                                result));
+    }
+
+    /// One request of the sink under the attempt's gate. A retry is the same attempt (R6-1): an opener that may retry calls
+    /// the sink once more with the same `seq`, so a cancel or a deactivation between the two answers `false` at the gate.
+    private Promise<Unit> requestDrain(NodeId targetNodeId, long seq, boolean retryable) {
+        return drainSink.request(targetNodeId,
+                                 gateOf(targetNodeId, seq))
+                        .fold(result -> retryOrKeep(result, targetNodeId, seq, retryable));
+    }
+
+    private Promise<Unit> retryOrKeep(Result<Unit> result, NodeId targetNodeId, long seq, boolean retryable) {
+        return retryable && isApplyTimeout(result)
+               ? requestDrain(targetNodeId, seq, false)
+               : Promise.resolved(result);
+    }
+
+    private static boolean isApplyTimeout(Result<Unit> result) {
+        return result.fold(cause -> cause instanceof ConsensusError.ApplyTimeout, _ -> false);
+    }
+
+    /// The failure row, then the resolution: a failed attempt is untracked by `seq` before its outcome is resolved, so a caller
+    /// woken by the failure finds the map without it.
+    private Promise<Unit> resolveAttempt(NodeId targetNodeId, DrainAttempt entry, Result<Unit> result) {
+        return entry.outcome()
+                    .resolve(result.onFailure(_ -> untrack(targetNodeId,
+                                                           entry.seq())));
+    }
+
+    @Contract
+    private synchronized void untrack(NodeId targetNodeId, long seq) {
+        ownedAttempt(targetNodeId, seq).onPresent(_ -> pendingDrains.remove(targetNodeId));
+    }
+
+    /// The entry of `targetNodeId` if it still belongs to the attempt `seq`. Identity is `seq`, never record equality; callers
+    /// hold the monitor, so the check and the act are one step.
+    private Option<DrainAttempt> ownedAttempt(NodeId targetNodeId, long seq) {
+        return Option.option(pendingDrains.get(targetNodeId)).filter(entry -> entry.seq() == seq);
+    }
+
+    /// The gate of attempt `seq`: it answers whether the attempt still owns its target, and whether the calling thread holds
+    /// this manager's monitor (the sink refuses a request made under it).
+    private DrainGate gateOf(NodeId targetNodeId, long seq) {
+        return new DrainGate() {
+            @Override
+            public boolean runIfOwned(Runnable write) {
+                return acceptDrain(targetNodeId, seq, write);
+            }
+
+            @Override
+            public boolean ownerMonitorHeld() {
+                return Thread.holdsLock(ClusterTopologyManagerRecord.this);
+            }
+        };
+    }
+
+    /// The gate's accept row (rule M): under the monitor the registry add runs, and then the kind **of the entry** decides: DRAIN
+    /// arms the grace timer with the entry's reason, EVICTION removes the entry. A cancelled or deactivated attempt finds no entry
+    /// and answers `false`, so no write happens.
+    private synchronized boolean acceptDrain(NodeId targetNodeId, long seq, Runnable write) {
+        return ownedAttempt(targetNodeId, seq).map(entry -> recordAccepted(entry, targetNodeId, write))
+                           .isPresent();
+    }
+
+    private Unit recordAccepted(DrainAttempt entry, NodeId targetNodeId, Runnable write) {
+        write.run();
+        armOrRelease(entry, targetNodeId);
 
         return unit();
     }
 
-    /// #3626: the ONE place a DRAIN command is written, by every writer ([#drainNode] and the two rejoin evictions), and the one
-    /// enforcer of the rule that this manager never drains the node it runs on: that node carries the DRAIN commands while it
-    /// leads. It is the last row of the refusal table, so a more specific refusal is told first.
-    private Result<Unit> writeDrainCommand(NodeId targetNodeId) {
-        if (targetNodeId.equals(observer.self().id())) {
-            return new LeaderCannotDrainItself(targetNodeId).result();
+    @Contract
+    private void armOrRelease(DrainAttempt entry, NodeId targetNodeId) {
+        switch (entry.kind()) {
+            case DRAIN -> scheduleGraceTerminate(targetNodeId, entry.seq());
+            case EVICTION -> pendingDrains.remove(targetNodeId);
         }
-
-        drainCommandSink.accept(targetNodeId);
-
-        return Result.unitResult();
     }
 
     @Override
@@ -2826,8 +2945,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// [#graceReapVerdict]) and clear the DRAIN command. Idempotent — `terminateNode` treats an instance
     /// that is already gone as done, and `drainCommandClear` no-ops on an absent target.
     @Contract
-    private void scheduleGraceTerminate(NodeId targetNodeId, DrainReason reason, long epoch) {
-        SharedScheduler.schedule(() -> graceTerminate(targetNodeId, reason, epoch), autoHealConfig.provisioningTimeout());
+    private void scheduleGraceTerminate(NodeId targetNodeId, long seq) {
+        SharedScheduler.schedule(() -> graceTerminate(targetNodeId, seq), autoHealConfig.provisioningTimeout());
     }
 
     /// Grace expiry. A non-surplus drain (`JOIN_GRACE_REAP`, `OPERATOR_COMMAND`) reaps as issued and never
@@ -2835,24 +2954,30 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// cleared in every branch and LAST: a deposed issuer must not re-deliver a stale DRAIN if it later
     /// regains leadership, and clearing last makes the clear the completion signal of the whole backstop.
     @Contract
-    private synchronized void graceTerminate(NodeId targetNodeId, DrainReason reason, long epoch) {
-        if (!pendingDrains.remove(targetNodeId, epoch)) {
-            return;
+    private synchronized void graceTerminate(NodeId targetNodeId, long seq) {
+        ownedAttempt(targetNodeId, seq).onPresent(entry -> reapOwned(targetNodeId, entry));
+    }
+
+    /// The one rc6 exception to rule M: the reap decision runs under the monitor. The timer carries only `(target, seq)`; the
+    /// reason and the epoch are read from **the entry** the timer still owns, so a timer of a cancelled, failed or replaced
+    /// attempt finds a different `seq` (or none) and does nothing.
+    @Contract
+    private void reapOwned(NodeId targetNodeId, DrainAttempt entry) {
+        pendingDrains.remove(targetNodeId);
+        if (active.get() && activationEpoch.get() == entry.epoch()) {
+            entry.reason().onPresent(reason -> reapForReason(targetNodeId, reason));
         }
 
-        if (!active.get() || activationEpoch.get() != epoch) {
-            drainCommandClear.accept(targetNodeId);
+        drainCommandClear.accept(targetNodeId);
+    }
 
-            return;
-        }
-
+    @Contract
+    private void reapForReason(NodeId targetNodeId, DrainReason reason) {
         if (reason.isSurplusTrim()) {
             surplusTrimGraceExpired(targetNodeId, reason);
         } else {
             reapDrainedNode(targetNodeId, reason);
         }
-
-        drainCommandClear.accept(targetNodeId);
     }
 
     @Contract
@@ -3727,12 +3852,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        var refused = cause instanceof NodeLifecycleManager.ReadmissionRefused;
+        if (cause instanceof NodeLifecycleManager.ReadmissionRefused) {
+            evict(nodeId).onResultRun(() -> warnRejoinUnreconciled(nodeId, cause, true));
 
-        if (refused) {
-            evict(nodeId);
+            return;
         }
 
+        warnRejoinUnreconciled(nodeId, cause, false);
+    }
+
+    @Contract
+    private void warnRejoinUnreconciled(NodeId nodeId, org.pragmatica.lang.Cause cause, boolean refused) {
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
                                                               org.pragmatica.utility.warning.OperatorWarningCode.EXTERNAL_REJOIN_UNRECONCILED,
@@ -3760,7 +3890,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// A node a replacement retired joined again: its identity is superseded. It is refused and evicted (the DRAIN command, no reap), never admitted again, and the
     /// operator is told which node replaced it.
     private void refuseSupersededIdentity(NodeId nodeId, NodeLifecycleManager.RetiredIdentityRejoined retired) {
-        evict(nodeId);
+        evict(nodeId).onResultRun(() -> warnSupersededIdentity(nodeId, retired));
+    }
+
+    @Contract
+    private void warnSupersededIdentity(NodeId nodeId, NodeLifecycleManager.RetiredIdentityRejoined retired) {
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
                                                               org.pragmatica.utility.warning.OperatorWarningCode.NODE_RETIRED_IDENTITY_REJOINED,
@@ -3770,24 +3904,51 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               retired.replacement());
     }
 
-    /// A rejoin eviction writes the DRAIN command through [#writeDrainCommand]. FER: refused for this manager's own node, the
-    /// eviction degrades to the logged refusal; the operator warning beside it is still raised, and the node is drained by the
-    /// next leader once leadership moves. Nothing retries it here: a later join of the node runs the eviction again.
-    @Contract
-    private void evict(NodeId nodeId) {
-        writeDrainCommand(nodeId).onFailure(cause -> log.warn("CTM: the eviction of {} was not queued: {}",
-                                                              nodeId,
-                                                              cause.message()));
+    /// A rejoin eviction writes the DRAIN command through the sink as an EVICTION attempt (rule M: [#decideEviction] under the
+    /// monitor, the sink request after it). An eviction joins any entry of the target, and it is the one opener that retries
+    /// (R6-1): an `ApplyTimeout` answer is requested once more under the same attempt's gate, before the failure row; a joined
+    /// caller never retries. FER: a refused eviction (this manager's own node, an inactive manager, a refused witness) degrades
+    /// to the logged refusal; the returned outcome still completes, so the operator warning that follows it is still raised, and
+    /// the node is drained by the next leader once leadership moves. A later join of the node runs the eviction again.
+    private Promise<Unit> evict(NodeId nodeId) {
+        return actOn(decideEviction(nodeId), nodeId, true).onFailure(cause -> log.warn("CTM: the eviction of {} was not queued: {}",
+                                                                                       nodeId,
+                                                                                       cause.message()));
+    }
+
+    /// Rule M: the decision of an eviction, under the monitor. A manager that is not active records nothing, so that
+    /// `deactivate`, which clears the map under the same monitor, reaches every entry.
+    private synchronized DrainDecision decideEviction(NodeId nodeId) {
+        if (!active.get()) {
+            return Refused.refused(Causes.cause("Topology manager is not active"));
+        }
+
+        if (nodeId.equals(observer.self().id())) {
+            return Refused.refused(new LeaderCannotDrainItself(nodeId));
+        }
+
+        return Option.option(pendingDrains.get(nodeId))
+                     .<DrainDecision> map(Join::join)
+                     .or(() -> putAttempt(nodeId,
+                                          DrainAttempt.Kind.EVICTION,
+                                          Option.none()));
     }
 
     /// A drain was issued to the previous incarnation: it does not apply to the one that has just joined. The pending entry is removed, so the grace expiry
     /// finds nothing to reap, the DRAIN command is cleared, and the operator is told to re-issue it if it is still intended.
     private void cancelPendingDrain(NodeId nodeId) {
-        if (Option.option(pendingDrains.remove(nodeId)).isEmpty()) {
-            return;
-        }
+        cancelAttempt(nodeId).filter(entry -> entry.kind() == DrainAttempt.Kind.DRAIN)
+                     .onPresent(_ -> warnDrainCancelled(nodeId));
+    }
 
-        drainCommandClear.accept(nodeId);
+    /// Rule M, the cancel row: under the monitor the entry is removed and the registry cleared, so a concurrent gate answers `false`
+    /// (cancel first) or has its write cleared (gate first). The warning is raised by the caller, after the monitor.
+    private synchronized Option<DrainAttempt> cancelAttempt(NodeId nodeId) {
+        return Option.option(pendingDrains.remove(nodeId)).onPresent(_ -> drainCommandClear.accept(nodeId));
+    }
+
+    @Contract
+    private void warnDrainCancelled(NodeId nodeId) {
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
                                                               org.pragmatica.utility.warning.OperatorWarningCode.NODE_DRAIN_CANCELLED_REJOINED,

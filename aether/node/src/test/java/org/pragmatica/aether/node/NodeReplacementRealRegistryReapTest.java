@@ -18,6 +18,7 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.TerminationRetirement;
 import org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.DrainSink;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
@@ -248,7 +249,7 @@ class NodeReplacementRealRegistryReapTest {
                                                                       : Option.<ClusterConfigValue> none(),
                                                                 commands -> Promise.success(List.<Object> of()),
                                                                 () -> AetherValue.ClusterPhase.NORMAL,
-                                                                requestedDrains::add,
+                                                                DrainSink.synchronous(requestedDrains::add, _ -> {}),
                                                                 clearedDrains::add,
                                                                 Option::none,
                                                                 MembershipLiveness.membershipLiveness(() -> replayCapable ? Set.of(CORE, new NodeId("c-2"), new NodeId("c-3")) : Set.of(),
