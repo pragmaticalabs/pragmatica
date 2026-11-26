@@ -2,8 +2,8 @@ package org.pragmatica.portbind;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+
 
 /// The set of socket-bind and port-allocation APIs the port-bind gate refuses in test classes (#3801), as data. Each entry is a
 /// type and the members of it (and of every subtype) that bind: `ServerSocket` and `DatagramSocket` allocate a port in every
@@ -20,6 +20,11 @@ import java.util.concurrent.ConcurrentHashMap;
 /// receives it is flagged), client sockets that connect, and the repository's own server-start entry points (they are handed a
 /// port that came from a reservation, which is a decision about where the port came from, not a bind the scan can see).
 /// Reflection and method handles looked up by name at run time are invisible to a bytecode scan.
+///
+/// JBCT rules suppressed on this class: this module may depend on nothing in this repository (every module with `src/test` gets it
+/// at test scope, so a dependency on `core` is a reactor cycle), which leaves `Result` and `Option` unavailable, and the class
+/// is a command-line tool whose boundary is the JDK's (`throws`, `Optional`, a `void main`).
+@SuppressWarnings({"JBCT-EX-01", "JBCT-RET-01", "JBCT-BND-01"})
 final class BindApis {
     /// The members of one type that bind. `member` answers for a member's name and descriptor.
     record Api(String type, MemberTest member) {}
@@ -39,11 +44,15 @@ final class BindApis {
                                          new Api("java.nio.channels.NetworkChannel", BIND),
                                          new Api("javax.net.ServerSocketFactory", named("createServerSocket")),
                                          new Api("com.sun.net.httpserver.HttpServer",
-                                                 either(BIND, (name, descriptor) -> name.equals("create") && descriptor.startsWith("(Ljava/net/InetSocketAddress;"))),
+                                                 either(BIND,
+                                                        (name, descriptor) -> name.equals("create") && descriptor.startsWith("(Ljava/net/InetSocketAddress;"))),
                                          new Api("io.netty.bootstrap.AbstractBootstrap", BIND),
                                          new Api("io.netty.channel.ChannelOutboundInvoker", BIND));
 
-    private final Map<String, Optional<Class<?>>> loaded = new ConcurrentHashMap<>();
+    /// Stands for a class that could not be loaded, so a failed load is remembered like a successful one.
+    private static final Class<?> ABSENT = Void.class;
+
+    private final Map<String, Class<?>> loaded = new ConcurrentHashMap<>();
     private final ClassLoader loader;
 
     BindApis(ClassLoader loader) {
@@ -51,12 +60,15 @@ final class BindApis {
     }
 
     /// The reference (`owner#name`, owner as the binary name the compiler wrote) when `owner.name descriptor` is a bind API, or empty.
-    Optional<String> match(String owner, String name, String descriptor) {
+    List<String> match(String owner, String name, String descriptor) {
         return ALL.stream()
-                  .filter(api -> api.member().binds(name, descriptor))
-                  .filter(api -> isOrExtends(owner.replace('/', '.'), api.type()))
+                  .filter(api -> api.member()
+                                    .binds(name, descriptor))
+                  .filter(api -> isOrExtends(owner.replace('/', '.'),
+                                             api.type()))
                   .map(api -> owner.replace('/', '.') + "#" + name)
-                  .findFirst();
+                  .limit(1)
+                  .toList();
     }
 
     private boolean isOrExtends(String ownerName, String type) {
@@ -67,20 +79,22 @@ final class BindApis {
         var ownerClass = load(ownerName);
         var apiClass = load(type);
 
-        return ownerClass.isPresent() && apiClass.isPresent() && apiClass.get().isAssignableFrom(ownerClass.get());
+        return ownerClass != ABSENT
+               && apiClass != ABSENT
+               && apiClass.isAssignableFrom(ownerClass);
     }
 
-    private Optional<Class<?>> load(String name) {
+    private Class<?> load(String name) {
         return loaded.computeIfAbsent(name, this::tryLoad);
     }
 
     /// Loads without initialising. A class that cannot be loaded here (absent from this module's classpath, or one whose own
     /// dependencies are) leaves only the exact-name match, which is the safe direction: it can only miss a subtype's call.
-    private Optional<Class<?>> tryLoad(String name) {
+    private Class<?> tryLoad(String name) {
         try {
-            return Optional.of(Class.forName(name, false, loader));
+            return Class.forName(name, false, loader);
         } catch (ClassNotFoundException | LinkageError e) {
-            return Optional.empty();
+            return ABSENT;
         }
     }
 

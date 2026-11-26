@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+
 /// The bytecode scan behind the port-bind gate (#3801): finds every call site of a socket-bind or port-allocation API ([BindApis])
 /// in a module's compiled test classes, whatever the port argument is, and fails the build on each one that is neither in
 /// `HeldPort` (a `src/main` class of this module, not a scanned tree) nor on the [AllowList] with its reason.
@@ -37,6 +38,11 @@ import java.util.stream.Stream;
 ///
 /// What it cannot see: reflection and `MethodHandles.Lookup` finds by name, a bind in `src/main` (not a test class; that is
 /// production code and its own concern), and a port that reaches a bind inside the repository's own server-start entry points.
+///
+/// JBCT rules suppressed on this class: this module may depend on nothing in this repository (every module with `src/test` gets it
+/// at test scope, so a dependency on `core` is a reactor cycle), which leaves `Result` and `Option` unavailable, and the class
+/// is a command-line tool whose boundary is the JDK's (`throws`, `Optional`, a `void main`).
+@SuppressWarnings({"JBCT-EX-01", "JBCT-RET-01", "JBCT-BND-01"})
 public final class PortBindScan {
     static final String ENFORCE = "enforce";
     static final String REPORT = "report";
@@ -44,9 +50,10 @@ public final class PortBindScan {
     public static final String STAMP = "port-bind-gate.txt";
     private static final String ALLOW_LIST_RESOURCE = "allowlist.txt";
     private static final Pattern LAMBDA = Pattern.compile("lambda\\$(.+)\\$\\d+");
+
     private static final String FIX = "bind the port through org.pragmatica.portbind.HeldPort (it comes back open and holds the port for as long as it is open), or"
-                                      + " take a reserved port from the module's ClusterTestPorts, or bind port 0 inside the server under test and read the bound port back."
-                                      + " A class whose job is the socket itself is listed with its reason in port-bind-gate's allowlist.txt";
+                                    + " take a reserved port from the module's ClusterTestPorts, or bind port 0 inside the server under test and read the bound port back."
+                                    + " A class whose job is the socket itself is listed with its reason in port-bind-gate's allowlist.txt";
 
     /// One call site: the class (binary name), the enclosing method (lambdas folded into the method that holds them), the source
     /// line and the API reference it reaches.
@@ -73,13 +80,18 @@ public final class PortBindScan {
 
         var module = args[0];
         var directory = Path.of(args[1]);
-        var mode = args.length == 3 ? args[2] : ENFORCE;
+        var mode = args.length == 3
+                   ? args[2]
+                   : ENFORCE;
 
         if (!mode.equals(ENFORCE) && !mode.equals(REPORT)) {
             throw new IllegalArgumentException("mode must be enforce or report, was " + mode);
         }
+
         if (!Files.isDirectory(directory)) {
-            System.err.println("[port-bind-gate] " + module + ": " + directory + " does not exist: the gate has nothing to read, which is not a pass (#3801)");
+            System.err.println("[port-bind-gate] " + module
+                              + ": " + directory
+                              + " does not exist: the gate has nothing to read, which is not a pass (#3801)");
             System.exit(1);
         }
 
@@ -109,7 +121,8 @@ public final class PortBindScan {
 
         lines.add(summary(module, result));
         lines.addAll(reportLines(module, result));
-        Files.write(classes.toAbsolutePath().getParent().resolve(STAMP), lines);
+        Files.write(classes.toAbsolutePath().getParent().resolve(STAMP),
+                    lines);
     }
 
     public static AllowList bundledAllowList() {
@@ -117,6 +130,7 @@ public final class PortBindScan {
             if (in == null) {
                 throw new IllegalStateException(ALLOW_LIST_RESOURCE + " is missing from the port-bind-gate jar");
             }
+
             return AllowList.parse(new String(in.readAllBytes(), StandardCharsets.UTF_8));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -126,7 +140,8 @@ public final class PortBindScan {
     /// Scans every class file under `classes`. `loader` resolves a call's receiver type; the directory itself is added in front
     /// of it, so a test class that extends a bind type is resolved from the very classes being scanned.
     public static Findings scan(String module, Path classes, ClassLoader loader, AllowList allowList) throws IOException {
-        try (var own = new URLClassLoader(new URL[]{classes.toUri().toURL()}, loader)) {
+        try (var own = new URLClassLoader(new URL[]{classes.toUri().toURL()},
+                                          loader)) {
             var apis = new BindApis(own);
             var sites = new ArrayList<Site>();
             var count = 0;
@@ -135,11 +150,12 @@ public final class PortBindScan {
                 sites.addAll(scanClass(Files.readAllBytes(file), apis));
                 count++;
             }
-            sites.sort(Comparator.comparing(Site::className)
-                                 .thenComparingInt(Site::line));
 
+            sites.sort(Comparator.comparing(Site::className).thenComparingInt(Site::line));
             var violations = sites.stream()
-                                  .filter(site -> !allowList.excuses(module, site.className(), site.method()))
+                                  .filter(site -> !allowList.excuses(module,
+                                                                     site.className(),
+                                                                     site.method()))
                                   .toList();
 
             return new Findings(count, List.copyOf(sites), violations, allowList.staleFor(module, sites));
@@ -148,7 +164,8 @@ public final class PortBindScan {
 
     private static List<Path> classFiles(Path root) throws IOException {
         try (Stream<Path> files = Files.walk(root)) {
-            return files.filter(path -> path.toString().endsWith(".class"))
+            return files.filter(path -> path.toString()
+                                            .endsWith(".class"))
                         .sorted()
                         .toList();
         }
@@ -162,39 +179,40 @@ public final class PortBindScan {
         for (var method : model.methods()) {
             scanMethod(className, method, apis, sites);
         }
+
         return sites;
     }
 
     private static void scanMethod(String className, MethodModel method, BindApis apis, List<Site> sites) {
         var enclosing = enclosingName(method.methodName().stringValue());
 
-        method.code().ifPresent(code -> {
-            var line = 0;
+        method.code()
+              .ifPresent(code -> {
+                             var line = 0;
 
-            for (CodeElement element : code) {
-                if (element instanceof LineNumber number) {
-                    line = number.line();
-                } else {
-                    for (var api : bindsAt(element, apis)) {
-                        sites.add(new Site(className, enclosing, line, api));
-                    }
-                }
-            }
-        });
+                             for (CodeElement element : code) {
+                                 if (element instanceof LineNumber number) {
+                                     line = number.line();
+                                 } else {
+                                     for (var api : bindsAt(element, apis)) {
+                                         sites.add(new Site(className, enclosing, line, api));
+                                     }
+                                 }
+                             }
+                         });
     }
 
     /// The APIs one instruction reaches: a direct call, a method handle loaded as a constant, or a handle in an invokedynamic's
     /// bootstrap arguments (`ServerSocket::new` compiles to the last).
     private static List<String> bindsAt(CodeElement element, BindApis apis) {
         return switch (element) {
-            case InvokeInstruction call -> reference(call.owner().asInternalName(), call.name().stringValue(), call.type().stringValue(), apis);
+            case InvokeInstruction call -> reference(call.owner().asInternalName(),
+                                                     call.name().stringValue(),
+                                                     call.type().stringValue(),
+                                                     apis);
             case ConstantInstruction.LoadConstantInstruction load -> handle(load.constantEntry(), apis);
-            case InvokeDynamicInstruction dynamic -> dynamic.invokedynamic()
-                                                            .bootstrap()
-                                                            .arguments()
-                                                            .stream()
-                                                            .flatMap(entry -> handle(entry, apis).stream())
-                                                            .toList();
+            case InvokeDynamicInstruction dynamic -> dynamic.invokedynamic().bootstrap().arguments().stream().flatMap(entry -> handle(entry,
+                                                                                                                                      apis).stream()).toList();
             default -> List.of();
         };
     }
@@ -206,13 +224,18 @@ public final class PortBindScan {
     }
 
     private static List<String> member(MemberRefEntry ref, BindApis apis) {
-        return reference(ref.owner().asInternalName(), ref.name().stringValue(), ref.type().stringValue(), apis);
+        return reference(ref.owner().asInternalName(),
+                         ref.name().stringValue(),
+                         ref.type().stringValue(),
+                         apis);
     }
 
     private static List<String> reference(String owner, String name, String descriptor, BindApis apis) {
         return owner.startsWith("[")
                ? List.of()
-               : apis.match(owner, name, descriptor).stream().toList();
+               : apis.match(owner, name, descriptor)
+                     .stream()
+                     .toList();
     }
 
     private static String enclosingName(String methodName) {
@@ -230,15 +253,27 @@ public final class PortBindScan {
     }
 
     public static String summary(String module, Findings result) {
-        return "[port-bind-gate] " + module + ": scanned " + result.classFiles() + " test class file(s), "
-               + result.sites().size() + " bind call site(s), " + result.violations().size() + " not allowed, " + result.stale().size() + " stale allow-list entr(ies)";
+        return "[port-bind-gate] " + module
+             + ": scanned " + result.classFiles()
+             + " test class file(s), " + result.sites()
+                                               .size()
+             + " bind call site(s), " + result.violations()
+                                              .size()
+             + " not allowed, " + result.stale()
+                                        .size()
+             + " stale allow-list entr(ies)";
     }
 
     private static List<String> reportLines(String module, Findings result) {
         return result.sites()
                      .stream()
-                     .map(site -> "PORT-BIND-SITE " + module + " " + site.location() + " " + site.method() + " " + site.api()
-                                  + (result.violations().contains(site) ? " VIOLATION" : " allowed"))
+                     .map(site -> "PORT-BIND-SITE " + module
+                                 + " " + site.location()
+                                 + " " + site.method()
+                                 + " " + site.api() + (result.violations()
+                                                             .contains(site)
+                                                       ? " VIOLATION"
+                                                       : " allowed"))
                      .toList();
     }
 
@@ -246,11 +281,17 @@ public final class PortBindScan {
         var lines = new ArrayList<String>();
 
         result.violations()
-              .forEach(site -> lines.add("[port-bind-gate] " + site.location() + " (" + site.method() + ") calls " + site.api()
-                                         + "\n    fix: " + FIX));
+              .forEach(site -> lines.add("[port-bind-gate] " + site.location()
+                                        + " (" + site.method()
+                                        + ") calls " + site.api()
+                                        + "\n    fix: " + FIX));
         result.stale()
-              .forEach(entry -> lines.add("[port-bind-gate] stale allow-list entry in " + module + ": " + entry.target() + " (" + entry.reason() + ")"
-                                          + "\n    fix: it excuses no bind call site any more; delete it from port-bind-gate's allowlist.txt"));
+              .forEach(entry -> lines.add("[port-bind-gate] stale allow-list entry in " + module
+                                         + ": " + entry.target()
+                                         + " (" + entry.reason()
+                                         + ")"
+                                         + "\n    fix: it excuses no bind call site any more; delete it from port-bind-gate's allowlist.txt"));
+
         return lines;
     }
 }
