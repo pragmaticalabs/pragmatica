@@ -62,6 +62,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.write.FsmWriteError;
 import org.pragmatica.aether.deployment.cluster.fsm.write.NotLeaderAction;
 import org.pragmatica.aether.deployment.cluster.fsm.write.TermWriter;
 import org.pragmatica.aether.deployment.cluster.fsm.write.WriteSite;
+import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.ActivationBlocked;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
@@ -1053,9 +1054,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.info("Schema migration pending for datasource: {}", datasource);
             ctx.schemaOrchestrator()
                .migrateIfNeeded(datasource)
-               .onFailure(cause -> log.error("Schema migration failed for {}: {}",
-                                             datasource,
-                                             cause.message()));
+               .onFailure(cause -> logMigrationFailure(datasource, cause));
+        }
+
+        /// #3754: an orchestrator stopped with its node refuses the dispatch before attempting anything, which is the shutdown working,
+        /// not a failed migration: it is logged at INFO, every other failure stays at ERROR.
+        @Contract
+        private void logMigrationFailure(String datasource, Cause cause) {
+            if (cause instanceof SchemaError.OrchestratorStopped) {
+                log.info("Schema migration for {} not started: {}", datasource, cause.message());
+
+                return;
+            }
+
+            log.error("Schema migration failed for {}: {}", datasource, cause.message());
         }
 
         private void handleSchemaCompleted(String datasource) {
