@@ -6,18 +6,26 @@ package org.pragmatica.aether.api.routes;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeResponse;
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.deployment.cluster.FenceFailure.ActivationChanged;
+import org.pragmatica.aether.deployment.cluster.FenceFailure.AttemptCancelled;
+import org.pragmatica.aether.deployment.cluster.FenceFailure.CalledUnderOwnerMonitor;
+import org.pragmatica.aether.deployment.cluster.FenceFailure.LeadershipNotWitnessed;
+import org.pragmatica.aether.deployment.cluster.FenceFailure.NotLeader;
+import org.pragmatica.aether.deployment.cluster.FenceFailure.WitnessExpired;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
@@ -29,6 +37,7 @@ import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.http.HttpError;
@@ -87,8 +96,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// fixtures that wire no slice ownership (they keep the budget-only admission they always had).
     private final Option<SliceFloor> sliceFloor;
     /// Targets whose operator drain the slice floor refused and that have not been admitted since: the refusal
-    /// event fires on entry, the recovery event on exit. Touched only inside the synchronized admission.
-    private final Set<String> floorRefusedTargets = new HashSet<>();
+    /// event fires on entry, the recovery event on exit. Entered inside the synchronized admission; left by the recovery notice,
+    /// which runs in the outcome continuation of an accepted request (or by the departure task, under the monitor), so the set is
+    /// concurrent and the removal is the atomic claim of the one request that reports the recovery.
+    private final Set<String> floorRefusedTargets = ConcurrentHashMap.newKeySet();
 
     /// The slice-floor guard the operator drain/shutdown routes consult (#1720), and the sink through which a
     /// FORCED breach is reported. `violations` is [SliceOwnershipQuery#minAvailableDrainViolations]: applied to
@@ -101,20 +112,31 @@ public final class NodeLifecycleRoutes implements RouteSource {
         }
     }
 
-    /// The leader's DRAIN channel as one value (C6a-0): `request` enqueues a drain target into the leader's
-    /// `DrainCommandRegistry`, `pending` reads the commanded-but-not-yet-departed targets. [#registry] carries the
-    /// registry's two accessors, [#none()] is the no-op for fixtures that wire no registry.
+    /// The leader's DRAIN channel as one value (C6a-0): `request` asks the sink to drain a target and answers when the request
+    /// committed, `pending` reads the targets with a request in flight or in the leader's `DrainCommandRegistry`, `inFlight` reads
+    /// the request in flight for one target. [#registry] carries the three accessors, [#none()] is the no-op for fixtures that
+    /// wire no registry.
     public sealed interface DrainPort {
-        /// Enqueues the drain target; the leader's cluster-sync ping then carries it.
-        @Contract
-        void request(NodeId node);
-
-        /// The commanded-but-not-yet-departed drain targets.
+        /// Asks for the drain of the target. Succeeds once the target is registered, and the leader's cluster-sync ping then
+        /// carries it; fails with the cause that kept it from being queued.
+        Promise<Unit> request(NodeId node);
+        /// The drain targets with a request in flight, and the commanded-but-not-yet-departed ones.
         Set<NodeId> pending();
+        /// The request in flight for the target, if any. Its promise succeeds only if the target is then registered.
+        Option<Promise<Unit>> inFlight(NodeId node);
 
-        /// The registry-backed port; a null sink is a no-op, a null pending supplier reads an empty set.
-        static DrainPort registry(Consumer<NodeId> sink, Supplier<Set<NodeId>> pending) {
-            return Registry.registry(sink, pending);
+        /// The registry-backed port without an in-flight read; a null sink answers success, a null pending supplier reads an
+        /// empty set.
+        static DrainPort registry(Function<NodeId, Promise<Unit>> sink, Supplier<Set<NodeId>> pending) {
+            return Registry.registry(sink, pending, null);
+        }
+
+        /// The registry-backed port; a null sink answers success, a null pending supplier reads an empty set, a null in-flight
+        /// read finds nothing in flight.
+        static DrainPort registry(Function<NodeId, Promise<Unit>> sink,
+                                  Supplier<Set<NodeId>> pending,
+                                  Function<NodeId, Option<Promise<Unit>>> inFlight) {
+            return Registry.registry(sink, pending, inFlight);
         }
 
         /// The no-op port: requests are dropped, nothing is pending.
@@ -122,41 +144,58 @@ public final class NodeLifecycleRoutes implements RouteSource {
             return None.INSTANCE;
         }
 
-        record Registry(Consumer<NodeId> sink, Supplier<Set<NodeId>> pendingSource) implements DrainPort {
-            /// NLR's null defaults: a null sink is a no-op, a null pending supplier reads an empty set.
+        record Registry(Function<NodeId, Promise<Unit>> sink,
+                        Supplier<Set<NodeId>> pendingSource,
+                        Function<NodeId, Option<Promise<Unit>>> inFlightSource) implements DrainPort {
+            /// NLR's null defaults: a null sink answers success, a null pending supplier reads an empty set, a null in-flight read
+            /// finds nothing in flight.
             public Registry {
                 sink = sink == null
-                       ? _ -> {}
+                       ? _ -> Promise.unitPromise()
                        : sink;
                 pendingSource = pendingSource == null
                                 ? Set::of
                                 : pendingSource;
+                inFlightSource = inFlightSource == null
+                                 ? _ -> Option.none()
+                                 : inFlightSource;
             }
 
-            static Registry registry(Consumer<NodeId> sink, Supplier<Set<NodeId>> pending) {
-                return new Registry(sink, pending);
+            static Registry registry(Function<NodeId, Promise<Unit>> sink,
+                                     Supplier<Set<NodeId>> pending,
+                                     Function<NodeId, Option<Promise<Unit>>> inFlight) {
+                return new Registry(sink, pending, inFlight);
             }
 
             @Override
-            @Contract
-            public void request(NodeId node) {
-                sink.accept(node);
+            public Promise<Unit> request(NodeId node) {
+                return sink.apply(node);
             }
 
             @Override
             public Set<NodeId> pending() {
                 return pendingSource.get();
             }
+
+            @Override
+            public Option<Promise<Unit>> inFlight(NodeId node) {
+                return inFlightSource.apply(node);
+            }
         }
 
         enum None implements DrainPort {
             INSTANCE;
             @Override
-            @Contract
-            public void request(NodeId node) {}
+            public Promise<Unit> request(NodeId node) {
+                return Promise.unitPromise();
+            }
             @Override
             public Set<NodeId> pending() {
                 return Set.of();
+            }
+            @Override
+            public Option<Promise<Unit>> inFlight(NodeId node) {
+                return Option.none();
             }
         }
     }
@@ -235,10 +274,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier) {
-        return new NodeLifecycleRoutes(nodeSupplier,
-                                       DrainPort.registry(_ -> {},
-                                                          Set::of),
-                                       Option.none());
+        return new NodeLifecycleRoutes(nodeSupplier, DrainPort.none(), Option.none());
     }
 
     /// Membership v2 (B5b) — production factory wiring the leader's DRAIN command sink + the
@@ -248,7 +284,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                           Consumer<NodeId> drainCommandSink,
                                                           Supplier<Set<NodeId>> pendingDrainsSupplier) {
         return new NodeLifecycleRoutes(nodeSupplier,
-                                       DrainPort.registry(drainCommandSink, pendingDrainsSupplier),
+                                       DrainPort.registry(acknowledging(drainCommandSink), pendingDrainsSupplier),
                                        Option.none());
     }
 
@@ -257,7 +293,20 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                           Consumer<NodeId> drainCommandSink,
                                                           Supplier<Set<NodeId>> pendingDrainsSupplier,
                                                           SliceFloor sliceFloor) {
-        return withDrainPort(nodeSupplier, DrainPort.registry(drainCommandSink, pendingDrainsSupplier), sliceFloor);
+        return withDrainPort(nodeSupplier,
+                             DrainPort.registry(acknowledging(drainCommandSink), pendingDrainsSupplier),
+                             sliceFloor);
+    }
+
+    /// The legacy `Consumer` sink as a port sink: the request is answered once the consumer returned.
+    private static Function<NodeId, Promise<Unit>> acknowledging(Consumer<NodeId> sink) {
+        return node -> acknowledge(sink, node);
+    }
+
+    private static Promise<Unit> acknowledge(Consumer<NodeId> sink, NodeId node) {
+        sink.accept(node);
+
+        return Promise.unitPromise();
     }
 
     /// C6a-0 — the port-taking factory: the leader's drain channel as one [DrainPort] in place of the sink / supplier
@@ -293,7 +342,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     /// Package-private: the synchronous admission, for the concurrent-admission test (#1720).
-    Result<TransitionResult> admitForTest(NodeId node, boolean drain, boolean force) {
+    Result<Promise<TransitionResult>> admitForTest(NodeId node, boolean drain, boolean force) {
         return admitOperatorDrain(node, drain, force);
     }
 
@@ -454,9 +503,15 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// the target self-drains via its `DrainProcedure`. The CTM grace-terminate backstop reaps the
     /// container if it never self-exits. No `LifecycleWriter` write happens here.
     private Promise<TransitionResult> drainNode(String nodeIdStr, boolean force) {
-        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
-                           .flatMap(node -> admitOperatorDrain(node, true, force))
-                           .async();
+        return settled(RequestParse.asRequest(NodeId.nodeId(nodeIdStr)).flatMap(node -> admitOperatorDrain(node,
+                                                                                                           true,
+                                                                                                           force)));
+    }
+
+    /// The admission's own checks ran synchronously, under the monitor; what is left is the commit of the drain request.
+    private static <T> Promise<T> settled(Result<Promise<T>> admission) {
+        return admission.async()
+                        .flatMap(promise -> promise);
     }
 
     /// One routes instance is installed per management server. Check and reserve synchronously:
@@ -468,29 +523,35 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// `enqueueOperatorDrain`, under the lock, before the next admission can evaluate. Two requests therefore never
     /// pass against one "pending drains" snapshot. Pinned by `NodeLifecycleRoutesSliceFloorTest`'s concurrent
     /// admission test.
-    private synchronized Result<TransitionResult> admitOperatorDrain(NodeId node, boolean requireReady, boolean force) {
+    private synchronized Result<Promise<TransitionResult>> admitOperatorDrain(NodeId node,
+                                                                              boolean requireReady,
+                                                                              boolean force) {
         return refuseLeader(node, requireReady).flatMap(_ -> checkDisruptionBudgetForTarget(node.id(),
                                                                                             node))
                            .flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
-                           .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
-                           .map(budget -> enqueueOperatorDrain(node,
-                                                               budget.message(),
-                                                               requireReady));
+                           .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(notices -> enqueueOperatorDrain(node,
+                                                                                                                             budget.message(),
+                                                                                                                             requireReady,
+                                                                                                                             notices)));
     }
 
     /// #1720: refuse, 409, an operator drain or shutdown that would leave a hosted slice below its `minAvailable`
     /// ACTIVE instances, with `remaining = counted members - pending drains - target` (the automatic drain's rule,
     /// [SliceOwnershipQuery#minAvailableDrainGuard]; workers are members here, slices run on them). `force`
     /// overrides, and a forced breach raises an operator warning naming every slice, so it is never silent.
-    private Result<org.pragmatica.lang.Unit> checkSliceFloor(NodeId node, boolean drain, boolean force) {
-        return sliceFloor.fold(() -> Result.success(org.pragmatica.lang.Unit.unit()),
+    ///
+    /// The result is the warnings the request owes, as a notice: nothing is raised for an admitted request until its commit is
+    /// accepted ([#enqueueOperatorDrain]), so a refused drain raises and returns none. The refusal event of a request the floor
+    /// itself refuses is raised here: that request is the refusal.
+    private Result<Runnable> checkSliceFloor(NodeId node, boolean drain, boolean force) {
+        return sliceFloor.fold(() -> Result.success(NodeLifecycleRoutes::noNotices),
                                floor -> applySliceFloor(floor, node, drain, force));
     }
 
-    private Result<org.pragmatica.lang.Unit> applySliceFloor(SliceFloor floor,
-                                                             NodeId node,
-                                                             boolean drain,
-                                                             boolean force) {
+    @Contract
+    private static void noNotices() {}
+
+    private Result<Runnable> applySliceFloor(SliceFloor floor, NodeId node, boolean drain, boolean force) {
         var remaining = new HashSet<>(nodeSupplier.get().membershipFsm().countedMembers());
         var tracked = nodeSupplier.get().membershipFsm().memberStates();
 
@@ -500,7 +561,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
             // capacity any more, so a "breach" read from the artifact entries it still carries is not caused by this
             // request. The floor protects the cluster from a departure, and this node has already departed. No refusal
             // is raised or recorded, so repeating the request cannot alternate refusal and recovery events (#1720).
-            return Result.success(org.pragmatica.lang.Unit.unit());
+            return Result.success(NodeLifecycleRoutes::noNotices);
         }
 
         remaining.removeAll(drainPort.pending());
@@ -511,9 +572,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
                         : "shutdown";
 
         if (breaches.isEmpty()) {
-            raiseFloorRecovery(floor, node, operation, "the floor cleared");
-
-            return Result.success(org.pragmatica.lang.Unit.unit());
+            return Result.success(recoveryNotice(floor, node, operation, "the floor cleared"));
         }
 
         if (!force) {
@@ -531,6 +590,24 @@ public final class NodeLifecycleRoutes implements RouteSource {
             return new SliceFloorBreached(node.id(), operation, breaches).result();
         }
 
+        return Result.success(forcedBreachNotice(floor, node, operation, forcingPrincipal(), describe(breaches)));
+    }
+
+    private Runnable recoveryNotice(SliceFloor floor, NodeId node, String operation, String how) {
+        return () -> raiseFloorRecovery(floor, node, operation, how);
+    }
+
+    /// The principal and the breach text are read here, in the admission: the notice runs in the commit's continuation, where the
+    /// request's security context is no longer bound.
+    private Runnable forcedBreachNotice(SliceFloor floor,
+                                        NodeId node,
+                                        String operation,
+                                        String principal,
+                                        String breaches) {
+        return () -> raiseForcedBreach(floor, node, operation, principal, breaches);
+    }
+
+    private void raiseForcedBreach(SliceFloor floor, NodeId node, String operation, String principal, String breaches) {
         raiseFloorRecovery(floor, node, operation, "forced past the floor");
         OperatorWarnings.raise(LOG,
                                floor.warnings(),
@@ -539,10 +616,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                "Forced {} of node {} by {} breaches the slice floor: {}",
                                operation,
                                node.id(),
-                               forcingPrincipal(),
-                               describe(breaches));
-
-        return Result.success(org.pragmatica.lang.Unit.unit());
+                               principal,
+                               breaches);
     }
 
     /// Who forced the request, for the audit trail of a forced breach: the authenticated management principal bound
@@ -555,7 +630,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     /// The recovery counterpart of the refusal event: only when this target WAS refused, and once (the set is
-    /// guarded by the same monitor as admission, so a transition is reported by exactly one request).
+    /// the set's atomic removal claims the transition for exactly one request).
     private void raiseFloorRecovery(SliceFloor floor, NodeId node, String operation, String how) {
         raiseFloorRecovery(floor, node.id(), operation, how);
     }
@@ -574,26 +649,57 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     /// #1543 E: the old node's drain in a replacement goes through the SAME admission as `POST /nodes/drain` (readiness, the
-    /// core disruption budget, #1720's slice floor), and is never forced. Success means the drain command was enqueued; a
-    /// refusal is the cause the operator would have received.
+    /// core disruption budget, #1720's slice floor), and is never forced. Success means the drain command was committed and the
+    /// target is registered; a refusal is the cause the operator would have received.
     ///
     /// A drain already under way is not asked for again: the reconciler repeats this call every tick (and a new leader
     /// repeats it without knowing the old one's request), and a second admission of a node that is already DRAINING is refused
     /// for want of readiness, which is not a block of any kind. "Under way" is the commanded set or the node's own reported
-    /// state, so it holds across a leader change.
+    /// state, so it holds across a leader change. A drain another caller has in flight is waited for through the port's
+    /// `inFlight` read, never asked for again: its outcome is the commit's, so a witness that is refused, or whose gate wrote
+    /// nothing, is a refusal here too.
     public Promise<Unit> admitReplacementDrain(NodeId node) {
-        if (drainUnderWay(node)) {
-            return Promise.unitPromise();
-        }
+        return reportsDraining(node)
+               ? Promise.unitPromise()
+               : admitUnlessPending(node);
+    }
 
-        return Promise.resolved(admitOperatorDrain(node, true, false).map(_ -> Unit.unit()));
+    private Promise<Unit> admitUnlessPending(NodeId node) {
+        return drainPort.pending()
+                        .contains(node)
+               ? awaitPending(node)
+               : admitReplacement(node);
+    }
+
+    /// The port named the target: a request in flight answers with its commit outcome. With none left the request ended between the
+    /// two reads, so the target is read again: registered answers success, otherwise the full admission runs, with the budget and the
+    /// floor. Asking the port again instead would start a request that skipped both. The joined request's refusal is the port's raw
+    /// cause, answered here as the [HttpError] of [#drainRefusal(Cause)], the same one an opened request's refusal is (R-B2-1).
+    private Promise<Unit> awaitPending(NodeId node) {
+        return drainPort.inFlight(node)
+                        .fold(() -> admitUnlessUnderWay(node),
+                              promise -> promise.mapError(NodeLifecycleRoutes::drainRefusal));
+    }
+
+    private Promise<Unit> admitUnlessUnderWay(NodeId node) {
+        return drainUnderWay(node)
+               ? Promise.unitPromise()
+               : admitReplacement(node);
+    }
+
+    private Promise<Unit> admitReplacement(NodeId node) {
+        return settled(admitOperatorDrain(node, true, false)).map(_ -> Unit.unit());
     }
 
     /// Whether a drain of `node` is already commanded or reported by the node itself.
     public boolean drainUnderWay(NodeId node) {
         return drainPort.pending()
-                        .contains(node) || readLifecycleState(node).filter(NodeReportedState::isDraining)
-                                                             .isPresent();
+                        .contains(node) || reportsDraining(node);
+    }
+
+    private boolean reportsDraining(NodeId node) {
+        return readLifecycleState(node).filter(NodeReportedState::isDraining)
+                                 .isPresent();
     }
 
     /// Whether `cause` is the slice floor holding a drain back: the one refusal a replacement reports as "blocked".
@@ -694,18 +800,61 @@ public final class NodeLifecycleRoutes implements RouteSource {
                           .result();
     }
 
-    private TransitionResult enqueueOperatorDrain(NodeId node, String guardNote, boolean requireReady) {
-        drainPort.request(node);
-        var result = requireReady
-                     ? drainInitiatedResult(node.id(), guardNote)
-                     : shutdownInitiatedResult(node.id(), guardNote);
+    /// The outcome is the commit's: "initiated" is reported, audited and emitted, and the floor's warnings raised, only once the
+    /// port's request succeeded, and a refusal is audited as "not queued" and answered as an [HttpError] of [#drainRefusal(Cause)].
+    private Promise<TransitionResult> enqueueOperatorDrain(NodeId node,
+                                                           String guardNote,
+                                                           boolean requireReady,
+                                                           Runnable floorNotices) {
+        return drainPort.request(node)
+                        .map(_ -> initiatedResult(node, guardNote, requireReady))
+                        .onSuccess(result -> auditAndEmitLifecycleTransition(result,
+                                                                             requireReady
+                                                                             ? NodeReportedState.DRAINING.name()
+                                                                             : STOPPED_STATE))
+                        .onSuccessRun(floorNotices)
+                        .onFailure(cause -> auditNotQueued(node, requireReady, cause))
+                        .mapError(NodeLifecycleRoutes::drainRefusal);
+    }
 
-        auditAndEmitLifecycleTransition(result,
-                                        requireReady
-                                        ? NodeReportedState.DRAINING.name()
-                                        : STOPPED_STATE);
+    private TransitionResult initiatedResult(NodeId node, String guardNote, boolean requireReady) {
+        return requireReady
+               ? drainInitiatedResult(node.id(), guardNote)
+               : shutdownInitiatedResult(node.id(), guardNote);
+    }
 
-        return result;
+    private static void auditNotQueued(NodeId node, boolean requireReady, Cause cause) {
+        AuditLog.nodeLifecycleTransition(node.id(),
+                                         requireReady
+                                         ? NodeReportedState.DRAINING.name()
+                                         : STOPPED_STATE,
+                                         false,
+                                         "drain not queued: " + cause.message());
+    }
+
+    /// The cause of a refused drain request as the operator's answer. The table is total: nothing was queued by any of these
+    /// causes, so a retry is safe, and the default row keeps a cause this table does not name (a failed submit, for example) an
+    /// explicit 503 instead of the route layer's default.
+    ///
+    /// | Cause | Status |
+    /// |---|---|
+    /// | `NotLeader`, `LeadershipNotWitnessed`, `ActivationChanged` | 503: leadership moved, retry against the current leader |
+    /// | `WitnessExpired`, `ApplyTimeout` | 504: the commit did not answer in time |
+    /// | `AttemptCancelled` | 409: the attempt was cancelled while its witness was in flight |
+    /// | `CalledUnderOwnerMonitor` | 500: a code defect |
+    /// | any other cause | 503 |
+    static HttpError drainRefusal(Cause cause) {
+        return HttpError.httpError(refusalStatus(cause), cause);
+    }
+
+    private static HttpStatus refusalStatus(Cause cause) {
+        return switch (cause) {
+            case NotLeader _, LeadershipNotWitnessed _, ActivationChanged _ -> HttpStatus.SERVICE_UNAVAILABLE;
+            case WitnessExpired _, ConsensusError.ApplyTimeout _ -> HttpStatus.GATEWAY_TIMEOUT;
+            case AttemptCancelled _ -> HttpStatus.CONFLICT;
+            case CalledUnderOwnerMonitor _ -> HttpStatus.INTERNAL_SERVER_ERROR;
+            default -> HttpStatus.SERVICE_UNAVAILABLE;
+        };
     }
 
     /// `guardNote` is the disruption-budget guard's own visible decision (see
@@ -804,9 +953,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// `drain` (the target self-drains then halts via its `DrainProcedure`); the CTM grace-terminate
     /// backstop reaps the container. No `LifecycleWriter` write happens here.
     private Promise<TransitionResult> shutdownNode(String nodeIdStr, boolean force) {
-        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
-                           .flatMap(node -> admitOperatorDrain(node, false, force))
-                           .async();
+        return settled(RequestParse.asRequest(NodeId.nodeId(nodeIdStr)).flatMap(node -> admitOperatorDrain(node,
+                                                                                                           false,
+                                                                                                           force)));
     }
 
     Promise<TransitionResult> shutdownNodeForTest(String nodeIdStr) {

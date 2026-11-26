@@ -14,9 +14,9 @@ import org.pragmatica.lang.Option;
 
 /// Layering-coverage census for one lint run (issue #534).
 ///
-/// The layering rules — JBCT-ARCH-01 (dependency direction) and JBCT-ARCH-02 (`lift(...)` zone) —
-/// are deliberately silent for a file whose own package cannot be classified: a direction cannot be
-/// ranked when one endpoint has no rank. That skip is correct, but it leaves no trace, so a narrow
+/// The layering rules — JBCT-ARCH-01 (domain purity) and JBCT-ARCH-02 (`lift(...)` zone) —
+/// are deliberately silent for a file whose own package cannot be classified: a layer rule cannot
+/// judge a file that has no layer. That skip is correct, but it leaves no trace, so a narrow
 /// `[lint.layers]` config enforces almost nothing while the run still reports clean. Measured: an
 /// adapter-only config over aether's 46 cloud-provider files produced **0** findings; the same config
 /// plus a domain catch-all produced **37**.

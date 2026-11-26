@@ -33,8 +33,7 @@ import org.pragmatica.lang.Option;
 /// Slices: a slice ROOT is the package that owns a vertical slice; every package strictly beneath a
 /// root is one of that slice's internals. Roots come from explicit `slices` globs (the shortest
 /// matching prefix of a package is its root) or, by convention, from the immediate child of a
-/// `usecase` segment (`com.example.usecase.registeruser`). JBCT-ARCH-04 uses this to flag imports
-/// that reach into another slice's internals.
+/// `usecase` segment (`com.example.usecase.registeruser`). The slice roots remain until the layer engine retires (#2527).
 ///
 /// **Limits (syntax only, no cross-file resolution):** classification sees package strings, not
 /// resolved types; a framework/layer target is recognised only by package shape. There is no

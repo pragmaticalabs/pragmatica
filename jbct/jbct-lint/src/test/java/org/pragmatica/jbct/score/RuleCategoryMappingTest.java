@@ -137,6 +137,13 @@ class RuleCategoryMappingTest {
             assertEquals(Option.some(ScoreCategory.STYLE), RuleCategoryMapping.categoryFor("JBCT-ORD-01"));
         }
 
+        /// F10 (#3738): both TREE rules (#2526) score as pattern purity, as the ARCH rules they replace did.
+        @Test
+        void categoryFor_treeRules_mapToPatternPurity() {
+            assertEquals(Option.some(ScoreCategory.PATTERN_PURITY), RuleCategoryMapping.categoryFor("JBCT-TREE-01"));
+            assertEquals(Option.some(ScoreCategory.PATTERN_PURITY), RuleCategoryMapping.categoryFor("JBCT-TREE-02"));
+        }
+
         @Test
         void categoryFor_unknownRule_isNoneAndNotKnown() {
             assertEquals(Option.none(), RuleCategoryMapping.categoryFor("JBCT-RETIRED-99"));

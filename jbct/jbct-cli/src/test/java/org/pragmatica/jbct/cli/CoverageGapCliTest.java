@@ -51,6 +51,10 @@ class CoverageGapCliTest {
                                               }
                                               """;
 
+    /// The fixture files sit in the default package, which no `[project] basePackage` covers: the source root is an
+    /// infrastructure root (structure rules never read the key, #2526), so these tests keep judging the code rules only.
+    private static final String INFRASTRUCTURE_CONFIG = "[lint]\nmode = \"infrastructure\"\n";
+
     @TempDir
     Path sources;
 
@@ -60,11 +64,12 @@ class CoverageGapCliTest {
     private PrintStream originalErr;
 
     @BeforeEach
-    void captureStreams() {
+    void captureStreams() throws IOException {
         originalOut = System.out;
         originalErr = System.err;
         System.setOut(new PrintStream(out, true, UTF_8));
         System.setErr(new PrintStream(err, true, UTF_8));
+        Files.writeString(sources.resolve("jbct.toml"), INFRASTRUCTURE_CONFIG);
     }
 
     @AfterEach

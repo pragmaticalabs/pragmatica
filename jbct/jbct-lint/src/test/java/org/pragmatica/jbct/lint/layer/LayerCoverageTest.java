@@ -57,11 +57,11 @@ class LayerCoverageTest {
             class Tool {}
             """;
 
-    /// Would violate JBCT-ARCH-01 (util -> cloud is domain -> adapter) once the file's own package is
+    /// Would violate JBCT-ARCH-01 (a domain file importing a framework) once the file's own package is
     /// ranked; silent while it is unclassified.
     private static final String ARCH_DIRECTION_SOURCE = """
             package com.example.util;
-            import com.example.cloud.hetzner.Client;
+            import org.springframework.stereotype.Component;
             class Helper {}
             """;
 

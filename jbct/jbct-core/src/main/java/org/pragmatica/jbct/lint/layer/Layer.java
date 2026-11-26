@@ -4,9 +4,10 @@ package org.pragmatica.jbct.lint.layer;
 ///
 /// The book's layering rule is "imports point up only": `domain <- application <- adapter <-
 /// bootstrap`. Each layer may depend on itself and every lower-ranked layer, never a higher one.
-/// [#rank()] encodes that order — domain lowest (0), bootstrap highest (3) — and JBCT-ARCH-01 flags
-/// an import whose target layer outranks the importer. Each layer also carries its [Zone]: only
-/// `ADAPTER` is the adapter boundary; every other layer is business code.
+/// [#rank()] encodes that order — domain lowest (0), bootstrap highest (3) — but no rule compares ranks
+/// any more: JBCT-ARCH-01 flags a `domain` file's reference to a framework package, and sideways imports
+/// are judged by JBCT-TREE-01 from `[project] basePackage` (#2526). Each layer also carries its [Zone]:
+/// only `ADAPTER` is the adapter boundary; every other layer is business code.
 public enum Layer {
     DOMAIN(0, Zone.BUSINESS),
     APPLICATION(1, Zone.BUSINESS),

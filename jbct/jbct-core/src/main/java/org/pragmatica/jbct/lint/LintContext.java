@@ -7,6 +7,7 @@ import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.config.JbctMode;
 import org.pragmatica.jbct.lint.layer.LayerClassifier;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
+import org.pragmatica.jbct.lint.tree.PackageTree;
 import org.pragmatica.jbct.shared.PackageGlob;
 import org.pragmatica.lang.Option;
 
@@ -19,12 +20,17 @@ import org.pragmatica.lang.Option;
 ///
 /// `mode` and `basePackage` are the source root's `[lint] mode` and `[project] basePackage` (#2525); the rules read
 /// them once they declare the modes they run in.
+///
+/// `tree` is the source root's package tree (#2526): `[project] basePackage` with the `[lint.tree]` excludes, present
+/// exactly when the TREE rules may judge this root's files. [#fromConfig] builds it from any declared root; the run's
+/// resolver takes it away from a test root and from a root whose tree it refused.
 public record LintContext(List<Pattern> excludedPackagePatterns,
                           LintConfig config,
                           String fileName,
                           LayerClassifier layers,
                           JbctMode mode,
-                          Option<String> basePackage) {
+                          Option<String> basePackage,
+                          Option<PackageTree> tree) {
     public LintContext {
         excludedPackagePatterns = List.copyOf(excludedPackagePatterns);
     }
@@ -59,6 +65,7 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
                                "Unknown.java",
                                LayerClassifier.conventionsOnly(),
                                JbctMode.DEFAULT,
+                               Option.none(),
                                Option.none());
     }
 
@@ -71,24 +78,25 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
                                "Unknown.java",
                                LayerClassifier.conventionsOnly(),
                                JbctMode.DEFAULT,
+                               Option.none(),
                                Option.none());
     }
 
     /// Builder-style method to set config.
     public LintContext withConfig(LintConfig config) {
-        return new LintContext(excludedPackagePatterns, config, fileName, layers, mode, basePackage);
+        return new LintContext(excludedPackagePatterns, config, fileName, layers, mode, basePackage, tree);
     }
 
     /// Builder-style method to set file name.
     public LintContext withFileName(String fileName) {
-        return new LintContext(excludedPackagePatterns, config, fileName, layers, mode, basePackage);
+        return new LintContext(excludedPackagePatterns, config, fileName, layers, mode, basePackage, tree);
     }
 
     /// Builder-style method to set excluded package patterns from glob strings.
     public LintContext withExcludePackages(List<String> patterns) {
         var compiledPatterns = patterns.stream().map(PackageGlob::compile).toList();
 
-        return new LintContext(compiledPatterns, config, fileName, layers, mode, basePackage);
+        return new LintContext(compiledPatterns, config, fileName, layers, mode, basePackage, tree);
     }
 
     /// Builder-style method to set the package-classification engine from layer config.
@@ -98,12 +106,18 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
                                fileName,
                                LayerClassifier.from(layerConfig),
                                mode,
-                               basePackage);
+                               basePackage,
+                               tree);
     }
 
     /// Builder-style method to set the source root's mode and project root package from its configuration.
     public LintContext withProject(JbctMode mode, Option<String> basePackage) {
-        return new LintContext(excludedPackagePatterns, config, fileName, layers, mode, basePackage);
+        return new LintContext(excludedPackagePatterns, config, fileName, layers, mode, basePackage, tree);
+    }
+
+    /// Builder-style method to set the package tree the TREE rules judge against; none silences them.
+    public LintContext withTree(Option<PackageTree> tree) {
+        return new LintContext(excludedPackagePatterns, config, fileName, layers, mode, basePackage, tree);
     }
 
     /// Factory method from JbctConfig.
@@ -111,6 +125,9 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
         return lintContext(jbctConfig.excludePackages()).withConfig(jbctConfig.lint())
                           .withLayers(jbctConfig.layers())
                           .withProject(jbctConfig.mode(),
-                                       jbctConfig.basePackage());
+                                       jbctConfig.basePackage())
+                          .withTree(jbctConfig.basePackage()
+                                              .map(root -> PackageTree.packageTree(root,
+                                                                                   jbctConfig.tree())));
     }
 }
