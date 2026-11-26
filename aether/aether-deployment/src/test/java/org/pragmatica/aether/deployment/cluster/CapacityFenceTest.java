@@ -163,9 +163,14 @@ class CapacityFenceTest {
     /// A terminable node: initialized fleet, one OBSERVED reservation of `NODE`.
     private void terminable() {
         initialize(1);
+        observeNode();
+    }
+
+    /// A successful terminate releases the reservation: a test that terminates twice re-arms it with this before the second call.
+    private void observeNode() {
         var key = new AetherKey.CapacityReservationKey(NODE);
 
-        seed(new KVCommand.LeaderTransaction<>(key, "observed", LEADER, List.of(), List.of(
+        seed(new KVCommand.LeaderTransaction<>(key, UUID.randomUUID().toString(), LEADER, List.of(), List.of(
             new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.none(), Option.some(observedReservation())))));
     }
 
@@ -283,6 +288,7 @@ class CapacityFenceTest {
         assertThat(terminate().isSuccess()).as("6 s under a 30 s timeout").isTrue();
         assertThat(terminates.get()).isEqualTo(1);
 
+        observeNode();
         afterWitness = () -> nano.addAndGet(31 * SECOND_NANOS);
         var late = terminate();
 
@@ -299,6 +305,7 @@ class CapacityFenceTest {
         assertThat(terminate().isSuccess()).as("4 s of 5 s").isTrue();
         assertThat(terminates.get()).isEqualTo(1);
 
+        observeNode();
         afterWitness = () -> nano.addAndGet(5 * SECOND_NANOS);
         assertThat(terminate().isSuccess()).as("exactly 5 s of 5 s").isTrue();
         assertThat(terminates.get()).isEqualTo(2);
