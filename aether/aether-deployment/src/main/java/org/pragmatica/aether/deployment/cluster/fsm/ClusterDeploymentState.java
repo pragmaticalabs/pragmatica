@@ -4511,6 +4511,58 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             deferredTopologyRecheck();
         }
 
+        /// #1191: lets a test reach the event- and callback-path schedules without a full event round trip; each seam is the one
+        /// call the named handler makes, so the arm under test is the production arm.
+        @Contract
+        void handleNodeAddedForTest(NodeId addedNode) {
+            handleNodeAdded(addedNode);
+        }
+
+        @Contract
+        void handleSliceNodeRemovalForTest(SliceNodeKey sliceNodeKey) {
+            handleSliceNodeRemoval(sliceNodeKey);
+        }
+
+        @Contract
+        void awaitRemovalThenRejoinForTest(WorkerJoinDecision decision, Promise<Unit> pending) {
+            awaitRemovalThenRejoin(decision, pending);
+        }
+
+        @Contract
+        void handleAppBlueprintRemovalForTest(AppBlueprintKey key, boolean wasPresent) {
+            handleAppBlueprintRemoval(key, wasPresent);
+        }
+
+        @Contract
+        void deployReplacementForDrainForTest(SliceNodeKey originalKey) {
+            deployReplacementForDrain(originalKey);
+        }
+
+        @Contract
+        void checkReplacementAndUnloadForTest(SliceNodeKey originalKey) {
+            checkReplacementAndUnload(originalKey);
+        }
+
+        @Contract
+        void handleTransientFailureForTest(SliceNodeKey sliceKey, String failureReason) {
+            handleTransientFailure(sliceKey, failureReason);
+        }
+
+        @Contract
+        void onActivateWriteFailureForTest(SliceNodeKey sliceKey, Cause cause, int attempt) {
+            onActivateWriteFailure(sliceKey, cause, attempt);
+        }
+
+        @Contract
+        void handleBatchFailureForTest(Cause cause, List<KVCommand<AetherKey>> commands) {
+            handleBatchFailure(cause, commands);
+        }
+
+        @Contract
+        void handleSliceNodeWriteFailureForTest(SliceNodeKey sliceKey, Cause cause) {
+            handleSliceNodeWriteFailure(sliceKey, cause);
+        }
+
         /// `attemptId` (#972) is the attempt of the `AppBlueprintValue` this entry tracks — the attempt
         /// every terminal this entry writes closes.
         public record InFlightBlueprint(BlueprintId id,
