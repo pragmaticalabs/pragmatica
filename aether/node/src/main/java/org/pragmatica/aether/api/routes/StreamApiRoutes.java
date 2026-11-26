@@ -172,10 +172,23 @@ public final class StreamApiRoutes implements RouteSource {
     /// `OUTCOME_UNKNOWN` item was refused or timed out AFTER it may have been appended (#1236) — retrying it can
     /// duplicate; a `NOT_ATTEMPTED` item was rejected before any write and is safe to retry. The former
     /// `Result.allOf` fold reported one failure and discarded the offsets that DID land.
+    ///
+    /// #1354 (OWNER ruling): the HTTP status is a function of the item statuses and is derived HERE, nowhere else
+    /// ([#httpStatus]): every item `PUBLISHED` answers `200`; anything else — a partial batch, or one where none
+    /// is published — answers `207` with this same body. A client that reads only the status can therefore no longer
+    /// mistake a partial batch for success.
     public record PublishBatchResponse(String address,
                                        int published,
                                        int notPublished,
-                                       List<PublishItemOutcome> outcomes) {}
+                                       List<PublishItemOutcome> outcomes) implements StatusBearingResponse {
+        @Override
+        public HttpStatus httpStatus() {
+            return outcomes.stream()
+                           .allMatch(item -> item.status() == PublishItemStatus.PUBLISHED)
+                   ? HttpStatus.OK
+                   : HttpStatus.MULTI_STATUS;
+        }
+    }
 
     public record PublishItemOutcome(int index, PublishItemStatus status, Option<Long> offset, Option<String> cause) {}
 
