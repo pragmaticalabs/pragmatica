@@ -179,10 +179,14 @@ public class RabiaEngine<C extends Command> {
     private final AtomicReference<ScheduledFuture<?>> genesisTimer = new AtomicReference<>();
     /// Seats this node raised [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for and has not closed yet (#1654).
     private final Set<NodeId> unreachableGenesisSeats = ConcurrentHashMap.newKeySet();
-    /// Seats of the installed roster that were not connected at the install, with the consecutive ticks each has stayed unconnected since
-    /// (#3774). Not yet warned about: a seat is named only after [#GENESIS_SEAT_CONFIRM_TICKS] such ticks, and a seat that connects or leaves
-    /// the roster before then is dropped without a warning.
-    private final Map<NodeId, Integer> unconfirmedGenesisSeats = new ConcurrentHashMap<>();
+    /// Seats of the installed roster that were not connected at the install and have not been decided yet (#3774). Decided once, by the
+    /// one-shot timer [#genesisSeatConfirmTimer] when [#GENESIS_SEAT_CONFIRM_WINDOW] after the install has passed: a seat that is connected
+    /// then, or has left the roster, is dropped without a warning; one still unconnected is named.
+    private final Set<NodeId> unconfirmedGenesisSeats = ConcurrentHashMap.newKeySet();
+    /// The confirmation deadline of the install (#3774): armed by the install, cancelled by [#stop]. It does not read the engine state, so it
+    /// runs in every state the engine can be in after the install (never activated, syncing, paused, active, observer).
+    private final AtomicReference<ScheduledFuture<?>> genesisSeatConfirmTimer = new AtomicReference<>();
+    private volatile TimeSpan genesisSeatConfirmWindow = GENESIS_SEAT_CONFIRM_WINDOW;
 
     /// The remedy sentence of the seat warning (#1654), read once at the raise and never again: the warning is true in the auto-heal
     /// state it was raised in. The node binds it to its live auto-heal state ([#useGenesisSeatRemedy]); until then it names no state.
@@ -197,11 +201,13 @@ public class RabiaEngine<C extends Command> {
     private static final TimeSpan GENESIS_ROUND_BASE = TimeSpan.timeSpan(250).millis();
     private static final int GENESIS_BACKOFF_STEPS = 5;
     private static final int GENESIS_WARN_EVERY_ROUNDS = 10;
-    /// Consecutive ticks a seat that was not connected at the genesis install must stay unconnected before it is named (#3774). Two, so the
-    /// window is at least one full tick interval whatever the timer's phase at the install: the seat that completed the agreement can
-    /// still be mid-handshake there (its report arrived on its own link before this node's dial to it attached), and the dead seat is
-    /// still unconnected after the window.
-    private static final int GENESIS_SEAT_CONFIRM_TICKS = 2;
+    /// Time after the genesis install at which a seat that was not connected at the install is decided (#3774): named if it is still
+    /// unconnected then, dropped without a warning if it is connected or has left the roster. The bound is stated from the install and does
+    /// not depend on activation, a phase or any tick: a dead seat is named about this long after the install (plus the executor's queueing
+    /// delay), never earlier. 5 s is a guess, not a measurement: a seat that completed the agreement on its own link and is only
+    /// mid-handshake here attaches in milliseconds (9 ms in the #3774 evidence), and the same order as the sync retry interval. A seat that
+    /// needs longer than this to attach is still named, and the warning closes when it connects.
+    static final TimeSpan GENESIS_SEAT_CONFIRM_WINDOW = TimeSpan.timeSpan(5).seconds();
 
     private volatile Option<Cause> authorityFailure = Option.none();
     /// #3213 — whether the persisted state was written by THIS engine instance ([#saveState]). Its configuration was then
@@ -585,15 +591,13 @@ public class RabiaEngine<C extends Command> {
     /// #1654: the view agreement counts each member's last two reports with no freshness, so a member that reported
     /// twice and then died can be agreed. Formation goes ahead. Every agreed seat that is not a connected, authenticated
     /// peer now is only a suspect: the install can be completed by a seat's own report while that seat is still mid-handshake
-    /// here, so naming it at the install would send the operator to a healthy node (#3774). [#confirmUnconnectedGenesisSeats]
-    /// names the seats that stay unconnected, once, loudly, for auto-heal to replace.
+    /// here, so naming it at the install would send the operator to a healthy node (#3774). The deadline armed here
+    /// ([#armGenesisSeatConfirmation]) decides the suspects [#GENESIS_SEAT_CONFIRM_WINDOW] after the install.
     private void signalUnreachableSeats(VoterConfiguration configuration) {
         var reachable = connectedSeats();
 
-        configuration.members()
-                     .stream()
-                     .filter(seat -> !reachable.contains(seat))
-                     .forEach(seat -> unconfirmedGenesisSeats.put(seat, 0));
+        configuration.members().stream().filter(seat -> !reachable.contains(seat)).forEach(unconfirmedGenesisSeats::add);
+        armGenesisSeatConfirmation();
     }
 
     /// Connectivity only, not discovery: with `cluster.genesis_voters` a seat can be connected before membership counts it,
@@ -606,30 +610,38 @@ public class RabiaEngine<C extends Command> {
         return Set.copyOf(connected);
     }
 
-    /// Ticks each suspect seat of the install: a seat that is connected or has left the voter roster is dropped without a warning (it
-    /// never needed one, so there is nothing to close); a seat still unconnected after [#GENESIS_SEAT_CONFIRM_TICKS] consecutive ticks
-    /// is named. Runs first on the same two ticks as [#resolveUnreachableGenesisSeats].
-    private void confirmUnconnectedGenesisSeats() {
-        if (unconfirmedGenesisSeats.isEmpty()) {
+    /// The decision of the install's suspects is driven by its own one-shot timer, started at the install and ended by the decision or by
+    /// [#performStop]. Not by the stall tick or the quiet-slot probe: those exist only while the engine is in a phase or activated, and a
+    /// node that installs genesis and never activates (it needs a sync majority first) has neither (#3785).
+    private void armGenesisSeatConfirmation() {
+        if (unconfirmedGenesisSeats.isEmpty() || stopping.get()) {
             return;
         }
 
+        var task = SharedScheduler.schedule(() -> safeExecute(this::confirmUnconnectedGenesisSeats),
+                                            genesisSeatConfirmWindow);
+
+        Option.option(genesisSeatConfirmTimer.getAndSet(task)).onPresent(previous -> previous.cancel(false));
+    }
+
+    /// Decides every suspect of the install, once: a seat that is connected or has left the voter roster is dropped without a warning (it
+    /// never needed one, so there is nothing to close); a seat still unconnected is named.
+    private void confirmUnconnectedGenesisSeats() {
         var connected = network.connectedPeers();
 
-        List.copyOf(unconfirmedGenesisSeats.keySet()).forEach(seat -> confirmUnconnectedGenesisSeat(seat, connected));
+        List.copyOf(unconfirmedGenesisSeats).forEach(seat -> confirmUnconnectedGenesisSeat(seat, connected));
     }
 
     private void confirmUnconnectedGenesisSeat(NodeId seat, Set<NodeId> connected) {
-        if (connected.contains(seat) || voters.filter(configuration -> !configuration.contains(seat)).isPresent()) {
-            unconfirmedGenesisSeats.remove(seat);
-
-            return;
-        }
-
-        if (unconfirmedGenesisSeats.merge(seat, 1, Integer::sum) >= GENESIS_SEAT_CONFIRM_TICKS) {
-            unconfirmedGenesisSeats.remove(seat);
+        unconfirmedGenesisSeats.remove(seat);
+        if (!connected.contains(seat) && !hasLeftVoterRoster(seat)) {
             signalUnreachableSeat(seat);
         }
+    }
+
+    private boolean hasLeftVoterRoster(NodeId seat) {
+        return voters.filter(configuration -> !configuration.contains(seat))
+                     .isPresent();
     }
 
     private Unit signalUnreachableSeat(NodeId seat) {
@@ -639,18 +651,19 @@ public class RabiaEngine<C extends Command> {
                                       operatorWarningSink.get(),
                                       OperatorWarningCode.GENESIS_SEAT_UNREACHABLE,
                                       seat.id(),
-                                      "Node {} installed genesis with seat {} not connected: the seat reported the agreed view earlier and has "
-                                     + "stayed unreachable since. Formation is not blocked. {}",
+                                      "Node {} installed genesis with seat {} not connected, and the seat was still not connected when checked, {} ms or more "
+                                     + "after the install: it reported the agreed view earlier. Formation is not blocked. {}",
                                       self,
                                       seat,
+                                      genesisSeatConfirmWindow.millis(),
                                       genesisSeatRemedy.get().get());
     }
 
     /// Closes [OperatorWarningCode#GENESIS_SEAT_UNREACHABLE] for every seat this node raised it for that is a connected peer again
     /// or has left the voter roster (replaced). Runs on the phase-stall tick (InPhase) and on the idle slot probe tick (Idle), so a seat
-    /// closes within one tick interval whether or not a phase is in progress.
+    /// closes within one tick interval whether or not a phase is in progress. Both ticks need an activated engine: an engine that installed
+    /// genesis and never activates names its dead seat (the install's own deadline, [#armGenesisSeatConfirmation]) but closes no warning.
     private void resolveUnreachableGenesisSeats() {
-        confirmUnconnectedGenesisSeats();
         if (unreachableGenesisSeats.isEmpty()) {
             return;
         }
@@ -667,7 +680,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        if (voters.filter(configuration -> !configuration.contains(seat)).isPresent()) {
+        if (hasLeftVoterRoster(seat)) {
             closeUnreachableGenesisSeat(seat, "left the voter roster (replaced)");
         }
     }
@@ -723,14 +736,39 @@ public class RabiaEngine<C extends Command> {
         genesisSeatRemedy.set(remedy);
     }
 
-    /// Test hook: one idle slot probe tick on the apply executor, which also runs the unreachable-genesis-seat check.
+    /// Test hook: the genesis install's confirmation deadline, run now on the apply executor.
+    Unit runGenesisSeatConfirmationForTesting() {
+        safeExecute(this::confirmUnconnectedGenesisSeats);
+
+        return Unit.unit();
+    }
+
+    /// Test hook: shortens the install's confirmation window; read when the install arms the deadline.
+    @Contract
+    void useGenesisSeatConfirmWindowForTesting(TimeSpan window) {
+        genesisSeatConfirmWindow = window;
+    }
+
+    /// Test-only view of the install's confirmation window.
+    TimeSpan genesisSeatConfirmWindowForTesting() {
+        return genesisSeatConfirmWindow;
+    }
+
+    /// Test-only view of the install's deadline: armed and not yet fired or cancelled.
+    boolean genesisSeatConfirmationPendingForTesting() {
+        return Option.option(genesisSeatConfirmTimer.get())
+                     .filter(task -> !task.isDone())
+                     .isPresent();
+    }
+
+    /// Test hook: one idle slot probe tick on the apply executor, which also runs the unreachable-genesis-seat close check.
     Unit runQuietSlotProbeForTesting() {
         safeExecute(this::probeQuietSlot);
 
         return Unit.unit();
     }
 
-    /// Test hook: one phase-stall tick on the apply executor, which also runs the unreachable-genesis-seat check.
+    /// Test hook: one phase-stall tick on the apply executor, which also runs the unreachable-genesis-seat close check.
     Unit runPhaseStallCheckForTesting() {
         safeExecute(this::checkPhaseStall);
 
@@ -2562,6 +2600,7 @@ public class RabiaEngine<C extends Command> {
 
     private void performStop(Promise<Unit> promise) {
         cancelGenesisTimer();
+        Option.option(genesisSeatConfirmTimer.getAndSet(null)).onPresent(task -> task.cancel(false));
         Option.option(cleanupTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         Option.option(quietSlotProbeTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         Option.option(decisionGapTask.getAndSet(null)).onPresent(task -> task.cancel(false));

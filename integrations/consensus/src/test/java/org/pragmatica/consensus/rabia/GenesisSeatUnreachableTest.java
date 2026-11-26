@@ -175,9 +175,7 @@ class GenesisSeatUnreachableTest {
     /// slot probe tick; the stall tick is never invoked here.
     @Test
     void unreachableSeat_reconnectsWhileEngineIdle_isClosedByTheIdleProbeTick() {
-        engine = pendingB();
-        formWithYGoneOn(engine);
-        engine.runQuietSlotProbeForTesting();
+        formWithYGone();
         engine.runQuietSlotProbeForTesting();
         settle();
         assertThat(seatWarnings()).as("still unreachable: nothing closes").containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
@@ -194,6 +192,104 @@ class GenesisSeatUnreachableTest {
     @Test
     void unreachableSeat_leavesTheVoterRoster_isClosedBySeatReachable() {
         formWithYGone();
+        adoptRosterWithoutY();
+        engine.runPhaseStallCheckForTesting();
+        settle();
+
+        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y), code(GENESIS_SEAT_REACHABLE, Y));
+    }
+
+    /// #3774: the seat that completes the agreement can still be mid-handshake at the install (its report arrived on its own link before
+    /// this node's dial to it attached). It is not named at the install, and a seat that is connected when the install's deadline decides is
+    /// never named, so there is nothing to close either. Pre-fix the warning was raised at the install and closed by the next tick.
+    @Test
+    void seatThatConnectsBeforeTheDeadline_isNeverNamed() {
+        engine = pendingB();
+        formWithYGoneOn(engine);
+        assertThat(seatWarnings()).as("the install itself names nothing: the seat may still be mid-handshake").isEmpty();
+        assertThat(engine.genesisSeatConfirmationPendingForTesting()).as("the install armed its deadline").isTrue();
+
+        connected.add(Y);
+        engine.runGenesisSeatConfirmationForTesting();
+        engine.runPhaseStallCheckForTesting();
+        engine.runQuietSlotProbeForTesting();
+        settle();
+
+        assertThat(engine.voterConfiguration()).as("precondition: genesis formed").isEqualTo(Option.some(new VoterConfiguration(0, VIEW)));
+        assertThat(seatWarnings()).as("no raise and no close: the seat was never named").isEmpty();
+    }
+
+    /// The other edge: a seat still unconnected when the deadline decides is named, and only then. The stall and probe ticks before it
+    /// decide nothing (the decision is the deadline's, not theirs), however many run.
+    @Test
+    void seatUnconnectedAtTheDeadline_isNamedByTheDeadlineAndNotByTicks() {
+        engine = pendingB();
+        formWithYGoneOn(engine);
+        engine.runPhaseStallCheckForTesting();
+        engine.runPhaseStallCheckForTesting();
+        engine.runPhaseStallCheckForTesting();
+        engine.runQuietSlotProbeForTesting();
+        engine.runQuietSlotProbeForTesting();
+        settle();
+        assertThat(seatWarnings()).as("ticks before the deadline name nothing").isEmpty();
+
+        engine.runGenesisSeatConfirmationForTesting();
+        settle();
+
+        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
+    }
+
+    /// A seat that left the voter roster before the deadline (replaced by a committed reconfiguration) is dropped, not named: naming it
+    /// would raise and close in the same breath. Only the exit after the naming is pinned by
+    /// `unreachableSeat_leavesTheVoterRoster_isClosedBySeatReachable`.
+    @Test
+    void seatThatLeavesTheRosterBeforeTheDeadline_isNeverNamed() {
+        engine = pendingB();
+        formWithYGoneOn(engine);
+        adoptRosterWithoutY();
+
+        engine.runGenesisSeatConfirmationForTesting();
+        engine.runPhaseStallCheckForTesting();
+        settle();
+
+        assertThat(seatWarnings()).as("not named, so nothing to close").isEmpty();
+    }
+
+    /// The decision is one-shot: once the deadline has decided a seat, a later deadline run names nothing again.
+    @Test
+    void namedSeat_isNamedOnce_whateverTheDeadlineRunsAfterwards() {
+        formWithYGone();
+        engine.runGenesisSeatConfirmationForTesting();
+        settle();
+
+        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
+    }
+
+    /// The deadline is the stated bound: the engine's default window is five seconds from the install. The armed timer is observed in
+    /// `GenesisSeatDecisionWithoutActivationTest`, with production timers.
+    @Test
+    void confirmationWindow_isFiveSecondsByDefault() {
+        engine = createB(Set.of(B, X, Y), Option.none());
+
+        assertThat(engine.genesisSeatConfirmWindowForTesting()).isEqualTo(timeSpan(5).seconds());
+    }
+
+    /// Never decided after stop: a stop between the install and the deadline cancels the deadline, and nothing is named afterwards.
+    @Test
+    void stoppedBeforeTheDeadline_namesNothing() {
+        engine = pendingB();
+        engine.useGenesisSeatConfirmWindowForTesting(timeSpan(200).millis());
+        formWithYGoneOn(engine);
+        assertThat(engine.genesisSeatConfirmationPendingForTesting()).as("precondition: the deadline is armed").isTrue();
+
+        engine.stop().await();
+        LockSupport.parkNanos(1_000_000_000L);
+
+        assertThat(engine.genesisSeatConfirmationPendingForTesting()).as("stop cancelled the deadline").isFalse();
+        assertThat(seatWarnings()).as("nothing decided after stop").isEmpty();
+    }
+
+    private void adoptRosterWithoutY() {
         var replaced = new VoterConfiguration(1, new ClusterConfig(List.of(B, X, Z)));
 
         for (var responder : List.of(X, Z)) {
@@ -207,46 +303,6 @@ class GenesisSeatUnreachableTest {
         settle();
         assertThat(engine.voterConfiguration()).as("precondition: the replacement roster was adopted")
                                                .isEqualTo(Option.some(replaced));
-        engine.runPhaseStallCheckForTesting();
-        settle();
-
-        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y), code(GENESIS_SEAT_REACHABLE, Y));
-    }
-
-    /// #3774: the seat that completes the agreement can still be mid-handshake at the install (its report arrived on its own link before
-    /// this node's dial to it attached). It is not named at the install, and a seat that connects inside the confirm window is never named,
-    /// so there is nothing to close either. Pre-fix the warning was raised at the install and closed by the next tick.
-    @Test
-    void seatThatConnectsInsideTheConfirmWindow_isNeverNamed() {
-        engine = pendingB();
-        formWithYGoneOn(engine);
-        assertThat(seatWarnings()).as("the install itself names nothing: the seat may still be mid-handshake").isEmpty();
-
-        engine.runPhaseStallCheckForTesting();
-        settle();
-        connected.add(Y);
-        engine.runPhaseStallCheckForTesting();
-        engine.runPhaseStallCheckForTesting();
-        engine.runPhaseStallCheckForTesting();
-        settle();
-
-        assertThat(engine.voterConfiguration()).as("precondition: genesis formed").isEqualTo(Option.some(new VoterConfiguration(0, VIEW)));
-        assertThat(seatWarnings()).as("no raise and no close: the seat was never named").isEmpty();
-    }
-
-    /// The other edge of the window: one tick of unconnected is not enough, the second consecutive one names the seat.
-    @Test
-    void seatUnconnectedForOneTickOnly_isNamedOnTheSecondConsecutiveTick() {
-        engine = pendingB();
-        formWithYGoneOn(engine);
-        engine.runPhaseStallCheckForTesting();
-        settle();
-        assertThat(seatWarnings()).as("one unconnected tick names nothing").isEmpty();
-
-        engine.runPhaseStallCheckForTesting();
-        settle();
-
-        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
     }
 
     private void formWithYGone() {
@@ -255,10 +311,9 @@ class GenesisSeatUnreachableTest {
         confirmWindow();
     }
 
-    /// The seat stays unconnected through the whole confirm window: two consecutive stall ticks.
+    /// The seat stays unconnected until the install's deadline decides.
     private void confirmWindow() {
-        engine.runPhaseStallCheckForTesting();
-        engine.runPhaseStallCheckForTesting();
+        engine.runGenesisSeatConfirmationForTesting();
         settle();
     }
 
@@ -320,7 +375,16 @@ class GenesisSeatUnreachableTest {
         return pendingB(Set.of(B, X, Y), Option.none());
     }
 
+    /// The deadline is pushed out of the tests' reach, so only the hook decides; the tests that watch the real timer shorten it.
     private RabiaEngine<TestCommand> pendingB(Set<NodeId> discovered, Option<ClusterConfig> fixedView) {
+        var created = createB(discovered, fixedView);
+
+        created.useGenesisSeatConfirmWindowForTesting(timeSpan(1).hours());
+
+        return created;
+    }
+
+    private RabiaEngine<TestCommand> createB(Set<NodeId> discovered, Option<ClusterConfig> fixedView) {
         connected.addAll(Set.of(B, X, Y));
 
         var created = new RabiaEngine<>(new TestTopologyManager(B, 3),
