@@ -265,8 +265,9 @@ class NodeLifecycleRoutesFencedDrainTest {
 
         var answered = outcome.await(SETTLE).unwrap();
 
-        assertThat(answered).isEqualTo(DrainOutcome.pending(cause.message()));
         assertThat(answered.accepted()).as("no drainRequested follows a refused witness").isFalse();
+        assertThat(answered.blockedBy()).as("a refused witness is pending, not blocked").isEmpty();
+        assertThat(answered.refusedFor()).as("the route's HttpError carries the cause").endsWith(cause.message());
         assertThat(registry).isEmpty();
         assertThat(fsm.memberStates().get(node(1))).isNotEqualTo("Departing");
 
