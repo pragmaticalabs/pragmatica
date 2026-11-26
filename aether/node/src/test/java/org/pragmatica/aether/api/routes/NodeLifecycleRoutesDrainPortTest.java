@@ -14,6 +14,8 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -24,9 +26,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 class NodeLifecycleRoutesDrainPortTest {
     private static final NodeId TARGET = NodeId.nodeId("node-target").unwrap();
 
+    private static Promise<Unit> recorded(List<NodeId> requested, NodeId node) {
+        requested.add(node);
+        return Promise.unitPromise();
+    }
+
     @Test
     void noneRequest_dropsTheRequestWithoutThrowing() {
-        NodeLifecycleRoutes.DrainPort.none().request(TARGET);
+        assertThat(NodeLifecycleRoutes.DrainPort.none().request(TARGET).await().isSuccess()).isTrue();
+    }
+
+    @Test
+    void noneInFlight_findsNothing() {
+        assertThat(NodeLifecycleRoutes.DrainPort.none().inFlight(TARGET).isEmpty()).isTrue();
     }
 
     @Test
@@ -38,7 +50,7 @@ class NodeLifecycleRoutesDrainPortTest {
     void registryRequest_reachesTheSink() {
         var requested = new ArrayList<NodeId>();
 
-        NodeLifecycleRoutes.DrainPort.registry(requested::add, Set::of).request(TARGET);
+        NodeLifecycleRoutes.DrainPort.registry(node -> recorded(requested, node), Set::of).request(TARGET);
 
         assertThat(requested).containsExactly(TARGET);
     }
@@ -46,7 +58,7 @@ class NodeLifecycleRoutesDrainPortTest {
     @Test
     void registryPending_readsTheSupplierEachTime() {
         var pending = new ArrayList<NodeId>();
-        var port = NodeLifecycleRoutes.DrainPort.registry(_ -> {}, () -> Set.copyOf(pending));
+        var port = NodeLifecycleRoutes.DrainPort.registry(_ -> Promise.unitPromise(), () -> Set.copyOf(pending));
 
         assertThat(port.pending()).isEmpty();
         pending.add(TARGET);
@@ -64,7 +76,7 @@ class NodeLifecycleRoutesDrainPortTest {
     /// counts no in-flight drain.
     @Test
     void registryWithNullPendingSupplier_failsOpenToAnEmptySet() {
-        assertThat(NodeLifecycleRoutes.DrainPort.registry(_ -> {}, null).pending()).isNotNull().isEmpty();
+        assertThat(NodeLifecycleRoutes.DrainPort.registry(_ -> Promise.unitPromise(), null).pending()).isNotNull().isEmpty();
     }
 
     /// Tripwire naming #3467 O1: a null port becomes `DrainPort.none()`, so a drain is not seen as under way.
@@ -86,7 +98,7 @@ class NodeLifecycleRoutesDrainPortTest {
 
     @Test
     void drainUnderWay_isTrueForATargetThePortReportsPending() {
-        var port = NodeLifecycleRoutes.DrainPort.registry(_ -> {}, () -> Set.of(TARGET));
+        var port = NodeLifecycleRoutes.DrainPort.registry(_ -> Promise.unitPromise(), () -> Set.of(TARGET));
         var routes = NodeLifecycleRoutes.withDrainPort(this::nodeReportingNoState, port, noFloor());
 
         assertThat(routes.drainUnderWay(TARGET)).as("pending in the port, no lifecycle state reported").isTrue();
@@ -94,7 +106,7 @@ class NodeLifecycleRoutesDrainPortTest {
 
     @Test
     void drainUnderWay_isFalseForATargetThePortDoesNotReport() {
-        var port = NodeLifecycleRoutes.DrainPort.registry(_ -> {}, () -> Set.of(NodeId.nodeId("node-other").unwrap()));
+        var port = NodeLifecycleRoutes.DrainPort.registry(_ -> Promise.unitPromise(), () -> Set.of(NodeId.nodeId("node-other").unwrap()));
         var routes = NodeLifecycleRoutes.withDrainPort(this::nodeReportingNoState, port, noFloor());
 
         assertThat(routes.drainUnderWay(TARGET)).isFalse();

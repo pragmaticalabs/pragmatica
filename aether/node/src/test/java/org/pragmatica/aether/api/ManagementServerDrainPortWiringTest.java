@@ -31,6 +31,7 @@ import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -55,7 +56,7 @@ class ManagementServerDrainPortWiringTest {
 
     @Test
     void replacementDrainUnderWay_readsThePendingSetOfThePortTheServerWasBuiltWith() {
-        var port = NodeLifecycleRoutes.DrainPort.registry(_ -> {}, () -> Set.of(COMMANDED));
+        var port = NodeLifecycleRoutes.DrainPort.registry(_ -> Promise.unitPromise(), () -> Set.of(COMMANDED));
 
         assertThat(server(port).replacementDrainUnderWay(COMMANDED)).as("a drain the port reports pending is under way")
                                                                     .isTrue();

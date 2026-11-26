@@ -4933,9 +4933,29 @@ Which guard applied — and why — is always visible in `message`, both on succ
 }
 ```
 
+**The drain is reported only after its request's outcome (#3754).** The route answers from the outcome of `DrainPort.request`: `"success": true` means the request succeeded and the target is registered in the leader's DRAIN set, never only that the request was accepted. A drain that was not queued is audited as `drain not queued: <cause>` and emits no lifecycle event. The floor's warnings (`SLICE_FLOOR_BREACHED_BY_FORCE`, `SLICE_FLOOR_DRAIN_ADMITTED`) follow the same rule: they are raised only for a drain whose request succeeded.
+
+**Fencing status: not wired yet.** At present the port is unfenced: the request runs its effect at once, with no leadership witness, so the outcome is the registration's and the route does not wait. The fenced path exists in the sink (`FencedDrainSink`) and is exercised only against a scripted witness port. When the fenced port is wired (the AetherNode lane of #3754), the leader commits a leadership witness before it queues a drain, and the route then waits for that commit: at most `applyTimeout` (30 s by default), plus the time the leader's own gate takes, so a client whose timeout is shorter would see a client-side timeout, not a status. A repeated request for a target whose commit is in flight would not start a second commit: it receives the first one's outcome, and a replacement drain that joins it answers the same `HttpError` an opened one does.
+
+A target that is already registered answers at once and starts no commit. This is local to the node that answers: a deposed leader keeps its registry entries until the target's DEAD edge and keeps broadcasting them for as long as it still reports itself leader (after a deposition, until it detects it); they are broadcast again if that node regains leadership first. `[derived: design-3754-c1 R-C2; no test covers it]`
+`[mechanism: NodeLifecycleRoutes.enqueueOperatorDrain maps the outcome of DrainPort.request; verified against a scripted witness port: aether/node/src/test/java/org/pragmatica/aether/api/routes/NodeLifecycleRoutesFencedDrainTest.java and aether/node/src/test/java/org/pragmatica/aether/node/assembly/FencedDrainSinkTest.java; the status table: NodeLifecycleRoutesDrainRefusalTest.java]`
+`[unverified: a real leadership witness; no test runs one until the fenced port is wired]`
+
+**Refusals when the drain was not queued.** Nothing was queued by any of these, so a retry is safe. The table is total: a cause it does not name answers 503.
+
+| Cause | Status | Operator action |
+|---|---|---|
+| `NotLeader`, `LeadershipNotWitnessed`, `ActivationChanged` | `503 Service Unavailable` | leadership moved: retry against the current leader |
+| `WitnessExpired`, `ApplyTimeout` | `504 Gateway Timeout` | the commit did not answer in time: retry |
+| `AttemptCancelled` | `409 Conflict` | the node rejoined, or the attempt was cancelled, while the commit was in flight: re-read the node's state, then retry if it is still wanted |
+| `CalledUnderOwnerMonitor` | `500 Internal Server Error` | a defect in the leader (a caller held the owner monitor); report it |
+| any other cause (for example a failed submit) | `503 Service Unavailable` | retry |
+
+[unverified: how `aether nodes drain` renders a `504`]
+
 ### POST /api/v1/nodes/shutdown/{id}
 
-Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The same admission as drain applies, including the slice `minAvailable` floor and the `force=true` override described there (#1720); a refused shutdown answers `409` with `Cannot shutdown node <id>: ...`. A shutdown of the current leader (or of the handling node) is refused with `409 Conflict` before anything is dispatched, with its own text: `Cannot shut down node <id>: it is the current leader or the node handling this request, and such a node is not shut down through the API. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader; ...` (#3348). A shutdown of any other node is unchanged. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
+Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The same admission as drain applies, including the slice `minAvailable` floor and the `force=true` override described there (#1720); a refused shutdown answers `409` with `Cannot shutdown node <id>: ...`. The response is built from the request outcome and a shutdown that was not queued answers from the refusal table under `POST /api/v1/nodes/drain/{id}` (the shutdown rides the same DRAIN channel, so once the fenced port is wired it waits for the same commit). A shutdown of the current leader (or of the handling node) is refused with `409 Conflict` before anything is dispatched, with its own text: `Cannot shut down node <id>: it is the current leader or the node handling this request, and such a node is not shut down through the API. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader; ...` (#3348). A shutdown of any other node is unchanged. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
 
 **Response:**
 ```json
