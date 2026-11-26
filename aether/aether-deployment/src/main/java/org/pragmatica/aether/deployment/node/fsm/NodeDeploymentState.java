@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -23,6 +24,7 @@ import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SliceDeployment;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SuspendedSlice;
 import org.pragmatica.aether.deployment.node.RoutingEpochAckTracker;
+import org.pragmatica.aether.deployment.node.fsm.LifetimeGatedCluster.WriteRefused;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.CatchUpSwept;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.ConfigChanged;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.LeavingRequested;
@@ -106,7 +108,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
 import org.pragmatica.utility.warning.OperatorWarningCode;
@@ -140,6 +141,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
     record Stopped(NodeDeploymentContext ctx) implements NodeDeploymentState {
         @Override
         public void onEntry() {
+            // #3754: the one end of the node's scheduling lifetime; every timer the FSM armed is cancelled here, from any state that reached Stopped.
+            ctx.lifetime().end();
             LOG.debug("NodeDeploymentManager stopped");
         }
 
@@ -631,9 +634,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// ROUTING, and an ack that lands first clears the tracker and transitions to ACTIVE, so the
         /// later timeout no-ops.
         @Contract
-        private void scheduleRoutingRemediation(SliceNodeKey sliceKey) {
-            SliceState.ROUTING.timeout().onPresent(timeout -> SharedScheduler.schedule(() -> remediateStuckRouting(sliceKey),
-                                                                                       timeout));
+        void scheduleRoutingRemediation(SliceNodeKey sliceKey) {
+            SliceState.ROUTING.timeout().onPresent(timeout -> ctx.lifetime()
+                                                                 .schedule(_ -> remediateStuckRouting(sliceKey),
+                                                                           timeout));
         }
 
         /// ROUTING-timeout fire: if the slice is still ROUTING (no ack-driven transition happened),
@@ -790,8 +794,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// on positive local proof that the slice can actually serve.
         @Contract
         private void scheduleActivationRemediation(SliceNodeKey sliceKey) {
-            SliceState.ACTIVATING.timeout().onPresent(timeout -> SharedScheduler.schedule(() -> remediateStuckActivating(sliceKey),
-                                                                                          timeout));
+            SliceState.ACTIVATING.timeout().onPresent(timeout -> ctx.lifetime()
+                                                                    .schedule(_ -> remediateStuckActivating(sliceKey),
+                                                                              timeout));
         }
 
         /// ACTIVATING-timeout fire. No-op when the slice has already left ACTIVATING.
@@ -1005,7 +1010,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             deferredStarts.put(sliceKey, refusedState);
             if (ctx.parkStart(sliceKey, refusedState)) {
-                SharedScheduler.schedule(() -> escalateParkedStart(sliceKey), ctx.parkedStartBound());
+                ctx.lifetime().schedule(_ -> escalateParkedStart(sliceKey), ctx.parkedStartBound());
             }
 
             log.warn("Node {} defers {} of {}: no committed SliceTarget names this version (#1068) — "
@@ -1064,6 +1069,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                     .millis())
                .filter(parked -> !deferralIsStale(Map.entry(sliceKey,
                                                             parked.state())))
+               // #3754 (N): a body already past the lifetime's wrapper read when the node stopped raises nothing; this node is the
+               // sole writer of the park mark, and the warning is in-memory/event only.
+               .filter(_ -> !ctx.lifetime()
+                                .isEnded())
                .filter(_ -> ctx.markParkWarned(sliceKey))
                .onPresent(parked -> OperatorWarnings.raise(log,
                                                            ctx.operatorWarnings(),
@@ -2462,9 +2471,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// Variant of [#updateSliceStateWithRetry] that batches `extraCommands` (the stream-ref
         /// mutations) into the same `cluster().apply(...)` round as the SliceNodeValue put, so the
         /// refcount mutation is consensus-ordered with the slice-state mutation (spec §8.5).
-        private Promise<SliceNodeKey> updateSliceStateWithExtraCommands(SliceNodeKey sliceKey,
-                                                                        SliceNodeValue value,
-                                                                        List<KVCommand<AetherKey>> extraCommands) {
+        Promise<SliceNodeKey> updateSliceStateWithExtraCommands(SliceNodeKey sliceKey,
+                                                                SliceNodeValue value,
+                                                                List<KVCommand<AetherKey>> extraCommands) {
             return updateSliceStateWithExtraCommandsAndRetry(sliceKey, value, extraCommands, 0);
         }
 
@@ -2484,16 +2493,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             commands.add(new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue));
             commands.addAll(extraCommands);
 
-            return submitStateWrite(sliceKey,
-                                    value.state(),
-                                    attempt,
-                                    commands).timeout(CONSENSUS_OPERATION_TIMEOUT)
-                                   .map(_ -> sliceKey)
-                                   .onSuccess(_ -> log.debug("State+refs update succeeded: {} -> {} (+{} extras)",
-                                                             sliceKey.artifact(),
-                                                             value.state(),
-                                                             extraCommands.size()))
-                                   .orElse(() -> retryConsensusBatch(sliceKey, value, extraCommands, attempt));
+            return retriedUnlessRefused(submitStateWrite(sliceKey,
+                                                         value.state(),
+                                                         attempt,
+                                                         commands).timeout(CONSENSUS_OPERATION_TIMEOUT)
+                                                        .map(_ -> sliceKey)
+                                                        .onSuccess(_ -> log.debug("State+refs update succeeded: {} -> {} (+{} extras)",
+                                                                                  sliceKey.artifact(),
+                                                                                  value.state(),
+                                                                                  extraCommands.size())),
+                                        () -> retryConsensusBatch(sliceKey, value, extraCommands, attempt));
         }
 
         private Promise<SliceNodeKey> retryConsensusBatch(SliceNodeKey sliceKey,
@@ -2522,10 +2531,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return transitionToFailedWithRetry(sliceKey, cause, unrecognised, 0);
         }
 
-        private Promise<SliceNodeKey> transitionToFailedWithRetry(SliceNodeKey sliceKey,
-                                                                  Cause originalCause,
-                                                                  Unrecognised unrecognised,
-                                                                  int attempt) {
+        Promise<SliceNodeKey> transitionToFailedWithRetry(SliceNodeKey sliceKey,
+                                                          Cause originalCause,
+                                                          Unrecognised unrecognised,
+                                                          int attempt) {
             return updateSliceState(sliceKey, SliceNodeValue.failedSliceNodeValue(originalCause, unrecognised)).onFailure(writeCause -> handleFailedTransitionRetry(sliceKey,
                                                                                                                                                                     originalCause,
                                                                                                                                                                     unrecognised,
@@ -2533,11 +2542,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                                                                                                                     attempt));
         }
 
-        private void handleFailedTransitionRetry(SliceNodeKey sliceKey,
-                                                 Cause originalCause,
-                                                 Unrecognised unrecognised,
-                                                 Cause writeCause,
-                                                 int attempt) {
+        void handleFailedTransitionRetry(SliceNodeKey sliceKey,
+                                         Cause originalCause,
+                                         Unrecognised unrecognised,
+                                         Cause writeCause,
+                                         int attempt) {
             if (attempt < MAX_TRANSITION_RETRIES) {
                 log.warn("Failed to write FAILED state for {} (attempt {}/{}), retrying in {}ms: {}",
                          sliceKey.artifact(),
@@ -2545,11 +2554,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                          MAX_TRANSITION_RETRIES,
                          ctx.transitionRetryDelay().millis(),
                          writeCause.message());
-                SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey,
-                                                                           originalCause,
-                                                                           unrecognised,
-                                                                           attempt + 1),
-                                         ctx.transitionRetryDelay());
+                ctx.lifetime()
+                   .schedule(_ -> transitionToFailedWithRetry(sliceKey, originalCause, unrecognised, attempt + 1),
+                             ctx.transitionRetryDelay());
             } else {
                 log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",
                           sliceKey.artifact(),
@@ -2576,15 +2583,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var nodeArtifactValue = nodeArtifactValueFor(sliceKey.artifact(), value);
             KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
 
-            return submitStateWrite(sliceKey,
-                                    value.state(),
-                                    attempt,
-                                    List.of(putArtifact)).timeout(CONSENSUS_OPERATION_TIMEOUT)
-                                   .map(_ -> sliceKey)
-                                   .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
-                                                             sliceKey.artifact(),
-                                                             value.state()))
-                                   .orElse(() -> retryConsensusOperation(sliceKey, value, attempt));
+            return retriedUnlessRefused(submitStateWrite(sliceKey,
+                                                         value.state(),
+                                                         attempt,
+                                                         List.of(putArtifact)).timeout(CONSENSUS_OPERATION_TIMEOUT)
+                                                        .map(_ -> sliceKey)
+                                                        .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
+                                                                                  sliceKey.artifact(),
+                                                                                  value.state())),
+                                        () -> retryConsensusOperation(sliceKey, value, attempt));
         }
 
         private Promise<SliceNodeKey> retryConsensusOperation(SliceNodeKey sliceKey,
@@ -2622,12 +2629,27 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       .apply(commands);
         }
 
-        private Promise<Unit> applyWithRetry(List<KVCommand<AetherKey>> commands, int attempt) {
-            return ctx.cluster()
-                      .apply(commands)
-                      .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                      .mapToUnit()
-                      .orElse(() -> retryApply(commands, attempt));
+        Promise<Unit> applyWithRetry(List<KVCommand<AetherKey>> commands, int attempt) {
+            return retriedUnlessRefused(ctx.cluster().apply(commands).timeout(CONSENSUS_OPERATION_TIMEOUT).mapToUnit(),
+                                        () -> retryApply(commands, attempt));
+        }
+
+        /// `attempt`'s own outcome, or the `retry` when it failed. A write the lifetime's gate refused after the stop ([WriteRefused]) is the outcome
+        /// itself: the lifetime never restarts, so a retry cannot change it. It is logged once at DEBUG and never retried.
+        private static <T> Promise<T> retriedUnlessRefused(Promise<T> attempt, Supplier<Promise<T>> retry) {
+            return attempt.fold(result -> result.fold(cause -> afterFailure(cause, attempt, retry), _ -> attempt));
+        }
+
+        private static <T> Promise<T> afterFailure(Cause cause, Promise<T> attempt, Supplier<Promise<T>> retry) {
+            return cause instanceof WriteRefused
+                   ? refusedAfterStop(cause, attempt)
+                   : retry.get();
+        }
+
+        private static <T> Promise<T> refusedAfterStop(Cause cause, Promise<T> attempt) {
+            log.debug("Consensus write refused after stop, not retried: {}", cause.message());
+
+            return attempt;
         }
 
         private Promise<Unit> retryApply(List<KVCommand<AetherKey>> commands, int attempt) {
