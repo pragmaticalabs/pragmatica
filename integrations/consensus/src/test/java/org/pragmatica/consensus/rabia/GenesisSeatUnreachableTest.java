@@ -276,8 +276,8 @@ class GenesisSeatUnreachableTest {
 
     /// Never decided after stop: a stop between the install and the deadline names nothing, even when the deadline fires afterwards.
     /// The outcome is held by `safeExecute`'s `stopping` guard (it refuses a task once the engine stops), so this test does not claim the
-    /// timer was cancelled: a 200 ms window has fired and is done by the time of the read, cancelled or not. Cancellation is pinned by
-    /// [#stop_cancelsTheArmedDeadline].
+    /// timer was cancelled: a 200 ms window has fired and is done by the time of the read, cancelled or not. The release of the
+    /// reference is pinned by [#stop_releasesTheArmedDeadlineReference].
     @Test
     void stoppedBeforeTheDeadline_namesNothing() {
         engine = pendingB();
@@ -291,10 +291,11 @@ class GenesisSeatUnreachableTest {
         assertThat(seatWarnings()).as("nothing decided after stop").isEmpty();
     }
 
-    /// Stop releases the install's deadline: with a window the timer cannot reach during the test, only the cancel in `performStop` can
-    /// leave it not pending (a stopped engine must not stay referenced by the shared scheduler for the rest of the window).
+    /// Stop releases the install's deadline reference: with a window the timer cannot reach during the test, the reference is gone after
+    /// stop. This pins the release only. The cancel itself has no observation without a test hook on the scheduled task; the outcome (nothing
+    /// decided after stop) is held by `safeExecute`'s `stopping` guards and pinned by [#stoppedBeforeTheDeadline_namesNothing].
     @Test
-    void stop_cancelsTheArmedDeadline() {
+    void stop_releasesTheArmedDeadlineReference() {
         engine = pendingB();
         engine.useGenesisSeatConfirmWindowForTesting(timeSpan(1).hours());
         formWithYGoneOn(engine);
@@ -302,7 +303,67 @@ class GenesisSeatUnreachableTest {
 
         engine.stop().await();
 
-        assertThat(engine.genesisSeatConfirmationPendingForTesting()).as("stop cancelled the deadline").isFalse();
+        assertThat(engine.genesisSeatConfirmationPendingForTesting()).as("stop released the deadline").isFalse();
+    }
+
+    /// A seat that was connected at the install is not a suspect, even if its link drops before the deadline: the suspects are fixed at
+    /// the install, so a later drop is the close path's business, not the deadline's.
+    @Test
+    void seatConnectedAtTheInstall_isNotASuspect_evenWhenItsLinkDropsBeforeTheDeadline() {
+        engine = pendingB();
+        engine.runGenesisRoundForTesting();
+        engine.runGenesisRoundForTesting();
+        settle();
+        announceStably(Y);
+        settle();
+        announceStably(X);
+        settle();
+        assertThat(engine.voterConfiguration()).as("precondition: genesis formed")
+                                               .isEqualTo(Option.some(new VoterConfiguration(0, VIEW)));
+        connected.remove(Y);
+        engine.runGenesisSeatConfirmationForTesting();
+        settle();
+
+        assertThat(seatWarnings()).as("Y was connected at the install: never a suspect").isEmpty();
+    }
+
+    /// Production `connectedPeers()` excludes self (the fake here includes it by default), so the install's suspect filter must count self
+    /// as reachable or the node names itself at the deadline in every real cluster.
+    @Test
+    void selfIsNeverASuspect_whenConnectedPeersExcludesSelf() {
+        engine = pendingB();
+        connected.remove(B);
+        formWithYGoneOn(engine);
+        confirmWindow();
+
+        assertThat(seatWarnings()).containsExactly(code(GENESIS_SEAT_UNREACHABLE, Y));
+    }
+
+    /// After the deadline has fired the install's timer is no longer pending (done, not armed).
+    @Test
+    void firedDeadline_isNoLongerPending() {
+        engine = pendingB();
+        engine.useGenesisSeatConfirmWindowForTesting(timeSpan(200).millis());
+        formWithYGoneOn(engine);
+
+        var limit = System.nanoTime() + 5_000_000_000L;
+
+        while (engine.genesisSeatConfirmationPendingForTesting() && System.nanoTime() < limit) {
+            LockSupport.parkNanos(10_000_000L);
+        }
+
+        assertThat(engine.genesisSeatConfirmationPendingForTesting()).as("the deadline fired").isFalse();
+    }
+
+    /// The message states the bound it was checked after: the configured window, as a lower bound ("or more").
+    @Test
+    void unreachableMessage_statesTheConfiguredWindowAsALowerBound() {
+        engine = pendingB();
+        engine.useGenesisSeatConfirmWindowForTesting(timeSpan(7777).millis());
+        formWithYGoneOn(engine);
+        confirmWindow();
+
+        assertThat(unreachableMessages()).singleElement().asString().contains("7777 ms or more");
     }
 
     private void adoptRosterWithoutY() {
