@@ -13,12 +13,23 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.config.StreamingConfig;
+import org.pragmatica.aether.config.TimeoutsConfig;
+import org.pragmatica.aether.controller.ControllerConfig;
+import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
+import org.pragmatica.aether.invoke.ObservabilityConfig;
+import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.ProtocolConfig;
+import org.pragmatica.consensus.topology.BackoffConfig;
+import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 
@@ -76,12 +87,9 @@ class BackupAgreementTest {
 
     @Test
     void config_backupAbsentDisabledOrWithoutPath_stampsNothing() {
-        var disabled = BackupConfig.backupConfig(false, "/data/backup", "", RestoreMode.AUTO);
-        var blankPath = BackupConfig.backupConfig(true, " ", "", RestoreMode.AUTO);
-
         assertThat(labelsOf(configWith(Option.none()), SELF)).doesNotContainKey(BackupAgreement.LABEL_BACKUP);
-        assertThat(labelsOf(configWith(Option.some(disabled)), SELF)).doesNotContainKey(BackupAgreement.LABEL_BACKUP);
-        assertThat(labelsOf(configWith(Option.some(blankPath)), SELF)).doesNotContainKey(BackupAgreement.LABEL_BACKUP);
+        assertThat(labelsOf(configWith(Option.some(disabledBackup())), SELF)).doesNotContainKey(BackupAgreement.LABEL_BACKUP);
+        assertThat(labelsOf(configWith(Option.some(blankPathBackup())), SELF)).doesNotContainKey(BackupAgreement.LABEL_BACKUP);
     }
 
     @Test
@@ -90,6 +98,81 @@ class BackupAgreementTest {
 
         assertThat(AetherNode.enabledBackup(config).isPresent()).isTrue();
         assertThat(AetherNode.enabledBackup(configWith(Option.none())).isPresent()).isFalse();
+        assertThat(AetherNode.enabledBackup(configWith(Option.some(disabledBackup()))).isPresent()).as("present but disabled")
+                                                                                              .isFalse();
+        assertThat(AetherNode.enabledBackup(configWith(Option.some(blankPathBackup()))).isPresent()).as("enabled with a blank path")
+                                                                                                .isFalse();
+    }
+
+    @Test
+    void stamped_topology_copiesEveryFieldButTheSelfLabelVerbatim() {
+        var topology = fullTopology();
+        var stamped = BackupAgreement.stamped(topology, Option.some(enabledBackup()));
+
+        assertThat(stamped).usingRecursiveComparison()
+                           .ignoringFields("coreNodes")
+                           .isEqualTo(topology);
+        assertThat(stamped.coreNodes()).containsExactly(NodeInfo.nodeInfo(SELF,
+                                                                          node(SELF, 7001).address(),
+                                                                          Map.of(BackupAgreement.LABEL_BACKUP,
+                                                                                 BackupAgreement.ENABLED)),
+                                                        node(PEER, 7002));
+        assertThat(BackupAgreement.stamped(topology, Option.none())).isEqualTo(topology);
+    }
+
+    @Test
+    void nodeConfig_copiesEveryUnstampedFieldVerbatim() {
+        var formation = new ClusterFormationConfig(TimeSpan.timeSpan(7).seconds(),
+                                                   TimeSpan.timeSpan(8).seconds(),
+                                                   TimeSpan.timeSpan(9).seconds());
+        var gated = gatedConfigWith(formation);
+        var gatedNode = BackupAgreement.nodeConfig(gated);
+        var plainNode = BackupAgreement.nodeConfig(configWith(Option.none()));
+
+        assertThat(gatedNode.activationGated()).as("activation gating of a gated config").isTrue();
+        assertThat(plainNode.activationGated()).as("activation gating of a default config").isFalse();
+        assertThat(gatedNode.clusterFormation()).isEqualTo(formation);
+        assertThat(gatedNode.protocol()).isEqualTo(gated.protocol()).isNotEqualTo(ProtocolConfig.defaultConfig());
+        assertThat(gatedNode.topology()).isEqualTo(gated.topology());
+    }
+
+    private static BackupConfig disabledBackup() {
+        return BackupConfig.backupConfig(false, "/data/backup", "", RestoreMode.AUTO);
+    }
+
+    private static BackupConfig blankPathBackup() {
+        return BackupConfig.backupConfig(true, " ", "", RestoreMode.AUTO);
+    }
+
+    private static TopologyConfig fullTopology() {
+        return new TopologyConfig(SELF,
+                                  3,
+                                  TimeSpan.timeSpan(7).seconds(),
+                                  TimeSpan.timeSpan(11).seconds(),
+                                  TimeSpan.timeSpan(13).seconds(),
+                                  List.of(node(SELF, 7001), node(PEER, 7002)),
+                                  Option.some(TlsConfig.selfSignedServer()),
+                                  new BackoffConfig(7, BackoffConfig.DEFAULT.backoffStrategy()),
+                                  5,
+                                  2);
+    }
+
+    /// A config whose activation gating, protocol and cluster formation differ from the builder defaults.
+    private static AetherNodeConfig gatedConfigWith(ClusterFormationConfig formation) {
+        return baseBuilder(Option.none()).membership(Option.none())
+                                         .streaming(StreamingConfig.streamingConfig())
+                                         .protocol(ProtocolConfig.testConfig())
+                                         .sliceAction(SliceActionConfig.sliceActionConfig())
+                                         .cache(DHTConfig.CACHE_DEFAULT)
+                                         .controllerConfig(ControllerConfig.DEFAULT)
+                                         .autoHeal(AutoHealConfig.DEFAULT)
+                                         .observability(ObservabilityConfig.DEFAULT)
+                                         .atomicity(DeploymentAtomicity.ALL_OR_NOTHING)
+                                         .activationGated(true)
+                                         .timeouts(TimeoutsConfig.timeoutsConfig())
+                                         .workerConfig(Option.none())
+                                         .deploymentDefaults(DeploymentDefaults.DEFAULT)
+                                         .clusterFormation(formation);
     }
 
     private static BackupConfig enabledBackup() {
@@ -107,6 +190,10 @@ class BackupAgreementTest {
     }
 
     private static AetherNodeConfig configWith(Option<BackupConfig> backup) {
+        return baseBuilder(backup).build();
+    }
+
+    private static AetherNodeConfig.WithMembership baseBuilder(Option<BackupConfig> backup) {
         return AetherNodeConfig.builder()
                                .self(SELF)
                                .coreNodes(List.of(node(SELF, 7001), node(PEER, 7002)))
@@ -122,8 +209,7 @@ class BackupAgreementTest {
                                .environment(Option.none())
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(Map.of())
-                               .backupConfig(backup)
-                               .build();
+                               .backupConfig(backup);
     }
 
     private static NodeInfo node(NodeId id, int port) {
