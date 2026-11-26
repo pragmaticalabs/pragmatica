@@ -1,0 +1,6 @@
+# The classes allowed to call a socket-bind or port-allocation API in a test class (#3801).
+# One entry per line: module | class[#method] | reason
+# `module` is the Maven artifactId whose test classes hold the call. `Class#method` excuses that method (a lambda counts under
+# its enclosing method); `Class` excuses the whole class. The reason is required and says why this socket is not a
+# pick-then-rebind hazard. An entry that excuses no call site in its module fails that module's scan (stale).
+# HeldPort needs no entry: it is in this module's src/main, not a scanned tree.

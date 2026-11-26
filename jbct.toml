@@ -28,7 +28,11 @@ excludes = [
     # The one source walk of the repository scans (#3703): a FileVisitor whose contract is to throw the IOException of a
     # failed listing, and a test-only API whose callers fail their test by that exception. test-logging cannot depend on
     # core (core tests depend on test-logging), so a Result return is not available here.
-    "**/testlogging/SourceWalk.java"
+    "**/testlogging/SourceWalk.java",
+    # The port-bind gate (#3801): a command-line scan whose entry point is `main`, with the JDK's class-file API throwing and a
+    # class-loading probe that reports absence by exception. The module may depend on nothing in this repository (every module
+    # with src/test gets it at test scope, so a dependency on core is a reactor cycle), so Result and Option are not available.
+    "**/portbind/**"
 ]
 
 [lint.rules]
