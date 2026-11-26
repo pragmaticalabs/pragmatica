@@ -35,6 +35,8 @@ class StreamEngineKeyRoutesTest {
     private static final String ENGINE_KEY = "topic:com.example.app:orders:1.0.0";
     private static final RetentionPolicy RETENTION = RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000);
     private static final int EVENTS = 3;
+    /// `StreamApiRoutes.MAX_EVENTS_PER_PAGE`: the cap a `maxEvents` is clamped to.
+    private static final int PAGE_CAP = 1000;
 
     /// One row per raw-key route.
     private enum Probe {
@@ -112,6 +114,24 @@ class StreamEngineKeyRoutesTest {
 
         assertThat(response.events()).extracting(StreamApiRoutes.EventEntry::offset).containsExactly(1L);
         assertThat(response.nextOffset()).isEqualTo(2L);
+        assertThat(response.hasMore()).isTrue();
+    }
+
+    /// The page cap holds on the raw-key route as on the catalog one: a `maxEvents` far past it is answered with the cap, never
+    /// with the whole stream. One event more than the cap is published, so an unclamped read returns one more than the cap.
+    @Test
+    void events_maxEventsPastThePageCap_isClampedToTheCap() {
+        holds(2);
+        publish(PAGE_CAP + 1);
+
+        var response = (StreamApiRoutes.StreamEventsResponse) RouteProbe.run(holderRoutes(true),
+                                                                              Probe.EVENTS.route,
+                                                                              Probe.EVENTS.path(ENGINE_KEY),
+                                                                              Map.of("maxEvents", List.of("1000000")))
+                                                                      .onFailure(cause -> fail("a read past the cap must answer: " + cause.message()))
+                                                                      .unwrap();
+
+        assertThat(response.events()).hasSize(PAGE_CAP);
         assertThat(response.hasMore()).isTrue();
     }
 

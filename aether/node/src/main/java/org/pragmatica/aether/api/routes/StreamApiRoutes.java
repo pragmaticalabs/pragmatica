@@ -702,13 +702,15 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     /// #1963: the catalog decides whether the stream exists ([#requireKnown]); the engine's `StreamNotFound` after that is
-    /// [#notMaterializedHere], 503.
+    /// [#notMaterializedHere], 503. A partition the stream does not declare is the caller's error, 400, as on `STREAM_PARTITION`
+    /// ([#requireDeclaredIfCounted]); before it, `/read/7` of a 2-partition stream answered 503 and invited a retry that could not succeed.
     private Promise<ReadEventsResponse> readEventsAtPartition(String engineKey,
                                                               Integer partition,
                                                               Option<Long> fromOffset,
                                                               int maxEvents,
                                                               ReadPreference preference) {
-        return requireKnown(engineKey).async()
+        return requireKnown(engineKey).flatMap(_ -> requireDeclaredIfCounted(engineKey, partition))
+                           .async()
                            .flatMap(_ -> readFromRequestedOrEarliest(fromOffset,
                                                                      from -> notMaterializedHere(engineKey,
                                                                                                  streamReadRouter().read(engineKey,
@@ -717,6 +719,16 @@ public final class StreamApiRoutes implements RouteSource {
                                                                                                                          maxEvents,
                                                                                                                          preference))))
                            .map(window -> toReadEventsResponse(window.events()));
+    }
+
+    /// The declared-partition check for a route that does not need the count for anything else: enforced when a count is known
+    /// (committed config, else this node's ring), skipped when none is, so a stream registered before its config commit stays
+    /// readable through the owner. Unlike [#knownStream], an unknown count is not a refusal here: this route has always been
+    /// answerable in that window, and the owner answers it.
+    private Result<Unit> requireDeclaredIfCounted(String engineKey, int partition) {
+        return committedPartitions(engineKey).orElse(() -> localPartitions(engineKey))
+                                  .map(count -> requireDeclared(partition, count))
+                                  .or(Result.unitResult());
     }
 
     /// Events read from `from`, which is where the caller asked to start or, when it asked for nothing, where the stream
