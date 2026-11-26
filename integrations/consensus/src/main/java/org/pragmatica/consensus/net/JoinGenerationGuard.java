@@ -57,7 +57,8 @@ public interface JoinGenerationGuard {
     /// 12: #3345 (`DHTMessage.MigrationDataAck` gained `bootToken`, `storeGeneration` and `draining`).
     /// 13: #3458 M-1 (`StreamDeclaration` gained `storage`; `StreamConfigValue` moved from tag 2920 to 3014).
     /// 14: #3359 (`IncarnationTag` gained `lineageId`).
-    int WIRE_GENERATION = 14;
+    /// 15: #3389 (`AppBlueprintValue` gained `declaredRoutes`).
+    int WIRE_GENERATION = 15;
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.
