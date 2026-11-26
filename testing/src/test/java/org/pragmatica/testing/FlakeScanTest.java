@@ -58,7 +58,9 @@ class FlakeScanTest {
         assertThat(Files.isRegularFile(root.resolve(ALLOW_LIST))).as("repository root %s must hold %s (else the scan examines nothing)", root, ALLOW_LIST).isTrue();
         assertThat(scan.examinedFiles()).as("positive controls: the scan reached the whole repository, including this test")
                                         .hasSizeGreaterThan(MINIMUM_EXAMINED_FILES)
-                                        .contains("testing/src/test/java/org/pragmatica/testing/FlakeScanTest.java");
+                                        .contains("testing/src/test/java/org/pragmatica/testing/FlakeScanTest.java")
+                                        .as("positive control: the scan reached the tree the PICK_THEN_REBIND pass covers")
+                                        .contains("aether/node/src/test/java/org/pragmatica/aether/node/ClusterTestPorts.java");
         assertThat(scan.hits()).as("positive control: the allow-listed census is still seen by the scan").isNotEmpty();
         assertThat(scan.hits()).as("positive control: the declared walks are still seen by the scan")
                                .anyMatch(hit -> hit.kind() == FlakeScan.Kind.REPO_WALK);
@@ -409,6 +411,133 @@ class FlakeScanTest {
         assertThat(FlakeScan.scan(root).examinedFiles()).isEmpty();
     }
 
+    @Test
+    void scan_aPickThenCloseHelper_inAScopedTree_isFlaggedAtTheReadThatLetsThePortOut() throws IOException {
+        var source = String.join("\n",
+                                 "class A {",
+                                 "    private static int freeUdpPort() throws SocketException {",
+                                 "        try (var socket = new DatagramSocket(0)) {",
+                                 "            return socket.getLocalPort();",
+                                 "        }",
+                                 "    }",
+                                 "    private static int freeTcpPort() {",
+                                 "        try (var socket = new ServerSocket(0, 50, loopback)) {",
+                                 "            return socket.getLocalPort();",
+                                 "        } catch (IOException e) {",
+                                 "            throw new AssertionError(e);",
+                                 "        }",
+                                 "    }",
+                                 "    private static int afterALambda() throws IOException {",
+                                 "        try (var socket = new java.net.DatagramSocket(0)) {",
+                                 "            Runnable touch = () -> {",
+                                 "                touch();",
+                                 "            };",
+                                 "            return socket.getLocalPort();",
+                                 "        }",
+                                 "    }",
+                                 "}");
+
+        assertThat(FlakeScan.scan(plantIn("aether/node", "A.java", source)).hits().stream().map(hit -> hit.line() + " " + hit.kind()).toList())
+            .containsExactly("4 PICK_THEN_REBIND", "9 PICK_THEN_REBIND", "19 PICK_THEN_REBIND");
+    }
+
+    @Test
+    void scan_aPortAssignedToAnOuterTarget_orReadAcrossAWrappedHeader_isFlagged() throws IOException {
+        var source = String.join("\n",
+                                 "class A {",
+                                 "    void assigned() throws IOException {",
+                                 "        int port;",
+                                 "        try (var probe = new ServerSocket(0)) {",
+                                 "            port = probe.getLocalPort();",
+                                 "        }",
+                                 "        use(port);",
+                                 "    }",
+                                 "    void field() throws IOException {",
+                                 "        try (var probe = new DatagramSocket(0)) {",
+                                 "            this.port = probe",
+                                 "                .getLocalPort();",
+                                 "        }",
+                                 "    }",
+                                 "    int twoResources() throws IOException {",
+                                 "        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());",
+                                 "             var client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {",
+                                 "            return server.getLocalPort();",
+                                 "        }",
+                                 "    }",
+                                 "}");
+
+        assertThat(FlakeScan.scan(plantIn("aether/node", "A.java", source)).hits().stream().map(hit -> hit.line() + " " + hit.kind()).toList())
+            .containsExactly("5 PICK_THEN_REBIND", "11 PICK_THEN_REBIND", "18 PICK_THEN_REBIND");
+    }
+
+    @Test
+    void scan_theHeldAndServedForms_ofAPortZeroSocket_areNotFlagged() throws IOException {
+        var source = String.join("\n",
+                                 "class A {",
+                                 "    void held() throws IOException {",
+                                 "        try (var held = new ServerSocket(0)) {",
+                                 "            var port = held.getLocalPort();",
+                                 "            start(held.getLocalPort());",
+                                 "            assertThat(isFree(port)).isFalse();",
+                                 "        }",
+                                 "    }",
+                                 "    int fromAField() {",
+                                 "        return server.getLocalPort();",
+                                 "    }",
+                                 "    int notPortZero(int port) throws IOException {",
+                                 "        try (var socket = new ServerSocket(port)) {",
+                                 "            return socket.getLocalPort();",
+                                 "        }",
+                                 "    }",
+                                 "    int anotherResource() throws IOException {",
+                                 "        try (var held = new ServerSocket(0); var other = new Socket()) {",
+                                 "            return other.getLocalPort();",
+                                 "        }",
+                                 "    }",
+                                 "    ServerSocket served() throws IOException {",
+                                 "        var server = new ServerSocket(0);",
+                                 "        return server;",
+                                 "    }",
+                                 "    // try (var socket = new DatagramSocket(0)) { return socket.getLocalPort(); }",
+                                 "}");
+
+        assertThat(FlakeScan.scan(plantIn("aether/node", "A.java", source)).hits()).isEmpty();
+    }
+
+    @Test
+    void scan_aPickThenCloseHelper_outsideTheScopedTrees_isNotExamined() throws IOException {
+        var source = String.join("\n",
+                                 "class A {",
+                                 "    private static int freeUdpPort() throws SocketException {",
+                                 "        try (var socket = new DatagramSocket(0)) {",
+                                 "            return socket.getLocalPort();",
+                                 "        }",
+                                 "    }",
+                                 "}");
+
+        assertThat(FlakeScan.scan(plant("A.java", source)).hits()).isEmpty();
+        assertThat(FlakeScan.scan(plantIn("aether/node-extras", "A.java", source)).hits()).isEmpty();
+    }
+
+    @Test
+    void problems_aPickThenRebindHit_isNeverExcused_evenByAnEntryOfItsOwnKey() throws IOException {
+        var source = String.join("\n",
+                                 "class A {",
+                                 "    private static int freeUdpPort() throws SocketException {",
+                                 "        try (var socket = new DatagramSocket(0)) {",
+                                 "            return socket.getLocalPort();",
+                                 "        }",
+                                 "    }",
+                                 "}");
+        var hit = FlakeScan.scan(plantIn("aether/node", "A.java", source)).hits().getFirst();
+
+        var problems = FlakeScan.problems(List.of(hit), List.of(hit.key()), 1);
+
+        assertThat(problems).hasSize(2);
+        assertThat(problems.getFirst()).contains("PICK_THEN_REBIND", "aether/node/src/test/java/A.java:4", "ClusterTestPorts");
+        assertThat(problems.getLast()).contains("stale allow-list entry");
+    }
+
     private static String wrapped(String... lines) {
         return String.join("\n", lines);
     }
@@ -445,6 +574,11 @@ class FlakeScanTest {
 
     private Path plant(String name, String content) throws IOException {
         write(tmp.resolve("m/src/test/java").resolve(name), content);
+        return tmp;
+    }
+
+    private Path plantIn(String module, String name, String content) throws IOException {
+        write(tmp.resolve(module).resolve("src/test/java").resolve(name), content);
         return tmp;
     }
 

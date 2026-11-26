@@ -56,8 +56,15 @@ import org.pragmatica.testlogging.SourceWalk;
 /// in [RepoWalkExceptions] with the reason its root cannot meet build output, and counts declarations per file like allow-list
 /// entries. It does not see a walk through another API (`File.listFiles` recursion, `Files.newDirectoryStream`, a library walker), a
 /// walk in `src/main`, or a declared root that is later changed; those are left to review. The fix it asks for is `SourceWalk`.
+///
+/// `PICK_THEN_REBIND` is a hazard in a socket's lifetime (#1826), found by [PickThenRebind] over the statements of the trees in
+/// `PICK_THEN_REBIND_SCOPE`, not by a line regex. It is never an allow-list entry and never declared: a hit is fixed.
 final class FlakeScan {
     private static final List<String> SCANNED_SOURCES = List.of("/src/test/java/", "/src/it/java/");
+    /// The trees the `PICK_THEN_REBIND` pass examines. TODO(#1826): aether/node only (part a); widen to `integrations/consensus/` (part b),
+    /// `integrations/net/http-server/` (part c) and the other sites listed in `oss/internal/s56/facts-f1826a.md`, each in the lane that converts
+    /// its sites: a tree listed before its sites are converted fails the build.
+    private static final List<String> PICK_THEN_REBIND_SCOPE = List.of("aether/node/");
 
     /// A pattern with a fixed flake behind it, and the fix the failure message points at.
     enum Kind {
@@ -73,7 +80,9 @@ final class FlakeScan {
         SHORT_AWAIT("\\batMost\\s*\\(\\s*(Duration\\s*\\.\\s*ofMillis\\s*\\(|Duration\\s*\\.\\s*ofSeconds\\s*\\(\\s*[1-4]\\s*\\)|[0-9_]+\\s*,\\s*TimeUnit\\s*\\.\\s*MILLISECONDS|[1-4]\\s*,\\s*(TimeUnit\\s*\\.\\s*)?SECONDS)",
                     "give the wait a deadline of at least 5 s (PollUntil.pollUntil(..., Duration.ofSeconds(10)) or atMost(Duration.ofSeconds(10))): the deadline bounds only the failure, a pass returns at once"),
         REPO_WALK("\\bFiles\\s*\\.\\s*(walk|walkFileTree|find)\\s*\\(",
-                  "scan source files with org.pragmatica.testlogging.SourceWalk.files(root): the java.nio walks (walk, walkFileTree, find) list and stat every entry before any filter runs, so a walk from a repository or multi-module root visits other modules' target/ while a parallel build rewrites it and fails with NoSuchFileException. A walk of a directory nothing else writes (a directory the test creates, the module's own fixed source path, a class directory complete before the forks start) is declared in RepoWalkExceptions with its reason (#3703)");
+                  "scan source files with org.pragmatica.testlogging.SourceWalk.files(root): the java.nio walks (walk, walkFileTree, find) list and stat every entry before any filter runs, so a walk from a repository or multi-module root visits other modules' target/ while a parallel build rewrites it and fails with NoSuchFileException. A walk of a directory nothing else writes (a directory the test creates, the module's own fixed source path, a class directory complete before the forks start) is declared in RepoWalkExceptions with its reason (#3703)"),
+        PICK_THEN_REBIND("(?!)",
+                         "take the port from the module's ClusterTestPorts (its reservation holds until the real bind) or bind port 0 in the server itself and read the bound port back: a port read from a socket that is then closed can be taken by another process before the real bind (#1826)");
 
         private final Pattern pattern;
         private final String fix;
@@ -144,12 +153,17 @@ final class FlakeScan {
                 }
             }
         }
-        for (var statement : Statements.of(lines)) {
+        var statements = Statements.of(lines);
+
+        for (var statement : statements) {
             for (var kind : Kind.values()) {
                 for (var n = kind.wrappedMatches(statement.text()); n > 0; n--) {
                     hits.add(Hit.hit(relative, statement.line(), kind, String.join(" ", statement.text().split("\\s+"))));
                 }
             }
+        }
+        if (PICK_THEN_REBIND_SCOPE.stream().anyMatch(relative::startsWith)) {
+            hits.addAll(PickThenRebind.hits(relative, statements));
         }
     }
 
@@ -278,9 +292,7 @@ final class FlakeScan {
 
         entries.forEach(entry -> remaining.merge(entry, 1, Integer::sum));
         for (var hit : hits) {
-            if (hit.kind() == Kind.REPO_WALK
-                ? walksLeft.merge(hit.file(), -1, Integer::sum) < 0
-                : remaining.merge(hit.key(), -1, Integer::sum) < 0) {
+            if (!excused(hit, remaining, walksLeft)) {
                 problems.add("flake pattern " + hit.kind() + " at " + hit.file() + ":" + hit.line() + ": " + hit.text()
                              + "\n    fix: " + hit.kind().fix());
             }
@@ -289,6 +301,15 @@ final class FlakeScan {
         problems.addAll(staleWalks(walksLeft));
         problems.addAll(sizeProblems(entries.size(), committedCount));
         return problems;
+    }
+
+    /// Whether the allow-list or the declared walks excuse `hit`, consuming the entry it uses. A `PICK_THEN_REBIND` hit is never excused: it is fixed.
+    private static boolean excused(Hit hit, Map<String, Integer> remaining, Map<String, Integer> walksLeft) {
+        return switch (hit.kind()) {
+            case PICK_THEN_REBIND -> false;
+            case REPO_WALK -> walksLeft.merge(hit.file(), -1, Integer::sum) >= 0;
+            default -> remaining.merge(hit.key(), -1, Integer::sum) >= 0;
+        };
     }
 
     private static List<String> staleWalks(Map<String, Integer> walksLeft) {

@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.node.health;
 
+import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.node.health.fsm.SwimHealthEvents;
 import org.pragmatica.aether.node.health.fsm.SwimHealthState;
 import org.pragmatica.consensus.NodeId;
@@ -167,7 +168,7 @@ class CoreSwimHealthDetectorTest {
     @Nested
     class ObservationListenerPreRegistration {
         @Test
-        void listenerAttachedBeforeStart_isInvokedByLiveProtocol() throws InterruptedException, SocketException {
+        void listenerAttachedBeforeStart_isInvokedByLiveProtocol() throws InterruptedException {
             var router = MessageRouter.mutable();
             // start() BINDS the SWIM UDP port (self port + SWIM_PORT_OFFSET) on the wildcard address. A
             // fixed 9001 made that 9101, which collides with any concurrent aether/node test JVM on the
@@ -259,10 +260,10 @@ class CoreSwimHealthDetectorTest {
                            .getSimpleName();
         }
 
-        private static int freeUdpPort() throws SocketException {
-            try (var socket = new DatagramSocket(0)) {
-                return socket.getLocalPort();
-            }
+        /// The SWIM port of a node whose cluster port [ClusterTestPorts] issued: cluster UDP, cluster TCP and this SWIM UDP port are probed
+        /// free and locked for the JVM's life, so nothing takes it between this call and the detector's bind (#1826).
+        private static int freeUdpPort() {
+            return ClusterTestPorts.freeClusterPort() + CoreSwimHealthDetector.SWIM_PORT_OFFSET;
         }
     }
 
@@ -271,7 +272,7 @@ class CoreSwimHealthDetectorTest {
     @Nested
     class SelfQuorumReport {
         @Test
-        void reportSelfQuorum_beforeStart_isReplayedOntoTheStartedProtocol() throws InterruptedException, SocketException {
+        void reportSelfQuorum_beforeStart_isReplayedOntoTheStartedProtocol() throws InterruptedException {
             var swimPort = ObservationListenerPreRegistration.freeUdpPort();
             var self = NodeInfo.nodeInfo(SELF,
                                          NodeAddress.nodeAddress("127.0.0.1", swimPort - CoreSwimHealthDetector.SWIM_PORT_OFFSET)

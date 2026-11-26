@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.node.health.fsm.SwimHealthState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -160,9 +161,9 @@ class CoreSwimHealthDetectorStartLeakTest {
                                                              Mockito.mock(Deserializer.class));
     }
 
-    private static int freeUdpPort() throws SocketException {
-        try (var socket = new DatagramSocket(0)) {
-            return socket.getLocalPort();
-        }
+    /// The SWIM port of a node whose cluster port [ClusterTestPorts] issued: cluster UDP, cluster TCP and this SWIM UDP port are probed
+    /// free and locked for the JVM's life, so nothing takes it between this call and the detector's bind (#1826).
+    private static int freeUdpPort() {
+        return ClusterTestPorts.freeClusterPort() + CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     }
 }
