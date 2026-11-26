@@ -6539,7 +6539,7 @@ the operator naming a target directly. A `partition` outside `[0, partitionCount
 is rejected with `400 Bad Request`, naming the valid range — never a silent write to partition 0,
 never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemResponses HttpStatusAware
 dispatch]` That `400` is the single publish; the batch form reports the same condition per item as
-`NOT_ATTEMPTED` with `200` — see below.
+`NOT_ATTEMPTED` inside a `207` — see below.
 
 A publish refused before the append because fewer than `confirmation_factor − 1` peers are registered
 for the partition — typically the FIRST publish to a stream that publish auto-creates, whose replica set
@@ -6576,13 +6576,22 @@ failure (a reserved name `400`, or an unavailable stream `409`) fails the whole 
 status and writes nothing. An empty batch publishes nothing and creates no stream. `[mechanism:
 publishMany runs ensureStreamExists before the per-item fan-out, and only when there are items]`
 
-**Batch publish is not atomic, and the response says per item what happened (#1342).** `publish-batch`
-validates and writes each item independently and concurrently. **`200` means the batch RAN, not that
-every event landed — read `notPublished`.** The top-level `published` / `notPublished` counts and one
-outcome per item, in request order, come back for every batch that ran, partial included. "Ran" means
-the route processed the batch past the stream-level check above: a batch in which NO item passed the
-PARTITION-level admission still answers `200` with `published: 0` and every item `NOT_ATTEMPTED`; a stream-level
-refusal is the batch's own status (CTO ruling, #1342 × #1299; before #1342 the all-rejected case answered `500`).
+**Batch publish is not atomic, and the response says per item what happened (#1342, #1354).** `publish-batch`
+validates and writes each item independently and concurrently. **The status says whether every event landed: `200`
+only when every item is `PUBLISHED`; anything else is `207 Multi-Status`, with the same body.** The top-level
+`published` / `notPublished` counts and one outcome per item, in request order, come back for every batch that
+ran, partial included. "Ran" means the route processed the batch past the stream-level check above: a batch in
+which NO item passed the PARTITION-level admission answers `207` with `published: 0` and every item
+`NOT_ATTEMPTED`; a stream-level refusal is the batch's own status (CTO ruling, #1342 × #1299; before #1342 the
+all-rejected case answered `500`).
+
+| Batch outcome | Status |
+|---|---|
+| every item `PUBLISHED` | `200` |
+| an empty batch (no item, none unpublished; nothing is written or created) | `200` |
+| at least one item `NOT_ATTEMPTED` or `OUTCOME_UNKNOWN`, partial or `published: 0` | `207` |
+| stream-level refusal: a reserved name | `400` |
+| stream-level refusal: an unavailable stream | `409` |
 
 ```json
 {"address":"acme:orders:1.0.0","published":1,"notPublished":1,
@@ -6596,12 +6605,18 @@ refusal is the batch's own status (CTO ruling, #1342 × #1299; before #1342 the 
 - `OUTCOME_UNKNOWN`: the write was refused or timed out, before or after the local append (#1236) — the
   caller cannot tell which, so it may be in the log; retrying it can duplicate.
 
-A client that treats `200` as "every event landed" misreads a partial batch; check `notPublished`. Before
-#1342 the response on a partial batch was the first failure alone, and the offsets of the items that had
-landed were discarded. `[mechanism: publishMany fires every item concurrently via Promise.allOf with no
-short-circuit; each item's Result becomes its own PublishItemOutcome]` `[verified:
-StreamApiRoutesPublishBatchTest.partialBatch_overHttpDispatch_answers200_withNotPublishedAndTheLandedOffset —
-the real route through ManagementRouter, asserting the written status and JSON]`
+A client that matched exactly `200` must also accept `207`, and must read `notPublished` and the per-item outcomes
+to learn which events to retry. Before #1354 every batch the route ran answered `200`, so a partial batch looked
+like success to a client that read only the status; before #1342 the response on a partial batch was the first
+failure alone, and the offsets of the items that had landed were discarded. The status is derived in ONE place,
+`PublishBatchResponse.httpStatus`, as a function of the item statuses; `ManagementRouter` writes the status a
+`StatusBearingResponse` value declares and `200` for every other success, so no route call site picks a status.
+An empty batch answering `200` is a reading of "not fully `PUBLISHED`", not a stated ruling.
+`[mechanism: publishMany fires every item concurrently via Promise.allOf with no short-circuit; each item's Result
+becomes its own PublishItemOutcome; PublishBatchResponse.httpStatus allMatch PUBLISHED -> 200 else 207]`
+`[verified: StreamApiRoutesPublishBatchTest — the real route through ManagementRouter, asserting the written status
+and JSON for a partial batch of three, a batch with none published, an OUTCOME_UNKNOWN-only batch, a full batch and
+an empty batch]`
 
 ### Delete Stream Version
 
