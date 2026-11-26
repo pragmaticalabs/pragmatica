@@ -21,13 +21,13 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.IntSupplier;
-
-import org.pragmatica.lang.Option;
 
 /// #2016 / #2731: ports for node tests that boot a real [AetherNode].
 ///
@@ -172,13 +172,14 @@ public final class ClusterTestPorts {
     /// A probe that found `port` busy on `protocol`.
     record Busy(int port, Protocol protocol) {}
 
-    /// #3471: why the allocator skipped `candidate`. `busy` is the probe that read a port busy; empty when the skip came from
-    /// somewhere else (outside the window, or the cross-JVM lock refused), and also when a candidate whose every probe said free
-    /// was refused, which is the defect a test control exists to catch. A skip with a `busy` probe is correct whatever the port's state
+    /// #3471: why the allocator skipped `candidate`. `busy` holds EVERY probe that read a port busy for it (the probes run on to
+    /// completion, so a third party that also holds another port of the candidate only adds to the set); empty when the skip came from
+    /// somewhere else (outside the window, or the cross-JVM lock refused), and also when a candidate whose every probe said free was
+    /// refused, which is the defect a test control exists to catch. A skip with a busy probe is correct whatever the port's state
     /// afterwards: a contender may take and release it inside the probe.
-    record Skip(int candidate, Option<Busy> busy) {
+    record Skip(int candidate, Set<Busy> busy) {
         boolean probedBusy() {
-            return busy.isPresent();
+            return !busy.isEmpty();
         }
     }
 
@@ -203,7 +204,7 @@ public final class ClusterTestPorts {
             var candidate = candidates.getAsInt();
 
             if (!(WINDOW.contains(candidate) && WINDOW.contains(candidate + SWIM_OFFSET))) {
-                skips.add(new Skip(candidate, Option.none()));
+                skips.add(new Skip(candidate, Set.of()));
             } else if (claimAll(adoptReserved, skips, candidate, candidate + SWIM_OFFSET)) {
                 return candidate;
             }
@@ -232,7 +233,7 @@ public final class ClusterTestPorts {
             var candidate = candidates.getAsInt();
 
             if (!WINDOW.contains(candidate)) {
-                skips.add(new Skip(candidate, Option.none()));
+                skips.add(new Skip(candidate, Set.of()));
             } else if (claimAll(adoptReserved, skips, candidate)) {
                 return candidate;
             }
@@ -307,11 +308,11 @@ public final class ClusterTestPorts {
         for (int i = 0; i < ports.length; i++) {
             if (!(adoptReserved && RESERVED.containsKey(ports[i])) && !lock(ports[i], HELD)) {
                 releaseFirst(ports, i);
-                skips.add(new Skip(first, Option.none()));
+                skips.add(new Skip(first, Set.of()));
                 return false;
             }
         }
-        var busy = firstBusy(ports);
+        var busy = allBusy(ports);
 
         if (busy.isEmpty()) {
             adoptReserved(ports);
@@ -333,20 +334,24 @@ public final class ClusterTestPorts {
         }
     }
 
-    /// The first probe, in the order cluster UDP, cluster TCP, then each further port's UDP, that reads a port busy.
-    private static Option<Busy> firstBusy(int[] ports) {
+    /// Every probe that reads a port busy: cluster UDP and TCP of the first port, then each further port's UDP. Probes are not
+    /// short-circuited, so the record cannot lose a busy protocol to an earlier one; the cost per skipped candidate is at most
+    /// `ports.length + 1` socket binds (3 for a cluster port, 2 for a TCP+UDP port), against 1 to 3 before.
+    private static Set<Busy> allBusy(int[] ports) {
+        var busy = new LinkedHashSet<Busy>();
+
         if (!udpFree(ports[0])) {
-            return Option.some(new Busy(ports[0], Protocol.UDP));
+            busy.add(new Busy(ports[0], Protocol.UDP));
         }
         if (!tcpFree(ports[0])) {
-            return Option.some(new Busy(ports[0], Protocol.TCP));
+            busy.add(new Busy(ports[0], Protocol.TCP));
         }
         for (int i = 1; i < ports.length; i++) {
             if (!udpFree(ports[i])) {
-                return Option.some(new Busy(ports[i], Protocol.UDP));
+                busy.add(new Busy(ports[i], Protocol.UDP));
             }
         }
-        return Option.none();
+        return busy;
     }
 
     private static void releaseFirst(int[] ports, int count) {

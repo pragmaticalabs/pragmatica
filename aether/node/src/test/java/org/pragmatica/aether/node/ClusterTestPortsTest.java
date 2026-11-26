@@ -23,11 +23,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
 import java.util.stream.Stream;
-
-import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -142,8 +141,7 @@ class ClusterTestPortsTest {
             var got = ClusterTestPorts.freeClusterPort(offering(taken), skips);
 
             assertThat(got).as("a port with cluster UDP held must not be issued").isNotEqualTo(taken);
-            assertThat(skips).as("the skip names the probe that read it busy")
-                             .contains(skippedBusy(taken, taken, ClusterTestPorts.Protocol.UDP));
+            assertSkippedBusy(skips, "the skip names the probe that read it busy", taken, taken, ClusterTestPorts.Protocol.UDP);
         }
         var skips = new ArrayList<ClusterTestPorts.Skip>();
 
@@ -172,8 +170,8 @@ class ClusterTestPortsTest {
     @Test
     void releasedPortControl_failsWhenAFreePortWasRefused() {
         var taken = occupiableClusterCandidate(true);
-        var refusedWithoutCause = List.of(new ClusterTestPorts.Skip(taken, Option.none()));
-        var refusedForBusyProbe = List.of(skippedBusy(taken, taken + SWIM, ClusterTestPorts.Protocol.UDP));
+        var refusedWithoutCause = List.of(new ClusterTestPorts.Skip(taken, Set.of()));
+        var refusedForBusyProbe = List.of(new ClusterTestPorts.Skip(taken, Set.of(new ClusterTestPorts.Busy(taken + SWIM, ClusterTestPorts.Protocol.UDP))));
 
         assertThatThrownBy(() -> assertAcceptedUnlessProbedBusy(taken + 1, taken, refusedWithoutCause, "refused"))
             .isInstanceOf(AssertionError.class);
@@ -190,8 +188,30 @@ class ClusterTestPortsTest {
         }
     }
 
-    private static ClusterTestPorts.Skip skippedBusy(int candidate, int port, ClusterTestPorts.Protocol protocol) {
-        return new ClusterTestPorts.Skip(candidate, Option.some(new ClusterTestPorts.Busy(port, protocol)));
+    /// The held probe is among the busy probes recorded for `candidate`. Set membership, not equality: a third party that holds another
+    /// port of the same candidate can only add to the record, never remove the held one.
+    private static void assertSkippedBusy(List<ClusterTestPorts.Skip> skips, String label, int candidate, int port, ClusterTestPorts.Protocol protocol) {
+        assertThat(skips).as(label)
+                         .anyMatch(skip -> skip.candidate() == candidate && skip.busy().contains(new ClusterTestPorts.Busy(port, protocol)));
+    }
+
+    /// #3471: a third party that holds more of the candidate than the probe the test holds must not hide it: the skip records every busy
+    /// probe (cluster UDP, cluster TCP, SWIM UDP), so "the held protocol is in the record" holds whatever else is taken.
+    @Test
+    void freeClusterPort_recordsEveryBusyProbeOfASkippedCandidate() throws IOException {
+        var taken = occupiableClusterCandidate(true);
+
+        try (var udp = new DatagramSocket(new InetSocketAddress(taken));
+             var tcp = new ServerSocket();
+             var swim = new DatagramSocket(new InetSocketAddress(taken + SWIM))) {
+            tcp.bind(new InetSocketAddress(taken));
+            var skips = new ArrayList<ClusterTestPorts.Skip>();
+
+            assertThat(ClusterTestPorts.freeClusterPort(offering(taken), skips)).isNotEqualTo(taken);
+            assertSkippedBusy(skips, "cluster UDP", taken, taken, ClusterTestPorts.Protocol.UDP);
+            assertSkippedBusy(skips, "cluster TCP", taken, taken, ClusterTestPorts.Protocol.TCP);
+            assertSkippedBusy(skips, "SWIM UDP", taken, taken + SWIM, ClusterTestPorts.Protocol.UDP);
+        }
     }
 
     @Test
@@ -202,8 +222,7 @@ class ClusterTestPortsTest {
             var skips = new ArrayList<ClusterTestPorts.Skip>();
 
             assertThat(ClusterTestPorts.freeClusterPort(offering(taken), skips)).as("SWIM UDP held").isNotEqualTo(taken);
-            assertThat(skips).as("the skip names the SWIM probe")
-                             .contains(skippedBusy(taken, taken + SWIM, ClusterTestPorts.Protocol.UDP));
+            assertSkippedBusy(skips, "the skip names the SWIM probe", taken, taken + SWIM, ClusterTestPorts.Protocol.UDP);
         }
         var skips = new ArrayList<ClusterTestPorts.Skip>();
 
@@ -220,8 +239,7 @@ class ClusterTestPortsTest {
             var skips = new ArrayList<ClusterTestPorts.Skip>();
 
             assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken), skips)).as("TCP held").isNotEqualTo(taken);
-            assertThat(skips).as("the skip names the TCP probe")
-                             .contains(skippedBusy(taken, taken, ClusterTestPorts.Protocol.TCP));
+            assertSkippedBusy(skips, "the skip names the TCP probe", taken, taken, ClusterTestPorts.Protocol.TCP);
         }
         var skips = new ArrayList<ClusterTestPorts.Skip>();
 
@@ -236,8 +254,7 @@ class ClusterTestPortsTest {
             var skips = new ArrayList<ClusterTestPorts.Skip>();
 
             assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken), skips)).as("UDP held").isNotEqualTo(taken);
-            assertThat(skips).as("the skip names the UDP probe")
-                             .contains(skippedBusy(taken, taken, ClusterTestPorts.Protocol.UDP));
+            assertSkippedBusy(skips, "the skip names the UDP probe", taken, taken, ClusterTestPorts.Protocol.UDP);
         }
         var skips = new ArrayList<ClusterTestPorts.Skip>();
 
