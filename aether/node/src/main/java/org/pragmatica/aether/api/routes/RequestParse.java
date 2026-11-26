@@ -23,7 +23,7 @@ public final class RequestParse {
     public static <T> Result<T> asRequest(Result<T> parsed) {
         return parsed.mapError(cause -> cause instanceof HttpStatusAware
                                         ? cause
-                                        : new ManagementServerError.InvalidRequest(cause.message()));
+                                        : new ManagementServerError.InvalidRequest(cause));
     }
 
     /// The stream registry and the stream engine refuse an unknown stream with causes that carry no status
@@ -37,7 +37,7 @@ public final class RequestParse {
 
     private static Cause typedNotFound(Cause cause) {
         if (cause == StreamRegistryError.General.NOT_FOUND || cause == StreamRegistryError.General.NO_VERSIONS_REGISTERED || cause instanceof StreamError.StreamNotFound) {
-            return new ManagementServerError.NotFound(cause.message());
+            return new ManagementServerError.NotFound(cause);
         }
 
         return cause;

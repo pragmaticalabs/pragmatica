@@ -37,13 +37,13 @@ import org.pragmatica.lang.Unit;
 /// The quorum check is an observation read before the store monitor hold, not a safety guard: a served answer is at most as stale as the
 /// core's apply lag.
 public final class WarningsRoutes implements RouteSource {
-    static final Cause WORKER = new ServiceUnavailable("Warnings are served by core nodes only; this node is a worker");
+    static final Cause WORKER = ServiceUnavailable.literal("Warnings are served by core nodes only; this node is a worker");
 
-    static final Cause NO_QUORUM = new ServiceUnavailable("This core does not hold quorum; its warning rows may be stale");
+    static final Cause NO_QUORUM = ServiceUnavailable.literal("This core does not hold quorum; its warning rows may be stale");
 
-    static final Cause NO_REVISION = new ServiceUnavailable("This core has committed no state yet (revision 0)");
+    static final Cause NO_REVISION = ServiceUnavailable.literal("This core has committed no state yet (revision 0)");
 
-    static final Cause NOT_EXACT = new ServiceUnavailable("This core's revision label is not exact; warnings resume after its next snapshot install");
+    static final Cause NOT_EXACT = ServiceUnavailable.literal("This core's revision label is not exact; warnings resume after its next snapshot install");
 
     private static final Comparator<WarningEntry> ORDER = Comparator.comparing(WarningEntry::code).thenComparing(WarningEntry::subject);
 

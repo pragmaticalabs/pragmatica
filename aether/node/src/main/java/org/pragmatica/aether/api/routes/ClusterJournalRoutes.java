@@ -38,7 +38,7 @@ import org.pragmatica.lang.utils.Causes;
 public final class ClusterJournalRoutes implements RouteSource {
     private static final int DEFAULT_LIMIT = 256;
 
-    private static final Cause INVALID_LAYER = new ManagementServerError.InvalidRequest("Invalid 'layer' query parameter: expected 'fsm' or 'peer'");
+    private static final Cause INVALID_LAYER = ManagementServerError.InvalidRequest.literal("Invalid 'layer' query parameter: expected 'fsm' or 'peer'");
 
     private static final Cause NON_POSITIVE_LIMIT = Causes.cause("limit must be positive");
 

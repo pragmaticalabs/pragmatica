@@ -73,16 +73,16 @@ public final class NodeIdRoutes implements RouteSource {
         return Verify.ensure(Option.option(request.source()).or(""),
                              Is::matches,
                              NAME,
-                             new ManagementServerError.InvalidRequest("source must be a non-empty name of letters, digits, '.', '_' and '-'"))
+                             ManagementServerError.InvalidRequest.literal("source must be a non-empty name of letters, digits, '.', '_' and '-'"))
                      .flatMap(_ -> Verify.ensure(Option.option(request.role()).or(""),
                                                  Is::matches,
                                                  NAME,
-                                                 new ManagementServerError.InvalidRequest("role must be a non-empty name of letters, digits, '.', '_' and '-'")))
+                                                 ManagementServerError.InvalidRequest.literal("role must be a non-empty name of letters, digits, '.', '_' and '-'")))
                      .flatMap(_ -> Verify.ensure(request.count(),
                                                  Is::between,
                                                  1,
                                                  MAX_COUNT,
-                                                 new ManagementServerError.InvalidRequest("count must be between 1 and " + MAX_COUNT)))
+                                                 ManagementServerError.InvalidRequest.literal("count must be between 1 and " + MAX_COUNT)))
                      .map(_ -> request);
     }
 
@@ -98,11 +98,11 @@ public final class NodeIdRoutes implements RouteSource {
     private static Result<LeaderValue> committedLeaderOf(ManageableNode node) {
         return node.kvStore()
                    .getTyped(LeaderKey.INSTANCE, LeaderValue.class)
-                   .fold(() -> new ManagementServerError.ServiceUnavailable("No core leader is committed yet; an election is in progress. Retry shortly.").<LeaderValue> result(),
+                   .fold(() -> ManagementServerError.ServiceUnavailable.literal("No core leader is committed yet; an election is in progress. Retry shortly.").<LeaderValue> result(),
                          leader -> node.isLeader() && leader.leader()
                                                             .equals(node.self())
                                    ? Result.success(leader)
-                                   : new ManagementServerError.Conflict("Current core leader required to reserve node ids").<LeaderValue> result());
+                                   : ManagementServerError.Conflict.literal("Current core leader required to reserve node ids").<LeaderValue> result());
     }
 
     private Promise<ReserveNodeIdsResponse> attempt(ManageableNode node,
@@ -135,10 +135,10 @@ public final class NodeIdRoutes implements RouteSource {
     private Promise<ReserveNodeIdsResponse> retryOrRefuse(ReserveNodeIdsRequest request, int attemptsLeft) {
         return attemptsLeft > 1
                ? commit(request, attemptsLeft - 1)
-               : new ManagementServerError.Conflict("Node id reservation lost the compare-and-set " + COMMIT_ATTEMPTS
-                                                   + " times to concurrent reservations for " + request.source()
-                                                   + "/" + request.role()
-                                                   + "; nothing was reserved. Retry.").<ReserveNodeIdsResponse> promise();
+               : ManagementServerError.Conflict.literal("Node id reservation lost the compare-and-set " + COMMIT_ATTEMPTS
+                                                       + " times to concurrent reservations for " + request.source()
+                                                       + "/" + request.role()
+                                                       + "; nothing was reserved. Retry.").<ReserveNodeIdsResponse> promise();
     }
 
     private static boolean accepted(List<Object> results, String transactionId) {

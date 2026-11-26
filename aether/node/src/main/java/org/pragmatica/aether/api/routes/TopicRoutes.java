@@ -292,7 +292,7 @@ public final class TopicRoutes implements RouteSource {
                                 .streamInfo(topicStream)
                                 .isPresent()
                ? Result.success(topicAddress)
-               : new ManagementServerError.NotFound("Topic " + topicAddress + " not found").result();
+               : ManagementServerError.NotFound.literal("Topic " + topicAddress + " not found").result();
     }
 
     /// 404 for a consumer group no declared consumer of the topic carries; a KNOWN group that is not hosted here stays the
@@ -305,7 +305,7 @@ public final class TopicRoutes implements RouteSource {
                            .anyMatch(status -> status.consumerGroup()
                                                      .equals(group))
                ? Result.success(group)
-               : new ManagementServerError.NotFound("Consumer group '" + group + "' not found on " + topicStream).result();
+               : ManagementServerError.NotFound.literal("Consumer group '" + group + "' not found on " + topicStream).result();
     }
 
     /// Two conditions, both LOCAL: the projection must be attached here AND this node must consume at
