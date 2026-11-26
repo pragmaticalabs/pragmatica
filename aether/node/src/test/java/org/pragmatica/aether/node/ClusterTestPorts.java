@@ -6,6 +6,9 @@ package org.pragmatica.aether.node;
 
 import java.util.Locale;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -20,10 +23,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.IntSupplier;
+
+import static org.pragmatica.lang.Result.success;
 
 /// #2016 / #2731: ports for node tests that boot a real [AetherNode].
 ///
@@ -160,23 +169,89 @@ public final class ClusterTestPorts {
         }
     }
 
+    enum Protocol {
+        TCP,
+        UDP
+    }
+
+    /// A probe that found `port` busy on `protocol`.
+    record Busy(int port, Protocol protocol) {}
+
+    /// #3471: why the allocator skipped a candidate: exactly one case per skip path, recorded at the site of the decision. A test
+    /// control reads a skip as "a free port was refused" only through [ProbeBusy]; a skip for any other reason is a different
+    /// mechanism and is never read as a refused free port.
+    sealed interface SkipCause {
+        /// The candidate (or its SWIM port) lies outside the [#WINDOW]; no lock was taken, no probe ran.
+        record OutsideWindow() implements SkipCause {
+            static OutsideWindow outsideWindow() {
+                return new OutsideWindow();
+            }
+        }
+
+        /// The lock step refused a port of the candidate: this JVM already holds it (issued, or reserved and not adopted), the lock file
+        /// could not be opened, or another JVM holds the OS lock. No probe ran.
+        record LockRefused() implements SkipCause {
+            static LockRefused lockRefused() {
+                return new LockRefused();
+            }
+        }
+
+        /// At least one probe read a port of the candidate busy; `busy` holds EVERY such probe (the probes run on to completion, so a
+        /// third party that also holds another port of the candidate only adds to the set). Never empty: [#probeBusy] refuses an empty
+        /// set, so "no probe read it busy" cannot be recorded as this cause. A skip with this cause is correct whatever the port's state
+        /// afterwards: a contender may take and release it inside the probe.
+        record ProbeBusy(Set<Busy> busy) implements SkipCause {
+            static final Cause NO_BUSY_PROBE = Causes.cause("no probe read the candidate busy");
+
+            static Result<ProbeBusy> probeBusy(Set<Busy> busy) {
+                return busy.isEmpty()
+                       ? NO_BUSY_PROBE.result()
+                       : success(new ProbeBusy(Set.copyOf(busy)));
+            }
+        }
+    }
+
+    /// #3471: the allocator turned `candidate` away, for `cause`.
+    record Skip(int candidate, SkipCause cause) {
+        static Skip skip(int candidate, SkipCause cause) {
+            return new Skip(candidate, cause);
+        }
+
+        boolean probedBusy() {
+            return cause instanceof SkipCause.ProbeBusy;
+        }
+
+        /// The probes that read a port busy; empty for every cause but [SkipCause.ProbeBusy].
+        Set<Busy> busy() {
+            return cause instanceof SkipCause.ProbeBusy(var busy)
+                   ? busy
+                   : Set.of();
+        }
+    }
+
     /// A cluster port whose cluster UDP, cluster TCP and SWIM UDP ports are locked for this JVM and were free at the call.
     public static int freeClusterPort() {
-        return freeClusterPort(ClusterTestPorts::windowCandidate, false);
+        return freeClusterPort(ClusterTestPorts::windowCandidate, false, new ArrayList<>());
     }
 
     /// Candidate source injected so a test can offer a taken or already-issued port and watch it be refused. Only this seam
     /// adopts a port a test [#reserve]d; the random draws of the public form never do.
     static int freeClusterPort(IntSupplier candidates) {
-        return freeClusterPort(candidates, true);
+        return freeClusterPort(candidates, true, new ArrayList<>());
     }
 
-    private static int freeClusterPort(IntSupplier candidates, boolean adoptReserved) {
+    /// As [#freeClusterPort(IntSupplier)], appending a [Skip] to `skips` for every candidate it did not issue.
+    static int freeClusterPort(IntSupplier candidates, List<Skip> skips) {
+        return freeClusterPort(candidates, true, skips);
+    }
+
+    private static int freeClusterPort(IntSupplier candidates, boolean adoptReserved, List<Skip> skips) {
         for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
             var candidate = candidates.getAsInt();
 
-            if (WINDOW.contains(candidate) && WINDOW.contains(candidate + SWIM_OFFSET)
-                && claimAll(adoptReserved, candidate, candidate + SWIM_OFFSET)) {
+            if (!(WINDOW.contains(candidate) && WINDOW.contains(candidate + SWIM_OFFSET))) {
+                skips.add(Skip.skip(candidate, SkipCause.OutsideWindow.outsideWindow()));
+            } else if (claimAll(adoptReserved, skips, candidate, candidate + SWIM_OFFSET)) {
                 return candidate;
             }
         }
@@ -187,18 +262,25 @@ public final class ClusterTestPorts {
     /// A port free on BOTH TCP and UDP, for a listener whose protocol (H1, H3, BOTH) the test does not fix. Not for a
     /// cluster port: that one also needs the SWIM port, see [#freeClusterPort].
     public static int freeTcpAndUdpPort() {
-        return freeTcpAndUdpPort(ClusterTestPorts::windowCandidate, false);
+        return freeTcpAndUdpPort(ClusterTestPorts::windowCandidate, false, new ArrayList<>());
     }
 
     static int freeTcpAndUdpPort(IntSupplier candidates) {
-        return freeTcpAndUdpPort(candidates, true);
+        return freeTcpAndUdpPort(candidates, true, new ArrayList<>());
     }
 
-    private static int freeTcpAndUdpPort(IntSupplier candidates, boolean adoptReserved) {
+    /// As [#freeTcpAndUdpPort(IntSupplier)], appending a [Skip] to `skips` for every candidate it did not issue.
+    static int freeTcpAndUdpPort(IntSupplier candidates, List<Skip> skips) {
+        return freeTcpAndUdpPort(candidates, true, skips);
+    }
+
+    private static int freeTcpAndUdpPort(IntSupplier candidates, boolean adoptReserved, List<Skip> skips) {
         for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
             var candidate = candidates.getAsInt();
 
-            if (WINDOW.contains(candidate) && claimAll(adoptReserved, candidate)) {
+            if (!WINDOW.contains(candidate)) {
+                skips.add(Skip.skip(candidate, SkipCause.OutsideWindow.outsideWindow()));
+            } else if (claimAll(adoptReserved, skips, candidate)) {
                 return candidate;
             }
         }
@@ -262,8 +344,9 @@ public final class ClusterTestPorts {
         }
     }
 
-    /// Locks every port in `ports`, then probes them; on any refusal, releases what this call locked.
-    private static synchronized boolean claimAll(boolean adoptReserved, int first, int... rest) {
+    /// Locks every port in `ports`, then probes them; on any refusal, releases what this call locked and records the [Skip] with its
+    /// [SkipCause] (#3471): the lock step refused, or the probes that read a port busy.
+    private static synchronized boolean claimAll(boolean adoptReserved, List<Skip> skips, int first, int... rest) {
         var ports = new int[rest.length + 1];
 
         ports[0] = first;
@@ -271,14 +354,24 @@ public final class ClusterTestPorts {
         for (int i = 0; i < ports.length; i++) {
             if (!(adoptReserved && RESERVED.containsKey(ports[i])) && !lock(ports[i], HELD)) {
                 releaseFirst(ports, i);
+                skips.add(Skip.skip(first, SkipCause.LockRefused.lockRefused()));
                 return false;
             }
         }
-        if (allFree(ports)) {
-            adoptReserved(ports);
-            return true;
-        }
+        return SkipCause.ProbeBusy.probeBusy(allBusy(ports))
+                        .fold(_ -> issue(ports), busy -> refuse(ports, skips, first, busy));
+    }
+
+    /// No probe read a port busy: the locks become the issued port's.
+    private static boolean issue(int[] ports) {
+        adoptReserved(ports);
+        return true;
+    }
+
+    /// A probe read a port busy: nothing stays locked, and the skip carries the probes.
+    private static boolean refuse(int[] ports, List<Skip> skips, int first, SkipCause.ProbeBusy busy) {
         releaseFirst(ports, ports.length);
+        skips.add(Skip.skip(first, busy));
         return false;
     }
 
@@ -293,20 +386,24 @@ public final class ClusterTestPorts {
         }
     }
 
-    private static boolean allFree(int[] ports) {
-        if (!isFreeOnBothProtocols(ports[0])) {
-            return false;
+    /// Every probe that reads a port busy: cluster UDP and TCP of the first port, then each further port's UDP. Probes are not
+    /// short-circuited, so the record cannot lose a busy protocol to an earlier one; the cost per skipped candidate is at most
+    /// `ports.length + 1` socket binds (3 for a cluster port, 2 for a TCP+UDP port), against 1 to 3 before.
+    private static Set<Busy> allBusy(int[] ports) {
+        var busy = new LinkedHashSet<Busy>();
+
+        if (!udpFree(ports[0])) {
+            busy.add(new Busy(ports[0], Protocol.UDP));
+        }
+        if (!tcpFree(ports[0])) {
+            busy.add(new Busy(ports[0], Protocol.TCP));
         }
         for (int i = 1; i < ports.length; i++) {
             if (!udpFree(ports[i])) {
-                return false;
+                busy.add(new Busy(ports[i], Protocol.UDP));
             }
         }
-        return true;
-    }
-
-    private static boolean isFreeOnBothProtocols(int port) {
-        return udpFree(port) && tcpFree(port);
+        return busy;
     }
 
     private static void releaseFirst(int[] ports, int count) {
