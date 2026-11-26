@@ -1014,7 +1014,7 @@ public final class LeaderReconciler {
     private void finishDebounce(OwnerLifetime life) {
         var seen = debounce.get();
 
-        if (!(seen instanceof Debounce.Pending pending) || pending.owner() != life) {
+        if (! (seen instanceof Debounce.Pending pending) || pending.owner() != life) {
             return;
         }
 
@@ -1035,7 +1035,7 @@ public final class LeaderReconciler {
     /// has set; a body on the non-leader lifetime (a quorum-loss intent reconciles without leadership) finds no leadership. That body
     /// only observes: it reaches the listener and nothing else.
     private boolean mayAct(OwnerLifetime life) {
-        return !life.isEnded() && isLeader.get();
+        return ! life.isEnded() && isLeader.get();
     }
 
     @Contract
@@ -1962,7 +1962,6 @@ public final class LeaderReconciler {
         }
 
         drainGraceReEvalHandleRef.set(none());
-
         triggerReconcile(life, ReconcileTrigger.NTT_FIRE);
     }
 
@@ -2061,7 +2060,6 @@ public final class LeaderReconciler {
         if (!mayAct(life)) {
             return;
         }
-
         // #2811: this ceiling only bounds the create call while it is in flight; once the provision is Dispatched the entry takes the
         // ceiling the disposition carries (markDispatched), so a placement or config commit between this read and the dispatch cannot
         // leave the entry with another source's ceiling.
@@ -2258,7 +2256,6 @@ public final class LeaderReconciler {
         }
 
         inFlightSweepHandleRef.set(none());
-
         var before = inFlightProvisioning.size();
 
         evictInFlightPastCeiling(life, timeSource.nanoTime());
@@ -2420,7 +2417,6 @@ public final class LeaderReconciler {
         }
 
         deficitFollowUpHandleRef.set(none());
-
         triggerReconcile(life, ReconcileTrigger.DEFICIT_FOLLOW_UP);
     }
 
@@ -2462,7 +2458,6 @@ public final class LeaderReconciler {
         }
 
         surplusFollowUpHandleRef.set(none());
-
         triggerReconcile(life, ReconcileTrigger.SURPLUS_FOLLOW_UP);
     }
 
@@ -2591,7 +2586,7 @@ public final class LeaderReconciler {
             }
 
             boolean isLive() {
-                return !owner.isEnded();
+                return ! owner.isEnded();
             }
         }
     }
