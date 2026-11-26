@@ -24,13 +24,15 @@ import org.slf4j.LoggerFactory;
 /// A failure never skips a later step; it is logged where it happens and recorded, and the stop's result is a [StopReport]
 /// carrying EVERY failure in step order. The stop SUCCEEDS with it once every step settled: a failed step means "stopped, with
 /// failures", never "did not stop". So a failed leave of the quorum, a failed HTTP listener stop and a failed shared-resource
-/// close are one case, not three. The result fails only when the sequence cannot complete; no returned step failure causes that.
+/// close are one case, not three. The result fails only when the sequence cannot complete; no step failure, returned or thrown, causes that.
 ///
 /// Each step is a `Supplier`, so no step starts before the previous one has settled. The sequence can be tested
 /// without assembling a node.
 ///
-/// Not covered: a step that THROWS (a synchronous step is total by contract; an exception is not a returned
-/// failure and ends the run at that step).
+/// A step that THROWS is a failure like a returned one: the runner is the enforcer of "a failing step never skips a later one", so it catches
+/// the throw, logs it at ERROR under the step's name, records it in the report and runs the next step. This holds for every step, including the
+/// ones typed as returning no failure (the FSM2 close dispatches the node deployment FSM's `Shutdown`, which from `Active` can reach
+/// `suspendSlices` and the route publisher).
 sealed interface NodeStopSequence {
     Logger LOG = LoggerFactory.getLogger(NodeStopSequence.class);
 
@@ -40,7 +42,7 @@ sealed interface NodeStopSequence {
             return new Step(name, action);
         }
 
-        /// A step that cannot fail (the FSM2 close, the storage drain), as an action of the list.
+        /// A step that returns no failure (the FSM2 close, the storage drain), as an action of the list. It may still throw; the runner catches that.
         static Step completing(String name, Supplier<Unit> action) {
             return step(name,
                         () -> Promise.success(action.get()));
@@ -51,8 +53,8 @@ sealed interface NodeStopSequence {
     /// router's quiesce); `deploymentWiring` the FSM2 close after it; `nodeComponents` the components' stops and the
     /// backup and sealer flushes (rc5's order, #2688); then the deployment deactivation, the listeners, the slice
     /// invoker, `sharedResources` (#903, closed once the slice invoker has stopped), `storage` and the cluster node.
-    /// `deploymentWiring` and `storage` are infallible by design (see `AetherNode.stopDeploymentWiring`,
-    /// `AetherNode.shutdownStorage`).
+    /// `deploymentWiring` and `storage` return no failure by design (see `AetherNode.stopDeploymentWiring`,
+    /// `AetherNode.shutdownStorage`); a throw from either is still caught by the runner like any step's.
     record Steps(Supplier<Promise<Unit>> leaveQuorum,
                  Supplier<Unit> deploymentWiring,
                  Supplier<Promise<Unit>> nodeComponents,
@@ -101,7 +103,7 @@ sealed interface NodeStopSequence {
     }
 
     /// Runs every step in order and resolves with the report of what failed: [StopReport#clean] when nothing did,
-    /// otherwise every failure, in step order. It never fails for a step's returned failure.
+    /// otherwise every failure, in step order. It never fails for a step's failure, returned or thrown.
     static Promise<StopReport> run(Steps steps) {
         return runFrom(steps.ordered(), List.of()).map(StopReport::of);
     }
@@ -117,12 +119,15 @@ sealed interface NodeStopSequence {
     }
 
     private static Promise<List<StepFailure>> settle(Step step, List<Step> rest, List<StepFailure> failures) {
-        return step.action()
-                   .get()
-                   .fold(result -> runFrom(rest,
-                                           withOutcomeOf(step.name(),
-                                                         result,
-                                                         failures)));
+        return invoked(step).fold(result -> runFrom(rest, withOutcomeOf(step.name(), result, failures)));
+    }
+
+    /// The step's promise, or the failure of a step that threw instead of returning one: this is where a throw stops being able to skip anything.
+    private static Promise<Unit> invoked(Step step) {
+        return Result.lift(Threw::threw,
+                           () -> step.action()
+                                     .get())
+                     .fold(Cause::promise, promise -> promise);
     }
 
     /// `failures` plus the failure of a settled step, logged; `failures` itself when it succeeded.
@@ -137,9 +142,28 @@ sealed interface NodeStopSequence {
     }
 
     private static StepFailure logged(String name, Cause cause) {
+        return cause instanceof Threw threw
+               ? loggedThrown(name, threw)
+               : loggedReturned(name, cause);
+    }
+
+    private static StepFailure loggedReturned(String name, Cause cause) {
         LOG.warn("{} did not stop cleanly; continuing node shutdown: {}", name, cause.message());
 
         return StepFailure.stepFailure(name, cause);
+    }
+
+    private static StepFailure loggedThrown(String name, Threw threw) {
+        LOG.error("{} threw; continuing node shutdown: {}", name, threw.message(), threw.thrown());
+
+        return StepFailure.stepFailure(name, threw);
+    }
+
+    /// The failure of a step that threw instead of returning a promise.
+    record Threw(Throwable thrown, String message) implements Cause {
+        static Threw threw(Throwable thrown) {
+            return new Threw(thrown, thrown.toString());
+        }
     }
 
     record unused() implements NodeStopSequence {}
