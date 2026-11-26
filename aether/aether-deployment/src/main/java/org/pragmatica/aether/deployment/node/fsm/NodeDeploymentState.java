@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -23,6 +24,7 @@ import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SliceDeployment;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SuspendedSlice;
 import org.pragmatica.aether.deployment.node.RoutingEpochAckTracker;
+import org.pragmatica.aether.deployment.node.fsm.LifetimeGatedCluster.WriteRefused;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.CatchUpSwept;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.ConfigChanged;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.LeavingRequested;
@@ -2469,9 +2471,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// Variant of [#updateSliceStateWithRetry] that batches `extraCommands` (the stream-ref
         /// mutations) into the same `cluster().apply(...)` round as the SliceNodeValue put, so the
         /// refcount mutation is consensus-ordered with the slice-state mutation (spec §8.5).
-        private Promise<SliceNodeKey> updateSliceStateWithExtraCommands(SliceNodeKey sliceKey,
-                                                                        SliceNodeValue value,
-                                                                        List<KVCommand<AetherKey>> extraCommands) {
+        Promise<SliceNodeKey> updateSliceStateWithExtraCommands(SliceNodeKey sliceKey,
+                                                                SliceNodeValue value,
+                                                                List<KVCommand<AetherKey>> extraCommands) {
             return updateSliceStateWithExtraCommandsAndRetry(sliceKey, value, extraCommands, 0);
         }
 
@@ -2491,16 +2493,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             commands.add(new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue));
             commands.addAll(extraCommands);
 
-            return submitStateWrite(sliceKey,
-                                    value.state(),
-                                    attempt,
-                                    commands).timeout(CONSENSUS_OPERATION_TIMEOUT)
-                                   .map(_ -> sliceKey)
-                                   .onSuccess(_ -> log.debug("State+refs update succeeded: {} -> {} (+{} extras)",
-                                                             sliceKey.artifact(),
-                                                             value.state(),
-                                                             extraCommands.size()))
-                                   .orElse(() -> retryConsensusBatch(sliceKey, value, extraCommands, attempt));
+            return retriedUnlessRefused(submitStateWrite(sliceKey,
+                                                         value.state(),
+                                                         attempt,
+                                                         commands).timeout(CONSENSUS_OPERATION_TIMEOUT)
+                                                        .map(_ -> sliceKey)
+                                                        .onSuccess(_ -> log.debug("State+refs update succeeded: {} -> {} (+{} extras)",
+                                                                                  sliceKey.artifact(),
+                                                                                  value.state(),
+                                                                                  extraCommands.size())),
+                                        () -> retryConsensusBatch(sliceKey, value, extraCommands, attempt));
         }
 
         private Promise<SliceNodeKey> retryConsensusBatch(SliceNodeKey sliceKey,
@@ -2581,15 +2583,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var nodeArtifactValue = nodeArtifactValueFor(sliceKey.artifact(), value);
             KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
 
-            return submitStateWrite(sliceKey,
-                                    value.state(),
-                                    attempt,
-                                    List.of(putArtifact)).timeout(CONSENSUS_OPERATION_TIMEOUT)
-                                   .map(_ -> sliceKey)
-                                   .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
-                                                             sliceKey.artifact(),
-                                                             value.state()))
-                                   .orElse(() -> retryConsensusOperation(sliceKey, value, attempt));
+            return retriedUnlessRefused(submitStateWrite(sliceKey,
+                                                         value.state(),
+                                                         attempt,
+                                                         List.of(putArtifact)).timeout(CONSENSUS_OPERATION_TIMEOUT)
+                                                        .map(_ -> sliceKey)
+                                                        .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
+                                                                                  sliceKey.artifact(),
+                                                                                  value.state())),
+                                        () -> retryConsensusOperation(sliceKey, value, attempt));
         }
 
         private Promise<SliceNodeKey> retryConsensusOperation(SliceNodeKey sliceKey,
@@ -2627,12 +2629,27 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       .apply(commands);
         }
 
-        private Promise<Unit> applyWithRetry(List<KVCommand<AetherKey>> commands, int attempt) {
-            return ctx.cluster()
-                      .apply(commands)
-                      .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                      .mapToUnit()
-                      .orElse(() -> retryApply(commands, attempt));
+        Promise<Unit> applyWithRetry(List<KVCommand<AetherKey>> commands, int attempt) {
+            return retriedUnlessRefused(ctx.cluster().apply(commands).timeout(CONSENSUS_OPERATION_TIMEOUT).mapToUnit(),
+                                        () -> retryApply(commands, attempt));
+        }
+
+        /// `attempt`'s own outcome, or the `retry` when it failed. A write the lifetime's gate refused after the stop ([WriteRefused]) is the outcome
+        /// itself: the lifetime never restarts, so a retry cannot change it. It is logged once at DEBUG and never retried.
+        private static <T> Promise<T> retriedUnlessRefused(Promise<T> attempt, Supplier<Promise<T>> retry) {
+            return attempt.fold(result -> result.fold(cause -> afterFailure(cause, attempt, retry), _ -> attempt));
+        }
+
+        private static <T> Promise<T> afterFailure(Cause cause, Promise<T> attempt, Supplier<Promise<T>> retry) {
+            return cause instanceof WriteRefused
+                   ? refusedAfterStop(cause, attempt)
+                   : retry.get();
+        }
+
+        private static <T> Promise<T> refusedAfterStop(Cause cause, Promise<T> attempt) {
+            log.debug("Consensus write refused after stop, not retried: {}", cause.message());
+
+            return attempt;
         }
 
         private Promise<Unit> retryApply(List<KVCommand<AetherKey>> commands, int attempt) {

@@ -37,6 +37,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -52,8 +53,10 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
@@ -65,7 +68,10 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
+import org.pragmatica.testlogging.LogCapture;
 
+import org.apache.logging.log4j.Level;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -265,6 +271,108 @@ class NodeDeploymentStopLifetimeTest {
             assertThat(written.isFailure()).as("the door refused the write").isTrue();
             assertThat(cluster.batches).as("nothing reached consensus").isEmpty();
             assertThat(seam.wrappers).as("the refused write's retry is not armed on an ended lifetime").isEmpty();
+        }
+    }
+
+    /// A write the gate refused after the stop is terminal: the three retry loops of the FSM's consensus writes (the slice-state write, its batched
+    /// variant and the plain batch apply) stop on it, log it once at DEBUG, and never reach the "after N retries" warning. Each has a control in which
+    /// a write that fails for any other reason IS retried (same body, live lifetime, failing cluster), so a silent loop cannot pass for a stopped one.
+    /// Mutant: a retry loop that retries the refusal anyway goes red.
+    @Nested
+    class RefusedWriteIsTerminal {
+        private static final String RETRIED = "Retrying consensus";
+        private static final String GAVE_UP = "failed after";
+        private final Cause boom = Causes.cause("consensus unavailable");
+        private LogCapture log;
+
+        @BeforeEach
+        void captureLog() {
+            log = LogCapture.capture(NodeDeploymentState.Active.class, Level.DEBUG, false);
+        }
+
+        @AfterEach
+        void releaseLog() {
+            log.close();
+        }
+
+        @Test
+        void sliceStateWrite_failingForAnyOtherReason_isRetried() {
+            var active = activeWithSlice(SliceState.LOADING);
+
+            cluster.failure = boom;
+            active.transitionToFailedWithRetry(KEY, boom, Unrecognised.RETRY, 0).await();
+
+            assertRetriedThenGaveUp();
+        }
+
+        @Test
+        void sliceStateWrite_refusedAfterStop_isNotRetried() {
+            var active = activeWithSlice(SliceState.LOADING);
+
+            stop();
+            var written = active.transitionToFailedWithRetry(KEY, boom, Unrecognised.RETRY, 0).await();
+
+            assertRefusedOnce(written);
+        }
+
+        @Test
+        void batchedSliceStateWrite_failingForAnyOtherReason_isRetried() {
+            var active = activeWithSlice(SliceState.LOADING);
+
+            cluster.failure = boom;
+            active.updateSliceStateWithExtraCommands(KEY, SliceNodeValue.sliceNodeValue(SliceState.LOADING), List.of()).await();
+
+            assertRetriedThenGaveUp();
+        }
+
+        @Test
+        void batchedSliceStateWrite_refusedAfterStop_isNotRetried() {
+            var active = activeWithSlice(SliceState.LOADING);
+
+            stop();
+            var written = active.updateSliceStateWithExtraCommands(KEY, SliceNodeValue.sliceNodeValue(SliceState.LOADING), List.of()).await();
+
+            assertRefusedOnce(written);
+        }
+
+        @Test
+        void batchApply_failingForAnyOtherReason_isRetried() {
+            var active = activeWithSlice(SliceState.LOADING);
+
+            cluster.failure = boom;
+            active.applyWithRetry(List.of(noop()), 0).await();
+
+            assertRetriedThenGaveUp();
+        }
+
+        @Test
+        void batchApply_refusedAfterStop_isNotRetried() {
+            var active = activeWithSlice(SliceState.LOADING);
+
+            stop();
+            var written = active.applyWithRetry(List.of(noop()), 0).await();
+
+            assertRefusedOnce(written);
+        }
+
+        /// The delegate was submitted to the first time and twice more (`CONSENSUS_MAX_RETRIES`), and the loop gave up.
+        private void assertRetriedThenGaveUp() {
+            assertThat(cluster.batches).as("control: the retry loop re-submitted the failing write").hasSize(3);
+            assertThat(log.messages()).as("control: and gave up").anyMatch(m -> m.contains(GAVE_UP));
+        }
+
+        private void assertRefusedOnce(Result<?> written) {
+            assertThat(written.isFailure()).as("the door refused the write").isTrue();
+            written.onFailure(cause -> assertThat(cause).as("with the gate's own refusal, not a timeout").isInstanceOf(LifetimeGatedCluster.WriteRefused.class));
+            assertThat(cluster.batches).as("nothing reached consensus").isEmpty();
+            assertThat(log.entries()).as("logged once, at DEBUG").filteredOn(e -> e.message().contains("refused after stop"))
+                                     .hasSize(1)
+                                     .allMatch(e -> e.level() == Level.DEBUG);
+            assertThat(log.messages()).as("never retried, never given up on").noneMatch(m -> m.startsWith(RETRIED)).noneMatch(m -> m.contains(GAVE_UP));
+        }
+
+        private KVCommand<AetherKey> noop() {
+            return new KVCommand.Noop<>(AetherKey.ClusterConfigKey.CURRENT);
         }
     }
 
@@ -503,6 +611,8 @@ class NodeDeploymentStopLifetimeTest {
     private static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final NodeId self;
         private final List<List<KVCommand<AetherKey>>> batches = new CopyOnWriteArrayList<>();
+        /// When set, every submission fails with it (the delegate is unavailable); otherwise it succeeds.
+        private volatile Cause failure;
 
         RecordingClusterNode(NodeId self) {
             this.self = self;
@@ -519,7 +629,9 @@ class NodeDeploymentStopLifetimeTest {
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             batches.add(List.copyOf(batch));
 
-            return Promise.success(List.of());
+            return failure == null
+                   ? Promise.success(List.of())
+                   : failure.promise();
         }
     }
 
