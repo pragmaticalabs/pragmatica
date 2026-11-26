@@ -29,6 +29,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.testing.PollUntil;
 
 import java.time.Duration;
 import java.util.List;
@@ -43,7 +44,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -59,6 +59,8 @@ class ClusterTopologyManagerDrainFenceTest {
     private static final HlcTimestamp HLC = new HlcTimestamp(HlcTimestamp.pack(1L, 0), SELF);
     private static final Cause WITNESS_REFUSED = Causes.cause("witness refused");
     private static final Cause SINK_FAILED = Causes.cause("sink failed after the gate ran");
+    private static final NodeId CONTROL = nodeId("node-control").unwrap();
+    private static final Duration DEADLINE = Duration.ofSeconds(10);
     private static final TimeSpan LONG_GRACE = timeSpan(1).hours();
 
     private final Set<NodeId> registry = ConcurrentHashMap.newKeySet();
@@ -87,18 +89,27 @@ class ClusterTopologyManagerDrainFenceTest {
         ctm = newCtm(sink, timeSpan(300).millis());
         var outcome = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
 
+        var start = System.nanoTime();
+
         sink.refuse(0, WITNESS_REFUSED);
         assertThat(outcome.await()).isEqualTo(WITNESS_REFUSED.<Unit>result());
-        settleFor(Duration.ofMillis(900));
+        waitUntilElapsed(start, Duration.ofMillis(200));
 
-        assertThat(clears).as("no timer was armed, so no expiry cleared or reaped anything").isEmpty();
-        assertThat(terminated).isEmpty();
-        assertThat(registry).isEmpty();
+        var control = ctm.drainNode(CONTROL, DrainReason.OPERATOR_COMMAND);
+
+        sink.accept(1);
+        assertThat(control.await().isSuccess()).isTrue();
+        awaitCleared();
+
+        assertThat(clears).as("the control's timer (armed 200 ms after the refusal) expired; a timer armed at the refused decision would have expired first")
+                          .containsExactly(CONTROL);
+        assertThat(terminated).doesNotContain(TARGET);
+        assertThat(registry).doesNotContain(TARGET);
 
         ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
 
         assertThat(sink.requests()).as("a refused attempt left no entry: the next drain opens its own request, never joins")
-                                   .isEqualTo(2);
+                                   .isEqualTo(3);
     }
 
     /// TB4r: the first attempt's gate ran (its timer is armed) and the sink then failed; a re-drain opens a second attempt.
@@ -114,21 +125,20 @@ class ClusterTopologyManagerDrainFenceTest {
 
         sink.acceptThenFail(0, SINK_FAILED);
         assertThat(first.await()).isEqualTo(SINK_FAILED.<Unit>result());
-        settleFor(Duration.ofMillis(600));
+        waitUntilElapsed(start, Duration.ofMillis(600));
 
+        var secondStart = System.nanoTime();
         var second = ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND);
 
         sink.accept(1);
         assertThat(second.await().isSuccess()).isTrue();
-        settleUntil(start, grace.plusMillis(200));
+        awaitCleared();
 
-        assertThat(clears).as("the first attempt's timer expired at +1000 ms, 600 ms before the second attempt's grace ends")
-                          .isEmpty();
-
-        await().atMost(Duration.ofSeconds(4))
-               .until(() -> !clears.isEmpty());
+        var sinceSecondAccepted = Duration.ofNanos(System.nanoTime() - secondStart);
 
         assertThat(clears).containsExactly(TARGET);
+        assertThat(sinceSecondAccepted).as("the first attempt's timer expired 600 ms before the second attempt's grace; the reap came only at the second's own expiry")
+                                       .isGreaterThanOrEqualTo(grace.minusMillis(100));
     }
 
     /// TB4s: a drain of a target already in the registry still arms its grace timer: the arm is not conditioned on the write being fresh.
@@ -142,8 +152,7 @@ class ClusterTopologyManagerDrainFenceTest {
 
         sink.accept(0);
         assertThat(outcome.await().isSuccess()).isTrue();
-        await().atMost(Duration.ofSeconds(3))
-               .until(() -> !clears.isEmpty());
+        awaitCleared();
 
         assertThat(clears).containsExactly(TARGET);
     }
@@ -182,8 +191,8 @@ class ClusterTopologyManagerDrainFenceTest {
 
         var canceller = startThread(() -> ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(TARGET, "worker", HLC)));
 
-        await().atMost(Duration.ofSeconds(5))
-               .until(() -> canceller.getState() == Thread.State.BLOCKED);
+        PollUntil.pollUntil(canceller::getState, state -> state == Thread.State.BLOCKED, DEADLINE)
+                 .assertMet("the cancel is blocked on the manager's monitor");
         assertThat(registry).as("the cancel waits for the write: nothing was cleared yet, nothing was added yet").isEmpty();
 
         releaseWrite.countDown();
@@ -316,17 +325,18 @@ class ClusterTopologyManagerDrainFenceTest {
         return thread;
     }
 
-    /// Lets scheduled work run before an ABSENCE is asserted; each caller states the margin it relies on.
-    private static void settleFor(Duration window) {
-        try {
-            Thread.sleep(window.toMillis());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+    /// Waits on the monotonic clock until `sinceStart` has passed since `startNanos`: a spacing between two steps, not a guess about the
+    /// work: every absence below is asserted against a positive signal (a later timer expiring), never against this wait.
+    private static void waitUntilElapsed(long startNanos, Duration sinceStart) {
+        PollUntil.pollUntil(() -> Duration.ofNanos(System.nanoTime() - startNanos),
+                            elapsed -> elapsed.compareTo(sinceStart) >= 0,
+                            DEADLINE)
+                 .assertMet("the clock reached " + sinceStart.toMillis() + " ms");
     }
 
-    private static void settleUntil(long startNanos, Duration sinceStart) {
-        settleFor(sinceStart.minus(Duration.ofNanos(System.nanoTime() - startNanos)));
+    private void awaitCleared() {
+        PollUntil.pollUntil(() -> clears.size(), count -> count > 0, DEADLINE)
+                 .assertMet("a grace expiry cleared a DRAIN command");
     }
 
     private static MessageRouter.MutableRouter quietRouter() {
