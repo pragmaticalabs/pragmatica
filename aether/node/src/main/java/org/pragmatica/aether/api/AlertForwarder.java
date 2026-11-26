@@ -230,6 +230,11 @@ public class AlertForwarder implements AsyncCloseable {
         return AlertForwarderError.WebhookError.webhookError(url, error).promise();
     }
 
+    /// @return `true` when the forwarder owns a webhook client; for tests
+    boolean hasWebhookClient() {
+        return httpOps.isPresent();
+    }
+
     /// @return the number of retries armed and not yet resolved; for tests
     int pendingRetryCount() {
         return pendingRetries.size();

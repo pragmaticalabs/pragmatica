@@ -155,6 +155,26 @@ class AlertForwarderStopTest {
         assertThat(forwarder.pendingRetryCount()).as("a resolved retry is not kept for the close to sweep").isZero();
     }
 
+    /// Pre-existing behaviour (the constructor made the same decision before #3754), moved into `webhookClient` by this PR and
+    /// pinned here: disabled alerts own no webhook client and send nothing, whatever the webhook section says.
+    @Test
+    void disabledAlerts_createNoWebhookClientAndSendNothing() {
+        var disabled = alertConfig(false);
+        var live = AlertForwarder.alertForwarder(alertConfig(true), OwnerLifetime.ownerLifetime(seam));
+        var off = AlertForwarder.alertForwarder(disabled, OwnerLifetime.ownerLifetime(seam));
+        var offWithClient = AlertForwarder.alertForwarder(disabled, OwnerLifetime.ownerLifetime(seam), Option.some(http));
+
+        try {
+            assertThat(live.hasWebhookClient()).as("control: the same webhook section with alerts enabled owns a client").isTrue();
+            assertThat(off.hasWebhookClient()).as("alerts disabled: no client although the webhook is enabled with urls").isFalse();
+            assertThat(offWithClient.forward(AlertEvent.AlertResolved.resolved("a-8", "test")).isResolved()).isTrue();
+            assertThat(http.sends).as("alerts disabled: no send even through a client").isZero();
+        } finally {
+            live.close();
+            off.close();
+        }
+    }
+
     /// Control for the two tests above: the same failure without a close arms a retry, leaves the forward pending and logs one
     /// WARN, so the resolved promise there and the missing WARN above are the close's doing.
     @Test
@@ -185,10 +205,17 @@ class AlertForwarderStopTest {
     }
 
     private AlertForwarder forwarderWithRetries(int retries) {
-        var webhook = WebhookConfig.webhookConfig(true, List.of("http://127.0.0.1:1/hook"), retries, timeSpan(5).seconds()).unwrap();
-        var config = AlertConfig.alertConfig(true, webhook, EventConfig.eventConfig(true).unwrap(), 0.05).unwrap();
+        return AlertForwarder.alertForwarder(alertConfig(true, retries), OwnerLifetime.ownerLifetime(seam), Option.some(http));
+    }
 
-        return AlertForwarder.alertForwarder(config, OwnerLifetime.ownerLifetime(seam), Option.some(http));
+    private static AlertConfig alertConfig(boolean alertsEnabled) {
+        return alertConfig(alertsEnabled, 2);
+    }
+
+    private static AlertConfig alertConfig(boolean alertsEnabled, int retries) {
+        var webhook = WebhookConfig.webhookConfig(true, List.of("http://127.0.0.1:1/hook"), retries, timeSpan(5).seconds()).unwrap();
+
+        return AlertConfig.alertConfig(alertsEnabled, webhook, EventConfig.eventConfig(true).unwrap(), 0.05).unwrap();
     }
 
     /// Answers each send with the next scripted promise and counts the sends.
