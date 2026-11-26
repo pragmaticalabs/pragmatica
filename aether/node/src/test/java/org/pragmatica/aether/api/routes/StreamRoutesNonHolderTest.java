@@ -36,6 +36,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -218,17 +219,31 @@ class StreamRoutesNonHolderTest {
         assertThat(statusOf(probe, holder)).as("holder").isEqualTo(HttpStatus.NOT_FOUND);
     }
 
-    /// A partition the stream does not declare is the caller's error at any node, not "this node holds no ring".
-    @Test
-    void partition_outOfRange_answers400_onANonHolder() {
+    /// A partition the stream does not declare is the caller's error at any node, not "this node holds no ring". The three
+    /// values are the three edges of `[0, count)`: below it, the first one past it (the count itself), and far past it.
+    @ParameterizedTest
+    @ValueSource(strings = {"-1", "2", "5"})
+    void partition_outsideTheDeclaredRange_answers400_onANonHolder(String partition) {
+        assertRefusedAsUndeclared(ManagementRoute.STREAM_PARTITION, "partitions", partition);
+    }
+
+    /// The same refusal on the read route: `/read/7` of a 2-partition stream is the caller's error (400), not a 503 that
+    /// invites a retry no owner can satisfy.
+    @ParameterizedTest
+    @ValueSource(strings = {"-1", "2", "7"})
+    void read_outsideTheDeclaredRange_answers400_onANonHolder(String partition) {
+        assertRefusedAsUndeclared(ManagementRoute.STREAM_READ, "read", partition);
+    }
+
+    private void assertRefusedAsUndeclared(ManagementRoute route, String literal, String partition) {
         ownerHolds(2, EVENTS);
         servingHoldsMetadataOnly(2);
 
-        var failure = RouteProbe.failureOf(forwardingRoutes(true),
-                                           ManagementRoute.STREAM_PARTITION,
-                                           List.of(NAMESPACE, STREAM, VERSION, "partitions", "5"),
-                                           Map.of());
+        var failure = RouteProbe.failureOf(forwardingRoutes(true), route, List.of(NAMESPACE, STREAM, VERSION, literal, partition), Map.of());
 
+        assertThat(failure).isInstanceOf(ManagementServerError.InvalidPartition.class)
+                           .extracting("requested", "partitionCount")
+                           .containsExactly(Integer.parseInt(partition), 2);
         assertThat(RouteProbe.problemStatus(failure)).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
