@@ -198,6 +198,83 @@ class BasePackageRequiredTest {
         assertRefusedRun(performed(plan, Invocation.lint(Surface.CLI)), refusal);
     }
 
+    /// F2 (#3738): the base package covers a file by package ancestry, never by text: `com.shop` does not cover
+    /// `com.shopping.order`.
+    @Test
+    void basePackageThatIsOnlyATextualPrefixOfTheFiles_refusesTheRoot() throws IOException {
+        var module = module(BUSINESS + "[project]\nbasePackage = \"com.shop\"\n");
+
+        source(module, "main", "com.shopping.order", "Order.java", "package com.shopping.order;\nclass Order {\n}\n");
+        var refusal = refusalOf(plan(module.resolve("src/main/java")));
+
+        assertInstanceOf(ConfigError.BasePackageCoversNoFile.class, refusal);
+        assertEquals("com.shopping.order", ((ConfigError.BasePackageCoversNoFile) refusal).suggestion());
+    }
+
+    /// F3 (#3738): a declared main root that holds no file reads no base package, so it is not refused beside a populated
+    /// root of the same module; the premise (two roots, one of them file-less) is asserted first.
+    @Test
+    void declaredRootWithoutFiles_isNotRefused_besideAPopulatedRoot() throws IOException {
+        var module = module(BUSINESS + "[project]\nbasePackage = \"com.example\"\n");
+        var populated = mainSources(module);
+        var spare = Files.createDirectories(module.resolve("src/main/spare"));
+        var plan = RootResolver.resolve(Request.request(List.of(populated, spare)).withDeclared(Set.of(populated, spare), Set.of()))
+                               .fold(cause -> fail("resolve failed: " + cause.message()), resolved -> resolved);
+
+        assertEquals(2, plan.roots().size());
+        assertEquals(1, plan.roots().stream().filter(root -> root.files().isEmpty()).count());
+        assertNoRefusal(plan);
+    }
+
+    /// F4 (#3738): a run both refused and holding an unparseable file fails with the refusal AND the parse failure.
+    @Test
+    void refusalAndUnparseableFile_bothReachTheFailureText() throws IOException {
+        var module = module(BUSINESS);
+
+        source(module, "main", "com.example.order.place", "Broken.java", "package com.example.order.place;\nclass Broken {{{\n");
+        source(module, "main", "com.example.order.cancel", "Refund.java", SIBLING);
+        var plan = plan(module.resolve("src/main/java"));
+        var refusal = refusalOf(plan);
+        var failure = performed(plan, Invocation.lint(Surface.CLI)).verdict().failure().or("");
+
+        assertTrue(failure.contains(refusal.message()), () -> "refusal missing from: " + failure);
+        assertTrue(failure.contains("could not be read or parsed and were NOT analysed"), () -> "parse failure missing from: " + failure);
+    }
+
+    /// F6 (#3738): the suggested base package is the common prefix segment by segment; segments equal at a later index
+    /// do not extend it: `a.b.c` and `a.x.c` suggest `a`.
+    @Test
+    void suggestion_stopsAtTheFirstSegmentTheFilesDisagreeOn() throws IOException {
+        var module = module(BUSINESS);
+
+        source(module, "main", "a.b.c", "One.java", "package a.b.c;\nclass One {\n}\n");
+        source(module, "main", "a.x.c", "Two.java", "package a.x.c;\nclass Two {\n}\n");
+        var refusal = refusalOf(plan(module.resolve("src/main/java")));
+
+        assertInstanceOf(ConfigError.BasePackageRequired.class, refusal);
+        assertEquals("a", ((ConfigError.BasePackageRequired) refusal).suggestion());
+    }
+
+    /// F7 (#3738): `[lint.rules]` turning one TREE rule off gives `0 of N` for that rule only.
+    @Test
+    void treeRuleSetOff_judgesNoFile_whileTheOtherTreeRuleStillJudgesAll() throws IOException {
+        var root = mainSources(module(BUSINESS + "[project]\nbasePackage = \"com.example\"\n[lint.rules]\nJBCT-TREE-01 = \"off\"\n"));
+        var result = linted(root);
+
+        assertEquals(List.of(TREE_01 + ": judged 0 of 2 file(s)", TREE_02 + ": judged 2 of 2 file(s)"),
+                     texts(result, Level.INFO).stream().filter(text -> text.startsWith("JBCT-TREE-")).toList());
+    }
+
+    /// F8 (#3738): a file in an `excludePackages` package is in N and never in K.
+    @Test
+    void fileInAnExcludedPackage_countsInTheTotalButNotAsJudged() throws IOException {
+        var root = mainSources(module("[lint]\nmode = \"business\"\nexcludePackages = [\"com.example.order.cancel\"]\n[project]\nbasePackage = \"com.example\"\n"));
+        var result = linted(root);
+
+        assertEquals(List.of(TREE_01 + ": judged 1 of 2 file(s)", TREE_02 + ": judged 1 of 2 file(s)"),
+                     texts(result, Level.INFO).stream().filter(text -> text.startsWith("JBCT-TREE-")).toList());
+    }
+
     @Test
     void usableBasePackage_runsTheTreeRules_andPrintsTheirCoverage() throws IOException {
         var root = mainSources(module(BUSINESS + "[project]\nbasePackage = \"com.example\"\n"));

@@ -4,3 +4,4 @@
 - **`JBCT-ARCH-04` (slice-internal imports) and `JBCT-ARCH-01`'s layer-rank check are deleted**; `JBCT-ARCH-01` keeps its domain-framework check. `JBCT-TREE-01` replaces ARCH-04.
 ### Changed (2026-11-25 — #2526)
 - **A `[lint.rules]` key that is no registry ID refuses the configuration load**, naming the key and value; a retired rule names its replacement (`JBCT-ARCH-04` -> `JBCT-TREE-01`, `JBCT-SEAL-02` -> `JBCT-CAUSE-01`). Before, such a key changed nothing silently. `jbct:generate-blueprint` reads the same configuration, so it stops on such a key too. [design intent — unverified: the live-path evidence tags are added by the final lane of #2526]
+- **Migration:** delete a retired key (`JBCT-ARCH-04`, `JBCT-SEAL-02`) from `[lint.rules]`; for a business source root set `[project] basePackage` in `jbct.toml`, or set `[lint] mode = "infrastructure"` for a root that is not business code.

@@ -224,7 +224,28 @@ class PartialConfigTest {
               [lint.rules]
               JBCT-ARCH-04 = "off"
               """).onSuccess(layer -> org.junit.jupiter.api.Assertions.fail("must refuse, captured " + layer))
-                  .onFailure(cause -> assertThat(cause.message()).contains("lint.rules.JBCT-ARCH-04", "retired", "JBCT-TREE-01"));
+                  .onFailure(cause -> assertThat(cause.message()).contains("lint.rules.JBCT-ARCH-04: expected a registered rule ID (this one is retired); use JBCT-TREE-01"));
+    }
+
+    /// F9 (#3738): the other retired rule names its replacement too, not only ARCH-04.
+    @Test
+    void partialConfig_refusesRetiredSeal02_namingJbctCause01() {
+        layer("""
+              [lint.rules]
+              JBCT-SEAL-02 = "off"
+              """).onSuccess(layer -> org.junit.jupiter.api.Assertions.fail("must refuse, captured " + layer))
+                  .onFailure(cause -> assertThat(cause.message()).contains("lint.rules.JBCT-SEAL-02: expected a registered rule ID (this one is retired); use JBCT-CAUSE-01"));
+    }
+
+    /// F11 (#3738): a registry ID is matched exactly; the same ID in another case is no registry ID and is refused.
+    @Test
+    void partialConfig_refusesARuleKeyInTheWrongCase_namingKeyAndValue() {
+        layer("""
+              [lint.rules]
+              jbct-ret-01 = "off"
+              """).onSuccess(layer -> org.junit.jupiter.api.Assertions.fail("must refuse, captured " + layer))
+                  .onFailure(cause -> assertThat(cause.message()).contains("lint.rules.jbct-ret-01", "off")
+                                                                 .contains("a rule ID of the registry"));
     }
 
     @Test

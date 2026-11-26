@@ -72,6 +72,14 @@ class PackageTreeTest {
             assertThat(tree("com.shop", "com.shop.generated.**").own("com.shop.generated.api")).isFalse();
         }
 
+        /// F5 (#3738): an exclude glob is matched whole, never as a prefix: `com.gen` leaves `com.generated` in the tree.
+        @Test
+        void own_isTrue_whenAnExcludeGlobIsOnlyATextualPrefixOfThePackage() {
+            assertThat(tree("com", "com.gen").own("com.generated")).isTrue();
+            assertThat(tree("com", "com.gen").excluded("com.generated")).isFalse();
+            assertThat(tree("com", "com.gen").excluded("com.gen")).isTrue();
+        }
+
         @Test
         void own_isFalse_forTheBarePackageOfAnAnyDepthGlob() {
             assertThat(tree("com.shop", "com.shop.generated.**").own("com.shop.generated")).isFalse();

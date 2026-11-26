@@ -285,7 +285,7 @@ record PartialConfig(PartialFormatter formatter,
 
         private static String unregisteredExpectation(String rule) {
             return RETIRED_RULES.containsKey(rule)
-                   ? "no longer a rule (retired); " + RETIRED_RULES.get(rule)
+                   ? "a registered rule ID (this one is retired); " + RETIRED_RULES.get(rule)
                    : "a rule ID of the registry, e.g. JBCT-RET-01";
         }
 

@@ -98,6 +98,17 @@ class TreeConfigTest {
                                                         .excludeGlobs()).containsExactly("a.b.**", "c.*"));
     }
 
+    /// F1 (#3738): `--mode` / `-Djbct.mode` replaces the mode only; the `[lint.tree] exclude` of the document stays.
+    @Test
+    void overrideMode_keepsTheTreeExcludes() {
+        TomlParser.parse("[lint.tree]\nexclude = [\"a.gen.**\"]\n")
+                  .flatMap(JbctConfig::fromToml)
+                  .flatMap(config -> config.overrideMode(Option.some("infrastructure")))
+                  .onFailure(TreeConfigTest::fail)
+                  .onSuccess(config -> assertThat(config.tree()
+                                                        .excludeGlobs()).containsExactly("a.gen.**"));
+    }
+
     @Test
     void toToml_omitsTheSection_whenThereAreNoExcludes() {
         assertThat(JbctConfig.DEFAULT.toToml()).doesNotContain("lint.tree");
