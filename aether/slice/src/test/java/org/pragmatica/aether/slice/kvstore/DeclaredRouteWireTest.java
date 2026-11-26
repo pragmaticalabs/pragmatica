@@ -19,7 +19,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.RuntimeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRoute;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRouteValue;
-import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
 import io.netty.buffer.Unpooled;
@@ -30,9 +29,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// The key text carries a path template, which holds the separator `/` and the `{id}` braces; the round trip must give the same
 /// key back or the factory must refuse the input. The codec tests run the BINARY path consensus replication uses, over the
-/// registry layered as in production (`NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs())`).
+/// registry the backup tests layer from every slice-side codec set (`BackupFixtures.codec()`), the blueprint's `ResolvedSlice` included.
 class DeclaredRouteWireTest {
-    private static final SliceCodec CODEC = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), KvstoreCodecsSlice.CODECS);
+    private static final SliceCodec CODEC = BackupFixtures.codec();
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:orders-slice:1.2.3").unwrap();
     private static final Artifact OTHER = Artifact.artifact("org.example:inventory-slice:2.0.0").unwrap();
 
