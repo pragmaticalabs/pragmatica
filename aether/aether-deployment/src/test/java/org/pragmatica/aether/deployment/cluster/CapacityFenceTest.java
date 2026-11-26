@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -383,23 +384,21 @@ class CapacityFenceTest {
 
     // ---- TA9: the accessor is one monitor step ----
 
-    /// A flag whose lose-to-gain edge parks the observing thread, inside the accessor, between the edge and the generation increment.
-    private static final class ParkingFlag extends AtomicBoolean {
+    /// The absence counts the gain starts afresh: the first `clear()` (the last effect of the gain edge, inside the accessor) parks the
+    /// observing thread, so a second reader meets the accessor with the gain half done.
+    private static final class ParkingMisses extends ConcurrentHashMap<NodeId, AtomicInteger> {
         final CountDownLatch parked = new CountDownLatch(1);
         final CountDownLatch release = new CountDownLatch(1);
         final AtomicBoolean parkOnce = new AtomicBoolean();
 
-        ParkingFlag() { super(false); }
-
         @Override
-        public boolean getAndSet(boolean next) {
-            var previous = super.getAndSet(next);
+        public void clear() {
+            super.clear();
 
-            if (next && !previous && parkOnce.compareAndSet(false, true)) {
+            if (parkOnce.compareAndSet(false, true)) {
                 parked.countDown();
                 awaitQuietly(release);
             }
-            return previous;
         }
 
         private static void awaitQuietly(CountDownLatch latch) {
@@ -411,33 +410,34 @@ class CapacityFenceTest {
         }
     }
 
-    private CapacityControlledLifecycle withLeading(CapacityControlledLifecycle base, AtomicBoolean flag) {
+    private CapacityControlledLifecycle withMisses(CapacityControlledLifecycle base, ConcurrentHashMap<NodeId, AtomicInteger> misses) {
         return new CapacityControlledLifecycle(base.delegate(), base.self(), base.store(), base.apply(), base.activeLeader(), base.limit(),
             base.initializing(), base.inventoried(), base.inventoryReconciling(), base.activeSources(), base.inventoryCursors(),
-            base.undispatched(), base.dispatchStamps(), base.dispatchMisses(), base.unmatchedSince(), flag, base.leadershipGeneration(),
+            base.undispatched(), base.dispatchStamps(), misses, base.unmatchedSince(), base.leading(), base.leadershipGeneration(),
             base.warningSink(), base.clock(), base.ceiling(), base.nanoClock(), base.applyTimeout());
     }
 
-    /// TA9, deterministic interleaving: thread A takes the lose-to-gain edge and is parked before it counts the gain. Thread B then reads
-    /// the accessor. `activation()` is ONE monitor step, so B cannot finish while A is parked inside it; B's answer, when it arrives, pairs
-    /// "present" with a generation that includes A's gain. Without the monitor B finishes first and answers "present" with generation 0.
+    /// TA9, deterministic interleaving: thread A takes the lose-to-gain edge and is parked inside the accessor, after the gain is counted
+    /// and before the absence counts are cleared. Thread B then reads the accessor. `activation()` is ONE monitor step, so B cannot finish
+    /// while A is parked inside it; B's answer, when it arrives, pairs "present" with a generation that includes A's gain. Without the
+    /// monitor B finishes while A is parked, with the gain half done.
     @Test
     void activation_isOneMonitorStep_aReaderNeverPairsPresentWithAGenerationOlderThanTheGainItFollows() throws Exception {
         initialize(0);
-        var flag = new ParkingFlag();
-        var parking = withLeading(lifecycle, flag);
+        var misses = new ParkingMisses();
+        var parking = withMisses(lifecycle, misses);
         var second = new AtomicReference<Option<Activation>>(Option.none());
         var secondDone = new CountDownLatch(1);
         var first = Thread.ofPlatform().start(parking::activation);
 
-        assertThat(flag.parked.await(5, TimeUnit.SECONDS)).as("thread A is parked on the gain edge").isTrue();
+        assertThat(misses.parked.await(5, TimeUnit.SECONDS)).as("thread A is parked on the gain edge").isTrue();
         var reader = Thread.ofPlatform().start(() -> {
             second.set(parking.activation());
             secondDone.countDown();
         });
 
         var finishedWhileParked = secondDone.await(250, TimeUnit.MILLISECONDS);
-        flag.release.countDown();
+        misses.release.countDown();
         first.join(5_000);
         reader.join(5_000);
 
