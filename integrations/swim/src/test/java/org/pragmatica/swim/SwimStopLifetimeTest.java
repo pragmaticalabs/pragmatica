@@ -34,9 +34,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
+import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.Announce;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimMessage.PingReq;
@@ -313,8 +315,152 @@ class SwimStopLifetimeTest {
         }
         gate.release.countDown();
         attempt.join(10_000);
+        assertThat(attempt.isAlive()).as("the attempt finished once released").isFalse();
 
         return fixture.transport.countTo(Announce.class, SEED_2);
+    }
+
+    // ---- the probe timeout of a real tick (#3763 x11) ----
+
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void probeTimeout_scheduledByARealTick_sendsNoPingReqAfterTheStop() {
+        assertThat(pingReqsFromTheTimeoutOfARealTick(false)).as("control: the timeout of a tick's probe, fired without a stop, sends PingReqs")
+                                                            .isEqualTo(2);
+        assertThat(pingReqsFromTheTimeoutOfARealTick(true)).as("the timeout of a tick's probe is on the tick's lifetime: after the stop it sends no PingReq")
+                                                           .isZero();
+    }
+
+    /// Unlike [#threeMembersOneProbe], the probe is sent by the tick the protocol armed itself, so the lifetime the tick hands to
+    /// `probeTarget` is the one under test; `probeRoundForTest` reads the protocol's current lifetime and cannot see a wrong hand-off.
+    private static long pingReqsFromTheTimeoutOfARealTick(boolean stop) {
+        var fixture = new Fixture(false);
+
+        fixture.protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
+        fixture.protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
+        fixture.protocol.putMemberForTest(NODE_C, ADDR_C, MemberState.ALIVE);
+        assertThat(fixture.protocol.start().isSuccess()).as("the protocol started").isTrue();
+        fixture.scheduler.periodic().wrapper().run();
+        var timeout = fixture.scheduler.oneShot();
+
+        fixture.transport.sent.clear();
+        if (stop) {
+            fixture.protocol.stop();
+        }
+        timeout.wrapper().run();
+
+        return fixture.transport.count(PingReq.class);
+    }
+
+    // ---- the membership-view request and the announce cap ----
+
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void requestMembershipView_afterTheStop_sendsNothing() {
+        assertThat(announcesFromAMembershipViewRequest(false)).as("control: a membership-view request without a stop reaches the target")
+                                                              .isEqualTo(1);
+        assertThat(announcesFromAMembershipViewRequest(true)).as("a membership-view request after the stop is refused")
+                                                             .isZero();
+    }
+
+    private static long announcesFromAMembershipViewRequest(boolean stop) {
+        var fixture = new Fixture(false);
+
+        if (stop) {
+            fixture.protocol.stop();
+        }
+        fixture.protocol.requestMembershipView(SELF_INFO, "c", List.of(SEED_1));
+
+        return fixture.transport.count(Announce.class);
+    }
+
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void announceLoop_atMaxAttempts_cancelsItself() {
+        var fixture = new Fixture(false);
+
+        fixture.protocol.announceJoin(SELF_INFO, "c", 1L, TOKEN, List.of(SEED_1));
+        var loop = fixture.scheduler.periodic();
+
+        for (var attempt = 1; attempt < 60; attempt++) {
+            loop.wrapper().run();
+        }
+        assertThat(loop.future().isCancelled()).as("control: the loop is still armed after 59 attempts").isFalse();
+        loop.wrapper().run();
+
+        assertThat(fixture.transport.count(Announce.class)).as("instrument: one ANNOUNCE per attempt").isEqualTo(60);
+        assertThat(loop.future().isCancelled()).as("the 60th attempt cancels the loop itself").isTrue();
+    }
+
+    // ---- restart ----
+
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void restart_probeInFlightAtTheStop_doesNotGateTheHintFlooredProbe() {
+        assertThat(hintProbesAfterRestart(false)).as("control: with no probe in flight at the stop, the hint-floored suspect is probed")
+                                                 .isEqualTo(1);
+        assertThat(hintProbesAfterRestart(true)).as("a probe in flight at the stop is not a pending probe of the next activation")
+                                                .isEqualTo(1);
+    }
+
+    /// The peer answers the first tick's probe (so it has been seen healthy), the stop ends the lifetime with the
+    /// second tick's probe still pending (`inFlight`), the protocol restarts and a transport hint then floors the peer's
+    /// suspicion: [SwimProtocol#probeFlooredSuspect] probes it only when no probe of it is pending.
+    private static long hintProbesAfterRestart(boolean inFlight) {
+        var fixture = new Fixture(false);
+
+        fixture.protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
+        assertThat(fixture.protocol.start().isSuccess()).as("the protocol started").isTrue();
+        var tick = fixture.scheduler.periodic();
+
+        tick.wrapper().run();
+        fixture.protocol.onMessage(ADDR_A, Ack.ack(NODE_A, fixture.transport.lastPingSequence(), List.of()));
+        if (inFlight) {
+            tick.wrapper().run();
+        }
+        assertThat(fixture.protocol.stop().isSuccess()).as("the protocol stopped").isTrue();
+        assertThat(fixture.protocol.start().isSuccess()).as("the protocol restarted").isTrue();
+        fixture.transport.sent.clear();
+        fixture.protocol.recordTransportHint(NODE_A,
+                                             new TransportObservation.PeerUnreachable(NODE_A,
+                                                                                      Causes.cause("ClusterSync missed pongs"),
+                                                                                      TransportObservation.HintOrigin.PEER_UNRESPONSIVE));
+
+        return fixture.transport.countTo(Ping.class, ADDR_A);
+    }
+
+    /// The lifetime renewal end to end: the stop cancels the first activation's tick, the restart arms a second one on a
+    /// fresh lifetime, the first tick's wrapper stays dead, the second tick's probe and its timeout run, and the second stop
+    /// ends the renewed lifetime too.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void restart_renewsTheLifetime_theOldTickStaysDeadAndTheNewOneEndsWithTheNextStop() {
+        var fixture = new Fixture(false);
+
+        fixture.protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
+        fixture.protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
+        fixture.protocol.putMemberForTest(NODE_C, ADDR_C, MemberState.ALIVE);
+        assertThat(fixture.protocol.start().isSuccess()).as("the protocol started").isTrue();
+        var oldTick = fixture.scheduler.periodicAt(0);
+
+        fixture.protocol.stop();
+        assertThat(oldTick.future().isCancelled()).as("the stop cancelled the first activation's tick").isTrue();
+        assertThat(fixture.protocol.start().isSuccess()).as("the protocol restarted").isTrue();
+        assertThat(fixture.scheduler.periodicCount()).as("the restart armed a second tick").isEqualTo(2);
+        var newTick = fixture.scheduler.periodicAt(1);
+
+        oldTick.wrapper().run();
+        assertThat(fixture.transport.count(Ping.class)).as("the first activation's tick stays dead after the restart").isZero();
+        newTick.wrapper().run();
+        assertThat(fixture.transport.count(Ping.class)).as("the renewed lifetime's tick probes").isEqualTo(1);
+        fixture.scheduler.oneShot().wrapper().run();
+        assertThat(fixture.transport.count(PingReq.class)).as("the renewed lifetime's probe timeout runs").isEqualTo(2);
+
+        var reArmed = fixture.scheduler.lastOneShot();
+
+        fixture.protocol.stop();
+        reArmed.wrapper().run();
+        assertThat(fixture.listener.suspects).as("the second stop ended the renewed lifetime: its re-armed timeout raises no suspicion").isEmpty();
     }
 
     // ---- fixtures ----
@@ -383,6 +529,7 @@ class SwimStopLifetimeTest {
         public void close() throws InterruptedException {
             release.countDown();
             holder.join(10_000);
+            assertThat(holder.isAlive()).as("the holder finished once released").isFalse();
         }
     }
 
@@ -418,6 +565,16 @@ class SwimStopLifetimeTest {
 
         long count(Class<? extends SwimMessage> type) {
             return sent.stream().filter(entry -> type.isInstance(entry.message())).count();
+        }
+
+        long lastPingSequence() {
+            synchronized (sent) {
+                return sent.stream()
+                           .filter(entry -> entry.message() instanceof Ping)
+                           .map(entry -> ((Ping) entry.message()).sequence())
+                           .reduce((_, later) -> later)
+                           .orElseThrow();
+            }
         }
 
         long countTo(Class<? extends SwimMessage> type, InetSocketAddress target) {
@@ -475,6 +632,18 @@ class SwimStopLifetimeTest {
 
         Task periodic() {
             return only(task -> task.period().isPresent());
+        }
+
+        Task periodicAt(int index) {
+            synchronized (tasks) {
+                return tasks.stream().filter(task -> task.period().isPresent()).toList().get(index);
+            }
+        }
+
+        int periodicCount() {
+            synchronized (tasks) {
+                return (int) tasks.stream().filter(task -> task.period().isPresent()).count();
+            }
         }
 
         Task oneShot() {

@@ -695,7 +695,17 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Start the protocol: begin periodic probing on a lifetime that [#stop] ends.
     /// First tick delayed by startupDelay to allow all TCP connections to establish after quorum.
+    ///
+    /// #3754: a restart begins with no pending probe of the previous lifetime. The enforcer is this method: once the
+    /// new activation is armed it queues [#sweepEndedLifetimeProbes] on the state executor. It is queued AFTER the
+    /// lifecycle lock is released, because the executor of a quiescing test protocol waits for quiet and a drainer
+    /// blocked on that lock would never let it; the sweep is still race-free there, since each pending probe names the
+    /// lifetime that sent it and only an ended one is removed, so a probe of the new lifetime is never touched.
     public Result<SwimProtocol> start() {
+        return arm().onSuccess(_ -> stateExecutor.execute(this::sweepEndedLifetimeProbes));
+    }
+
+    private Result<SwimProtocol> arm() {
         synchronized (lifecycleLock) {
             if (tickFuture.get().isPresent()) {
                 return SwimError.General.PROTOCOL_ALREADY_RUNNING.result();
@@ -737,6 +747,16 @@ public final class SwimProtocol implements SwimMessageHandler {
 
             return Result.success(this);
         }
+    }
+
+    /// Drop every pending probe sent under a lifetime that has ended. Its timeout was cancelled (or refused) by the end,
+    /// so nothing else removes it, and [#noPendingProbeOf] would read it as a live probe of the peer and gate
+    /// [#probeFlooredSuspect] for the whole new activation. Relay entries are not swept: they gate nothing and age out in
+    /// [#expireSuspectMembers].
+    private void sweepEndedLifetimeProbes() {
+        requireConfined("sweepEndedLifetimeProbes");
+        pendingProbes.values().removeIf(probe -> probe.lifetime()
+                                                      .isEnded());
     }
 
     /// The live lifetime of this activation: the current one, or a fresh one when [#stop] ended it. Called with
@@ -1372,7 +1392,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
         lastProbedAt.put(target.nodeId(), probeOrdinal.incrementAndGet());
         pendingProbes.put(seq,
-                          PendingProbe.pendingProbe(target.nodeId(), System.currentTimeMillis(), false));
+                          PendingProbe.pendingProbe(target.nodeId(), System.currentTimeMillis(), false, lt));
         // A failed probe SEND is local trouble (Wave-6 Lifeguard): this node could not even
         // get the datagram out, so it is the likely degraded party.
         transport.send(target.address(),
@@ -2051,7 +2071,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void sendIndirectProbes(long seq, PendingProbe probe, OwnerLifetime lt) {
         requireConfined("sendIndirectProbes");
         pendingProbes.put(seq,
-                          PendingProbe.pendingProbe(probe.targetId(), probe.startTime(), true));
+                          PendingProbe.pendingProbe(probe.targetId(), probe.startTime(), true, probe.lifetime()));
         var others = selectRandomOtherMembers(probe.targetId(), config.indirectProbes());
         var pingReq = PingReq.pingReq(selfId, probe.targetId(), seq);
 
@@ -3798,10 +3818,14 @@ public final class SwimProtocol implements SwimMessageHandler {
         piggybackBuffer.addUpdate(update);
     }
 
-    /// Pending probe tracking: which node is being probed and whether indirect probes were sent.
-    record PendingProbe(NodeId targetId, long startTime, boolean indirectSent) {
-        static PendingProbe pendingProbe(NodeId targetId, long startTime, boolean indirectSent) {
-            return new PendingProbe(targetId, startTime, indirectSent);
+    /// Pending probe tracking: which node is being probed, whether indirect probes were sent, and the lifetime whose
+    /// timeout owns the entry (#3754: [#sweepEndedLifetimeProbes] removes the entries of an ended one).
+    record PendingProbe(NodeId targetId, long startTime, boolean indirectSent, OwnerLifetime lifetime) {
+        static PendingProbe pendingProbe(NodeId targetId,
+                                         long startTime,
+                                         boolean indirectSent,
+                                         OwnerLifetime lifetime) {
+            return new PendingProbe(targetId, startTime, indirectSent, lifetime);
         }
     }
 
