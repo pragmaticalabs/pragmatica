@@ -83,10 +83,14 @@ class StreamReplicationStopBootTest {
         node = null;
 
         assertThat(executor.isShutdown()).as("the stop shut the backfill executor").isTrue();
-        assertThat(backfill.backfill(STREAM, PARTITION).await(timeSpan(10).seconds()).fold(cause -> cause == BackfillError.General.STOPPED,
-                                                                                            _ -> false))
-            .as("the stop closed the backfill: a call after it is refused with the stopped cause")
-            .isTrue();
+        assertThat(refusedAsStopped(backfill)).as("the stop closed the backfill: a call after it is refused with the stopped cause")
+                                              .isTrue();
+    }
+
+    private static boolean refusedAsStopped(PartitionBackfill backfill) {
+        return backfill.backfill(STREAM, PARTITION)
+                       .await(timeSpan(10).seconds())
+                       .fold(cause -> cause == BackfillError.General.STOPPED, _ -> false);
     }
 
     /// The node record's `streamReplicationShutdown` component: the Runnable `AetherNode.stop` runs after the partition manager's close.

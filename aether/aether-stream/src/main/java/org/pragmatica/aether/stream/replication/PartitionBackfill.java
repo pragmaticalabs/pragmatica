@@ -416,12 +416,12 @@ public final class PartitionBackfill {
     /// with a scheduler it fires by hand, so the refusal hold and the idle watch run when the test says. Public so that the node
     /// module's stop test can do the same (#3754 F3); production builds through the factories below, whose lifetime is the shared scheduler's.
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
-                                               AlignedRecovery partitionRecovery,
-                                               CatchupTransport transport,
-                                               ReplicationTransport replicationTransport,
-                                               NodeId self,
-                                               TimeSpan flightBound,
-                                               OwnerLifetime lifetime) {
+                                                      AlignedRecovery partitionRecovery,
+                                                      CatchupTransport transport,
+                                                      ReplicationTransport replicationTransport,
+                                                      NodeId self,
+                                                      TimeSpan flightBound,
+                                                      OwnerLifetime lifetime) {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
@@ -852,7 +852,6 @@ public final class PartitionBackfill {
     @Contract
     private void rerun(PartitionKey key) {
         var flight = Flight.flight();
-
         // #3754 (N): the pull a timer body past the lifetime's read would start (a wire read, in-memory replica rows and the local
         // WAL, no write another node also makes) is refused by `fly`, which abandons this flight once the stop is visible.
         if (inFlight.putIfAbsent(key, flight) == null) {

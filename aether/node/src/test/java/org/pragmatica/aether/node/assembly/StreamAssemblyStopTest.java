@@ -137,8 +137,12 @@ class StreamAssemblyStopTest {
 
         assertThat(pulls).as("the hold's timer was ended by the stop: no re-run at the hold's end").hasSize(1);
         assertThat(backfillExecutor.isShutdown()).as("the stop still shuts the backfill executor").isTrue();
-        assertThat(backfill.backfill(STREAM, PARTITION).await(AWAIT).fold(cause -> cause == BackfillError.General.STOPPED, _ -> false))
-            .as("the stop closed the backfill: a call after it is refused as stopped")
-            .isTrue();
+        assertThat(refusedAsStopped(backfill)).as("the stop closed the backfill: a call after it is refused as stopped").isTrue();
+    }
+
+    private static boolean refusedAsStopped(PartitionBackfill backfill) {
+        return backfill.backfill(STREAM, PARTITION)
+                       .await(AWAIT)
+                       .fold(cause -> cause == BackfillError.General.STOPPED, _ -> false);
     }
 }
