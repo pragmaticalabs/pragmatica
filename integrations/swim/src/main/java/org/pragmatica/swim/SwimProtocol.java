@@ -4366,6 +4366,12 @@ public final class SwimProtocol implements SwimMessageHandler {
         return option(addressPins.get(peer));
     }
 
+    /// Test-only: the number of probes pending now, read on the state executor (#3763: the restart sweep keeps a probe of the
+    /// current lifetime and drops one of an ended lifetime).
+    int pendingProbeCountForTest() {
+        return callForTest(pendingProbes::size);
+    }
+
     /// Test-only: current Wave-6 Lifeguard local-health-multiplier score.
     int lhmScoreForTest() {
         return lhmScore.get();

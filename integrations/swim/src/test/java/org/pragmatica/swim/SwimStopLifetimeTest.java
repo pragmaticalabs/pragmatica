@@ -463,6 +463,32 @@ class SwimStopLifetimeTest {
         assertThat(fixture.listener.suspects).as("the second stop ended the renewed lifetime: its re-armed timeout raises no suspicion").isEmpty();
     }
 
+    /// The sweep ([SwimProtocol#sweepEndedLifetimeProbes]) is queued by `start()` AFTER `arm()`, so a tick of the new lifetime
+    /// can register its probe first. Production order: a probe of the first lifetime is in flight at the stop; the restart arms
+    /// a tick that is dispatched at once (executor held, so it is queued before the sweep); the tick probes under the new
+    /// lifetime; then the sweep runs. It must drop only the old probe: exactly one probe stays pending.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void restart_sweepRunsAfterANewLifetimeProbe_dropsOnlyTheEndedLifetimesProbe() throws InterruptedException {
+        var fixture = new Fixture(true);
+
+        fixture.protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
+        assertThat(fixture.protocol.start().isSuccess()).as("the protocol started").isTrue();
+        fixture.scheduler.periodic().wrapper().run();
+        fixture.protocol.onStateExecutorForTest(() -> {});
+        assertThat(fixture.protocol.pendingProbeCountForTest()).as("control: the first lifetime's probe is in flight").isEqualTo(1);
+        assertThat(fixture.protocol.stop().isSuccess()).as("the protocol stopped").isTrue();
+        fixture.scheduler.dispatchNextPeriodicAtOnce = true;
+        try (var hold = new ExecutorHold(fixture.protocol)) {
+            assertThat(fixture.protocol.start().isSuccess()).as("the protocol restarted").isTrue();
+        }
+        fixture.protocol.onStateExecutorForTest(() -> {});
+
+        assertThat(fixture.transport.count(Ping.class)).as("control: the new lifetime's tick probed before the sweep").isEqualTo(2);
+        assertThat(fixture.protocol.pendingProbeCountForTest()).as("the old probe is swept and the new lifetime's probe is kept")
+                                                               .isEqualTo(1);
+    }
+
     // ---- fixtures ----
 
     private static SwimConfig config() {
@@ -620,12 +646,18 @@ class SwimStopLifetimeTest {
         record Task(Runnable wrapper, TimeSpan delay, Option<TimeSpan> period, FakeFuture future) {}
 
         private final List<Task> tasks = Collections.synchronizedList(new ArrayList<>());
+        /// When set, the next periodic enqueue fires its wrapper at once, as a tick that comes due the moment it is armed.
+        volatile boolean dispatchNextPeriodicAtOnce;
 
         @Override
         public ScheduledFuture<?> enqueue(Runnable wrapper, TimeSpan initialDelay, Option<TimeSpan> period) {
             var future = new FakeFuture();
 
             tasks.add(new Task(wrapper, initialDelay, period, future));
+            if (period.isPresent() && dispatchNextPeriodicAtOnce) {
+                dispatchNextPeriodicAtOnce = false;
+                wrapper.run();
+            }
 
             return future;
         }
