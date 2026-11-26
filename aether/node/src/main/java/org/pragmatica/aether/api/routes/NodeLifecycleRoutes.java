@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -95,8 +96,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// fixtures that wire no slice ownership (they keep the budget-only admission they always had).
     private final Option<SliceFloor> sliceFloor;
     /// Targets whose operator drain the slice floor refused and that have not been admitted since: the refusal
-    /// event fires on entry, the recovery event on exit. Touched only inside the synchronized admission.
-    private final Set<String> floorRefusedTargets = new HashSet<>();
+    /// event fires on entry, the recovery event on exit. Entered inside the synchronized admission; left by the recovery notice,
+    /// which runs in the outcome continuation of an accepted request (or by the departure task, under the monitor), so the set is
+    /// concurrent and the removal is the atomic claim of the one request that reports the recovery.
+    private final Set<String> floorRefusedTargets = ConcurrentHashMap.newKeySet();
 
     /// The slice-floor guard the operator drain/shutdown routes consult (#1720), and the sink through which a
     /// FORCED breach is reported. `violations` is [SliceOwnershipQuery#minAvailableDrainViolations]: applied to
@@ -526,25 +529,29 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return refuseLeader(node, requireReady).flatMap(_ -> checkDisruptionBudgetForTarget(node.id(),
                                                                                             node))
                            .flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
-                           .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
-                           .map(budget -> enqueueOperatorDrain(node,
-                                                               budget.message(),
-                                                               requireReady));
+                           .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(notices -> enqueueOperatorDrain(node,
+                                                                                                                             budget.message(),
+                                                                                                                             requireReady,
+                                                                                                                             notices)));
     }
 
     /// #1720: refuse, 409, an operator drain or shutdown that would leave a hosted slice below its `minAvailable`
     /// ACTIVE instances, with `remaining = counted members - pending drains - target` (the automatic drain's rule,
     /// [SliceOwnershipQuery#minAvailableDrainGuard]; workers are members here, slices run on them). `force`
     /// overrides, and a forced breach raises an operator warning naming every slice, so it is never silent.
-    private Result<org.pragmatica.lang.Unit> checkSliceFloor(NodeId node, boolean drain, boolean force) {
-        return sliceFloor.fold(() -> Result.success(org.pragmatica.lang.Unit.unit()),
+    ///
+    /// The result is the warnings the request owes, as a notice: nothing is raised for an admitted request until its commit is
+    /// accepted ([#enqueueOperatorDrain]), so a refused drain raises and returns none. The refusal event of a request the floor
+    /// itself refuses is raised here: that request is the refusal.
+    private Result<Runnable> checkSliceFloor(NodeId node, boolean drain, boolean force) {
+        return sliceFloor.fold(() -> Result.success(NodeLifecycleRoutes::noNotices),
                                floor -> applySliceFloor(floor, node, drain, force));
     }
 
-    private Result<org.pragmatica.lang.Unit> applySliceFloor(SliceFloor floor,
-                                                             NodeId node,
-                                                             boolean drain,
-                                                             boolean force) {
+    @Contract
+    private static void noNotices() {}
+
+    private Result<Runnable> applySliceFloor(SliceFloor floor, NodeId node, boolean drain, boolean force) {
         var remaining = new HashSet<>(nodeSupplier.get().membershipFsm().countedMembers());
         var tracked = nodeSupplier.get().membershipFsm().memberStates();
 
@@ -554,7 +561,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
             // capacity any more, so a "breach" read from the artifact entries it still carries is not caused by this
             // request. The floor protects the cluster from a departure, and this node has already departed. No refusal
             // is raised or recorded, so repeating the request cannot alternate refusal and recovery events (#1720).
-            return Result.success(org.pragmatica.lang.Unit.unit());
+            return Result.success(NodeLifecycleRoutes::noNotices);
         }
 
         remaining.removeAll(drainPort.pending());
@@ -565,9 +572,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
                         : "shutdown";
 
         if (breaches.isEmpty()) {
-            raiseFloorRecovery(floor, node, operation, "the floor cleared");
-
-            return Result.success(org.pragmatica.lang.Unit.unit());
+            return Result.success(recoveryNotice(floor, node, operation, "the floor cleared"));
         }
 
         if (!force) {
@@ -585,6 +590,24 @@ public final class NodeLifecycleRoutes implements RouteSource {
             return new SliceFloorBreached(node.id(), operation, breaches).result();
         }
 
+        return Result.success(forcedBreachNotice(floor, node, operation, forcingPrincipal(), describe(breaches)));
+    }
+
+    private Runnable recoveryNotice(SliceFloor floor, NodeId node, String operation, String how) {
+        return () -> raiseFloorRecovery(floor, node, operation, how);
+    }
+
+    /// The principal and the breach text are read here, in the admission: the notice runs in the commit's continuation, where the
+    /// request's security context is no longer bound.
+    private Runnable forcedBreachNotice(SliceFloor floor,
+                                        NodeId node,
+                                        String operation,
+                                        String principal,
+                                        String breaches) {
+        return () -> raiseForcedBreach(floor, node, operation, principal, breaches);
+    }
+
+    private void raiseForcedBreach(SliceFloor floor, NodeId node, String operation, String principal, String breaches) {
         raiseFloorRecovery(floor, node, operation, "forced past the floor");
         OperatorWarnings.raise(LOG,
                                floor.warnings(),
@@ -593,10 +616,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                "Forced {} of node {} by {} breaches the slice floor: {}",
                                operation,
                                node.id(),
-                               forcingPrincipal(),
-                               describe(breaches));
-
-        return Result.success(org.pragmatica.lang.Unit.unit());
+                               principal,
+                               breaches);
     }
 
     /// Who forced the request, for the audit trail of a forced breach: the authenticated management principal bound
@@ -609,7 +630,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     /// The recovery counterpart of the refusal event: only when this target WAS refused, and once (the set is
-    /// guarded by the same monitor as admission, so a transition is reported by exactly one request).
+    /// the set's atomic removal claims the transition for exactly one request).
     private void raiseFloorRecovery(SliceFloor floor, NodeId node, String operation, String how) {
         raiseFloorRecovery(floor, node.id(), operation, how);
     }
@@ -652,11 +673,12 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     /// The port named the target: a request in flight answers with its commit outcome. With none left the request ended between the
     /// two reads, so the target is read again: registered answers success, otherwise the full admission runs, with the budget and the
-    /// floor. Asking the port again instead would start a request that skipped both.
+    /// floor. Asking the port again instead would start a request that skipped both. The joined request's refusal is the port's raw
+    /// cause, answered here as the [HttpError] of [#drainRefusal(Cause)], the same one an opened request's refusal is (R-B2-1).
     private Promise<Unit> awaitPending(NodeId node) {
         return drainPort.inFlight(node)
                         .fold(() -> admitUnlessUnderWay(node),
-                              promise -> promise);
+                              promise -> promise.mapError(NodeLifecycleRoutes::drainRefusal));
     }
 
     private Promise<Unit> admitUnlessUnderWay(NodeId node) {
@@ -778,15 +800,19 @@ public final class NodeLifecycleRoutes implements RouteSource {
                           .result();
     }
 
-    /// The outcome is the commit's: "initiated" is reported, audited and emitted only once the port's request succeeded, and a
-    /// refusal is audited as "not queued" and answered as an [HttpError] of [#drainRefusal(Cause)].
-    private Promise<TransitionResult> enqueueOperatorDrain(NodeId node, String guardNote, boolean requireReady) {
+    /// The outcome is the commit's: "initiated" is reported, audited and emitted, and the floor's warnings raised, only once the
+    /// port's request succeeded, and a refusal is audited as "not queued" and answered as an [HttpError] of [#drainRefusal(Cause)].
+    private Promise<TransitionResult> enqueueOperatorDrain(NodeId node,
+                                                           String guardNote,
+                                                           boolean requireReady,
+                                                           Runnable floorNotices) {
         return drainPort.request(node)
                         .map(_ -> initiatedResult(node, guardNote, requireReady))
                         .onSuccess(result -> auditAndEmitLifecycleTransition(result,
                                                                              requireReady
                                                                              ? NodeReportedState.DRAINING.name()
                                                                              : STOPPED_STATE))
+                        .onSuccessRun(floorNotices)
                         .onFailure(cause -> auditNotQueued(node, requireReady, cause))
                         .mapError(NodeLifecycleRoutes::drainRefusal);
     }
