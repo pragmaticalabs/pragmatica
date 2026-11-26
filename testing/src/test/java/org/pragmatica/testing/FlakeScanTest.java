@@ -464,7 +464,9 @@ class FlakeScanTest {
         shapes.put("closed in finally", List.of("var socket = new DatagramSocket(0);", "try {", "    return socket.getLocalPort();", "} finally {", "    socket.close();", "}"));
         shapes.put("bound unbound socket", List.of("var socket = new ServerSocket();", "socket.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));", "var port = socket.getLocalPort();", "socket.close();"));
         shapes.put("channel", List.of("try (var channel = ServerSocketChannel.open().bind(new InetSocketAddress(0))) {", "    return ((InetSocketAddress) channel.getLocalAddress()).getPort();", "}"));
-        shapes.forEach((name, lines) -> assertThat(portZeroLines(body(lines.toArray(String[]::new)))).as(name).hasSize(1));
+        for (var shape : shapes.entrySet()) {
+            assertThat(portZeroLines(body(shape.getValue().toArray(String[]::new)))).as(shape.getKey()).hasSize(1);
+        }
         assertThat(portZeroLines(body("try (var socket = new java.net.DatagramSocket(0)) {", "    return socket.getLocalPort();", "}"))).as("the QuicClusterNetworkLifecycleTest shape").containsExactly(3);
     }
 
