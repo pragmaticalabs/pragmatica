@@ -2,6 +2,7 @@ package org.pragmatica.jbct.format.flow;
 
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.IntStream;
 
@@ -149,10 +150,12 @@ final class CommentCursor {
         private void checkOrder() {
             if (frontier < comments.length && comments[frontier] != t && violation.isEmpty()) {
                 violation = Option.some(new Violation(lineOf(t),
-                                                      "comment `%s` (input line %d) would be printed before the earlier comment `%s` (input line %d)".formatted(first(t),
-                                                                                                                                                                lineOf(t),
-                                                                                                                                                                first(comments[frontier]),
-                                                                                                                                                                lineOf(comments[frontier]))));
+                                                      String.format(Locale.ROOT,
+                                                                    "comment `%s` (input line %d) would be printed before the earlier comment `%s` (input line %d)",
+                                                                    first(t),
+                                                                    lineOf(t),
+                                                                    first(comments[frontier]),
+                                                                    lineOf(comments[frontier]))));
             }
         }
     }
