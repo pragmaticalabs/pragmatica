@@ -1609,6 +1609,35 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// The directive receipt of one node id (#3828): the committed fact that the cluster FSM issued an activation directive to that node id, kept
+    /// after the directive itself is gone. A [RuntimeKey], read only by the cluster FSM and not replicated to workers. Inert at this lane: nothing
+    /// writes it.
+    record DirectiveReceiptKey(NodeId nodeId) implements RuntimeKey {
+        private static final String PREFIX = "directive-receipt/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static DirectiveReceiptKey directiveReceiptKey(NodeId nodeId) {
+            return new DirectiveReceiptKey(nodeId);
+        }
+
+        public static Result<DirectiveReceiptKey> directiveReceiptKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return DIRECTIVE_RECEIPT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return NodeId.nodeId(key.substring(PREFIX.length())).map(DirectiveReceiptKey::new);
+        }
+    }
+
     /// The lifecycle record of one node id (O3, owner ruling c37a7c11e2): its identity facet (the admitted process) and its capacity facet (the
     /// reservation) under one key, never deleted. A [RuntimeKey], classified as [CapacityReservationKey] is, which this record replaces at the O3-4 flip;
     /// the identity LEDGER on each core's disk, not the KV, is what survives the loss of every holder.
@@ -1647,6 +1676,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> ARTIFACT_JUDGMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-judgment key format: %s");
 
     Fn1<Cause, String> NODE_DEPARTURE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-departure key format: %s");
+
+    Fn1<Cause, String> DIRECTIVE_RECEIPT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid directive-receipt key format: %s");
 
     Fn1<Cause, String> NODE_IDENTITY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-identity key format: %s");
 

@@ -885,6 +885,9 @@ public interface SystemTags {
         pin(table, 3071, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue.Election");
         pin(table, 3072, "org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionStateValue.PartitionState");
         pin(table, 3073, "org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionStateKey");
+        // #3828 receipt redesign, lane 1: the directive receipt's key. Inside the k3828 reservation 3120..3123 of wire-tag-ranges.txt;
+        // 3121 is held for DirectiveReceiptValue (lane 2).
+        pin(table, 3120, "org.pragmatica.aether.slice.kvstore.AetherKey.DirectiveReceiptKey");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

@@ -147,6 +147,7 @@ class ReplicaFilterTripwireTest {
         assertThat(filter.excludes(instanceOf(AetherKey.ArtifactJudgmentKey.class))).as("cluster FSM only").isTrue();
         assertThat(filter.excludes(instanceOf(AetherKey.NodeDepartureKey.class))).as("INCLUDED (F5a, know 63ff3388bd): a worker's traffic feed binds departures").isFalse();
         assertThat(filter.excludes(instanceOf(AetherKey.FsmWarningKey.class))).as("cluster FSM only (#2834)").isTrue();
+        assertThat(filter.excludes(instanceOf(AetherKey.DirectiveReceiptKey.class))).as("cluster FSM only (#3828)").isTrue();
     }
 
     @Disabled("enable at W3/W4 (worker replica): when the worker holds a full replica minus the exclusion set, re-point workerView at the filtered replica")
@@ -258,7 +259,7 @@ class ReplicaFilterTripwireTest {
     }
 
     /// TW-O15, the full classification: every `AetherKey` class in the sealed hierarchy, not a sample, is classified, and the EXCLUDE set is
-    /// exactly the stream cursor checkpoints, the cluster configuration, the three cluster-FSM-only keys (P3-D, F3; #2834) and the drain command (#3413). Mutation: move
+    /// exactly the stream cursor checkpoints, the cluster configuration, the cluster-FSM-only keys (P3-D, F3; #2834; the directive receipt, #3828) and the drain command (#3413). Mutation: move
     /// any other class (say `SliceTargetKey`) to EXCLUDE, and the set has an extra member.
     @Test
     void everyAetherKeyClass_isIncluded_exceptTheCheckpointsTheConfigurationAndTheClusterFsmKeys() {
@@ -272,7 +273,7 @@ class ReplicaFilterTripwireTest {
                            .hasSizeGreaterThan(60)
                            .extracting(Class::getSimpleName)
                            .containsAll(unscopedKeys().keySet());
-        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey", "DeploymentApplyKey", "ArtifactJudgmentKey", "FsmWarningKey", "DrainCommandKey");
+        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey", "DeploymentApplyKey", "ArtifactJudgmentKey", "FsmWarningKey", "DirectiveReceiptKey", "DrainCommandKey");
     }
 
     /// The ring's byte measure sizes a key by `asString()` (R-07). `StructuredKey` gives a default for key families with no canonical text;
