@@ -145,6 +145,18 @@ class FlakeScanTest {
     }
 
     @Test
+    void problems_aParkSleepHit_namesPollUntilAndPauseAsTheFix() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", methodBody("LockSupport.park" + "Nanos(1_000_000L);"))).hits();
+
+        var problems = FlakeScan.problems(hits, List.of(), 0, Map.of());
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.getFirst()).contains("flake pattern PARK_SLEEP at m/src/test/java/A.java:",
+                                                 "org.pragmatica.testing.PollUntil.pollUntil(supplier, predicate, deadline)",
+                                                 "org.pragmatica.testing.Pause.pause(duration)");
+    }
+
+    @Test
     void scan_aParkNanosInsideALoop_isNotFlagged() throws IOException {
         var scan = FlakeScan.scan(plant("A.java", methodBody("while (!done()) {", "    LockSupport.park" + "Nanos(1_000L);", "}")));
 

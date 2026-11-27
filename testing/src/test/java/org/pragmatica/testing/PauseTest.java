@@ -17,6 +17,8 @@
 package org.pragmatica.testing;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -40,6 +42,7 @@ class PauseTest {
     private static final class ModelledThread {
         private final AtomicLong now = new AtomicLong();
         private final AtomicInteger parks = new AtomicInteger();
+        private final List<Long> requested = new CopyOnWriteArrayList<>();
         private final long chunk;
 
         ModelledThread(long chunk) {
@@ -51,6 +54,7 @@ class PauseTest {
         }
 
         void park(long nanos) {
+            requested.add(nanos);
             if (parks.incrementAndGet() > SPIN_CAP) {
                 throw new AssertionError("the helper spun: more than " + SPIN_CAP + " parks without the clock reaching the deadline");
             }
@@ -118,6 +122,11 @@ class PauseTest {
 
         assertThat(thread.now()).isGreaterThanOrEqualTo(SPAN.toNanos());
         assertThat(thread.parks).as("100 ms in parks of at most 30 ms").hasValue(4);
+        assertThat(thread.requested).as("each park asks for what is left, not for the whole span again")
+                                    .containsExactly(Duration.ofMillis(100).toNanos(),
+                                                     Duration.ofMillis(70).toNanos(),
+                                                     Duration.ofMillis(40).toNanos(),
+                                                     Duration.ofMillis(10).toNanos());
     }
 
     @Test

@@ -99,4 +99,73 @@ class SingleParkSleepTest {
     void hits_aCallInACommentOrAStringLiteral_isNotReported() {
         assertThat(hitLines("class A {", "    // " + PARK, "    String s = \"" + PARK + "\";", "}")).isEmpty();
     }
+
+    @Test
+    void hits_aCallInAnIfInsideALoopInsideABlockLambdaInCallParentheses_isNotReported_theLambdaBodyEndsItsStatementsNormally() {
+        assertThat(hitLines("class A {",
+                            "    void waits() {",
+                            "        run(() -> {",
+                            "            while (!done()) {",
+                            "                tick();",
+                            "                if (slow()) {",
+                            "                    " + PARK,
+                            "                }",
+                            "            }",
+                            "        });",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    @Test
+    void hits_aCallInACaseArmOrDefaultArmInsideALoop_isNotReported() {
+        assertThat(hitLines("class A {",
+                            "    void waits(int k) {",
+                            "        while (!done()) {",
+                            "            switch (k) {",
+                            "                case 1 -> {",
+                            "                    " + PARK,
+                            "                }",
+                            "                default -> {",
+                            "                    " + PARK,
+                            "                }",
+                            "            }",
+                            "        }",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    @Test
+    void hits_aCallInACaseArmOutsideAnyLoop_isReported() {
+        assertThat(hitLines("class A {",
+                            "    void sleeps(int k) {",
+                            "        switch (k) {",
+                            "            case 1 -> {",
+                            "                " + PARK,
+                            "            }",
+                            "            default -> {}",
+                            "        }",
+                            "    }",
+                            "}")).containsExactly(5);
+    }
+
+    @Test
+    void hits_aCharLiteralHoldingABrace_isBlanked_soItOpensNoBlock() {
+        assertThat(hitLines("class A {",
+                            "    void waits() {",
+                            "        while (!done()) {",
+                            "            char open = '{';",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    @Test
+    void hits_theHitText_isTheSourceLineStripped() {
+        var source = String.join("\n", "class A {", "    void sleeps() {", "        " + PARK + "  ", "    }", "}");
+
+        var hits = SingleParkSleep.hits("A.java", source.split("\n", -1), source);
+
+        assertThat(hits).extracting(FlakeScan.Hit::text).containsExactly(PARK);
+    }
 }
