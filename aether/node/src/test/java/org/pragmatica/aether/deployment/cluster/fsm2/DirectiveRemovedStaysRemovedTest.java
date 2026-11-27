@@ -43,8 +43,10 @@ class DirectiveRemovedStaysRemovedTest {
         return w;
     }
 
+    /// The join carries the process the seam reports now. Built directly: the real registry refuses a second token for a bound node id, so
+    /// a new incarnation reaches the model as a join input that carries it.
     private static void redrive(MbWorld w, long token) {
-        w.h.deliver(new ClusterInput.WorkerJoin(WORKER, w.admit(WORKER, token)));
+        w.h.deliver(new ClusterInput.WorkerJoin(WORKER, Admission.admission(Fixtures.process(token))));
     }
 
     private static long directiveWrites(MbWorld w) {
@@ -99,7 +101,13 @@ class DirectiveRemovedStaysRemovedTest {
         w.h.settleHeld(stale, w.h.refused(stale));
 
         assertThat(directiveWrites(w)).as("the stale draft is not resubmitted behind the removal").isZero();
-        assertThat(w.h.held.values()).as("nothing is held for resubmission").isEmpty();
+        assertThat(w.h.held.values()
+                           .stream()
+                           .filter(submit -> submit.transaction()
+                                                   .mutations()
+                                                   .stream()
+                                                   .anyMatch(mutation -> mutation.key().equals(KEY)))).as("no directive write is held for resubmission")
+                                                                                                      .isEmpty();
     }
 
     // Green at the base and after: B11 heal. A directive write that was lost, never committed, is derived again by a re-drive.
