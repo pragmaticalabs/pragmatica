@@ -164,17 +164,16 @@ public sealed interface Placement {
     /// The empty audience of a worker-reading policy waits only while the community's own FORMING/DEGRADED to ACTIVE write is in flight, never
     /// on a draft: the event is computed from committed state, and `Communities.run` redrafts a refused or lost write every pass, so a
     /// suppression read from the draft would hide the stall for good. A due community (its next state is ACTIVE) is in flight until its
-    /// window (`ClusterModel.activationDeadline`) ends: it has not been drafted yet (this pass, before `Communities.run`), or the bound since
-    /// the first draft has not passed (a lost write), and no refusal or failure closed it.
+    /// window (`ClusterModel.activationDeadline`) ends: it has not been drafted yet (this pass, before `Communities.run`; a slot holding another
+    /// write's window counts as not drafted), or the bound since the first draft of that ACTIVE write has not passed (a lost write), and no
+    /// refusal or failure of that write closed it.
     private static boolean activationInFlight(ClusterModel m, Ctx ctx, PlacementPolicy policy) {
         var floor = CommunityPolicies.current(m, ctx).viabilityFloor();
 
         return policy != PlacementPolicy.CORE_ONLY && m.communities.entries()
                                                                    .stream()
                                                                    .filter(entry -> due(m, floor, entry))
-                                                                   .anyMatch(entry -> windowOpen(m,
-                                                                                                 ctx,
-                                                                                                 entry.getKey()));
+                                                                   .anyMatch(entry -> windowOpen(m, ctx, entry));
     }
 
     private static boolean due(ClusterModel m, int floor, Map.Entry<String, CommunityValue> entry) {
@@ -185,9 +184,14 @@ public sealed interface Placement {
                                                                   floor) == CommunityState.ACTIVE;
     }
 
-    private static boolean windowOpen(ClusterModel m, Ctx ctx, String communityId) {
-        return m.activationDeadline.get(communityId)
-                                   .map(deadline -> ctx.monoNs() < deadline)
+    /// Open when the window in the slot belongs to the community's ACTIVE write (its edge leaves the committed state for ACTIVE) and its bound
+    /// has not passed. A slot with no window, or with the window of another write, means the ACTIVE write has not been drafted yet (this pass,
+    /// before `Communities.run` opens its window): open, and never closed by the other write's deadline.
+    private static boolean windowOpen(ClusterModel m, Ctx ctx, Map.Entry<String, CommunityValue> entry) {
+        return m.activationDeadline.get(entry.getKey())
+                                   .filter(window -> window.isFor(entry.getValue().state(),
+                                                                  CommunityState.ACTIVE))
+                                   .map(window -> window.openAt(ctx.monoNs()))
                                    .or(true);
     }
 

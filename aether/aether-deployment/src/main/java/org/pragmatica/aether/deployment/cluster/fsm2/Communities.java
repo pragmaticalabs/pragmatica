@@ -47,10 +47,14 @@ public sealed interface Communities {
                                                                           Option.some((AetherValue) community.withState(next)));
             var guard = new KVCommand.ReadWitness<AetherKey>(announcement,
                                                              m.rosters.get(id).map(v -> (Object) v));
+            var window = openWindow(m, ctx, id, community.state(), next);
 
-            openWindow(m, ctx, id);
             Outbox.direct(m,
-                          TxDraft.draft(SubmitKind.COMMUNITY, key, List.of(mutation)).withGuards(List.of(guard)));
+                          TxDraft.draft(SubmitKind.COMMUNITY,
+                                        key,
+                                        List.of(mutation))
+                                 .withGuards(List.of(guard))
+                                 .withWindow(window.write()));
         } else {
             m.activationDeadline = m.activationDeadline.remove(id);
         }
@@ -58,20 +62,38 @@ public sealed interface Communities {
         return m;
     }
 
-    /// #3815: the in-flight window of a community's state-change write opens at the first draft and lasts the submission-expiry bound; a redraft
-    /// (every pass redrafts while the state differs) leaves it where it is, so a write that is lost again and again ends the window at the
-    /// first bound. `Placement` holds the empty-audience event back only inside it.
-    private static ClusterModel openWindow(ClusterModel m, Ctx ctx, String id) {
-        if (!m.activationDeadline.containsKey(id)) {
-            m.activationDeadline = m.activationDeadline.put(id,
-                                                            ctx.monoNs() + ctx.settings().submissionExpiry() * 1_000_000L);
-        }
+    /// #3815, #3852: the in-flight window belongs to ONE write: the community's change from `from` to `to`. It opens at the first draft of that
+    /// edge and lasts the submission-expiry bound; a redraft of the same edge (every pass redrafts while the state differs) keeps it where it
+    /// is, so a write that is lost again and again ends the window at the first bound. A draft for another edge (an earlier write's window
+    /// still in the slot, e.g. a commit coalesced with the next draft so that no pass saw agreement) opens its own, with a new write number.
+    /// `Placement` holds the empty-audience event back only inside the window of the community's ACTIVE write.
+    private static ActivationWindow openWindow(ClusterModel m,
+                                               Ctx ctx,
+                                               String id,
+                                               CommunityState from,
+                                               CommunityState to) {
+        var window = m.activationDeadline.get(id)
+                                         .filter(current -> current.isFor(from, to))
+                                         .or(() -> opened(m, ctx, from, to));
 
-        return m;
+        m.activationDeadline = m.activationDeadline.put(id, window);
+
+        return window;
     }
 
-    /// #3815: a refused or failed write is not in flight: the window of each community it wrote closes at the settlement (no-op for a community
-    /// whose window is not open, e.g. already agreed). The redraft of the next pass does not reopen it.
+    private static ActivationWindow opened(ClusterModel m, Ctx ctx, CommunityState from, CommunityState to) {
+        m.activationWrites = m.activationWrites + 1;
+
+        return ActivationWindow.activationWindow(m.activationWrites,
+                                                 from,
+                                                 to,
+                                                 ctx.monoNs() + ctx.settings().submissionExpiry() * 1_000_000L);
+    }
+
+    /// #3815, #3852: a refused or failed write is not in flight: the window it opened closes at the settlement. Only that window: a submission
+    /// closes a window when its draft carries the window's write number, so the late settlement of an earlier or different write leaves the
+    /// current write's window alone (no-op for a draft with no window, a community whose window is not open, or one already agreed). The
+    /// redraft of the next pass does not reopen it.
     static ClusterModel closeWindows(ClusterModel m, Ctx ctx, List<TxDraft> drafts) {
         drafts.stream()
               .filter(draft -> draft.kind() == SubmitKind.COMMUNITY)
@@ -81,8 +103,12 @@ public sealed interface Communities {
     }
 
     private static ClusterModel closeWindow(ClusterModel m, Ctx ctx, TxDraft draft) {
-        if (draft.key() instanceof CommunityKey key && m.activationDeadline.containsKey(key.communityId())) {
-            m.activationDeadline = m.activationDeadline.put(key.communityId(), ctx.monoNs());
+        if (draft.key() instanceof CommunityKey key) {
+            m.activationDeadline = m.activationDeadline.get(key.communityId())
+                                                       .filter(window -> window.write() == draft.window())
+                                                       .map(window -> m.activationDeadline.put(key.communityId(),
+                                                                                               window.closedAt(ctx.monoNs())))
+                                                       .or(m.activationDeadline);
         }
 
         return m;
