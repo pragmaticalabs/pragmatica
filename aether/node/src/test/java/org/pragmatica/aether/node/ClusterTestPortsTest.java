@@ -671,7 +671,7 @@ class ClusterTestPortsTest {
     }
 
     private static int drawOtherThan(IntSupplier draws, Set<Integer> offered) {
-        return draws.getAsInt();
+        return IntStream.generate(draws).filter(port -> !offered.contains(port)).findFirst().getAsInt();
     }
 
     /// A child JVM running [PortHolderMain] on this JVM's classpath.
