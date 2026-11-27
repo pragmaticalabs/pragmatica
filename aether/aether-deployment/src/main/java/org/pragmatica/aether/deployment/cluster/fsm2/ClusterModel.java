@@ -69,6 +69,8 @@ public final class ClusterModel {
     boolean joinWarningsDue;
     long txSeq;
     long genCounter;
+    /// #3852: the last window number handed to a community state-change write (`ActivationWindow#write`); the numbers start at 1.
+    long activationWrites;
     long tickCount;
     Seams seams = Seams.UNWIRED;
     PSet<TimerId> timers = PSet.empty(scans);
@@ -184,6 +186,15 @@ public final class ClusterModel {
     PSet<NodeId> unmatchedWarned = PSet.empty(scans);
     /// D.6 row 10: artifacts reported `invalid-placement` whose episode is open (the warning is raised once per episode).
     PSet<Artifact> invalidPlacementWarned = PSet.empty(scans);
+    /// #3815: targets reported `placement-audience-empty` whose episode is open (raised once per episode; one episode per target base).
+    PSet<ArtifactBase> emptyAudienceWarned = PSet.empty(scans);
+    /// #3815, #3852: per community, the window of its pending state-change write (`ActivationWindow`: the write it belongs to, the edge it
+    /// writes, the monotonic time (ns) until which it counts as in flight). Opened by `Communities.run` when it first drafts that edge (now plus
+    /// the submission-expiry bound) and stamped on the draft; a draft for another edge replaces it. Closed early by `Outbox` only when the
+    /// refused or failed submission carries THE window's write number; removed when the committed state matches the evaluated one. A redraft
+    /// of the same write never moves it, so a write lost again and again does not stay in flight past the first bound. `Placement` reads it
+    /// only for the community's ACTIVE write; nothing else does.
+    PMap<String, ActivationWindow> activationDeadline = PMap.empty(scans);
     /// D.6 row 14: artifacts reported `retry-exhausted-unsettled` whose episode is open.
     PSet<Artifact> retryExhaustedWarned = PSet.empty(scans);
     /// D.6 row 17: datasources reported `schema-status-unknown` whose episode is open.
@@ -242,6 +253,7 @@ public final class ClusterModel {
         c.joinWarningsDue = joinWarningsDue;
         c.txSeq = txSeq;
         c.genCounter = genCounter;
+        c.activationWrites = activationWrites;
         c.tickCount = tickCount;
         c.seams = seams;
         c.timers = timers.rebound(meter);
@@ -325,6 +337,8 @@ public final class ClusterModel {
         c.noPolicyWarned = noPolicyWarned.rebound(meter);
         c.unmatchedWarned = unmatchedWarned.rebound(meter);
         c.invalidPlacementWarned = invalidPlacementWarned.rebound(meter);
+        c.emptyAudienceWarned = emptyAudienceWarned.rebound(meter);
+        c.activationDeadline = activationDeadline.rebound(meter);
         c.retryExhaustedWarned = retryExhaustedWarned.rebound(meter);
         c.schemaUnknownWarned = schemaUnknownWarned.rebound(meter);
         c.schemaStalledWarned = schemaStalledWarned.rebound(meter);
@@ -596,6 +610,7 @@ public final class ClusterModel {
                           int attempt,
                           List<RoutedEvent> onAccepted,
                           List<JudgmentOp> eventOps,
+                          long window,
                           Option<RetirementUnit> unit) {
         public TxDraft {
             mutations = List.copyOf(mutations);
@@ -613,7 +628,7 @@ public final class ClusterModel {
                        Option<NodeId> node,
                        int attempt,
                        List<RoutedEvent> onAccepted) {
-            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, List.of(), Option.none());
+            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, List.of(), 0L, Option.none());
         }
 
         public TxDraft(SubmitKind kind,
@@ -625,7 +640,7 @@ public final class ClusterModel {
                        int attempt,
                        List<RoutedEvent> onAccepted,
                        List<JudgmentOp> eventOps) {
-            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, eventOps, Option.none());
+            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, eventOps, 0L, Option.none());
         }
 
         public static TxDraft draft(SubmitKind kind,
@@ -635,11 +650,11 @@ public final class ClusterModel {
         }
 
         public TxDraft withGuards(List<KVCommand.ReadWitness<AetherKey>> value) {
-            return new TxDraft(kind, key, mutations, value, pairs, node, attempt, onAccepted, eventOps, unit);
+            return new TxDraft(kind, key, mutations, value, pairs, node, attempt, onAccepted, eventOps, window, unit);
         }
 
         public TxDraft withPairs(Set<SlicePair> value) {
-            return new TxDraft(kind, key, mutations, guards, value, node, attempt, onAccepted, eventOps, unit);
+            return new TxDraft(kind, key, mutations, guards, value, node, attempt, onAccepted, eventOps, window, unit);
         }
 
         public TxDraft withNode(NodeId value) {
@@ -652,17 +667,18 @@ public final class ClusterModel {
                                attempt,
                                onAccepted,
                                eventOps,
+                               window,
                                unit);
         }
 
         public TxDraft withOnAccepted(List<RoutedEvent> value) {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, value, eventOps, unit);
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, value, eventOps, window, unit);
         }
 
         /// The judgment operations this transaction carries that answer an event (see [JudgmentOp#eventOnly]): if the write is lost,
         /// failed or its judgment moved, they are decided again from here, since no sweep derives them.
         public TxDraft withEventOps(List<JudgmentOp> value) {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, onAccepted, value, unit);
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, onAccepted, value, window, unit);
         }
 
         /// The retirement unit a CLEANUP draft was built with (#3828, design 3.4): resubmission asks the unit, never the flat lists.
@@ -676,11 +692,28 @@ public final class ClusterModel {
                                attempt,
                                onAccepted,
                                eventOps,
+                               window,
                                Option.some(value));
         }
 
+        /// The community state-change write this draft belongs to (`ActivationWindow#write`), so that its refusal or failure can tell its
+        /// own window from another write's. 0 for a draft that is not a community state change.
+        public TxDraft withWindow(long value) {
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, onAccepted, eventOps, value, unit);
+        }
+
         public TxDraft nextAttempt() {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt + 1, onAccepted, eventOps, unit);
+            return new TxDraft(kind,
+                               key,
+                               mutations,
+                               guards,
+                               pairs,
+                               node,
+                               attempt + 1,
+                               onAccepted,
+                               eventOps,
+                               window,
+                               unit);
         }
     }
 
