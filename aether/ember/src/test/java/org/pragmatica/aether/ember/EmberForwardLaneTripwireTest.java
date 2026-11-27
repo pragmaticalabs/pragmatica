@@ -8,7 +8,6 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterEach;
