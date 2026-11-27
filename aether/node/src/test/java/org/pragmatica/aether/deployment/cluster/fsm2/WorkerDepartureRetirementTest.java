@@ -343,6 +343,26 @@ class WorkerDepartureRetirementTest {
         assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the removal of a live worker's directive is marked").isTrue();
     }
 
+    // #3828 enforcer 2 — Red when: the removal of a worker's record leaves the mark the operator's earlier directive removal wrote, so the
+    // same process admitted under the id again is not directed (the mark must not outlive the record it was written under).
+    @Test
+    void markedWorker_thenItsRecordIsRemoved_isAssignedWhenItJoinsAgain() {
+        var w = world();
+
+        w.h.seedRemove(new ActivationDirectiveKey(worker));
+        w.h.drain();
+        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("precondition: the operator's removal marked the worker").isTrue();
+
+        w.h.seedRemove(new NodeDepartureKey(worker));
+        w.h.drain();
+        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the record's removal dropped the mark").isFalse();
+
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admissionOf(worker)));
+        settle(w);
+
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("the worker is directed again").isTrue();
+    }
+
     // #3028 — Red when: a falsely departed worker that rejoins (same process) before C17b loses its directive.
     @Test
     void falselyDepartedWorker_rejoiningBeforeC17b_keepsItsDirective() {
