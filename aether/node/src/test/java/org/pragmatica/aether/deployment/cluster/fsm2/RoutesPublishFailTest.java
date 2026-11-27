@@ -5,14 +5,17 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeclaredRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRoute;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.lang.Option;
 
@@ -172,6 +175,30 @@ class RoutesPublishFailTest {
         failFatally(h);
         assertThat(committed(h, LIST)).isEqualTo(Option.some(failed(ATTEMPT_1, "earlier")));
         assertThat(committed(h, GET_ONE)).isEqualTo(Option.some(failed(ATTEMPT_1, "boom")));
+    }
+
+    /// Red when: the Failed mutations ride the transaction in the order the mirror's index iterates (hash order) instead of key order: the
+    /// transaction's mutation list, which is replayed and compared across leaders, is then not a function of the committed rows alone. Eight
+    /// rows make a coincidental match of the two orders negligible.
+    @Test
+    void fail_theRowMutationsRideInKeyOrder() {
+        var h = leader(DeploymentAtomicity.BEST_EFFORT, 0.5, CORE_1);
+        var routes = IntStream.rangeClosed(1, 8)
+                              .mapToObj(i -> DeclaredRoute.declaredRoute("GET", "/r" + i))
+                              .toArray(DeclaredRoute[]::new);
+
+        h.activate();
+        publish(h, blueprintOf(ATTEMPT_1, routes));
+        failFatally(h);
+        var rowKeys = h.submits(SubmitKind.FAILURE)
+                       .stream()
+                       .flatMap(submit -> submit.transaction().mutations().stream())
+                       .map(mutation -> (AetherKey) mutation.key())
+                       .filter(DeclaredRouteKey.class::isInstance)
+                       .toList();
+
+        assertThat(rowKeys).as("all eight rows ride the failure").hasSize(8);
+        assertThat(rowKeys.stream().map(AetherKey::asString).toList()).isSorted();
     }
 
     /// Red when: a Published row is left out of the Failed set (only Declared is failed): the served-then-failed deploy keeps answering 503.
