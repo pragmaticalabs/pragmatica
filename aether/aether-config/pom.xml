@@ -46,6 +46,12 @@
         </dependency>
 
         <!-- Testing -->
+        <!-- LogCapture and the console log4j2 binding the gate's forked-JVM tests read the FATAL line from (#3806) -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>test-logging</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>

@@ -27,6 +27,7 @@ import org.pragmatica.aether.ember.EmberCluster.StartFailure;
 import org.pragmatica.aether.ember.EmberConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.JvmVulnerabilityGate;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
@@ -118,7 +119,8 @@ public final class ForgeServer {
 
             return;
         }
-
+        // #3806 (CVE-2026-114938): refused before the config is read and before any listener binds, as the node's Main does.
+        JvmVulnerabilityGate.enforceForThisProcess();
         var startupConfigResult = StartupConfig.startupConfig(args);
 
         startupConfigResult.onFailure(cause -> {

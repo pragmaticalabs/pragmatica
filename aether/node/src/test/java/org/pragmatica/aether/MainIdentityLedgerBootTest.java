@@ -41,7 +41,7 @@ class MainIdentityLedgerBootTest {
     private static Run boot(Path dir, String nodeToml) throws Exception {
         var file = Files.writeString(dir.resolve("node.toml"), nodeToml);
         var java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-        var command = new ArrayList<>(List.of(java, "-Xmx256m", "-cp", System.getProperty("java.class.path"), Main.class.getName(),
+        var command = new ArrayList<>(List.of(java, "-Xmx256m", "-XX:-UseBASE64Intrinsics", "-cp", System.getProperty("java.class.path"), Main.class.getName(),
                                               "--config=" + file, "--node-id=node-1", "--port=" + ClusterTestPorts.freeTcpAndUdpPort(),
                                               "--management-port=" + ClusterTestPorts.freeTcpAndUdpPort()));
         var out = dir.resolve("out.txt");
