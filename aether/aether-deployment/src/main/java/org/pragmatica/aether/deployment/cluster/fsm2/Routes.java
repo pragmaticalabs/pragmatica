@@ -27,7 +27,7 @@ import org.pragmatica.lang.Option;
 
 
 /// The leader-side writers of the declared-route table that follow the committed blueprint (#3389 A2): DECLARE (W1), the re-drive of a lost
-/// DECLARE (W1b), REMOVE of a removed blueprint's rows (W4) and PUBLISH (W2). FAIL is another writer.
+/// DECLARE (W1b), REMOVE of a removed blueprint's rows (W4) and PUBLISH (W2); [#fail] (W3) is the one writer that rides another transaction.
 ///
 /// One mechanism for the four: [#reconcile] diffs the rows the blueprint's declared routes name against the committed rows the blueprint owns
 /// and drafts the difference as one `ROUTES` transaction. PUBLISH is part of that difference: a `Declared` row of an artifact some node
@@ -50,13 +50,39 @@ public sealed interface Routes {
                : submit(m, id, difference(m, id));
     }
 
-    // -- W2: PUBLISH -------------------------------------------------------------------------------------------
+    // -- W2: PUBLISH, W3: FAIL ---------------------------------------------------------------------------------------
     /// The event hook of PUBLISH: a node's routes for `artifact` are committed. When the artifact has declared rows the reconcile derives the
     /// flip at once; the sweep derives it again if the draft is refused or lost, and after a leader change.
     static ClusterModel onNodeRoutes(ClusterModel m, Ctx ctx, Artifact artifact) {
         return m.declaredByArtifact.containsKey(artifact)
                ? Reconcile.request(m, ctx)
                : m;
+    }
+
+    /// W3: every `Declared` or `Published` row of `artifact` becomes `Failed(reason)`, each mutation expecting the row as the mirror holds it. The
+    /// mutations join the artifact's FAILURE transaction (`Outbox.artifactDraft`), so the judgment and the rows commit or are refused together.
+    static ClusterModel fail(ClusterModel m, Artifact artifact, String reason) {
+        Idx.members(m.declaredByArtifact, artifact)
+           .toList()
+           .stream()
+           .sorted(Comparator.comparing(DeclaredRouteKey::asString))
+           .flatMap(key -> failure(m, key, reason).stream())
+           .forEach(mutation -> Outbox.artifact(m,
+                                                artifact,
+                                                intent -> intent.withExtra(mutation)));
+
+        return m;
+    }
+
+    private static Option<KVCommand.Mutation<AetherKey, AetherValue>> failure(ClusterModel m,
+                                                                              DeclaredRouteKey key,
+                                                                              String reason) {
+        return m.declaredRoutes.get(key)
+                               .filter(row -> !(row.state() instanceof RouteState.Failed))
+                               .map(row -> new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                          Option.some((AetherValue) row),
+                                                                                          Option.some(restated(row,
+                                                                                                               RouteState.Failed.failed(reason)))));
     }
 
     /// The row at its own owner and attemptId in `state`.
