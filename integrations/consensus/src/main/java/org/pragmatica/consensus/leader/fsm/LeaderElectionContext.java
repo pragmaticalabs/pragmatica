@@ -28,6 +28,7 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.topology.TransportView;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -1166,6 +1167,8 @@ public final class LeaderElectionContext {
     /// The episode of a source that lives as long as the node: it ends with [#stop()], when the executor closes and
     /// rejects every later task (`SerialExecutor#execute`). Only the view re-assertion, which no state owns, has it.
     private static final EpisodeIdentity NODE_LIFETIME = () -> true;
+    /// The identity of an entry that does not exist: never live.
+    private static final EpisodeIdentity NEVER = () -> false;
 
     /// #3587, #3809, #3846: `task` as a callback (a timer's, a listener's) that runs in the node's one total order, and
     /// only while `owner`'s current ENTRY is still the FSM's current entry. The ONE path by which a callback that runs off
@@ -1195,13 +1198,29 @@ public final class LeaderElectionContext {
         return () -> serial.execute(() -> runIfLive(episode, task));
     }
 
+    /// The identity of the entry `owner` is IN, read at an arm site that runs inside that entry. No entry of `owner` (the
+    /// Fsm holds none yet, or holds another state's) is an identity that is never live: a missing identity never reads
+    /// as live.
     private EpisodeIdentity entryOf(LeaderElectionState owner) {
-        var entered = fsm.entered();
-        var lifetime = entered.lifetime();
+        return enteredLifetimeOf(owner).map(LeaderElectionContext::liveWhileRunning)
+                                .or(NEVER);
+    }
 
-        return entered.state() == owner
-               ? () -> !lifetime.isEnded()
-               : () -> false;
+    /// #3846: the identity of `owner`'s FIRST entry, for a record that arms its timers in its factory, before the Fsm
+    /// holds the entry ([FirstEntry]). Unlike [#entryOf(LeaderElectionState)] it is not read at the arm site: the entry
+    /// is read inside the serial task, where the Fsm already holds it.
+    EpisodeIdentity firstEntryOf(LeaderElectionState owner, FirstEntry first) {
+        return () -> first.admits(enteredLifetimeOf(owner));
+    }
+
+    private static EpisodeIdentity liveWhileRunning(OwnerLifetime lifetime) {
+        return () -> ! lifetime.isEnded();
+    }
+
+    private Option<OwnerLifetime> enteredLifetimeOf(LeaderElectionState owner) {
+        return Option.option(fsm.entered())
+                     .filter(entered -> entered.state() == owner)
+                     .map(Fsm.Entered::lifetime);
     }
 
     private void runIfLive(EpisodeIdentity episode, Runnable task) {

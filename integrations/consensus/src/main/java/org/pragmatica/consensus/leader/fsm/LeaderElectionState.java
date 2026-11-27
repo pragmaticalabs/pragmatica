@@ -15,6 +15,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionContext.EpisodeIdentity;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ElectionTick;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeout;
@@ -420,7 +421,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                     long entryBaseline,
                     AtomicReference<ScheduledFuture<?>> tickFuture,
                     AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture,
-                    AtomicReference<ScheduledFuture<?>> observationFuture) implements LeaderElectionState {
+                    AtomicReference<ScheduledFuture<?>> observationFuture,
+                    FirstEntry firstEntry) implements LeaderElectionState {
         public static Electing fresh(LeaderElectionContext ctx) {
             // FIX-1 refinement: snapshot the highest COMMITTED viewSequence at the instant this
             // node decides to elect. Adoption WITHIN this election requires a commit that POSTDATES
@@ -430,15 +432,19 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                 ctx.committedViewSequence(),
                                 new AtomicReference<>(),
                                 new AtomicReference<>(),
-                                new AtomicReference<>()).armTimers();
+                                new AtomicReference<>(),
+                                FirstEntry.firstEntry()).armTimers();
         }
 
-        /// #3809: arms the first tick and the peer observation for THIS record, so each tick is fenced to this episode
-        /// ([LeaderElectionContext#serializedFor]). The timers are armed here, from `fresh`, before the Fsm has the
-        /// record: the record is the episode, so it exists before its timers.
+        /// #3809, #3846: arms the first tick and the peer observation for THIS record, so each tick is fenced to this
+        /// episode. The timers are armed here, from `fresh`, before the Fsm holds the entry, so the identity is the
+        /// record's [FirstEntry] ([LeaderElectionContext#firstEntryOf]), bound to the entry inside the serial task:
+        /// reading the Fsm's entry here would read the previous state's, or none.
         private Electing armTimers() {
-            tickFuture.set(scheduleStaircaseFirstTick(ctx, this, "Electing", Option.none()));
-            observationFuture.set(SharedScheduler.scheduleAtFixedRate(ctx.serializedFor(this,
+            var episode = ctx.firstEntryOf(this, firstEntry);
+
+            tickFuture.set(scheduleStaircaseFirstTick(ctx, episode, "Electing", Option.none()));
+            observationFuture.set(SharedScheduler.scheduleAtFixedRate(ctx.serializedFor(episode,
                                                                                         () -> adoptLeaderFromKvIfPresent(ctx)),
                                                                       ctx.peerObservationInterval()));
 
@@ -458,6 +464,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             cancelFuture(tickFuture);
             cancelFuture(proposalTimeoutFuture);
             cancelFuture(observationFuture);
+            firstEntry.exited();
             ctx.clearProposalInFlight();
             ctx.resetElectionRetryCount();
         }
@@ -902,7 +909,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                       Option<NodeId> suspect,
                       AtomicReference<ScheduledFuture<?>> tickFuture,
                       AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture,
-                      AtomicReference<ScheduledFuture<?>> observationFuture) implements LeaderElectionState {
+                      AtomicReference<ScheduledFuture<?>> observationFuture,
+                      FirstEntry firstEntry) implements LeaderElectionState {
         public static ReElecting fresh(LeaderElectionContext ctx) {
             return fresh(ctx, Option.none());
         }
@@ -925,13 +933,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                   suspect,
                                   new AtomicReference<>(),
                                   new AtomicReference<>(),
-                                  new AtomicReference<>()).armTimers();
+                                  new AtomicReference<>(),
+                                  FirstEntry.firstEntry()).armTimers();
         }
 
         /// #3809: as [Electing#armTimers]: the first tick and the peer observation are fenced to this episode.
         private ReElecting armTimers() {
-            tickFuture.set(scheduleStaircaseFirstTick(ctx, this, "ReElecting", suspect));
-            observationFuture.set(SharedScheduler.scheduleAtFixedRate(ctx.serializedFor(this,
+            var episode = ctx.firstEntryOf(this, firstEntry);
+
+            tickFuture.set(scheduleStaircaseFirstTick(ctx, episode, "ReElecting", suspect));
+            observationFuture.set(SharedScheduler.scheduleAtFixedRate(ctx.serializedFor(episode,
                                                                                         () -> adoptLeaderFromKvIfPresent(ctx)),
                                                                       ctx.peerObservationInterval()));
 
@@ -951,6 +962,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             cancelFuture(tickFuture);
             cancelFuture(proposalTimeoutFuture);
             cancelFuture(observationFuture);
+            firstEntry.exited();
             ctx.clearProposalInFlight();
             ctx.resetElectionRetryCount();
         }
@@ -1571,7 +1583,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// the window where parallel proposals would otherwise collide. A [`ReElecting`] suspect is left out
     /// of the ranking (#2869), so the lowest non-suspect node proposes at the base delay.
     private static ScheduledFuture<?> scheduleStaircaseFirstTick(LeaderElectionContext ctx,
-                                                                 LeaderElectionState owner,
+                                                                 EpisodeIdentity episode,
                                                                  String stateLabel,
                                                                  Option<NodeId> suspect) {
         var rank = ctx.rankOfSelf(suspect);
@@ -1586,7 +1598,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                  ctx.perRankDelay().millis(),
                  ctx.peerObservationInterval().millis());
 
-        return SharedScheduler.schedule(ctx.serializedFor(owner, () -> dispatchSelf(ctx, new ElectionTick())),
+        return SharedScheduler.schedule(ctx.serializedFor(episode, () -> dispatchSelf(ctx, new ElectionTick())),
                                         TimeSpan.timeSpan(delayMs).millis());
     }
 
