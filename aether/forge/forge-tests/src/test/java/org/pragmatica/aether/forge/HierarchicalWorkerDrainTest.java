@@ -5,7 +5,6 @@
 package org.pragmatica.aether.forge;
 
 import java.net.URI;
-import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.net.http.HttpRequest;
 import java.util.List;
@@ -25,6 +24,7 @@ import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.portbind.HeldPort;
 
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;
@@ -189,7 +189,7 @@ class HierarchicalWorkerDrainTest {
                                   .findFirst()
                                   .orElseThrow();
 
-        barrier = Result.lift(() -> HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)).unwrap();
+        barrier = Result.lift(HeldPort::httpServer).unwrap();
         barrier.createContext("/release",
                               exchange -> {
                                   entered.succeed(Unit.unit());
