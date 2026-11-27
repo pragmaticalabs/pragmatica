@@ -57,6 +57,16 @@ class AetherNodeDrainSetObserverTest {
     }
 
     @Test
+    void drainSet_neverMarksANodeTheDepartedPredicateHolds_andMarksTheOthers() {
+        var alerts = alerts();
+
+        DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY, DRAINED::equals).accept(Set.of(DRAINED, OTHER));
+
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).as("its life is over on this observer").isFalse();
+        assertThat(alerts.hasAnnouncedDeparture(OTHER)).isTrue();
+    }
+
+    @Test
     void drainSet_neverMarksSelf() {
         var alerts = alerts();
 
