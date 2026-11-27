@@ -37,22 +37,31 @@ class PortBindGateTest {
     private static final String MODULE = "fixture-module";
 
     /// The fixture method for each API type of the gate's set. Keep in step with `BindApis.ALL`: the set pin below fails otherwise.
-    private static final Map<String, String> FIXTURE_FOR_TYPE = Map.of("java.net.ServerSocket",
-                                                                       "serverSocket",
-                                                                       "java.net.DatagramSocket",
-                                                                       "datagramSocket",
-                                                                       "java.net.Socket",
-                                                                       "socket",
-                                                                       "java.nio.channels.NetworkChannel",
-                                                                       "networkChannel",
-                                                                       "javax.net.ServerSocketFactory",
-                                                                       "serverSocketFactory",
-                                                                       "com.sun.net.httpserver.HttpServer",
-                                                                       "httpServer",
-                                                                       "io.netty.bootstrap.AbstractBootstrap",
-                                                                       "nettyBootstrap",
-                                                                       "io.netty.channel.ChannelOutboundInvoker",
-                                                                       "nettyChannel");
+    private static final Map<String, String> FIXTURE_FOR_TYPE = Map.ofEntries(Map.entry("java.net.ServerSocket",
+                                                                                        "serverSocket"),
+                                                                              Map.entry("java.net.DatagramSocket",
+                                                                                        "datagramSocket"),
+                                                                              Map.entry("java.net.Socket", "socket"),
+                                                                              Map.entry("java.nio.channels.NetworkChannel",
+                                                                                        "networkChannel"),
+                                                                              Map.entry("javax.net.ServerSocketFactory",
+                                                                                        "serverSocketFactory"),
+                                                                              Map.entry("com.sun.net.httpserver.HttpServer",
+                                                                                        "httpServer"),
+                                                                              Map.entry("com.sun.net.httpserver.SimpleFileServer",
+                                                                                        "simpleFileServer"),
+                                                                              Map.entry("com.sun.net.httpserver.spi.HttpServerProvider",
+                                                                                        "httpServerProvider"),
+                                                                              Map.entry("java.rmi.registry.LocateRegistry",
+                                                                                        "rmiRegistry"),
+                                                                              Map.entry("java.rmi.server.UnicastRemoteObject",
+                                                                                        "rmiExport"),
+                                                                              Map.entry("java.rmi.server.RMISocketFactory",
+                                                                                        "rmiSocketFactory"),
+                                                                              Map.entry("io.netty.bootstrap.AbstractBootstrap",
+                                                                                        "nettyBootstrap"),
+                                                                              Map.entry("io.netty.channel.ChannelOutboundInvoker",
+                                                                                        "nettyChannel"));
 
     /// The forms of `fx.Forms` and the method that holds each; `<clinit>` and `<init>` are the initialiser forms (a lambda counts under
     /// the method that holds it).
@@ -165,6 +174,49 @@ class PortBindGateTest {
     }
 
     @Test
+    void anEntryWithABlankModuleOrTarget_doesNotParse() {
+        assertThatThrownBy(() -> AllowList.parse(" | fx.Forms#computed | a reason")).isInstanceOf(IllegalArgumentException.class)
+                          .hasMessageContaining("module | target | reason");
+        assertThatThrownBy(() -> AllowList.parse(MODULE + " |  | a reason")).isInstanceOf(IllegalArgumentException.class)
+                          .hasMessageContaining("module | target | reason");
+    }
+
+    @Test
+    void blankLinesCommentsAndIndentation_areNotEntries_andFieldsAreStripped() {
+        var parsed = AllowList.parse("\n   \n# a comment, not an entry\n    " + MODULE
+                                    + "  |  fx.Forms#computed  |  the reason, padded  \n\n");
+
+        assertThat(parsed.entries()).containsExactly(new AllowList.Entry(MODULE,
+                                                                         "fx.Forms#computed",
+                                                                         "the reason, padded"));
+    }
+
+    @Test
+    void aReasonMayContainTheSeparator() {
+        var parsed = AllowList.parse(MODULE + " | fx.Forms#computed | one | two | three");
+
+        assertThat(parsed.entries()).extracting(AllowList.Entry::reason).containsExactly("one | two | three");
+    }
+
+    @Test
+    void findingsAreClean_onlyWhenThereIsNeitherAViolationNorAStaleEntry() {
+        var site = new PortBindScan.Site("fx.Forms", "computed", 1, "java.net.ServerSocket#<init>");
+        var stale = new AllowList.Entry(MODULE, "fx.Gone", "reason");
+
+        assertThat(new PortBindScan.Findings(1, List.of(), List.of(), List.of()).clean()).isTrue();
+        assertThat(new PortBindScan.Findings(1,
+                                             List.of(site),
+                                             List.of(site),
+                                             List.of()).clean()).as("a violation alone")
+                  .isFalse();
+        assertThat(new PortBindScan.Findings(1,
+                                             List.of(),
+                                             List.of(),
+                                             List.of(stale)).clean()).as("a stale entry alone")
+                  .isFalse();
+    }
+
+    @Test
     void theBundledAllowList_parses_andNamesNoHeldPort() {
         var bundled = PortBindScan.bundledAllowList();
 
@@ -213,6 +265,8 @@ class PortBindGateTest {
         var server = Result.lift(() -> HeldPort.httpServer()).unwrap();
 
         assertThat(server.getAddress().getPort()).isPositive();
+        assertThat(server.getAddress().getAddress().getHostAddress()).as("the server is bound to the loopback address, not the wildcard")
+                  .isEqualTo("127.0.0.1");
         server.stop(0);
     }
 
@@ -226,6 +280,17 @@ class PortBindGateTest {
         assertThat(tcp.getInetAddress()).isEqualTo(loopback);
         udp.close();
         assertThat(Result.lift(tcp::close).isSuccess()).isTrue();
+    }
+
+    @Test
+    void heldPortHttpServer_bindsOnTheRequestedAddress_notTheDefaultLoopback() {
+        var wildcard = Result.lift(() -> InetAddress.getByName("0.0.0.0")).unwrap();
+        var server = Result.lift(() -> HeldPort.httpServer(wildcard)).unwrap();
+
+        assertThat(server.getAddress().getAddress().isAnyLocalAddress()).as("the requested wildcard address, not the 127.0.0.1 of httpServer()")
+                  .isTrue();
+        assertThat(server.getAddress().getPort()).isPositive();
+        server.stop(0);
     }
 
     @Test

@@ -7,7 +7,8 @@ import java.util.List;
 /// The classes allowed to call a bind API, each with the reason (#3801). One entry per line, `module | target | reason`; blank
 /// lines and `#` comments are ignored. `module` is the Maven artifactId whose test classes hold the call, `target` is a binary
 /// class name, optionally `#method` (a lambda counts under its enclosing method): `Class#method` excuses that method only,
-/// `Class` excuses the class. The reason is required: an entry without one is a parse failure, not an empty justification.
+/// `Class` excuses the class. The match is by method NAME: an entry covers every overload of that name and every bind inside it, and a class
+/// entry does not cover nested classes (they are `Outer$Inner` of their own); keep an entry as narrow as the reason it carries. The reason is required: an entry without one is a parse failure, not an empty justification.
 ///
 /// An entry that excuses no call site in its module is STALE and fails the scan of that module: the list may not outlive the
 /// call it excused. `HeldPort` has no entry: it ships in this module's `src/main`, which is not a scanned tree.

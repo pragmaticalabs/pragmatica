@@ -13,13 +13,14 @@ import java.util.concurrent.ConcurrentHashMap;
 ///
 /// A call is matched by the reference the compiler wrote: owner, name and descriptor. The owner is the static receiver type, so a
 /// call through a subtype (`MulticastSocket`, `ServerSocketChannel`, a test's own subclass) does not carry the supertype's name;
-/// the owner is therefore resolved against the scan's class loader and matched when it is assignable to the entry's type, and
-/// by exact name when it cannot be loaded.
+/// the owner is therefore resolved against the scan's class loader and matched when it is assignable to the entry's type, or when it
+/// cannot be loaded at all (fail closed: its supertypes are unknown).
 ///
 /// What this set does NOT contain, on purpose: `InetSocketAddress` constructors (an address is not a bind; the `bind` that
 /// receives it is flagged), client sockets that connect, and the repository's own server-start entry points (they are handed a
 /// port that came from a reservation, which is a decision about where the port came from, not a bind the scan can see).
-/// Reflection and method handles looked up by name at run time are invisible to a bytecode scan.
+/// Reflection and method handles looked up by name at run time are invisible to a bytecode scan. Out on purpose too: the
+/// `UnicastRemoteObject` constructors, which export on an anonymous port that RMI itself holds for the object's lifetime.
 ///
 /// JBCT rules suppressed on this class: this module may depend on nothing in this repository (every module with `src/test` gets it
 /// at test scope, so a dependency on `core` is a reactor cycle), which leaves `Result` and `Option` unavailable, and the class
@@ -46,6 +47,12 @@ final class BindApis {
                                          new Api("com.sun.net.httpserver.HttpServer",
                                                  either(BIND,
                                                         (name, descriptor) -> name.equals("create") && descriptor.startsWith("(Ljava/net/InetSocketAddress;"))),
+                                         new Api("com.sun.net.httpserver.SimpleFileServer", named("createFileServer")),
+                                         new Api("com.sun.net.httpserver.spi.HttpServerProvider",
+                                                 either(named("createHttpServer"), named("createHttpsServer"))),
+                                         new Api("java.rmi.registry.LocateRegistry", named("createRegistry")),
+                                         new Api("java.rmi.server.UnicastRemoteObject", named("exportObject")),
+                                         new Api("java.rmi.server.RMISocketFactory", named("createServerSocket")),
                                          new Api("io.netty.bootstrap.AbstractBootstrap", BIND),
                                          new Api("io.netty.channel.ChannelOutboundInvoker", BIND));
 
@@ -72,24 +79,25 @@ final class BindApis {
     }
 
     private boolean isOrExtends(String ownerName, String type) {
-        if (ownerName.equals(type)) {
+        var ownerClass = load(ownerName);
+
+        if (ownerClass == ABSENT) {
             return true;
         }
 
-        var ownerClass = load(ownerName);
         var apiClass = load(type);
 
-        return ownerClass != ABSENT
-               && apiClass != ABSENT
-               && apiClass.isAssignableFrom(ownerClass);
+        return apiClass != ABSENT && apiClass.isAssignableFrom(ownerClass);
     }
 
     private Class<?> load(String name) {
         return loaded.computeIfAbsent(name, this::tryLoad);
     }
 
-    /// Loads without initialising. A class that cannot be loaded here (absent from this module's classpath, or one whose own
-    /// dependencies are) leaves only the exact-name match, which is the safe direction: it can only miss a subtype's call.
+    /// Loads without initialising. A class that cannot be loaded here (absent from the scan's classpath, or one whose own supertypes
+    /// are) is ABSENT, and [#isOrExtends] answers for an ABSENT receiver that it may be the API: the scan cannot rule out that it
+    /// extends a bind type, and letting its call pass would be the unsafe direction (a missed bind is a silent gate). An API type that
+    /// is absent (Netty in a module that does not link it) rules nothing in: a receiver that loaded cannot extend a type it lacks.
     private Class<?> tryLoad(String name) {
         try {
             return Class.forName(name, false, loader);

@@ -1,6 +1,7 @@
 package org.pragmatica.portbind;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.CodeElement;
@@ -36,8 +37,14 @@ import java.util.stream.Stream;
 /// class loader that resolves a call's receiver type to its supertypes. `mode` is `enforce` (a site fails the run) or `report`
 /// (every site is listed with its verdict and the run passes: how the sites were first enumerated).
 ///
-/// What it cannot see: reflection and `MethodHandles.Lookup` finds by name, a bind in `src/main` (not a test class; that is
-/// production code and its own concern), and a port that reaches a bind inside the repository's own server-start entry points.
+/// Off-switch: the execution is skipped by `-Dmaven.test.skip=true` alone, because that compiles no test class and there is nothing to
+/// read. `-Dmaven.antrun.skip` is deliberately NOT honoured: one global flag would switch off the gate of every module (and the
+/// repository's other antrun executions with it), and the execution's explicit `skip` overrides that property anyway. The mode is
+/// `enforce` in the root pom and only there; a pin in script-gate fails when another pom, `.mvn/maven.config` or a workflow sets it.
+///
+/// What it cannot see: reflection and `MethodHandles.Lookup` finds by name (a class name held in a string is data to a bytecode
+/// scan, and no test of this repository binds that way), a bind in `src/main` (not a test class; that is production code and its
+/// own concern), and a port that reaches a bind inside the repository's own server-start entry points.
 ///
 /// JBCT rules suppressed on this class: this module may depend on nothing in this repository (every module with `src/test` gets it
 /// at test scope, so a dependency on `core` is a reactor cycle), which leaves `Result` and `Option` unavailable, and the class
@@ -72,10 +79,23 @@ public final class PortBindScan {
 
     private PortBindScan() {}
 
-    /// `module classesDirectory [enforce|report]`. Exit 1 when `enforce` finds a violation or a stale entry, or the directory is missing.
+    /// The build's entry point: [#run] with the process's streams; a non-zero status ends the process, which is what fails the
+    /// antrun `java` task (`failonerror`) and so the module's build.
     public static void main(String[] args) throws IOException {
+        var status = run(args, System.out, System.err);
+
+        if (status != 0) {
+            System.exit(status);
+        }
+    }
+
+    /// `module classesDirectory [enforce|report]` (default `enforce`). The exit status: 0 passes; 1 fails the build, which `enforce`
+    /// does on a violation or a stale entry and every mode does on a wrong argument list, an unknown mode or a missing directory
+    /// (a gate with nothing to read is not a pass). `report` lists every site with its verdict and passes. The build's failure path
+    /// is this status, so a test drives it here and through the real antrun target, never by reading the source.
+    public static int run(String[] args, PrintStream out, PrintStream err) throws IOException {
         if (args.length < 2 || args.length > 3) {
-            throw new IllegalArgumentException("usage: PortBindScan <module> <test-classes directory> [enforce|report]");
+            return refuse(err, "usage: PortBindScan <module> <test-classes directory> [enforce|report]");
         }
 
         var module = args[0];
@@ -85,26 +105,37 @@ public final class PortBindScan {
                    : ENFORCE;
 
         if (!mode.equals(ENFORCE) && !mode.equals(REPORT)) {
-            throw new IllegalArgumentException("mode must be enforce or report, was " + mode);
+            return refuse(err, "mode must be enforce or report, was " + mode);
         }
 
         if (!Files.isDirectory(directory)) {
-            System.err.println("[port-bind-gate] " + module
-                              + ": " + directory
-                              + " does not exist: the gate has nothing to read, which is not a pass (#3801)");
-            System.exit(1);
+            return refuse(err,
+                          module
+                         + ": " + directory
+                         + " does not exist: the gate has nothing to read, which is not a pass (#3801)");
         }
 
         var result = scan(module, directory, PortBindScan.class.getClassLoader(), bundledAllowList());
 
-        System.out.println(summary(module, result));
+        out.println(summary(module, result));
         writeStamp(directory, module, mode, result);
         if (mode.equals(REPORT)) {
-            reportLines(module, result).forEach(System.out::println);
-        } else if (!result.clean()) {
-            failures(module, result).forEach(System.err::println);
-            System.exit(1);
+            reportLines(module, result).forEach(out::println);
+
+            return 0;
         }
+
+        failures(module, result).forEach(err::println);
+
+        return result.clean()
+               ? 0
+               : 1;
+    }
+
+    private static int refuse(PrintStream err, String message) {
+        err.println("[port-bind-gate] " + message);
+
+        return 1;
     }
 
     /// The types of [BindApis]: what the scan refuses, for a pin that holds every one of them to a fixture.

@@ -1,5 +1,10 @@
 package org.pragmatica.scriptgate;
 
+import java.lang.classfile.ClassFile;
+import java.lang.constant.ClassDesc;
+import java.lang.constant.ConstantDescs;
+import java.lang.constant.MethodHandleDesc;
+import java.lang.constant.MethodTypeDesc;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -98,15 +103,23 @@ final class PortBindFixtures {
         package fx;
 
         import com.sun.net.httpserver.HttpServer;
+        import com.sun.net.httpserver.SimpleFileServer;
+        import com.sun.net.httpserver.spi.HttpServerProvider;
         import io.netty.bootstrap.ServerBootstrap;
         import io.netty.channel.Channel;
         import java.net.DatagramSocket;
         import java.net.InetSocketAddress;
         import java.net.ServerSocket;
         import java.net.Socket;
+        import java.net.SocketAddress;
         import java.nio.channels.AsynchronousServerSocketChannel;
         import java.nio.channels.DatagramChannel;
         import java.nio.channels.ServerSocketChannel;
+        import java.nio.file.Path;
+        import java.rmi.Remote;
+        import java.rmi.registry.LocateRegistry;
+        import java.rmi.server.RMISocketFactory;
+        import java.rmi.server.UnicastRemoteObject;
         import javax.net.ServerSocketFactory;
 
         public class EveryApi {
@@ -134,6 +147,35 @@ final class PortBindFixtures {
 
             void httpServer() throws Exception {
                 HttpServer.create(new InetSocketAddress(0), 0);
+            }
+
+            void datagramBind() throws Exception {
+                new DatagramSocket((SocketAddress) null).bind(new InetSocketAddress(0));
+            }
+
+            void httpServerBind() throws Exception {
+                HttpServer.create().bind(new InetSocketAddress(0), 0);
+            }
+
+            void simpleFileServer() {
+                SimpleFileServer.createFileServer(new InetSocketAddress(0), Path.of("."), SimpleFileServer.OutputLevel.NONE);
+            }
+
+            void httpServerProvider() throws Exception {
+                HttpServerProvider.provider().createHttpServer(new InetSocketAddress(0), 0);
+                HttpServerProvider.provider().createHttpsServer(new InetSocketAddress(0), 0);
+            }
+
+            void rmiRegistry() throws Exception {
+                LocateRegistry.createRegistry(0);
+            }
+
+            void rmiExport(Remote remote) throws Exception {
+                UnicastRemoteObject.exportObject(remote, 0);
+            }
+
+            void rmiSocketFactory() throws Exception {
+                RMISocketFactory.getDefaultSocketFactory().createServerSocket(0);
             }
 
             void nettyBootstrap() {
@@ -168,6 +210,32 @@ final class PortBindFixtures {
                 try (var held = HeldPort.udp()) {
                     return held.getLocalPort();
                 }
+            }
+        }
+        """;
+
+    /// A receiver whose supertype is missing at scan time: `Broken` extends `Missing`, and `Missing.class` is deleted before the scan, so
+    /// loading `Broken` fails with a linkage error. The gate cannot tell what it extends, and must not let its `bind` pass.
+    static final String MISSING = """
+        package fx;
+
+        public class Missing {
+            public void bind(String address) {}
+        }
+        """;
+
+    static final String BROKEN = """
+        package fx;
+
+        public class Broken extends Missing {}
+        """;
+
+    static final String CALLS_BROKEN = """
+        package fx;
+
+        public class CallsBroken {
+            void callIt() {
+                new Broken().bind("somewhere");
             }
         }
         """;
@@ -215,6 +283,52 @@ final class PortBindFixtures {
 
         return Result.lift(() -> Files.createDirectories(classes))
                      .map(dir -> javac(dir, files))
+                     .unwrap();
+    }
+
+    /// Only `fx.Clean` (no bind call site), compiled under `root`: the module whose test classes are fine.
+    static Path compiledClean(Path root) {
+        var sources = root.resolve("src");
+        var classes = root.resolve("classes");
+
+        return Result.lift(() -> Files.createDirectories(classes))
+                     .map(dir -> javac(dir,
+                                       List.of(write(sources, "fx/Clean.java", CLEAN))))
+                     .unwrap();
+    }
+
+    /// `fx.CallsBroken` calls `bind` on `fx.Broken`, whose superclass `fx.Missing` is deleted after compiling.
+    static Path compiledWithUnloadableReceiver(Path root) {
+        var sources = root.resolve("src");
+        var classes = root.resolve("classes");
+        var compiled = Result.lift(() -> Files.createDirectories(classes))
+                             .map(dir -> javac(dir,
+                                               List.of(write(sources, "fx/Missing.java", MISSING),
+                                                       write(sources, "fx/Broken.java", BROKEN),
+                                                       write(sources, "fx/CallsBroken.java", CALLS_BROKEN))))
+                             .unwrap();
+
+        return Result.lift(() -> Files.delete(compiled.resolve("fx/Missing.class")))
+                     .map(unit -> compiled)
+                     .unwrap();
+    }
+
+    /// `fx.Ldc` loads the `ServerSocket(int)` constructor as a method-handle constant with an `ldc`: a form no Java source compiles to
+    /// (a method reference is an invokedynamic), so the class is assembled with `java.lang.classfile`.
+    static Path withLdcOfAConstructorHandle(Path classes) {
+        var bytes = ClassFile.of().build(ClassDesc.of("fx.Ldc"),
+                                         builder -> builder.withMethodBody("handle",
+                                                                           MethodTypeDesc.of(ConstantDescs.CD_void),
+                                                                           ClassFile.ACC_STATIC,
+                                                                           code -> code.ldc(MethodHandleDesc.ofConstructor(ClassDesc.of("java.net.ServerSocket"),
+                                                                                                                           ConstantDescs.CD_int))
+                                                                                       .pop()
+                                                                                       .return_()));
+        var file = classes.resolve("fx/Ldc.class");
+
+        return Result.lift(() -> Files.createDirectories(file.getParent()))
+                     .flatMap(dir -> Result.lift(() -> Files.write(file, bytes)))
+                     .map(written -> classes)
                      .unwrap();
     }
 
