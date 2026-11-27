@@ -169,8 +169,8 @@ class RoutesGateTest {
     }
 
     /// Red when: a `Failed` row of an earlier attempt counts as committed: the blueprint is at attempt-1, its DECLARE is in flight, and the row
-    /// that lands is `Failed` for attempt-0 (a `Failed` row of the current attempt is committed; this one is the stale kind). No goal is drafted
-    /// against it.
+    /// that lands is `Failed` for attempt-0 (the stale kind; a `Failed` row of the current attempt does not count either, see below). No goal is
+    /// drafted against it.
     @Test
     void gate_aFailedRowOfAnEarlierAttemptIsNotCommitted() {
         var h = leaderWithOneCore();
@@ -181,33 +181,40 @@ class RoutesGateTest {
         h.drain();
         assertThat(committed(h, LIST)).as("control: the earlier attempt's row is committed").isEqualTo(Option.some(failed("attempt-0", "boom")));
         assertThat(h.held.values().stream().filter(submit -> submit.kind() == SubmitKind.ROUTES)).as("control: the DECLARE is in flight").hasSize(1);
-        assertThat(h.submits(SubmitKind.GOALS)).as("no goal against the stale row").isEmpty();
+        assertThat(h.submits(SubmitKind.GOALS)).as("no goal against the row").isEmpty();
     }
 
     /// Red when: a `Declared` row of an earlier attempt counts as committed (ruling A of #3836): the owner is at attempt-1, its DECLARE is in
     /// flight, and the row that is committed still speaks for attempt-0. No goal is drafted against it.
     @Test
     void gate_aDeclaredRowOfAnEarlierAttemptIsNotCommitted() {
-        assertStaleRowKeepsTheGateClosed(declared("attempt-0"));
+        assertRowKeepsTheGateClosed(declared("attempt-0"));
     }
 
     /// Red when: a `Published` row of an earlier attempt counts as committed: same setting as the `Declared` case.
     @Test
     void gate_aPublishedRowOfAnEarlierAttemptIsNotCommitted() {
-        assertStaleRowKeepsTheGateClosed(published("attempt-0"));
+        assertRowKeepsTheGateClosed(published("attempt-0"));
     }
 
-    private static void assertStaleRowKeepsTheGateClosed(DeclaredRouteValue stale) {
+    /// Red when: a `Failed` row of the owner's current attempt counts as committed: the gate counts only `Declared` and `Published` rows at the
+    /// current attempt, so a goal is not drafted over a row that says the deploy already failed.
+    @Test
+    void gate_aFailedRowOfTheCurrentAttemptIsNotCommitted() {
+        assertRowKeepsTheGateClosed(failed("attempt-1", "boom"));
+    }
+
+    private static void assertRowKeepsTheGateClosed(DeclaredRouteValue row) {
         var h = leaderWithOneCore();
 
         h.holdKinds = Set.of(SubmitKind.ROUTES);
         publish(h, blueprintOf("attempt-1", LIST));
-        h.seed(key(LIST), stale);
+        h.seed(key(LIST), row);
         h.drain();
-        assertThat(committed(h, LIST)).as("control: the earlier attempt's row is committed").isEqualTo(Option.some(stale));
+        assertThat(committed(h, LIST)).as("control: the row is committed").isEqualTo(Option.some(row));
         assertThat(h.held.values().stream().filter(submit -> submit.kind() == SubmitKind.ROUTES)).as("control: the DECLARE is in flight").hasSize(1);
         assertThat(Routes.rowsCommitted(h.model(), ORDERS)).as("the gate is closed").isFalse();
-        assertThat(h.submits(SubmitKind.GOALS)).as("no goal against the stale row").isEmpty();
+        assertThat(h.submits(SubmitKind.GOALS)).as("no goal against the row").isEmpty();
     }
 
     /// Red when: an ACTIVE goal is not gated (the gate covers only LOADED): the instance is LOADED, its row goes and its re-declaration is held;
