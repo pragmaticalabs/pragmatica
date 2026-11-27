@@ -343,12 +343,41 @@ public sealed interface Joins {
         return m.removedDirectives.containsKey(node);
     }
 
-    /// The removal of `node`'s committed directive was observed: remember the incarnation it was observed under.
+    /// The removal of `node`'s committed directive was observed: remember the incarnation it was observed under. Not for the model's own
+    /// retirement of a departed worker (`noteRetiring`): that id is terminal, and a process that joins under it is a new admission (#3028).
     static ClusterModel markRemoved(ClusterModel m, NodeId node) {
+        return m.retiringWorkers.contains(node)
+               ? settleRetiring(m, node)
+               : remember(m, node);
+    }
+
+    private static ClusterModel settleRetiring(ClusterModel m, NodeId node) {
+        m.retiringWorkers = m.retiringWorkers.remove(node);
+
+        return m;
+    }
+
+    private static ClusterModel remember(ClusterModel m, NodeId node) {
         m.removedDirectives = m.removedDirectives.put(node,
                                                       m.admissions.get(node).or(Admission.UNKNOWN).process());
 
         return m;
+    }
+
+    /// C17b removes a departed worker's record first and its directive second, in one transaction (`DepartureFlow.workerRetirement`): a
+    /// record removal that finds a departed worker's directive standing announces the directive's removal, which is not an operator's.
+    static ClusterModel noteRetiring(ClusterModel m, NodeId node) {
+        m.retiringWorkers = retiresWorker(m, node)
+                            ? m.retiringWorkers.add(node)
+                            : m.retiringWorkers;
+
+        return m;
+    }
+
+    private static boolean retiresWorker(ClusterModel m, NodeId node) {
+        return m.departed.contains(node) && m.directives.get(node)
+                                                        .filter(directive -> ActivationDirectiveValue.WORKER.equals(directive.role()))
+                                                        .isPresent();
     }
 
     /// An admission update ends the mark on positive evidence of another process (C8: both tokens known and unequal). A mark taken while the
