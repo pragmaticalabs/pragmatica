@@ -995,13 +995,13 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// migration lock is never removed at all (it is released by a tombstone `Put` so its version chain
     /// never restarts, and this arm refuses a bare `Remove` that would restart it); a stream-registry
     /// holder value (#1978) is removed by a release or departure sweep carrying the value it read, so a
-    /// remover that read an earlier life of the key cannot delete a later one. A fourth refusal, [#readsOtherLife], precedes
+    /// remover that read an earlier life of the key cannot delete a later one. A fourth refusal, [#removesLiveLife], precedes
     /// all of these for an [AssignmentGuarded] key (#3041). The decision reads only committed storage and
     /// the command, so every replica accepts or rejects a delete identically inside the applier.
     private boolean staleRemove(Remove<K> remove) {
         var key = remove.key();
 
-        if (storage.get(key) instanceof LeaderAuthorized || key instanceof RestoreAuthorityKey || readsOtherLife(remove)) {
+        if (storage.get(key) instanceof LeaderAuthorized || key instanceof RestoreAuthorityKey || removesLiveLife(remove)) {
             return true;
         }
 
@@ -1013,21 +1013,20 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         };
     }
 
-    /// A `Remove` of an [AssignmentGuarded] key whose committed value carries a token (#3041) is keyed by the token's life:
-    /// refused when its witness is a token-bearing value of ANOTHER token than the committed one. A remover that read
-    /// an earlier life of the key, committing late after a later life wrote its record there, therefore deletes
-    /// nothing, whatever the epochs of the two records. This arm only narrows (a witnessless `Remove` is still decided
-    /// by the arms below, which refuse it for an [EpochBearing] value).
-    private boolean readsOtherLife(Remove<K> remove) {
-        return remove.key() instanceof AssignmentGuarded
-               && storage.get(remove.key()) instanceof AssignmentTokenBearing committed
-               && namesOtherToken(remove.witness(), committed);
-    }
-
-    private static boolean namesOtherToken(Option<Object> witness, AssignmentTokenBearing committed) {
-        return witness.map(value -> value instanceof AssignmentTokenBearing claim && !claim.guardToken()
-                                                                                           .equals(committed.guardToken()))
-                      .or(false);
+    /// Delete-side life fence for an [AssignmentGuarded] key (#3041): a `Remove` is refused when the COMMITTED record
+    /// under the key carries the token of the COMMITTED authority under its guard key, that is, when the record belongs to
+    /// the live life of its stream. Only the records of a life that is not the committed one (the authority absent, or
+    /// carrying another token) can be deleted, whatever the `Remove`'s witness says or what its proposer read: the decision
+    /// is made here, at apply time, against committed storage, so a sweep that raced a recreate, or a late `Remove` of an
+    /// older life, deletes nothing of the live life. A record that carries no token, or a guard key with no token-bearing
+    /// authority, is not a live life, so this arm refuses nothing there. This arm only narrows (a witnessless `Remove` is
+    /// still decided by the arms below, which refuse it for an [EpochBearing] value).
+    private boolean removesLiveLife(Remove<K> remove) {
+        return remove.key() instanceof AssignmentGuarded guarded
+               && storage.get(remove.key()) instanceof AssignmentTokenBearing record
+               && storage.get(guarded.guardKey()) instanceof AssignmentTokenBearing authority
+               && authority.guardToken()
+                           .equals(record.guardToken());
     }
 
     @SuppressWarnings("unchecked")

@@ -28,6 +28,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry.GroupRecord;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.consensus.NodeId;
@@ -53,6 +54,12 @@ public sealed interface ConsumerGroupCoordinator {
     /// record whose life is not the committed one; any other node ignores it.
     @MessageReceiver
     void onStreamConfigRemove(ValueRemove<StreamConfigKey, StreamConfigValue> notification);
+
+    /// #3041: a committed (or replayed) consumer-group record of a life that is not the stream's committed one is an orphan
+    /// no delete trigger will reach: a cold boot restores it from the snapshot and the replay burst delivers it, possibly
+    /// after the activation sweep read an empty mirror. The leader reclaims it on arrival; any other node ignores it.
+    @MessageReceiver
+    void onConsumerGroupPut(ValuePut<ConsumerGroupKey, AetherValue> notification);
 
     Result<Unit> joinGroup(String groupId, String streamName, int partitionCount, String consumerId, NodeId nodeId);
 
@@ -89,6 +96,9 @@ public sealed interface ConsumerGroupCoordinator {
 
         @Override
         public void onStreamConfigRemove(ValueRemove<StreamConfigKey, StreamConfigValue> notification) {}
+
+        @Override
+        public void onConsumerGroupPut(ValuePut<ConsumerGroupKey, AetherValue> notification) {}
 
         @Override
         public Result<Unit> joinGroup(String groupId,
@@ -130,6 +140,8 @@ public sealed interface ConsumerGroupCoordinator {
         default void reclaim(String streamName) {}
 
         default void reclaimAll() {}
+
+        default void reclaimIfDead(ConsumerGroupKey key, AetherValue value) {}
 
         record Dormant() implements CoordinatorState {}
 
@@ -210,11 +222,11 @@ public sealed interface ConsumerGroupCoordinator {
             }
 
             /// #3041, reclaim: removes every record of the stream whose life is not the committed one (all of them while the
-            /// stream has no committed config). Each `Remove` names the record it read as its witness, so the applier
-            /// deletes it only while the key still holds a record not older than that one; a `Remove` that commits late,
-            /// after a recreate has written the new life's record, is refused and deletes nothing: by the epoch witness,
-            /// and by the KV applier's life arm (`readsOtherLife`) when the witness's token is another life's. The
-            /// writes of a dead life are refused by the stream-life guard, so nothing re-creates what is removed.
+            /// stream has no committed config). What this leader read is only a proposal: the KV applier decides at apply
+            /// time, against committed state, and refuses (`removesLiveLife`) the deletion of any record that belongs to the
+            /// committed life of its stream. A sweep that raced a recreate, or a `Remove` that commits late after a recreate
+            /// has written the new life's record, therefore deletes nothing of the live life. The writes of a dead life are
+            /// refused by the stream-life guard, so nothing re-creates what is removed.
             @Override
             public void reclaim(String streamName) {
                 submitReclaim(streamName, removalsOf(streamName, lives.incarnationOf(streamName)));
@@ -225,6 +237,27 @@ public sealed interface ConsumerGroupCoordinator {
             @Override
             public void reclaimAll() {
                 registry.streamNames().forEach(this::reclaim);
+            }
+
+            /// #3041, F5: the per-record trigger. A record that arrives (a Put notification, replayed or live) with a life other
+            /// than the committed one is reclaimed at once, so an orphan that the activation sweep missed (it read the mirror
+            /// before the replay burst delivered the record) is still removed. The applier's life fence decides, as in the sweep.
+            @Override
+            public void reclaimIfDead(ConsumerGroupKey key, AetherValue value) {
+                lifeOf(value).filter(life -> lives.incarnationOf(key.streamName())
+                                                  .filter(committed -> committed.equals(life))
+                                                  .isEmpty())
+                      .map(life -> GroupRecord.groupRecord(key, value, life))
+                      .onPresent(record -> submitReclaim(key.streamName(),
+                                                         List.of(removal(record))));
+            }
+
+            private static Option<Long> lifeOf(AetherValue value) {
+                return switch (value) {
+                    case ConsumerGroupValue assignment -> Option.some(assignment.streamIncarnation());
+                    case ConsumerGroupTombstone tombstone -> Option.some(tombstone.streamIncarnation());
+                    default -> Option.none();
+                };
             }
 
             private List<KVCommand<AetherKey>> removalsOf(String streamName, Option<Long> committed) {
@@ -552,6 +585,12 @@ public sealed interface ConsumerGroupCoordinator {
         @Override
         public void onStreamConfigRemove(ValueRemove<StreamConfigKey, StreamConfigValue> notification) {
             state.get().reclaim(notification.cause().key().streamName());
+        }
+
+        @Override
+        public void onConsumerGroupPut(ValuePut<ConsumerGroupKey, AetherValue> notification) {
+            state.get().reclaimIfDead(notification.cause().key(),
+                                      notification.cause().value());
         }
 
         @Override

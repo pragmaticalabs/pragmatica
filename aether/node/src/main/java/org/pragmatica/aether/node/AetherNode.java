@@ -5183,6 +5183,8 @@ public interface AetherNode extends ManageableNode {
 
         dynamicConfigManager.onPresent(dcm -> dcm.onApplied(DEPLOYMENT_CONFIG_LISTENER, configApplied));
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
+        // #3041, F5: a record that arrives with a life other than the committed one is an orphan; the leader reclaims it.
+        kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupCoordinator::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
         // #3041: a committed stream delete ends the stream's life; the leader's coordinator reclaims the records of it.
         kvRouterBuilder.onRemove(AetherKey.StreamConfigKey.class, consumerGroupCoordinator::onStreamConfigRemove);

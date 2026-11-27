@@ -77,6 +77,7 @@ class ConsumerGroupStreamLifeReclaimTest {
     private void route(ValuePut<?, ?> event) {
         if (event.cause().key() instanceof ConsumerGroupKey) {
             registry.onConsumerGroupPut((ValuePut<ConsumerGroupKey, AetherValue>) event);
+            coordinator.onConsumerGroupPut((ValuePut<ConsumerGroupKey, AetherValue>) event);
         }
     }
 
