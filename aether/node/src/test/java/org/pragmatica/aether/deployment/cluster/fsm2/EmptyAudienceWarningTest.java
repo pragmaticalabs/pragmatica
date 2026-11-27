@@ -364,6 +364,28 @@ class EmptyAudienceWarningTest {
     /// seconds, not ticks: a tick is 30 s, which is longer than the bound itself.
     @Test
     void degradedWriteWindow_commitsLate_doesNotCutTheActiveWritesHoldBackShort() {
+        var w = degradedCommittedLate_activeWriteDrafted();
+        var second = 1_000L;
+
+        w.h.advance(6 * second);
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("the ACTIVE write has been in flight ~6 seconds, far below its own bound").isEmpty();
+    }
+
+    /// Red when: a window of another edge is kept for the ACTIVE write (the ACTIVE write then has no window of its own, which `Placement` reads
+    /// as "not drafted yet": held back for ever). The ACTIVE write is lost after the F1 sequence; the stall must be told past ITS bound.
+    @Test
+    void degradedWriteCommitsLate_theActiveWriteLost_raisesAfterItsOwnBound() {
+        var w = degradedCommittedLate_activeWriteDrafted();
+
+        w.h.advance(w.h.settings.submissionExpiry() + 3 * w.h.settings.timing().tick());
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("the ACTIVE write is lost: the stall is told past its own bound").hasSize(1);
+    }
+
+    /// The F1 sequence up to the point where the ACTIVE write is drafted: the DEGRADED write commits late, coalesced with a roster return, at
+    /// submission-expiry minus 3 seconds; no pass saw agreement between, so the slot still holds the DEGRADED write's window. COMMUNITY drafts stay held.
+    private static MbWorld degradedCommittedLate_activeWriteDrafted() {
         var w = activeWorld();
         var expiry = w.h.settings.submissionExpiry();
         var second = 1_000L;
@@ -388,9 +410,8 @@ class EmptyAudienceWarningTest {
         assertThat(w.h.model().communities.get("east-w-0").map(v -> v.state().name()).or("none"))
             .as("committed DEGRADED, the ACTIVE write drafted").isEqualTo("DEGRADED");
         assertThat(w.h.warns(OPEN)).as("the ACTIVE write is in flight").isEmpty();
-        w.h.advance(6 * second);
-        w.h.deliver(new ClusterInput.Reconcile());
-        assertThat(w.h.warns(OPEN)).as("the ACTIVE write has been in flight ~6 seconds, far below its own bound").isEmpty();
+
+        return w;
     }
 
     /// Control of the test above, same sequence plus one agreement pass after the DEGRADED commit (W3 still off the roster): the window is
