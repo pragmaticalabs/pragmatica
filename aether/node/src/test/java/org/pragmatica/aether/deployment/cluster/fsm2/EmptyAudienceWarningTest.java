@@ -471,6 +471,30 @@ class EmptyAudienceWarningTest {
     /// window of the other write, past its deadline, is read as the ACTIVE write's and the event opens at once.
     @Test
     void expiredDegradedWindow_activeWriteNotYetDrafted_isHeldBack() {
+        activeWriteNotYetDrafted_afterTheDegradedCommit(Option.none());
+    }
+
+    /// Same pass, with the slot holding a closed window of a write that left FORMING for ACTIVE: the same target state, another edge, so
+    /// not the ACTIVE write's window of a DEGRADED community. Red when: `ActivationWindow#isFor` ignores the state the write leaves.
+    @Test
+    void closedWindowOfTheFormingEdge_isNotTheDegradedCommunitysActiveWrite() {
+        activeWriteNotYetDrafted_afterTheDegradedCommit(Option.some(ActivationWindow.activationWindow(99L,
+                                                                                                     CommunityState.FORMING,
+                                                                                                     CommunityState.ACTIVE,
+                                                                                                     0L)));
+    }
+
+    /// Same pass, with the slot holding a closed window of a write that left DEGRADED for DEGRADED: the same starting state, another target.
+    /// Red when: `ActivationWindow#isFor` ignores the state the write targets.
+    @Test
+    void closedWindowOfAnotherTarget_isNotTheDegradedCommunitysActiveWrite() {
+        activeWriteNotYetDrafted_afterTheDegradedCommit(Option.some(ActivationWindow.activationWindow(98L,
+                                                                                                     CommunityState.DEGRADED,
+                                                                                                     CommunityState.DEGRADED,
+                                                                                                     0L)));
+    }
+
+    private static void activeWriteNotYetDrafted_afterTheDegradedCommit(Option<ActivationWindow> slot) {
         var w = activeWorld();
         var expiry = w.h.settings.submissionExpiry();
         var tick = w.h.settings.timing().tick();
@@ -487,6 +511,7 @@ class EmptyAudienceWarningTest {
         w.h.settle(degraded, w.h.applyHeld(degraded.correlationId()));
         w.h.seed(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
         w.h.drain();
+        slot.onPresent(window -> w.h.model().activationDeadline = w.h.model().activationDeadline.put("east-w-0", window));
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.model().communities.get("east-w-0").map(v -> v.state().name()).or("none"))
             .as("committed DEGRADED, the ACTIVE write drafted").isEqualTo("DEGRADED");
