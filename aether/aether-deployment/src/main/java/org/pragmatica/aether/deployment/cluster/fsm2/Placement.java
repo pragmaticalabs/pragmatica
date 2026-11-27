@@ -151,7 +151,7 @@ public sealed interface Placement {
     /// closed by `placement-audience-available`). FER (degrade forward): the target stays unplaced; the floor is not lowered here, because it
     /// is the DHT replication factor. Guarantee: the stall is visible, never silent. Mechanism: the committed open set of `Warnings`.
     private static ClusterModel emptyAudience(ClusterModel m, Ctx ctx, ArtifactBase base, PlacementPolicy policy) {
-        return activationDue(m, ctx, policy)
+        return activationInFlight(m, ctx, policy)
                ? m
                : Warnings.raise(m,
                                 Warnings.EMPTY_AUDIENCE,
@@ -161,24 +161,34 @@ public sealed interface Placement {
                                 emptyAudienceText(m, ctx, base, policy));
     }
 
-    /// A worker-reading policy whose audience is empty only because a community reached its floor this tick: `Communities.run` (after this
-    /// step in `Reconcile.run`) has its FORMING/DEGRADED to ACTIVE write due, and the audience is non-empty once it commits. That is not a
-    /// stall, so it opens no episode (the order cannot help: the write commits after the tick). A write that never commits keeps the audience
-    /// empty and the community stuck below ACTIVE: Communities re-evaluates it every pass, and its own state is the operator's signal then.
-    private static boolean activationDue(ClusterModel m, Ctx ctx, PlacementPolicy policy) {
+    /// The empty audience of a worker-reading policy waits only while the community's own FORMING/DEGRADED to ACTIVE write is in flight, never
+    /// on a draft: the event is computed from committed state, and `Communities.run` redrafts a refused or lost write every pass, so a
+    /// suppression read from the draft would hide the stall for good. A due community (its next state is ACTIVE) is in flight until its
+    /// window (`ClusterModel.activationDeadline`) ends: it has not been drafted yet (this pass, before `Communities.run`), or the bound since
+    /// the first draft has not passed (a lost write), and no refusal or failure closed it.
+    private static boolean activationInFlight(ClusterModel m, Ctx ctx, PlacementPolicy policy) {
         var floor = CommunityPolicies.current(m, ctx).viabilityFloor();
 
         return policy != PlacementPolicy.CORE_ONLY && m.communities.entries()
                                                                    .stream()
-                                                                   .anyMatch(entry -> becomesActive(m, floor, entry));
+                                                                   .filter(entry -> due(m, floor, entry))
+                                                                   .anyMatch(entry -> windowOpen(m,
+                                                                                                 ctx,
+                                                                                                 entry.getKey()));
     }
 
-    private static boolean becomesActive(ClusterModel m, int floor, Map.Entry<String, CommunityValue> entry) {
+    private static boolean due(ClusterModel m, int floor, Map.Entry<String, CommunityValue> entry) {
         var state = entry.getValue().state();
 
         return state != CommunityState.ACTIVE && Communities.next(state,
                                                                   Communities.liveMembers(m, entry.getKey()),
                                                                   floor) == CommunityState.ACTIVE;
+    }
+
+    private static boolean windowOpen(ClusterModel m, Ctx ctx, String communityId) {
+        return m.activationDeadline.get(communityId)
+                                   .map(deadline -> ctx.monoNs() < deadline)
+                                   .or(true);
     }
 
     private static String emptyAudienceText(ClusterModel m, Ctx ctx, ArtifactBase base, PlacementPolicy policy) {

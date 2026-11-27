@@ -48,8 +48,41 @@ public sealed interface Communities {
             var guard = new KVCommand.ReadWitness<AetherKey>(announcement,
                                                              m.rosters.get(id).map(v -> (Object) v));
 
+            openWindow(m, ctx, id);
             Outbox.direct(m,
                           TxDraft.draft(SubmitKind.COMMUNITY, key, List.of(mutation)).withGuards(List.of(guard)));
+        } else {
+            m.activationDeadline = m.activationDeadline.remove(id);
+        }
+
+        return m;
+    }
+
+    /// #3815: the in-flight window of a community's state-change write opens at the first draft and lasts the submission-expiry bound; a redraft
+    /// (every pass redrafts while the state differs) leaves it where it is, so a write that is lost again and again ends the window at the
+    /// first bound. `Placement` holds the empty-audience event back only inside it.
+    private static ClusterModel openWindow(ClusterModel m, Ctx ctx, String id) {
+        if (!m.activationDeadline.containsKey(id)) {
+            m.activationDeadline = m.activationDeadline.put(id,
+                                                            ctx.monoNs() + ctx.settings().submissionExpiry() * 1_000_000L);
+        }
+
+        return m;
+    }
+
+    /// #3815: a refused or failed write is not in flight: the window of each community it wrote closes at the settlement (no-op for a community
+    /// whose window is not open, e.g. already agreed). The redraft of the next pass does not reopen it.
+    static ClusterModel closeWindows(ClusterModel m, Ctx ctx, List<TxDraft> drafts) {
+        drafts.stream()
+              .filter(draft -> draft.kind() == SubmitKind.COMMUNITY)
+              .forEach(draft -> closeWindow(m, ctx, draft));
+
+        return m;
+    }
+
+    private static ClusterModel closeWindow(ClusterModel m, Ctx ctx, TxDraft draft) {
+        if (draft.key() instanceof CommunityKey key && m.activationDeadline.containsKey(key.communityId())) {
+            m.activationDeadline = m.activationDeadline.put(key.communityId(), ctx.monoNs());
         }
 
         return m;
