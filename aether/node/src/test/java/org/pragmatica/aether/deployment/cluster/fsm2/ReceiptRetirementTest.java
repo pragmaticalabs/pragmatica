@@ -251,9 +251,10 @@ class ReceiptRetirementTest {
     // together with a WORKER directive, "otherwise never"), so nothing ever releases the id.
     @Test
     void sweep_departedWorkerWithAReceiptAndNoDirective_isRetired_andTheSameProcessIsDirectedAgain() {
-        var w = departedWithReceiptOnly().activate();
+        var w = departedWithReceiptOnly();
         var record = recordNow(w);
 
+        w.activate();
         settle(w);
 
         assertThat(w.h.submits(SubmitKind.CLEANUP)).as("a C17b is submitted").isNotEmpty();
