@@ -27,6 +27,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.RouteState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Option;
 
@@ -202,6 +203,25 @@ class RoutesGateTest {
     @Test
     void gate_aFailedRowOfTheCurrentAttemptIsNotCommitted() {
         assertRowKeepsTheGateClosed(failed("attempt-1", "boom"));
+    }
+
+    /// Red when: a row another blueprint owns counts as committed because its attemptId equals the owner's: a row speaks only for the blueprint
+    /// that owns it, so the owner's DECLARE must take it over before any goal is drafted.
+    @Test
+    void gate_aRowAnotherBlueprintOwnsIsNotCommitted() {
+        assertRowKeepsTheGateClosed(DeclaredRouteValue.declaredRouteValue("org.example:other:1.0.0", "attempt-1", RouteState.Declared.declared()));
+    }
+
+    /// Red when: a `Published` row of the current attempt does not count as committed: a node's routes are served, so the gate must not hold
+    /// the goal over the row that says so.
+    @Test
+    void gate_aPublishedRowOfTheCurrentAttemptIsCommitted() {
+        var h = leaderWithOneCore();
+
+        publish(h, blueprintOf("attempt-1", LIST));
+        publishRoutes(h, CORE_1);
+        assertThat(committed(h, LIST)).as("control: published at the owner's attempt").isEqualTo(Option.some(published("attempt-1")));
+        assertThat(Routes.rowsCommitted(h.model(), ORDERS)).isTrue();
     }
 
     private static void assertRowKeepsTheGateClosed(DeclaredRouteValue row) {
