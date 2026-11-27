@@ -84,13 +84,16 @@ public sealed interface Blueprints {
             return rejected(m, ctx, id, expanded);
         }
 
+        var put = Routes.classify(m.blueprints.get(id), value);
+
         Indexer.indexBlueprint(m, id, value);
         if (value.registerOnly()) {
             return m;
         }
         // #3389 W1: the routes are drafted in the same drain as the targets, ahead of the goals the targets lead to (the load gate on those goals
-        // is `Outbox.goalDraft`'s, a later step of #3389 A2).
-        Routes.reconcile(m, ctx, id);
+        // is `Outbox.goalDraft`'s, a later step of #3389 A2). #3836: `put` is classified above, before `indexBlueprint` replaces the value it is read
+        // against; a restore (the rollback re-using the rolled-back attemptId) opens the rows that failure left `Failed`.
+        Routes.reconcile(m, ctx, id, put);
 
         return declare(m, ctx, id, expanded, true);
     }

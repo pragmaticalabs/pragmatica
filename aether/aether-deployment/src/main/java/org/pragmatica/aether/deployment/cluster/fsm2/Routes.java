@@ -12,6 +12,7 @@ import java.util.function.Function;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -39,10 +40,39 @@ import org.pragmatica.lang.Option;
 /// Every draft carries a witness on the owner blueprint's row, so a draft that lands after the blueprint's remove or republish is refused by the
 /// applier, in any commit order and across a leader change.
 ///
-/// A declared row speaks only for its owner blueprint's current attemptId (#3836). [#standing] is the one place that compares a row's attemptId
-/// with the owner's: the gate, DECLARE, PUBLISH and FAIL all ask it, and every row any of them writes carries the owner's current attemptId.
+/// A declared row speaks only for its claimant blueprint's current attemptId (#3836). [#standing] is the one place that compares a row's attemptId
+/// with the claimant's: the gate, DECLARE, PUBLISH and FAIL all ask it, and every row any of them writes carries the claimant's current attemptId.
+///
+/// A row key has one claimant, whatever the number of committed blueprints that declare it (two versions of one base coexist, C2): [#claimant] is
+/// the one function that names it, from committed values alone, and DECLARE, PUBLISH, FAIL, REMOVE, the sweep and the gate all take the blueprint
+/// they act for from it. A row is removed only when no committed blueprint claims its key.
 public sealed interface Routes {
-    /// Where a committed row stands against the blueprint that owns it. `STALE` is a row of another owner or of an earlier attempt, whatever its
+    /// What a committed `AppBlueprintValue` put is, read against the value the mirror held for the same id before it (#3836): the first put or one
+    /// under another attemptId (`NEW_ATTEMPT`: `BlueprintService` stamps a fresh attemptId on every put), or a put under the attemptId the mirror
+    /// already holds (`RESTORED`): the only other writer is the rollback restore of #972, which re-puts a committed attempt, with the rolled-back
+    /// attemptId for the same id or the restored id's own committed value for a different one, so a restore of identical content is a put of an
+    /// unchanged value and no comparison of content could tell it from nothing. A restore is the only put under which a row `Failed` at the
+    /// blueprint's current attempt is opened again: the rollback ended the failure that row recorded. `NONE` is a reconcile with no put behind it
+    /// (the sweep, a removal), which opens nothing.
+    enum Put {
+        NONE,
+        NEW_ATTEMPT,
+        RESTORED;
+
+        boolean reopens() {
+            return this == RESTORED;
+        }
+    }
+
+    /// Classify a put from the values alone: `previous` is the mirror's value before [Indexer#indexBlueprint] replaces it.
+    static Put classify(Option<AppBlueprintValue> previous, AppBlueprintValue value) {
+        return previous.filter(before -> before.attemptId()
+                                               .equals(value.attemptId()))
+                       .fold(() -> Put.NEW_ATTEMPT,
+                             _ -> Put.RESTORED);
+    }
+
+    /// Where a committed row stands against the blueprint that claims its key. `STALE` is a row of another owner or of an earlier attempt, whatever its
     /// state: it speaks for nobody until it is re-declared at the current attempt. The other three are the row's state at the current attempt.
     enum Standing {
         DECLARED,
@@ -57,11 +87,17 @@ public sealed interface Routes {
     /// removal of each owned row no declared route names, and of every owned row once the blueprint is gone. A `registerOnly` blueprint
     /// deploys nothing, so it declares nothing and its rows are left as they are.
     ///
-    /// A draft of this blueprint already queued or in flight is not repeated: its refusal or loss is derived again by [#sweep].
+    /// A draft of this blueprint already queued or in flight is not repeated: its refusal or loss is derived again by [#sweep]. The one exception
+    /// is the put of a restore ([Put#RESTORED]): the sweep never reopens a `Failed` row, so a draft in flight, which the restore's new blueprint
+    /// value refuses at the applier, must not stand in for it.
     static ClusterModel reconcile(ClusterModel m, Ctx ctx, BlueprintId id) {
-        return inFlight(m, id)
+        return reconcile(m, ctx, id, Put.NONE);
+    }
+
+    static ClusterModel reconcile(ClusterModel m, Ctx ctx, BlueprintId id, Put put) {
+        return inFlight(m, id) && !put.reopens()
                ? m
-               : submit(m, id, difference(m, id));
+               : submit(m, id, difference(m, id, put));
     }
 
     // -- W2: PUBLISH, W3: FAIL ---------------------------------------------------------------------------------------
@@ -73,7 +109,7 @@ public sealed interface Routes {
                : m;
     }
 
-    /// W3: every row of `artifact` not yet `Failed` at its owner's current attempt becomes `Failed(reason)` at that attempt, each mutation
+    /// W3: every row of `artifact` not yet `Failed` at its claimant's current attempt becomes `Failed(reason)` at that attempt, each mutation
     /// expecting the row as the mirror holds it. The mutations join the artifact's FAILURE transaction (`Outbox.artifactDraft`), so the judgment
     /// and the rows commit or are refused together.
     static ClusterModel fail(ClusterModel m, Artifact artifact, String reason) {
@@ -96,14 +132,13 @@ public sealed interface Routes {
                                .flatMap(row -> failure(m, key, row, reason));
     }
 
-    /// The owner is the blueprint the row names: a row whose owner is gone is removed by the next reconcile, so there is no attempt to fail it at.
+    /// The claimant is the blueprint that speaks for the key: a row no committed blueprint claims is removed by the next reconcile, so there is no
+    /// attempt to fail it at.
     private static Option<KVCommand.Mutation<AetherKey, AetherValue>> failure(ClusterModel m,
                                                                               DeclaredRouteKey key,
                                                                               DeclaredRouteValue row,
                                                                               String reason) {
-        return BlueprintId.blueprintId(row.blueprintId())
-                          .option()
-                          .flatMap(id -> failure(m, key, row, id, reason));
+        return claimant(m, key).flatMap(id -> failure(m, key, row, id, reason));
     }
 
     private static Option<KVCommand.Mutation<AetherKey, AetherValue>> failure(ClusterModel m,
@@ -140,22 +175,23 @@ public sealed interface Routes {
         return m;
     }
 
-    private static List<KVCommand.Mutation<AetherKey, AetherValue>> difference(ClusterModel m, BlueprintId id) {
+    private static List<KVCommand.Mutation<AetherKey, AetherValue>> difference(ClusterModel m, BlueprintId id, Put put) {
         return m.blueprints.get(id)
                            .fold(() -> removals(m,
                                                 id,
                                                 Set.of()),
                                  value -> value.registerOnly()
                                           ? List.<KVCommand.Mutation<AetherKey, AetherValue>> of()
-                                          : declaredDifference(m, id, value));
+                                          : declaredDifference(m, id, value, put));
     }
 
     private static List<KVCommand.Mutation<AetherKey, AetherValue>> declaredDifference(ClusterModel m,
                                                                                        BlueprintId id,
-                                                                                       AppBlueprintValue value) {
+                                                                                       AppBlueprintValue value,
+                                                                                       Put put) {
         var wanted = wantedKeys(value);
 
-        return Stream.concat(wanted.stream().flatMap(key -> declare(m, id, value, key).stream()),
+        return Stream.concat(wanted.stream().flatMap(key -> declare(m, id, value, key, put).stream()),
                              removals(m,
                                       id,
                                       Set.copyOf(wanted)).stream())
@@ -189,18 +225,26 @@ public sealed interface Routes {
                                .option();
     }
 
-    /// A row is written for a declared route when none is committed or its standing is `STALE`: another blueprint owns it, or it is of an earlier
-    /// attempt of this blueprint, whatever its state. A row at the current attempt stays as it is: `Declared` is published when a node publishes
-    /// routes for its artifact, `Published` holds, and `Failed` stays `Failed` until the next attempt.
+    /// A blueprint declares only the rows whose key it claims ([#claimant]). A row is written for such a key when none is committed or its standing
+    /// is `STALE`: another blueprint owns it, or it is of an earlier attempt of this blueprint, whatever its state. A row at the current attempt stays
+    /// as it is: `Declared` is published when a node publishes routes for its artifact, `Published` holds, and `Failed` stays `Failed` until the next
+    /// attempt, except after a restore ([Put#RESTORED]), which opens it again.
     private static Option<KVCommand.Mutation<AetherKey, AetherValue>> declare(ClusterModel m,
                                                                               BlueprintId id,
                                                                               AppBlueprintValue owner,
-                                                                              DeclaredRouteKey key) {
+                                                                              DeclaredRouteKey key,
+                                                                              Put put) {
         var committed = m.declaredRoutes.get(key);
 
-        return committed.filter(row -> standing(row, id, owner) != Standing.STALE)
-                        .fold(() -> Option.some(declaration(key, committed, id, owner)),
-                              row -> publish(m, id, owner, key, row));
+        return claimant(m, key).filter(id::equals)
+                               .flatMap(_ -> committed.filter(row -> kept(standing(row, id, owner), put))
+                                                      .fold(() -> Option.some(declaration(key, committed, id, owner)),
+                                                            row -> publish(m, id, owner, key, row)));
+    }
+
+    /// A committed row stays as it is unless it is `STALE`, or `Failed` under a put that reopens failed rows.
+    private static boolean kept(Standing standing, Put put) {
+        return standing != Standing.STALE && !(standing == Standing.FAILED && put.reopens());
     }
 
     /// The mutation that writes `key`'s row `Declared` at the owner's current attemptId over what is committed (nothing, or a `STALE` row).
@@ -271,7 +315,7 @@ public sealed interface Routes {
                      List<DeclaredRouteKey> rows) {
         static GateReads gateReads(Function<AetherKey, Option<AetherValue>> read, Artifact artifact) {
             var targetKey = new AetherKey.SliceTargetKey(artifact.base());
-            var owner = typed(read.apply(targetKey), SliceTargetValue.class).flatMap(SliceTargetValue::owningBlueprint);
+            var owner = targetOwner(read, artifact.base());
             var blueprint = owner.flatMap(id -> typed(read.apply(AppBlueprintKey.appBlueprintKey(id)),
                                                       AppBlueprintValue.class));
 
@@ -296,6 +340,33 @@ public sealed interface Routes {
                     .map(type::cast);
     }
 
+    /// The SliceTarget row's owning blueprint of `base`: the one reading of that relation, shared by the gate and by [#claimant].
+    private static Option<BlueprintId> targetOwner(Function<AetherKey, Option<AetherValue>> read, ArtifactBase base) {
+        return typed(read.apply(new AetherKey.SliceTargetKey(base)), SliceTargetValue.class).flatMap(SliceTargetValue::owningBlueprint);
+    }
+
+    /// The one function that names the blueprint speaking for a declared row key (#3836): the SliceTarget owner of the key's base when it is
+    /// committed and declares the key, else the committed declarer of the greatest id text (a stable choice, not a claim of the newest version).
+    /// Two versions of one base can both declare a key (C2 exempts the same base), and every writer of the table asks this function, so one key
+    /// never has two claimants; the gate reads the owner from the same [#targetOwner] and waits only for keys that owner declares, which that
+    /// owner claims. A function of committed values alone (the target row and the blueprints), so a leader that rebuilds the same state names the
+    /// same claimant. The fallback scans the committed blueprints, and runs only for a key whose target owner does not declare it.
+    private static Option<BlueprintId> claimant(ClusterModel m, DeclaredRouteKey key) {
+        return targetOwner(mirror(m),
+                           key.artifact()
+                              .base()).filter(id -> declares(m, id, key))
+                                      .orElse(() -> Option.from(m.blueprints.keys()
+                                                                            .stream()
+                                                                            .filter(id -> declares(m, id, key))
+                                                                            .max(Comparator.comparing(BlueprintId::asString))));
+    }
+
+    private static boolean declares(ClusterModel m, BlueprintId id, DeclaredRouteKey key) {
+        return m.blueprints.get(id)
+                           .map(value -> declaredKeys(value, key.artifact()).contains(key))
+                           .or(false);
+    }
+
     private static boolean allCurrent(GateReads reads, BlueprintId id, AppBlueprintValue value) {
         return reads.rows()
                     .stream()
@@ -312,7 +383,7 @@ public sealed interface Routes {
                                   value.declaredRoutes().getOrDefault(artifact, List.of())));
     }
 
-    /// The one comparison of a row's attemptId with its owner's. A row of another owner or of an earlier attempt is `STALE`, whatever its state.
+    /// The one comparison of a row's attemptId with its claimant's. A row of another owner or of an earlier attempt is `STALE`, whatever its state.
     private static Standing standing(DeclaredRouteValue row, BlueprintId id, AppBlueprintValue owner) {
         return owns(row, id) && row.attemptId()
                                    .equals(owner.attemptId())
@@ -338,7 +409,8 @@ public sealed interface Routes {
         return DeclaredRouteValue.declaredRouteValue(id.asString(), owner.attemptId(), state);
     }
 
-    /// The removal of every row `id` owns that no declared route names, each at its committed value.
+    /// The removal of every row `id` owns that no declared route names and that no committed blueprint claims, each at its committed value: a key
+    /// another blueprint claims is taken over by its claimant's DECLARE, never removed.
     private static List<KVCommand.Mutation<AetherKey, AetherValue>> removals(ClusterModel m,
                                                                              BlueprintId id,
                                                                              Set<DeclaredRouteKey> wanted) {
@@ -360,6 +432,7 @@ public sealed interface Routes {
                                                                               DeclaredRouteKey key) {
         return m.declaredRoutes.get(key)
                                .filter(row -> owns(row, id))
+                               .filter(_ -> claimant(m, key).isEmpty())
                                .map(row -> new KVCommand.Mutation<AetherKey, AetherValue>(key,
                                                                                           Option.some((AetherValue) row),
                                                                                           Option.none()));
