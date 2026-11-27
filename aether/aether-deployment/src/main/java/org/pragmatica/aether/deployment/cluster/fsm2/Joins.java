@@ -60,6 +60,7 @@ public sealed interface Joins {
 
         m.admissions = m.admissions.put(node, admission);
         m.admittedAt = m.admittedAt.put(node, ctx.monoNs());
+        m.retiredWorkers = m.retiredWorkers.remove(node);
         refreshRemoved(m, node);
         Absence.clear(m, node);
         Indexer.refreshDeparted(m, node);
@@ -343,13 +344,20 @@ public sealed interface Joins {
         return m.removedDirectives.containsKey(node);
     }
 
-    /// The removal of `node`'s committed directive was observed while its departure record stands: remember the incarnation it was observed
-    /// under. A node without a record is retired (C17b removes the record first, `DepartureFlow.workerRetirement`) and is not marked; the
-    /// id is terminal, and a process that joins under it is a new admission (#3028).
+    /// The removal of `node`'s committed directive was observed: remember the incarnation it was observed under, but only for a node that is
+    /// live at the removal (#3828). A node with a DEPARTED record is retiring, and a node in `retiredWorkers` was retired by C17b (the record
+    /// went first, `DepartureFlow.workerRetirement`): that id is terminal, the directive's removal is the model's own, and a process that joins
+    /// under it is a new admission (#3028). A live node has no DEPARTED record, with or without an ADMITTED one.
     static ClusterModel markRemoved(ClusterModel m, NodeId node) {
-        return m.records.containsKey(node)
+        return isLive(m, node)
                ? remember(m, node)
                : m;
+    }
+
+    private static boolean isLive(ClusterModel m, NodeId node) {
+        return !m.retiredWorkers.contains(node) && !m.records.get(node)
+                                                            .filter(Departures::isDeparted)
+                                                            .isPresent();
     }
 
     private static ClusterModel remember(ClusterModel m, NodeId node) {
@@ -359,12 +367,17 @@ public sealed interface Joins {
         return m;
     }
 
-    /// The departure record of `node` was removed: no mark outlives its record, whichever of the record's and the directive's removals came
-    /// first.
-    static ClusterModel forgetRemoved(ClusterModel m, NodeId node) {
-        m.removedDirectives = m.removedDirectives.remove(node);
+    /// The DEPARTED record of `node` is being removed (R-4.3.3 / C17b): the id is retired, and no mark outlives it, whichever of the record's
+    /// and the directive's removals came first. Called before the record leaves `m.records`. The id stays retired until its next join.
+    static ClusterModel retire(ClusterModel m, NodeId node) {
+        m.records.get(node).filter(Departures::isDeparted).onPresent(record -> retired(m, node));
 
         return m;
+    }
+
+    private static void retired(ClusterModel m, NodeId node) {
+        m.retiredWorkers = m.retiredWorkers.add(node);
+        m.removedDirectives = m.removedDirectives.remove(node);
     }
 
     /// An admission update ends the mark on positive evidence of another process (C8: both tokens known and unequal). A mark taken while the

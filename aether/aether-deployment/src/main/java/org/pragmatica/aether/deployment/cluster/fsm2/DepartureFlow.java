@@ -235,7 +235,7 @@ public sealed interface DepartureFlow {
 
     static ClusterModel onRecordRemove(ClusterModel m, Ctx ctx, NodeId node) {
         m.records.get(node).filter(DepartureFlow::isInferred).onPresent(record -> confirmed(m, ctx, node, record));
-        Joins.forgetRemoved(m, node);
+        Joins.retire(m, node);
         Indexer.removeRecord(m, node);
         resolveInFlight(m, ctx, node);
         Joins.reevaluate(m, ctx, node);
