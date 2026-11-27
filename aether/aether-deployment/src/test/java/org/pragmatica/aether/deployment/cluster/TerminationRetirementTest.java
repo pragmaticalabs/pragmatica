@@ -6,20 +6,25 @@ package org.pragmatica.aether.deployment.cluster;
 
 import io.netty.buffer.ByteBuf;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.deployment.cluster.fsm2.Admission;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DirectiveReceiptKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DirectiveReceiptValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -27,8 +32,11 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
@@ -57,6 +65,16 @@ class TerminationRetirementTest {
                                                                               new ProcessIncarnation(1L, 0x99L),
                                                                               Option.some(DepartureCause.NODE_REMOVED),
                                                                               10L);
+    private static final DirectiveReceiptKey RECEIPT = new DirectiveReceiptKey(GONE);
+    private static final DirectiveReceiptValue RECEIPT_VALUE = DirectiveReceiptValue.directiveReceiptValue("worker");
+    private static final ProcessIncarnation READMITTED_PROCESS = new ProcessIncarnation(2L, 0xAAL);
+    /// A live re-admitted node: ADMITTED at epoch 2, the shape of the three failure inputs of the design's 3.4.
+    private static final NodeDepartureValue ADMITTED_AT_2 = new NodeDepartureValue(DepartureState.ADMITTED, 2L, READMITTED_PROCESS, Option.none(), 20L);
+    /// The departure of the re-admitted node, recorded by a leader that does not hold its admission: the process of `Admission.UNKNOWN`.
+    private static final NodeDepartureValue DEPARTED_AT_2 = new NodeDepartureValue(DepartureState.DEPARTED, 2L, Admission.UNKNOWN.process(), Option.some(DepartureCause.NODE_REMOVED), 30L);
+    private static final NodeDepartureValue ADMITTED_AT_3 = new NodeDepartureValue(DepartureState.ADMITTED, 3L, new ProcessIncarnation(3L, 0xBBL), Option.none(), 40L);
+    /// The first departure of a node that never departed: epoch 0, as `Departures.epochOf` counts an absent record.
+    private static final NodeDepartureValue DEPARTED_AT_0 = new NodeDepartureValue(DepartureState.DEPARTED, 0L, DEPARTED.process(), Option.some(DepartureCause.NODE_REMOVED), 30L);
 
     private final KVStore<AetherKey, AetherValue> store = new KVStore<>(MessageRouter.mutable(), new Serializer() {
         @Override public <T> void write(ByteBuf buffer, T value) {}
@@ -105,8 +123,12 @@ class TerminationRetirementTest {
     private final AtomicBoolean stopping = new AtomicBoolean();
     private final AtomicInteger stopChecks = new AtomicInteger();
 
+    /// Test-local hooks keyed by the n-th read of the stop signal. The signal is read once per attempt, before the rule is asked (3.4 of the
+    /// design), so a hook at n is a write that lands before the n-th attempt, the first included, whether or not that attempt submits.
+    private final Map<Integer, Runnable> beforeAttempt = new HashMap<>();
+
     private boolean isStopping() {
-        stopChecks.incrementAndGet();
+        beforeAttempt.getOrDefault(stopChecks.incrementAndGet(), () -> {}).run();
 
         return stopping.get();
     }
@@ -122,7 +144,12 @@ class TerminationRetirementTest {
         return TerminationRetirement.directiveAndRecord(store, commands -> Promise.success(applyAfterTheInterloper(commands)), SHORT_RETRY, this::isStopping);
     }
 
+    /// Batches that the retirement itself submitted. `seed` clears `submitted`, so a hook that writes would hide an earlier batch from it.
+    private final AtomicInteger retirementBatches = new AtomicInteger();
+
     private List<Object> applyAfterTheInterloper(List<KVCommand<AetherKey>> commands) {
+        retirementBatches.incrementAndGet();
+
         var interloper = beforeFirstApply;
 
         beforeFirstApply = () -> {};
@@ -135,6 +162,52 @@ class TerminationRetirementTest {
         commitLeader();
         seed(DIRECTIVE, ActivationDirectiveValue.worker("east-w-0", ""));
         seed(RECORD, DEPARTED);
+    }
+
+    private void leaderAndAllThreeKeys() {
+        leaderAndBothKeys();
+        seed(RECEIPT, RECEIPT_VALUE);
+    }
+
+    /// The committed leader, a re-admitted node's ADMITTED record at epoch 2, its directive and its receipt.
+    private void leaderAndALiveReadmittedUnit() {
+        commitLeader();
+        seed(DIRECTIVE, ActivationDirectiveValue.worker("east-w-0", ""));
+        seed(RECORD, ADMITTED_AT_2);
+        seed(RECEIPT, RECEIPT_VALUE);
+    }
+
+    /// The committed leader, a directive and a receipt, and no record: the unit of a node that never departed.
+    private void leaderDirectiveAndReceiptWithNoRecord() {
+        commitLeader();
+        seed(DIRECTIVE, ActivationDirectiveValue.worker("east-w-0", ""));
+        seed(RECEIPT, RECEIPT_VALUE);
+    }
+
+    private static Cause causeOf(Result<Unit> outcome) {
+        return outcome.fold(cause -> cause, _ -> fail("the retirement succeeded, an end cause was expected"));
+    }
+
+    /// The wait of the design's 3.4 (`AwaitingDeparture`, row 4) is a cause of its own, and not terminal, so the retry asks again.
+    private static void assertAwaitingDeparture(Cause cause) {
+        assertThat(cause).as("the wait is a cause of its own: AwaitingDeparture").isInstanceOf(TerminationRetirement.AwaitingDeparture.class);
+        assertThat(cause.isTerminal()).as("and it is not terminal, so the retry asks again").isFalse();
+    }
+
+    private List<AetherKey> mutatedKeysOfTheOnlyTransaction() {
+        assertThat(submitted).as("one batch").hasSize(1);
+        assertThat(submitted.getFirst()).as("one transaction").hasSize(1);
+
+        return ((KVCommand.LeaderTransaction<?, ?>) submitted.getFirst().getFirst()).mutations()
+                                                                                  .stream()
+                                                                                  .map(mutation -> (AetherKey) mutation.key())
+                                                                                  .toList();
+    }
+
+    private void assertAllThreeStandAsSeeded(NodeDepartureValue record) {
+        assertThat(store.get(RECORD)).as("the record stands").isEqualTo(Option.some(record));
+        assertThat(store.get(DIRECTIVE).isPresent()).as("the directive stands").isTrue();
+        assertThat(store.get(RECEIPT)).as("the receipt stands").isEqualTo(Option.some(RECEIPT_VALUE));
     }
 
     @Test
@@ -220,14 +293,47 @@ class TerminationRetirementTest {
         endsOnARecordThatMovedTo(new NodeDepartureValue(DepartureState.DEPARTED, 2L, DEPARTED.process(), Option.some(DepartureCause.NODE_REMOVED), 20L));
     }
 
+    /// Inverted by lane 4 (design 3.4, fix round 3 and `decide` row 2): the process comparison is deleted, and the epoch alone is the identity.
+    /// A departure recorded by a leader that does not hold the admission carries another process, and it is still the departure of the node
+    /// first read. Red when the retry ends over it (the process comparison restored), or removes anything but the value it read.
     @Test
-    void aRetryEnds_onADepartedRecordOfTheSameEpoch_withAnotherIncarnation() {
-        endsOnARecordThatMovedTo(new NodeDepartureValue(DepartureState.DEPARTED, 1L, new ProcessIncarnation(2L, 0xAAL), Option.some(DepartureCause.NODE_REMOVED), 20L));
+    void aRetryGoesOn_onADepartedRecordOfTheSameEpoch_withAnotherIncarnation_andRemovesBothKeys() {
+        var moved = new NodeDepartureValue(DepartureState.DEPARTED, 1L, new ProcessIncarnation(2L, 0xAAL), Option.some(DepartureCause.NODE_REMOVED), 20L);
+        leaderAndBothKeys();
+        beforeFirstApply = () -> seed(RECORD, moved);
+
+        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(submitted).as("the refused attempt, then the attempt on the record now").hasSize(2);
+        assertThat(mutationOf(submitted.getLast(), RECORD).expected()).as("the second transaction expects the record as read at that attempt").isEqualTo(Option.some(moved));
+        assertThat(store.get(RECORD)).isEqualTo(Option.none());
+        assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());
     }
 
+    private static KVCommand.Mutation<?, ?> mutationOf(List<KVCommand<AetherKey>> batch, AetherKey key) {
+        return ((KVCommand.LeaderTransaction<?, ?>) batch.getFirst()).mutations()
+                                                                     .stream()
+                                                                     .filter(mutation -> mutation.key().equals(key))
+                                                                     .toList()
+                                                                     .getFirst();
+    }
+
+    /// Changed by lane 4 (design 3.4, `decide` row 4): an ADMITTED record at the epoch first read is waited on, not ended on. The batch count
+    /// stays 1 and both keys stay, but the retry runs its whole budget and ends on the non-terminal `AwaitingDeparture`. No product writer
+    /// produces this move (an admission raises the epoch); the test pins the state arm alone.
     @Test
-    void aRetryEnds_onAnAdmittedRecordAtTheFirstReadsEpochAndIncarnation() {
-        endsOnARecordThatMovedTo(new NodeDepartureValue(DepartureState.ADMITTED, 1L, DEPARTED.process(), Option.none(), 20L));
+    void aRetryWaits_onAnAdmittedRecordAtTheFirstReadsEpoch() {
+        var admitted = new NodeDepartureValue(DepartureState.ADMITTED, 1L, DEPARTED.process(), Option.none(), 20L);
+        leaderAndBothKeys();
+        beforeFirstApply = () -> seed(RECORD, admitted);
+
+        var outcome = retried().retire(GONE).await();
+
+        assertAwaitingDeparture(causeOf(outcome));
+        assertThat(submitted).as("the refused attempt only").hasSize(1);
+        assertThat(stopChecks).as("the whole retry budget of SHORT_RETRY: five attempts").hasValue(5);
+        assertThat(store.get(RECORD)).as("the record stays").isEqualTo(Option.some(admitted));
+        assertThat(store.get(DIRECTIVE).isPresent()).as("and so does the directive").isTrue();
     }
 
     private void endsOnARecordThatMovedTo(NodeDepartureValue moved) {
@@ -269,15 +375,20 @@ class TerminationRetirementTest {
         assertThat(TerminationRetirement.Stopped.FACTORY.apply(GONE).isTerminal()).isTrue();
     }
 
+    /// Inverted by lane 4 (design 3.4, R11 symmetric, `decide` row 1): the first read held epoch 1 and the record now is absent, which is
+    /// epoch 0, so the epochs differ and the retirement ends `Readmitted`. It may invert because no product writer removes the record alone
+    /// while its directive stands (R6): C17b is whole or nothing, R-4.3.3 runs when the directive is already gone, and the two out-of-FSM
+    /// retirers remove what the store holds in one transaction. Red when the retry goes on and removes the directive.
     @Test
-    void aRetirementWhoseRecordAloneWasRemovedMeanwhile_isRetried_andRetiresTheDirective() {
+    void aRetirementWhoseRecordAloneWasRemovedMeanwhile_endsReadmitted_andLeavesTheDirective() {
         leaderAndBothKeys();
         beforeFirstApply = this::removeTheRecord;
 
-        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        var outcome = retried().retire(GONE).await();
 
-        assertThat(submitted).as("refused, then retried on the directive alone").hasSize(2);
-        assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());
+        assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
+        assertThat(submitted).as("the refused attempt only").hasSize(1);
+        assertThat(store.get(DIRECTIVE).isPresent()).as("the directive stands").isTrue();
     }
 
     private void removeTheRecord() {
@@ -522,5 +633,234 @@ class TerminationRetirementTest {
         retirement().retire(GONE).await();
 
         assertThat(store.get(RECORD)).isEqualTo(Option.none());
+    }
+
+    // Lane 4 of #3828 (design 3.4): the retirement's one rule, `decide`, on the real applier. Every test below seeds a committed leader
+    // (check K3: without one the unconditional first attempt fails `NoCommittedLeader`, and mutant and rule then run the same code). A hook is
+    // a write at the n-th read of the stop signal (`beforeAttempt`), or `beforeFirstApply` where the first attempt submits.
+
+    /// One test per retirer, TR: the record, the directive and the receipt leave in ONE transaction, the record first, each at the value read.
+    /// Red when the receipt is left behind (the unit not asked, or `removals` without the receipt).
+    @Test
+    void aTermination_retiresRecordDirectiveAndReceipt_inOneTransaction() {
+        leaderAndAllThreeKeys();
+
+        retirement().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(mutatedKeysOfTheOnlyTransaction()).as("the record first, then the directive, then the receipt").containsExactly(RECORD, DIRECTIVE, RECEIPT);
+        assertThat(store.get(RECORD)).isEqualTo(Option.none());
+        assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());
+        assertThat(store.get(RECEIPT)).isEqualTo(Option.none());
+    }
+
+    /// One test per retirer, TR: an ADMITTED record is a live node, so nothing leaves, receipt included (row 4: WAIT). Red when the first
+    /// attempt removes it (the `first ||` of today's code).
+    @Test
+    void aTerminationOfAnAdmittedRecord_removesNothing_andLeavesAllThree() {
+        leaderAndALiveReadmittedUnit();
+
+        var outcome = retirement().retire(GONE).await();
+
+        assertAwaitingDeparture(causeOf(outcome));
+        assertThat(submitted).as("no batch").isEmpty();
+        assertAllThreeStandAsSeeded(ADMITTED_AT_2);
+    }
+
+    /// One test per retirer, TR (check F6; row 5 and the empty-unit test of row 0): a termination of an id with a receipt and no record and
+    /// no directive removes the receipt. Seeded with the receipt alone, so the mutant "`isEmpty` ignores the receipt" answers DONE and dies.
+    @Test
+    void aTerminationWithoutARecord_removesTheReceipt() {
+        commitLeader();
+        seed(RECEIPT, RECEIPT_VALUE);
+
+        retirement().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(mutatedKeysOfTheOnlyTransaction()).as("the receipt alone").containsExactly(RECEIPT);
+        assertThat(store.get(RECEIPT)).isEqualTo(Option.none());
+    }
+
+    /// Failure input 1 (row 2 after a wait): a re-admitted CORE whose confirmation precedes the departure commit. The first read holds an
+    /// ADMITTED record, so TR waits; the departure commits DEPARTED at the same epoch (the process of `Admission.UNKNOWN`: the departure is
+    /// recorded by a leader that does not hold the admission); the next attempt removes the unit. Red when the first attempt is exempt (its
+    /// batch expects the ADMITTED value), when ADMITTED ends the retry, or when the process comparison is restored.
+    @Test
+    void aTerminationConfirmedBeforeTheDepartureCommits_waits_thenRemovesTheUnit() {
+        leaderAndALiveReadmittedUnit();
+        beforeAttempt.put(2, () -> seed(RECORD, DEPARTED_AT_2));
+
+        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(retirementBatches).as("the waiting attempt submits nothing: one batch in all").hasValue(1);
+        assertThat(mutationOf(submitted.getFirst(), RECORD).expected()).as("the record mutation expects the DEPARTED value, never the ADMITTED one")
+                                                                       .isEqualTo(Option.some(DEPARTED_AT_2));
+        assertThat(store.get(RECORD)).isEqualTo(Option.none());
+        assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());
+        assertThat(store.get(RECEIPT)).isEqualTo(Option.none());
+        assertThat(stopChecks).as("one wait, one removal").hasValue(2);
+    }
+
+    /// Failure input 2 (row 1): a new admission between attempts. The epoch is now the first read's plus one; the retirement ends
+    /// `Readmitted` and removes nothing. Red when any epoch counts as the first read's (it waits the whole budget instead).
+    @Test
+    void anAdmissionBetweenAttempts_endsTheRetirementReadmitted_andRemovesNothing() {
+        leaderAndALiveReadmittedUnit();
+        beforeAttempt.put(2, () -> seed(RECORD, ADMITTED_AT_3));
+
+        var outcome = retried().retire(GONE).await();
+
+        assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
+        assertThat(retirementBatches).as("no batch").hasValue(0);
+        assertAllThreeStandAsSeeded(ADMITTED_AT_3);
+        assertThat(stopChecks).hasValue(2);
+    }
+
+    /// Failure input 3 (row 4): a wrong termination of a live node that has an ADMITTED record. Nothing moves; every attempt waits, nothing is
+    /// removed, and the overdue event is raised once. The test's retry is bounded, so its watch closes with one resolved event when the attempts
+    /// are spent; production's retry has no bound, and there the event stays open. The stop supplier moves the clock a minute per call, because
+    /// a waiting attempt never reaches the clock step of `refuseThenApply`.
+    @Test
+    void aTerminationOfALiveReadmittedNode_removesNothing_keepsWaiting_andRaisesTheOverdueEvent() {
+        leaderAndALiveReadmittedUnit();
+
+        var outcome = refusedFor(0, this::stopCheckThatTakesAMinute).retire(GONE).await();
+
+        assertAwaitingDeparture(causeOf(outcome));
+        assertThat(submitted).as("no batch").isEmpty();
+        assertAllThreeStandAsSeeded(ADMITTED_AT_2);
+        assertThat(stopChecks).as("the retry's 20 attempts").hasValue(20);
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() >= 2);
+        assertThat(codesRaised()).as("one overdue event, closed once when the bounded retry is spent")
+                                 .containsExactly(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE, OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED);
+    }
+
+    private boolean stopCheckThatTakesAMinute() {
+        stopChecks.incrementAndGet();
+        clockNs.addAndGet(TimeSpan.timeSpan(1).minutes().nanos());
+
+        return false;
+    }
+
+    /// The directive clause at the first attempt (row 6): a directive that moved after the first read, with no record. The retirement ends
+    /// `Readmitted`, and the new directive stands. Red when the first attempt is exempt (it removes the new directive).
+    @Test
+    void aTerminationWhoseDirectiveMovedBeforeTheFirstAttempt_removesNothing() {
+        leaderDirectiveAndReceiptWithNoRecord();
+        var reassigned = ActivationDirectiveValue.worker("east-w-0", "10.0.0.9:9000");
+        beforeAttempt.put(1, () -> seed(DIRECTIVE, reassigned));
+
+        var outcome = retried().retire(GONE).await();
+
+        assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
+        assertThat(retirementBatches).as("no batch").hasValue(0);
+        assertThat(store.get(DIRECTIVE)).as("the new directive stands").isEqualTo(Option.some(reassigned));
+        assertThat(store.get(RECEIPT)).as("and so does the receipt").isEqualTo(Option.some(RECEIPT_VALUE));
+        assertThat(stopChecks).hasValue(1);
+    }
+
+    /// Failure input 4 (R11; row 2 at epoch 0): a departure commits inside the commit window of a termination whose first read held no record.
+    /// The unit witnesses the record absent, so the first transaction is refused (today's has no guard and commits); the departure wrote
+    /// DEPARTED at epoch 0; the next attempt compares 0 with 0 and removes the unit. Red when a first read without a record matches no epoch
+    /// (the retirement ends), or when the first batch commits unguarded.
+    @Test
+    void aDepartureInsideTheCommitWindow_afterAFirstReadWithoutARecord_isRemovedAtTheNextAttempt() {
+        leaderDirectiveAndReceiptWithNoRecord();
+        beforeFirstApply = () -> seed(RECORD, DEPARTED_AT_0);
+
+        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(submitted).as("the refused first batch, then the batch on the record now").hasSize(2);
+        assertThat(mutationOf(submitted.getLast(), RECORD).expected()).as("the second batch expects the DEPARTED value that landed")
+                                                                      .isEqualTo(Option.some(DEPARTED_AT_0));
+        assertThat(store.get(RECORD)).isEqualTo(Option.none());
+        assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());
+        assertThat(store.get(RECEIPT)).isEqualTo(Option.none());
+        assertThat(stopChecks).as("two attempts").hasValue(2);
+    }
+
+    /// Its counterpart (row 1 after a first read without a record): a record at epoch 1 differs from the absent record's epoch 0. It pins
+    /// "absent is epoch 0", not "absent matches any epoch". Red when a first read without a record matches any epoch.
+    @Test
+    void aRecordAtEpochOneAfterAFirstReadWithoutARecord_endsTheRetirement() {
+        leaderDirectiveAndReceiptWithNoRecord();
+        beforeAttempt.put(1, () -> seed(RECORD, DEPARTED));
+
+        var outcome = retried().retire(GONE).await();
+
+        assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
+        assertThat(retirementBatches).as("no batch").hasValue(0);
+        assertAllThreeStandAsSeeded(DEPARTED);
+        assertThat(stopChecks).hasValue(1);
+    }
+
+    /// Failure input 5 (check P1; row 1 with an absent record now): a waiting twin whose unit was retired and issued again. The unit is not
+    /// empty, so row 0 does not answer; epoch 0 is not the first read's 2; it ends, and the fresh directive and receipt of a live core stay.
+    /// Red when an absent record now is exempt from the epoch comparison.
+    @Test
+    void aWaitingRetirementThatFindsItsRecordGone_ends_andLeavesAnEqualDirectiveAndItsReceipt() {
+        leaderAndALiveReadmittedUnit();
+        beforeAttempt.put(2, this::retireTheUnitThenIssueItAgain);
+
+        var outcome = retried().retire(GONE).await();
+
+        assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
+        assertThat(retirementBatches).as("no batch").hasValue(0);
+        assertThat(store.get(RECORD)).as("no record").isEqualTo(Option.none());
+        assertThat(store.get(DIRECTIVE)).as("the directive of equal value stands").isEqualTo(Option.some(ActivationDirectiveValue.worker("east-w-0", "")));
+        assertThat(store.get(RECEIPT)).as("and so does the receipt").isEqualTo(Option.some(RECEIPT_VALUE));
+        assertThat(stopChecks).hasValue(2);
+    }
+
+    /// The sibling of a confirmed reap retires the unit, and the node restarts under its configured id: a directive of the same value and a
+    /// receipt are issued, with no record (a first join writes none).
+    private void retireTheUnitThenIssueItAgain() {
+        commit(new KVCommand.LeaderTransaction<>(RECORD,
+                                                 "sibling-reap",
+                                                 LEADER,
+                                                 List.of(),
+                                                 List.of(new KVCommand.Mutation<>(RECORD, store.get(RECORD), Option.none()),
+                                                         new KVCommand.Mutation<>(DIRECTIVE, store.get(DIRECTIVE), Option.none()),
+                                                         new KVCommand.Mutation<>(RECEIPT, store.get(RECEIPT), Option.none()))));
+        seed(DIRECTIVE, ActivationDirectiveValue.worker("east-w-0", ""));
+        seed(RECEIPT, RECEIPT_VALUE);
+    }
+
+    /// Failure input 6 (CTO ruling of 11-27; row 3): the record now is DEPARTED at the epoch first read, and the directive moved. The
+    /// retirement ends and removes nothing. Red when the directive clause is asked only when no record is present.
+    @Test
+    void aDirectiveThatMovedBesideADepartedRecordAtTheEpochFirstRead_endsTheRetirement_andRemovesNothing() {
+        commitLeader();
+        seed(DIRECTIVE, ActivationDirectiveValue.worker("east-w-0", ""));
+        seed(RECORD, DEPARTED_AT_2);
+        seed(RECEIPT, RECEIPT_VALUE);
+        var reassigned = ActivationDirectiveValue.worker("east-w-0", "10.0.0.9:9000");
+        beforeAttempt.put(1, () -> seed(DIRECTIVE, reassigned));
+
+        var outcome = retried().retire(GONE).await();
+
+        assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
+        assertThat(retirementBatches).as("no batch").hasValue(0);
+        assertThat(store.get(RECORD)).as("the record stands").isEqualTo(Option.some(DEPARTED_AT_2));
+        assertThat(store.get(DIRECTIVE)).as("the new directive stands").isEqualTo(Option.some(reassigned));
+        assertThat(store.get(RECEIPT)).as("and so does the receipt").isEqualTo(Option.some(RECEIPT_VALUE));
+        assertThat(stopChecks).hasValue(1);
+    }
+
+    /// Row 7 (check P4): a record in a state that is neither DEPARTED nor ADMITTED. No product writer produces it; the test pins the default
+    /// arm. Red when any other state answers REMOVE or WAIT.
+    @Test
+    void aRecordInAStateThatIsNeitherDepartedNorAdmitted_endsTheRetirement() {
+        commitLeader();
+        seed(DIRECTIVE, ActivationDirectiveValue.worker("east-w-0", ""));
+        seed(RECORD, DEPARTED_AT_2);
+        seed(RECEIPT, RECEIPT_VALUE);
+        var unknown = new NodeDepartureValue(DepartureState.UNKNOWN, 2L, DEPARTED_AT_2.process(), Option.none(), 50L);
+        beforeAttempt.put(1, () -> seed(RECORD, unknown));
+
+        var outcome = retried().retire(GONE).await();
+
+        assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
+        assertThat(retirementBatches).as("no batch").hasValue(0);
+        assertAllThreeStandAsSeeded(unknown);
+        assertThat(stopChecks).hasValue(1);
     }
 }

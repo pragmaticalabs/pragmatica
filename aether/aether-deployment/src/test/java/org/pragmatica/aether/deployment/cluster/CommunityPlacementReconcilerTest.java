@@ -605,10 +605,26 @@ class CommunityPlacementReconcilerTest {
                                                List.of(new KVCommand.Mutation<>(key, store.get(key), Option.some(record)))));
     }
 
+    private static final AetherValue.DirectiveReceiptValue RECEIPT = AetherValue.DirectiveReceiptValue.directiveReceiptValue("worker");
+
+    private void seedReceipt(NodeId node) {
+        var key = new AetherKey.DirectiveReceiptKey(node);
+        seed(new KVCommand.LeaderTransaction<>(key,
+                                               "receipt-" + node.id(),
+                                               new LeaderValue(CORE, 1),
+                                               List.of(),
+                                               List.of(new KVCommand.Mutation<>(key, store.get(key), Option.some(RECEIPT)))));
+    }
+
     /// Up to the step whose commit is COMPLETE, the drained OLD holding its directive, its placement and a departure record.
     private void movedUpToTheCompletingStep() {
+        movedUpToTheCompletingStepSeeding(() -> seedRecord(OLD, DEPARTED));
+    }
+
+    /// The same, with `seeds` written after `initialize` and before the first reconcile pass.
+    private void movedUpToTheCompletingStepSeeding(Runnable seeds) {
         initialize();
-        seedRecord(OLD, DEPARTED);
+        seeds.run();
         reconciler.reconcile().await().unwrap();
         reconciler.reconcile().await().unwrap();
         replacementReady();
@@ -639,6 +655,51 @@ class CommunityPlacementReconcilerTest {
                                                                           .toList()).as("the record leaves first: the cluster FSM never sees a directive removed under it")
                                                                                     .containsSubsequence(new AetherKey.NodeDepartureKey(OLD),
                                                                                                          new AetherKey.ActivationDirectiveKey(OLD));
+    }
+
+    /// Lane 4 of #3828, one test per retirer, COMPLETE (design 3.4, W10): the directive receipt of the id leaves in the COMPLETE transaction,
+    /// beside a DEPARTED record. Red when COMPLETE leaves the receipt behind (the unit not asked).
+    @Test
+    void complete_besideADepartedRecord_removesTheReceiptWithTheRecordAndTheDirective() {
+        movedUpToTheCompletingStepSeeding(() -> {
+            seedRecord(OLD, DEPARTED);
+            seedReceipt(OLD);
+        });
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+        assertThat(identityHeld(OLD)).as("directive, placement, record").containsExactly(false, false, false);
+        assertThat(store.get(new AetherKey.DirectiveReceiptKey(OLD))).as("the receipt leaves with them").isEqualTo(Option.none());
+    }
+
+    /// COMPLETE beside an ADMITTED record is today's rule and stays (design 3.4, "a COMPLETE that finds an ADMITTED record removes nothing,
+    /// receipt included"): directive, record and receipt stand; the placement row leaves either way. Green at base: it pins the rule that the
+    /// unit's removal must not widen. Red when the receipt leaves without a DEPARTED record.
+    @Test
+    void complete_besideAnAdmittedRecord_leavesTheDirectiveTheRecordAndTheReceipt() {
+        movedUpToTheCompletingStepSeeding(() -> {
+            seedRecord(OLD, DEPARTED);
+            seedReceipt(OLD);
+        });
+        seedRecord(OLD, new AetherValue.NodeDepartureValue(AetherValue.DepartureState.ADMITTED,
+                                                           2L,
+                                                           new AetherValue.ProcessIncarnation(2L, 8L),
+                                                           Option.none(),
+                                                           2L));
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+        assertThat(identityHeld(OLD)).as("directive and record stand; the placement row leaves").containsExactly(true, false, true);
+        assertThat(store.get(new AetherKey.DirectiveReceiptKey(OLD))).as("the receipt stands").isEqualTo(Option.some(RECEIPT));
+    }
+
+    /// COMPLETE with no record stays outside the retirement rule (design 3.4, W11): it removes the directive as today and leaves the receipt,
+    /// whose worker halts and is retired by the sweep. Green at base: it pins the exception. Red when the receipt leaves with no verdict.
+    @Test
+    void complete_withNoRecord_removesTheDirective_andLeavesTheReceipt() {
+        movedUpToTheCompletingStepSeeding(() -> seedReceipt(OLD));
+        reconciler.reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.COMPLETE);
+        assertThat(identityHeld(OLD)).as("directive, placement, record").containsExactly(false, false, false);
+        assertThat(store.get(new AetherKey.DirectiveReceiptKey(OLD))).as("the receipt stands").isEqualTo(Option.some(RECEIPT));
     }
 
     /// The record moved between the read and the commit: the COMPLETE transaction is refused whole, so none of the three leaves.

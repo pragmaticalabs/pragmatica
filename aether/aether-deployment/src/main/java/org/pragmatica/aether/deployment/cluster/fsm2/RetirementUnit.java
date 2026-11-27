@@ -13,6 +13,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DirectiveReceiptKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
@@ -24,8 +26,8 @@ import org.pragmatica.lang.Option;
 /// member moved. The *guarding* form of the same read is for a retirer that may not retire: it removes nothing and guards on the record as
 /// read. The members are kept as read and asked of nobody; a caller asks only the questions below, and never chooses members.
 ///
-/// Not here, deliberately: the emptiness test and `decide` (design 3.4) have no caller before lane 4 (`TerminationRetirement`), which
-/// deletes the `Identity` they replace.
+/// The unit read first answers `decide` about the unit read at an attempt (design 3.4, TR's one rule): the eight rows, 0 to 7, are one
+/// comparison of epochs and the directive clause, and no other condition exists. Its caller is `TerminationRetirement`.
 ///
 /// @param node      the retiring id
 /// @param record    the DEPARTED record as read
@@ -46,6 +48,65 @@ public record RetirementUnit(NodeId node,
                                   lookup.apply(new ActivationDirectiveKey(node)),
                                   lookup.apply(new DirectiveReceiptKey(node)),
                                   true);
+    }
+
+    /// What a retirement does at an attempt (design 3.4, the table of TR's one rule): DONE, the unit is empty, so nothing is left to retire;
+    /// END, the unit is no longer the one first read, so what is present stays; REMOVE, the unit read now is retired; WAIT, the record is
+    /// ADMITTED at the epoch first read, so the departure is still to commit.
+    public enum Decision {
+        DONE,
+        END,
+        REMOVE,
+        WAIT
+    }
+
+    /// Whether no member was held.
+    public boolean isEmpty() {
+        return record.isEmpty()
+               && directive.isEmpty()
+               && receipt.isEmpty();
+    }
+
+    /// The answer of the eight-row table (design 3.4), asked of the unit first read about `now`, the unit read at this attempt. An empty `now`
+    /// is DONE (row 0). Otherwise one comparison of epochs, an absent record counting as epoch 0 on both sides (rows 1, 5, 6): epochs that
+    /// differ END, and equal epochs go by the record now. The directive clause (a directive now that is absent or equal to the one first read)
+    /// is asked at every REMOVE (rows 2, 3, 5, 6): a DEPARTED or an absent record REMOVEs when it holds and ENDs when it fails, an ADMITTED
+    /// record WAITs (row 4), any other state ENDs (row 7).
+    public Decision decide(RetirementUnit now) {
+        return now.isEmpty()
+               ? Decision.DONE
+               : epochOf(now.record) == epochOf(record)
+                 ? decideAtTheEpochFirstRead(now)
+                 : Decision.END;
+    }
+
+    private Decision decideAtTheEpochFirstRead(RetirementUnit now) {
+        return now.record.filter(NodeDepartureValue.class::isInstance)
+                         .map(NodeDepartureValue.class::cast)
+                         .fold(() -> removeWhenTheDirectiveHolds(now),
+                               current -> decideOn(current.state(),
+                                                   now));
+    }
+
+    private Decision decideOn(DepartureState state, RetirementUnit now) {
+        return switch (state) {
+            case DEPARTED -> removeWhenTheDirectiveHolds(now);
+            case ADMITTED -> Decision.WAIT;
+            case UNKNOWN -> Decision.END;
+        };
+    }
+
+    private Decision removeWhenTheDirectiveHolds(RetirementUnit now) {
+        return now.directive.isEmpty() || now.directive.equals(directive)
+               ? Decision.REMOVE
+               : Decision.END;
+    }
+
+    private static long epochOf(Option<AetherValue> record) {
+        return record.filter(NodeDepartureValue.class::isInstance)
+                     .map(NodeDepartureValue.class::cast)
+                     .map(NodeDepartureValue::epoch)
+                     .or(0L);
     }
 
     /// The same read in the guarding form.
