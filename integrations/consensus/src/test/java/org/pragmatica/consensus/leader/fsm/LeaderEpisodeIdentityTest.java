@@ -9,7 +9,6 @@ package org.pragmatica.consensus.leader.fsm;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -255,7 +254,7 @@ class LeaderEpisodeIdentityTest {
                   .isEqualTo(before + 1);
     }
 
-    private ScheduledFuture<?> tickFutureOfCurrent() {
+    private Object tickFutureOfCurrent() {
         return switch (harness.state()) {
             case LeaderElectionState.Electing e -> e.tickFuture().get();
             case LeaderElectionState.ReElecting r -> r.tickFuture().get();
