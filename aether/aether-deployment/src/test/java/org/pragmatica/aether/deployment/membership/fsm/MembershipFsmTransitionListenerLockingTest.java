@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.fsm;
 
+import java.time.Duration;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.statemachine.FsmObserver;
@@ -22,8 +23,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -188,7 +189,7 @@ class MembershipFsmTransitionListenerLockingTest {
         var staleObservations = new AtomicInteger();
 
         fsm.onTransition(record -> {
-            LockSupport.parkNanos(OBSERVATION_WINDOW_NANOS);
+            Pause.pause(Duration.ofNanos(OBSERVATION_WINDOW_NANOS));
             if (!record.toState().equals(fsm.memberStates().get(A))) {
                 staleObservations.incrementAndGet();
             }
@@ -251,7 +252,7 @@ class MembershipFsmTransitionListenerLockingTest {
 
         fsm.onTransition(record -> {
             transitions.incrementAndGet();
-            LockSupport.parkNanos(OBSERVATION_WINDOW_NANOS);
+            Pause.pause(Duration.ofNanos(OBSERVATION_WINDOW_NANOS));
             if (!record.toState().equals(fsm.memberStates().get(A))) {
                 staleObservations.incrementAndGet();
             }

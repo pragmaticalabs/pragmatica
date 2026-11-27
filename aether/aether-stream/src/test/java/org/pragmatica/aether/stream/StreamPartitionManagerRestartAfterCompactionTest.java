@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.stream;
 
+import java.time.Duration;
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,6 +25,7 @@ import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.SnapshotConfig;
 import org.pragmatica.storage.SnapshotManager;
+import org.pragmatica.testing.Pause;
 import org.pragmatica.testlogging.LogCapture;
 
 import java.nio.file.Path;
@@ -178,7 +180,7 @@ class StreamPartitionManagerRestartAfterCompactionTest {
         var create = createStream(recovered);
 
         // The sealer drains asynchronously; give an (incorrect) append-first ordering time to reach the sink.
-        LockSupport.parkNanos(SEAL_DRAIN_NANOS);
+        Pause.pause(Duration.ofNanos(SEAL_DRAIN_NANOS));
         recovered.close();
 
         assertThat(create.isFailure()).as("a mid-log hole was renumbered silently").isTrue();
