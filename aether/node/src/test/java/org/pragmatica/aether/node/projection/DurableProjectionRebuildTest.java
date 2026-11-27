@@ -99,6 +99,7 @@ import org.mockito.Mockito;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.AdditionalAnswers.delegatesTo;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -523,9 +524,7 @@ class DurableProjectionRebuildTest {
         awaitCommittedCursor(6L, 20_000);
         var delivered = attempts.get();
 
-        applyNow(removeCheckpoint());
-        localCursors.forget();
-        applyNow(checkpoint(2L, RewindEpoch.NONE));
+        recreateCheckpointAt(2L);
         assertThat(committedCursor()).as("control: the checkpoint was deleted and recreated at 2, the applier did not refuse either write")
                   .isEqualTo(Option.some(2L));
         forwardingEpochs.set(true);
@@ -561,9 +560,7 @@ class DurableProjectionRebuildTest {
         awaitModel(123456L, 15_000);
         awaitCommittedCursor(6L, 20_000);
 
-        applyNow(removeCheckpoint());
-        localCursors.forget();
-        applyNow(checkpoint(2L, RewindEpoch.NONE));
+        recreateCheckpointAt(2L);
         forwardingEpochs.set(true);
         passUntilEpochReadsSent(1);
         epochReads.getFirst().succeed(List.of(Option.some(checkpointAtEpoch(5L))));
@@ -587,9 +584,7 @@ class DurableProjectionRebuildTest {
         awaitModel(123456L, 15_000);
         awaitCommittedCursor(6L, 20_000);
 
-        applyNow(removeCheckpoint());
-        localCursors.forget();
-        applyNow(checkpoint(2L, RewindEpoch.NONE));
+        recreateCheckpointAt(2L);
         forwardingEpochs.set(true);
         passUntilEpochReadsSent(1);
         epochReads.getFirst().succeed(List.of(Option.some(checkpointAtEpoch(5L))));
@@ -970,6 +965,21 @@ class DurableProjectionRebuildTest {
         apply(command).await().onFailure(cause -> fail(cause.message()));
     }
 
+    /// The checkpoint of a recreated life, reached in the production order (#3856). The applier refuses to delete a record
+    /// whose token is the committed assignment's, so the consumer is abandoned (the quorum-loss path, no flush), the
+    /// assignment moves away (the old checkpoint is a dead life's record), the delete is applied and its premise asserted,
+    /// then the assignment comes back at a newer epoch and the cursor is recreated under the new token.
+    private void recreateCheckpointAt(long offset) {
+        manager.abandonAll();
+        applyNow(assignmentTo(OTHER, 1L));
+        applyNow(removeCheckpoint());
+        assertThat(committed(CHECKPOINT_KEY)).as("premise: the checkpoint is absent before it is recreated").isEqualTo(Option.none());
+        localCursors.forget();
+        applyNow(assignmentTo(SELF, 2L));
+        applyNow(checkpoint(offset, RewindEpoch.NONE));
+        clearInvocations(managedRuntime);
+    }
+
     /// The applier refuses a witnessless `Remove` of a fenced value, so the delete carries the committed value as its witness.
     private KVCommand<AetherKey> removeCheckpoint() {
         return new KVCommand.Remove<>(CHECKPOINT_KEY, Option.<Object> some(committed(CHECKPOINT_KEY).unwrap()));
@@ -982,9 +992,13 @@ class DurableProjectionRebuildTest {
     /// #1400: the assignment record moved to `assignee` at a strictly newer epoch, so every checkpoint under the old token
     /// is refused and the committed token (`selfToken()`, the committed record's) is the new assignee's.
     private static KVCommand<AetherKey> assignmentTo(NodeId assignee) {
+        return assignmentTo(assignee, 1L);
+    }
+
+    private static KVCommand<AetherKey> assignmentTo(NodeId assignee, long epochSequence) {
         return new KVCommand.Put<AetherKey, AetherValue>(ASSIGNMENT_KEY,
                                                          ConsumerAssignmentValue.consumerAssignmentValue(assignee,
-                                                                                                         Epoch.epoch(1L, 1L, 1L),
+                                                                                                         Epoch.epoch(1L, 1L, epochSequence),
                                                                                                          2L,
                                                                                                          HlcTimestamp.ZERO,
                                                                                                          Option.none()));
