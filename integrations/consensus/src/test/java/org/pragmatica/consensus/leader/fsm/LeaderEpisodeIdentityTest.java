@@ -9,6 +9,7 @@ package org.pragmatica.consensus.leader.fsm;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -86,10 +87,8 @@ class LeaderEpisodeIdentityTest {
         var stuckBefore = ctx.stuckElectionCount();
 
         assertThat(proposals).hasValue(2);
-        assertThat(ctx.proposalInFlight()).as("instrument: the re-entered episode's proposal is outstanding")
-                  .isTrue();
-        episodeOne.fail(Causes.cause("late failure of the exited episode"));
-        OnDrainer.drained(ctx);
+        assertThat(ctx.proposalInFlight()).as("instrument: the re-entered episode's proposal is outstanding").isTrue();
+        failDelivered(episodeOne, "late failure of the exited episode");
         assertThat(ctx.proposalInFlight()).as("the exited episode's failure cleared the re-entered episode's in-flight flag")
                   .isTrue();
         assertThat(ctx.stuckElectionCount()).as("the exited episode's failure was counted against the re-entered episode")
@@ -108,14 +107,12 @@ class LeaderEpisodeIdentityTest {
         var saved = harness.state();
 
         OnDrainer.run(ctx, () -> harness.reenter(saved));
-        assertThat(harness.state()).as("instrument: the same record, a new entry")
-                  .isSameAs(saved);
+        assertThat(harness.state()).as("instrument: the same record, a new entry").isSameAs(saved);
         proposeInCurrentEpisode();
         var tickOfEntryTwo = tickFutureOfCurrent();
         var stuckBefore = ctx.stuckElectionCount();
 
-        entryOne.fail(Causes.cause("late failure of the exited entry"));
-        OnDrainer.drained(ctx);
+        failDelivered(entryOne, "late failure of the exited entry");
         assertThat(ctx.proposalInFlight()).as("the exited entry's failure cleared the new entry's in-flight flag")
                   .isTrue();
         assertThat(ctx.stuckElectionCount()).isEqualTo(stuckBefore);
@@ -132,9 +129,7 @@ class LeaderEpisodeIdentityTest {
         proposeInCurrentEpisode();
         var tickBefore = tickFutureOfCurrent();
 
-        issued.get(0)
-              .fail(Causes.cause("failure of the current episode"));
-        OnDrainer.drained(ctx);
+        failDelivered(issued.get(0), "failure of the current episode");
         assertThat(ctx.proposalInFlight()).isFalse();
         assertThat(ctx.stuckElectionCount()).isEqualTo(1);
         assertThat(tickFutureOfCurrent()).isNotSameAs(tickBefore);
@@ -158,7 +153,8 @@ class LeaderEpisodeIdentityTest {
         grace.set(TimeSpan.timeSpan(300).millis());
         start();
         enterAwaitingKvSync();
-        OnDrainer.run(ctx, () -> harness.reenter(harness.state()));
+        OnDrainer.run(ctx,
+                      () -> harness.reenter(harness.state()));
         awaitState(LeaderElectionState.Electing.class);
     }
 
@@ -170,8 +166,7 @@ class LeaderEpisodeIdentityTest {
         var saved = harness.state();
 
         staleTickBehind(() -> harness.reenter(saved));
-        assertThat(proposals).as("the old entry's first tick proposed for the saved record's new entry")
-                  .hasValue(0);
+        assertThat(proposals).as("the old entry's first tick proposed for the saved record's new entry").hasValue(0);
         assertThat(harness.state()).isSameAs(saved);
     }
 
@@ -250,8 +245,7 @@ class LeaderEpisodeIdentityTest {
         var before = proposals.get();
 
         OnDrainer.dispatch(harness, new ElectionTick());
-        assertThat(proposals.get()).as("instrument: the tick proposed")
-                  .isEqualTo(before + 1);
+        assertThat(proposals.get()).as("instrument: the tick proposed").isEqualTo(before + 1);
     }
 
     private Object tickFutureOfCurrent() {
@@ -260,6 +254,25 @@ class LeaderEpisodeIdentityTest {
             case LeaderElectionState.ReElecting r -> r.tickFuture().get();
             default -> throw new AssertionError("not electing: " + harness.state());
         };
+    }
+
+    /// Fails `promise` and returns only after the production callbacks of that failure are queued on the serial executor
+    /// and run. A promise runs its callbacks on its own event-handler task, so draining the serial queue right after
+    /// `fail` can return before the callback reached it, and the test then reads the state before the event: a control
+    /// that reads red, and a late-failure probe that is green without ever having delivered the failure. The
+    /// delivery latch is attached after the production callbacks (a promise runs them in attachment order), so it opens
+    /// only once they have run.
+    private void failDelivered(Promise<Unit> promise, String message) {
+        var delivered = new CountDownLatch(1);
+
+        promise.onResultRun(delivered::countDown);
+        promise.fail(Causes.cause(message));
+        awaitDelivered(delivered);
+        OnDrainer.drained(ctx);
+    }
+
+    private static void awaitDelivered(CountDownLatch delivered) {
+        Awaitility.await("the promise's callbacks ran").atMost(WITHIN).until(() -> delivered.getCount() == 0);
     }
 
     private void awaitState(Class<? extends LeaderElectionState> expected) {
