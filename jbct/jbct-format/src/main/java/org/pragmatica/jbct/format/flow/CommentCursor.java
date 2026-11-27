@@ -37,9 +37,6 @@ final class CommentCursor {
     /// and the earlier comment that was still unprinted.
     record Violation(int line, String details) {}
 
-    /// The printed comments at one point, for the printer's speculative trial renders.
-    record Snapshot(Set<Integer> printed, int frontier) {}
-
     private final TokenArray tokens;
     private final String source;
     private final Sink sink;
@@ -117,16 +114,6 @@ final class CommentCursor {
 
     Option<Violation> violation() {
         return violation;
-    }
-
-    Snapshot snapshot() {
-        return new Snapshot(new HashSet<>(printed), frontier);
-    }
-
-    void restore(Snapshot snapshot) {
-        printed.clear();
-        printed.addAll(snapshot.printed());
-        frontier = snapshot.frontier();
     }
 
     /// The right to print one comment, valid inside [Layout#place]: the only way its text reaches the output.
