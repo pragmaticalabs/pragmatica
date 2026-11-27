@@ -320,6 +320,30 @@ class RoutesTest {
         assertThat(h.submits(SubmitKind.ROUTES)).as("no ROUTES write once both are declared").isEmpty();
     }
 
+    /// Red when: removing the claimant of a shared row removes the row (or leaves it with a blueprint that is gone) while another committed
+    /// version still declares it. The claimant moves to the remaining declarer within the ticks that follow, and once the last declarer is
+    /// gone the row goes with it: no row is ever left without a claimant while a declarer exists, and none outlives its last declarer.
+    @Test
+    void claimant_removingTheClaimantMovesTheRowToTheRemainingDeclarer() {
+        var h = active();
+
+        publish(h, blueprintOf("attempt-1", false, LIST));
+        publish(h, upgradeOf("attempt-b", LIST), Option.some(blueprintOf("attempt-1", false, LIST)));
+        ticks(h, 3);
+        var firstIsV1 = ownerOf(h, LIST).equals(Option.some(APP));
+        var first = firstIsV1 ? APP_ID : APP_V2_ID;
+        var second = firstIsV1 ? APP_V2_ID : APP_ID;
+
+        h.seedRemove(new AppBlueprintKey(first));
+        h.drain();
+        ticks(h, 3);
+        assertThat(ownerOf(h, LIST)).as("the remaining declarer claims the row").isEqualTo(Option.some(second.asString()));
+        h.seedRemove(new AppBlueprintKey(second));
+        h.drain();
+        ticks(h, 3);
+        assertThat(committed(h, LIST)).as("the last declarer's removal removes the row").isEqualTo(Option.none());
+    }
+
     private static void releaseHeld(FsmHarness h) {
         new ArrayList<>(h.held.values()).forEach(submit -> {
             h.applyHeld(submit.correlationId());
