@@ -328,6 +328,101 @@ class RoutesGateTest {
                   .containsExactly(billingKey());
     }
 
+    /// The one goal transaction of the node, held, with the rows committed and nothing else in flight: ROUTES is held and released first.
+    private static ClusterEffect.Submit heldGoalOf(FsmHarness h, AppBlueprintValue blueprint) {
+        h.holdKinds = Set.of(SubmitKind.GOALS, SubmitKind.ROUTES);
+        publish(h, blueprint);
+        releaseHeldOf(h, SubmitKind.ROUTES);
+        var goals = h.held.values().stream().filter(submit -> submit.kind() == SubmitKind.GOALS).toList();
+
+        assertThat(goals).as("control: one goal transaction is in flight").hasSize(1);
+
+        return goals.getFirst();
+    }
+
+    private static List<AetherKey> witnessedKeys(ClusterEffect.Submit submit) {
+        return submit.transaction().guards().stream().map(KVCommand.ReadWitness::key).toList();
+    }
+
+    /// Red when: the GOALS transaction does not witness the SliceTarget row (the owner id the gate reads) or the owner's AppBlueprintValue (#3836
+    /// ruling B): the transaction carries both, at the committed values, and with nothing moved it commits.
+    @Test
+    void gate_theGoalTransactionWitnessesTheOwnerAndItsBlueprint_nothingMovedCommits() {
+        var h = leaderWithOneCore();
+        var goal = heldGoalOf(h, blueprintOf("attempt-1", LIST));
+        var guards = goal.transaction().guards();
+
+        assertThat(guards.stream().filter(guard -> guard.key().equals(new SliceTargetKey(ORDERS.base()))).map(KVCommand.ReadWitness::expected).toList())
+                  .containsExactly(h.store.get(new SliceTargetKey(ORDERS.base())).map(value -> (Object) value));
+        assertThat(guards.stream().filter(guard -> guard.key().equals(AppBlueprintKey.appBlueprintKey(APP_ID))).map(KVCommand.ReadWitness::expected).toList())
+                  .containsExactly(Option.some(blueprintOf("attempt-1", LIST)));
+        assertThat(h.applyHeld(goal.correlationId())).isInstanceOf(Settlement.Accepted.class);
+        assertThat(h.store.get(goal.transaction().mutations().getFirst().key()).isPresent()).as("the goal landed").isTrue();
+    }
+
+    /// Red when: the owner's blueprint moving to the next attempt between the read and the commit does not refuse the GOALS transaction (the
+    /// blueprint is not witnessed; the row witnesses alone hold, as the re-declaration is still in flight). The refused goal is judged again
+    /// against the new attempt: its row is of the earlier attempt, so no second goal goes out.
+    @Test
+    void gate_theOwnersBlueprintMovingToTheNextAttemptRefusesTheGoalAndItIsJudgedAgain() {
+        var h = leaderWithOneCore();
+        var goal = heldGoalOf(h, blueprintOf("attempt-1", LIST));
+        var goalKey = goal.transaction().mutations().getFirst().key();
+
+        h.seed(AppBlueprintKey.appBlueprintKey(APP_ID), blueprintOf("attempt-2", LIST));
+        h.drain();
+        var settlement = h.applyHeld(goal.correlationId());
+
+        assertThat(settlement).isInstanceOf(Settlement.Refused.class);
+        assertThat(h.store.get(goalKey)).as("the refused goal wrote nothing").isEqualTo(Option.none());
+        h.settleHeld(goal, settlement);
+        assertThat(h.submits(SubmitKind.GOALS)).as("judged again: the row is of attempt-1, no second goal").hasSize(1);
+    }
+
+    /// Red when: the SliceTarget owner changing between the read and the commit does not refuse the GOALS transaction (the target row is not
+    /// witnessed; the blueprint and the rows are untouched).
+    @Test
+    void gate_theSliceTargetOwnerChangingBeforeTheCommitRefusesTheGoal() {
+        var h = leaderWithOneCore();
+        var goal = heldGoalOf(h, blueprintOf("attempt-1", LIST));
+        var goalKey = goal.transaction().mutations().getFirst().key();
+
+        h.seed(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1, Option.some(blueprintId("org.example:other:1.0.0"))));
+        h.drain();
+
+        assertThat(h.applyHeld(goal.correlationId())).isInstanceOf(Settlement.Refused.class);
+        assertThat(h.store.get(goalKey)).as("the refused goal wrote nothing").isEqualTo(Option.none());
+    }
+
+    /// Red when: a pair resubmitted after a refusal drops the target and blueprint witnesses (the split keeps only the observed guard and the
+    /// declared rows): ORDERS' row changes, BILLING's goal is resubmitted alone, with BILLING's target and the shared blueprint witnessed and
+    /// not ORDERS' target; the blueprint then moves, and the resubmitted goal is refused.
+    @Test
+    void gate_aResubmittedGoalStillWitnessesItsOwnerAndTheBlueprint() {
+        var h = leaderWithOneCore();
+        var first = heldGoalOf(h, twoSlices("attempt-1"));
+
+        h.seed(key(LIST), published("attempt-1"));
+        h.drain();
+        var settlement = h.applyHeld(first.correlationId());
+
+        assertThat(settlement).as("control: the first transaction is refused by ORDERS' row").isInstanceOf(Settlement.Refused.class);
+        h.settleHeld(first, settlement);
+        var billingOnly = h.held.values()
+                               .stream()
+                               .filter(submit -> submit.kind() == SubmitKind.GOALS)
+                               .toList();
+
+        assertThat(billingOnly).as("BILLING's goal is resubmitted alone").hasSize(1);
+        assertThat(billingOnly.getFirst().transaction().mutations()).hasSize(1);
+        assertThat(witnessedKeys(billingOnly.getFirst())).contains(new SliceTargetKey(BILLING.base()), AppBlueprintKey.appBlueprintKey(APP_ID), billingKey())
+                                                         .doesNotContain(new SliceTargetKey(ORDERS.base()), key(LIST));
+        h.seed(AppBlueprintKey.appBlueprintKey(APP_ID), twoSlices("attempt-2"));
+        h.drain();
+
+        assertThat(h.applyHeld(billingOnly.getFirst().correlationId())).isInstanceOf(Settlement.Refused.class);
+    }
+
     /// Red when: the gate also holds an UNLOADED goal: with the blueprint committed and its row gone from the mirror (removed while its
     /// re-declaration is in flight), a stray instance on a second node is condemned (goal UNLOADED) and the condemnation must still go out.
     @Test
