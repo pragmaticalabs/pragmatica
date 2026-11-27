@@ -48,7 +48,7 @@ import static org.pragmatica.lang.Option.some;
 /// - Recovery edge: the committed state follows the evaluation by a consensus round (`Communities.evaluate` only submits the edge), so a
 ///   response can carry DEGRADED with the full count while ACTIVE is still being committed. The lag explains this pair.
 /// - Degradation edge: the lag does NOT explain DEGRADED with a count of 3 after the commit, because DEGRADED is committed only after
-///   the evaluation saw the count below the floor. Why the count rose again is open (#3827).
+///   the evaluation saw the count below the floor. Why the count read 3 after that commit is open (#3827).
 ///
 /// No relation between the two in one response is promised, and a caller must not wait on or assert a pair.
 ///

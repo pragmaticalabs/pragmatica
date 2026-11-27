@@ -5,7 +5,12 @@
 package org.pragmatica.aether.forge;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
 import org.awaitility.core.ConditionTimeoutException;
@@ -41,51 +46,83 @@ class CommunityAwaitsTest {
         CommunityAwaits.awaitLiveMembersBelow(route, FORMED, BOUND);
     }
 
+    /// The enforcer for the strictness of every await. Each await is one row (field, comparison against a bound), and an ABSENT field never
+    /// satisfies any row. Every row runs against each of {absent, bound-1, bound, bound+1} and its exact truth value is asserted, so a
+    /// comparator change or an absent-passes change in any row turns a cell red. A true cell must return; a false cell must time out.
     @Test
-    void awaitLiveMembersBelow_neverPassesOnAnAbsentCount() {
-        Supplier<String> route = () -> "{\"state\":\"DEGRADED\",\"liveMembers\":null}";
+    void everyAwaitRow_holdsItsExactTruthValueOnAbsentBelowAtAndAboveItsBound() {
+        var mismatches = new ArrayList<String>();
 
-        assertThatThrownBy(() -> CommunityAwaits.awaitLiveMembersBelow(route, FORMED, Duration.ofMillis(300))).isInstanceOf(ConditionTimeoutException.class);
+        rows().forEach(row -> row.cells()
+                                 .forEach((body, expected) -> checkCell(row, body, expected, mismatches)));
+        assertThat(mismatches).isEmpty();
     }
 
-    @Test
-    void awaitState_returnsOnlyOnceTheTargetStateWasRead() {
-        var reads = new AtomicInteger();
-        Supplier<String> route = servingUntilTarget(reads, body("ACTIVE", FORMED), body("DEGRADED", FORMED - 1));
+    private static void checkCell(Row row, String body, boolean expected, List<String> mismatches) {
+        Supplier<String> route = () -> body;
 
-        CommunityAwaits.awaitState(route, "DEGRADED", BOUND);
-        assertThat(reads.get()).isGreaterThan(LAG);
+        if (satisfied(row, route) != expected) {
+            mismatches.add(row.name() + " on " + body + " expected " + expected);
+        }
     }
 
-    @Test
-    void awaitLiveMembersEqual_returnsOnlyOnceTheFullCountWasRead() {
-        var reads = new AtomicInteger();
-        Supplier<String> route = servingUntilTarget(reads, body("DEGRADED", FORMED - 1), body("ACTIVE", FORMED));
+    private static boolean satisfied(Row row, Supplier<String> route) {
+        try {
+            row.await().accept(route, expectedTimeout());
 
-        CommunityAwaits.awaitLiveMembersEqual(route, FORMED, BOUND);
-        assertThat(reads.get()).isGreaterThan(LAG);
+            return true;
+        } catch (ConditionTimeoutException e) {
+            return false;
+        }
     }
 
-    @Test
-    void awaitLiveMembersBelow_returnsOnlyOnceTheCountIsStrictlyBelow() {
-        var reads = new AtomicInteger();
-        Supplier<String> route = servingUntilTarget(reads, body("DEGRADED", FORMED), body("DEGRADED", FORMED - 1));
-
-        CommunityAwaits.awaitLiveMembersBelow(route, FORMED, BOUND);
-        assertThat(reads.get()).isGreaterThan(LAG);
+    private static Duration expectedTimeout() {
+        return Duration.ofMillis(300);
     }
+
+    private static List<Row> rows() {
+        return List.of(new Row("awaitState(DEGRADED)",
+                               (route, atMost) -> CommunityAwaits.awaitState(route, "DEGRADED", atMost),
+                               stateCells()),
+                       new Row("awaitLiveMembersBelow(FORMED)",
+                               (route, atMost) -> CommunityAwaits.awaitLiveMembersBelow(route, FORMED, atMost),
+                               countCells(FORMED - 1)),
+                       new Row("awaitLiveMembersEqual(FORMED)",
+                               (route, atMost) -> CommunityAwaits.awaitLiveMembersEqual(route, FORMED, atMost),
+                               countCells(FORMED)));
+    }
+
+    /// `state` is an equality row: absent and every value other than the target (a different state, a superstring) is false.
+    private static Map<String, Boolean> stateCells() {
+        var cells = new LinkedHashMap<String, Boolean>();
+
+        cells.put("{\"liveMembers\":2}", false);
+        cells.put(body("ACTIVE", FORMED), false);
+        cells.put(body("DEGRADED_2", FORMED), false);
+        cells.put(body("DEGRADED", FORMED), true);
+
+        return cells;
+    }
+
+    /// A count row, keyed by its bodies at {absent, FORMED-1, FORMED, FORMED+1}; `trueAt` is the one count that satisfies it
+    /// (`FORMED-1` for the strict-below row, `FORMED` for the equality row).
+    private static Map<String, Boolean> countCells(int trueAt) {
+        var cells = new LinkedHashMap<String, Boolean>();
+
+        cells.put("{\"state\":\"DEGRADED\",\"liveMembers\":null}", false);
+        for (var count : new int[]{FORMED - 1, FORMED, FORMED + 1}) {
+            cells.put(body("DEGRADED", count), count == trueAt);
+        }
+
+        return cells;
+    }
+
+    private record Row(String name, BiConsumer<Supplier<String>, Duration> await, Map<String, Boolean> cells) {}
 
     private static void oldPairing(Supplier<String> route) {
         await().atMost(BOUND).until(() -> route.get()
                                                .contains("\"state\":\"DEGRADED\""));
         assertThat(route.get()).contains("\"liveMembers\":2");
-    }
-
-    /// Serves `beforeTarget` for the first `LAG` reads, then `target`; `reads` counts every read the await made.
-    private static Supplier<String> servingUntilTarget(AtomicInteger reads, String beforeTarget, String target) {
-        return () -> reads.incrementAndGet() > LAG
-                     ? target
-                     : beforeTarget;
     }
 
     private static Supplier<String> laggingRoute() {
