@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Map;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DirectiveReceiptKey;
@@ -14,8 +13,11 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DirectiveReceiptValue;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #3828 lane 3a (design 3.3, 4.4): the cluster FSM mirrors the directive receipt like every other key family. The mirror is a cache of the
 /// KV that the committed notifications and a refusal fill; its handlers decide nothing, they request a reconcile. Nothing writes a receipt
@@ -42,7 +44,6 @@ class ReceiptMirrorTest {
 
         w.h.seedQuietly(KEY, VALUE);
         w.activate();
-
         assertThat(w.h.model().receipts.get(CORE_2)).isEqualTo(Option.some(VALUE));
         assertThat(w.h.model().receipts.get(CORE_3)).as("only the receipt of the snapshot").isEqualTo(Option.none());
     }
@@ -58,7 +59,6 @@ class ReceiptMirrorTest {
         w.h.drain();
         assertThat(w.h.model().receipts.get(CORE_2)).as("after the put").isEqualTo(Option.some(VALUE));
         assertThat(reconcilesQueued(w.h)).as("the put requests one reconcile").isEqualTo(1L);
-
         w.h.clearLog();
         w.h.seedRemove(KEY);
         w.h.drain();
@@ -84,9 +84,11 @@ class ReceiptMirrorTest {
         w.h.seedQuietly(KEY, VALUE);
         assertThat(w.h.model().receipts.get(CORE_2)).as("precondition: the mirror lags").isEqualTo(Option.none());
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
-        w.h.settleHeld(first, new Settlement.Refused(w.h.committedLeader(), Map.of(KEY, w.h.store.get(KEY))));
-
-        assertThat(w.h.model().receipts.get(CORE_2)).as("the refusal corrected the mirror").isEqualTo(Option.some(VALUE));
+        w.h.settleHeld(first,
+                       new Settlement.Refused(w.h.committedLeader(),
+                                              Map.of(KEY, w.h.store.get(KEY))));
+        assertThat(w.h.model().receipts.get(CORE_2)).as("the refusal corrected the mirror")
+                  .isEqualTo(Option.some(VALUE));
     }
 
     /// Red when: a refusal that shows a receipt gone from the store does not drop it from the mirror (`Outbox.reindex` goes through
@@ -110,9 +112,11 @@ class ReceiptMirrorTest {
         w.h.notifying = true;
         assertThat(w.h.model().receipts.get(CORE_2)).as("precondition: the mirror lags").isEqualTo(Option.some(VALUE));
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
-        w.h.settleHeld(first, new Settlement.Refused(w.h.committedLeader(), Map.of(KEY, w.h.store.get(KEY))));
-
-        assertThat(w.h.model().receipts.get(CORE_2)).as("the refusal dropped the receipt from the mirror").isEqualTo(Option.none());
+        w.h.settleHeld(first,
+                       new Settlement.Refused(w.h.committedLeader(),
+                                              Map.of(KEY, w.h.store.get(KEY))));
+        assertThat(w.h.model().receipts.get(CORE_2)).as("the refusal dropped the receipt from the mirror")
+                  .isEqualTo(Option.none());
     }
 
     /// Red when: `Outbox.mirrored` has no receipt case, so `reindex` thinks the mirror never matches and the unit function sees no receipt.
@@ -123,8 +127,9 @@ class ReceiptMirrorTest {
         assertThat(Outbox.mirrored(w.h.model(), KEY)).as("before any receipt").isEqualTo(Option.none());
         w.h.seed(KEY, VALUE);
         w.h.drain();
-
         assertThat(Outbox.mirrored(w.h.model(), KEY)).isEqualTo(Option.some((AetherValue) VALUE));
-        assertThat(Outbox.mirrored(w.h.model(), DirectiveReceiptKey.directiveReceiptKey(CORE_3))).as("another node id").isEqualTo(Option.none());
+        assertThat(Outbox.mirrored(w.h.model(),
+                                   DirectiveReceiptKey.directiveReceiptKey(CORE_3))).as("another node id")
+                  .isEqualTo(Option.none());
     }
 }

@@ -26,10 +26,12 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #3828 lane 3 (design 3.4, 6, 8): the retire side of the directive receipt. A bound id is released only by a committed transaction that
 /// carries an end verdict for it, and one function builds the triple {record, directive, receipt} for every retirer: each present member
@@ -40,7 +42,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ReceiptRetirementTest {
     private static final long TOKEN = 0x4444L;
     private static final long TOKEN_2 = 0x2222L;
+
     private static final DirectiveReceiptValue WORKER_RECEIPT = DirectiveReceiptValue.directiveReceiptValue(ActivationDirectiveValue.WORKER);
+
     private static final DirectiveReceiptValue CORE_RECEIPT = DirectiveReceiptValue.directiveReceiptValue(ActivationDirectiveValue.CORE);
 
     private final NodeId worker = node("worker-1");
@@ -49,7 +53,6 @@ class ReceiptRetirementTest {
     private final NodeDepartureKey recordKey = new NodeDepartureKey(worker);
 
     // -- set-ups ---------------------------------------------------------------------------------------------------
-
     /// One core, one admitted worker of an ACTIVE community, nothing else committed; not activated.
     private MbWorld bare() {
         var w = MbWorld.world(CORE_1);
@@ -70,8 +73,9 @@ class ReceiptRetirementTest {
 
     /// A live worker with its directive and no receipt: a directive committed before receipts existed.
     private MbWorld directedWithoutReceipt() {
-        return bare().directive(worker, Fixtures.worker("c1"))
-                     .activate();
+        return bare().directive(worker,
+                                Fixtures.worker("c1"))
+                   .activate();
     }
 
     /// A worker whose directive was removed and whose departure was recorded: a DEPARTED record and a receipt, no directive, no rows.
@@ -98,29 +102,36 @@ class ReceiptRetirementTest {
         w.h.drain();
         settle(w);
 
-        return w.h.submits(SubmitKind.CLEANUP).getLast();
+        return w.h.submits(SubmitKind.CLEANUP)
+                  .getLast();
     }
 
     // -- readers ---------------------------------------------------------------------------------------------------
-
     private static boolean removesAt(ClusterEffect.Submit submit, AetherKey key, AetherValue value) {
         return submit.transaction()
                      .mutations()
                      .stream()
-                     .anyMatch(mutation -> mutation.key().equals(key) && mutation.replacement().isEmpty() && mutation.expected().equals(Option.some(value)));
+                     .anyMatch(mutation -> mutation.key()
+                                                   .equals(key)
+                                           && mutation.replacement()
+                                                      .isEmpty()
+                                           && mutation.expected()
+                                                      .equals(Option.some(value)));
     }
 
     private static boolean removes(ClusterEffect.Submit submit, AetherKey key) {
         return submit.transaction()
                      .mutations()
                      .stream()
-                     .anyMatch(mutation -> mutation.key().equals(key));
+                     .anyMatch(mutation -> mutation.key()
+                                                   .equals(key));
     }
 
     private NodeDepartureValue recordNow(MbWorld w) {
         assertThat(w.recordOf(worker).isPresent()).as("precondition: the worker has a committed record").isTrue();
 
-        return w.recordOf(worker).or((NodeDepartureValue) null);
+        return w.recordOf(worker)
+                .or((NodeDepartureValue) null);
     }
 
     private void assertNothingOfTheIdIsLeft(MbWorld w) {
@@ -136,9 +147,7 @@ class ReceiptRetirementTest {
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN)));
         settle(w);
-
-        assertThat(w.stored(directiveKey).map(value -> ((ActivationDirectiveValue) value).role()))
-                  .as("the same process (TOKEN) is directed as WORKER once the id is retired")
+        assertThat(w.stored(directiveKey).map(value -> ((ActivationDirectiveValue) value).role())).as("the same process (TOKEN) is directed as WORKER once the id is retired")
                   .isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
     }
 
@@ -149,7 +158,6 @@ class ReceiptRetirementTest {
     }
 
     // -- the retirement, per retirer, without and with a leader change ---------------------------------------------
-
     // Red when: C17b leaves the receipt behind (its members are the record and the directive only), removes a member at other than its
     // exact value, or removes the record after the directive (notifications follow mutation order, the record leaves `departed` first).
     @Test
@@ -159,14 +167,17 @@ class ReceiptRetirementTest {
         var record = recordNow(w);
 
         assertThat(removesAt(cleanup, recordKey, record)).as("the C17b removes the record at its exact value").isTrue();
-        assertThat(removesAt(cleanup, directiveKey, Fixtures.worker("c1"))).as("the C17b removes the directive at its exact value").isTrue();
-        assertThat(removesAt(cleanup, receiptKey, WORKER_RECEIPT)).as("the C17b removes the receipt at its exact value").isTrue();
+        assertThat(removesAt(cleanup,
+                             directiveKey,
+                             Fixtures.worker("c1"))).as("the C17b removes the directive at its exact value")
+                  .isTrue();
+        assertThat(removesAt(cleanup, receiptKey, WORKER_RECEIPT)).as("the C17b removes the receipt at its exact value")
+                  .isTrue();
         assertThat(cleanup.transaction().mutations().getFirst().key()).as("the record goes first").isEqualTo(recordKey);
-
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
-        assertThat(w.h.applyHeld(cleanup.correlationId())).as("the C17b commits").isInstanceOf(Settlement.Accepted.class);
+        assertThat(w.h.applyHeld(cleanup.correlationId())).as("the C17b commits")
+                  .isInstanceOf(Settlement.Accepted.class);
         w.h.drain();
-
         assertNothingOfTheIdIsLeft(w);
         assertTheSameProcessIsDirectedAgain(w);
     }
@@ -178,7 +189,8 @@ class ReceiptRetirementTest {
         var w = directedWithReceipt();
         var cleanup = departedAndC17bHeld(w);
 
-        assertThat(removesAt(cleanup, receiptKey, WORKER_RECEIPT)).as("precondition: the deposed leader's C17b carries the receipt").isTrue();
+        assertThat(removesAt(cleanup, receiptKey, WORKER_RECEIPT)).as("precondition: the deposed leader's C17b carries the receipt")
+                  .isTrue();
         w.h.deliver(new ClusterInput.Deactivate());
         w.h.held.clear();
         w.h.commitLeader(FsmHarness.SELF, 2L);
@@ -188,8 +200,8 @@ class ReceiptRetirementTest {
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.h.activate();
         settle(w);
-
-        assertThat(w.h.model().receipts.get(worker)).as("the successor's mirror dropped the receipt with the committed retirement").isEqualTo(Option.none());
+        assertThat(w.h.model().receipts.get(worker)).as("the successor's mirror dropped the receipt with the committed retirement")
+                  .isEqualTo(Option.none());
         assertNothingOfTheIdIsLeft(w);
         assertTheSameProcessIsDirectedAgain(w);
     }
@@ -211,7 +223,8 @@ class ReceiptRetirementTest {
         var removal = w.h.submits(SubmitKind.DIRECTIVE_REMOVAL).getLast();
 
         assertThat(removesAt(removal, recordKey, record)).as("R-4.3.3 removes the record at its exact value").isTrue();
-        assertThat(removesAt(removal, receiptKey, WORKER_RECEIPT)).as("R-4.3.3 removes the receipt at its exact value").isTrue();
+        assertThat(removesAt(removal, receiptKey, WORKER_RECEIPT)).as("R-4.3.3 removes the receipt at its exact value")
+                  .isTrue();
         assertThat(removal.transaction().mutations().getFirst().key()).as("the record goes first").isEqualTo(recordKey);
         assertNothingOfTheIdIsLeft(w);
         assertTheSameProcessIsDirectedAgain(w);
@@ -230,7 +243,8 @@ class ReceiptRetirementTest {
         w.h.holdKinds = Set.of(SubmitKind.DIRECTIVE_REMOVAL);
         w.h.seedRemove(directiveKey);
         w.h.drain();
-        assertThat(w.h.submits(SubmitKind.DIRECTIVE_REMOVAL)).as("precondition: R-4.3.3 was submitted, and it is held").isNotEmpty();
+        assertThat(w.h.submits(SubmitKind.DIRECTIVE_REMOVAL)).as("precondition: R-4.3.3 was submitted, and it is held")
+                  .isNotEmpty();
         w.h.deliver(new ClusterInput.Deactivate());
         w.h.held.clear();
         w.h.commitLeader(FsmHarness.SELF, 2L);
@@ -242,7 +256,6 @@ class ReceiptRetirementTest {
         w.h.holdKinds = Set.of();
         w.h.activate();
         settle(w);
-
         assertNothingOfTheIdIsLeft(w);
         assertTheSameProcessIsDirectedAgain(w);
     }
@@ -256,10 +269,13 @@ class ReceiptRetirementTest {
 
         w.activate();
         settle(w);
-
         assertThat(w.h.submits(SubmitKind.CLEANUP)).as("a C17b is submitted").isNotEmpty();
-        assertThat(w.h.submits(SubmitKind.CLEANUP).stream().anyMatch(submit -> removesAt(submit, recordKey, record) && removesAt(submit, receiptKey, WORKER_RECEIPT)))
-                  .as("one C17b removes the record and the receipt, each at its exact value").isTrue();
+        assertThat(w.h.submits(SubmitKind.CLEANUP)
+                      .stream()
+                      .anyMatch(submit -> removesAt(submit, recordKey, record) && removesAt(submit,
+                                                                                            receiptKey,
+                                                                                            WORKER_RECEIPT))).as("one C17b removes the record and the receipt, each at its exact value")
+                  .isTrue();
         assertNothingOfTheIdIsLeft(w);
         assertTheSameProcessIsDirectedAgain(w);
     }
@@ -280,14 +296,14 @@ class ReceiptRetirementTest {
         w.h.seedQuietly(coreReceipt, CORE_RECEIPT);
         w.activate();
         settle(w);
-
-        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("no C17b touches the departed core's record").noneMatch(submit -> removes(submit, new NodeDepartureKey(CORE_2)));
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("no C17b touches the departed core's record")
+                  .noneMatch(submit -> removes(submit,
+                                               new NodeDepartureKey(CORE_2)));
         assertThat(w.present(new NodeDepartureKey(CORE_2))).as("the core's record stands").isTrue();
         assertThat(w.present(coreReceipt)).as("the core's receipt stands").isTrue();
     }
 
     // -- the witnesses: every absent member is witnessed absent, every present member is removed at its exact value ---
-
     // M5 (a witness dropped: the directive) — Red when: a C17b of an R3 unit (record and receipt, no directive) commits although a directive
     // was committed after it was derived: the transaction would retire the record under a live directive.
     @Test
@@ -299,14 +315,16 @@ class ReceiptRetirementTest {
         settle(w);
         var cleanups = w.h.submits(SubmitKind.CLEANUP);
 
-        assertThat(cleanups.stream().filter(submit -> removes(submit, recordKey))).as("precondition: the sweep derived a C17b that retires the record").isNotEmpty();
+        assertThat(cleanups.stream().filter(submit -> removes(submit, recordKey))).as("precondition: the sweep derived a C17b that retires the record")
+                  .isNotEmpty();
         var cleanup = cleanups.stream().filter(submit -> removes(submit, recordKey)).findFirst().orElseThrow();
 
         w.h.seed(directiveKey, Fixtures.worker("c1"));
         w.h.drain();
         var verdict = w.h.applyHeld(cleanup.correlationId());
 
-        assertThat(verdict).as("the directive committed after the derivation refuses the whole unit").isInstanceOf(Settlement.Refused.class);
+        assertThat(verdict).as("the directive committed after the derivation refuses the whole unit")
+                  .isInstanceOf(Settlement.Refused.class);
         assertThat(w.present(recordKey)).as("the record stands").isTrue();
         assertThat(w.present(receiptKey)).as("the receipt stands").isTrue();
     }
@@ -340,7 +358,10 @@ class ReceiptRetirementTest {
         var cleanup = departedAndC17bHeld(w);
 
         assertThat(removes(cleanup, receiptKey)).as("precondition: the C17b was derived with no receipt").isFalse();
-        assertThat(removesAt(cleanup, directiveKey, Fixtures.worker("c1"))).as("precondition: it retires the directive").isTrue();
+        assertThat(removesAt(cleanup,
+                             directiveKey,
+                             Fixtures.worker("c1"))).as("precondition: it retires the directive")
+                  .isTrue();
         w.h.seed(receiptKey, WORKER_RECEIPT);
         w.h.drain();
 
@@ -355,7 +376,8 @@ class ReceiptRetirementTest {
         var cleanup = c17bHeldThenAReceiptCommits(w);
         var verdict = w.h.applyHeld(cleanup.correlationId());
 
-        assertThat(verdict).as("the receipt committed after the derivation refuses the whole unit").isInstanceOf(Settlement.Refused.class);
+        assertThat(verdict).as("the receipt committed after the derivation refuses the whole unit")
+                  .isInstanceOf(Settlement.Refused.class);
         assertThat(w.present(recordKey)).as("the record never leaves alone").isTrue();
         assertThat(w.present(directiveKey)).as("the directive stands").isTrue();
         assertThat(w.present(receiptKey)).as("the receipt stands").isTrue();
@@ -375,9 +397,18 @@ class ReceiptRetirementTest {
         var next = cleanupsAfter(w, cleanup);
 
         assertThat(next).as("a C17b follows the refusal").isNotEmpty();
-        assertThat(removesAt(next.getFirst(), recordKey, record)).as("the next C17b removes the record at its exact value").isTrue();
-        assertThat(removesAt(next.getFirst(), directiveKey, Fixtures.worker("c1"))).as("the next C17b removes the directive at its exact value").isTrue();
-        assertThat(removesAt(next.getFirst(), receiptKey, WORKER_RECEIPT)).as("the next C17b removes the receipt at its exact value").isTrue();
+        assertThat(removesAt(next.getFirst(),
+                             recordKey,
+                             record)).as("the next C17b removes the record at its exact value")
+                  .isTrue();
+        assertThat(removesAt(next.getFirst(),
+                             directiveKey,
+                             Fixtures.worker("c1"))).as("the next C17b removes the directive at its exact value")
+                  .isTrue();
+        assertThat(removesAt(next.getFirst(),
+                             receiptKey,
+                             WORKER_RECEIPT)).as("the next C17b removes the receipt at its exact value")
+                  .isTrue();
     }
 
     // M4 pin (the record witness of the guarding form) — Red when: a C17b of a CORE (rows only, never the record) is no longer guarded by the
@@ -400,7 +431,11 @@ class ReceiptRetirementTest {
 
         assertThat(removes(cleanup, rowKey)).as("precondition: the C17b removes the departed core's row").isTrue();
         w.h.seed(new NodeDepartureKey(CORE_2),
-                 new NodeDepartureValue(DepartureState.ADMITTED, 2L, process(TOKEN_2 + 1), Option.none(), FsmHarness.START_WALL));
+                 new NodeDepartureValue(DepartureState.ADMITTED,
+                                        2L,
+                                        process(TOKEN_2 + 1),
+                                        Option.none(),
+                                        FsmHarness.START_WALL));
         w.h.drain();
         var verdict = w.h.applyHeld(cleanup.correlationId());
 
@@ -409,7 +444,6 @@ class ReceiptRetirementTest {
     }
 
     // -- G4: a refused R3 unit is resubmitted at once ------------------------------------------------------------------
-
     // Check G4 (S-r2: a unit witness read as the record witness must go red) — Red when: a refused C17b of an R3 unit (a receipt, no directive,
     // so a "directive absent" witness) is dropped to the next sweep instead of resubmitted at once, because the record-unchanged question reads
     // every witness of the draft against the DEPARTED record (the two never match). A count of CLEANUP submits proves nothing (check H6): the
@@ -426,8 +460,9 @@ class ReceiptRetirementTest {
         var record = recordNow(w);
         var cleanup = w.h.submits(SubmitKind.CLEANUP).getLast();
 
-        assertThat(removesAt(cleanup, recordKey, record) && removesAt(cleanup, receiptKey, WORKER_RECEIPT) && removes(cleanup, rowKey))
-                  .as("precondition: the C17b under test retires the record, the receipt and the row together").isTrue();
+        assertThat(removesAt(cleanup, recordKey, record) && removesAt(cleanup, receiptKey, WORKER_RECEIPT) && removes(cleanup,
+                                                                                                                      rowKey)).as("precondition: the C17b under test retires the record, the receipt and the row together")
+                  .isTrue();
         w.h.seed(rowKey, row(SliceObservedState.ACTIVE, 2L, gen(2), process(TOKEN)));
         w.h.drain();
         var verdict = w.h.applyHeld(cleanup.correlationId());
@@ -438,12 +473,15 @@ class ReceiptRetirementTest {
 
         assertThat(next).as("a C17b follows the refusal").isNotEmpty();
         assertThat(removes(next.getFirst(), rowKey)).as("nextCleanup_omitsTheMovedRow").isFalse();
-        assertThat(removesAt(next.getFirst(), recordKey, record) && removesAt(next.getFirst(), receiptKey, WORKER_RECEIPT))
-                  .as("nextCleanup_removesRecordAndReceipt_atTheirExactValues").isTrue();
+        assertThat(removesAt(next.getFirst(),
+                             recordKey,
+                             record) && removesAt(next.getFirst(),
+                                                  receiptKey,
+                                                  WORKER_RECEIPT)).as("nextCleanup_removesRecordAndReceipt_atTheirExactValues")
+                  .isTrue();
     }
 
     // -- G3: the receipt alone is residue ------------------------------------------------------------------------------
-
     // Check G3 (the receipt dropped from `hasResidue` must go red) — Red when: a leader change between a worker's halt and its recorded
     // departure leaves the id with a receipt and nothing else, `Rebuild` synthesises no `WorkerLeave` for it (the receipt is not residue), no
     // DEPARTED record is written, and no verdict ever releases the receipt. The next Rebuild must find no residue (no ghost loop, NT-169).
@@ -456,15 +494,18 @@ class ReceiptRetirementTest {
         var snapshot = w.h.snapshot();
         var keys = snapshot.entries().stream().map(ClusterInput.KvPut::key).toList();
 
-        assertThat(snapshot.dead().workers()).as("atRebuild_wIsDead_andHasNoRecordNoDirectiveNoRows: W is in the dead workers").contains(worker);
-        assertThat(keys).as("atRebuild_wIsDead_andHasNoRecordNoDirectiveNoRows: no record, no directive").doesNotContain(recordKey, directiveKey);
-        assertThat(keys.stream().filter(key -> key instanceof SliceDesiredKey desired && desired.nodeId().equals(worker)
-                                               || key instanceof SliceObservedKey observed && observed.nodeId().equals(worker)))
-                  .as("atRebuild_wIsDead_andHasNoRecordNoDirectiveNoRows: no desired or observed rows").isEmpty();
+        assertThat(snapshot.dead().workers()).as("atRebuild_wIsDead_andHasNoRecordNoDirectiveNoRows: W is in the dead workers")
+                  .contains(worker);
+        assertThat(keys).as("atRebuild_wIsDead_andHasNoRecordNoDirectiveNoRows: no record, no directive")
+                  .doesNotContain(recordKey, directiveKey);
+        assertThat(keys.stream()
+                       .filter(key -> key instanceof SliceDesiredKey desired && desired.nodeId()
+                                                                                       .equals(worker) || key instanceof SliceObservedKey observed && observed.nodeId()
+                                                                                                                                                              .equals(worker))).as("atRebuild_wIsDead_andHasNoRecordNoDirectiveNoRows: no desired or observed rows")
+                  .isEmpty();
         assertThat(keys).as("the receipt is the only residue of W").contains(receiptKey);
         w.activate();
         settle(w);
-
         assertThat(w.h.submits(SubmitKind.DEPARTURE)).as("Rebuild synthesised the departure of W").isNotEmpty();
         assertNothingOfTheIdIsLeft(w);
         w.h.clearLog();
