@@ -13,7 +13,6 @@ import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 
@@ -37,6 +36,7 @@ import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.testing.Pause;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.HttpWaitStrategy;
 
@@ -470,7 +470,7 @@ class RemoteTierS3IntegrationTest {
 
     /// Last-Modified has whole-second precision: a refresh is visible only in a later second.
     private static void waitPastTheNextSecond() {
-        LockSupport.parkNanos(Duration.ofMillis(1_100).toNanos());
+        Pause.pause(Duration.ofMillis(1_100));
     }
 
     /// A2b: the scan/stat/touch contract against the real endpoint -- Last-Modified from HEAD and from LIST, start-after

@@ -2439,19 +2439,26 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// are read, a self-drain is refused before any round, an existing DRAIN entry is joined (the first call's reason stands),
     /// an EVICTION entry is raised to DRAIN with this call's reason and joined, and otherwise a new DRAIN attempt is put.
     private synchronized DrainDecision decideDrain(NodeId targetNodeId, DrainReason reason) {
+        return drainRefusal(targetNodeId, reason).<DrainDecision> map(Refused::refused)
+                           .or(() -> joinOrPutDrain(targetNodeId, reason));
+    }
+
+    /// #3439: the ONE answer to "may this node be drained now", the table [#drainNode] refuses by and the surplus selection asks before it picks
+    /// a victim: a node this answers for is never selected, and is refused here if it is asked for anyway. In order: the manager is not
+    /// active, the voter handoff the node's retirement awaits, the replacement pairing a surplus trim must not break, the leader's own id.
+    @Override
+    public Option<Cause> drainRefusal(NodeId targetNodeId, DrainReason reason) {
         if (!active.get() || retirementRefusal.get().apply(targetNodeId).isPresent()) {
-            return Refused.refused(Causes.cause("Node retirement awaits certified voter handoff"));
+            return Option.some(RETIREMENT_AWAITS_VOTER_HANDOFF);
         }
 
         if (reason.isSurplusTrim() && nodeReplacements.get().retirementProtected().contains(targetNodeId)) {
-            return Refused.refused(Causes.cause("Node is paired in an in-flight node replacement"));
+            return Option.some(PAIRED_IN_NODE_REPLACEMENT);
         }
 
-        if (targetNodeId.equals(observer.self().id())) {
-            return Refused.refused(new LeaderCannotDrainItself(targetNodeId));
-        }
-
-        return joinOrPutDrain(targetNodeId, reason);
+        return targetNodeId.equals(observer.self().id())
+               ? Option.some(new LeaderCannotDrainItself(targetNodeId))
+               : Option.none();
     }
 
     private DrainDecision joinOrPutDrain(NodeId targetNodeId, DrainReason reason) {

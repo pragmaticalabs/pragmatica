@@ -34,6 +34,7 @@ import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -69,7 +70,7 @@ class HttpServerTlsStartupTest {
     /// (#3321: probing a guessed port for "nothing listens" was a false red whenever another process took it).
     @Test
     void start_unbuildableTls_failsBeforeAnyBind() throws Exception {
-        try (var held = new ServerSocket(0)) {
+        try (var held = HeldPort.tcp()) {
             var outcome = HttpServer.httpServer(brokenTls("no-listener", held.getLocalPort()), (_, writer) -> writer.okText("plain"))
                                     .await(timeSpan(WAIT_MS).millis());
 

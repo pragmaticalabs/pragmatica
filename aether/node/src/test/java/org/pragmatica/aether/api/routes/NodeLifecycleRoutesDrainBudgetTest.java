@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -33,6 +34,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -253,7 +255,7 @@ class NodeLifecycleRoutesDrainBudgetTest {
         var first = java.util.concurrent.CompletableFuture.supplyAsync(() -> routes.drainNodeForTest(node(1).id()).await());
         assertThat(entered.await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds()).isSuccess()).isTrue();
         var second = java.util.concurrent.CompletableFuture.supplyAsync(() -> routes.shutdownNodeForTest(node(2).id()).await());
-        java.util.concurrent.locks.LockSupport.parkNanos(org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis().nanos());
+        Pause.pause(Duration.ofMillis(100));
         assertThat(calls).hasValue(1);
         release.succeed(org.pragmatica.lang.Unit.unit());
         assertThat(first.orTimeout(5, java.util.concurrent.TimeUnit.SECONDS).join().isSuccess()).isTrue();

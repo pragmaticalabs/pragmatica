@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.net.http.HttpRequest;
 import java.time.Duration;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -46,7 +47,7 @@ class ClusterHttpClientTest {
         }
 
         private void serve(int conflictsBeforeSuccess, int conflictStatus, String conflictBody) throws IOException {
-            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server = HeldPort.httpServer();
             server.createContext("/", exchange -> {
                 var conflicting = calls.incrementAndGet() <= conflictsBeforeSuccess;
                 var bytes = (conflicting ? conflictBody : "{\"ok\":true}").getBytes(StandardCharsets.UTF_8);

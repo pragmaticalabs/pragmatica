@@ -36,6 +36,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.node.backup.GitFixtures.bareRemote;
@@ -1306,7 +1307,7 @@ class GitBackupRepositoryTest {
     @Timeout(60)
     void anHttpsRemoteDemandingCredentials_failsWithoutPrompting() throws IOException {
         Assumptions.assumeTrue(GitFixtures.gitHasHttpTransport(), "this git was built without git-remote-http");
-        var server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        var server = HeldPort.httpServer(InetAddress.getLoopbackAddress());
 
         server.createContext("/", exchange -> {
             exchange.getResponseHeaders()

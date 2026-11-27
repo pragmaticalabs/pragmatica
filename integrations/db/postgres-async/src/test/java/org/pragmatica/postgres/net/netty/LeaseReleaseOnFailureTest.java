@@ -43,6 +43,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -267,7 +268,7 @@ class LeaseReleaseOnFailureTest {
     }
 
     private int serve(StartupAnswer answer) throws IOException {
-        var server = new ServerSocket(0);
+        var server = HeldPort.tcp();
 
         servers.add(server);
         Thread.ofVirtual().start(() -> acceptEach(server, answer));

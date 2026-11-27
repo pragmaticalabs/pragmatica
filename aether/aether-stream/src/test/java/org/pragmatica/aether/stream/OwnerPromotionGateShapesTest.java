@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -23,6 +24,7 @@ import org.pragmatica.lang.Unit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
@@ -90,7 +92,7 @@ class OwnerPromotionGateShapesTest {
 
         assertThat(exOwner.publishLocal(STREAM, PARTITION, bytes("zombie-0"), 1L)
                           .isFailure()).isTrue();
-        LockSupport.parkNanos(200_000_000L);
+        Pause.pause(Duration.ofMillis(200));
 
         assertThat(exOwner.publishLocal(STREAM, PARTITION, bytes("zombie-1"), 1L)
                           .isFailure()).as("still refused once the round revealed the newer record").isTrue();

@@ -24,6 +24,7 @@ import io.netty.handler.ssl.SslContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -221,7 +222,7 @@ class SmtpClientFailClosedTest {
 
         private static ServerSocket open() {
             try {
-                return new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
+                return HeldPort.tcp(50, InetAddress.getLoopbackAddress());
             } catch (IOException e) {
                 return fail("cannot open a loopback server: " + e);
             }

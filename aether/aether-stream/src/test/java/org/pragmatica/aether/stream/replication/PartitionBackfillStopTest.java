@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Delayed;
@@ -26,6 +27,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.OwnerLifetime;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.replication.PartitionBackfill.partitionBackfill;
@@ -117,11 +119,7 @@ class PartitionBackfillStopTest {
     }
 
     private static void sleepPast(TimeSpan bound) {
-        var deadline = System.nanoTime() + 2 * bound.nanos();
-
-        while (System.nanoTime() < deadline) {
-            LockSupport.parkNanos(1_000_000L);
-        }
+        Pause.pause(Duration.ofNanos(2 * bound.nanos()));
     }
 
     @Nested

@@ -48,6 +48,11 @@
             below fails a module whose marker outlives the fork (#1344). Depends on nothing here.
         -->
         <module>test-plan-witness</module>
+        <!--
+            The port-bind gate (#3801): HeldPort and the bytecode scan that refuses a socket bind in any other test class. Depends
+            on nothing here; the port-bind-gate profile below gives every module with src/test a test-scope dependency on it.
+        -->
+        <module>port-bind-gate</module>
         <module>jbct</module>
         <module>aether</module>
         <module>examples</module>
@@ -118,6 +123,10 @@
         <maven-plugin-plugin.version>4.0.0-beta-2</maven-plugin-plugin.version>
         <jacoco.version>0.8.13</jacoco.version>
         <maven-antrun-plugin.version>3.1.0</maven-antrun-plugin.version>
+
+        <!-- The port-bind gate's mode (#3801): `enforce` fails a module on a bind call site outside HeldPort and the allow-list;
+             `report` lists every site with its verdict and passes (how the sites are enumerated). -->
+        <port.bind.gate.mode>enforce</port.bind.gate.mode>
 
         <!-- Default true to avoid reactor cycle; override with -Djbct.skip=false -pl !jbct -->
         <jbct.skip>true</jbct.skip>
@@ -1111,6 +1120,63 @@
                                             </and>
                                         </condition>
                                         <fail if="witness.silent" message="failsafe wrote test reports but no test plan was witnessed (#1344): ${project.build.directory}/test-plan-witness does not exist, so the test-plan-witness listener did not run in this module's forks (deactivated in junit-platform.properties, or the test-plan-gate dependency is missing). The crash gate was dump-only for this run."/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!--
+            The port-bind gate (#3801), the structural follow-up of #3793. The invariant: no compiled test class calls a socket-bind
+            or port-allocation API outside HeldPort, whatever the port argument (a literal, a computed value and 0 are the same
+            call). A bytecode scan, not a source pattern, because a source pattern cannot enumerate every way to spell a port or to
+            reach a bind (an alias, a method reference, a subtype's receiver).
+
+            Per module, right after test-compile: org.pragmatica.portbind.PortBindScan reads this module's target/test-classes with
+            the module's test classpath as its class loader (to resolve a receiver type to its supertypes), and fails the module on
+            every call site that is not on port-bind-gate's allowlist.txt, naming class:line. The scan runs in the module that
+            owns the classes, so there is no module list to maintain and no reactor order to get wrong: a module with src/test is
+            scanned by construction. Skipped only by -Dmaven.test.skip=true, which compiles no tests (the gate has nothing to read).
+            Not skipped by -DskipTests: the classes it reads are compiled either way.
+        -->
+        <profile>
+            <id>port-bind-gate</id>
+            <activation>
+                <file>
+                    <exists>src/test</exists>
+                </file>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>org.pragmatica-lite</groupId>
+                    <artifactId>port-bind-gate</artifactId>
+                    <version>${project.version}</version>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <version>${maven-antrun-plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>port-bind-scan</id>
+                                <phase>process-test-classes</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${maven.test.skip}</skip>
+                                    <target>
+                                        <java classname="org.pragmatica.portbind.PortBindScan" classpathref="maven.test.classpath" fork="true" failonerror="true">
+                                            <arg value="${project.artifactId}"/>
+                                            <arg value="${project.build.testOutputDirectory}"/>
+                                            <arg value="${port.bind.gate.mode}"/>
+                                        </java>
                                     </target>
                                 </configuration>
                             </execution>

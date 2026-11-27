@@ -10,6 +10,7 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,7 +41,7 @@ class JwksKeyStoreFetchFailureTest {
     }
 
     private static void assertFetchOutcome(int status, String body, Class<? extends SecurityError> expected) throws Exception {
-        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var server = HeldPort.httpServer();
 
         server.createContext("/jwks",
                              exchange -> {

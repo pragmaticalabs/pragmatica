@@ -20,6 +20,7 @@ import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -181,7 +182,7 @@ class ClusterHttpClientDrainStateTest {
 
     @Test
     void await_realLiveTargetAnswering404_isNotCompletion() throws IOException {
-        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var server = HeldPort.httpServer();
         var body = ((ScriptedDrainHttp.Step.Reply) notFound(NODE)).body().getBytes(StandardCharsets.UTF_8);
 
         server.createContext("/", exchange -> {

@@ -26,6 +26,7 @@ import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Option;
+import org.pragmatica.testing.Pause;
 
 import org.awaitility.core.ConditionTimeoutException;
 import org.junit.jupiter.api.AfterAll;
@@ -1167,7 +1168,7 @@ class DurableTopicDeliveryForgeTest {
     /// NOT move, and there is no condition to poll for that — only elapsed time in which movement would
     /// have shown up.
     private static void sleep(Duration duration) {
-        java.util.concurrent.locks.LockSupport.parkNanos(duration.toNanos());
+        Pause.pause(duration);
     }
 
     private void failIfSliceFailed() {

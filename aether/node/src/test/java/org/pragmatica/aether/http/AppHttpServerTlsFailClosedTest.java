@@ -18,6 +18,7 @@ import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.lang.Option;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -31,7 +32,7 @@ class AppHttpServerTlsFailClosedTest {
     @Test
     @Timeout(60)
     void start_unbuildableAppTls_failsBeforeAnyBind() throws Exception {
-        try (var held = new ServerSocket(0)) { // port0-held: the blocker socket stays open for the whole try block, the server under test runs inside it
+        try (var held = HeldPort.tcp()) {
             var server = appHttpServerWithMissingCertificate(held.getLocalPort(), HttpProtocol.H1);
 
             var outcome = server.start().await(timeSpan(30).seconds());

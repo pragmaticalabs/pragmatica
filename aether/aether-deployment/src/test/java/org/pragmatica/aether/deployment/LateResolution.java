@@ -4,9 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment;
 
-import java.util.concurrent.locks.LockSupport;
+import java.time.Duration;
 
 import org.pragmatica.lang.Promise;
+import org.pragmatica.testing.Pause;
 
 /// A promise that resolves LATER, on another thread. A fake that returns `Promise.success(...)` hides every ordering
 /// defect between a promise and its `on*` handlers (the handler then runs inline on the caller), so a probe of such a
@@ -25,7 +26,7 @@ public final class LateResolution {
     }
 
     private static <T> void resolveAfterDelay(Promise<T> promise, T value) {
-        LockSupport.parkNanos(DELAY_NANOS);
+        Pause.pause(Duration.ofNanos(DELAY_NANOS));
         promise.succeed(value);
     }
 }

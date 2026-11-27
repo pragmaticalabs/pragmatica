@@ -25,6 +25,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -43,7 +44,7 @@ class ServerTlsFailClosedTest {
 
     @Test
     void start_unbuildableServerTls_failsTypedBeforeAnyBind() throws IOException {
-        try (var held = new ServerSocket(0)) {
+        try (var held = HeldPort.tcp()) {
             var config = serverConfig("tls-server", held.getLocalPort(), missingCertificate());
             var outcome = Server.server(config, List::of).await(timeSpan(10).seconds());
 
@@ -59,7 +60,7 @@ class ServerTlsFailClosedTest {
 
     @Test
     void start_unbuildableClientTls_failsTypedBeforeAnyBind() throws IOException {
-        try (var held = new ServerSocket(0)) {
+        try (var held = HeldPort.tcp()) {
             var broken = serverConfig("tls-client", held.getLocalPort()).withClientTls(TlsConfig.clientWithCa(Path.of("/missing/ca.pem")));
             var outcome = Server.server(broken, List::of).await(timeSpan(10).seconds());
 

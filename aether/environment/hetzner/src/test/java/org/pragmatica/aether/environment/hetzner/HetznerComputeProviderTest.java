@@ -1848,10 +1848,11 @@ class HetznerComputeProviderTest {
         }
 
         /// #3292: the cluster-label-lost arm and the source-label-lost arm both match by name, so BOTH are swept over
-        /// every cluster-name length a replacement can reach the firewall check with, in two shapes. The operation id
-        /// `<cluster>-<nodeId>` must fit 63 characters, so with the one-character node id used here that is 1..61;
-        /// lengths 62 and 63 are refused before any firewall lookup, and `FirewallNameTest` sweeps all 1..63 on the name
-        /// match itself. Length 55 is the one where
+        /// every cluster-name length a replacement can reach the firewall check with, in two shapes. Without a request
+        /// operation id the id `<cluster>-<nodeId>` must fit 63 characters, so with the one-character node id used here
+        /// that is 1..61 (62 and 63 are refused before any firewall lookup); a request carrying its own id skips that
+        /// bound, and 62-63 are pinned on that path by the `operationIdPath` cases below (#3434). `FirewallNameTest`
+        /// sweeps all 1..63 on the name match itself. Length 55 is the one where
         /// `aether-<cluster>-` is exactly 63 characters and the cut leaves a trailing hyphen to trim: a hand-built
         /// prefix missed it and a duplicate firewall-less node was provisioned.
         @Test
@@ -1934,17 +1935,99 @@ class HetznerComputeProviderTest {
         /// Refused FOR THE FIREWALL: the failure must carry `reason`, so a provision that fails earlier for an
         /// unrelated cause (a name bound, say) cannot pass as a refusal.
         private boolean refuses(ClusterName cluster, String reason, List<Firewall> clusterSelected, List<Firewall> unselected) {
+            return refuses(replacementRequestFor(cluster, SOURCE, "n"), cluster, reason, clusterSelected, unselected);
+        }
+
+        private boolean refuses(ProvisionRequest request,
+                                ClusterName cluster,
+                                String reason,
+                                List<Firewall> clusterSelected,
+                                List<Firewall> unselected) {
             var selector = "aether-cluster=" + cluster.value();
             testClient.lastCreateServerRequest = null;
             testClient.firewallsBySelector.put(selector + ",aether-source=hetzner-eu", Promise.success(List.of()));
             testClient.firewallsBySelector.put(selector, Promise.success(clusterSelected));
             testClient.listAllFirewallsResponse = Promise.success(unselected);
 
-            return replacementProvider().createFrom(replacementRequestFor(cluster, SOURCE, "n"))
+            return replacementProvider().createFrom(request)
                                         .await()
                                         .fold(cause -> cause.message().contains(reason),
                                               info -> false)
                    && testClient.lastCreateServerRequest == null;
+        }
+
+        /// #3434: a request carrying its own operation id skips the `<cluster>-<nodeId>` bound
+        /// (`HetznerComputeProvider#operationIdOf`), so cluster names of 62 and 63 characters DO reach the firewall check
+        /// there, the lengths the sweep above cannot reach. Entry `createFrom` -> `createLabelled` -> `operationIdOf`
+        /// (the request's id, no bound) -> `createAndConfirm` -> `buildCreateRequest` -> `resolveFirewallIds` ->
+        /// `unmanagedOrMissed` / `unmanagedOrUnlabelled` -> `hasAetherName` -> `FirewallName.isDerivedFor`.
+        /// Same outcome as `FirewallNameTest`'s match: refused, in both arms and both name shapes.
+        @Test
+        void createFrom_operationIdPath_atClusterNameLengths62And63_refusesWhenClusterLabelLost() {
+            assertThat(operationIdLengthsNotRefused(this::refusesWithOperationIdWhenClusterLabelLost))
+                    .as("operation-id cluster-name lengths provisioned unfirewalled")
+                    .isEmpty();
+        }
+
+        @Test
+        void createFrom_operationIdPath_atClusterNameLengths62And63_refusesWhenSourceLabelLost() {
+            assertThat(operationIdLengthsNotRefused(this::refusesWithOperationIdWhenSourceLabelLost))
+                    .as("operation-id cluster-name lengths provisioned unfirewalled")
+                    .isEmpty();
+        }
+
+        /// Control: at the same lengths and operation id, with NO firewall for the cluster the create goes through, so
+        /// the refusals above come from the firewall check and not from a bound on the operation-id path.
+        @Test
+        void createFrom_operationIdPath_atClusterNameLengths62And63_createsWhenNoFirewallExists() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            assertThat(List.of(62, 63)).allSatisfy(length -> {
+                var cluster = plainCluster(length);
+                testClient.lastCreateServerRequest = null;
+                testClient.firewallsBySelector.put("aether-cluster=" + cluster.value() + ",aether-source=hetzner-eu",
+                                                   Promise.success(List.of()));
+                testClient.firewallsBySelector.put("aether-cluster=" + cluster.value(), Promise.success(List.of()));
+                testClient.listAllFirewallsResponse = Promise.success(List.of());
+
+                assertThat(replacementProvider().createFrom(operationIdRequest(cluster)).await().isSuccess())
+                        .as("length " + length).isTrue();
+                assertThat(testClient.lastCreateServerRequest).as("length " + length).isNotNull();
+            });
+        }
+
+        private static final List<Integer> OPERATION_ID_ONLY_LENGTHS = List.of(MAX_REACHABLE_CLUSTER_LENGTH + 1,
+                                                                               MAX_REACHABLE_CLUSTER_LENGTH + 2);
+
+        private List<Integer> operationIdLengthsNotRefused(Predicate<ClusterName> refuses) {
+            return OPERATION_ID_ONLY_LENGTHS.stream()
+                                            .filter(length -> !refuses.test(plainCluster(length)) || !refuses.test(hyphenatedCluster(length)))
+                                            .toList();
+        }
+
+        private static ProvisionRequest operationIdRequest(ClusterName cluster) {
+            var request = replacementRequestFor(cluster, SOURCE, "n");
+
+            return new ProvisionRequest(request.market(), request.instanceSize(), request.image(), request.zone(), request.userData(),
+                                        request.marketOptions(), request.context(),
+                                        Option.some(OperationId.operationId("op-3434").unwrap()));
+        }
+
+        private boolean refusesWithOperationIdWhenClusterLabelLost(ClusterName cluster) {
+            var name = FirewallName.forSource(cluster, SOURCE).value();
+
+            return refuses(operationIdRequest(cluster),
+                           cluster,
+                           "carries no cluster label",
+                           List.of(),
+                           List.of(new Firewall(98, name, List.of(), Map.of())));
+        }
+
+        private boolean refusesWithOperationIdWhenSourceLabelLost(ClusterName cluster) {
+            var name = FirewallName.forSource(cluster, SOURCE).value();
+            var stripped = new Firewall(94, name, List.of(), Map.of("aether-cluster", cluster.value()));
+
+            return refuses(operationIdRequest(cluster), cluster, "has 1 Aether-managed firewall(s)", List.of(stripped), List.of());
         }
 
         @Test

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -40,6 +41,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testing.Pause;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.pragmatica.lang.Option.none;
@@ -1268,7 +1270,7 @@ class StreamConsumerRuntimeTest {
         private static Promise<Unit> deliverAfterTheFence(StreamConsumerRuntime fencedRuntime,
                                                           long offset,
                                                           List<Long> deliveredAfterTheFence) {
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+            Pause.pause(Duration.ofMillis(20));
             if (offset == 0L) {
                 return Promise.unitPromise();
             }

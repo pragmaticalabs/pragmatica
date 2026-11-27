@@ -23,6 +23,7 @@ import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.SliceInvoker;
+import org.pragmatica.aether.node.SlotPasses;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
 import org.pragmatica.aether.node.stream.CommittedCursorRead;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
@@ -94,6 +95,7 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -182,6 +184,9 @@ class DurableProjectionRebuildTest {
     /// core and reads its own committed state, when true it is a forwarding node whose reads are [#epochReads].
     private final AtomicBoolean forwardingEpochs = new AtomicBoolean(false);
     private final List<Promise<List<Object>>> epochReads = new CopyOnWriteArrayList<>();
+    /// #3853: when above zero, [#reconcileAndReturnUnit] counts it down and makes the node a forwarding one once it reaches zero, so the
+    /// first passes of [#passUntilEpochReadsSent] send no read.
+    private final AtomicInteger passesBeforeForwarding = new AtomicInteger();
     /// The runtime as the manager sees it, so a test can count the manager's abandons (a rewind restart abandons).
     private StreamConsumerRuntime managedRuntime;
     private ExecutorService consensus;
@@ -549,6 +554,91 @@ class DurableProjectionRebuildTest {
         assertThat(committedEpoch()).isEqualTo(Option.some(RewindEpoch.NONE));
     }
 
+    /// #3835: ONE stale FOUND restarts the consumer ONCE, however many passes run before a later read answers. The read
+    /// sent by the restarting pass stays unanswered here, so every pass in between acts on the same stale epoch; the
+    /// restarted consumer has fetched its cursor by then (its epoch is the recreated one), so each of those passes sees it
+    /// "rewound behind" the stale epoch. Before #3835 each pass abandoned the restarted consumer again. In production the
+    /// same happens whenever the answer of the read sent after the restart has not been recorded when a pass starts.
+    @Test
+    void forwardingNode_staleFound_restartsTheConsumerOnce_whateverNumberOfPassesRunBeforeALaterReadAnswers() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        awaitCommittedCursor(6L, 20_000);
+
+        applyNow(removeCheckpoint());
+        localCursors.forget();
+        applyNow(checkpoint(2L, RewindEpoch.NONE));
+        forwardingEpochs.set(true);
+        passUntilEpochReadsSent(1);
+        epochReads.getFirst().succeed(List.of(Option.some(checkpointAtEpoch(5L))));
+        passUntilEpochReadsSent(2);
+        verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
+        awaitCommittedCursor(6L, 20_000);
+
+        manager.reconcile();
+        manager.reconcile();
+        manager.reconcile();
+
+        verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
+        assertThat(epochReads).as("the passes between sent no read: the second is still outstanding").hasSize(2);
+    }
+
+    /// #3835: the once-per-epoch memory ends when a later read answers anything else. A checkpoint that reads epoch 5, then
+    /// the recreated epoch, then epoch 5 again is a new rewind to the same epoch value, and it restarts the consumer again.
+    @Test
+    void forwardingNode_theSameEpochAnsweredAgainAfterAnotherAnswer_restartsTheConsumerAgain() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        awaitCommittedCursor(6L, 20_000);
+
+        applyNow(removeCheckpoint());
+        localCursors.forget();
+        applyNow(checkpoint(2L, RewindEpoch.NONE));
+        forwardingEpochs.set(true);
+        passUntilEpochReadsSent(1);
+        epochReads.getFirst().succeed(List.of(Option.some(checkpointAtEpoch(5L))));
+        passUntilEpochReadsSent(2);
+        awaitCommittedCursor(6L, 20_000);
+        assertThat(abandonsOfTheGroup()).as("the first answer restarted the consumer once").isEqualTo(1);
+
+        answerEpochReadFromCommittedState(1);
+        passUntilEpochReadsSent(3);
+        manager.reconcile();
+        epochReads.get(2).succeed(List.of(Option.some(checkpointAtEpoch(5L))));
+        PollUntil.pollUntil(this::reconcileAndCountAbandons, abandons -> abandons >= 2, Duration.ofSeconds(10))
+                 .assertMet("epoch 5 answered again after the recreated epoch restarted the consumer again");
+    }
+
+    /// #3853: [#passUntilEpochReadsSent] waits for the count-th read, however many passes that takes. The first three passes run while
+    /// the node is a core and read its own committed state, so they send nothing; the node forwards from the fourth. A wait that
+    /// returned after one pass (the sent count not read) would return with no read sent. Mutant t5: the sent supplier constant MAX.
+    @Test
+    void passUntilEpochReadsSent_theFirstPassesSendNoRead_keepsPassingUntilTheReadIsSent() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        awaitCommittedCursor(6L, 20_000);
+        passesBeforeForwarding.set(3);
+
+        passUntilEpochReadsSent(1);
+
+        assertThat(forwardingEpochs).describedAs("the passes ran until the node forwarded").isTrue();
+        assertThat(epochReads).describedAs("the wait returned only after the first read was sent, and the extra pass sent no second").hasSize(1);
+    }
+
+    private long reconcileAndCountAbandons() {
+        manager.reconcile();
+
+        return abandonsOfTheGroup();
+    }
+
+    private long abandonsOfTheGroup() {
+        return Mockito.mockingDetails(managedRuntime)
+                      .getInvocations()
+                      .stream()
+                      .filter(invocation -> invocation.getMethod().getName().equals("abandon"))
+                      .count();
+    }
+
     /// #3283 round 2: a consumer still fetching its cursor has no epoch yet and is left alone, however much newer the
     /// committed one is: it picks the committed epoch up when its fetch lands. The restarted consumer's fetch is held
     /// here, so passes that read a strictly newer epoch run while it is awaiting; none of them restarts it again.
@@ -781,17 +871,23 @@ class DurableProjectionRebuildTest {
         return reply;
     }
 
-    /// Runs passes until the `count`-th epoch read is sent. A pass sends only when the previous read has landed, so the
-    /// pass that sends it is the first to act on that answer.
+    /// Runs passes until the `count`-th epoch read is sent, then one more pass that acts on every answer that freed the slot.
+    /// The contract and why the sending pass is not the one to act is at [SlotPasses].
     private void passUntilEpochReadsSent(int count) {
-        PollUntil.pollUntil(this::reconcileAndCountEpochReads, sent -> sent >= count, Duration.ofSeconds(10))
-                 .assertMet(count + " epoch reads sent");
+        SlotPasses.passUntilSent(this::reconcileAndReturnUnit, epochReads::size, count, Duration.ofSeconds(10));
     }
 
-    private int reconcileAndCountEpochReads() {
+    private Unit reconcileAndReturnUnit() {
         manager.reconcile();
+        forwardWhenCountdownEnds();
 
-        return epochReads.size();
+        return Unit.unit();
+    }
+
+    private void forwardWhenCountdownEnds() {
+        if (passesBeforeForwarding.get() > 0 && passesBeforeForwarding.decrementAndGet() == 0) {
+            forwardingEpochs.set(true);
+        }
     }
 
     /// The committed checkpoint as a core answers the epoch read: one Get answer for the one held key.

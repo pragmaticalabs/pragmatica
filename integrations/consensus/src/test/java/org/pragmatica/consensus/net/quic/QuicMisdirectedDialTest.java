@@ -16,6 +16,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -41,6 +42,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -102,7 +104,7 @@ class QuicMisdirectedDialTest {
         aNet.dialForTests(nodeInfo(ghost, bNet.boundPort().unwrap()), true);
         awaitTrue(() -> aNet.quicMetrics().dialFailureCount() > aDialFailuresBefore,
                   "arming: the ghost dial failed at the dialer (a dial failure since #1489; an identity mismatch is not a TLS handshake failure)");
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MS));
+        Pause.pause(Duration.ofMillis(SETTLE_MS));
 
         assertThat(bNet.activeConnectionForTests(a).unwrap())
             .as("B's connection to A is the same object: the ghost dial displaced nothing")
