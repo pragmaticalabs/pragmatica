@@ -92,13 +92,13 @@ class EmptyAudienceWarningTest {
         assertThat(hosts(w.h, ORDERS).getFirst()).isIn(W1, W2, W3);
     }
 
-    /// Red when: a cluster whose community is ACTIVE with three workers (the default floor) raises the event at any pass. The first pass of a
-    /// FORMING community that reaches the floor in the same tick opens and closes the event (Placement runs before Communities in Reconcile).
+    /// Red when: a cluster whose community is FORMING with three live workers (the floor) raises the event at any pass: its ACTIVE write is
+    /// due in the same tick, so the audience is not stalled (Placement runs before the community write commits).
     @Test
     void threeWorkers_fromTheStart_raiseNothing() {
         var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
                        .target(ORDERS, 1, "WORKERS_ONLY")
-                       .community("east-w-0", 3, CommunityState.ACTIVE)
+                       .community("east-w-0", 3, CommunityState.FORMING)
                        .seams(seams -> seams.withReady(ALL).withLocalAlive(Option.some(Set.of(W1, W2, W3))));
 
         w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));

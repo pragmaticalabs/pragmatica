@@ -151,12 +151,34 @@ public sealed interface Placement {
     /// closed by `placement-audience-available`). FER (degrade forward): the target stays unplaced; the floor is not lowered here, because it
     /// is the DHT replication factor. Guarantee: the stall is visible, never silent. Mechanism: the committed open set of `Warnings`.
     private static ClusterModel emptyAudience(ClusterModel m, Ctx ctx, ArtifactBase base, PlacementPolicy policy) {
-        return Warnings.raise(m,
-                              Warnings.EMPTY_AUDIENCE,
-                              base.asString(),
-                              Warnings.SINGLE,
-                              Warnings.SINGLE,
-                              emptyAudienceText(m, ctx, base, policy));
+        return activationDue(m, ctx, policy)
+               ? m
+               : Warnings.raise(m,
+                                Warnings.EMPTY_AUDIENCE,
+                                base.asString(),
+                                Warnings.SINGLE,
+                                Warnings.SINGLE,
+                                emptyAudienceText(m, ctx, base, policy));
+    }
+
+    /// A worker-reading policy whose audience is empty only because a community reached its floor this tick: `Communities.run` (after this
+    /// step in `Reconcile.run`) has its FORMING/DEGRADED to ACTIVE write due, and the audience is non-empty once it commits. That is not a
+    /// stall, so it opens no episode (the order cannot help: the write commits after the tick). A write that never commits keeps the audience
+    /// empty and the community stuck below ACTIVE: Communities re-evaluates it every pass, and its own state is the operator's signal then.
+    private static boolean activationDue(ClusterModel m, Ctx ctx, PlacementPolicy policy) {
+        var floor = CommunityPolicies.current(m, ctx).viabilityFloor();
+
+        return policy != PlacementPolicy.CORE_ONLY && m.communities.entries()
+                                                                   .stream()
+                                                                   .anyMatch(entry -> becomesActive(m, floor, entry));
+    }
+
+    private static boolean becomesActive(ClusterModel m, int floor, Map.Entry<String, CommunityValue> entry) {
+        var state = entry.getValue().state();
+
+        return state != CommunityState.ACTIVE && Communities.next(state,
+                                                                  Communities.liveMembers(m, entry.getKey()),
+                                                                  floor) == CommunityState.ACTIVE;
     }
 
     private static String emptyAudienceText(ClusterModel m, Ctx ctx, ArtifactBase base, PlacementPolicy policy) {

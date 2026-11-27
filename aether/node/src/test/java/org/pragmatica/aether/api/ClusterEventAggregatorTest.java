@@ -3190,6 +3190,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.DEPARTURE_INFERRED_SUPPRESSED,
                 OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH,
                 OperatorWarningCode.INVALID_PLACEMENT,
+                OperatorWarningCode.PLACEMENT_AUDIENCE_EMPTY,
                 OperatorWarningCode.JOIN_UNMATCHED,
                 OperatorWarningCode.RETRY_EXHAUSTED_UNSETTLED,
                 OperatorWarningCode.SCHEMA_HOLD,
