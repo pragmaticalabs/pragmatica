@@ -330,37 +330,67 @@ class WorkerDepartureRetirementTest {
         assertNoMarkAndReturningWorkerAssigned(w);
     }
 
-    // #3828 control — Red when: the operator's removal of a LIVE worker's directive (its record stands) leaves no mark, so a join writes the
-    // directive back.
+    // #3828 invariant (a) — Red when: the operator's removal of a NEVER-DEPARTED live worker's directive (it has no record at all) leaves no
+    // mark, so a join writes the directive back.
     @Test
     void liveWorker_operatorRemovesTheDirective_leavesTheMark() {
         var w = world();
 
+        assertThat(w.recordOf(worker).isPresent()).as("precondition: a live worker has no record").isFalse();
+
         w.h.seedRemove(new ActivationDirectiveKey(worker));
         w.h.drain();
 
-        assertThat(w.recordOf(worker).isPresent()).as("precondition: the worker's record stands").isTrue();
         assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the removal of a live worker's directive is marked").isTrue();
     }
 
-    // #3828 enforcer 2 — Red when: the removal of a worker's record leaves the mark the operator's earlier directive removal wrote, so the
-    // same process admitted under the id again is not directed (the mark must not outlive the record it was written under).
+    // #3828 invariant (d) — Red when: the operator's removal of a re-admitted live worker's directive (its record is ADMITTED, superseding a
+    // DEPARTED one) leaves no mark: a live worker is told apart by having no DEPARTED record, not by having no record.
     @Test
-    void markedWorker_thenItsRecordIsRemoved_isAssignedWhenItJoinsAgain() {
+    void readmittedWorker_operatorRemovesTheDirective_leavesTheMark() {
         var w = world();
+
+        w.h.loseKinds = Set.of(SubmitKind.CLEANUP, SubmitKind.DIRECTIVE_REMOVAL);
+        w.h.deliver(new ClusterInput.WorkerLeave(worker));
+        w.h.drain();
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN)));
+        settle(w);
+
+        assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).as("precondition: the re-admission wrote ADMITTED")
+                  .isEqualTo(Option.some(DepartureState.ADMITTED));
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("precondition: the directive stands").isTrue();
 
         w.h.seedRemove(new ActivationDirectiveKey(worker));
         w.h.drain();
+
+        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the removal of a re-admitted live worker's directive is marked").isTrue();
+    }
+
+    // #3828 enforcer (1) — Red when: the removal of a DEPARTED record leaves the mark an earlier operator removal wrote for the same id, so
+    // the id admitted again is not directed (the mark must not outlive the departure it was written before).
+    @Test
+    void markedWorker_thenItsDepartedRecordIsRemoved_isAssignedWhenItJoinsAgain() {
+        var w = world();
+
+        w.h.loseKinds = Set.of(SubmitKind.CLEANUP, SubmitKind.DIRECTIVE_REMOVAL);
+        w.h.seedRemove(new ActivationDirectiveKey(worker));
+        w.h.drain();
         assertThat(w.h.model().removedDirectives.containsKey(worker)).as("precondition: the operator's removal marked the worker").isTrue();
+
+        w.h.deliver(new ClusterInput.WorkerLeave(worker));
+        w.h.drain();
+        assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).as("precondition: DEPARTED")
+                  .isEqualTo(Option.some(DepartureState.DEPARTED));
 
         w.h.seedRemove(new NodeDepartureKey(worker));
         w.h.drain();
         assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the record's removal dropped the mark").isFalse();
 
-        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admissionOf(worker)));
+        w.h.loseKinds = Set.of();
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN + 1)));
         settle(w);
 
-        assertThat(w.present(new ActivationDirectiveKey(worker))).as("the worker is directed again").isTrue();
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("the returning worker is directed again").isTrue();
     }
 
     // #3028 — Red when: a falsely departed worker that rejoins (same process) before C17b loses its directive.
