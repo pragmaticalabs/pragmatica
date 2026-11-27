@@ -28,7 +28,10 @@ public sealed interface Reconcile {
     /// \* Reconcile pass (Timer TICK -> Reconcile.java run): level-triggered raises (once per episode, the family set
     /// \* gates them), level-triggered closes of subjects in the family set (Failures.java closeSettled; Strays.java),
     /// \* Warnings.reconcile marks dirty (Warnings.reconcile, Reconcile.run), and the desired/observed
-    /// \* reconcile derives a goal intent when the desired row is off target. Not while suspended (Lifecycle.isSuspended).
+    /// \* reconcile derives a goal intent when the desired row is off target. Routes.sweep (Reconcile.run, #3389, #3836) re-drives the
+    /// \* declared-route rows and the goal transactions that witness them (the target row, the owner's blueprint, the rows): the model
+    /// \* carries them in the one goal intent gi and the one in-flight goal gInfl[n] and has no route rows, so a refused witness is a
+    /// \* refused goal write, which gi re-derives. Not while suspended (Lifecycle.isSuspended).
     /// Tick(n) ==
     ///   /\ fsm[n] = "Active" /\ ~Suspended(n)   \* Reconcile.run returns at once while suspended
     ///   /\ LET raises == IF WarnOK(n) THEN {l \in LevelFam : l \in cond /\ l \notin warned[n]} ELSE {}
