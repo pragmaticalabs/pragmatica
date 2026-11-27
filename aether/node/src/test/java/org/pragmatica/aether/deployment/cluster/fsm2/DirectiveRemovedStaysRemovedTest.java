@@ -161,6 +161,19 @@ class DirectiveRemovedStaysRemovedTest {
         assertThat(w.present(KEY)).as("22 differs from the adopted 21: a new incarnation").isTrue();
     }
 
+    // Red when: a join that reports no token replaces the marked incarnation with the unknown one, so a later different token is no evidence.
+    @Test
+    void directiveRemoved_joinWithoutATokenDoesNotForgetTheMarkedIncarnation() {
+        var w = directedThenRemoved(21L);
+
+        redrive(w, 0L);
+        assertThat(directiveWrites(w)).as("an unknown token is not a new incarnation").isZero();
+
+        redrive(w, 22L);
+
+        assertThat(w.present(KEY)).as("22 differs from the marked 21: a new incarnation").isTrue();
+    }
+
     // Red when: the removal is not remembered per node: another worker's removal must not block this worker.
     @Test
     void directiveRemovedOfAnotherWorker_doesNotBlockThisWorker() {
