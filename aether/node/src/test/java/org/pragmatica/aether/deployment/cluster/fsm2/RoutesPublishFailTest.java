@@ -403,6 +403,23 @@ class RoutesPublishFailTest {
                   .isTrue();
     }
 
+    /// Red when: `fail` writes a row at the attemptId of the blueprint the ROW names instead of its claimant's. 2.0.0 is taking LIST over from
+    /// 1.0.0 (the takeover is in flight, the row is still 1.0.0's) and the artifact fails: the row is failed for the claimant 2.0.0, at its
+    /// attempt, under its id.
+    @Test
+    void fail_aRowStillOwnedByTheOldVersionIsFailedAtItsClaimant() {
+        var h = declaredApp();
+
+        h.holdKinds = Set.of(SubmitKind.ROUTES);
+        publish(h, upgradeOf(ATTEMPT_2, LIST), Option.some(blueprintOf(ATTEMPT_1, LIST, GET_ONE)));
+        assertThat(committed(h, LIST).map(row -> ((DeclaredRouteValue) row).blueprintId())).as("control: the row is still 1.0.0's")
+                  .isEqualTo(Option.some(APP));
+        h.holdKinds = Set.of();
+        failFatally(h);
+        assertThat(committed(h, LIST)).as("failed at the claimant 2.0.0's attempt")
+                  .isEqualTo(Option.some(DeclaredRouteValue.declaredRouteValue("org.example:app:2.0.0", ATTEMPT_2, RouteState.Failed.failed("boom"))));
+    }
+
     private static AppBlueprintValue upgradeOf(String attempt, DeclaredRoute... routes) {
         var expanded = ExpandedBlueprint.expandedBlueprint(blueprintId("org.example:app:2.0.0"),
                                                            List.of(slice(ORDERS, 1, 1, Set.of())));
