@@ -482,7 +482,8 @@ class RoutesTest {
     /// while 1.0.0 was the claimant commits after the SliceTarget moved to 2.0.0 and writes the row at 1.0.0 (a witness cannot cover the target
     /// row alone: a version put later, a greater declarer, is a row that did not exist when the draft was derived). Meanwhile the gate, which
     /// reads the target owner, holds the goal (the row is `STALE` for 2.0.0); 2.0.0's own takeover draft, derived over the earlier row, is refused,
-    /// and the next sweep re-derives it: the row moves to the claimant within one sweep.
+    /// and the next sweep re-derives it. The bound is one tick: the 30 s tick the leader reschedules by itself (`Lifecycle.tick`) requests that
+    /// sweep, so no further event is needed (no put, no target move) for the row to reach the claimant.
     @Test
     void claimant_aDraftDerivedBeforeTheTargetMovedCommitsAtTheOldClaimantAndTheSweepHealsIt() {
         var h = active();
@@ -508,8 +509,9 @@ class RoutesTest {
 
         h.settle(secondDraft, refused);
         h.drain();
-        ticks(h, 3);
         assertThat(refused).as("2.0.0's takeover was derived over the row 1.0.0's draft replaced").isInstanceOf(Settlement.Refused.class);
+        assertThat(ownerOf(h, LIST)).as("nothing but the leader's own tick is left to move the row: a refused ROUTES draft is not resubmitted").isEqualTo(Option.some(APP));
+        ticks(h, 1);
         assertThat(ownerOf(h, LIST)).as("the sweep moved the row to the claimant").isEqualTo(Option.some(APP_V2_ID.asString()));
         assertThat(Routes.rowsCommitted(h.model(), ORDERS)).as("and the gate opens").isTrue();
     }
