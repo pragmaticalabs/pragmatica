@@ -224,6 +224,11 @@ class RoutesGateTest {
         assertThat(Routes.rowsCommitted(h.model(), ORDERS)).isTrue();
     }
 
+    /// A ROUTES transaction that puts a row (the DECLARE), not one that only removes the rows of a blueprint that no longer owns them.
+    private static boolean writesARow(ClusterEffect.Submit submit) {
+        return submit.transaction().mutations().stream().anyMatch(mutation -> mutation.replacement().isPresent());
+    }
+
     private static void assertRowKeepsTheGateClosed(DeclaredRouteValue row) {
         var h = leaderWithOneCore();
 
@@ -232,7 +237,7 @@ class RoutesGateTest {
         h.seed(key(LIST), row);
         h.drain();
         assertThat(committed(h, LIST)).as("control: the row is committed").isEqualTo(Option.some(row));
-        assertThat(h.held.values().stream().filter(submit -> submit.kind() == SubmitKind.ROUTES)).as("control: the DECLARE is in flight").hasSize(1);
+        assertThat(h.held.values().stream().filter(submit -> submit.kind() == SubmitKind.ROUTES).filter(RoutesGateTest::writesARow)).as("control: the DECLARE is in flight").hasSize(1);
         assertThat(Routes.rowsCommitted(h.model(), ORDERS)).as("the gate is closed").isFalse();
         assertThat(h.submits(SubmitKind.GOALS)).as("no goal against the row").isEmpty();
     }
@@ -412,6 +417,7 @@ class RoutesGateTest {
         var billingOnly = h.held.values()
                                .stream()
                                .filter(submit -> submit.kind() == SubmitKind.GOALS)
+                               .filter(submit -> submit.transaction().mutations().stream().allMatch(mutation -> mutation.key().equals(new SliceDesiredKey(CORE_1, BILLING))))
                                .toList();
 
         assertThat(billingOnly).as("BILLING's goal is resubmitted alone").hasSize(1);
