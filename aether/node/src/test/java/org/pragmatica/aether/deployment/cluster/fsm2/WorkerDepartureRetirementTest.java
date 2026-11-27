@@ -235,8 +235,8 @@ class WorkerDepartureRetirementTest {
                   .isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
     }
 
-    // #3828 — Red when: the retirement's own removal mark outlives it (the model's retirement is not an operator's removal, so it leaves no
-    // mark), or the mark it left is not consumed: then the removal of the directive J5 gave the returning worker is not remembered.
+    // #3828 invariant (e) — Red when: the retirement leaves a mark, or the id stays retired after it joined (the join must end it): then the
+    // operator's removal of the directive J5 gave the returning worker is not remembered.
     @Test
     void retiredWorker_directedAgain_thenRemovedByTheOperator_isNotDirectedAgain() {
         var w = world();
