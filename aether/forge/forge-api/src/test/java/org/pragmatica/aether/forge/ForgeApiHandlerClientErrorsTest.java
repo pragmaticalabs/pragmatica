@@ -13,11 +13,16 @@ import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.JsonCodec;
 import org.pragmatica.http.QueryParams;
+import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -25,11 +30,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The Forge API is an HTTP boundary: a body it writes carries a failure's client text, never its `message()`, which for
 /// a caught throwable is the printed stack trace (#3723). Two sites write an error body from a `Cause`: a route handler
 /// that fails (400) and a success value that cannot be serialized (500). Mutation: writing `cause.message()` at either
-/// site turns the matching test red; the codec copying the mapper's message into its error turns the second red.
+/// site turns the matching test red (the second site is pinned by the failing-codec test); the codec copying the mapper's
+/// message into its error turns the end-to-end unserializable test red.
 class ForgeApiHandlerClientErrorsTest {
     private static final String INTERNAL_TEXT = "secret-internal-text";
 
-    private final ForgeApiHandler handler = ForgeApiHandler.forgeApiHandler(RequestRouter.with(failingRoute(), unserializableRoute()));
+    private final RequestRouter router = RequestRouter.with(failingRoute(), unserializableRoute(), plainRoute());
+    private final ForgeApiHandler handler = ForgeApiHandler.forgeApiHandler(router, JsonCodecAdapter.defaultCodec());
 
     @Test
     void failingRouteHandler_writesTheClientText_notTheThrowablesTrace() {
@@ -53,6 +60,38 @@ class ForgeApiHandlerClientErrorsTest {
         assertThat(writer.status).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(writer.body).contains("Serialization failed");
         assertThat(writer.body).doesNotContain(INTERNAL_TEXT).doesNotContain("Exception").doesNotContain("\\tat ");
+    }
+
+    /// The codec fails with a caught throwable, whose `message()` is its stack trace: only the handler's own rendering of the
+    /// failure can hide it, so this pins the handler's site independently of what a real codec puts in its error.
+    @Test
+    void codecFailingWithAThrowable_writesTheFixedInternalText_notTheTrace() {
+        var writer = new RecordingWriter();
+        var codec = new FailingCodec(Causes.fromThrowable(new IllegalStateException(INTERNAL_TEXT)));
+
+        ForgeApiHandler.forgeApiHandler(router, codec).handle(new StubRequest(HttpMethod.GET, "/api/plain"), writer);
+
+        assertThat(writer.status).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(writer.body).contains(HttpError.INTERNAL_ERROR_TEXT);
+        assertThat(writer.body).doesNotContain(INTERNAL_TEXT).doesNotContain("IllegalStateException").doesNotContain("\\tat ");
+    }
+
+    private static Route<String> plainRoute() {
+        return Route.<String> get("/api/plain")
+                    .to(_ -> Promise.success("value"))
+                    .asJson();
+    }
+
+    private record FailingCodec(Cause failure) implements JsonCodec {
+        @Override
+        public Result<byte[]> serialize(Object value) {
+            return failure.result();
+        }
+
+        @Override
+        public <T> Result<T> deserialize(byte[] bytes, TypeToken<T> token) {
+            return failure.result();
+        }
     }
 
     private static Route<String> failingRoute() {

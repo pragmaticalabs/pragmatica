@@ -60,6 +60,7 @@ public final class ForgeApiHandler {
     private final InventoryState inventoryState;
 
     private ForgeApiHandler(Function<ForgeApiHandler, RequestRouter> routerOf,
+                            JsonCodec jsonCodec,
                             ChaosController chaosController,
                             InventoryState inventoryState,
                             Deque<ForgeEvent> events,
@@ -68,7 +69,7 @@ public final class ForgeApiHandler {
         this.inventoryState = inventoryState;
         this.events = events;
         this.startTime = startTime;
-        this.jsonCodec = JsonCodecAdapter.defaultCodec();
+        this.jsonCodec = jsonCodec;
         this.router = routerOf.apply(this);
     }
 
@@ -92,15 +93,18 @@ public final class ForgeApiHandler {
                                                                       startTime,
                                                                       handler::logEvent,
                                                                       operatorKey),
+                                   JsonCodecAdapter.defaultCodec(),
                                    chaosController,
                                    inventoryState,
                                    events,
                                    startTime);
     }
 
-    /// A handler over a caller-supplied router, so a test can drive the response boundary with a route of its own.
-    static ForgeApiHandler forgeApiHandler(RequestRouter router) {
+    /// A handler over a caller-supplied router and codec, so a test can drive the response boundary with a route and a
+    /// codec of its own.
+    static ForgeApiHandler forgeApiHandler(RequestRouter router, JsonCodec jsonCodec) {
         return new ForgeApiHandler(_ -> router,
+                                   jsonCodec,
                                    ChaosController.chaosController(_ -> {}),
                                    InventoryState.inventoryState(),
                                    new ConcurrentLinkedDeque<>(),
