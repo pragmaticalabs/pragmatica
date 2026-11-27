@@ -11,10 +11,9 @@ import javax.tools.DiagnosticCollector;
 import javax.tools.JavaFileObject;
 import javax.tools.SimpleJavaFileObject;
 import javax.tools.ToolProvider;
+import com.sun.source.util.JavacTask;
+
 import java.net.URI;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.Comparator;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -85,34 +84,23 @@ class LeaderEpisodeEntryPathTest {
                   .anyMatch(message -> message.contains("serialized"));
     }
 
+    /// Attribution only (`JavacTask#analyze`): the errors are the compiler's, and no class file is written.
     private static List<String> compile(String code) throws Exception {
         var compiler = ToolProvider.getSystemJavaCompiler();
         var diagnostics = new DiagnosticCollector<JavaFileObject>();
-        var out = Files.createTempDirectory("episode-entry-path");
+        var task = (JavacTask) compiler.getTask(null,
+                                                null,
+                                                diagnostics,
+                                                List.of("-proc:none", "-cp", System.getProperty("java.class.path")),
+                                                null,
+                                                List.of(new Source(code).file()));
 
-        try {
-            compiler.getTask(null,
-                             null,
-                             diagnostics,
-                             List.of("-proc:none", "-d", out.toString(), "-cp", System.getProperty("java.class.path")),
-                             null,
-                             List.of(new Source(code).file()))
-                    .call();
+        task.analyze();
 
-            return diagnostics.getDiagnostics()
-                              .stream()
-                              .filter(diagnostic -> diagnostic.getKind() == Diagnostic.Kind.ERROR)
-                              .map(diagnostic -> diagnostic.getMessage(null))
-                              .toList();
-        } finally {
-            deleteRecursively(out);
-        }
-    }
-
-    private static void deleteRecursively(Path root) throws Exception {
-        try (var walk = Files.walk(root)) {
-            walk.sorted(Comparator.reverseOrder())
-                .forEach(path -> path.toFile().delete());
-        }
+        return diagnostics.getDiagnostics()
+                          .stream()
+                          .filter(diagnostic -> diagnostic.getKind() == Diagnostic.Kind.ERROR)
+                          .map(diagnostic -> diagnostic.getMessage(null))
+                          .toList();
     }
 }
