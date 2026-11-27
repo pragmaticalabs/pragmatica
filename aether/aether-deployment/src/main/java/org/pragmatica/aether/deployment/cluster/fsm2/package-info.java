@@ -1958,14 +1958,6 @@
 ///   /\ StartRet
 ///   /\ UNCHANGED <<role, history, inflight, term, mirror, pending, view, token, runs, live, directed, sticky, ranSince, mark>>
 ///
-/// \* TR's one rule (3.4 of the memo), rows 0 to 7 from the top; row 7 has no instance in the record's domain.
-/// Decide(first, now) ==
-///   LET clause == ~now.dir \/ first.dir IN
-///   IF now.rec.st = "none" /\ ~now.dir /\ now.rcpt = 0 THEN "DONE"
-///   ELSE IF now.rec.e # first.e THEN "END"
-///   ELSE IF now.rec.st = "A" THEN "WAIT"
-///   ELSE IF clause THEN "REMOVE" ELSE "END"
-///
 /// \* W15 (read: prefix, once per attempt), its two paths: REMOVE submits the unit; DONE and END drop the retirement; WAIT
 /// \* is no step. Fair (weak), with no term condition.
 /// AttemptRemove(r) ==

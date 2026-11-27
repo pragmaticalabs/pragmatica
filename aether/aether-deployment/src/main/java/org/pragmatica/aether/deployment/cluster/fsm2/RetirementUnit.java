@@ -86,6 +86,18 @@ public record RetirementUnit(NodeId node,
     /// differ END, and equal epochs go by the record now. The directive clause (a directive now that is absent or equal to the one first read)
     /// is asked at every REMOVE (rows 2, 3, 5, 6): a DEPARTED or an absent record REMOVEs when it holds and ENDs when it fails, an ADMITTED
     /// record WAITs (row 4), any other state ENDs (row 7).
+    ///
+    /// ```tla DirectiveReceipt:Decide
+    /// \* TR's one rule (3.4 of the memo), rows 0 to 7 from the top, as this method with `decideAtTheEpochFirstRead` and `decideOn`
+    /// \* answers it; row 7 (any other record state) has no instance in the model's record domain. `first` is the unit first read
+    /// \* (its epoch and its directive), `now` the unit read at this attempt.
+    /// Decide(first, now) ==
+    ///   LET clause == ~now.dir \/ first.dir IN
+    ///   IF now.rec.st = "none" /\ ~now.dir /\ now.rcpt = 0 THEN "DONE"
+    ///   ELSE IF now.rec.e # first.e THEN "END"
+    ///   ELSE IF now.rec.st = "A" THEN "WAIT"
+    ///   ELSE IF clause THEN "REMOVE" ELSE "END"
+    /// ```
     public Decision decide(RetirementUnit now) {
         return now.isEmpty()
                ? Decision.DONE
