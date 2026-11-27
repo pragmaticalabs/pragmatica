@@ -227,4 +227,15 @@ class KVStoreAssignmentGuardTest {
 
         assertThat(stored(CURSOR)).isNull();
     }
+
+    /// Negative control (#3041): the arm is scoped to [AssignmentGuarded] keys. The assignment key itself is not guarded,
+    /// so a `Remove` of it naming another token is decided by the arms below it, and they admit it.
+    @Test
+    void remove_ofAKeyThatIsNotGuarded_witnessOfAnotherToken_deletesTheRecord() {
+        put(ASSIGNMENT, new Assignment("node-a@1"));
+
+        removeWitnessed(ASSIGNMENT, new Assignment("node-b@2"));
+
+        assertThat(stored(ASSIGNMENT)).isNull();
+    }
 }
