@@ -517,6 +517,17 @@ public enum OperatorWarningCode {
                                         "stream-consumer",
                                         WarningLevel.INFO,
                                         STREAM_CONSUMER_DETACH_WAIT_EXCEEDED),
+    /// A stream consumer cannot read its cursor (#3283): the cursor fetch failed, so the consumer has not started and retries
+    /// the fetch with backoff. It never starts at the group's reset point instead; on a worker the committed cursor is read
+    /// from a core node, and no answer from a core is not the answer "no cursor". Raised once per run of failed fetches;
+    /// subject `stream[partition]/group`. The message names the cause.
+    STREAM_CONSUMER_CURSOR_UNREADABLE("stream-consumer-cursor-unreadable", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_CURSOR_UNREADABLE], same subject: a later fetch read the cursor and the consumer
+    /// started from it, or the consumer was cancelled while its fetch was failing (the message says which).
+    STREAM_CONSUMER_CURSOR_READABLE("stream-consumer-cursor-readable",
+                                    "stream-consumer",
+                                    WarningLevel.INFO,
+                                    STREAM_CONSUMER_CURSOR_UNREADABLE),
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.

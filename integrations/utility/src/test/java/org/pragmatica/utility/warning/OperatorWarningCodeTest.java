@@ -330,6 +330,19 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED);
     }
 
+    /// #3283: an unreadable committed cursor holds the partition and keeps retrying, which an operator must see as a WARNING (not
+    /// INFO, which a dashboard filters out); it is closed by an INFO recovery of the same subsystem. The level is pinned here
+    /// because nothing downstream reads it: the raise sites pass the code, and the level is whatever the code carries.
+    @Test
+    void cursorUnreadable_isAWarning_andIsClosedByCursorReadable() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE.code()).isEqualTo("stream-consumer-cursor-unreadable");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE.code()).isEqualTo("stream-consumer-cursor-readable");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE.subsystem()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE.subsystem());
+    }
+
     /// #2450 A3-0: a corrupt durable anchor is critical and closed by an INFO recovery of the same subsystem.
     @Test
     void anchorCorrupt_isCritical_andIsClosedByAnInfoRecovery() {

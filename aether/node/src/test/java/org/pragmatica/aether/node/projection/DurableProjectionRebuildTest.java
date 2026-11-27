@@ -11,6 +11,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -22,6 +24,7 @@ import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
+import org.pragmatica.aether.node.stream.CommittedCursorRead;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter.CommittedAssignments;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
@@ -94,7 +97,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.AdditionalAnswers.delegatesTo;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 
 /// #1333 in-JVM twin of `DurableProjectionRebuildForgeTest` — the same scenario on the real
@@ -154,6 +160,9 @@ class DurableProjectionRebuildTest {
     private static final Topic<AppEvent> TOPIC = Topic.topic(TOPIC_NAME, AppEvent.class);
     private static final String MODEL_KEY = "model";
     private static final int PARTITION = 0;
+    private static final StreamCursorCheckpointKey CHECKPOINT_KEY = StreamCursorCheckpointKey.streamCursorCheckpointKey(TOPIC_STREAM,
+                                                                                                                     PARTITION,
+                                                                                                                     GROUP);
     private static final ConsumerAssignmentKey ASSIGNMENT_KEY = ConsumerAssignmentKey.consumerAssignmentKey(TOPIC_STREAM, PARTITION, GROUP);
     /// #1400: the node the partition's assignment moves to; it does not exist in the harness, its checkpoints are puts.
     private static final NodeId OTHER = NodeId.nodeId("node-2").unwrap();
@@ -169,6 +178,12 @@ class DurableProjectionRebuildTest {
     private final AtomicReference<Runnable> afterRewind = new AtomicReference<>();
     private final InMemoryProjectionStore<Long> store = InMemoryProjectionStore.inMemoryProjectionStore();
     private final InMemoryClusterCursorStore localCursors = new InMemoryClusterCursorStore();
+    /// #3283: the manager's rewind check reads through the production epoch source; while this is false the node is a
+    /// core and reads its own committed state, when true it is a forwarding node whose reads are [#epochReads].
+    private final AtomicBoolean forwardingEpochs = new AtomicBoolean(false);
+    private final List<Promise<List<Object>>> epochReads = new CopyOnWriteArrayList<>();
+    /// The runtime as the manager sees it, so a test can count the manager's abandons (a rewind restart abandons).
+    private StreamConsumerRuntime managedRuntime;
     private ExecutorService consensus;
     private KVStore<AetherKey, AetherValue> kv;
     private StreamPartitionManager partitions;
@@ -387,6 +402,24 @@ class DurableProjectionRebuildTest {
         assertThat(model()).isEqualTo(Option.some(123456L));
     }
 
+    private StreamCursorCheckpointValue checkpointAtEpoch(long sequence) {
+        return StreamCursorCheckpointValue.streamCursorCheckpointValue(6L,
+                                                                       selfToken(),
+                                                                       RewindEpoch.rewindEpoch(INCARNATION, sequence, 1L));
+    }
+
+    private void awaitStarted(long maxMs) {
+        PollUntil.pollUntil(this::startedConsumers, started -> started == 1, Duration.ofMillis(maxMs))
+                 .assertMet("the consumer started once its fetch landed");
+        assertThat(subscriptionsForGroup()).as("exactly one consumer, and it is not fetching").hasSize(1);
+    }
+
+    private long startedConsumers() {
+        return subscriptionsForGroup().stream()
+                                      .filter(snapshot -> !snapshot.awaitingCursorFetch())
+                                      .count();
+    }
+
     /// #1400 (the RED pin, red at the base: the old store stays REBUILDING at offset 0). A rebuild requested here whose
     /// partition then moves to another assignee: this node's consumer is gone (detached first, like the zombie test, so
     /// nothing local commits), the committed assignment names another node, and that node's consumer resumes under the
@@ -475,6 +508,76 @@ class DurableProjectionRebuildTest {
                       .stream()
                       .filter(snapshot -> snapshot.streamName().equals(TOPIC_STREAM) && snapshot.partition() == PARTITION && snapshot.consumerGroup().equals(GROUP))
                       .toList();
+    }
+
+    /// #3283 round 2: a stale FOUND on a forwarding node. The last FOUND says epoch 5, but the checkpoint was deleted and
+    /// recreated at epoch 0 since (with the node's local cursor gone with it), which the applier's rewind fence does not
+    /// cover. The stale epoch restarts the consumer; the restart abandons it without a flush and re-fetches the cursor
+    /// from committed state, so it resumes at the recreated cursor, and once a read sent after the change has answered
+    /// there is no further restart.
+    @Test
+    void forwardingNode_staleFoundAfterTheCheckpointWasRecreated_resumesAtTheRecreatedCursor_andRestartsNoFurther() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        awaitCommittedCursor(6L, 20_000);
+        var delivered = attempts.get();
+
+        applyNow(removeCheckpoint());
+        localCursors.forget();
+        applyNow(checkpoint(2L, RewindEpoch.NONE));
+        assertThat(committedCursor()).as("control: the checkpoint was deleted and recreated at 2, the applier did not refuse either write")
+                  .isEqualTo(Option.some(2L));
+        forwardingEpochs.set(true);
+        passUntilEpochReadsSent(1);
+        epochReads.getFirst()
+                  .succeed(List.of(Option.some(StreamCursorCheckpointValue.streamCursorCheckpointValue(6L,
+                                                                                                      selfToken(),
+                                                                                                      RewindEpoch.rewindEpoch(INCARNATION,
+                                                                                                                              5L,
+                                                                                                                              1L)))));
+        passUntilEpochReadsSent(2);
+        verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
+        awaitCommittedCursor(6L, 20_000);
+        assertThat(attempts.get() - delivered).as("offsets 2..5 delivered again from the recreated cursor, once each")
+                  .isEqualTo(4);
+
+        answerEpochReadFromCommittedState(1);
+        passUntilEpochReadsSent(3);
+        answerEpochReadFromCommittedState(2);
+        passUntilEpochReadsSent(4);
+        verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
+        assertThat(committedEpoch()).isEqualTo(Option.some(RewindEpoch.NONE));
+    }
+
+    /// #3283 round 2: a consumer still fetching its cursor has no epoch yet and is left alone, however much newer the
+    /// committed one is: it picks the committed epoch up when its fetch lands. The restarted consumer's fetch is held
+    /// here, so passes that read a strictly newer epoch run while it is awaiting; none of them restarts it again.
+    @Test
+    void forwardingNode_consumerStillFetchingItsCursor_isNotRestartedAgainByANewerCommittedEpoch() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        awaitCommittedCursor(6L, 20_000);
+
+        localCursors.holdFetches();
+        forwardingEpochs.set(true);
+        passUntilEpochReadsSent(1);
+        epochReads.getFirst().succeed(List.of(Option.some(checkpointAtEpoch(5L))));
+        passUntilEpochReadsSent(2);
+        verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
+        assertThat(subscriptionsForGroup()).as("the restarted consumer is fetching its cursor")
+                                           .allMatch(StreamConsumerRuntime.SubscriptionSnapshot::awaitingCursorFetch);
+
+        epochReads.get(1).succeed(List.of(Option.some(checkpointAtEpoch(5L))));
+        passUntilEpochReadsSent(3);
+        epochReads.get(2).succeed(List.of(Option.some(checkpointAtEpoch(5L))));
+        passUntilEpochReadsSent(4);
+
+        assertThat(subscriptionsForGroup()).as("still fetching: nothing restarted it")
+                                           .allMatch(StreamConsumerRuntime.SubscriptionSnapshot::awaitingCursorFetch);
+        verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
+
+        localCursors.releaseFetches();
+        awaitStarted(20_000);
     }
 
     /// rev1369 probe B: a FRESH store after a committed rewind (node restart, or the assignee moved). A
@@ -652,8 +755,10 @@ class DurableProjectionRebuildTest {
                                                 mock(DeploymentManager.class));
         StreamConsumerManager.SlicePlacement placement = _ -> Map.of(SELF, SliceState.ACTIVE);
 
+        managedRuntime = mock(StreamConsumerRuntime.class, delegatesTo(runtime));
+
         return StreamConsumerManager.streamConsumerManager(StreamConsumerRegistry.streamConsumerRegistry(),
-                                                           runtime,
+                                                           managedRuntime,
                                                            invoker,
                                                            handler,
                                                            nodeCodec,
@@ -663,9 +768,35 @@ class DurableProjectionRebuildTest {
                                                            TopicGroupDeclarationSource.topicGroupDeclarationSource(topics,
                                                                                                                    _ -> true),
                                                            authority(),
-                                                           (stream, partition, group) -> committed(StreamCursorCheckpointKey.streamCursorCheckpointKey(stream,
-                                                                                                                                                       partition,
-                                                                                                                                                       group)).map(StreamCursorCheckpointValue::rewindEpoch));
+                                                           CommittedCursorRead.committedEpochs(forwardingEpochs::get,
+                                                                                               this::committed,
+                                                                                               CommittedCursorRead.consensusReads(this::pendingEpochRead)));
+    }
+
+    private Promise<List<Object>> pendingEpochRead(List<KVCommand<AetherKey>> commands) {
+        var reply = Promise.<List<Object>> promise();
+
+        epochReads.add(reply);
+
+        return reply;
+    }
+
+    /// Runs passes until the `count`-th epoch read is sent. A pass sends only when the previous read has landed, so the
+    /// pass that sends it is the first to act on that answer.
+    private void passUntilEpochReadsSent(int count) {
+        PollUntil.pollUntil(this::reconcileAndCountEpochReads, sent -> sent >= count, Duration.ofSeconds(10))
+                 .assertMet(count + " epoch reads sent");
+    }
+
+    private int reconcileAndCountEpochReads() {
+        manager.reconcile();
+
+        return epochReads.size();
+    }
+
+    /// The committed checkpoint as a core answers the epoch read: one Get answer for the one held key.
+    private void answerEpochReadFromCommittedState(int index) {
+        epochReads.get(index).succeed(List.of(committed(CHECKPOINT_KEY)));
     }
 
     /// #1271: this node is the leader, so the manager's own writer commits the assignment through the
@@ -767,6 +898,11 @@ class DurableProjectionRebuildTest {
 
     private void applyNow(KVCommand<AetherKey> command) {
         apply(command).await().onFailure(cause -> fail(cause.message()));
+    }
+
+    /// The applier refuses a witnessless `Remove` of a fenced value, so the delete carries the committed value as its witness.
+    private KVCommand<AetherKey> removeCheckpoint() {
+        return new KVCommand.Remove<>(CHECKPOINT_KEY, Option.<Object> some(committed(CHECKPOINT_KEY).unwrap()));
     }
 
     private Option<StreamCursorCheckpointValue> committed(StreamCursorCheckpointKey key) {
@@ -918,6 +1054,21 @@ class DurableProjectionRebuildTest {
         private record Stored(Cursor cursor, Option<Epoch> assignmentEpoch) {}
 
         private final Map<String, Stored> cursors = new ConcurrentHashMap<>();
+        private volatile Promise<Unit> fetchGate = Promise.unitPromise();
+
+        /// Fetches of a fenced cursor stay pending until [#releaseFetches].
+        void holdFetches() {
+            fetchGate = Promise.<Unit> promise();
+        }
+
+        void releaseFetches() {
+            fetchGate.succeed(Unit.unit());
+        }
+
+        /// The node's local cursors are gone (the group was deleted with its checkpoint).
+        void forget() {
+            cursors.clear();
+        }
 
         @Override
         public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
@@ -947,9 +1098,9 @@ class DurableProjectionRebuildTest {
 
         @Override
         public Promise<Option<Cursor>> fetchCursor(String consumerGroup, String streamName, int partition, Epoch assignmentEpoch) {
-            return Promise.success(Option.option(cursors.get(consumerGroup + "/" + streamName + "/" + partition))
-                                         .filter(stored -> stored.assignmentEpoch().filter(assignmentEpoch::equals).isPresent())
-                                         .map(Stored::cursor));
+            return fetchGate.map(_ -> Option.option(cursors.get(consumerGroup + "/" + streamName + "/" + partition))
+                                           .filter(stored -> stored.assignmentEpoch().filter(assignmentEpoch::equals).isPresent())
+                                           .map(Stored::cursor));
         }
     }
 

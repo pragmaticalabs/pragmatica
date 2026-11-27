@@ -90,12 +90,19 @@ import org.slf4j.LoggerFactory;
 /// back a same-token record at another offset and epoch; the assignment still names this node, so it is
 /// reported [CommitOutcome.LocalOnly] naming the rewind — retryable, and bounded by the manager's
 /// `restartRewound`, which the checkpoint put itself triggers.
+///
+/// ## Resume on a forwarding node (#3283)
+/// A forwarding (worker) node's mirror holds no checkpoints, so both fetches read the cluster half through
+/// `committedRead` ([CommittedCursorRead]) instead of `committedReader`. Only its ABSENT answer resumes with no
+/// cluster cursor (the reset point when the local half is also empty); an UNREADABLE answer fails the fetch, which the
+/// consumer runtime retries before it starts. A core node's resume still reads its own mirror.
 public record ClusterCursorStore(ConsumerCursorStore local,
                                  NodeId self,
                                  Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader,
                                  CommittedAssignments committedAssignments,
                                  Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
-                                 BooleanSupplier forwarding) implements ConsumerCursorStore {
+                                 BooleanSupplier forwarding,
+                                 CommittedCursorRead committedRead) implements ConsumerCursorStore {
     private static final Logger log = LoggerFactory.getLogger(ClusterCursorStore.class);
 
     private static final String UNFENCED_REFUSED = "the cluster cursor admits only commits made under a committed consumer assignment";
@@ -106,7 +113,30 @@ public record ClusterCursorStore(ConsumerCursorStore local,
                                                          CommittedAssignments committedAssignments,
                                                          Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
                                                          BooleanSupplier forwarding) {
-        return new ClusterCursorStore(local, self, committedReader, committedAssignments, commandWriter, forwarding);
+        return clusterCursorStore(local,
+                                  self,
+                                  committedReader,
+                                  committedAssignments,
+                                  commandWriter,
+                                  forwarding,
+                                  CommittedCursorRead.unwired());
+    }
+
+    /// #3283: `committedRead` is the authoritative cursor read a forwarding node resumes from.
+    public static ConsumerCursorStore clusterCursorStore(ConsumerCursorStore local,
+                                                         NodeId self,
+                                                         Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader,
+                                                         CommittedAssignments committedAssignments,
+                                                         Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
+                                                         BooleanSupplier forwarding,
+                                                         CommittedCursorRead committedRead) {
+        return new ClusterCursorStore(local,
+                                      self,
+                                      committedReader,
+                                      committedAssignments,
+                                      commandWriter,
+                                      forwarding,
+                                      committedRead);
     }
 
     /// #1271: a commit with no assignment cannot pass the applier's guard, so it is not published at all.
@@ -158,8 +188,7 @@ public record ClusterCursorStore(ConsumerCursorStore local,
     @Override
     public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
         return local.fetch(consumerGroup, streamName, partition)
-                    .map(localOffset -> resumeOffset(localOffset,
-                                                     committedOffset(consumerGroup, streamName, partition)));
+                    .flatMap(localOffset -> againstCommittedOffset(localOffset, consumerGroup, streamName, partition));
     }
 
     @Override
@@ -173,8 +202,35 @@ public record ClusterCursorStore(ConsumerCursorStore local,
                                                int partition,
                                                Epoch assignmentEpoch) {
         return local.fetchCursor(consumerGroup, streamName, partition, assignmentEpoch)
-                    .map(localCursor -> resumeCursor(localCursor,
-                                                     committedCursor(consumerGroup, streamName, partition)));
+                    .flatMap(localCursor -> againstCommittedCursor(localCursor, consumerGroup, streamName, partition));
+    }
+
+    private Promise<Option<Long>> againstCommittedOffset(Option<Long> localOffset,
+                                                         String consumerGroup,
+                                                         String streamName,
+                                                         int partition) {
+        return committedCheckpoint(consumerGroup, streamName, partition).map(committed -> committed.map(StreamCursorCheckpointValue::committedOffset))
+                                  .map(clusterOffset -> resumeOffset(localOffset, clusterOffset));
+    }
+
+    private Promise<Option<Cursor>> againstCommittedCursor(Option<Cursor> localCursor,
+                                                           String consumerGroup,
+                                                           String streamName,
+                                                           int partition) {
+        return committedCheckpoint(consumerGroup, streamName, partition).map(committed -> committed.map(ClusterCursorStore::toCursor))
+                                  .map(clusterCursor -> resumeCursor(localCursor, clusterCursor));
+    }
+
+    /// The cluster half of a resume. A forwarding node asks a core ([CommittedCursorRead]); a core node reads its own
+    /// committed state, whose replica holds the key, exactly as before #3283.
+    private Promise<Option<StreamCursorCheckpointValue>> committedCheckpoint(String consumerGroup,
+                                                                             String streamName,
+                                                                             int partition) {
+        var key = checkpointKey(consumerGroup, streamName, partition);
+
+        return forwarding.getAsBoolean()
+               ? committedRead.read(key)
+               : Promise.success(committedReader.apply(key));
     }
 
     /// FER: a failed consensus publish degrades this commit to [CommitOutcome.LocalOnly] instead of
@@ -326,16 +382,6 @@ public record ClusterCursorStore(ConsumerCursorStore local,
 
     private static StreamCursorCheckpointKey checkpointKey(String consumerGroup, String streamName, int partition) {
         return StreamCursorCheckpointKey.streamCursorCheckpointKey(streamName, partition, consumerGroup);
-    }
-
-    private Option<Long> committedOffset(String consumerGroup, String streamName, int partition) {
-        return committedReader.apply(checkpointKey(consumerGroup, streamName, partition))
-                              .map(StreamCursorCheckpointValue::committedOffset);
-    }
-
-    private Option<Cursor> committedCursor(String consumerGroup, String streamName, int partition) {
-        return committedReader.apply(checkpointKey(consumerGroup, streamName, partition))
-                              .map(ClusterCursorStore::toCursor);
     }
 
     static Cursor toCursor(StreamCursorCheckpointValue value) {
