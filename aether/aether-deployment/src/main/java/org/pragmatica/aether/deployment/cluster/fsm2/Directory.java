@@ -663,6 +663,20 @@ public sealed interface Directory {
         return m;
     }
 
+    /// The WORKER directive's mutation: the key expected absent.
+    ///
+    /// ```tla DirectiveReceipt:Issue
+    /// \* J5/J6 with no directive in the mirror and none in flight: the leader drafts the directive, expecting the key absent.
+    /// \* The code today is FACT = "none": that expected value is the draft's only one on this id, and nothing withholds the
+    /// \* draft (MayAssign is TRUE). Directory.putDirective builds the same mutation for a core.
+    /// \* Every other FACT is NOT this method: under "receipt" (the redesign of #3828) the draft also puts the receipt, expecting it
+    /// \* absent (IssuePuts, IssueExpects), and the leader does not draft while its mirror holds a receipt for the id (MayAssign).
+    /// Issue ==
+    ///   /\ pend /\ mir.rec # "D" /\ ~mir.dir /\ ~InFlight("issue") /\ MayAssign
+    ///   /\ joined' = TRUE
+    ///   /\ txs' = txs \cup {Tx("issue", IssuePuts, adm, "absent", IssueExpects, "any")}
+    ///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, ntf, mir, pend, adm, mark, retired, gone, halted, viol, left>>
+    /// ```
     private static KVCommand.Mutation<AetherKey, AetherValue> directiveMutation(NodeId node, String communityId) {
         return new KVCommand.Mutation<>(new ActivationDirectiveKey(node),
                                         Option.none(),

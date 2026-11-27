@@ -390,6 +390,26 @@ public sealed interface DepartureFlow {
     /// before the directive's reaches [Directory#onDirectiveRemove]. Removal is terminal: a falsely declared-dead worker is not re-admitted
     /// under this id; it is replaced under a fresh NodeId (`FalseDeadWorkerRejoinTest`, `MembershipFsm.processEvidenceRefusal`). Nothing
     /// for a core or a node without a WORKER directive.
+    ///
+    /// ```tla DirectiveReceipt:Retire
+    /// \* The retirement of the id. The code today (no receipt exists; the ELSE arm): this method builds the pair, the DEPARTED record
+    /// \* and the WORKER directive at their exact values, only when a WORKER directive is mirrored (the sweep's C17b), and
+    /// \* Directory.removalMutations (R-4.3.3, at the removal of a departed node's directive, either role) removes the record alone.
+    /// \* The THEN arm is the redesign of #3828, NOT this method yet: one unit over record, directive and receipt, each removed at its
+    /// \* mirrored value when present and witnessed absent when not (mutant "nowitness" witnesses nothing), and the sweep also retires
+    /// \* a departed worker that has a receipt and no directive (ruling R3; mutant "nor3" keeps today's condition). A core is retired
+    /// \* only by R-4.3.3 or a termination.
+    /// Retirement(m) ==
+    ///   IF Receipts
+    ///     THEN Tx("retire", NoR, 0, IF m.dir THEN "present" ELSE IF MUT = "nowitness" THEN "any" ELSE "absent",
+    ///             IF m.rcpt # NoR THEN m.rcpt ELSE IF MUT = "nowitness" THEN Any ELSE NoR, "D")
+    ///     ELSE Tx("retire", NoR, 0, IF m.dir THEN "present" ELSE "any", Any, "D")
+    /// Retire ==
+    ///   /\ ROLE = "worker" /\ Departed(mir, joined) /\ ~InFlight("retire")
+    ///   /\ mir.dir \/ (Receipts /\ MUT # "nor3" /\ mir.rcpt # NoR)
+    ///   /\ txs' = txs \cup {Retirement(mir)}
+    ///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, ntf, mir, pend, adm, joined, mark, retired, gone, halted, viol, left>>
+    /// ```
     private static List<KVCommand.Mutation<AetherKey, AetherValue>> workerRetirement(ClusterModel m,
                                                                                      NodeId node,
                                                                                      NodeDepartureValue record) {
@@ -521,6 +541,15 @@ public sealed interface DepartureFlow {
     /// A superseded DEPARTED record leaves the node counted; it is replaced by `ADMITTED(e_d + 1)`, expecting the DEPARTED value. A
     /// node whose admission carries no known token (a core promoted by liveness evidence alone, C8) keeps the process the record names:
     /// the rewrite must not erase what the committed record knows `[guess: C8 fail-open applied to the rewrite]`.
+    ///
+    /// ```tla DirectiveReceipt:Rewrite
+    /// \* Step 10, this method as it is today: a DEPARTED record that a join superseded is replaced by ADMITTED, expecting the
+    /// \* DEPARTED value and witnessing nothing else, one admission write at a time.
+    /// Rewrite ==
+    ///   /\ mir.rec = "D" /\ joined /\ ~InFlight("admit")
+    ///   /\ txs' = txs \cup {Tx("admit", NoR, 0, "any", Any, "D")}
+    ///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, ntf, mir, pend, adm, joined, mark, retired, gone, halted, viol, left>>
+    /// ```
     static ClusterModel admittedRewrite(ClusterModel m, Ctx ctx, NodeId node) {
         var record = m.records.get(node);
 
