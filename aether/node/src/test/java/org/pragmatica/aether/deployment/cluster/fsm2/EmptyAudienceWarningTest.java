@@ -239,6 +239,7 @@ class EmptyAudienceWarningTest {
                        .seams(seams -> seams.withReady(Set.of(W1, W2, W3))
                                             .withLocalAlive(Option.some(Set.of(W1, W2, W3))));
 
+        w.h.holdKinds = Set.of(ClusterModel.SubmitKind.COMMUNITY);
         w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
         w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
         w.activate();
