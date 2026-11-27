@@ -81,15 +81,27 @@ a sequence of Java locations.
 ## Writer check: `writers-check.py`
 
 TLC cannot show a wrong writer: `v' = e /\ UNCHANGED v` is no error, it disables the step, and the run stays green on a
-narrower model. For a model that keeps a writer table (`<Module>.writers.tsv`: the variables with the rows that write them,
-the rows with the variables they write, the map from model actions to operators and rows), `writers-check.py --table
-<table> --module <Module> <roots>` compares the module text with the table in both directions: the module's variables are
-the table's lines; each operator primes, outside `UNCHANGED`, exactly the variables its rows name, and leaves every other
-variable in an `UNCHANGED` (in that word, so a write can be told from none); `Next` takes exactly the mapped operators. It
-says which variables an action writes, never which value. `DirectiveReceipt` is the one model with a table.
-`python3 -m unittest discover -s tools/tla -p test_writers_check.py` runs it on the real model and on eight mutations that
-must each go red (a write removed, a write added, the silent `v' = e /\ UNCHANGED v`, a variable or a row off the table),
-and holds edge run E8 of that model: no `CONSTRAINT` in any of its cfg files, with a control that holds the word.
+narrower model. Nor can it show a bound written as a conjunct of `Next` or as a cfg `CONSTRAINT`: the fair step the bound
+cuts drops out of the liveness check. For a model that keeps a writer table (`<Module>.writers.tsv`), `writers-check.py
+--table <table> --module <Module> <roots>` reads the module text, the table and the cfg files, and fails on any mismatch:
+
+- **The writes, one invariant:** on every path of a step, every variable is constrained exactly once, in one of two literal
+  forms: `v' = e` or `v' \in S` at the start of a conjunct (`e` not `v` itself), or `v` inside an `UNCHANGED`. A path is one
+  disjunct of an operator whose body is a `\/` list. A definition a step uses counts as the step's own text, once per use.
+  Any other prime fails: of a parameter, a tuple or a definition, in a comparison, inside an `IF`. Each path writes exactly
+  the variables the table expects of its operator.
+- **The steps:** `Next` is a plain disjunction of exactly the mapped operators, with no conjunct of its own; `Spec` is
+  exactly `Init /\ [][Next]_vars /\ Fairness`; `Fairness` holds `WF_vars` of exactly the table's `fair` operators.
+- **The bounds:** every CONSTANT is a `bound` or a `param`. A bound sits in the enabling of at least one step, and the steps
+  that hold it are printed; an `input` bound sits in the enabling of no step a fair operator takes (it then stops only
+  inputs, and what it costs is the reachable prefixes: a run that needs one more term, token or retirement is outside
+  the model, and no run shows that).
+- **The cfg files:** none holds the word `CONSTRAINT`; each names `Spec`, or the `spec` the table gives its variant.
+
+It says which variables a step constrains, never which value. `DirectiveReceipt` is the one model with a table.
+`python3 -m unittest discover -s tools/tla -p test_writers_check.py` (in the `selftests` job, so every run of the workflow
+checks the model as it stands) runs the script on the real model and on 27 mutations of the module, the table and the
+cfg files that must each go red.
 
 ## Expected verdicts: `models.tsv`
 

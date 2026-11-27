@@ -5,6 +5,7 @@
 #   record, directive, receipt   are definitions over the last entry of `history` (the memo allows it).
 #   mark        is NOT in the memo: the leader-local mark of the rejected designs FACT "local" and "record" (known-bad
 #               configs local_f3, record_f1). Rows S1 and S3 write it; under every other FACT it stays FALSE.
+#   attempt     is two operators, one per path of row W15 (AttemptRemove writes inflight, AttemptEnd writes retirements).
 # kind	name	kind-or-operators	rows-or-variables
 var	role	const	-
 var	record	def:history	W23
@@ -67,7 +68,7 @@ action	foreignPut	ForeignPut	W18
 action	terminate	Terminate	W12
 action	externalConfirm	ExternalConfirm	W13
 action	forcedClear	ForcedClear	W14
-action	attempt	Attempt	W15
+action	attempt	AttemptRemove,AttemptEnd	W15
 action	halt	Halt	W21
 action	commit	Commit	W23
 action	advance	Advance	S1
@@ -78,3 +79,26 @@ action	partition	Partition	S5
 action	reconnect	Reconnect	S5
 action	stop	Stop	S5,W21
 action	lose	Lose	S6
+# an operator that writes a part of what its action writes (the two paths of W15)
+op	AttemptRemove	inflight
+op	AttemptEnd	retirements
+# the operators under WF in Fairness, and the rows whose fairness cell says "weak"
+fair	J1Fair	W4
+fair	J4Fair	W16
+fair	RetireFair	W8
+fair	Attempt	W15
+# the instrument's bounds. line: it can stop a step a sentence needs, and a Dom line takes that state out (E_max: Dom 7; H_max:
+# Dom 8). input: it may stop only steps that are not fair (the script fails otherwise); what it costs is the reachable prefixes:
+# a run that needs a third term, token or retirement is outside the model, and no run shows it.
+bound	E_max	line	Dom 7
+bound	H_max	line	Dom 8
+bound	MaxTerm	input	-
+bound	MaxToken	input	-
+bound	MaxRet	input	-
+param	FACT
+param	MUT
+param	Roles
+param	Leaders
+param	Off
+# one more specification, for the per-commit step configs only
+spec	SpecStep	step,step_unguarded,step_nowitness

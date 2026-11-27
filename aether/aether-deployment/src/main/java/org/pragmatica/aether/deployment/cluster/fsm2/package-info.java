@@ -1728,11 +1728,13 @@
 /// against `tools/tla/DirectiveReceipt.writers.tsv` by `tools/tla/writers-check.py`.
 ///
 /// **What the configs cover.** The model with every action on does not finish at these constants (two leaders, `E_max` 1,
-/// `H_max` 5: tens of millions of states with one release authority, far more with all). So a config that must FAIL
-/// switches actions off freely (`Off`): its counterexample is a behaviour of the whole model. A config that must PASS covers
-/// the actions it leaves on and no others: the `receipt_*` rows each leave one release authority on beside the join, the
-/// commit, the mirror and the operator's and the foreign writer's steps, and the `e7_*` rows do the same for the two
-/// liveness sentences. No config with a `pass` verdict covers two release authorities at two leaders together.
+/// `H_max` 5). So a config that must FAIL switches actions off freely (`Off`): its counterexample is a behaviour of the whole
+/// model. A config that must PASS covers the actions it leaves on and no others: the `receipt_*` rows each leave one release
+/// authority on, and the `e7_*` rows do the same for the two liveness sentences. Three things stand beside that split.
+/// `step` checks the commit step alone from every committed state and every single transaction: Safety, RetiredWhole and
+/// FactWithholds are properties of one commit, so no interleaving of the writers breaks them. `receipt_composed` and
+/// `e7_composed_*` run every release authority together at the largest constants that finish (one leader, `H_max` 4). And
+/// the full config was run once to a deadline as a bound, not a pass (the lane's record, #3828).
 ///
 /// ```tla DirectiveReceipt:head
 /// (* One node id: its departure record, its activation directive and the issue receipt proposed for #3828, as the applier *)
@@ -1774,7 +1776,7 @@
 /// (*                                                                                                                      *)
 /// (* Not in the memo's tables, added here and named in the writers table: `mark` (the leader-local mark of FACT "local"   *)
 /// (* and "record"; FALSE under every other FACT), a receipt that is a token under FACT "arm2", and the properties         *)
-/// (* FactWithholds and RetiredWhole. Marked choices of this model where the memo leaves one: the first term names the     *)
+/// (* FactWithholds, RetiredWhole and SpecStep. Marked choices of this model where the memo leaves one: the first term names the     *)
 /// (* least leader (the leaders are alike); a leader change may name any leader; `join` keeps one in-flight slot per leader *)
 /// (* for both of its arms, `retire` one for its mirror read (W8, W9) and one for its prefix read (W10); P1 is weak        *)
 /// (* fairness of the commit of each single transaction.                                                                   *)
@@ -1860,7 +1862,8 @@
 ///        {DepartTx(L, x, s) : L \in Leaders, x \in RecDom, s \in BOOLEAN}
 ///   \cup {J1Tx(L, x, w) : L \in Leaders, x \in {y \in Admissible : y.st = "D"}, w \in BOOLEAN}
 ///   \cup {AdmitTx(L, x) : L \in Leaders, x \in Admissible}
-///   \cup {IssueTx(L, er, nr) : L \in Leaders, er \in RcptDom, nr \in RcptDom}
+///   \cup {IssueTx(L, er, nr) : L \in Leaders, er \in IF FACT = "arm2" THEN RcptDom ELSE {0},
+///                               nr \in IF FACT = "arm2" THEN 1..MaxToken ELSE IF Receipts THEN {1} ELSE {0}}
 ///   \cup {UnitTx(<<n, L>>, en) : n \in {"retire", "retireP"}, L \in Leaders, en \in {y \in EntryDom : y.rec.st = "D"}}
 ///   \cup {UnitTx(<<"attempt", r>>, en) : r \in RetIds, en \in {y \in EntryDom : y.rec.st # "A"}}
 ///   \cup {OpRemTx, FputTx}
@@ -1962,19 +1965,22 @@
 ///   ELSE IF now.rec.st = "A" THEN "WAIT"
 ///   ELSE IF clause THEN "REMOVE" ELSE "END"
 ///
-/// \* W15 (read: prefix, once per attempt): REMOVE submits the unit, DONE and END drop the retirement, WAIT is no step.
-/// \* Fair (weak), with no term condition.
-/// Attempt(r) ==
+/// \* W15 (read: prefix, once per attempt), its two paths: REMOVE submits the unit; DONE and END drop the retirement; WAIT
+/// \* is no step. Fair (weak), with no term condition.
+/// AttemptRemove(r) ==
 ///   /\ On("attempt")
 ///   /\ retirements[r] # NoRet
 ///   /\ \E i \in 1..Len(history) :
-///        LET d == Decide(retirements[r], history[i]) IN
-///          /\ d # "WAIT"
-///          /\ inflight' = IF d = "REMOVE"
-///                         THEN {u \in inflight : u.k # <<"attempt", r>>} \cup {UnitTx(<<"attempt", r>>, history[i])}
-///                         ELSE inflight
-///          /\ retirements' = IF d = "REMOVE" THEN retirements ELSE [retirements EXCEPT ![r] = NoRet]
-///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, sticky, ranSince, mark>>
+///        /\ Decide(retirements[r], history[i]) = "REMOVE"
+///        /\ Submit(UnitTx(<<"attempt", r>>, history[i]))
+///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
+///
+/// AttemptEnd(r) ==
+///   /\ On("attempt")
+///   /\ retirements[r] # NoRet
+///   /\ \E i \in 1..Len(history) : Decide(retirements[r], history[i]) \in {"DONE", "END"}
+///   /\ retirements' = [retirements EXCEPT ![r] = NoRet]
+///   /\ UNCHANGED <<role, history, inflight, term, mirror, pending, view, token, runs, live, directed, sticky, ranSince, mark>>
 ///
 /// \* W21 (reads the committed directive): a directed, live WORKER halts on the delivered removal. Not fair.
 /// Halt ==
@@ -2100,18 +2106,20 @@
 ///   /\ sticky = "clear" /\ ranSince = FALSE
 ///   /\ mark = [L \in Leaders |-> FALSE]
 ///
-/// \* The 21 actions of the memo's map (`join` is ArmJ1 and Issue, `retire` is Retire and RetireP).
+/// \* The 21 actions of the memo's map (`join` is ArmJ1 and Issue, `retire` is Retire and RetireP, `attempt` is AttemptRemove
+/// \* and AttemptEnd). A plain disjunction: no conjunct of its own, so no bound hides here (writers-check.py holds it so).
 /// Next ==
 ///   \/ \E L \in Leaders : Depart(L) \/ Infer(L) \/ ArmJ1(L) \/ Issue(L) \/ Admit(L) \/ Retire(L) \/ RetireP(L)
 ///                         \/ Advance(L) \/ JoinInput(L)
 ///   \/ OpRemove \/ ForeignPut \/ Terminate \/ ExternalConfirm \/ ForcedClear \/ Halt
-///   \/ \E r \in RetIds : Attempt(r)
+///   \/ \E r \in RetIds : AttemptRemove(r) \/ AttemptEnd(r)
 ///   \/ \E t \in inflight : Commit(t) \/ Lose(t)
 ///   \/ LeaderChange \/ Restart \/ Partition \/ Reconnect \/ Stop
 ///
 /// \* Fairness, by the one rule of the writer table: weak fairness exactly where a fairness cell says "weak", on the row's
 /// \* expressed part and on the tick's (S2: the acting leader is the one the term names). W4, W16 (not beside a DEPARTED
 /// \* record), W8, and W15 (no term condition). Nothing else is fair.
+/// Attempt(r) == AttemptRemove(r) \/ AttemptEnd(r)
 /// J1Fair(L) == term.ldr = L /\ T(L) /\ ArmJ1(L)
 /// J4Fair(L) == term.ldr = L /\ T(L) /\ M(L).rec.st # "D" /\ Issue(L)
 /// RetireFair(L) == term.ldr = L /\ role = "WORKER" /\ (M(L).dir \/ M(L).rcpt # 0) /\ Retire(L)
@@ -2121,6 +2129,27 @@
 ///   /\ \A r \in RetIds : WF_vars(Attempt(r))
 ///
 /// Spec == Init /\ [][Next]_vars /\ Fairness
+///
+/// \* Not in the memo: the commit step alone, from EVERY committed state and EVERY single transaction of TxSpace (config
+/// \* `step`). Safety, RetiredWhole and FactWithholds are properties of one commit; StepInv is what a commit needs of the state
+/// \* before it. A commit that keeps them from every such state keeps them in every interleaving of every writer, which is why
+/// \* the per-authority split of the `receipt_*` rows cannot hide a breach of these three.
+/// StepInv == sticky \in {"issued", "removed"} => receipt # 0
+/// InitStep ==
+///   /\ role \in Roles
+///   /\ history \in {<<e>> : e \in EntryDom}
+///   /\ inflight \in {{t} : t \in TxSpace}
+///   /\ sticky \in {"clear", "issued", "removed"}
+///   /\ StepInv
+///   /\ term = [n |-> 1, ldr |-> MinLeader]
+///   /\ mirror = [L \in Leaders |-> 1]
+///   /\ pending = [L \in Leaders |-> TRUE]
+///   /\ view = [L \in Leaders |-> 1]
+///   /\ token = 1 /\ runs = TRUE /\ live = FALSE /\ directed = FALSE
+///   /\ retirements = [r \in RetIds |-> NoRet]
+///   /\ ranSince = FALSE
+///   /\ mark = [L \in Leaders |-> FALSE]
+/// SpecStep == InitStep /\ [][\E t \in inflight : Commit(t)]_vars
 ///
 /// TypeOK ==
 ///   /\ role \in Roles
@@ -2156,6 +2185,13 @@
 /// RetiredWhole == [][(record.st # "none" /\ history'[Len(history')].rec.st = "none")
 ///                    => history'[Len(history')].rcpt = 0]_vars
 ///
+/// \* The stability claims the two sentences rest on (the memo states each in prose).
+/// RetiredStays == [][Retired => Retired']_vars
+/// TopHistoryStays == [][Len(history) = H_max => Len(history') = H_max]_vars
+/// PendingStays == [][\A L \in Leaders : pending[L] => pending'[L]]_vars
+/// MirrorForward == [][\A L \in Leaders : mirror'[L] >= mirror[L]]_vars
+/// ViewStays == [][\A L \in Leaders : view[L] # 0 => view'[L] = view[L]]_vars
+///
 /// \* The liveness sentences (invariant 2): for every leader L, <>[]Dom_k(L) /\ Settle /\ P1 /\ P2(L) => []<>Goal. The parts
 /// \* are the memo's parts table; they are parts of the two sentences and never fairness of the specification.
 /// Held == role = "WORKER" /\ record.st = "D" /\ ~record.stale /\ ~directive /\ receipt = 0
@@ -2164,12 +2200,14 @@
 /// TopHistory == Len(history) = H_max
 /// Goal == directive
 ///
-/// \* Dom 1 to 5; Dom 6 tells the sentences apart; Dom 7 and Dom 8 are the instrument's bounds that can stop a needed step.
-/// DomBase(L) == term.ldr = L /\ pending[L] /\ T(L) /\ ~Held /\ ~Unreleased
-/// Dom1(L) == DomBase(L) /\ ~Retired /\ ~TopEpoch /\ ~TopHistory
-/// Dom2(L) == DomBase(L) /\ Retired /\ ~TopEpoch /\ ~TopHistory
-/// Dom1no7(L) == DomBase(L) /\ ~Retired /\ ~TopHistory     \* the probe of edge run E5
-/// Dom1no8(L) == DomBase(L) /\ ~Retired /\ ~TopEpoch       \* the probe of edge run E6
+/// \* Dom 1 to 5, 7 and 8 (d drops one line, for the probes); Dom 6 tells the sentences apart; Dom 7 and Dom 8 are the
+/// \* instrument's bounds that can stop a needed step.
+/// DomLines(L, d) ==
+///   /\ (d = 1 \/ term.ldr = L) /\ (d = 2 \/ pending[L]) /\ (d = 3 \/ T(L)) /\ (d = 4 \/ ~Held) /\ (d = 5 \/ ~Unreleased)
+///   /\ (d = 7 \/ ~TopEpoch) /\ (d = 8 \/ ~TopHistory)
+/// Dom1(L) == DomLines(L, 0) /\ ~Retired
+/// Dom2(L) == DomLines(L, 0) /\ Retired
+/// Dom1no(L, d) == DomLines(L, d) /\ ~Retired
 ///
 /// \* Settle: from some point on every step is a commit, an advance, or a fair row's step where its fairness is.
 /// SettleStep ==
@@ -2182,19 +2220,32 @@
 ///
 /// Live1 == \A L \in Leaders : (<>[]Dom1(L) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
 /// Live2 == \A L \in Leaders : (<>[]Dom2(L) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
-/// \* Edge run E4: must FAIL, on a behaviour that stays inside Dom_k and holds a directive again and again.
-/// NoGoal1 == \A L \in Leaders : (<>[]Dom1(L) /\ Settle /\ P1 /\ P2(L)) => <>[]~Goal
-/// NoGoal2 == \A L \in Leaders : (<>[]Dom2(L) /\ Settle /\ P1 /\ P2(L)) => <>[]~Goal
-/// Live1no7 == \A L \in Leaders : (<>[]Dom1no7(L) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
-/// Live1no8 == \A L \in Leaders : (<>[]Dom1no8(L) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
+///
+/// \* Edge run E4, a safety probe that must FAIL: the commit of a leader issue reaches Goal from inside Dom_k and stays inside.
+/// IssueCommit == \E t \in inflight : t.issue /\ Accepts(t) /\ Commit(t)
+/// NoEntry1 == [][~\E L \in Leaders : Dom1(L) /\ ~Goal /\ IssueCommit /\ Dom1(L)']_vars
+/// NoEntry2 == [][~\E L \in Leaders : Dom2(L) /\ ~Goal /\ IssueCommit /\ Dom2(L)']_vars
+///
+/// \* The necessity probes, each Live1 without one line of Dom, each must FAIL: without the line a stuck class is inside.
+/// Live1no1 == \A L \in Leaders : (<>[]Dom1no(L, 1) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
+/// Live1no2 == \A L \in Leaders : (<>[]Dom1no(L, 2) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
+/// Live1no3 == \A L \in Leaders : (<>[]Dom1no(L, 3) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
+/// Live1no4 == \A L \in Leaders : (<>[]Dom1no(L, 4) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
+/// Live1no5 == \A L \in Leaders : (<>[]Dom1no(L, 5) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
+/// Live1no7 == \A L \in Leaders : (<>[]Dom1no(L, 7) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
+/// Live1no8 == \A L \in Leaders : (<>[]Dom1no(L, 8) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
+/// \* The probes of Goal, each must FAIL: Live1 with the goal read as a committed leader issue (a foreign put keeps it away),
+/// \* and as the flag `directed` (a stopped process never gets it).
+/// Live1GoalIssue == \A L \in Leaders : (<>[]Dom1(L) /\ Settle /\ P1 /\ P2(L)) => []<>(sticky = "issued")
+/// Live1GoalFlag == \A L \in Leaders : (<>[]Dom1(L) /\ Settle /\ P1 /\ P2(L)) => []<>directed
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:common
-/// SPECIFICATION Spec
 /// INVARIANT TypeOK
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:base
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "none"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER"}
@@ -2209,6 +2260,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:local_f3
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "local"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER"}
@@ -2223,6 +2275,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:local_ctl
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "local"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER"}
@@ -2237,6 +2290,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:record_f1
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "record"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER"}
@@ -2251,6 +2305,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:record_ctl
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "record"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER"}
@@ -2265,6 +2320,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:unguarded_late
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "unguarded"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER"}
@@ -2279,6 +2335,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:unguarded_ctl
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "unguarded"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER"}
@@ -2293,6 +2350,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:arm2_f2
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "arm2"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER"}
@@ -2307,6 +2365,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:arm2_n1
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "arm2"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER"}
@@ -2321,6 +2380,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:mut_nowitness
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "nowitness"
 /// CONSTANT Roles = {"CORE"}
@@ -2335,6 +2395,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:residual_forced
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"CORE"}
@@ -2349,6 +2410,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:receipt_depart
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2359,12 +2421,19 @@
 /// CONSTANT E_max = 1
 /// CONSTANT H_max = 5
 /// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "infer", "admit", "retire", "terminate"}
+/// INVARIANT StepInv
 /// INVARIANT FactWithholds
 /// PROPERTY Safety
 /// PROPERTY RetiredWhole
+/// PROPERTY RetiredStays
+/// PROPERTY TopHistoryStays
+/// PROPERTY PendingStays
+/// PROPERTY MirrorForward
+/// PROPERTY ViewStays
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:receipt_infer
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2375,12 +2444,19 @@
 /// CONSTANT E_max = 1
 /// CONSTANT H_max = 5
 /// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "admit", "retire", "terminate"}
+/// INVARIANT StepInv
 /// INVARIANT FactWithholds
 /// PROPERTY Safety
 /// PROPERTY RetiredWhole
+/// PROPERTY RetiredStays
+/// PROPERTY TopHistoryStays
+/// PROPERTY PendingStays
+/// PROPERTY MirrorForward
+/// PROPERTY ViewStays
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:receipt_admit
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2391,12 +2467,19 @@
 /// CONSTANT E_max = 1
 /// CONSTANT H_max = 5
 /// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "infer", "retire", "terminate"}
+/// INVARIANT StepInv
 /// INVARIANT FactWithholds
 /// PROPERTY Safety
 /// PROPERTY RetiredWhole
+/// PROPERTY RetiredStays
+/// PROPERTY TopHistoryStays
+/// PROPERTY PendingStays
+/// PROPERTY MirrorForward
+/// PROPERTY ViewStays
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:receipt_terminate
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2407,12 +2490,19 @@
 /// CONSTANT E_max = 1
 /// CONSTANT H_max = 5
 /// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "infer", "admit", "retire"}
+/// INVARIANT StepInv
 /// INVARIANT FactWithholds
 /// PROPERTY Safety
 /// PROPERTY RetiredWhole
+/// PROPERTY RetiredStays
+/// PROPERTY TopHistoryStays
+/// PROPERTY PendingStays
+/// PROPERTY MirrorForward
+/// PROPERTY ViewStays
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:receipt_process
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2423,12 +2513,19 @@
 /// CONSTANT E_max = 1
 /// CONSTANT H_max = 5
 /// CONSTANT Off = {"depart", "infer", "admit", "retire", "terminate", "externalConfirm", "forcedClear"}
+/// INVARIANT StepInv
 /// INVARIANT FactWithholds
 /// PROPERTY Safety
 /// PROPERTY StickyWhileRunning
+/// PROPERTY RetiredStays
+/// PROPERTY TopHistoryStays
+/// PROPERTY PendingStays
+/// PROPERTY MirrorForward
+/// PROPERTY ViewStays
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:receipt_forced
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"CORE"}
@@ -2443,6 +2540,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:receipt_retire_one
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2453,12 +2551,19 @@
 /// CONSTANT E_max = 1
 /// CONSTANT H_max = 5
 /// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "infer", "admit", "terminate"}
+/// INVARIANT StepInv
 /// INVARIANT FactWithholds
 /// PROPERTY Safety
 /// PROPERTY RetiredWhole
+/// PROPERTY RetiredStays
+/// PROPERTY TopHistoryStays
+/// PROPERTY PendingStays
+/// PROPERTY MirrorForward
+/// PROPERTY ViewStays
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:receipt_retire_worker
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER"}
@@ -2469,12 +2574,19 @@
 /// CONSTANT E_max = 1
 /// CONSTANT H_max = 5
 /// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "infer", "admit", "terminate"}
+/// INVARIANT StepInv
 /// INVARIANT FactWithholds
 /// PROPERTY Safety
 /// PROPERTY RetiredWhole
+/// PROPERTY RetiredStays
+/// PROPERTY TopHistoryStays
+/// PROPERTY PendingStays
+/// PROPERTY MirrorForward
+/// PROPERTY ViewStays
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:receipt_retire_core
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"CORE"}
@@ -2485,12 +2597,19 @@
 /// CONSTANT E_max = 1
 /// CONSTANT H_max = 5
 /// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "infer", "admit", "terminate"}
+/// INVARIANT StepInv
 /// INVARIANT FactWithholds
 /// PROPERTY Safety
 /// PROPERTY RetiredWhole
+/// PROPERTY RetiredStays
+/// PROPERTY TopHistoryStays
+/// PROPERTY PendingStays
+/// PROPERTY MirrorForward
+/// PROPERTY ViewStays
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:residual_forced_memo
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"CORE"}
@@ -2505,6 +2624,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e1_core
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "noJ4"
 /// CONSTANT Roles = {"CORE"}
@@ -2519,6 +2639,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e1_worker
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "noJ4"
 /// CONSTANT Roles = {"WORKER"}
@@ -2533,6 +2654,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e2_core
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "noJ4ret"
 /// CONSTANT Roles = {"CORE"}
@@ -2547,6 +2669,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e2_worker
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "noJ4ret"
 /// CONSTANT Roles = {"WORKER"}
@@ -2561,6 +2684,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e3_core_live1
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "noJ1"
 /// CONSTANT Roles = {"CORE"}
@@ -2575,6 +2699,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e3_worker_live1
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "noJ1"
 /// CONSTANT Roles = {"WORKER"}
@@ -2589,6 +2714,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e3_core_live2
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "noJ1"
 /// CONSTANT Roles = {"CORE"}
@@ -2603,6 +2729,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e3_worker_live2
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "noJ1"
 /// CONSTANT Roles = {"WORKER"}
@@ -2616,10 +2743,11 @@
 /// PROPERTY Live2
 /// ```
 ///
-/// ```tlacfg DirectiveReceipt:e4_nogoal1
+/// ```tlacfg DirectiveReceipt:e4_core_k1
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
-/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Roles = {"CORE"}
 /// CONSTANT Leaders = {1, 2}
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxToken = 2
@@ -2627,13 +2755,29 @@
 /// CONSTANT E_max = 1
 /// CONSTANT H_max = 5
 /// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "terminate", "foreignPut", "operatorRemoval"}
-/// PROPERTY NoGoal1
+/// PROPERTY NoEntry1
 /// ```
 ///
-/// ```tlacfg DirectiveReceipt:e4_nogoal2
+/// ```tlacfg DirectiveReceipt:e4_worker_k1
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
-/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY NoEntry1
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e4_core_k2
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"CORE"}
 /// CONSTANT Leaders = {1, 2}
 /// CONSTANT MaxTerm = 2
 /// CONSTANT MaxToken = 2
@@ -2641,10 +2785,26 @@
 /// CONSTANT E_max = 1
 /// CONSTANT H_max = 5
 /// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "foreignPut", "operatorRemoval"}
-/// PROPERTY NoGoal2
+/// PROPERTY NoEntry2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e4_worker_k2
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "foreignPut", "operatorRemoval"}
+/// PROPERTY NoEntry2
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e5_nodom7
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"CORE"}
@@ -2659,6 +2819,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e6_nodom8
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2672,7 +2833,176 @@
 /// PROPERTY Live1no8
 /// ```
 ///
+/// ```tlacfg DirectiveReceipt:e5_nodom1
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "depart", "infer", "admit", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live1no1
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e5_nodom2
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live1no2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e5a_nodom3
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "leaderChange", "depart", "infer", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live1no3
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e5b_nodom4
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "infer", "admit", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live1no4
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e5c_nodom5_core
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "terminate", "foreignPut"}
+/// PROPERTY Live1no5
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e5c_nodom5_worker
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "terminate", "foreignPut"}
+/// PROPERTY Live1no5
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:goal_issue
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "terminate", "operatorRemoval"}
+/// PROPERTY Live1GoalIssue
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:goal_flag
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live1GoalFlag
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:step
+/// SPECIFICATION SpecStep
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {}
+/// INVARIANT StepInv
+/// INVARIANT FactWithholds
+/// PROPERTY Safety
+/// PROPERTY RetiredWhole
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:step_unguarded
+/// SPECIFICATION SpecStep
+/// CONSTANT FACT = "unguarded"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {}
+/// PROPERTY Safety
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:step_nowitness
+/// SPECIFICATION SpecStep
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "nowitness"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {}
+/// PROPERTY RetiredWhole
+/// ```
+///
 /// ```tlacfg DirectiveReceipt:e7_core
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2688,6 +3018,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e7_depart
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2703,6 +3034,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e7_infer
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2718,6 +3050,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e7_admit
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2733,6 +3066,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e7_terminate
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2748,6 +3082,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e7_retire
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2763,6 +3098,7 @@
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:e7_admit_foreign
+/// SPECIFICATION Spec
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
 /// CONSTANT Roles = {"WORKER", "CORE"}
@@ -2773,6 +3109,61 @@
 /// CONSTANT E_max = 1
 /// CONSTANT H_max = 5
 /// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "retire", "terminate"}
+/// PROPERTY Live1
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:receipt_composed
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 4
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear"}
+/// INVARIANT StepInv
+/// INVARIANT FactWithholds
+/// PROPERTY Safety
+/// PROPERTY RetiredWhole
+/// PROPERTY RetiredStays
+/// PROPERTY TopHistoryStays
+/// PROPERTY PendingStays
+/// PROPERTY MirrorForward
+/// PROPERTY ViewStays
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e7_composed_worker
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 1
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 4
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "foreignPut"}
+/// PROPERTY Live1
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e7_composed_core
+/// SPECIFICATION Spec
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 1
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 4
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "foreignPut"}
 /// PROPERTY Live1
 /// PROPERTY Live2
 /// ```
