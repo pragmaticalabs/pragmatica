@@ -120,6 +120,21 @@ class LeaderEpisodeIdentityTest {
                   .isSameAs(tickOfEntryTwo);
     }
 
+    // ---- input 2, owner half: an owner that is not the FSM's current entry arms nothing that can run ----
+    @Test
+    void arm_byAStateThatIsNotTheCurrentEntry_runsNothing() {
+        start();
+        var dormant = harness.state();
+
+        enterAwaitingKvSync();
+        var ran = new AtomicInteger();
+
+        ctx.serializedFor(dormant, ran::incrementAndGet).run();
+        ctx.serializedFor(harness.state(), ran::incrementAndGet).run();
+        OnDrainer.drained(ctx);
+        assertThat(ran).as("only the arm by the current entry ran").hasValue(1);
+    }
+
     // ---- input 4: the control ----
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
