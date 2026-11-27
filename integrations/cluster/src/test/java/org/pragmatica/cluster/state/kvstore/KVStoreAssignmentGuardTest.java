@@ -182,7 +182,7 @@ class KVStoreAssignmentGuardTest {
     }
 
     /// #3041: a `Remove` that names the life it read. The record of the earlier life was read before the successor wrote
-    /// its own; the late `Remove` must delete nothing.
+    /// its own; the late `Remove` must delete nothing (the successor's record is the live life's).
     @Test
     void remove_witnessOfAnotherToken_deletesNothing() {
         put(ASSIGNMENT, new Assignment("node-a@1"));
@@ -195,35 +195,73 @@ class KVStoreAssignmentGuardTest {
         assertThat(stored(CURSOR)).isEqualTo(new Cursor("node-b@2", 12));
     }
 
+    /// #3041 invariant: a `Remove` deletes only records of a life that is not the committed one when it APPLIES. The record
+    /// holds the committed authority's token, so it is the live life's: refused whatever witness the proposer read.
     @Test
-    void remove_witnessOfTheCommittedToken_deletesTheRecord() {
+    void remove_ofTheLiveLifesRecord_witnessOfTheCommittedToken_deletesNothing() {
         put(ASSIGNMENT, new Assignment("node-a@1"));
         put(CURSOR, new Cursor("node-a@1", 10));
+
+        removeWitnessed(CURSOR, new Cursor("node-a@1", 10));
+
+        assertThat(stored(CURSOR)).isEqualTo(new Cursor("node-a@1", 10));
+    }
+
+    @Test
+    void remove_ofTheLiveLifesRecord_withoutWitness_deletesNothing() {
+        put(ASSIGNMENT, new Assignment("node-a@1"));
+        put(CURSOR, new Cursor("node-a@1", 10));
+
+        store.process(store.createBatch(List.of(new Remove<StructuredKey>(CURSOR))));
+
+        assertThat(stored(CURSOR)).isEqualTo(new Cursor("node-a@1", 10));
+    }
+
+    /// The witness is not read by the life arm: a witness that carries no token does not make the live life's record
+    /// deletable.
+    @Test
+    void remove_ofTheLiveLifesRecord_witnessWithoutToken_deletesNothing() {
+        put(ASSIGNMENT, new Assignment("node-a@1"));
+        put(CURSOR, new Cursor("node-a@1", 10));
+
+        removeWitnessed(CURSOR, new PlainCursor(10));
+
+        assertThat(stored(CURSOR)).isEqualTo(new Cursor("node-a@1", 10));
+    }
+
+    /// The other direction: the authority moved to another token, so the record is of a dead life and is deleted.
+    @Test
+    void remove_ofADeadLifesRecord_authorityOfAnotherToken_deletesTheRecord() {
+        put(ASSIGNMENT, new Assignment("node-a@1"));
+        put(CURSOR, new Cursor("node-a@1", 10));
+        put(ASSIGNMENT, new Assignment("node-b@2"));
 
         removeWitnessed(CURSOR, new Cursor("node-a@1", 10));
 
         assertThat(stored(CURSOR)).isNull();
     }
 
-    /// Negative control (#3041): the arm only narrows. A witnessless `Remove` of a non-epoch value is decided by the arms
-    /// below it, and they admit it.
+    /// The other direction: the authority is gone, so the record is of a dead life and is deleted.
     @Test
-    void remove_withoutWitness_ofNonEpochValue_deletesTheRecord() {
+    void remove_ofADeadLifesRecord_authorityAbsent_deletesTheRecord() {
         put(ASSIGNMENT, new Assignment("node-a@1"));
         put(CURSOR, new Cursor("node-a@1", 10));
+        store.process(store.createBatch(List.of(new Remove<StructuredKey>(ASSIGNMENT))));
 
-        store.process(store.createBatch(List.of(new Remove<StructuredKey>(CURSOR))));
+        removeWitnessed(CURSOR, new Cursor("node-a@1", 10));
 
         assertThat(stored(CURSOR)).isNull();
     }
 
-    /// Negative control (#3041): a witness that carries no token names no life, so the arm does not refuse it.
+    /// Negative control (#3041): the arm only narrows. A witnessless `Remove` of a non-epoch value of a dead life is decided
+    /// by the arms below it, and they admit it.
     @Test
-    void remove_witnessWithoutToken_deletesTheRecord() {
+    void remove_withoutWitness_ofADeadLifesNonEpochValue_deletesTheRecord() {
         put(ASSIGNMENT, new Assignment("node-a@1"));
         put(CURSOR, new Cursor("node-a@1", 10));
+        put(ASSIGNMENT, new Assignment("node-b@2"));
 
-        removeWitnessed(CURSOR, new PlainCursor(10));
+        store.process(store.createBatch(List.of(new Remove<StructuredKey>(CURSOR))));
 
         assertThat(stored(CURSOR)).isNull();
     }

@@ -354,6 +354,41 @@ class ConsumerGroupStreamLifeReclaimTest {
         assertThat(registry.streamNames()).doesNotContain("events");
     }
 
+    /// F5, assignments: the same cold boot where the dead life holds assignment values (its group never left), not tombstones.
+    @Test
+    void coldBoot_leaderChangeBeforeTheReplay_stillReclaimsTheDeadLifesAssignments_f5() {
+        coldBoot(deadLifeAssignmentsSnapshot());
+
+        router.route(new LeaderChange(Option.some(SELF), true));
+        store.replayNotifications();
+
+        assertThat(recordsOf("events")).as("the dead life's assignments were reclaimed after the burst").isEmpty();
+        assertThat(registry.streamNames()).doesNotContain("events");
+    }
+
+    /// F5, leader gate: a node that is not the leader proposes nothing when the burst delivers a dead life's records.
+    @Test
+    void coldBoot_replayWithoutALeaderChange_proposesNoReclaim_f5() {
+        coldBoot(deadLifeSnapshot());
+
+        store.replayNotifications();
+
+        assertThat(recordsOf("events")).as("a dormant coordinator reclaims nothing").hasSize(PARTITIONS);
+    }
+
+    /// F5, no overreach: a record of the committed life that arrives (a join) proposes no removal at all; the applier's fence
+    /// would refuse it, but the trigger must not even ask.
+    @Test
+    void liveRecordArriving_proposesNoRemoval_f5() {
+        createStream("events");
+        deferRemovals = true;
+
+        coordinator.joinGroup("g", "events", PARTITIONS, "c1", NODE_A);
+
+        assertThat(deferred).as("no removal proposed for records of the committed life").isEmpty();
+        assertThat(recordsOf("events")).hasSize(PARTITIONS);
+    }
+
     /// F2 (m5): a delete whose reclaim never committed, then a recreate before the next sweep. The sweep removes the old
     /// life's records of the LIVE stream, and leaves the new life's.
     @Test
@@ -451,6 +486,18 @@ class ConsumerGroupStreamLifeReclaimTest {
         deferred.clear();
         deferRemovals = false;
         assertThat(recordsOf("events")).as("the dead life's records remain in the snapshot").hasSize(PARTITIONS);
+        return Map.copyOf(store.snapshot());
+    }
+
+    /// Like [#deadLifeSnapshot()], but the group never left: the dead life holds assignment values.
+    private Map<AetherKey, AetherValue> deadLifeAssignmentsSnapshot() {
+        createStream("events");
+        coordinator.joinGroup("g", "events", PARTITIONS, "c1", NODE_A);
+        deferRemovals = true;
+        deleteStream("events");
+        deferred.clear();
+        deferRemovals = false;
+        assertThat(recordsOf("events")).as("the dead life's assignments remain in the snapshot").hasSize(PARTITIONS);
         return Map.copyOf(store.snapshot());
     }
 
