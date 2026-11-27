@@ -1,0 +1,2 @@
+### Changed (2026-11-27, follow-up to #3726: ember worker fixtures)
+- **Ember worker-stream fixtures reach cluster state through production writers** (#3283, #3811). The tests deploy through a blueprint apply and the fenced scale endpoint instead of a hand-committed `SliceTarget`. The replica-filter premise is asserted on the filter instance itself, and worker-only hosting is checked from registration to assignment. Test-only.

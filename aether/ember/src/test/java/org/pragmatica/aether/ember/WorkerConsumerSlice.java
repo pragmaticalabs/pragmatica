@@ -50,8 +50,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// What stays hand-committed by the tests that use it is the consumer DECLARATION (`StreamRegistrationKey`, via [#commit]). Production writes it
 /// from the slice's reactive manifest and the stream's config section when the node activates the slice
 /// (`NodeDeploymentState.doPublishStreamSubscriptions`, value `StreamRegistrationValue(self, group, ...)`), which a minimal jar does not carry. The
-/// tests commit it only after the slice is ACTIVE on the worker (`awaitHostedByWorkersOnly`), the order production writes it in. It is declared
-/// configuration, not instance state.
+/// tests commit it only after the slice is ACTIVE on every worker (`awaitActiveOnEveryWorker`), which is LATER than production (production puts it in
+/// the ACTIVATING chain, before ACTIVE). The state reached is one production also reaches; the order is a marked design choice (PR #3833). It is
+/// declared configuration, not instance state.
 final class WorkerConsumerSlice {
     private static final String SLICE_CLASS = WorkerConsumerFactory.class.getName();
     private static final TimeSpan COMMIT_BOUND = TimeSpan.timeSpan(30).seconds();
@@ -86,8 +87,8 @@ final class WorkerConsumerSlice {
         return cluster;
     }
 
-    /// Deploys the slice onto workers the way an operator does: publishes a blueprint declaring it (one instance), awaits the `SliceTarget` that apply
-    /// commits, then moves the target to WORKERS_ONLY through the scale endpoint. Everything after it, the placement, the load and the worker's ACTIVE row,
+    /// Deploys the slice onto workers the way an operator does: publishes a blueprint declaring it (3 instances, `SliceSpec.MIN_INSTANCES`), awaits
+    /// the `SliceTarget` that apply commits, then moves the target to WORKERS_ONLY through the scale endpoint. Everything after it, the placement, the load and the worker's ACTIVE row,
     /// is the system's. The apply first places the slice on a core (CORE_ONLY is a target's default), so a caller that needs the worker-only state waits
     /// for it with [#awaitHostedByWorkersOnly].
     void deployOnWorkers(EmberCluster cluster) {
