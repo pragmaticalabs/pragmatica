@@ -34,6 +34,12 @@ import org.pragmatica.serialization.Serializer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,6 +54,7 @@ class ConsumerGroupStreamLifeReclaimTest {
     private static final NodeId NODE_A = new NodeId("node-a");
     private static final int PARTITIONS = 4;
 
+    private MessageRouter.MutableRouter router;
     private KVStore<AetherKey, AetherValue> store;
     private ConsumerGroupRegistry registry;
     private ConsumerGroupCoordinator coordinator;
@@ -57,7 +64,7 @@ class ConsumerGroupStreamLifeReclaimTest {
 
     @BeforeEach
     void setUp() {
-        var router = MessageRouter.mutable();
+        router = MessageRouter.mutable();
 
         store = new KVStore<>(router, stubSerializer(), stubDeserializer());
         registry = ConsumerGroupRegistry.consumerGroupRegistry();
@@ -81,6 +88,10 @@ class ConsumerGroupStreamLifeReclaimTest {
         if (event.cause().key() instanceof StreamConfigKey) {
             coordinator.onStreamConfigRemove((ValueRemove<StreamConfigKey, StreamConfigValue>) event);
         }
+    }
+
+    private void routeLeaderChange(LeaderChange change) {
+        coordinator.onLeaderChange(change);
     }
 
     private ConsumerGroupCoordinator newCoordinator() {
@@ -283,6 +294,216 @@ class ConsumerGroupStreamLifeReclaimTest {
         assertThat(recordsOf("events")).as("the sweep removed nothing of the live life")
                                        .hasSize(PARTITIONS)
                                        .allSatisfy(entry -> assertThat(entry.getValue()).isInstanceOf(ConsumerGroupValue.class));
+    }
+
+    /// F1 (#3041 fix round 1), production order: the activation sweep runs on the router thread (a `LeaderChange` route, as
+    /// `AetherNode` wires it) while the KV notification dispatcher thread commits and mirrors a recreate. The sweep has read the
+    /// stream's life as absent (the delete committed); the recreate and the new life's records then commit and are mirrored; the
+    /// sweep's next read finds the new life's records. A reclaim deletes only records of a life that is not the committed life
+    /// of its stream when the deletion APPLIES, whatever the leader read when it decided.
+    @Test
+    void sweepRacingARecreate_leavesTheNewLifesRecords_f1() {
+        createStream("events");
+        coordinator.joinGroup("g", "events", PARTITIONS, "c1", NODE_A);
+        coordinator.leaveGroup("g", "events", "c1");
+        deferRemovals = true;
+        deleteStream("events");
+        deferred.clear();
+        deferRemovals = false;
+        var raced = new AtomicBoolean();
+
+        coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(immediateClusterNode(),
+                                                                        registry,
+                                                                        () -> Epoch.epoch(1L, 2L, 0L),
+                                                                        recreatingAfterTheFirstRead(raced));
+        router.addRoute(LeaderChange.class, this::routeLeaderChange);
+        onThread("leader-change-router", () -> router.route(new LeaderChange(Option.some(SELF), true)));
+
+        assertThat(raced.get()).as("the race was staged").isTrue();
+        assertThat(recordsOf("events")).as("the sweep removed nothing of the new life")
+                                       .hasSize(PARTITIONS)
+                                       .allSatisfy(entry -> assertThat(entry.getValue()).isInstanceOf(ConsumerGroupValue.class));
+    }
+
+    /// F5: a cold boot whose LeaderChange (local leader) is handled before the replay burst reaches the registry. The restored
+    /// records of a dead life have no StreamConfig Remove in the burst (the key is absent), so the sweep that read an empty
+    /// mirror is the only trigger and it is gone: the records must still be reclaimed once the burst is delivered. The order
+    /// can occur: LeaderKey and ConsumerGroupKey share replay rank 0 (AetherNode.replayRank), so their order is the
+    /// iteration order of the store's ConcurrentHashMap.
+    @Test
+    void coldBoot_leaderChangeBeforeTheReplay_stillReclaimsTheDeadLifesRecords_f5() {
+        coldBoot(deadLifeSnapshot());
+
+        router.route(new LeaderChange(Option.some(SELF), true));
+        store.replayNotifications();
+
+        assertThat(recordsOf("events")).as("the dead life's records were reclaimed after the burst").isEmpty();
+        assertThat(registry.streamNames()).as("and the registry dropped in step").doesNotContain("events");
+    }
+
+    /// Control of F5: the same cold boot with the burst delivered BEFORE the LeaderChange is reclaimed by the activation sweep.
+    @Test
+    void coldBoot_replayBeforeTheLeaderChange_reclaimsTheDeadLifesRecords_f5Control() {
+        coldBoot(deadLifeSnapshot());
+
+        store.replayNotifications();
+        router.route(new LeaderChange(Option.some(SELF), true));
+
+        assertThat(recordsOf("events")).as("the sweep reclaimed the dead life").isEmpty();
+        assertThat(registry.streamNames()).doesNotContain("events");
+    }
+
+    /// F2 (m5): a delete whose reclaim never committed, then a recreate before the next sweep. The sweep removes the old
+    /// life's records of the LIVE stream, and leaves the new life's.
+    @Test
+    void staleLifeRecords_ofALiveStream_areReclaimedByTheSweep_theLiveLifesStay_f2() {
+        createStream("events");
+        coordinator.joinGroup("old", "events", PARTITIONS, "c1", NODE_A);
+        deferRemovals = true;
+        deleteStream("events");
+        deferred.clear();
+        deferRemovals = false;
+        createStream("events");
+        coordinator.joinGroup("new", "events", PARTITIONS, "c2", NODE_A);
+        assertThat(recordsOf("events")).as("both lives' records are present before the sweep").hasSize(2 * PARTITIONS);
+
+        coordinator = newCoordinator();
+
+        assertThat(recordsOfGroup("old", "events")).as("the dead life's records of the live stream were reclaimed").isEmpty();
+        assertThat(recordsOfGroup("new", "events")).as("the live life's records stay")
+                                                   .hasSize(PARTITIONS)
+                                                   .allSatisfy(entry -> assertThat(entry.getValue()).isInstanceOf(ConsumerGroupValue.class));
+    }
+
+    /// F3 (m1), production path: the same Remove of the old life is proposed twice (the delete trigger and a sweep). The first
+    /// copy commits and the mirror drops the records; the new life is then minted by a lagging term source, so its epoch ranks
+    /// BELOW the old witness's. The late copy's epoch witness is current, so only the applier's life arm (`readsOtherLife`)
+    /// keeps the new life's records.
+    @Test
+    void lateRemoveOfTheOldLife_whoseWitnessOutranksTheNewLifesEpoch_leavesTheNewLifesRecords_f3() {
+        var term = new AtomicLong(9L);
+
+        coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(immediateClusterNode(),
+                                                                        registry,
+                                                                        () -> Epoch.epoch(1L, term.get(), 0L),
+                                                                        StreamLives.committedIn(store));
+        coordinator.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+        createStream("events");
+        coordinator.joinGroup("g", "events", PARTITIONS, "c1", NODE_A);
+        var oldEpoch = assignmentEpoch("events", 0);
+        deferRemovals = true;
+        deleteStream("events");
+        var late = List.copyOf(deferred);
+        deferred.clear();
+        deferRemovals = false;
+        assertThat(late).as("the delete trigger proposed the reclaim of the old life").hasSize(PARTITIONS);
+        store.process(store.createBatch(late));
+        createStream("events");
+        term.set(2L);
+        assertThat(coordinator.joinGroup("g", "events", PARTITIONS, "c2", NODE_A).isSuccess()).isTrue();
+        assertThat(assignmentEpoch("events", 0)).as("the new life ranks below the old witness").isLessThan(oldEpoch);
+
+        store.process(store.createBatch(late));
+
+        assertThat(recordsOf("events")).as("the late Remove of the old life deleted nothing of the new life")
+                                       .hasSize(PARTITIONS)
+                                       .allSatisfy(entry -> assertThat(entry.getValue()).isInstanceOf(ConsumerGroupValue.class));
+    }
+
+    private StreamLives recreatingAfterTheFirstRead(AtomicBoolean raced) {
+        var committed = StreamLives.committedIn(store);
+
+        return name -> readThenRecreate(committed, name, raced);
+    }
+
+    private Option<Long> readThenRecreate(StreamLives committed, String name, AtomicBoolean raced) {
+        var read = committed.incarnationOf(name);
+
+        if (raced.compareAndSet(false, true)) {
+            onThread("kv-dispatcher", () -> recreateWithRecords(name));
+        }
+        return read;
+    }
+
+    private void recreateWithRecords(String name) {
+        createStream(name);
+        var puts = new ArrayList<KVCommand<AetherKey>>();
+
+        for (var partition = 0; partition < PARTITIONS; partition++) {
+            puts.add(new KVCommand.Put<AetherKey, AetherValue>(ConsumerGroupKey.consumerGroupKey("g", name, partition),
+                                                               ConsumerGroupValue.consumerGroupValue(NODE_A,
+                                                                                                     "c2",
+                                                                                                     Epoch.epoch(1L, 2L, 100L),
+                                                                                                     life)));
+        }
+        store.process(store.createBatch(puts));
+    }
+
+    /// The committed state of a node that held a stream's group records when the stream was deleted and whose reclaim never
+    /// committed: the records without their StreamConfig.
+    private Map<AetherKey, AetherValue> deadLifeSnapshot() {
+        createStream("events");
+        coordinator.joinGroup("g", "events", PARTITIONS, "c1", NODE_A);
+        coordinator.leaveGroup("g", "events", "c1");
+        deferRemovals = true;
+        deleteStream("events");
+        deferred.clear();
+        deferRemovals = false;
+        assertThat(recordsOf("events")).as("the dead life's records remain in the snapshot").hasSize(PARTITIONS);
+        return Map.copyOf(store.snapshot());
+    }
+
+    /// A fresh node: new router, store and registry, the snapshot installed silently, the coordinator dormant until a
+    /// LeaderChange is routed. The burst is NOT replayed here.
+    private void coldBoot(Map<AetherKey, AetherValue> snapshot) {
+        router = MessageRouter.mutable();
+        registry = ConsumerGroupRegistry.consumerGroupRegistry();
+        store = new KVStore<>(router, stubSerializer(), snapshotDeserializer(snapshot));
+        router.addRoute(ValuePut.class, this::route);
+        router.addRoute(ValueRemove.class, this::routeRemove);
+        router.addRoute(LeaderChange.class, this::routeLeaderChange);
+        coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(immediateClusterNode(),
+                                                                        registry,
+                                                                        () -> Epoch.epoch(1L, 1L, 0L),
+                                                                        StreamLives.committedIn(store));
+        assertThat(store.restoreSnapshot(new byte[0]).isSuccess()).as("the snapshot installed").isTrue();
+        assertThat(registry.streamNames()).as("a silent install notifies nothing").isEmpty();
+    }
+
+    private static void onThread(String name, Runnable task) {
+        var executor = Executors.newSingleThreadExecutor(runnable -> new Thread(runnable, name));
+
+        try {
+            executor.submit(task).get(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while staging on " + name, e);
+        } catch (ExecutionException | TimeoutException e) {
+            throw new AssertionError("staged step failed on " + name, e);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private List<Map.Entry<AetherKey, AetherValue>> recordsOfGroup(String groupId, String streamName) {
+        return recordsOf(streamName).stream()
+                                    .filter(entry -> entry.getKey() instanceof ConsumerGroupKey key && key.groupId().equals(groupId))
+                                    .toList();
+    }
+
+    private static Deserializer snapshotDeserializer(Map<AetherKey, AetherValue> snapshot) {
+        return new Deserializer() {
+            @Override
+            @SuppressWarnings("unchecked")
+            public <T> T decode(byte[] bytes) {
+                return (T) snapshot;
+            }
+
+            @Override
+            public <T> T read(ByteBuf buffer) {
+                return null;
+            }
+        };
     }
 
     private void createStream(String name) {
