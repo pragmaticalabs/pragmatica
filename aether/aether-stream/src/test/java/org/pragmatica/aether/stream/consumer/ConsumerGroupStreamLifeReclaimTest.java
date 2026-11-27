@@ -271,6 +271,20 @@ class ConsumerGroupStreamLifeReclaimTest {
         assertThat(registry.streamNames()).as("and the registry dropped in step").doesNotContain("events");
     }
 
+    /// The control of the sweep (#3041): a new leader's activation sweep reclaims by life, so the records of a stream whose
+    /// committed life they carry survive it.
+    @Test
+    void leaderChange_onALiveStream_sweepLeavesTheRecordsOfTheLiveLife_e() {
+        createStream("events");
+        coordinator.joinGroup("g", "events", PARTITIONS, "c1", NODE_A);
+
+        coordinator = newCoordinator();
+
+        assertThat(recordsOf("events")).as("the sweep removed nothing of the live life")
+                                       .hasSize(PARTITIONS)
+                                       .allSatisfy(entry -> assertThat(entry.getValue()).isInstanceOf(ConsumerGroupValue.class));
+    }
+
     private void createStream(String name) {
         life++;
         store.process(store.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(StreamConfigKey.streamConfigKey(name),
