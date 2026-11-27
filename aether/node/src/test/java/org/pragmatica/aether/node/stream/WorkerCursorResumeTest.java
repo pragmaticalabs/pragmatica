@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.node.SlotPasses;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -604,8 +605,9 @@ class WorkerCursorResumeTest {
             return reply;
         }
 
-        /// Runs passes until the `count`-th read is sent. The slot frees only after the previous answer has landed, so the
-        /// lookup of the pass that sent it reflects that answer.
+        /// Runs passes until the `count`-th read is sent, then returns the lookup of one more pass: the one that starts after
+        /// every answer that freed the slot has landed. The contract and why the sending pass's own lookup is not returned
+        /// are at [SlotPasses].
         private Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey> passUntilSent(List<StreamConsumerManager.SubscriptionKey> keys,
                                                                                                                                 int count) {
             return passUntilSent(source, keys, count);
@@ -614,29 +616,15 @@ class WorkerCursorResumeTest {
         private Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey> passUntilSent(StreamConsumerManager.CommittedEpochSource epochs,
                                                                                                                                 List<StreamConsumerManager.SubscriptionKey> keys,
                                                                                                                                 int count) {
-            var lookup = new AtomicReference<Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey>>();
-
-            PollUntil.pollUntil(() -> passAndCount(epochs, keys, lookup), sent -> sent >= count, AWAIT_DEADLINE)
-                     .assertMet(count + " reads sent");
-
-            return lookup.get();
-        }
-
-        private int passAndCount(StreamConsumerManager.CommittedEpochSource epochs,
-                                 List<StreamConsumerManager.SubscriptionKey> keys,
-                                 AtomicReference<Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey>> lookup) {
-            var before = applies.size();
-            var pass = epochs.forPass(keys);
-
-            if (applies.size() > before) {
-                lookup.set(pass);
-            }
-
-            return applies.size();
+            return SlotPasses.passUntilSent(() -> epochs.forPass(keys), applies::size, count, AWAIT_DEADLINE);
         }
 
         private StreamConsumerManager.CommittedEpochSource fixesLookupBeforeAnswerLands(Runnable landAnswer) {
-            return keys -> inTheBadOrder(keys, landAnswer);
+            var firstPass = new AtomicBoolean(true);
+
+            return keys -> firstPass.getAndSet(false)
+                           ? inTheBadOrder(keys, landAnswer)
+                           : source.forPass(keys);
         }
 
         /// One pass that did all of it: its lookup is fixed while the slot is busy, then the answer lands and the pass wins
