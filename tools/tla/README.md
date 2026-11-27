@@ -87,7 +87,7 @@ the rows with the variables they write, the map from model actions to operators 
 the table's lines; each operator primes, outside `UNCHANGED`, exactly the variables its rows name, and leaves every other
 variable in an `UNCHANGED` (in that word, so a write can be told from none); `Next` takes exactly the mapped operators. It
 says which variables an action writes, never which value. `DirectiveReceipt` is the one model with a table.
-`python3 -m unittest discover -s tools/tla -p test_writers_check.py` runs it on the real model and on nine mutations that
+`python3 -m unittest discover -s tools/tla -p test_writers_check.py` runs it on the real model and on eight mutations that
 must each go red (a write removed, a write added, the silent `v' = e /\ UNCHANGED v`, a variable or a row off the table),
 and holds edge run E8 of that model: no `CONSTRAINT` in any of its cfg files, with a control that holds the word.
 
