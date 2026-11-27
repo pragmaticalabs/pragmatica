@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
-import java.lang.reflect.Proxy;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -19,6 +18,7 @@ import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.stream.StreamRegistry;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
@@ -92,21 +92,13 @@ class ManagementStreamNotFoundStatusTest {
     }
 
     @Test
-    void streamPartition_answers404_whenTheEngineHoldsNoSuchStream() {
+    void streamPartition_answers404_whenTheCatalogHoldsNoSuchStream() {
         assertThat(apiStatus(ManagementRoute.STREAM_PARTITION, path(ADDRESS, "partitions", "0"))).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
     @Test
-    void streamConsumers_answers404_whenTheEngineHoldsNoSuchStream() {
-        var manager = streamPartitionManager(Long.MAX_VALUE);
-
-        try {
-            var routes = StreamRoutes.streamRoutes(() -> nodeWith(manager), ConsumerGroupCoordinator.noOp(), null).routes();
-
-            assertThat(statusOf(routes, ManagementRoute.STREAM_CONSUMERS, path(ADDRESS, "consumers"))).isEqualTo(HttpStatus.NOT_FOUND);
-        } finally {
-            manager.close();
-        }
+    void streamConsumers_answers404_whenTheCatalogHoldsNoSuchStream() {
+        assertThat(apiStatus(ManagementRoute.STREAM_CONSUMERS, path(ADDRESS, "consumers"))).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
     /// Control: the mapping is keyed on the three not-found causes, not on "any cause the stream layer produces".
@@ -167,15 +159,9 @@ class ManagementStreamNotFoundStatusTest {
         return Stream.concat(address.stream(), Stream.of(rest)).toList();
     }
 
+    /// #1753, #1963: the routes resolve a stream through the catalog, so the node has a (here empty) KV store and a read router.
     private static ManageableNode nodeWith(StreamPartitionManager manager) {
-        return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
-                                                       new Class[]{ManageableNode.class},
-                                                       (_, method, _) -> {
-                                                           if (method.getName().equals("streamPartitionManager")) {
-                                                               return manager;
-                                                           }
-                                                           throw new UnsupportedOperationException("Not stubbed: " + method.getName());
-                                                       });
+        return StreamRouteFixtures.node(manager, StreamReadRouter.localOnly(manager), StreamRouteFixtures.emptyStore());
     }
 
     private static final class ProblemStatus {

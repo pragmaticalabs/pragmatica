@@ -31,6 +31,7 @@ import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -61,9 +62,18 @@ class ManagementRouteArityGuardTest {
                                                                                                   + "two leading slots (name, partition) and the route is "
                                                                                                   + "driven over HTTP by DurableTopicDeliveryForgeTest");
 
+    /// #3796: the node's real route set (every source `ManagementServerImpl` declares, dynamic config included) goes through the
+    /// router's duplicate refusal. A name two sources both register fails the node at start, so production must register none.
+    @Test
+    void productionRouteSet_registersNoRouteNameTwice() {
+        var router = server().router();
+
+        assertThat(router.isSuccess()).as(router.fold(Cause::message, _ -> "assembled")).isTrue();
+    }
+
     @Test
     void everyServedRoute_registersTheParametersItsTemplateDeclares() {
-        var router = server().router();
+        var router = server().router().unwrap();
         var mismatches = new ArrayList<String>();
         var unregistered = new ArrayList<ManagementRoute>();
 

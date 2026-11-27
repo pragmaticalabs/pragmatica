@@ -33,7 +33,6 @@ import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.lang.Option;
@@ -356,8 +355,7 @@ public final class ClusterDeploymentContext {
                                                  ConcurrentHashMap.newKeySet(),
                                                  new AtomicInteger(0),
                                                  deactivated,
-                                                 writer.openTerm(deactivated::get),
-                                                 CancellableTask.cancellableTask());
+                                                 writer.openTerm(deactivated::get));
     }
 
     public NodeId self() {

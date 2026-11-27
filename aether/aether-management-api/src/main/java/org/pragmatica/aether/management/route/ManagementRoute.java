@@ -220,6 +220,17 @@ public enum ManagementRoute {
                         spacer("read"),
                         param("partition")),
                 taskGroup(STREAMING)),
+    // #1399 read-only variants of STREAMS_EVENTS / STREAM_CONSUMERS for the streams the runtime itself provisions under a reserved
+    // kind prefix (`topic:<ns>:<topic>:<ver>`, `entity:...`): their engine key has four parts, which the
+    // `(namespace, stream, version)` grammar of the catalog routes above cannot carry. The path takes the raw engine key as ONE
+    // parameter, behind a literal of its own so no catalog route's bucket is shared. Same target and same catalog
+    // resolution as the catalog routes: a route reads the stream the cluster knows, whichever node it lands on.
+    STREAM_ENGINE_EVENTS(GET,
+                         List.of(spacer("engine-streams"), param("engineKey"), spacer("events")),
+                         taskGroup(STREAMING)),
+    STREAM_ENGINE_CONSUMERS(GET,
+                            List.of(spacer("engine-streams"), param("engineKey"), spacer("consumers")),
+                            taskGroup(STREAMING)),
     // #260/#261/#333 replica-state observability, owner-forwarded since #1039. The previous
     // taskGroup(STREAMING) target landed the request on an ARBITRARY STREAMING-capable node and
     // discarded whether that node was the partition's owner — and the `ReplicaRegistry` is

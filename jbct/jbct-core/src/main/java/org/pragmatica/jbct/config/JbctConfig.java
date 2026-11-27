@@ -8,6 +8,7 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.lint.LintConfig;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
+import org.pragmatica.jbct.lint.tree.TreeConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -24,6 +25,7 @@ public record JbctConfig(FormatterConfig formatter,
                          List<String> sourceDirectories,
                          List<String> excludePackages,
                          LayerConfig layers,
+                         TreeConfig tree,
                          JbctMode mode,
                          Option<String> basePackage) {
     public JbctConfig {
@@ -32,6 +34,9 @@ public record JbctConfig(FormatterConfig formatter,
         layers = layers == null
                  ? LayerConfig.DEFAULT
                  : layers;
+        tree = tree == null
+               ? TreeConfig.DEFAULT
+               : tree;
     }
 
     /// Default configuration.
@@ -42,6 +47,7 @@ public record JbctConfig(FormatterConfig formatter,
                                                         List.of("src/main/java"),
                                                         List.of(),
                                                         LayerConfig.DEFAULT,
+                                                        TreeConfig.DEFAULT,
                                                         JbctMode.DEFAULT,
                                                         Option.none());
 
@@ -53,6 +59,7 @@ public record JbctConfig(FormatterConfig formatter,
                                         List<String> sourceDirectories,
                                         List<String> excludePackages,
                                         LayerConfig layers,
+                                        TreeConfig tree,
                                         JbctMode mode,
                                         Option<String> basePackage) {
         return new JbctConfig(formatter,
@@ -62,6 +69,7 @@ public record JbctConfig(FormatterConfig formatter,
                               sourceDirectories,
                               excludePackages,
                               layers,
+                              tree,
                               mode,
                               basePackage);
     }
@@ -84,6 +92,7 @@ public record JbctConfig(FormatterConfig formatter,
                           sourceDirectories,
                           excludePackages,
                           layers,
+                          tree,
                           newMode,
                           basePackage);
     }
@@ -153,6 +162,11 @@ public record JbctConfig(FormatterConfig formatter,
             appendGlobList(sb, "adapter", layers.adapterGlobs());
             appendGlobList(sb, "bootstrap", layers.bootstrapGlobs());
             appendGlobList(sb, "slices", layers.sliceGlobs());
+        }
+        // Package-tree section (#2526) — omitted when no exclusion is configured.
+        if (!tree.isEmpty()) {
+            sb.append("\n[lint.tree]\n");
+            appendGlobList(sb, "exclude", tree.excludeGlobs());
         }
 
         return sb.toString();

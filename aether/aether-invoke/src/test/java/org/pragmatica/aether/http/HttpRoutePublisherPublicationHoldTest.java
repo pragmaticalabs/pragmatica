@@ -10,6 +10,7 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodHandle;
@@ -215,6 +216,24 @@ class HttpRoutePublisherPublicationHoldTest {
         assertThat(released.await(timeSpan(5).seconds()).isSuccess()).isTrue();
     }
 
+    /// #3591 (u1): the release awaits the cluster write of every held publication, so a write that fails (after the bounded
+    /// retry) reaches the caller as the release's own failure. RED when the release returns success whatever the writes did.
+    @Test
+    @Timeout(30)
+    void releaseWhoseHeldPublicationClusterWriteFails_completesWithThatFailure() {
+        var cluster = new RecordingCluster();
+        var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, cluster);
+
+        publisher.holdRoutePublication();
+        publish(publisher);
+        cluster.failWrites();
+
+        var released = publisher.releaseRoutePublication().await(timeSpan(30).seconds());
+
+        assertThat(released.isFailure()).as("the failed cluster write must not be reported as a completed release").isTrue();
+        assertThat(cluster.attempts()).as("CONTROL: the write was attempted, so the failure came from the write").isPositive();
+    }
+
     private static HttpRoutePublisher defaultsOnly() {
         return (HttpRoutePublisher) Proxy.newProxyInstance(HttpRoutePublisher.class.getClassLoader(),
                                                            new Class<?>[]{HttpRoutePublisher.class},
@@ -271,6 +290,16 @@ class HttpRoutePublisherPublicationHoldTest {
 
     private static final class RecordingCluster implements ClusterNode<KVCommand<AetherKey>> {
         private final List<KVCommand<AetherKey>> applied = new CopyOnWriteArrayList<>();
+        private final AtomicInteger attempts = new AtomicInteger();
+        private volatile boolean failing;
+
+        void failWrites() {
+            failing = true;
+        }
+
+        int attempts() {
+            return attempts.get();
+        }
 
         List<KVCommand<AetherKey>> commands() {
             return List.copyOf(applied);
@@ -309,6 +338,12 @@ class HttpRoutePublisherPublicationHoldTest {
         @SuppressWarnings("unchecked")
         @Override
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            attempts.incrementAndGet();
+
+            if (failing) {
+                return Causes.cause("cluster write refused").promise();
+            }
+
             applied.addAll(commands);
 
             return (Promise<List<R>>)(Promise<?>) Promise.success(List.of());

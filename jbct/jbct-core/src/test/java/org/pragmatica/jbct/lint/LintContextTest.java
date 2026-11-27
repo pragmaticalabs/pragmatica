@@ -5,6 +5,8 @@ import java.util.List;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.config.JbctMode;
+import org.pragmatica.jbct.lint.tree.PackageTree;
+import org.pragmatica.jbct.lint.tree.TreeConfig;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Nested;
@@ -65,6 +67,17 @@ class LintContextTest {
         @Test
         void shouldLint_anyDepthGlob_keepsSiblingWithSharedPrefix() {
             assertThat(context.shouldLint("com.example.adapters")).isTrue();
+        }
+
+        /// F12 (#3738): the builder replaces the excludes only; the package tree the TREE rules judge against stays.
+        @Test
+        void withExcludePackages_keepsTheTree() {
+            var tree = Option.some(PackageTree.packageTree("com.example", TreeConfig.DEFAULT));
+            var excluded = LintContext.defaultContext()
+                                      .withTree(tree)
+                                      .withExcludePackages(List.of("com.example.adapter.**"));
+
+            assertThat(excluded.tree()).isEqualTo(tree);
         }
     }
 

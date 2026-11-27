@@ -172,7 +172,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             configRef::get,
                                                             ClusterTopologyManagerWorkerReconcileTest::applyNoop,
                                                             () -> AetherValue.ClusterPhase.NORMAL,
-                                                            _ -> {},
+                                                            DrainSink.synchronous(_ -> {}, _ -> {}),
                                                             _ -> {},
                                                             autoHealRef::get,
                                                             liveness);

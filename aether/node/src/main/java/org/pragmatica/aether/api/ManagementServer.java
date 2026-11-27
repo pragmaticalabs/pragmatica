@@ -316,7 +316,9 @@ class ManagementServerImpl implements ManagementServer {
     /// route sources are otherwise fire-and-forget, and this one outlived its node on the shared
     /// scheduler.
     private final AtomicReference<ApiKeyRoutes> apiKeyRoutesRef = new AtomicReference<>();
-    private final ManagementRouter router;
+    /// The assembled route table, or the cause that refused it (a route name registered twice). A refused table never serves:
+    /// [#start()] fails with the cause, so the node does not come up with one handler silently hiding another.
+    private final Result<ManagementRouter> router;
     private final StatusRoutes statusRoutes;
     private final JsonMapper probeJsonMapper;
     private final List<RouteHandler> legacyRoutes;
@@ -402,7 +404,7 @@ class ManagementServerImpl implements ManagementServer {
                          Option<org.pragmatica.serialization.Deserializer> deserializer,
                          NodeLifecycleRoutes.DrainPort drainPort,
                          NodeLifecycleRoutes.SliceFloor sliceFloor,
-                         Fn1<ManagementRouter, RouteSource[]> routerAssembly) {
+                         Fn1<Result<ManagementRouter>, RouteSource[]> routerAssembly) {
         this.sliceFloor = sliceFloor;
         this.port = port;
         this.nodeSupplier = nodeSupplier;
@@ -520,7 +522,7 @@ class ManagementServerImpl implements ManagementServer {
 
     /// Package-visible so a test can ask the router this server actually assembled which handler each declared route resolves to
     /// (#1921). Not a second assembly: the same instance `dispatchManagementRequest` calls.
-    ManagementRouter router() {
+    Result<ManagementRouter> router() {
         return router;
     }
 
@@ -551,6 +553,11 @@ class ManagementServerImpl implements ManagementServer {
 
     @Override
     public Promise<Unit> start() {
+        return router.async()
+                     .flatMap(_ -> startListeners());
+    }
+
+    private Promise<Unit> startListeners() {
         log.info("Starting management server on port {} (protocol: {})", port, httpProtocol);
         if (httpProtocol.includesH1()) {
             return startH1Server().flatMap(_ -> httpProtocol.includesH3()
@@ -1408,7 +1415,7 @@ class ManagementServerImpl implements ManagementServer {
             return;
         }
 
-        if (router.handle(ctx, instrumented, authenticated)) {
+        if (router.map(table -> table.handle(ctx, instrumented, authenticated)).or(false)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
 
             return;
@@ -1422,8 +1429,36 @@ class ManagementServerImpl implements ManagementServer {
             }
         }
 
-        writeNotFound(instrumented, path);
+        writeUnmatched(ctx, instrumented);
         recordRequestMetrics(methodName, path, instrumented, startTime);
+    }
+
+    /// A path no route answers for this method. When the path is registered for OTHER methods the refusal is `405` with the
+    /// `Allow` list (RFC 9110 15.5.6), not `404`: `404` says the resource does not exist, and a client cannot tell a refused
+    /// write verb on a known path from a mistyped one. A path no method knows stays [#writeNotFound].
+    private static void writeUnmatched(HttpRequest ctx, ResponseWriter response) {
+        var allowed = allowedMethods(ctx.path());
+
+        if (allowed.isEmpty()) {
+            writeNotFound(response, ctx.path());
+
+            return;
+        }
+
+        response.header("Allow", allowed);
+        ProblemResponses.writeProblem(response,
+                                      HttpStatus.METHOD_NOT_ALLOWED,
+                                      "Method not allowed for " + ctx.path() + "; allowed: " + allowed,
+                                      ctx.path(),
+                                      ctx.requestId());
+    }
+
+    /// The methods the declared routes answer for `path`, in [HttpMethod] order, comma-separated; empty when none does.
+    private static String allowedMethods(String path) {
+        return Stream.of(HttpMethod.values())
+                     .filter(method -> ManagementRoute.match(method, path).isSuccess())
+                     .map(HttpMethod::name)
+                     .collect(Collectors.joining(", "));
     }
 
     /// The body shape (`File not found: <path>`, text/plain) is what the retired static-file fallback
@@ -2138,7 +2173,7 @@ class ManagementServerImpl implements ManagementServer {
             return;
         }
 
-        if (router.handle(serverCtx, responseCapture, authenticated)) {
+        if (router.map(table -> table.handle(serverCtx, responseCapture, authenticated)).or(false)) {
             responseCapture.completion()
                            .onSuccess(responseData -> sendManagementForwardSuccess(network, request, ser, responseData))
                            .onFailure(cause -> sendManagementForwardFailure(network, request, "", cause));

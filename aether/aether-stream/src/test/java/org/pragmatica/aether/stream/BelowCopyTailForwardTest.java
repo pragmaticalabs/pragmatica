@@ -416,7 +416,7 @@ class BelowCopyTailForwardTest {
                                                          committed,
                                                          Option.none(),
                                                          Option.none(),
-                                                         (_, _) -> false);
+                                                         ForwardingReadRouter.StaleReplica.NEVER);
     }
 
     private static LocalReader<String> reader(StreamError refusal) {

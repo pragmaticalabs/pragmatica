@@ -116,7 +116,7 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
                                                              clusterConfigReader,
                                                              commandApplier,
                                                              () -> ClusterPhase.NORMAL,
-                                                             _ -> {},
+                                                             DrainSink.synchronous(_ -> {}, _ -> {}),
                                                              _ -> {},
                                                              Option::none,
                                                              autoHealStateReader,

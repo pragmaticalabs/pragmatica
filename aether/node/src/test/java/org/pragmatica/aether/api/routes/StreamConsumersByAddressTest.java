@@ -4,18 +4,19 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
-import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.management.route.ManagementRoute;
-import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.StreamPartitionManager;
-import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
+import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.routing.Route;
 
 import org.junit.jupiter.api.Test;
 
@@ -40,13 +41,14 @@ class StreamConsumersByAddressTest {
         try {
             var engineKey = StreamManager.engineKey(ResourceAddress.resourceAddress(NAMESPACE, STREAM, VERSION).unwrap());
 
-            manager.createStream(StreamConfig.streamConfig(engineKey,
-                                                           2,
-                                                           RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
-                                                           "earliest"))
-                   .onFailure(cause -> fail(cause.message()));
+            var config = StreamConfig.streamConfig(engineKey,
+                                                   2,
+                                                   RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
+                                                   "earliest");
 
-            RouteProbe.run(routes(manager), ManagementRoute.STREAM_CONSUMERS, ADDRESS, Map.of())
+            manager.createStream(config).onFailure(cause -> fail(cause.message()));
+
+            RouteProbe.run(routes(manager, engineKey, config), ManagementRoute.STREAM_CONSUMERS, ADDRESS, Map.of())
                       .onFailure(cause -> fail("a known stream must be reachable by its address, got: " + cause.message()))
                       .onSuccess(value -> assertThat(value).isInstanceOfSatisfying(StreamRoutes.StreamConsumersResponse.class,
                                                                                    response -> {
@@ -68,13 +70,14 @@ class StreamConsumersByAddressTest {
             var address = ResourceAddress.resourceAddress(ResourceAddress.SYSTEM_NAMESPACE, "cluster-events", "1.0.0").unwrap();
 
             assertThat(StreamManager.engineKey(address)).isEqualTo(address.asString());
-            manager.createStream(StreamConfig.streamConfig(address.asString(),
-                                                           1,
-                                                           RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
-                                                           "earliest"))
-                   .onFailure(cause -> fail(cause.message()));
+            var config = StreamConfig.streamConfig(address.asString(),
+                                                   1,
+                                                   RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
+                                                   "earliest");
 
-            RouteProbe.run(routes(manager),
+            manager.createStream(config).onFailure(cause -> fail(cause.message()));
+
+            RouteProbe.run(routes(manager, address.asString(), config),
                            ManagementRoute.STREAM_CONSUMERS,
                            List.of(ResourceAddress.SYSTEM_NAMESPACE, "cluster-events", VERSION, "consumers"),
                            Map.of())
@@ -125,16 +128,19 @@ class StreamConsumersByAddressTest {
         }
     }
 
-    private static java.util.stream.Stream<org.pragmatica.http.routing.Route<?>> routes(StreamPartitionManager manager) {
-        return StreamRoutes.streamRoutes(() -> (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
-                                                                                       new Class[]{ManageableNode.class},
-                                                                                       (_, method, _) -> {
-                                                                                           if (method.getName().equals("streamPartitionManager")) {
-                                                                                               return manager;
-                                                                                           }
-                                                                                           throw new UnsupportedOperationException(method.getName());
-                                                                                       }),
-                                         ConsumerGroupCoordinator.noOp(),
-                                         null).routes();
+    /// A node whose catalog has committed `config`: the route resolves the stream there, the engine only answers for its rings.
+    private static Stream<Route<?>> routes(StreamPartitionManager manager, String engineKey, StreamConfig config) {
+        return StreamRouteFixtures.routes(manager,
+                                          StreamReadRouter.localOnly(manager),
+                                          StreamRouteFixtures.storeCommitting(engineKey, config),
+                                          StreamNamespacesService.inMemory());
+    }
+
+    /// A node whose catalog has committed nothing.
+    private static Stream<Route<?>> routes(StreamPartitionManager manager) {
+        return StreamRouteFixtures.routes(manager,
+                                          StreamReadRouter.localOnly(manager),
+                                          StreamRouteFixtures.emptyStore(),
+                                          StreamNamespacesService.inMemory());
     }
 }

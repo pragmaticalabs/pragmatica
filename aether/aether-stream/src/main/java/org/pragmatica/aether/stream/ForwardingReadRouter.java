@@ -11,6 +11,7 @@ import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource.CommittedOwner;
 import org.pragmatica.aether.stream.forward.RawEventDto;
+import org.pragmatica.aether.stream.forward.ReadRefusal;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
@@ -31,9 +32,10 @@ import org.pragmatica.lang.Promise;
 /// Routing precedence ({@link #route}):
 ///   1. `GOVERNOR` reads local, forwarding to the HRW owner when the local read fails `PARTITION_NOT_LOCAL` (a
 ///      metadata-only node that holds the stream config but never the ring — the metadata-only-node read recovery)
-///      or, BEFORE reading, when {@link StaleReplica} reports this node's copy behind the owner (PR-2f S2, know
-///      `e10cf838c9`: no announcement from the current owner in this life, or local visible below the announced
-///      one); any other local failure propagates. `NEAREST` is LOCAL-FIRST:
+///      or, BEFORE reading, when {@link StaleReplica} reports this node's copy stale (PR-2f S2, know `e10cf838c9`: no
+///      announcement in this life, local visible below the announced one, or, #3325, the announced one an ended owner
+///      life's, where a forward that cannot be made is refused instead of read locally); any other local failure
+///      propagates. `NEAREST` is LOCAL-FIRST:
 ///      read local when self covers the partition (caught-up replica, or no registry), else forward to the
 ///      HRW owner — never to a lagging remote — and, like `GOVERNOR`, forward on a `PARTITION_NOT_LOCAL`
 ///      local failure rather than surfacing it. `ANY_REPLICA` enters remote-preferring replica selection
@@ -76,12 +78,12 @@ public final class ForwardingReadRouter<E> {
         Option<NodeId> resolve(String streamName, int partition);
     }
 
-    /// PR-2f S2: whether this node's copy of `(streamName, partition)` is behind the owner, so a `GOVERNOR` read goes to
-    /// the owner instead of serving the copy (`StreamPartitionManager#behindCommittedOwner`).
+    /// PR-2f S2: what a `GOVERNOR` read may make of this node's copy of `(streamName, partition)`, with the reason when it
+    /// goes to the owner instead of serving the copy (`StreamPartitionManager#replicaStaleness`).
     @FunctionalInterface
     public interface StaleReplica {
-        boolean behindOwner(String streamName, int partition);
-        StaleReplica NEVER = (_, _) -> false;
+        ReplicaStaleness staleness(String streamName, int partition);
+        StaleReplica NEVER = (_, _) -> ReplicaStaleness.CURRENT;
     }
 
     private final Option<ReplicaRegistry> registry;
@@ -216,14 +218,18 @@ public final class ForwardingReadRouter<E> {
 
     /// `GOVERNOR` routing (PR-2f S2, know `e10cf838c9`): a copy {@link StaleReplica} reports behind the owner forwards
     /// without reading local ({@link #forwardStale}), so the first read after a restart reaches the owner's admission, where
-    /// its acked marker raises visible. Otherwise local, forwarding on `PARTITION_NOT_LOCAL` ({@link #localOrForwardOnNotLocal}).
+    /// its acked marker raises visible. A copy whose mark an ended owner life announced forwards too, and never reads local
+    /// ({@link #forwardVoidMark}, #3325). Otherwise local, forwarding on `PARTITION_NOT_LOCAL`
+    /// ({@link #localOrForwardOnNotLocal}).
     private Promise<List<E>> readGovernor(String streamName, int partition, long fromOffset, int maxEvents) {
-        return staleReplica.behindOwner(streamName, partition)
-               ? forwardStale(streamName, partition, fromOffset, maxEvents)
-               : localOrForwardOnNotLocal(streamName, partition, fromOffset, maxEvents);
+        return switch (staleReplica.staleness(streamName, partition)) {
+            case CURRENT -> localOrForwardOnNotLocal(streamName, partition, fromOffset, maxEvents);
+            case BEHIND -> forwardStale(streamName, partition, fromOffset, maxEvents);
+            case VOID_OWNER_MARK -> forwardVoidMark(streamName, partition, fromOffset, maxEvents);
+        };
     }
 
-    /// A stale copy's read goes to the COMMITTED owner when another node holds the committed record: that is the owner
+    /// A `BEHIND` copy's read goes to the COMMITTED owner when another node holds the committed record: that is the owner
     /// whose announcements the copy follows and whose admission restores the acked marker. After a restart it can differ
     /// from the HRW owner, which would answer `PARTITION_NOT_LOCAL`. With no committed record, or one naming this node, it
     /// goes to the HRW owner ({@link #forwardToOwner}). Either forward degrades to the local read as {@link #forwardReadToNode}
@@ -239,6 +245,41 @@ public final class ForwardingReadRouter<E> {
                                                                                                    fromOffset,
                                                                                                    maxEvents)))
                                    .or(() -> forwardToOwner(streamName, partition, fromOffset, maxEvents));
+    }
+
+    /// #3325: a copy whose mark an ended owner life announced has no bound it may serve from, so the read is the owner's
+    /// answer or a refusal, never this copy. The target is {@link #belowCopyTailTarget}'s; with none (owner unknown or this
+    /// node) or no forward client, the retryable {@link StreamError.ReplicaNotVerified} answers.
+    private Promise<List<E>> forwardVoidMark(String streamName, int partition, long fromOffset, int maxEvents) {
+        return belowCopyTailTarget(streamName, partition).flatMap(owner -> forwardClient.map(client -> askOwnerOfVoidMark(client,
+                                                                                                                          owner,
+                                                                                                                          streamName,
+                                                                                                                          partition,
+                                                                                                                          fromOffset,
+                                                                                                                          maxEvents)))
+                                  .or(() -> new StreamError.ReplicaNotVerified(streamName, partition, fromOffset).promise());
+    }
+
+    private Promise<List<E>> askOwnerOfVoidMark(StreamForwardClient client,
+                                                NodeId owner,
+                                                String streamName,
+                                                int partition,
+                                                long fromOffset,
+                                                int maxEvents) {
+        return askNode(client, owner, streamName, partition, fromOffset, maxEvents).mapError(cause -> voidMarkRefusal(cause,
+                                                                                                                      streamName,
+                                                                                                                      partition,
+                                                                                                                      fromOffset));
+    }
+
+    /// The forward's own cause is the read's answer (the owner's typed refusal, a transient transport failure, or a fault no
+    /// retry can change, `FAULT_DEGRADE`), except where the owner could not be asked and that cause does not say the read may
+    /// be retried (`PARTITION_NOT_LOCAL`, a failure the peer reported only as text): the condition is the owner change itself,
+    /// which passes, so it answers the retryable {@link StreamError.ReplicaNotVerified}.
+    private static Cause voidMarkRefusal(Cause cause, String streamName, int partition, long fromOffset) {
+        return couldNotAsk(cause) && !cause.isTransient() && ReadRefusal.answerOf(cause) != ReadRefusal.Answer.FAULT_DEGRADE
+               ? new StreamError.ReplicaNotVerified(streamName, partition, fromOffset)
+               : cause;
     }
 
     /// `NEAREST` routing: LOCAL-FIRST, forward on a local MISS. If self is a registered caught-up
@@ -487,6 +528,20 @@ public final class ForwardingReadRouter<E> {
                                                int partition,
                                                long fromOffset,
                                                int maxEvents) {
+        return askNode(client, owner, streamName, partition, fromOffset, maxEvents).fold(result -> result.fold(cause -> afterForwardFailure(cause,
+                                                                                                                                            streamName,
+                                                                                                                                            partition,
+                                                                                                                                            fromOffset,
+                                                                                                                                            maxEvents),
+                                                                                                               Promise::success));
+    }
+
+    private Promise<List<E>> askNode(StreamForwardClient client,
+                                     NodeId owner,
+                                     String streamName,
+                                     int partition,
+                                     long fromOffset,
+                                     int maxEvents) {
         LOG.log(System.Logger.Level.DEBUG,
                 "ReadPreference {0}: owner-forward to {1} for {2}[{3}]",
                 readPreference,
@@ -496,13 +551,7 @@ public final class ForwardingReadRouter<E> {
 
         return client.readRemote(owner, streamName, partition, fromOffset, maxEvents)
                      .map(result -> remoteDecoder.decode(result.events(),
-                                                         partition))
-                     .fold(result -> result.fold(cause -> afterForwardFailure(cause,
-                                                                              streamName,
-                                                                              partition,
-                                                                              fromOffset,
-                                                                              maxEvents),
-                                                 Promise::success));
+                                                         partition));
     }
 
     /// The forward degrades to a local read when the owner could not be asked or does not hold the partition: a timeout, an

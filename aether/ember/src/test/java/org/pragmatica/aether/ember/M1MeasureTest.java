@@ -268,13 +268,16 @@ class M1MeasureTest {
     private void replaceWorkerClass() {
         syncWorkers();
         for (int rep = 1; rep <= REPS; rep++) {
-            measure("replace-worker", rep, Set.of(), () -> {
-                var victim = workers.peekLast();
+            var victim = new NodeId(workers.peekLast());
 
-                leader().nodeReplacementService().begin(new NodeId(victim), "").await(START_BOUND).onFailure(cause -> check(false, "replacement begin: " + cause.message()));
-                await("old worker gone", () -> cluster.getNode(victim).isEmpty(), 600_000);
+            measure("replace-worker", rep, Set.of(), () -> {
+                leader().nodeReplacementService().begin(victim, "").await(START_BOUND).onFailure(cause -> check(false, "replacement begin: " + cause.message()));
+                await("old worker gone", () -> cluster.getNode(victim.id()).isEmpty(), 600_000);
                 await("node count restored", () -> cluster.nodeCount() == coreIds.size() + N, 300_000);
             }, MIN_EVENT_MS, QUIET_MS);
+            // #3799: the next repetition's begin is refused from the leader's own index while it still holds this record live, so the
+            // wait is DONE as the leader sees it. Outside measure(): the measured window is unchanged.
+            await("replacement of " + victim.id() + " DONE on the leader", () -> ReplacementSignal.settledOnLeader(cluster.allNodes(), victim), 240_000);
             syncWorkers();
             settleLoose("after replace", 20_000, 200_000);
         }

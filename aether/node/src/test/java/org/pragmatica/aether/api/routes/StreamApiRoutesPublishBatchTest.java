@@ -140,30 +140,97 @@ class StreamApiRoutesPublishBatchTest {
         }
     }
 
-    /// CTO ruling (s25, #1342): a partial batch answers 200 — the batch RAN — with `notPublished > 0` and the
-    /// landed offsets in the body, so a reader who checks only the status misreads it. Pinned at the WIRE:
-    /// the real route dispatched through `ManagementRouter` with the JSON body a client sends, and the status
-    /// and JSON the router writes back.
+    /// #1354 (OWNER ruling, know 35add91740): a batch that is not fully PUBLISHED answers `207` with the body
+    /// unchanged. The status is derived from the item statuses in ONE place (`PublishBatchResponse.httpStatus`),
+    /// never picked by a call site. Pinned at the WIRE: the real route dispatched through `ManagementRouter` with
+    /// the JSON body a client sends, and the status and JSON the router writes back.
+    ///
+    /// Failure input 1: a batch of 3 where one item is refused.
     @Test
-    void partialBatch_overHttpDispatch_answers200_withNotPublishedAndTheLandedOffset() throws InterruptedException {
-        var manager = streamPartitionManager(Long.MAX_VALUE);
-        try {
-            createStream(manager, ConsistencyMode.EVENTUAL);
-            var router = ManagementRouter.managementRouter(routesFor(manager));
-            var recorder = new RecordingResponseWriter();
-            var path = ManagementRoute.STREAMS_PUBLISH_BATCH.assemble(NAMESPACE, STREAM, VERSION).unwrap();
-            var body = "[{\"data\":\"ok\",\"partition\":0},{\"data\":\"bad\",\"partition\":" + PARTITIONS + "}]";
+    void partialBatchOfThree_overHttpDispatch_answers207_withNotPublishedAndTheLandedOffsets() throws InterruptedException {
+        var wire = dispatch(ConsistencyMode.EVENTUAL,
+                            "[{\"data\":\"a\",\"partition\":0},{\"data\":\"bad\",\"partition\":" + PARTITIONS
+                            + "},{\"data\":\"c\",\"partition\":1}]");
 
-            assertThat(router.handle(new PostRequest(path, body), recorder)).as("route matched and dispatched").isTrue();
+        assertThat(wire.status()).isEqualTo(HttpStatus.MULTI_STATUS);
+        assertThat(wire.body()).startsWith("{\"address\":\"" + STREAM_ADDRESS + "\",\"published\":2,\"notPublished\":1,\"outcomes\":[")
+                               .contains("\"index\":0")
+                               .contains("\"index\":2")
+                               .contains("\"status\":\"PUBLISHED\"")
+                               .contains("\"offset\":0")
+                               .contains("\"status\":\"NOT_ATTEMPTED\"")
+                               .contains("out of range")
+                               .doesNotContain("httpStatus");
+    }
+
+    /// Failure input 2: a batch where none is published (every item rejected by partition admission) is 207, not 200.
+    @Test
+    void batchWhereNoneIsPublished_overHttpDispatch_answers207_withEveryItemNotAttempted() throws InterruptedException {
+        var wire = dispatch(ConsistencyMode.EVENTUAL,
+                            "[{\"data\":\"x\",\"partition\":" + PARTITIONS + "},{\"data\":\"y\",\"partition\":" + (PARTITIONS + 1) + "}]");
+
+        assertThat(wire.status()).isEqualTo(HttpStatus.MULTI_STATUS);
+        assertThat(wire.body()).startsWith("{\"address\":\"" + STREAM_ADDRESS + "\",\"published\":0,\"notPublished\":2,\"outcomes\":[")
+                               .doesNotContain("\"status\":\"PUBLISHED\"")
+                               .doesNotContain("httpStatus");
+    }
+
+    /// An OUTCOME_UNKNOWN item is not PUBLISHED either: the router-refusal batch answers 207.
+    @Test
+    void batchWhoseOnlyItemIsOutcomeUnknown_overHttpDispatch_answers207() throws InterruptedException {
+        var wire = dispatch(ConsistencyMode.UNKNOWN, "[{\"data\":\"a\",\"partition\":0}]");
+
+        assertThat(wire.status()).isEqualTo(HttpStatus.MULTI_STATUS);
+        assertThat(wire.body()).contains("\"published\":0").contains("\"status\":\"OUTCOME_UNKNOWN\"");
+    }
+
+    /// The other side of the table: every item PUBLISHED is the only `200`.
+    @Test
+    void fullBatch_overHttpDispatch_answers200() throws InterruptedException {
+        var wire = dispatch(ConsistencyMode.EVENTUAL, "[{\"data\":\"a\",\"partition\":0},{\"data\":\"b\",\"partition\":1}]");
+
+        assertThat(wire.status()).isEqualTo(HttpStatus.OK);
+        assertThat(wire.body()).startsWith("{\"address\":\"" + STREAM_ADDRESS + "\",\"published\":2,\"notPublished\":0,\"outcomes\":[")
+                               .doesNotContain("httpStatus");
+    }
+
+    /// Marked guess (the ruling names "not fully PUBLISHED"): an EMPTY batch has no unpublished item, so it is `200`.
+    @Test
+    void emptyBatch_overHttpDispatch_answers200() throws InterruptedException {
+        var wire = dispatch(ConsistencyMode.EVENTUAL, "[]");
+
+        assertThat(wire.status()).isEqualTo(HttpStatus.OK);
+        assertThat(wire.body()).contains("\"published\":0").contains("\"notPublished\":0");
+    }
+
+    /// The default stays `200`: a route value that declares no status (the single `publish`) is not touched by #1354.
+    @Test
+    void singlePublish_overHttpDispatch_stillAnswers200() throws InterruptedException {
+        var wire = dispatch(ManagementRoute.STREAMS_PUBLISH, ConsistencyMode.EVENTUAL, "{\"data\":\"a\",\"partition\":0}");
+
+        assertThat(wire.status()).isEqualTo(HttpStatus.OK);
+        assertThat(wire.body()).contains("\"offset\":0");
+    }
+
+    private record Wire(HttpStatus status, String body) {}
+
+    private static Wire dispatch(ConsistencyMode mode, String json) throws InterruptedException {
+        return dispatch(ManagementRoute.STREAMS_PUBLISH_BATCH, mode, json);
+    }
+
+    private static Wire dispatch(ManagementRoute route, ConsistencyMode mode, String json) throws InterruptedException {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+
+        try {
+            createStream(manager, mode);
+            var router = ManagementRouter.managementRouter(routesFor(manager)).unwrap();
+            var recorder = new RecordingResponseWriter();
+            var path = route.assemble(NAMESPACE, STREAM, VERSION).unwrap();
+
+            assertThat(router.handle(new PostRequest(path, json), recorder)).as("route matched and dispatched").isTrue();
             assertThat(recorder.written.await(5, TimeUnit.SECONDS)).as("a response was written").isTrue();
 
-            assertThat(recorder.status.get()).isEqualTo(HttpStatus.OK);
-            assertThat(recorder.body()).contains("\"published\":1")
-                                       .contains("\"notPublished\":1")
-                                       .contains("\"status\":\"PUBLISHED\"")
-                                       .contains("\"offset\":0")
-                                       .contains("\"status\":\"NOT_ATTEMPTED\"")
-                                       .contains("out of range");
+            return new Wire(recorder.status.get(), recorder.body());
         } finally {
             manager.close();
         }

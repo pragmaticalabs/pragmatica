@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
 import org.apache.logging.log4j.Level;
@@ -275,6 +276,58 @@ class ManagementServerSecurityCouplingTest {
             assertThat(writer.status()).as("status for %s", path).isEqualTo(404);
             assertThat(writer.bodyText()).as("body for %s", path).isEqualTo("File not found: " + path);
         }
+    }
+
+    /// #3796: a route table refused for a duplicate name never serves, even the probe route it also carries (control: the same probe
+    /// answers on the unrefused assemblies above). Local path: the request is unmatched, `404`. Red if a refused table still dispatches
+    /// or reports the request as handled.
+    @Test
+    void refusedRouteTable_localPath_servesNothing() {
+        var probe = GrantedRouteProbe.answering();
+        var writer = new RecordingResponseWriter();
+
+        server(offValidator(), false, probeRequest(), refusedWith(probe)).handleRequest(GrantRequest.adminGet(GrantedRouteProbe.PATH), writer);
+
+        assertThat(writer.status()).isEqualTo(404);
+        assertThat(probe.received().toOptional()).as("the refused table never ran the route").isEmpty();
+    }
+
+    /// The forwarded path of [#refusedRouteTable_localPath_servesNothing]: the sender is told no route is found.
+    @Test
+    void refusedRouteTable_forwardedPath_servesNothing() {
+        var probe = GrantedRouteProbe.answering();
+
+        server(offValidator(), false, probeRequest(), refusedWith(probe)).onHttpForwardRequest(forwardRequest());
+
+        assertThat(serializer.status()).isEqualTo(404);
+        assertThat(probe.received().toOptional()).as("the refused table never ran the route").isEmpty();
+    }
+
+    /// Node start: a refused route table fails `start()` with the duplicate itself, so the node does not come up with one handler
+    /// hiding another. Red if start binds anyway.
+    @Test
+    void refusedRouteTable_start_failsWithTheDuplicate() {
+        var server = server(offValidator(), false, probeRequest(), refusedWith(GrantedRouteProbe.answering()));
+
+        try {
+            var outcome = server.start().await();
+
+            assertThat(outcome.isFailure()).as("start must refuse, not serve").isTrue();
+            outcome.onFailure(cause -> assertThat(cause).isInstanceOf(ManagementRouter.DuplicateRoute.class));
+        } finally {
+            server.stop().await();
+        }
+    }
+
+    private static HttpRequestContext probeRequest() {
+        return HttpRequestContext.httpRequestContext(GrantedRouteProbe.PATH, "GET", Map.of(), Map.of(), new byte[0], "req-3796");
+    }
+
+    /// An assembly that registers every source twice (so every named route is a duplicate and the table is refused) and carries the probe route.
+    private static Fn1<Result<ManagementRouter>, RouteSource[]> refusedWith(GrantedRouteProbe probe) {
+        return sources -> ManagementRouter.managementRouter(Stream.concat(Stream.concat(Stream.of(sources), Stream.of(sources)),
+                                                                          Stream.<RouteSource>of(probe))
+                                                                  .toArray(RouteSource[]::new));
     }
 
     /// The local secured path hands a granted route the very [Authenticated] the validator returned for an ADMIN key,
@@ -872,7 +925,7 @@ class ManagementServerSecurityCouplingTest {
     private ManagementServerImpl server(SecurityValidator validator,
                                         boolean securityEnabled,
                                         HttpRequestContext forwarded,
-                                        Fn1<ManagementRouter, RouteSource[]> routerAssembly) {
+                                        Fn1<Result<ManagementRouter>, RouteSource[]> routerAssembly) {
         var node = mock(ManageableNode.class);
         var appHttpServer = mock(AppHttpServer.class);
         var maven = mock(MavenProtocolHandler.class);

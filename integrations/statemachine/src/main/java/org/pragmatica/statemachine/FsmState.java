@@ -7,6 +7,7 @@
 package org.pragmatica.statemachine;
 
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.utils.OwnerLifetime;
 
 
 /// A state in a GoF-style state machine. Each state owns the logic for the events it accepts.
@@ -45,6 +46,17 @@ public interface FsmState<S extends FsmState<S, E>, E> {
     ///
     /// MUST NOT dispatch events: the same follow-up rule as [`#onExit`] applies ([`Fsm#followUp`]).
     default void onEntry() {}
+
+    /// Invariant setup for this state, given the lifetime of this entry. The [Fsm] calls this form; a state that arms
+    /// timers in `onEntry` overrides it and arms them through `life`, never by keeping a raw handle in a field: `life`
+    /// ends when a successor's CAS wins, before the predecessor's [`#onExit`], so a registration that arrives after the
+    /// state was left (this hook ran late, behind the next winner's hooks) is refused and its timer never runs. The
+    /// default delegates to [`#onEntry()`], so a state that arms nothing overrides neither.
+    ///
+    /// MUST NOT dispatch events: the same follow-up rule as [`#onExit`] applies ([`Fsm#followUp`]).
+    default void onEntry(OwnerLifetime life) {
+        onEntry();
+    }
 
     /// Invoked on `target` when its CAS attempt loses to another thread. The state was constructed
     /// with any eager resources it declared (e.g. scheduled futures in factory methods) but never

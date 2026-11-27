@@ -4,9 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.assembly;
 
-import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
-import java.net.SocketException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -18,6 +16,7 @@ import org.mockito.Mockito;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector;
+import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.health.WorkerEndpointDirectory;
 import org.pragmatica.aether.node.health.fsm.SwimHealthState;
@@ -59,7 +58,7 @@ class QuorumReportWiringTest {
     private WorkerEndpointDirectory directory;
 
     @BeforeEach
-    void setUp() throws SocketException, InterruptedException {
+    void setUp() throws InterruptedException {
         var swimPort = freeUdpPort();
         var self = NodeInfo.nodeInfo(SELF,
                                      NodeAddress.nodeAddress("127.0.0.1", swimPort - CoreSwimHealthDetector.SWIM_PORT_OFFSET)
@@ -232,9 +231,9 @@ class QuorumReportWiringTest {
         return fail("detector not Running: " + detector.lifecycleState().getClass().getSimpleName());
     }
 
-    private static int freeUdpPort() throws SocketException {
-        try (var socket = new DatagramSocket(0)) {
-            return socket.getLocalPort();
-        }
+    /// The SWIM port of a node whose cluster port [ClusterTestPorts] issued: cluster UDP, cluster TCP and this SWIM UDP port are probed
+    /// free and locked for the JVM's life, so nothing takes it between this call and the detector's bind (#1826).
+    private static int freeUdpPort() {
+        return ClusterTestPorts.freeClusterPort() + CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     }
 }

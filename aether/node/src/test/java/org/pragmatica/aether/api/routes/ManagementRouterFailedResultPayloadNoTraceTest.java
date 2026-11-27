@@ -41,7 +41,7 @@ class ManagementRouterFailedResultPayloadNoTraceTest {
         RouteSource source = () -> Stream.of(PROBE);
         var writer = new BodyWriter();
 
-        assertThat(ManagementRouter.managementRouter(source).handle(new Request(), writer)).isTrue();
+        assertThat(ManagementRouter.managementRouter(source).unwrap().handle(new Request(), writer)).isTrue();
 
         assertThat(writer.body()).doesNotContain(SENTINEL)
                                  .doesNotContain("IllegalStateException")
