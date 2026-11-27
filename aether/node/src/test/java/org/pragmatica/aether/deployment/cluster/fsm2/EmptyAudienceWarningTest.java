@@ -19,6 +19,7 @@ import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
+
 /// #3815: a committed target whose placement audience is empty is visible to the operator as `placement-audience-empty`, once per episode,
 /// closed by `placement-audience-available` when the audience is non-empty (or the target or its policy goes away). The floor is unchanged.
 class EmptyAudienceWarningTest {
@@ -55,12 +56,17 @@ class EmptyAudienceWarningTest {
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
-
         var warns = w.h.warns(OPEN);
 
         assertThat(warns).as("once per episode").hasSize(1);
         assertThat(warns.getFirst().subject()).isEqualTo(ORDERS.base().asString());
-        assertThat(warns.getFirst().message()).contains(ORDERS.base().asString(), "WORKERS_ONLY", "east-w-0", "FORMING", "1 live", "floor is 3", "allow_below_rf");
+        assertThat(warns.getFirst().message()).contains(ORDERS.base().asString(),
+                                                        "WORKERS_ONLY",
+                                                        "east-w-0",
+                                                        "FORMING",
+                                                        "1 live",
+                                                        "floor is 3",
+                                                        "allow_below_rf");
         assertThat(w.h.warns(CLOSE)).isEmpty();
         assertThat(hosts(w.h, ORDERS)).as("the floor stays: nothing is placed").isEmpty();
     }
@@ -73,7 +79,6 @@ class EmptyAudienceWarningTest {
 
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.warns(OPEN)).hasSize(1);
-
         w.h.seed(new ActivationDirectiveKey(W2), worker("east-w-0"));
         w.h.seed(new ActivationDirectiveKey(W3), worker("east-w-0"));
         w.h.drain();
@@ -81,7 +86,6 @@ class EmptyAudienceWarningTest {
         w.announce("east-w-0", W1, W1, W2, W3);
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
-
         var closes = w.h.warns(CLOSE);
 
         assertThat(closes).hasSize(1);
@@ -101,7 +105,6 @@ class EmptyAudienceWarningTest {
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
-
         assertThat(w.h.warns(OPEN)).isEmpty();
         assertThat(w.h.warns(CLOSE)).isEmpty();
         assertThat(hosts(w.h, ORDERS)).hasSize(1);
@@ -116,22 +119,71 @@ class EmptyAudienceWarningTest {
 
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.warns(OPEN)).as("the write is in flight").isEmpty();
-
         var write = w.h.held.values().iterator().next();
 
         w.h.held.clear();
         w.h.settle(write, w.h.refused(write));
         w.h.drain();
         w.h.deliver(new ClusterInput.Reconcile());
-
         assertThat(w.h.warns(OPEN)).as("refused: the stall is told").hasSize(1);
-
         w.h.holdKinds = Set.of();
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
-
         assertThat(w.h.warns(CLOSE)).as("the next write commits: the episode closes").hasSize(1);
         assertThat(hosts(w.h, ORDERS)).hasSize(1);
+    }
+
+    /// Red when: the ACTIVE write is held in flight past several passes and then commits, and an event opens meanwhile or after: the
+    /// community's own write in flight raises nothing, and once it commits the audience is not empty.
+    @Test
+    void activeWriteCommits_afterSeveralPasses_opensNoEvent() {
+        var w = threeForming(Set.of(ClusterModel.SubmitKind.COMMUNITY), Set.of());
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.deliver(new ClusterInput.Reconcile());
+        var write = w.h.held.values().iterator().next();
+
+        w.h.held.values().removeIf(held -> !held.equals(write));
+        w.h.settleHeld(write,
+                       w.h.applyHeld(write.correlationId()));
+        w.h.holdKinds = Set.of();
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).isEmpty();
+        assertThat(w.h.warns(CLOSE)).isEmpty();
+        assertThat(hosts(w.h, ORDERS)).hasSize(1);
+    }
+
+    /// Red when: the in-flight window of a community outlives the write that opened it: once the committed state agrees, the window is gone,
+    /// so a later activation (a degraded community recovering) opens its own and cannot inherit an expired one.
+    @Test
+    void activationWindow_opensWithTheWrite_andEndsWhenTheCommittedStateAgrees() {
+        var w = threeForming(Set.of(ClusterModel.SubmitKind.COMMUNITY), Set.of());
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.model().activationDeadline.containsKey("east-w-0")).as("the write is drafted: its window is open")
+                  .isTrue();
+        w.h.holdKinds = Set.of();
+        w.h.held.clear();
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.model().activationDeadline.isEmpty()).as("the committed state agrees: no window").isTrue();
+    }
+
+    /// Red when: the ACTIVE write fails (the settlement is Failed) and the empty audience stays silent: a failed write is not in flight, so
+    /// the stall is told on the first pass after it, the same as a refusal.
+    @Test
+    void activeWriteFailed_raisesOnTheNextPass() {
+        var w = threeForming(Set.of(ClusterModel.SubmitKind.COMMUNITY), Set.of());
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("the write is in flight").isEmpty();
+        var write = w.h.held.values().iterator().next();
+
+        w.h.held.clear();
+        w.h.settleHeld(write, new ClusterInput.Settlement.Failed("injected"));
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("failed: the stall is told").hasSize(1);
     }
 
     /// Red when: the ACTIVE write is lost (never settles) and the empty audience stays silent past the in-flight bound.
@@ -141,10 +193,8 @@ class EmptyAudienceWarningTest {
 
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.warns(OPEN)).as("the write is in flight").isEmpty();
-
         w.h.advance(w.h.settings.submissionExpiry() + 3 * w.h.settings.timing().tick());
         w.h.deliver(new ClusterInput.Reconcile());
-
         assertThat(w.h.warns(OPEN)).as("lost: the stall is told").hasSize(1);
     }
 
@@ -152,7 +202,8 @@ class EmptyAudienceWarningTest {
         var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
                        .target(ORDERS, 1, "WORKERS_ONLY")
                        .community("east-w-0", 3, CommunityState.FORMING)
-                       .seams(seams -> seams.withReady(ALL).withLocalAlive(Option.some(Set.of(W1, W2, W3))));
+                       .seams(seams -> seams.withReady(ALL)
+                                            .withLocalAlive(Option.some(Set.of(W1, W2, W3))));
 
         w.h.holdKinds = hold;
         w.h.loseKinds = lose;
@@ -174,9 +225,25 @@ class EmptyAudienceWarningTest {
 
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
-
         assertThat(w.h.warns(OPEN)).hasSize(1);
         assertThat(w.h.warns(OPEN).getFirst().message()).contains("CORE_ONLY");
+    }
+
+    /// Red when: a community's pending ACTIVE write holds back the event of a CORE_ONLY target: the write changes the worker audience only,
+    /// so a CORE_ONLY target with no ready core is told on the first pass, the community due or not.
+    @Test
+    void coreOnly_withACommunityDue_stillRaisesOnTheFirstPass() {
+        var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
+                       .target(ORDERS, 1, "CORE_ONLY")
+                       .community("east-w-0", 3, CommunityState.FORMING)
+                       .seams(seams -> seams.withReady(Set.of())
+                                            .withLocalAlive(Option.some(Set.of(W1, W2, W3))));
+
+        w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
+        w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
+        w.activate();
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).hasSize(1);
     }
 
     /// Red when: removing the target leaves the episode open (subject gone).
@@ -187,7 +254,6 @@ class EmptyAudienceWarningTest {
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.seedRemove(new SliceTargetKey(ORDERS.base()));
         w.h.drain();
-
         var closes = w.h.warns(CLOSE);
 
         assertThat(closes).hasSize(1);
@@ -203,7 +269,6 @@ class EmptyAudienceWarningTest {
         w.h.seed(new SliceTargetKey(ORDERS.base()), target(ORDERS, 1, 1, "SIDEWAYS"));
         w.h.drain();
         w.h.deliver(new ClusterInput.Reconcile());
-
         assertThat(w.h.warns("invalid-placement")).hasSize(1);
         assertThat(w.h.warns(CLOSE)).hasSize(1);
     }
