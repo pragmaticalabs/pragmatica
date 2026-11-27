@@ -94,6 +94,7 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -547,6 +548,75 @@ class DurableProjectionRebuildTest {
         passUntilEpochReadsSent(4);
         verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
         assertThat(committedEpoch()).isEqualTo(Option.some(RewindEpoch.NONE));
+    }
+
+    /// #3835: ONE stale FOUND restarts the consumer ONCE, however many passes run before a later read answers. The read
+    /// sent by the restarting pass stays unanswered here, so every pass in between acts on the same stale epoch; the
+    /// restarted consumer has fetched its cursor by then (its epoch is the recreated one), so each of those passes sees it
+    /// "rewound behind" the stale epoch. Before #3835 each pass abandoned the restarted consumer again. In production the
+    /// same happens whenever the answer of the read sent after the restart has not been recorded when a pass starts.
+    @Test
+    void forwardingNode_staleFound_restartsTheConsumerOnce_whateverNumberOfPassesRunBeforeALaterReadAnswers() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        awaitCommittedCursor(6L, 20_000);
+
+        applyNow(removeCheckpoint());
+        localCursors.forget();
+        applyNow(checkpoint(2L, RewindEpoch.NONE));
+        forwardingEpochs.set(true);
+        passUntilEpochReadsSent(1);
+        epochReads.getFirst().succeed(List.of(Option.some(checkpointAtEpoch(5L))));
+        passUntilEpochReadsSent(2);
+        verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
+        awaitCommittedCursor(6L, 20_000);
+
+        manager.reconcile();
+        manager.reconcile();
+        manager.reconcile();
+
+        verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
+        assertThat(epochReads).as("the passes between sent no read: the second is still outstanding").hasSize(2);
+    }
+
+    /// #3835: the once-per-epoch memory ends when a later read answers anything else. A checkpoint that reads epoch 5, then
+    /// the recreated epoch, then epoch 5 again is a new rewind to the same epoch value, and it restarts the consumer again.
+    @Test
+    void forwardingNode_theSameEpochAnsweredAgainAfterAnotherAnswer_restartsTheConsumerAgain() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        awaitCommittedCursor(6L, 20_000);
+
+        applyNow(removeCheckpoint());
+        localCursors.forget();
+        applyNow(checkpoint(2L, RewindEpoch.NONE));
+        forwardingEpochs.set(true);
+        passUntilEpochReadsSent(1);
+        epochReads.getFirst().succeed(List.of(Option.some(checkpointAtEpoch(5L))));
+        passUntilEpochReadsSent(2);
+        awaitCommittedCursor(6L, 20_000);
+        assertThat(abandonsOfTheGroup()).as("the first answer restarted the consumer once").isEqualTo(1);
+
+        answerEpochReadFromCommittedState(1);
+        passUntilEpochReadsSent(3);
+        manager.reconcile();
+        epochReads.get(2).succeed(List.of(Option.some(checkpointAtEpoch(5L))));
+        PollUntil.pollUntil(this::reconcileAndCountAbandons, abandons -> abandons >= 2, Duration.ofSeconds(10))
+                 .assertMet("epoch 5 answered again after the recreated epoch restarted the consumer again");
+    }
+
+    private long reconcileAndCountAbandons() {
+        manager.reconcile();
+
+        return abandonsOfTheGroup();
+    }
+
+    private long abandonsOfTheGroup() {
+        return Mockito.mockingDetails(managedRuntime)
+                      .getInvocations()
+                      .stream()
+                      .filter(invocation -> invocation.getMethod().getName().equals("abandon"))
+                      .count();
     }
 
     /// #3283 round 2: a consumer still fetching its cursor has no epoch yet and is left alone, however much newer the
