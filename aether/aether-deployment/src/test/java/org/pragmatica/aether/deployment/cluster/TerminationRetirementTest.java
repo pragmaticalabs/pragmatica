@@ -188,10 +188,9 @@ class TerminationRetirementTest {
         return outcome.fold(cause -> cause, _ -> fail("the retirement succeeded, an end cause was expected"));
     }
 
-    /// The cause type of the design's 3.4 (`AwaitingDeparture`, row 4) does not exist before lane 4B, so it is asserted by name: the tests then
-    /// compile at base and go red on the assertion.
+    /// The wait of the design's 3.4 (`AwaitingDeparture`, row 4) is a cause of its own, and not terminal, so the retry asks again.
     private static void assertAwaitingDeparture(Cause cause) {
-        assertThat(cause.getClass().getSimpleName()).as("the wait is a cause of its own: AwaitingDeparture").isEqualTo("AwaitingDeparture");
+        assertThat(cause).as("the wait is a cause of its own: AwaitingDeparture").isInstanceOf(TerminationRetirement.AwaitingDeparture.class);
         assertThat(cause.isTerminal()).as("and it is not terminal, so the retry asks again").isFalse();
     }
 
