@@ -235,6 +235,26 @@ class WorkerDepartureRetirementTest {
                   .isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
     }
 
+    // #3828 — Red when: the retirement's own removal mark outlives it (the model's retirement is not an operator's removal, so it leaves no
+    // mark), or the mark it left is not consumed: then the removal of the directive J5 gave the returning worker is not remembered.
+    @Test
+    void retiredWorker_directedAgain_thenRemovedByTheOperator_isNotDirectedAgain() {
+        var w = world();
+
+        w.h.deliver(new ClusterInput.WorkerLeave(worker));
+        settle(w);
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN + 1)));
+        settle(w);
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("precondition: J5 directed the returning worker").isTrue();
+        w.h.seedRemove(new ActivationDirectiveKey(worker));
+        w.h.drain();
+        w.h.clearLog();
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admissionOf(worker)));
+        settle(w);
+
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("the operator's removal sticks").isFalse();
+    }
+
     // #3028 — Red when: a falsely departed worker that rejoins (same process) before C17b loses its directive.
     @Test
     void falselyDepartedWorker_rejoiningBeforeC17b_keepsItsDirective() {
