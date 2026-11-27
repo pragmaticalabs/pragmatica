@@ -159,7 +159,9 @@ class DeclaredRouteWireTest {
         @Test
         void appBlueprintValue_roundTrips_withRoutes() {
             var routes = Map.of(ARTIFACT,
-                                List.of(DeclaredRoute.declaredRoute("GET", "/orders/{id}"), DeclaredRoute.declaredRoute("POST", "/orders")),
+                                List.of(DeclaredRoute.declaredRoute("POST", "/orders"),
+                                        DeclaredRoute.declaredRoute("GET", "/orders/{id}"),
+                                        DeclaredRoute.declaredRoute("DELETE", "/orders/{id}")),
                                 OTHER,
                                 List.of(DeclaredRoute.declaredRoute("GET", "/stock")));
             var original = AppBlueprintValue.appBlueprintValue(blueprint(), false, "attempt-8", routes);
@@ -168,8 +170,10 @@ class DeclaredRouteWireTest {
 
             assertThat(decoded).isEqualTo(original);
             assertThat(decoded.declaredRoutes()).containsExactlyInAnyOrderEntriesOf(routes);
-            assertThat(decoded.declaredRoutes().get(ARTIFACT)).containsExactly(DeclaredRoute.declaredRoute("GET", "/orders/{id}"),
-                                                                              DeclaredRoute.declaredRoute("POST", "/orders"));
+            // The input is deliberately unsorted: a codec that sorted (or reversed) the list would not round-trip it in the written order.
+            assertThat(decoded.declaredRoutes().get(ARTIFACT)).containsExactly(DeclaredRoute.declaredRoute("POST", "/orders"),
+                                                                              DeclaredRoute.declaredRoute("GET", "/orders/{id}"),
+                                                                              DeclaredRoute.declaredRoute("DELETE", "/orders/{id}"));
         }
 
         @Test
