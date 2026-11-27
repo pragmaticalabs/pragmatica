@@ -29,7 +29,7 @@ class ConsumerGroupTombstoneCodecTest {
     void consumerGroupTombstonePut_roundTrips_throughTheNodeCodec() {
         var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
         var key = ConsumerGroupKey.consumerGroupKey("group", "stream", 3);
-        var value = ConsumerGroupTombstone.consumerGroupTombstone(Epoch.epoch(2L, 3L, 4L));
+        var value = ConsumerGroupTombstone.consumerGroupTombstone(Epoch.epoch(2L, 3L, 4L), 7L);
         var buf = Unpooled.buffer();
 
         codec.write(buf, new KVCommand.Put<AetherKey, AetherValue>(key, value));

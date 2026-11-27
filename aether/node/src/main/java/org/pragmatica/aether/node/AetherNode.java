@@ -150,6 +150,7 @@ import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.aether.stream.consumer.StreamLives;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
@@ -3074,7 +3075,8 @@ public interface AetherNode extends ManageableNode {
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode,
                                                                                          consumerGroupRegistry,
-                                                                                         epochSources.leaderEpoch());
+                                                                                         epochSources.leaderEpoch(),
+                                                                                         StreamLives.committedIn(kvStore));
         var managementServerRef = new AtomicReference<Option<ManagementServer>>(Option.empty());
         // Hoisted before collectRouteEntries (Wave 9 Fix A): the PASSIVE→process-exit-drain bridge
         // routes through this detector's windowed path, so the route-collection needs the ref

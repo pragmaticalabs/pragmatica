@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// #3041: the tombstones of a deleted stream, and of partitions a group no longer has, are reclaimed; the guard of the
 /// stream's life keeps the reclaim sound. The coordinator drives a REAL [KVStore] that commits every batch at once.
 ///
-/// Expected at the guard package (i3041b): (f) and (g) are green; (a), (b) and the bound are RED until the reclaim
+/// Expected at the guard package (i3041b): (f), (g) and (d) are green; (a), (b) and the bound are RED until the reclaim
 /// triggers land (i3041c), which wires [#reclaimTrigger] to them.
 class ConsumerGroupStreamLifeReclaimTest {
     private static final NodeId SELF = new NodeId("leader-node");
@@ -86,7 +86,8 @@ class ConsumerGroupStreamLifeReclaimTest {
     private ConsumerGroupCoordinator newCoordinator() {
         var created = ConsumerGroupCoordinator.consumerGroupCoordinator(immediateClusterNode(),
                                                                         registry,
-                                                                        () -> Epoch.epoch(1L, 1L, 0L));
+                                                                        () -> Epoch.epoch(1L, 1L, 0L),
+                                                                        StreamLives.committedIn(store));
 
         created.onLeaderChange(new LeaderChange(Option.some(SELF), true));
 
@@ -129,6 +130,7 @@ class ConsumerGroupStreamLifeReclaimTest {
         createStream("events");
 
         assertThat(coordinator.joinGroup("g", "events", PARTITIONS, "c1", NODE_A).isSuccess()).isTrue();
+        assertThat(recordsOf("events")).as("the join commits an assignment per partition").hasSize(PARTITIONS);
         assertThat(coordinator.leaveGroup("g", "events", "c1").isSuccess()).isTrue();
 
         assertThat(tombstonesOf("events")).as("the last leave tombstones every partition, as at base")
@@ -152,6 +154,17 @@ class ConsumerGroupStreamLifeReclaimTest {
 
         assertThat(joined.isFailure()).as("a join for a deleted stream is refused").isTrue();
         assertThat(recordsOf("events")).isEmpty();
+    }
+
+    @Test
+    void leave_afterStreamDeleted_succeedsAndWritesNoTombstone_d() {
+        createStream("events");
+        coordinator.joinGroup("g", "events", PARTITIONS, "c1", NODE_A);
+        deleteStream("events");
+
+        assertThat(coordinator.leaveGroup("g", "events", "c1").isSuccess()).as("design-out: nothing can commit, so the leave is not an error")
+                                                                           .isTrue();
+        assertThat(tombstonesOf("events")).as("and no tombstone of the dead life is written").isEmpty();
     }
 
     @Test

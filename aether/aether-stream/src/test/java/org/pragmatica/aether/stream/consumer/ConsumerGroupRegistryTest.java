@@ -197,13 +197,13 @@ class ConsumerGroupRegistryTest {
                                                                     NodeId nodeId,
                                                                     String consumerId) {
         var key = ConsumerGroupKey.consumerGroupKey(groupId, streamName, partition);
-        AetherValue value = ConsumerGroupValue.consumerGroupValue(nodeId, consumerId, Epoch.epoch(1L, 1L, 1L));
+        AetherValue value = ConsumerGroupValue.consumerGroupValue(nodeId, consumerId, Epoch.epoch(1L, 1L, 1L), 1L);
         return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }
 
     private static ValuePut<ConsumerGroupKey, AetherValue> tombstoneEvent(int partition, Epoch epoch) {
         var key = ConsumerGroupKey.consumerGroupKey(GROUP, STREAM, partition);
-        AetherValue value = ConsumerGroupTombstone.consumerGroupTombstone(epoch);
+        AetherValue value = ConsumerGroupTombstone.consumerGroupTombstone(epoch, 1L);
         return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }
 

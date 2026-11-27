@@ -60,12 +60,16 @@ public sealed interface ConsumerGroupCoordinator {
     ///                     before it is submitted (#2626)
     /// @param leaderEpoch  the node's current leader epoch (`Epoch(incarnation, leaderTerm, _)`), read at every
     ///                     rebalance; only its incarnation and term are used, the counter is the coordinator's own
+    /// @param lives        the committed life of each stream (#3041): every record this coordinator writes is stamped
+    ///                     with it, and a group of a stream with no committed life is refused
     static ConsumerGroupCoordinator consumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode,
                                                              ConsumerGroupRegistry registry,
-                                                             Supplier<Epoch> leaderEpoch) {
+                                                             Supplier<Epoch> leaderEpoch,
+                                                             StreamLives lives) {
         return new DefaultConsumerGroupCoordinator(clusterNode,
                                                    registry,
                                                    leaderEpoch,
+                                                   lives,
                                                    new AtomicLong(),
                                                    new AtomicReference<>(new CoordinatorState.Dormant()));
     }
@@ -123,6 +127,7 @@ public sealed interface ConsumerGroupCoordinator {
         record Active(ClusterNode<KVCommand<AetherKey>> clusterNode,
                       ConsumerGroupRegistry registry,
                       Supplier<Epoch> leaderEpoch,
+                      StreamLives lives,
                       AtomicLong counter,
                       ConcurrentHashMap<GroupKey, List<ConsumerMember>> members,
                       ConcurrentHashMap<GroupKey, Integer> partitionCounts) implements CoordinatorState {
@@ -134,6 +139,18 @@ public sealed interface ConsumerGroupCoordinator {
                                           int partitionCount,
                                           String consumerId,
                                           NodeId nodeId) {
+                return lives.incarnationOf(streamName)
+                            .map(_ -> enroll(groupId, streamName, partitionCount, consumerId, nodeId))
+                            .or(CoordinatorError.STREAM_NOT_COMMITTED.result());
+            }
+
+            /// #3041: a join is admitted only for a stream with a committed life. The applier refuses the write of any
+            /// other stream anyway; refusing here keeps the member out of the roster of a stream that cannot hold it.
+            private Result<Unit> enroll(String groupId,
+                                        String streamName,
+                                        int partitionCount,
+                                        String consumerId,
+                                        NodeId nodeId) {
                 var key = new GroupKey(groupId, streamName);
                 var memberList = members.computeIfAbsent(key, _ -> new CopyOnWriteArrayList<>());
                 var alreadyPresent = memberList.stream().anyMatch(m -> m.consumerId()
@@ -194,10 +211,21 @@ public sealed interface ConsumerGroupCoordinator {
             private synchronized Result<List<KVCommand<AetherKey>>> nextAssignmentCommands(String groupId,
                                                                                            String streamName,
                                                                                            int partitionCount) {
+                return lives.incarnationOf(streamName)
+                            .map(life -> commandsOfLife(groupId, streamName, partitionCount, life))
+                            .or(Result.success(List.of()));
+            }
+
+            /// Design-out, not a fallback (#3041): a stream with no committed life admits no consumer-group write, the
+            /// applier refuses every one, so nothing is submitted and nothing is in flight to fence.
+            private Result<List<KVCommand<AetherKey>>> commandsOfLife(String groupId,
+                                                                      String streamName,
+                                                                      int partitionCount,
+                                                                      long life) {
                 var memberList = members.getOrDefault(new GroupKey(groupId, streamName), List.of());
 
                 if (memberList.isEmpty()) {
-                    return clearAssignmentCommands(groupId, streamName, partitionCount);
+                    return clearAssignmentCommands(groupId, streamName, partitionCount, life);
                 }
 
                 var sorted = memberList.stream().sorted(Comparator.comparing(ConsumerMember::consumerId)).toList();
@@ -206,7 +234,8 @@ public sealed interface ConsumerGroupCoordinator {
                                                                                            streamName,
                                                                                            partitionCount,
                                                                                            sorted,
-                                                                                           epoch));
+                                                                                           epoch,
+                                                                                           life));
             }
 
             /// #2635: an empty group owns no partitions, so EVERY partition is released under a freshly minted epoch by
@@ -219,7 +248,8 @@ public sealed interface ConsumerGroupCoordinator {
             /// no known partitions and no committed assignments mints nothing and submits nothing.
             private Result<List<KVCommand<AetherKey>>> clearAssignmentCommands(String groupId,
                                                                                String streamName,
-                                                                               int partitionCount) {
+                                                                               int partitionCount,
+                                                                               long life) {
                 var partitions = releasedPartitions(groupId, streamName, partitionCount);
 
                 if (partitions.isEmpty()) {
@@ -231,7 +261,8 @@ public sealed interface ConsumerGroupCoordinator {
                 return nextEpoch(groupId, streamName).map(epoch -> buildTombstoneCommands(groupId,
                                                                                           streamName,
                                                                                           partitions,
-                                                                                          epoch))
+                                                                                          epoch,
+                                                                                          life))
                                 .fold(this::absorbUncommittedIncarnation, Result::success);
             }
 
@@ -338,8 +369,9 @@ public sealed interface ConsumerGroupCoordinator {
             private static List<KVCommand<AetherKey>> buildTombstoneCommands(String groupId,
                                                                              String streamName,
                                                                              SortedSet<Integer> partitions,
-                                                                             Epoch epoch) {
-                var tombstone = ConsumerGroupTombstone.consumerGroupTombstone(epoch);
+                                                                             Epoch epoch,
+                                                                             long life) {
+                var tombstone = ConsumerGroupTombstone.consumerGroupTombstone(epoch, life);
 
                 return partitions.stream()
                                  .map(partition -> tombstoneCommand(groupId, streamName, partition, tombstone))
@@ -359,13 +391,14 @@ public sealed interface ConsumerGroupCoordinator {
                                                                               String streamName,
                                                                               int partitionCount,
                                                                               List<ConsumerMember> sorted,
-                                                                              Epoch epoch) {
+                                                                              Epoch epoch,
+                                                                              long life) {
                 var commands = new ArrayList<KVCommand<AetherKey>>();
 
                 for (var i = 0; i < partitionCount; i++) {
                     var member = sorted.get(i % sorted.size());
                     var key = ConsumerGroupKey.consumerGroupKey(groupId, streamName, i);
-                    var value = ConsumerGroupValue.consumerGroupValue(member.nodeId(), member.consumerId(), epoch);
+                    var value = ConsumerGroupValue.consumerGroupValue(member.nodeId(), member.consumerId(), epoch, life);
 
                     commands.add(new KVCommand.Put<>(key, value));
                 }
@@ -381,7 +414,8 @@ public sealed interface ConsumerGroupCoordinator {
 
     enum CoordinatorError implements Cause {
         NOT_LEADER("Consumer group coordinator is not active (not leader)"),
-        SUPERSEDED("Consumer group rebalance refused: a newer leader term has already committed assignments");
+        SUPERSEDED("Consumer group rebalance refused: a newer leader term has already committed assignments"),
+        STREAM_NOT_COMMITTED("Consumer group join refused: the stream has no committed config (never created, or deleted)");
         private final String message;
         CoordinatorError(String message) {
             this.message = message;
@@ -395,6 +429,7 @@ public sealed interface ConsumerGroupCoordinator {
     record DefaultConsumerGroupCoordinator(ClusterNode<KVCommand<AetherKey>> clusterNode,
                                            ConsumerGroupRegistry registry,
                                            Supplier<Epoch> leaderEpoch,
+                                           StreamLives lives,
                                            AtomicLong counter,
                                            AtomicReference<CoordinatorState> state) implements ConsumerGroupCoordinator {
         private static final Logger log = LoggerFactory.getLogger(DefaultConsumerGroupCoordinator.class);
@@ -406,6 +441,7 @@ public sealed interface ConsumerGroupCoordinator {
                 state.set(new CoordinatorState.Active(clusterNode,
                                                       registry,
                                                       leaderEpoch,
+                                                      lives,
                                                       counter,
                                                       new ConcurrentHashMap<>(),
                                                       new ConcurrentHashMap<>()));

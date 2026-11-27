@@ -96,6 +96,10 @@ class ConsumerGroupStreamLifeGuardTest {
     void put_ofTheLiveLife_isAdmitted_g() {
         createStream(11);
         put(GROUP_KEY, assignment(1, 11));
+
+        assertThat(store.get(GROUP_KEY).or((AetherValue) null)).as("a join of the live life commits")
+                                                                .isInstanceOf(ConsumerGroupValue.class);
+
         put(GROUP_KEY, tombstone(2, 11));
 
         assertThat(store.get(GROUP_KEY).or((AetherValue) null)).as("join then leave on a live stream commits both")
@@ -129,13 +133,12 @@ class ConsumerGroupStreamLifeGuardTest {
         };
     }
 
-    /// The life token is the stream incarnation the record was written under; at base the value carries none, so the
-    /// parameter is ignored until the guard commit adds it.
+    /// The life token is the stream incarnation the record was written under.
     private static ConsumerGroupValue assignment(long counter, long life) {
-        return ConsumerGroupValue.consumerGroupValue(NODE, "c1", Epoch.epoch(1L, 1L, counter));
+        return ConsumerGroupValue.consumerGroupValue(NODE, "c1", Epoch.epoch(1L, 1L, counter), life);
     }
 
     private static ConsumerGroupTombstone tombstone(long counter, long life) {
-        return ConsumerGroupTombstone.consumerGroupTombstone(Epoch.epoch(1L, 1L, counter));
+        return ConsumerGroupTombstone.consumerGroupTombstone(Epoch.epoch(1L, 1L, counter), life);
     }
 }
