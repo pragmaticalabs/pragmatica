@@ -83,7 +83,7 @@ class FsmWarningCatalogueTest {
     @Test
     void everyCodeTheFsmsRaise_isInTheCatalogue_asADeploymentWarning() {
         var scan = scan(FSM_SOURCES);
-        // WARN-V2 (design §0): the 13 leader-local families are raised from the Warnings family table, not from a ctx.warn site, so the source scan
+        // WARN-V2 (design §0): the 14 leader-local families are raised from the Warnings family table, not from a ctx.warn site, so the source scan
         // cannot see them; their opener codes join the scanned set from that table.
         scan.codes().addAll(Warnings.FAMILIES.keySet());
         // #3203: the recovery codes too, since the committed-put publisher (ClusterEventAggregator.onFsmWarningPut) drops an uncatalogued one.

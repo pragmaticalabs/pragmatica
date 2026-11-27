@@ -58,7 +58,7 @@ class EmptyAudienceWarningTest {
 
         assertThat(warns).as("once per episode").hasSize(1);
         assertThat(warns.getFirst().subject()).isEqualTo(ORDERS.base().asString());
-        assertThat(warns.getFirst().message()).contains(ORDERS.base().asString(), "WORKERS_ONLY", "east-w-0", "FORMING", "1 live", "floor 3", "allow_below_rf");
+        assertThat(warns.getFirst().message()).contains(ORDERS.base().asString(), "WORKERS_ONLY", "east-w-0", "FORMING", "1 live", "floor is 3", "allow_below_rf");
         assertThat(w.h.warns(CLOSE)).isEmpty();
         assertThat(hosts(w.h, ORDERS)).as("the floor stays: nothing is placed").isEmpty();
     }

@@ -85,7 +85,7 @@ public sealed interface Placement {
                                         Artifact artifact,
                                         SliceTargetValue target,
                                         Cause cause) {
-        return Warnings.raise(m,
+        return Warnings.raise(closeEmptyAudience(m, ctx, artifact.base(), "its placement does not parse"),
                               Warnings.INVALID_PLACEMENT,
                               artifact.asString(),
                               Warnings.SINGLE,
@@ -138,8 +138,65 @@ public sealed interface Placement {
         var audience = audience(m, policy);
 
         return audience.isEmpty()
-               ? m
-               : reconcileAudience(m, ctx, artifact, target, policy, audience);
+               ? emptyAudience(m, ctx, artifact.base(), policy)
+               : reconcileAudience(closeEmptyAudience(m, ctx, artifact.base(), "the audience is not empty"),
+                                   ctx,
+                                   artifact,
+                                   target,
+                                   policy,
+                                   audience);
+    }
+
+    /// #3815: a committed target whose audience is empty is not placed, and the operator is told once per episode (`placement-audience-empty`,
+    /// closed by `placement-audience-available`). FER (degrade forward): the target stays unplaced; the floor is not lowered here, because it
+    /// is the DHT replication factor. Guarantee: the stall is visible, never silent. Mechanism: the committed open set of `Warnings`.
+    private static ClusterModel emptyAudience(ClusterModel m, Ctx ctx, ArtifactBase base, PlacementPolicy policy) {
+        return Warnings.raise(m,
+                              Warnings.EMPTY_AUDIENCE,
+                              base.asString(),
+                              Warnings.SINGLE,
+                              Warnings.SINGLE,
+                              emptyAudienceText(m, ctx, base, policy));
+    }
+
+    private static String emptyAudienceText(ClusterModel m, Ctx ctx, ArtifactBase base, PlacementPolicy policy) {
+        return "Target " + base.asString()
+             + " is not placed: its placement " + policy
+             + " has an empty audience (" + cores(m).size()
+             + " eligible cores; " + communityCensus(m)
+             + "). The community viability floor is " + CommunityPolicies.current(m, ctx).viabilityFloor()
+             + " live members: add workers, or lower viability_floor in [community_policy] with allow_below_rf = true";
+    }
+
+    /// Every community with its state and its live members, in id order.
+    private static String communityCensus(ClusterModel m) {
+        var census = m.communities.entries()
+                                  .stream()
+                                  .sorted(Comparator.comparing(Map.Entry::getKey))
+                                  .map(entry -> entry.getKey()
+                                               + " " + entry.getValue()
+                                                            .state()
+                                               + " with " + Communities.liveMembers(m,
+                                                                                    entry.getKey())
+                                               + " live")
+                                  .collect(Collectors.joining(", "));
+
+        return census.isEmpty()
+               ? "no communities"
+               : "communities: " + census;
+    }
+
+    /// Closes the open `placement-audience-empty` episode of `base` with `placement-audience-available`, the reason being `why`; nothing
+    /// when none is open.
+    static ClusterModel closeEmptyAudience(ClusterModel m, Ctx ctx, ArtifactBase base, String why) {
+        return m.emptyAudienceWarned.contains(base)
+               ? Warnings.raise(m,
+                                Recoveries.PLACEMENT_AUDIENCE_AVAILABLE,
+                                base.asString(),
+                                Warnings.SINGLE,
+                                Warnings.SINGLE,
+                                "Placement audience of " + base.asString() + ": " + why)
+               : m;
     }
 
     private static ClusterModel reconcileAudience(ClusterModel m,

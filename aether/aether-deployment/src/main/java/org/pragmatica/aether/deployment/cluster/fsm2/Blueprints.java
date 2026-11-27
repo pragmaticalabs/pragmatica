@@ -350,6 +350,10 @@ public sealed interface Blueprints {
                                 ctx,
                                 base,
                                 Recoveries.gone(base.asString(), "the target was removed"));
+        Placement.closeEmptyAudience(m,
+                                     ctx,
+                                     base,
+                                     Recoveries.gone(base.asString(), "the target was removed"));
         Failures.closeReported(m,
                                ctx,
                                base,
