@@ -4,7 +4,9 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
+import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -81,6 +83,10 @@ class KVStoreAssignmentGuardTest {
 
     private void put(StructuredKey key, Object value) {
         store.process(store.createBatch(List.of(new Put<>(key, value))));
+    }
+
+    private void removeWitnessed(StructuredKey key, Object witness) {
+        store.process(store.createBatch(List.of(new Remove<StructuredKey>(key, Option.some(witness)))));
     }
 
     private Object stored(StructuredKey key) {
@@ -173,5 +179,52 @@ class KVStoreAssignmentGuardTest {
 
         assertThat(replica.get(CURSOR).or((Object) null)).isEqualTo(stored(CURSOR))
                                                           .isEqualTo(new Cursor("node-b@2", 12));
+    }
+
+    /// #3041: a `Remove` that names the life it read. The record of the earlier life was read before the successor wrote
+    /// its own; the late `Remove` must delete nothing.
+    @Test
+    void remove_witnessOfAnotherToken_deletesNothing() {
+        put(ASSIGNMENT, new Assignment("node-a@1"));
+        put(CURSOR, new Cursor("node-a@1", 10));
+        put(ASSIGNMENT, new Assignment("node-b@2"));
+        put(CURSOR, new Cursor("node-b@2", 12));
+
+        removeWitnessed(CURSOR, new Cursor("node-a@1", 10));
+
+        assertThat(stored(CURSOR)).isEqualTo(new Cursor("node-b@2", 12));
+    }
+
+    @Test
+    void remove_witnessOfTheCommittedToken_deletesTheRecord() {
+        put(ASSIGNMENT, new Assignment("node-a@1"));
+        put(CURSOR, new Cursor("node-a@1", 10));
+
+        removeWitnessed(CURSOR, new Cursor("node-a@1", 10));
+
+        assertThat(stored(CURSOR)).isNull();
+    }
+
+    /// Negative control (#3041): the arm only narrows. A witnessless `Remove` of a non-epoch value is decided by the arms
+    /// below it, and they admit it.
+    @Test
+    void remove_withoutWitness_ofNonEpochValue_deletesTheRecord() {
+        put(ASSIGNMENT, new Assignment("node-a@1"));
+        put(CURSOR, new Cursor("node-a@1", 10));
+
+        store.process(store.createBatch(List.of(new Remove<StructuredKey>(CURSOR))));
+
+        assertThat(stored(CURSOR)).isNull();
+    }
+
+    /// Negative control (#3041): a witness that carries no token names no life, so the arm does not refuse it.
+    @Test
+    void remove_witnessWithoutToken_deletesTheRecord() {
+        put(ASSIGNMENT, new Assignment("node-a@1"));
+        put(CURSOR, new Cursor("node-a@1", 10));
+
+        removeWitnessed(CURSOR, new PlainCursor(10));
+
+        assertThat(stored(CURSOR)).isNull();
     }
 }

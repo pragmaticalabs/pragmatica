@@ -31,6 +31,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -39,8 +40,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// #3041: the tombstones of a deleted stream, and of partitions a group no longer has, are reclaimed; the guard of the
 /// stream's life keeps the reclaim sound. The coordinator drives a REAL [KVStore] that commits every batch at once.
 ///
-/// Expected at the guard package (i3041b): (f), (g) and (d) are green; (a), (b) and the bound are RED until the reclaim
-/// triggers land (i3041c), which wires [#reclaimTrigger] to them.
+/// The reclaim is wired to the node-local reaction to a committed removal of a stream's config, as `AetherNode` wires it.
+/// (i): a `Remove` of the old life committing late, after a recreate, leaves the new life's records. (j): a leader change
+/// between the delete and the reclaim still reclaims, by the new leader's activation sweep.
 class ConsumerGroupStreamLifeReclaimTest {
     private static final NodeId SELF = new NodeId("leader-node");
     private static final NodeId NODE_A = new NodeId("node-a");
@@ -49,6 +51,8 @@ class ConsumerGroupStreamLifeReclaimTest {
     private KVStore<AetherKey, AetherValue> store;
     private ConsumerGroupRegistry registry;
     private ConsumerGroupCoordinator coordinator;
+    private final List<KVCommand<AetherKey>> deferred = new ArrayList<>();
+    private boolean deferRemovals;
     private long life = 10;
 
     @BeforeEach
@@ -74,14 +78,10 @@ class ConsumerGroupStreamLifeReclaimTest {
         if (event.cause().key() instanceof ConsumerGroupKey) {
             registry.onConsumerGroupRemove((ValueRemove<ConsumerGroupKey, ConsumerGroupValue>) event);
         }
-        if (event.cause().key() instanceof StreamConfigKey configKey) {
-            reclaimTrigger(configKey.streamName());
+        if (event.cause().key() instanceof StreamConfigKey) {
+            coordinator.onStreamConfigRemove((ValueRemove<StreamConfigKey, StreamConfigValue>) event);
         }
     }
-
-    /// i3041c wires the reclaim here: the node-local reaction to a committed removal of a stream's config. At base
-    /// nothing reclaims, which is what makes (a) and the bound red.
-    private void reclaimTrigger(String streamName) {}
 
     private ConsumerGroupCoordinator newCoordinator() {
         var created = ConsumerGroupCoordinator.consumerGroupCoordinator(immediateClusterNode(),
@@ -119,6 +119,10 @@ class ConsumerGroupStreamLifeReclaimTest {
             @Override
             @SuppressWarnings("unchecked")
             public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+                if (deferRemovals && commands.stream().allMatch(KVCommand.Remove.class::isInstance)) {
+                    deferred.addAll(commands);
+                    return Promise.success((List<R>) List.of());
+                }
                 store.process(store.createBatch(commands));
                 return Promise.success((List<R>) List.of());
             }
@@ -225,6 +229,46 @@ class ConsumerGroupStreamLifeReclaimTest {
         var tombstones = store.snapshot().values().stream().filter(ConsumerGroupTombstone.class::isInstance).count();
 
         assertThat(tombstones).as("tombstones <= groups x partitions of live streams").isLessThanOrEqualTo(bound);
+    }
+
+    @Test
+    void lateRemoveOfTheOldLife_afterRecreate_leavesTheNewLifesRecords_i() {
+        createStream("events");
+        coordinator.joinGroup("g", "events", PARTITIONS, "c1", NODE_A);
+        coordinator.leaveGroup("g", "events", "c1");
+        deferRemovals = true;
+        deleteStream("events");
+        assertThat(deferred).as("the reclaim of the dead life was proposed, and has not committed yet")
+                            .hasSize(PARTITIONS);
+        createStream("events");
+        coordinator.joinGroup("g", "events", PARTITIONS, "c2", NODE_A);
+        deferRemovals = false;
+
+        store.process(store.createBatch(List.copyOf(deferred)));
+
+        assertThat(recordsOf("events")).as("the late Remove of the old life deleted nothing of the new life")
+                                       .hasSize(PARTITIONS)
+                                       .allSatisfy(entry -> assertThat(entry.getValue()).isInstanceOf(ConsumerGroupValue.class));
+        assertThat(registry.recordsOf("events")).hasSize(PARTITIONS);
+    }
+
+    @Test
+    void leaderChange_betweenDeleteAndReclaim_stillReclaims_bySweepOfTheNewLeader_j() {
+        createStream("events");
+        coordinator.joinGroup("g", "events", PARTITIONS, "c1", NODE_A);
+        coordinator.leaveGroup("g", "events", "c1");
+        deferRemovals = true;
+        deleteStream("events");
+        assertThat(deferred).as("the old leader proposed the reclaim and died before it committed")
+                            .hasSize(PARTITIONS);
+        assertThat(tombstonesOf("events")).hasSize(PARTITIONS);
+        deferred.clear();
+        deferRemovals = false;
+
+        coordinator = newCoordinator();
+
+        assertThat(recordsOf("events")).as("the new leader's activation sweep reclaimed the dead life").isEmpty();
+        assertThat(registry.streamNames()).as("and the registry dropped in step").doesNotContain("events");
     }
 
     private void createStream(String name) {
