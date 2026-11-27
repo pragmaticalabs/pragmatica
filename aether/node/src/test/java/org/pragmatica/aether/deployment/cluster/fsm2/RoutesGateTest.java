@@ -13,6 +13,7 @@ import java.util.function.Predicate;
 import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -408,6 +409,38 @@ class RoutesGateTest {
 
         assertThat(goal.transaction().mutations()).as("control: both goals ride one transaction").hasSize(2);
         assertThat(witnessedKeys(goal).stream().filter(AppBlueprintKey.appBlueprintKey(APP_ID)::equals).count()).isEqualTo(1);
+    }
+
+    private static final Artifact INVENTORY = artifact("org.example:inventory:1.0.0");
+
+    /// The blueprint of one ORDERS, one BILLING and one INVENTORY instance, each declaring one route.
+    private static AppBlueprintValue threeSlices(String attempt) {
+        var expanded = ExpandedBlueprint.expandedBlueprint(APP_ID,
+                                                           List.of(slice(ORDERS, 1, 1, Set.of()), slice(BILLING, 1, 1, Set.of()), slice(INVENTORY, 1, 1, Set.of())));
+
+        return AppBlueprintValue.appBlueprintValue(expanded,
+                                                   false,
+                                                   attempt,
+                                                   Map.of(ORDERS, List.of(LIST), BILLING, List.of(billingRoute()), INVENTORY, List.of(DeclaredRoute.declaredRoute("GET", "/stock"))));
+    }
+
+    /// Red when: the pairs that stay after a refusal each bring the blueprint they share: ORDERS' row changes, BILLING and INVENTORY are resubmitted
+    /// in one transaction, which carries the blueprint once.
+    @Test
+    void gate_twoPairsThatStayAfterARefusalWitnessTheirSharedBlueprintOnce() {
+        var h = leaderWithOneCore();
+        var first = heldGoalOf(h, threeSlices("attempt-1"));
+
+        h.seed(key(LIST), published("attempt-1"));
+        h.drain();
+        var settlement = h.applyHeld(first.correlationId());
+
+        assertThat(settlement).as("control: the first transaction is refused by ORDERS' row").isInstanceOf(Settlement.Refused.class);
+        h.settleHeld(first, settlement);
+        var stayed = h.held.values().stream().filter(submit -> submit.kind() == SubmitKind.GOALS).filter(submit -> submit.transaction().mutations().size() == 2).toList();
+
+        assertThat(stayed).as("control: the two pairs that did not move are resubmitted together").hasSize(1);
+        assertThat(witnessedKeys(stayed.getFirst()).stream().filter(AppBlueprintKey.appBlueprintKey(APP_ID)::equals).count()).isEqualTo(1);
     }
 
     /// Red when: a pair resubmitted after a refusal drops the target and blueprint witnesses (the split keeps only the observed guard and the
