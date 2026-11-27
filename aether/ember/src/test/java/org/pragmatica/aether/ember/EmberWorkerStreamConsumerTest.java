@@ -10,6 +10,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
@@ -37,8 +38,8 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.engineKey;
 
 /// #2600: a declarative stream consumer whose slice is ACTIVE only on a worker is assigned to that worker.
 ///
-/// 3 cores and 3 workers. A stream is created, the slice's target is committed WORKERS_ONLY (see [WorkerConsumerSlice]: a real slice jar in a staged
-/// repository, so the worker loads it and writes its own ACTIVE row), and a consumer declaration (`StreamRegistrationKey`) for the slice is committed.
+/// 3 cores and 3 workers. A stream is created, the slice is deployed WORKERS_ONLY (see [WorkerConsumerSlice]: a blueprint applied through the management
+/// API, then moved to workers; a real slice jar in a staged repository, so the worker loads it and writes its own ACTIVE row), and a consumer declaration (`StreamRegistrationKey`) for the slice is committed.
 /// The leader's `StreamConsumerManager` must read that worker as a live candidate (its `PartitionOwnership.liveWorkers`, wired in `AetherNode` from
 /// `MembershipFsm.workerCountedMembers`, the B1 liveness source: every core observes every member's descriptor) and commit the partition's
 /// `ConsumerAssignmentKey` naming it. Before the fix the candidate set was the core-only view, so the slice read as "not consumed yet" and no
@@ -102,19 +103,26 @@ class EmberWorkerStreamConsumerTest {
                        () -> workers.stream().allMatch(id -> leader().membershipFsm().workerCountedMembers().contains(id)),
                        () -> membership(workers.getFirst()));
         StreamTripwireSupport.createStream(leader(), StreamTripwireSupport.smallRingStream(STREAM, 1, 1_000L, 3_600_000L));
-        slice.deployOnWorkers(leader());
-        var worker = slice.awaitActiveWorker(this::leader, workers, WAIT_BOUND_MS, this::diagnostics);
-
-        assertThat(leader().deploymentMap().byArtifact(SLICE).keySet()).as("the slice is hosted by workers only (WORKERS_ONLY)")
-                                                                      .allMatch(workers::contains);
+        slice.deployOnWorkers(cluster);
+        slice.awaitActiveOnEveryWorker(this::leader, workers, WAIT_BOUND_MS, this::diagnostics);
         WorkerConsumerSlice.commit(leader(),
                                    registrationKey(),
-                                   AetherValue.StreamRegistrationValue.streamRegistrationValue(worker, GROUP, false, "java.lang.String"));
+                                   AetherValue.StreamRegistrationValue.streamRegistrationValue(workers.getFirst(), GROUP, false, "java.lang.String"));
         var assignment = AetherKey.ConsumerAssignmentKey.consumerAssignmentKey(engineKey(STREAM), 0, GROUP);
 
-        awaitUntil(() -> assignee(assignment).equals(Option.some(worker)),
+        awaitUntil(() -> assignedToAWorkerWhileWorkersOnly(assignment, workers),
                    WAIT_BOUND_MS,
-                   "the partition is assigned to the only worker the slice is ACTIVE on, got " + assignee(assignment) + diagnostics());
+                   "the partition is assigned to a worker (the slice is ACTIVE on workers only), got " + assignee(assignment) + diagnostics());
+        slice.assertAssigneeIsActiveWorker(cluster, assignee(assignment).unwrap(), workers);
+    }
+
+    /// The window the test relies on is registration to assignment: every poll first asserts the slice is still hosted by workers only, so an
+    /// assignment that appears is one made while no core hosted the slice (the core-only candidate view that #2600 fixed would have read a core host).
+    private boolean assignedToAWorkerWhileWorkersOnly(AetherKey.ConsumerAssignmentKey assignment, List<NodeId> workers) {
+        assertThat(slice.hostedByWorkersOnly(leader(), workers)).as("the slice stays hosted by workers only until the partition is assigned" + diagnostics())
+                                                               .isTrue();
+
+        return assignee(assignment).filter(workers::contains).isPresent();
     }
 
     private NodeId startedWorker() {
