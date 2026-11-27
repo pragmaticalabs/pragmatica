@@ -366,6 +366,20 @@ class ConsumerGroupStreamLifeReclaimTest {
         assertThat(registry.streamNames()).doesNotContain("events");
     }
 
+    /// F5, stale life of a LIVE stream: the cold boot restores the committed new life's config and records, and the old life's
+    /// records that were never reclaimed. The per-record trigger reclaims the old life's on arrival, whatever life is committed,
+    /// and leaves the new life's.
+    @Test
+    void coldBoot_leaderChangeBeforeTheReplay_reclaimsTheStaleLifeOfALiveStream_f5() {
+        coldBoot(staleLifeSnapshot());
+
+        router.route(new LeaderChange(Option.some(SELF), true));
+        store.replayNotifications();
+
+        assertThat(recordsOf("events")).as("only the live life's records remain").hasSize(PARTITIONS)
+                                       .allSatisfy(entry -> assertThat(((ConsumerGroupValue) entry.getValue()).streamIncarnation()).isEqualTo(life));
+    }
+
     /// F5, leader gate: a node that is not the leader proposes nothing when the burst delivers a dead life's records.
     @Test
     void coldBoot_replayWithoutALeaderChange_proposesNoReclaim_f5() {
@@ -498,6 +512,20 @@ class ConsumerGroupStreamLifeReclaimTest {
         deferred.clear();
         deferRemovals = false;
         assertThat(recordsOf("events")).as("the dead life's assignments remain in the snapshot").hasSize(PARTITIONS);
+        return Map.copyOf(store.snapshot());
+    }
+
+    /// A stream deleted without its reclaim and recreated: the old life's group records and the new life's.
+    private Map<AetherKey, AetherValue> staleLifeSnapshot() {
+        createStream("events");
+        coordinator.joinGroup("old", "events", PARTITIONS, "c1", NODE_A);
+        deferRemovals = true;
+        deleteStream("events");
+        deferred.clear();
+        deferRemovals = false;
+        createStream("events");
+        coordinator.joinGroup("new", "events", PARTITIONS, "c2", NODE_A);
+        assertThat(recordsOf("events")).as("both lives' records are in the snapshot").hasSize(2 * PARTITIONS);
         return Map.copyOf(store.snapshot());
     }
 
