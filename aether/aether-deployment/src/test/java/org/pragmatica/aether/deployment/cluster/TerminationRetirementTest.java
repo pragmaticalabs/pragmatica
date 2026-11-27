@@ -864,4 +864,71 @@ class TerminationRetirementTest {
         assertAllThreeStandAsSeeded(unknown);
         assertThat(stopChecks).hasValue(1);
     }
+
+    // v3860d: the two interleavings of Invariant R against one attempt, driven through `retire` in production order: the attempt reads the
+    // unit, builds its transaction, and a concurrent writer lands between that read and the commit (`beforeFirstApply`).
+
+    /// (a) A directive re-issued at another value between the attempt's read and its commit: the directive's exact-value removal refuses the
+    /// whole transaction (EXPECTED), and the retry ends on a directive that is not the one first read (row 3). Red when the unit's removal
+    /// does not expect the exact value, or when the directive clause is not asked.
+    @Test
+    void v3860d_aDirectiveReissuedBetweenTheReadAndTheCommit_refusesTheWhole_andTheRetryEnds_removingNothing() {
+        leaderAndAllThreeKeys();
+        var reissued = ActivationDirectiveValue.worker("east-w-0", "10.0.0.9:9000");
+        beforeFirstApply = () -> {
+            commit(new KVCommand.LeaderTransaction<>(DIRECTIVE,
+                                                     "reissue-remove",
+                                                     LEADER,
+                                                     List.of(),
+                                                     List.of(new KVCommand.Mutation<>(DIRECTIVE, store.get(DIRECTIVE), Option.none()))));
+            seed(DIRECTIVE, reissued);
+        };
+
+        var outcome = retried().retire(GONE).await();
+
+        assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
+        assertThat(retirementBatches).as("one refused batch").hasValue(1);
+        assertThat(store.get(RECORD)).isEqualTo(Option.some(DEPARTED));
+        assertThat(store.get(DIRECTIVE)).isEqualTo(Option.some(reissued));
+        assertThat(store.get(RECEIPT)).isEqualTo(Option.some(RECEIPT_VALUE));
+    }
+
+    /// (b) A receipt committed between the attempt's read and its commit: the unit's witness "receipt absent" refuses the whole transaction
+    /// (WITNESS), and the retry reads the unit again and retires all three. Red when the retiring form does not witness an absent receipt.
+    @Test
+    void v3860d_aReceiptCommittedBetweenTheReadAndTheCommit_refusesTheWhole_andTheRetryRetiresAllThree() {
+        leaderAndBothKeys();
+        beforeFirstApply = () -> seed(RECEIPT, RECEIPT_VALUE);
+
+        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(retirementBatches).as("the refused batch, then the one that commits").hasValue(2);
+        assertThat(store.get(RECORD)).isEqualTo(Option.none());
+        assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());
+        assertThat(store.get(RECEIPT)).isEqualTo(Option.none());
+    }
+
+    /// The bound of (a), characterised: a directive and receipt removed and re-issued at EQUAL values between the read and the commit of a
+    /// unit with no record are removed by the transaction (exact-value removal cannot tell equal issues apart; design 10.5, the declared
+    /// residue of a first read with no record). This pins today's behaviour; it is not a guarantee.
+    @Test
+    void v3860d_characterisation_anEqualReissueBetweenTheReadAndTheCommit_ofAUnitWithNoRecord_isRemoved() {
+        leaderDirectiveAndReceiptWithNoRecord();
+        beforeFirstApply = () -> {
+            commit(new KVCommand.LeaderTransaction<>(DIRECTIVE,
+                                                     "sibling-retire",
+                                                     LEADER,
+                                                     List.of(),
+                                                     List.of(new KVCommand.Mutation<>(DIRECTIVE, store.get(DIRECTIVE), Option.none()),
+                                                             new KVCommand.Mutation<>(RECEIPT, store.get(RECEIPT), Option.none()))));
+            seed(DIRECTIVE, ActivationDirectiveValue.worker("east-w-0", ""));
+            seed(RECEIPT, RECEIPT_VALUE);
+        };
+
+        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(retirementBatches).as("one batch, accepted").hasValue(1);
+        assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());
+        assertThat(store.get(RECEIPT)).isEqualTo(Option.none());
+    }
 }
