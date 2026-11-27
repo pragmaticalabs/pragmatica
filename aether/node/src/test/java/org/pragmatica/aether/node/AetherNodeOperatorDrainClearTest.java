@@ -103,6 +103,22 @@ class AetherNodeOperatorDrainClearTest {
         assertThat(NodeDepartureWiringTest.assemblyCode()).contains("clearOperatorDrainOnDeath(drainCommandRegistry,record);");
     }
 
+    /// #2315: the identity facts are bound where the node is assembled, and the topology manager's drains go through the holder of
+    /// their ids. No unit test builds the assembly, so pin the three seams: an unbound registry pins every drain at process and
+    /// incarnation `0`, which no edge takes as evidence (the fix would be inert), a manager drain set by node id could not be
+    /// cleared by id, and a drain observer without the DEAD predicate keeps tracking a node that never reports READY.
+    @Test
+    void assembly_bindsTheDrainSubject_wiresTheTopologyDrainIds_andEndsTrackingOnDead() {
+        var code = NodeDepartureWiringTest.assemblyCode();
+
+        assertThat(code).containsOnlyOnce("drainCommandRegistry.bindSubject(drainSubject(swimHealthDetector,membershipFsm));");
+        assertThat(code).containsOnlyOnce("nodeReadyAgain(metricsCollector::reportedStates).or(nodeDead(membershipFsm))");
+        assertThat(code).containsOnlyOnce("setDrainSetObserver(drainSetObserver(alertManager,config.self(),drainEnded))");
+        assertThat(code).containsOnlyOnce("drainCommandRegistry::drainTargets,drainSetObserver(alertManager,config.self(),drainEnded));");
+        assertThat(code).containsOnlyOnce("DrainSink.synchronous(topologyDrains::request,");
+        assertThat(code).containsOnlyOnce("topologyDrains::clear,");
+    }
+
     /// The tests above hand-build transition records, so they cannot see which edges a real FSM emits. These drive a
     /// REAL [`MembershipFsm`] with the hook wired the way `AetherNode`'s `onTransition` listener wires it, and enter the
     /// drain through `DrainAssembly.requestDrainThroughFsm`, the production sink (registry first, then the FSM).
@@ -340,6 +356,33 @@ class AetherNodeOperatorDrainClearTest {
 
             assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member");
             assertThat(registry.isDrainRequested(DRAINED)).isTrue();
+        }
+
+        /// The facts the registry is bound with are the ones production reads: the node's boot token from the token registry and
+        /// the FSM's incarnation high-water mark for it; a node nobody knows is `0` on both.
+        @Test
+        void drainSubject_readsTheNodesBootTokenAndTheFsmIncarnation() {
+            var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
+
+            promoteCore(fsm, DRAINED);
+            fsm.onSwimHealthy(DRAINED, 5L);
+            process.set(7);
+            var subject = DrainAssembly.drainSubject(detectorHoldingTokenOf(), fsm);
+
+            assertThat(subject.process().applyAsLong(DRAINED)).isEqualTo(7L);
+            assertThat(subject.incarnation().applyAsLong(DRAINED)).isPositive().isEqualTo(fsm.memberIncarnations().get(DRAINED));
+            assertThat(subject.incarnation().applyAsLong(OTHER)).isZero();
+            assertThat(subject.process().applyAsLong(OTHER)).isZero();
+        }
+
+        @Test
+        void drainSubject_withoutATokenRegistry_knowsNoProcess() {
+            var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
+            var detector = mock(CoreSwimHealthDetector.class);
+
+            when(detector.bootTokens()).thenReturn(Option.none());
+
+            assertThat(DrainAssembly.drainSubject(detector, fsm).process().applyAsLong(DRAINED)).isZero();
         }
 
         @Test
