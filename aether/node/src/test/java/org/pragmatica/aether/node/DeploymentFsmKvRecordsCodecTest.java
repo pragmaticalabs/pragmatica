@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DirectiveReceiptKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
@@ -32,6 +33,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DirectiveReceiptValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
@@ -42,6 +44,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -92,6 +95,8 @@ class DeploymentFsmKvRecordsCodecTest {
         pins.put(VALUE + "DepartureState", 2157);
         pins.put(VALUE + "DepartureCause", 2158);
         pins.put(VALUE + "SliceObservedState", 2159);
+        // #3828: the directive receipt's value (wire-tag-ranges.txt 3120..3123 k3828; the key's 3120 is pinned in SystemTags beside it)
+        pins.put(VALUE + "DirectiveReceiptValue", 3121);
         // #2834: the committed open set of the cluster FSM's leader-local warnings (wire-tag-ranges.txt 2902..2903 fix2834)
         pins.put(KEY + "FsmWarningKey", 2902);
         pins.put(VALUE + "FsmWarningValue", 2903);
@@ -252,6 +257,23 @@ class DeploymentFsmKvRecordsCodecTest {
                                              new ProcessIncarnation(0L, 0L),
                                              Option.some(DepartureCause.STALE),
                                              1L));
+        }
+
+        /// #3828: the receipt carries the role of the directive it was issued with, and is a leader-authorized write.
+        @Test
+        void directiveReceipt_roundTripsTheRole() {
+            var key = DirectiveReceiptKey.directiveReceiptKey(NODE);
+
+            roundTrip(key, DirectiveReceiptValue.directiveReceiptValue("core"));
+            roundTrip(key, DirectiveReceiptValue.directiveReceiptValue("worker"));
+            roundTrip(key, DirectiveReceiptValue.directiveReceiptValue("r\u00f4le-\u2603"));
+            assertThat(DirectiveReceiptValue.directiveReceiptValue("core")).isInstanceOf(LeaderAuthorized.class);
+        }
+
+        @Test
+        void directiveReceipt_differentRolesAreDifferentValues() {
+            assertThat(DirectiveReceiptValue.directiveReceiptValue("core"))
+                .isNotEqualTo(DirectiveReceiptValue.directiveReceiptValue("worker"));
         }
 
         private static FsmWarningValue row(Map<String, String> members, boolean open, String message, long revision) {
