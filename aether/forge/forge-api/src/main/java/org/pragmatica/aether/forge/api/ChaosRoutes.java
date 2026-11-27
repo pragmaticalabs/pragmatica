@@ -26,6 +26,7 @@ import org.pragmatica.aether.forge.simulator.ChaosController;
 import org.pragmatica.aether.forge.simulator.ChaosController.ActiveChaosEvent;
 import org.pragmatica.aether.forge.simulator.ChaosController.ChaosStatus;
 import org.pragmatica.aether.forge.simulator.ChaosEvent;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.aether.forge.api.SimulatorRoutes.InventoryState;
@@ -275,7 +276,7 @@ public final class ChaosRoutes {
         return cluster.addNode()
                       .map(nodeId -> logAndBuildNodeAddedResponse(eventLogger, nodeId))
                       .onFailure(cause -> eventLogger.accept(new EventLogEntry("ADD_NODE_FAILED",
-                                                                               "Failed to add node: " + cause.message())));
+                                                                               "Failed to add node: " + HttpError.clientMessage(cause))));
     }
 
     private static NodeAddedResponse logAndBuildNodeAddedResponse(Consumer<EventLogEntry> eventLogger,

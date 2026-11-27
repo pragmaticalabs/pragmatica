@@ -384,7 +384,7 @@ public final class TopicRoutes implements RouteSource {
                                                             .map(registration -> support.registry()
                                                                                         .groupIdOf(registration))
                                                             .filter(Result::isFailure)
-                                                            .map(result -> result.fold(Cause::message, _ -> ""))
+                                                            .map(result -> result.fold(HttpError::clientMessage, _ -> ""))
                                                             .findFirst()
                                                             .orElse(""))
                                      .or("");
