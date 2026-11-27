@@ -680,8 +680,7 @@ public sealed interface ManagementApiResponses {
     /// createdAt, dissolvedAt) and its committed roster (governorId, members, communityTerm). A half with
     /// no committed record is `null`, never a fabricated default. `liveMembers` is the LEADER's
     /// instantaneous observation, not committed state — `null` when the serving node cannot observe it. `state` and `liveMembers` come from
-    /// different sources at different instants and may disagree in one response for a moment (#3812): each reaches its value eventually,
-    /// and no relation between the two is promised.
+    /// different sources at different instants and may disagree in one response for a moment (#3812); no relation between the two is promised.
     record CommunityInfo(String communityId,
                          Option<String> state,
                          Option<Integer> targetSize,

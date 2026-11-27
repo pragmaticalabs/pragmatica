@@ -49,11 +49,30 @@ class CommunityAwaitsTest {
     }
 
     @Test
-    void awaitLiveMembersEqual_waitsForTheFullCount_andAwaitStateForTheNamedState() {
-        var route = recoveringRoute();
+    void awaitState_returnsOnlyOnceTheTargetStateWasRead() {
+        var reads = new AtomicInteger();
+        Supplier<String> route = servingUntilTarget(reads, body("ACTIVE", FORMED), body("DEGRADED", FORMED - 1));
+
+        CommunityAwaits.awaitState(route, "DEGRADED", BOUND);
+        assertThat(reads.get()).isGreaterThan(LAG);
+    }
+
+    @Test
+    void awaitLiveMembersEqual_returnsOnlyOnceTheFullCountWasRead() {
+        var reads = new AtomicInteger();
+        Supplier<String> route = servingUntilTarget(reads, body("DEGRADED", FORMED - 1), body("ACTIVE", FORMED));
 
         CommunityAwaits.awaitLiveMembersEqual(route, FORMED, BOUND);
-        CommunityAwaits.awaitState(route, "ACTIVE", BOUND);
+        assertThat(reads.get()).isGreaterThan(LAG);
+    }
+
+    @Test
+    void awaitLiveMembersBelow_returnsOnlyOnceTheCountIsStrictlyBelow() {
+        var reads = new AtomicInteger();
+        Supplier<String> route = servingUntilTarget(reads, body("DEGRADED", FORMED), body("DEGRADED", FORMED - 1));
+
+        CommunityAwaits.awaitLiveMembersBelow(route, FORMED, BOUND);
+        assertThat(reads.get()).isGreaterThan(LAG);
     }
 
     private static void oldPairing(Supplier<String> route) {
@@ -62,12 +81,11 @@ class CommunityAwaitsTest {
         assertThat(route.get()).contains("\"liveMembers\":2");
     }
 
-    private static Supplier<String> recoveringRoute() {
-        var reads = new AtomicInteger();
-
+    /// Serves `beforeTarget` for the first `LAG` reads, then `target`; `reads` counts every read the await made.
+    private static Supplier<String> servingUntilTarget(AtomicInteger reads, String beforeTarget, String target) {
         return () -> reads.incrementAndGet() > LAG
-                     ? body("ACTIVE", FORMED)
-                     : body("DEGRADED", FORMED - 1);
+                     ? target
+                     : beforeTarget;
     }
 
     private static Supplier<String> laggingRoute() {

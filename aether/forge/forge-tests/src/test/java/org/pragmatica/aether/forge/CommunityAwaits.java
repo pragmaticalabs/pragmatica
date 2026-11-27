@@ -16,9 +16,10 @@ import static org.awaitility.Awaitility.await;
 /// #3812: waits on the fields of `GET /cluster/communities/{id}`, one field per wait.
 ///
 /// The route promises each field its own thing and no relation between them: `state` is the committed community row, `liveMembers` is
-/// the leader's instantaneous observation, and each request re-resolves the leader. The committed state follows the evaluation by a
-/// consensus round, so a response can carry (DEGRADED, 3) for a moment. What the product does guarantee is that each field reaches its
-/// value eventually; so each is awaited on its own, and no predicate pairs the two. An absent count never satisfies a wait.
+/// the leader's instantaneous observation, and each request re-resolves the leader. On the recovery edge the committed state follows the
+/// evaluation by a consensus round, so a response can carry (DEGRADED, full count) for a moment; the degradation edge (DEGRADED, 3 after
+/// the commit) is not explained by that lag and is open as #3827. So each field is awaited on its own, and no predicate pairs the two.
+/// Each await is strict: it returns only once the TARGET value has been read, and an absent count never satisfies a wait.
 sealed interface CommunityAwaits {
     static void awaitState(Supplier<String> route, String state, Duration atMost) {
         await().atMost(atMost).until(() -> field(route.get(), "state").equals(Option.some(state)));
