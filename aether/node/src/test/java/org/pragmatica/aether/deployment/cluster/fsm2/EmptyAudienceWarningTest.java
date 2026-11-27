@@ -360,12 +360,13 @@ class EmptyAudienceWarningTest {
     /// The window belongs to ONE write, the community's own ACTIVE write (#3852 F1). A DEGRADED write opens the window and commits late,
     /// coalesced with a roster return (its KvPut, its settlement and W3's return land before the next pass), so no pass sees agreement
     /// between; the ACTIVE write is then drafted. Red when: the ACTIVE write is held back only for the DEGRADED write's remaining window and
-    /// the event opens after ~6 ticks, far inside the ACTIVE write's own bound.
+    /// the event opens about 6 seconds into it (the submission-expiry bound is 35 s), far inside the ACTIVE write's own bound. The steps are in
+    /// seconds, not ticks: a tick is 30 s, which is longer than the bound itself.
     @Test
     void degradedWriteWindow_commitsLate_doesNotCutTheActiveWritesHoldBackShort() {
         var w = activeWorld();
         var expiry = w.h.settings.submissionExpiry();
-        var tick = w.h.settings.timing().tick();
+        var second = 1_000L;
 
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(hosts(w.h, ORDERS)).as("placed while ACTIVE").hasSize(1);
@@ -375,7 +376,7 @@ class EmptyAudienceWarningTest {
         var opened = w.h.model().activationDeadline.get("east-w-0");
 
         assertThat(opened.isPresent()).as("the DEGRADED write opened the window").isTrue();
-        w.h.advance(expiry - 3 * tick);
+        w.h.advance(expiry - 3 * second);
         assertThat(w.h.held).as("the DEGRADED write is held").isNotEmpty();
         var degraded = w.h.held.values().iterator().next();
 
@@ -387,9 +388,9 @@ class EmptyAudienceWarningTest {
         assertThat(w.h.model().communities.get("east-w-0").map(v -> v.state().name()).or("none"))
             .as("committed DEGRADED, the ACTIVE write drafted").isEqualTo("DEGRADED");
         assertThat(w.h.warns(OPEN)).as("the ACTIVE write is in flight").isEmpty();
-        w.h.advance(6 * tick);
+        w.h.advance(6 * second);
         w.h.deliver(new ClusterInput.Reconcile());
-        assertThat(w.h.warns(OPEN)).as("the ACTIVE write has been in flight ~6 ticks, far below its own bound").isEmpty();
+        assertThat(w.h.warns(OPEN)).as("the ACTIVE write has been in flight ~6 seconds, far below its own bound").isEmpty();
     }
 
     /// Control of the test above, same sequence plus one agreement pass after the DEGRADED commit (W3 still off the roster): the window is
@@ -398,13 +399,13 @@ class EmptyAudienceWarningTest {
     void control_degradedWriteCommits_withAnAgreementPass_theActiveWriteHasItsOwnWindow() {
         var w = activeWorld();
         var expiry = w.h.settings.submissionExpiry();
-        var tick = w.h.settings.timing().tick();
+        var second = 1_000L;
 
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.holdKinds = Set.of(ClusterModel.SubmitKind.COMMUNITY);
         w.announce("east-w-0", W1, W1, W2);
         w.h.deliver(new ClusterInput.Reconcile());
-        w.h.advance(expiry - 3 * tick);
+        w.h.advance(expiry - 3 * second);
         assertThat(w.h.held).as("the DEGRADED write is held").isNotEmpty();
         var degraded = w.h.held.values().iterator().next();
 
@@ -417,7 +418,7 @@ class EmptyAudienceWarningTest {
 
         w.announce("east-w-0", W1, W1, W2, W3);
         w.h.deliver(new ClusterInput.Reconcile());
-        w.h.advance(6 * tick);
+        w.h.advance(6 * second);
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.warns(OPEN)).as("no new opener while the fresh window is open").hasSize(opensBefore);
     }
@@ -438,7 +439,7 @@ class EmptyAudienceWarningTest {
 
     private static void lateSettlementOfTheDegradedWrite_leavesTheActiveWritesWindowOpen(boolean refused) {
         var w = activeWorld();
-        var tick = w.h.settings.timing().tick();
+        var second = 1_000L;
 
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.holdKinds = Set.of(ClusterModel.SubmitKind.COMMUNITY);
@@ -455,12 +456,12 @@ class EmptyAudienceWarningTest {
         assertThat(w.h.model().communities.get("east-w-0").map(v -> v.state().name()).or("none"))
             .as("committed DEGRADED, the ACTIVE write drafted").isEqualTo("DEGRADED");
         assertThat(w.h.held).as("the ACTIVE write is held in flight").isNotEmpty();
-        w.h.advance(2 * tick);
+        w.h.advance(2 * second);
         w.h.settleHeld(degraded,
                        refused
                        ? w.h.refused(degraded)
                        : new ClusterInput.Settlement.Failed("late"));
-        w.h.advance(2 * tick);
+        w.h.advance(2 * second);
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.warns(OPEN)).as("the older write settled late: the ACTIVE write is still inside its own bound").isEmpty();
     }
