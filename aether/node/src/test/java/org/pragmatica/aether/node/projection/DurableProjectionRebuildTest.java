@@ -549,6 +549,35 @@ class DurableProjectionRebuildTest {
         assertThat(committedEpoch()).isEqualTo(Option.some(RewindEpoch.NONE));
     }
 
+    /// #3835: ONE stale FOUND restarts the consumer ONCE, however many passes run before a later read answers. The read
+    /// sent by the restarting pass stays unanswered here, so every pass in between acts on the same stale epoch; the
+    /// restarted consumer has fetched its cursor by then (its epoch is the recreated one), so each of those passes sees it
+    /// "rewound behind" the stale epoch. Before #3835 each pass abandoned the restarted consumer again. In production the
+    /// same happens whenever the answer of the read sent after the restart has not been recorded when a pass starts.
+    @Test
+    void forwardingNode_staleFound_restartsTheConsumerOnce_whateverNumberOfPassesRunBeforeALaterReadAnswers() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        awaitCommittedCursor(6L, 20_000);
+
+        applyNow(removeCheckpoint());
+        localCursors.forget();
+        applyNow(checkpoint(2L, RewindEpoch.NONE));
+        forwardingEpochs.set(true);
+        passUntilEpochReadsSent(1);
+        epochReads.getFirst().succeed(List.of(Option.some(checkpointAtEpoch(5L))));
+        passUntilEpochReadsSent(2);
+        verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
+        awaitCommittedCursor(6L, 20_000);
+
+        manager.reconcile();
+        manager.reconcile();
+        manager.reconcile();
+
+        verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
+        assertThat(epochReads).as("the passes between sent no read: the second is still outstanding").hasSize(2);
+    }
+
     /// #3283 round 2: a consumer still fetching its cursor has no epoch yet and is left alone, however much newer the
     /// committed one is: it picks the committed epoch up when its fetch lands. The restarted consumer's fetch is held
     /// here, so passes that read a strictly newer epoch run while it is awaiting; none of them restarts it again.
