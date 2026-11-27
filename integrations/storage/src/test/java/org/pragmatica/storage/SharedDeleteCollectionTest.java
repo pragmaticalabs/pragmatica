@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -15,6 +16,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.StorageGarbageCollector.SharedDeleteLimits;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -278,7 +280,7 @@ class SharedDeleteCollectionTest {
     /// One periodic tick with no grace: what the 5-minute maintenance tick does to every orphan past its hour. The config
     /// clamps the grace to at least 1 ms, so the tick waits past it.
     private int tickPastGrace() {
-        java.util.concurrent.locks.LockSupport.parkNanos(5_000_000L);
+        Pause.pause(Duration.ofMillis(5));
 
         var noGrace = StorageGarbageCollector.storageGarbageCollector(storage, store, new GarbageCollectorConfig(0L, 500));
 
@@ -345,7 +347,7 @@ class SharedDeleteCollectionTest {
         @Override
         public Promise<Unit> delete(BlockId id) {
             deletes.incrementAndGet();
-            java.util.concurrent.locks.LockSupport.parkNanos(deleteDelayMs.get() * 1_000_000L);
+            Pause.pause(Duration.ofNanos(deleteDelayMs.get() * 1_000_000L));
 
             return failDeletes.get()
                    ? Causes.cause("DHT write quorum unreachable").promise()
