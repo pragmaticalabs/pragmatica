@@ -1643,7 +1643,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// \* I3, local mode: a leaderless electing state's tick commits the first node of the stored view and adoptLocalCommit
     /// \* admits it (in view, no sequence gate; the mutant "seqgatelocal" puts it behind the cluster gate local mode never
     /// \* passes); Led's local entry (leftTheViewOnLocalEntry) keeps it (the view is read in the same step); the
-    /// \* sequence-less commit records its sequence through recordAdoptedSequence.
+    /// \* sequence-less commit records its sequence through recordAdoptedSequence. The conjunct st = "electing" is enforced
+    /// \* twice (#3846): the tick runs only through the entry's episode handle, which refuses it unless that entry's identity
+    /// \* is still the Fsm's current entry, and the guard `ctx.current() != owner` re-checks the state; a stale tick is a no-op.
     /// L_Tick == /\ Local
     ///           /\ st = "electing"
     ///           /\ view # {}
