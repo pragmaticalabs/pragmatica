@@ -26,6 +26,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -37,8 +38,9 @@ import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// #3041 through the REAL assembly: the stream-life guard and the reclaim, on a booted single-node cluster whose leader
-/// is the node itself. The unit tests drive a coordinator over a store they built; what only this test pins is what
+/// #3041 through the REAL assembly: the stream-life guard and the reclaim, on a booted single-node cluster. A lone node never
+/// elects itself (the election's empty-topology guard skips the proposal, seen in the first run's log), so the test
+/// routes the `LeaderChange` a leader would raise through `AetherNode.route`, the same entry the election uses. The unit tests drive a coordinator over a store they built; what only this test pins is what
 /// `AetherNode` wires: `StreamLives.committedIn(kvStore)` into the coordinator (a join of a stream with no committed
 /// config is refused, a join of a committed one is not), the applier's guard on [ConsumerGroupKey] in the node's own
 /// KV store (a write of a dead life is refused), and the router entry that hands a committed removal of a
@@ -81,6 +83,8 @@ class AetherNodeConsumerGroupStreamLifeBootTest {
         node.start()
             .await(timeSpan(30).seconds())
             .onFailure(cause -> fail("start() must succeed: " + cause.message()));
+
+        node.route(LeaderNotification.leaderChange(Option.some(node.self()), true));
 
         awaitJoinRefusedAs(CoordinatorError.STREAM_NOT_COMMITTED);
         assertThat(recordsOfStream()).as("the refused join committed nothing").isEmpty();
