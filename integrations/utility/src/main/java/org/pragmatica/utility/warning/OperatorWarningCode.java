@@ -1276,7 +1276,11 @@ public enum OperatorWarningCode {
     PLACEMENT_AUDIENCE_EMPTY("placement-audience-empty", "deployment", WarningLevel.WARNING),
     /// The recovery of [#PLACEMENT_AUDIENCE_EMPTY], same subject: the audience is no longer empty, the placement no longer parses, or the
     /// target was removed. Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`).
-    PLACEMENT_AUDIENCE_AVAILABLE("placement-audience-available", "deployment", WarningLevel.INFO, PLACEMENT_AUDIENCE_EMPTY, true),
+    PLACEMENT_AUDIENCE_AVAILABLE("placement-audience-available",
+                                 "deployment",
+                                 WarningLevel.INFO,
+                                 PLACEMENT_AUDIENCE_EMPTY,
+                                 true),
     /// A live worker saw its own activation directive removed with no replacement, and halts (#3193): the core retired it as
     /// departed while the process still runs. Subject: the worker's node id. There is no recovery code: the halt ends the
     /// process, and the node returns only through a fresh `WorkerJoin`.
