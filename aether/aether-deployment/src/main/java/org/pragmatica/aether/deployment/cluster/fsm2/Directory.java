@@ -55,9 +55,14 @@ public sealed interface Directory {
     int MAX_ASSIGNMENT_ATTEMPTS = 3;
 
     // -- C13 -------------------------------------------------------------------------------------------------------
+    /// #3603: the observed directive ends the join that wrote it, here and not at the next reconcile pass. A pending join that outlived its own
+    /// directive until that pass was evaluated again behind a removal handled in between, and wrote the directive back. Design-out: no pending
+    /// join survives its directive's Put, so a later removal has none to supersede (`Joins.reevaluate` consumes it, as `DepartureFlow` does
+    /// when a record arrives).
     static ClusterModel onDirectivePut(ClusterModel m, Ctx ctx, NodeId node, ActivationDirectiveValue value) {
         Indexer.indexDirective(m, node, value);
         Absence.refresh(m, ctx, node);
+        Joins.reevaluate(m, ctx, node);
 
         return Reconcile.request(placed(m, ctx, node), ctx);
     }
