@@ -35,7 +35,7 @@ class PlannedDepartureMarkTest {
     private static final long AFTER_THE_OMISSION_GRACE = T0 + AlertManager.DRAIN_OMISSION_GRACE_MS;
 
     private static Predicate<NodeId> drainEnded(MembershipFsm fsm) {
-        return DrainAssembly.nodeReadyAgain(() -> Map.of()).or(DrainAssembly.nodeDead(fsm));
+        return DrainAssembly.nodeReadyAgain(() -> Map.of()).or(DrainAssembly.nodeUntracked(fsm));
     }
 
     @SuppressWarnings("unchecked")
@@ -57,12 +57,12 @@ class PlannedDepartureMarkTest {
         var hookRuns = new AtomicInteger();
 
         fsm.onSwimHealthy(NODE, 1L);
-        alerts.observeDrainSet(Set.of(NODE), SELF, T0, drainEnded(fsm));
+        alerts.observeDrainSet(Set.of(NODE), SELF, T0, drainEnded(fsm), DrainAssembly.nodeDead(fsm));
         assertThat(alerts.hasAnnouncedDeparture(NODE)).as("precondition: the drain record created the mark").isTrue();
         fsm.onConfirmedDeparture(departed -> {
             hookRuns.incrementAndGet();
             assertThat(fsm.memberStates()).as("instrument: the hook runs after the Dead state change").containsEntry(departed, "Dead");
-            alerts.observeDrainSet(Set.of(), SELF, AFTER_THE_OMISSION_GRACE, drainEnded(fsm));
+            alerts.observeDrainSet(Set.of(), SELF, AFTER_THE_OMISSION_GRACE, drainEnded(fsm), DrainAssembly.nodeDead(fsm));
             notifier.onConfirmedDeparture(departed);
         });
 
@@ -87,8 +87,8 @@ class PlannedDepartureMarkTest {
         fsm.setTrackingEligibility(id -> !id.equals(NODE));
         assertThat(fsm.memberStates()).as("precondition: the scope change dropped the node").doesNotContainKey(NODE);
 
-        alerts.observeDrainSet(Set.of(NODE), SELF, T0, drainEnded(fsm));
-        alerts.observeDrainSet(Set.of(), SELF, AFTER_THE_OMISSION_GRACE, drainEnded(fsm));
+        alerts.observeDrainSet(Set.of(NODE), SELF, T0, drainEnded(fsm), DrainAssembly.nodeDead(fsm));
+        alerts.observeDrainSet(Set.of(), SELF, AFTER_THE_OMISSION_GRACE, drainEnded(fsm), DrainAssembly.nodeDead(fsm));
 
         assertThat(alerts.trackedDrainNodes()).as("tracking entries after the omission grace").isZero();
     }

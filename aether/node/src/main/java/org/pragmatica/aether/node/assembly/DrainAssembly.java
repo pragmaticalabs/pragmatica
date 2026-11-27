@@ -286,15 +286,19 @@ public sealed interface DrainAssembly {
         // #2014: the leader is the only node that saw DrainRequested, so its FSM edge is the only place the
         // announced-departure mark was set. The leader's broadcast ping carries the global drain set to every
         // peer: mark each commanded node here so a follower's DEAD edge reads a planned departure as one.
-        var drainEnded = nodeReadyAgain(metricsCollector::reportedStates).or(nodeDead(membershipFsm));
+        var drainEnded = nodeReadyAgain(metricsCollector::reportedStates).or(nodeUntracked(membershipFsm));
+        var departed = nodeDead(membershipFsm);
 
-        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), drainEnded));
+        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), drainEnded, departed));
         // The leader never processes its own ping, so it re-derives its mark from its own registry each interval. Only
         // the LEADER: an operator drain never leaves the registry, so a node that was leader once and is not now would
         // keep re-marking a node that restarted under the new leader, silencing that node's next real crash (v-2043 N1).
         var ownDrainRecord = leaderOnlyDrainRecordTick(isLeaderSupplier,
                                                        drainCommandRegistry::drainTargets,
-                                                       drainSetObserver(alertManager, config.self(), drainEnded));
+                                                       drainSetObserver(alertManager,
+                                                                        config.self(),
+                                                                        drainEnded,
+                                                                        departed));
 
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(ownDrainRecord,
                                                                config.timeouts().cluster().pingInterval()));
@@ -364,12 +368,12 @@ public sealed interface DrainAssembly {
     /// - out of DEAD: a drain commanded on an already-DEAD node is ignored by the FSM, so it leaves no edge of its own and would be
     ///   inherited by the rejoin; an entry pinned before the re-admitted incarnation is cleared, one pinned at it is the new
     ///   life's ([DrainCommandRegistry#clearPriorLives]).
-    /// - into MEMBER: a node that comes back as a NEW PROCESS before it reached DEAD (restarted mid-drain) never inherits the drain:
-    ///   the entry is cleared when its pinned boot token differs from the one the id names now ([DrainCommandRegistry#clearSupersededProcess]).
-    ///   The SAME process back as MEMBER is the FSM's VIEW refuting or withdrawing the drain (a higher-incarnation `SwimHealthy` from a live
-    ///   SWIM refutation, or the #1054 undelivered-drain withdrawal) while the command is still in flight and the target is still to be
-    ///   told to drain; its entry stays, or the leader stops pinging the DRAIN and the node never leaves. An unknown token on either
-    ///   side (`0`) is no evidence of a new process: the entry then ends at its DEAD edge.
+    /// - into MEMBER: no edge clears. A restarted process never reaches MEMBER under the id it drained under: the real `BootTokens`
+    ///   keeps the first token of an id, refuses the restarted process and retires its id, so the drain of that life ends at its
+    ///   own DEAD edge (pinned by `OperatorDrainRealTokensTest`). The SAME process back as MEMBER is the FSM's VIEW refuting or
+    ///   withdrawing the drain (a higher-incarnation `SwimHealthy` from a live SWIM refutation, or the #1054 undelivered-drain
+    ///   withdrawal) while the command is still in flight and the target is still to be told to drain; its entry stays, or the
+    ///   leader stops pinging the DRAIN and the node never leaves.
     @Contract
     static void clearOperatorDrainOnDeath(DrainCommandRegistry drainCommandRegistry,
                                           MembershipTransitionRecord record) {
@@ -377,8 +381,6 @@ public sealed interface DrainAssembly {
             drainCommandRegistry.clearEndedLife(record.nodeId(), record.incarnation());
         } else if ("Dead".equals(record.fromState())) {
             drainCommandRegistry.clearPriorLives(record.nodeId(), record.incarnation());
-        } else if ("Member".equals(record.toState())) {
-            drainCommandRegistry.clearSupersededProcess(record.nodeId());
         }
     }
 
@@ -458,27 +460,39 @@ public sealed interface DrainAssembly {
     }
 
     /// #2014: the drain record (the leader's broadcast set, or the leader's own registry) marks each commanded node
-    /// (never self) as an announced departure on this observer. `nodeReadyAgain` is the only thing that ends a mark
-    /// early. Package-private so the composition is pinned without booting a node.
+    /// (never self, never a node `departed` holds) as an announced departure on this observer. `drainEnded` is the only thing
+    /// that ends a mark early. Package-private so the composition is pinned without booting a node.
     static Consumer<Set<NodeId>> drainSetObserver(AlertManager alertManager,
                                                   NodeId self,
-                                                  java.util.function.Predicate<NodeId> nodeReadyAgain) {
-        return drained -> alertManager.observeDrainSet(drained, self, System.currentTimeMillis(), nodeReadyAgain);
+                                                  Predicate<NodeId> drainEnded,
+                                                  Predicate<NodeId> departed) {
+        return drained -> alertManager.observeDrainSet(drained, self, System.currentTimeMillis(), drainEnded, departed);
     }
 
     /// The node reports itself READY in the readiness view this observer holds (the leader's pong fan, or a
-    /// follower's cache of it): alive, responsive and not draining. The only evidence that ends a planned-departure
-    /// mark short of the DEAD edge (#2014). Absence from the view is NOT evidence. Package-private for the pin.
+    /// follower's cache of it): alive, responsive and not draining. One of the two facts that end a planned-departure
+    /// mark short of its DEAD edge's consumer (#2014; the other is [#nodeUntracked]). Absence from the view is NOT evidence.
+    /// Package-private for the pin.
     static java.util.function.Predicate<NodeId> nodeReadyAgain(java.util.function.Supplier<Map<NodeId, NodeReportedState>> reportedStates) {
         return id -> reportedStates.get()
                                    .get(id) == NodeReportedState.READY;
     }
 
-    /// The membership FSM holds the node DEAD (#2315): positive evidence that its drain is over, for the node that never reports
-    /// READY again. Without it a mark re-created by a ping that named the node after this observer's own DEAD edge (the leader
-    /// clears its registry on ITS edge, later) would outlive the node. Package-private for the pin.
+    /// The membership FSM holds the node DEAD (#2315): its life is over on this observer. NOT drain-ended evidence (the FSM
+    /// changes the state before its DEAD hooks run, so a mark whose departure notification is pending reads DEAD): it only keeps
+    /// a ping that names the node after this observer's own DEAD edge (the leader clears its registry on ITS edge, later) from
+    /// creating a mark nothing would consume. Package-private for the pin.
     static Predicate<NodeId> nodeDead(MembershipFsm membershipFsm) {
         return id -> "Dead".equals(membershipFsm.memberStates().get(id));
+    }
+
+    /// The membership FSM does not track the node (#2315 L5): a directory scope change dropped it (`MembershipFsm.setTrackingEligibility`)
+    /// or it was never eligible. No DEAD edge, hence no departure notification, will ever come for it, so nothing is pending and its
+    /// mark, which nothing else consumes, ends with the drain record. A tracked node, DEAD included, is never untracked: the FSM keeps
+    /// a DEAD entry. Package-private for the pin.
+    static Predicate<NodeId> nodeUntracked(MembershipFsm membershipFsm) {
+        return id -> !membershipFsm.memberStates()
+                                   .containsKey(id);
     }
 
     /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement

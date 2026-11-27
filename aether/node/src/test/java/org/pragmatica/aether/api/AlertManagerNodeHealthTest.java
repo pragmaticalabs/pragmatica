@@ -130,14 +130,14 @@ class AlertManagerNodeHealthTest {
         var drainee = new NodeId("drainee");
         var seenAt = 1_000L;
 
-        manager.observeDrainSet(java.util.Set.of(drainee), OBSERVER, seenAt, _ -> true);
+        manager.observeDrainSet(java.util.Set.of(drainee), OBSERVER, seenAt, _ -> true, _ -> false);
         assertThat(manager.hasAnnouncedDeparture(drainee)).as("control: the drain record created the mark").isTrue();
 
         manager.forgetDepartureMarks(drainee);
         assertThat(manager.hasAnnouncedDeparture(drainee)).as("the handshake ended the mark").isFalse();
 
         manager.noteMembershipTransition(drainee, "DrainRequested");
-        manager.observeDrainSet(java.util.Set.of(), OBSERVER, seenAt + AlertManager.DRAIN_OMISSION_GRACE_MS, _ -> true);
+        manager.observeDrainSet(java.util.Set.of(), OBSERVER, seenAt + AlertManager.DRAIN_OMISSION_GRACE_MS, _ -> true, _ -> false);
 
         assertThat(manager.hasAnnouncedDeparture(drainee)).as("a local-FSM mark is never expired by absence").isTrue();
     }

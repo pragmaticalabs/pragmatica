@@ -71,6 +71,22 @@ class AetherNodeOperatorDrainClearTest {
         assertThat(registry.isDrainRequested(DRAINED)).as("the command is still in flight; the leader must keep delivering it").isTrue();
     }
 
+    /// #2315 F1: no edge into MEMBER clears an entry, whatever the node's boot token reads afterwards. The real `BootTokens` never
+    /// replaces a recorded token (OperatorDrainRealTokensTest), so a restarted process cannot reach MEMBER under the drained
+    /// id and its drain ends at DEAD; a clear on a token change would be code only a substituted token can reach.
+    @Test
+    void clearOperatorDrainOnDeath_keepsTheEntry_onAnEdgeIntoMember_evenWhenTheBootTokenChanged() {
+        var registry = DrainCommandRegistry.drainCommandRegistry();
+        var token = new AtomicLong(1L);
+
+        registry.bindSubject(DrainSubject.drainSubject(_ -> token.get(), _ -> 1L));
+        registry.requestDrain(DRAINED);
+        token.set(2L);
+        DrainAssembly.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Observed", "Member"));
+
+        assertThat(registry.isDrainRequested(DRAINED)).isTrue();
+    }
+
     @Test
     void clearOperatorDrainOnDeath_clearsOnlyTheDeadNode() {
         var registry = DrainCommandRegistry.drainCommandRegistry();
@@ -106,15 +122,17 @@ class AetherNodeOperatorDrainClearTest {
     /// #2315: the identity facts are bound where the node is assembled, and the topology manager's drains go through the holder of
     /// their ids. No unit test builds the assembly, so pin the three seams: an unbound registry pins every drain at process and
     /// incarnation `0`, which no edge takes as evidence (the fix would be inert), a manager drain set by node id could not be
-    /// cleared by id, and a drain observer without the DEAD predicate keeps tracking a node that never reports READY.
+    /// cleared by id, and a drain observer without the untracked fact keeps tracking a node the FSM dropped without a DEAD edge, while one
+    /// without the DEAD guard re-creates a mark for a node whose departure consumer already ran.
     @Test
     void assembly_bindsTheDrainSubject_wiresTheTopologyDrainIds_andEndsTrackingOnDead() {
         var code = NodeDepartureWiringTest.assemblyCode();
 
         assertThat(code).containsOnlyOnce("drainCommandRegistry.bindSubject(drainSubject(swimHealthDetector,membershipFsm));");
-        assertThat(code).containsOnlyOnce("nodeReadyAgain(metricsCollector::reportedStates).or(nodeDead(membershipFsm))");
-        assertThat(code).containsOnlyOnce("setDrainSetObserver(drainSetObserver(alertManager,config.self(),drainEnded))");
-        assertThat(code).containsOnlyOnce("drainCommandRegistry::drainTargets,drainSetObserver(alertManager,config.self(),drainEnded));");
+        assertThat(code).containsOnlyOnce("nodeReadyAgain(metricsCollector::reportedStates).or(nodeUntracked(membershipFsm))");
+        assertThat(code).containsOnlyOnce("departed=nodeDead(membershipFsm);");
+        assertThat(code).containsOnlyOnce("setDrainSetObserver(drainSetObserver(alertManager,config.self(),drainEnded,departed))");
+        assertThat(code).containsOnlyOnce("drainCommandRegistry::drainTargets,drainSetObserver(alertManager,config.self(),drainEnded,departed));");
         assertThat(code).containsOnlyOnce("topologyDrains.sink(fsmDrainRequested(membershipFsmRef)),");
         assertThat(code).containsOnlyOnce("topologyDrains::clear,");
     }
@@ -247,26 +265,8 @@ class AetherNodeOperatorDrainClearTest {
             assertThat(registry.isDrainRequested(DRAINED)).isFalse();
         }
 
-        /// Failure input (a): the drained node restarts and is back as MEMBER before it reached DEAD. The FSM reads the
-        /// restart as it reads a refutation (a strictly newer incarnation), so the identity that tells them apart is the
-        /// process: the entry was pinned to the first process's boot token, and the new incarnation never inherits it.
-        @Test
-        void drainedNode_restartedAsANewProcess_backAsMemberBeforeDead_hasNoEntryForTheNewIncarnation() {
-            var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
-
-            promoteCore(fsm, DRAINED);
-            drain(fsm, DRAINED);
-            assertThat(fsm.memberStates()).containsEntry(DRAINED, "Departing");
-
-            process.set(2);
-            fsm.onSwimHealthy(DRAINED, 2L);
-
-            assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member");
-            assertThat(registry.isDrainRequested(DRAINED)).isFalse();
-        }
-
-        /// Failure input (b), the same event order as (a) with the SAME process: the drain is refuted while in flight and the
-        /// entry stays. Only the boot token differs between this test and the one above.
+        /// Failure input (b): the drain is refuted while in flight (a strictly newer incarnation of the SAME process) and the entry
+        /// stays. A restarted process never reaches MEMBER under the drained id (real `BootTokens`, `OperatorDrainRealTokensTest`).
         @Test
         void drainedNode_refutedByTheSameProcess_keepsTheEntryWhileTheDrainIsInFlight() {
             var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
