@@ -43,8 +43,27 @@ class ReplacementSignalTest {
         assertThat(ReplacementSignal.settledOnLeader(List.of(node(false, NodeReplacementPhase.DONE)), VICTIM)).isFalse();
     }
 
+    @Test
+    void newestRecordOnAnyNode_isTheHighestEpoch_whicheverNodeHoldsIt() {
+        var stale = node(true, NodeReplacementPhase.JOINING, 1L);
+        var ahead = node(false, NodeReplacementPhase.DONE, 7L);
+        var middle = node(false, NodeReplacementPhase.RETIRING_OLD, 4L);
+
+        assertThat(ReplacementSignal.newestRecordOnAnyNode(List.of(stale, ahead, middle), VICTIM).map(NodeReplacementValue::epoch)).isEqualTo(Option.some(7L));
+        assertThat(ReplacementSignal.newestRecordOnAnyNode(List.of(ahead, stale, middle), VICTIM).map(NodeReplacementValue::epoch)).isEqualTo(Option.some(7L));
+    }
+
+    @Test
+    void newestRecordOnAnyNode_isNone_whenNoNodeHoldsARecord() {
+        assertThat(ReplacementSignal.newestRecordOnAnyNode(List.of(), VICTIM)).isEqualTo(Option.none());
+    }
+
     private static ManageableNode node(boolean leader, NodeReplacementPhase phase) {
-        var record = new NodeReplacementValue(FRESH, "core", phase, 0L);
+        return node(leader, phase, 0L);
+    }
+
+    private static ManageableNode node(boolean leader, NodeReplacementPhase phase, long epoch) {
+        var record = new NodeReplacementValue(FRESH, "core", phase, 0L, "", "", NodeReplacementValue.MODE_CTM, 0, "", epoch);
         var service = (NodeReplacementService) Proxy.newProxyInstance(NodeReplacementService.class.getClassLoader(),
                                                                       new Class<?>[]{NodeReplacementService.class},
                                                                       (proxy, method, args) -> Option.some(record));

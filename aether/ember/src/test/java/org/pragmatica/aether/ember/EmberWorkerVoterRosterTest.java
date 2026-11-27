@@ -12,8 +12,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner;
 import org.pragmatica.aether.node.AetherNode;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.io.TimeSpan;
@@ -87,7 +85,7 @@ class EmberWorkerVoterRosterTest {
         assertThat(genesis.epoch()).as("arming: the worker starts at the genesis epoch").isZero();
 
         leader.nodeReplacementService().begin(victim, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
-        awaitCondition("the replacement of " + victim.id() + " reaches DONE", DONE_BOUND_MS, () -> replacementDone(victim));
+        awaitCondition("the replacement of " + victim.id() + " reaches DONE on the leader", DONE_BOUND_MS, () -> replacementDone(victim));
         awaitCondition("the leader's electorate moved past genesis and excludes the replaced core",
                        120_000L,
                        () -> installed(awaitLeader()).epoch() > genesis.epoch() && !installed(awaitLeader()).contains(victim));
@@ -109,10 +107,7 @@ class EmberWorkerVoterRosterTest {
     }
 
     private boolean replacementDone(NodeId victim) {
-        return cluster.allNodes()
-                      .stream()
-                      .map(node -> node.nodeReplacementService().status(victim).or((NodeReplacementValue) null))
-                      .anyMatch(record -> record != null && record.phase() == NodeReplacementPhase.DONE);
+        return ReplacementSignal.settledOnLeader(cluster.allNodes(), victim);
     }
 
     private static VoterConfiguration installed(AetherNode node) {
