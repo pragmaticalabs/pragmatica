@@ -6,6 +6,8 @@ package org.pragmatica.aether.pg.parser;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.regex.Pattern;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Pins #3674: a DDL parse failure reports the line and column of the furthest failing token,
@@ -15,12 +17,21 @@ class ParseErrorPositionTest {
     private static final PostgresParser PARSER = PostgresParser.create();
     private static final String FIRST = "CREATE TABLE a (id INT);\n";
 
-    private static void assertFailsAt(String sql, String position) {
+    private static final Pattern POSITION = Pattern.compile(" at (\\d+:\\d+)(?: \\(\\+\\d+ more\\))?$");
+
+    private static String positionOf(String sql) {
         var message = PARSER.parseCst(sql)
                             .fold(cause -> cause.message(), _ -> "parsed");
+        var matcher = POSITION.matcher(message);
 
-        assertThat(message).as("parse of [%s]", sql)
-                           .contains(" at " + position);
+        return matcher.find()
+               ? matcher.group(1)
+               : "no position in [" + message + "]";
+    }
+
+    private static void assertFailsAt(String sql, String position) {
+        assertThat(positionOf(sql)).as("parse of [%s]", sql)
+                                   .isEqualTo(position);
     }
 
     @Test
