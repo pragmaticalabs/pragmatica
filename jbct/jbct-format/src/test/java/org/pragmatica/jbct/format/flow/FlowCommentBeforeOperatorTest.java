@@ -147,6 +147,10 @@ class FlowCommentBeforeOperatorTest {
         assertMarkedGapKeepsEveryComment("switch (k) {\n            case 1 -> {\n                switch (j) @@{\n                    case 1 -> a();\n                    default -> b();\n                }\n            }\n            default -> b();\n        }\n        return 0;");
     }
 
+    @Test void switchInAColonLabelRule_commentBeforeTheBlockBrace_isPrintedBeforeIt() {
+        assertMarkedGapKeepsEveryComment("switch (k) {\n            case 1:\n                switch (j) @@{\n                    case 1 -> a();\n                    default -> b();\n                }\n                break;\n            default: b();\n        }\n        return 0;");
+    }
+
     @Test void wrappedStringPlus_commentBeforeAPlus_isPrintedBeforeIt() {
         assertEveryGapKeepsEveryComment(STRING_PLUS, "+");
     }
