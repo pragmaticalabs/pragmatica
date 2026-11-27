@@ -320,6 +320,21 @@ class RoutesTest {
         assertThat(h.submits(SubmitKind.ROUTES)).as("no ROUTES write once both are declared").isEmpty();
     }
 
+    /// Red when: DECLARE takes the standing of a committed row from its attemptId alone (or a gate or removal does): a row another blueprint owns,
+    /// at the very attemptId the claimant is committed at, then reads as the claimant's own and is never taken over. APP is the only declarer, so it
+    /// is the claimant; the foreign row is `Published` at its attempt, so only the owner check can tell it is not APP's.
+    @Test
+    void declare_aForeignOwnersRowAtTheClaimantsCurrentAttemptIsTakenOver() {
+        var h = active();
+
+        publish(h, blueprintOf("attempt-1", false, LIST));
+        h.seed(key(LIST), row("org.example:other:1.0.0", "attempt-1", RouteState.Published.published()));
+        h.drain();
+        ticks(h, 3);
+        assertThat(ownerOf(h, LIST)).as("the claimant declares the row over the foreign owner's").isEqualTo(Option.some(APP));
+        assertThat(Routes.rowsCommitted(h.model(), ORDERS)).as("and the gate counts it as the claimant's row").isTrue();
+    }
+
     /// Red when: removing the claimant of a shared row removes the row (or leaves it with a blueprint that is gone) while another committed
     /// version still declares it. The claimant moves to the remaining declarer within the ticks that follow, and once the last declarer is
     /// gone the row goes with it: no row is ever left without a claimant while a declarer exists, and none outlives its last declarer.
