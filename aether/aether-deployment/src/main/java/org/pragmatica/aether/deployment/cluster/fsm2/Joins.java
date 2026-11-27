@@ -355,9 +355,9 @@ public sealed interface Joins {
     }
 
     private static boolean isLive(ClusterModel m, NodeId node) {
-        return !m.retiredWorkers.contains(node) && !m.records.get(node)
-                                                            .filter(Departures::isDeparted)
-                                                            .isPresent();
+        return ! m.retiredWorkers.contains(node) && !m.records.get(node)
+                                                              .filter(Departures::isDeparted)
+                                                              .isPresent();
     }
 
     private static ClusterModel remember(ClusterModel m, NodeId node) {
