@@ -103,6 +103,79 @@ It says which variables a step constrains, never which value. `DirectiveReceipt`
 checks the model as it stands) runs the script on the real model and on 27 mutations of the module, the table and the
 cfg files that must each go red.
 
+## DirectiveReceipt: what the split PASS rows cover (non-interference)
+
+The model with every action on does not finish at its constants (two leaders, `E_max` 1, `H_max` 5), so its PASS rows are
+split: each `receipt_*` and `e7_*` row leaves one release authority on. This section says what that split can and cannot
+hide. It is an argument, and where it says "checked" it names the row or the script that checks it.
+
+**What each action reads and writes** (the writer table; `writers-check.py` fails the module on any other write):
+
+| Action | Writes | Reads |
+|---|---|---|
+| `depart`, `infer` | `inflight`: its own slot (`depart@L`, `infer@L`) | the record of `history[mirror[L]]` |
+| `admit` | `inflight`: slot `admit@L` | nothing (it expects any value) |
+| `retire` | `inflight`: slots `retire@L`, `retireP@L` | `history[mirror[L]]`, any `history[i]`, `role` |
+| `terminate`, `externalConfirm`, `forcedClear` | `retirements` | any `history[i]`; `live` |
+| `attempt` | `inflight`: slot `attempt@r`; `retirements[r]` | any `history[i]`, `retirements[r]` |
+| `foreign put`, `operator removal` | `inflight`: its own slot | the committed directive (`operator removal` only) |
+| `join` (both arms) | `inflight`: slot `join@L` | `history[mirror[L]]`, `pending[L]`, `role` |
+| `commit` | `history` (so `record`, `directive`, `receipt`), `inflight`, `sticky`, `directed`, `ranSince` | the committed state, the transaction |
+
+**The shared variables.** Any two writers share `inflight` and `history`, and nothing else: no release authority and no
+foreign put writes `mirror`, `pending`, `view`, `term`, `token` or a process flag. Through `inflight` nothing passes: a
+writer replaces only its own slot, and no enabling reads another writer's slot. Everything passes through `history`, which
+only `commit` writes. So two writers meet at commits and nowhere else: one's committed transaction changes what the other
+reads later, or what the other's in-flight transaction finds when it commits.
+
+**An interleaving does reach states that neither part reaches alone.** This holds for every pair, and no argument here
+denies it. Together two writers produce histories that neither produces (a DEPARTED record that `retire` then removes; an
+ADMITTED record over an inferred one; a foreign directive beside a DEPARTED record) and bags that hold transactions of
+both. What can be argued is narrower: which *properties* such a state cannot break.
+
+**Safety, RetiredWhole, FactWithholds: closed, for every pair and for the foreign put.** Each is a property of one commit:
+- only `commit` writes `history` and `sticky` (the script), so every other step keeps the three properties as they are;
+- row `step` takes the commit step from **every** committed state that meets `StepInv` (sticky `issued` or `removed` implies
+  a committed receipt) and **every** single transaction of `TxSpace`, for both roles, and passes: `StepInv` holds again
+  after the commit, and the commit breaks none of the three. `StepInv` holds in `Init`. That is an induction over commits,
+  and it does not ask who submitted a transaction or in which order;
+- `TxSpace` is the image of the model's own transaction constructors over the whole record and entry domains, and `TypeOK`
+  holds `inflight` inside it and every history entry inside `EntryDom`, in every row and after the step of `step`.
+
+So no interleaving of any writers breaks these three, at any `H_max` and any leader count. The split of the `receipt_*`
+rows hides nothing for them. `step_unguarded` and `step_nowitness` show that the step config can go red. Its limits are
+its own constants (`E_max` 1, `MaxToken` 2) and FACT `receipt`. `receipt_composed` (every writer of the three keys
+together, one leader, `H_max` 4) stands beside it as a run, not as the argument.
+
+**The five stability properties: closed.** Each reads one variable that one or two rows write (`mirror`: S1; `pending`,
+`view`: S4, S5; the length and the receipts of `history`: W23). No pair of release authorities enters.
+
+**StickyWhileRunning: not a claim of the fixed design.** It is the red of `residual_forced`; `receipt_process` passes it
+with no release authority on, and no row claims it with one.
+
+**Live1, Live2: NOT closed. No argument is offered, per pair or for the foreign put.** A sentence quantifies over what the
+inputs leave at the point where they stop: the committed state, the bag, the retirements in progress. A split run reaches
+only what one authority can leave. Two authorities together leave a bag with transactions of both, which commit in either
+order after that point, and a history that neither produces. The memo's proof goes by the committed record alone and lets
+the commits empty the bag, which is why a mixed bag is not expected to matter; that proof is by hand, and no run checks it
+for a mixed bag beyond these:
+
+| Interleaving | Composed liveness run | The run that would settle the rest |
+|---|---|---|
+| any two release authorities (ten pairs) | `e7_composed_worker`, `e7_composed_core`: all five together, **one** leader, `H_max` 4, `MaxRet` 1, no foreign put, no leader change, no restart | an `e7` row with both authorities on at two leaders and `H_max` 5. Not run: `depart` with `retire` is 7.7M states without the foreign put, hours of a liveness run; the other pairs were not sized |
+| foreign put with `admit` | `e7_admit_foreign`, two leaders | none needed |
+| foreign put with `retire` (and `depart`) | `e7_retire`, **one** leader | `e7_retire` at two leaders: not run (19M states and more) |
+| foreign put with `depart`, `infer`, the termination retirement | none | `e7_depart`, `e7_infer`, `e7_terminate` with the foreign put on, two leaders: 552,946, 723,790 and 1,571,760 states (the counts of the matching `receipt_*` rows), about 15 minutes to an hour each. Not run |
+| a release authority with a leader change or a process restart | none (`e7_core` has both with no release authority) | an `e7` row with the authority and both steps on. Not sized |
+
+Until those runs exist, the liveness claim is: each sentence holds with one release authority at a time at two leaders,
+and with all five together at one leader and `H_max` 4. An interleaving of two authorities at two leaders that leaves a
+state from which a sentence fails is not excluded by anything here.
+
+**The full config, as a bound.** Every action on, two leaders, `H_max` 5, was run once to a deadline: it is unfinished,
+and the states it did explore hold no violation of the safety properties. It is a bound and never a pass; the numbers
+are in the evidence of the change that added the model (#3828).
+
 ## Expected verdicts: `models.tsv`
 
 One row per config: module, source root, variant, `expect` (`pass` or `fail`), `property`, the constant overrides of the
