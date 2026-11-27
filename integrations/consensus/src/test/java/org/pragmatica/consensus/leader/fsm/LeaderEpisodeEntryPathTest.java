@@ -17,6 +17,7 @@ import java.net.URI;
 import java.util.List;
 import java.util.stream.Stream;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -95,6 +96,7 @@ class LeaderEpisodeEntryPathTest {
     private static final String FORGED_TOKEN_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(org.pragmatica.consensus.leader.LeaderInbound.leaderInbound(), task); }";
     private static final String NEW_TOKEN_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(new org.pragmatica.consensus.leader.LeaderInbound(), task); }";
     private static final String FSM_DISPATCH_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, org.pragmatica.consensus.fsm.ClusterFsmEvent event) { return () -> ctx.fsm().dispatch(event); }";
+    private static final String FSM_ACCESSOR_SITE = "static Runnable arm(LeaderElectionContext ctx) { return () -> ctx.fsm(); }";
     private static final String FORGED_IDENTITY_SITE = "static final class Forged implements LeaderElectionContext.EpisodeIdentity { public boolean isLive() { return true; } }";
 
     /// The ruling (2026-11-27): an arm site that reaches the serial executor without an episode identity of the entry it
@@ -121,7 +123,89 @@ class LeaderEpisodeEntryPathTest {
                          Arguments.of(FORGED_TOKEN_ARM_SITE, "leaderInbound"),
                          Arguments.of(NEW_TOKEN_ARM_SITE, "LeaderInbound"),
                          Arguments.of(FORGED_IDENTITY_SITE, "EpisodeIdentity"),
-                         Arguments.of(FSM_DISPATCH_ARM_SITE, "fsm"));
+                         Arguments.of(FSM_DISPATCH_ARM_SITE, "fsm"),
+                         Arguments.of(FSM_ACCESSOR_SITE, "fsm"));
+    }
+
+    // ---- #3846 round 2 (v3855c C1-C4): the rows the round-1 enforcer left compiling ----
+    private static final String EVENT = "org.pragmatica.consensus.fsm.ClusterFsmEvent";
+    private static final String CONTROL_FENCED = "static Runnable arm(LeaderElectionContext ctx, LeaderElectionState owner, Runnable task) { return ctx.serializedFor(owner, task); }";
+    private static final String CONTROL_CURRENT = "static LeaderElectionState arm(LeaderElectionContext ctx) { return ctx.current(); }";
+
+    /// One round-2 row: the `code` that must not compile once the fence stands, and the `control` next to it that must
+    /// compile at every head. `refusedMember` is what the refusal must name when the row is enabled.
+    private record Round2Row(String name, String code, String control, String refusedMember) {}
+
+    private static final List<Round2Row> ROUND_2_ROWS = List.of(
+        new Round2Row("followUp from an off-frame lambda",
+                      "static Runnable arm(LeaderElectionContext ctx, " + EVENT + " event) { return () -> ctx.followUp(event); }",
+                      "static void onFrame(LeaderElectionContext ctx, " + EVENT + " event) { ctx.followUp(event); }",
+                      "followUp"),
+        new Round2Row("serially(null, task)",
+                      "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(null, task); }",
+                      CONTROL_FENCED,
+                      "serially"),
+        new Round2Row("serializedFor(ctx.current(), task)",
+                      "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serializedFor(ctx.current(), task).run(); }",
+                      CONTROL_FENCED,
+                      "serializedFor"),
+        new Round2Row("serializedFor((EpisodeIdentity) null, task)",
+                      "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return ctx.serializedFor((LeaderElectionContext.EpisodeIdentity) null, task); }",
+                      CONTROL_FENCED,
+                      "serializedFor"));
+
+    /// ENABLED TRIPWIRE: asserts the CURRENT behaviour of 2867082201. Every round-2 row compiles (that is the red:
+    /// v3855c C1-C4), and every control compiles (the instrument can compile each shape). When the fence lands a row stops
+    /// compiling and this goes red: enable `round2Row_doesNotCompile` (remove its `@Disabled`) and delete this tripwire.
+    /// (`ctx.fsm()` is the fifth row of the ruling; it already does not compile at this head, so it is an enabled row of
+    /// `armSite_throughAnUnfencedPath_doesNotCompile`: `FSM_ACCESSOR_SITE`.)
+    @Test
+    void round2Rows_compileAtThisHead_untilTheFenceIsBuilt() throws Exception {
+        for (var row : ROUND_2_ROWS) {
+            assertThat(compile(HEAD + "  " + row.control() + "\n}\n"))
+                .as("instrument: the control of row '" + row.name() + "' must compile at every head")
+                .isEmpty();
+            assertThat(compile(HEAD + "  " + row.code() + "\n}\n"))
+                .as("round-2 row '" + row.name() + "' no longer compiles: the fence landed. Enable "
+                    + "round2Row_doesNotCompile (remove @Disabled) and delete this tripwire")
+                .isEmpty();
+        }
+    }
+
+    /// Control of the `ctx.fsm()` row: reading the current state compiles, so the refusal of `ctx.fsm()` is about that member.
+    @Test
+    void controlProbe_readingTheCurrentState_compiles() throws Exception {
+        assertThat(compile(HEAD + "  " + CONTROL_CURRENT + "\n}\n"))
+            .as("instrument: the probe class path compiles a read of the current state").isEmpty();
+    }
+
+    /// The literal `ctx.serializedFor(null, task)` of the ruling does not compile today, but only because `null` is
+    /// ambiguous between the `LeaderElectionState` and `EpisodeIdentity` overloads: an accident of overload count, not a
+    /// fence (the cast row above is the real C4 input). ENABLED so a change of the overload set shows up here.
+    @Test
+    void literalNullIdentity_isRefusedAtThisHead_onlyByOverloadAmbiguity() throws Exception {
+        var errors = compile(HEAD + "  static Runnable arm(LeaderElectionContext ctx, Runnable task) { return ctx.serializedFor(null, task); }\n}\n");
+
+        assertThat(errors).as("the literal null row compiled: the overload set changed, re-derive the C4 row").isNotEmpty();
+        assertThat(errors).as("refused by something other than ambiguity: the accident is gone, name the real check")
+                  .anyMatch(message -> message.contains("ambiguous"));
+    }
+
+    @Disabled("#3846 round 2: enable when the episode-handle fence exists (lane B); lifted it is red at 2867082201")
+    @ParameterizedTest
+    @MethodSource("round2Rows")
+    void round2Row_doesNotCompile(String name, String code, String refusedMember) throws Exception {
+        var errors = compile(HEAD + "  " + code + "\n}\n");
+
+        assertThat(errors).as("round-2 row '" + name + "' compiled: an off-frame path to the executor, the FSM or followUp exists")
+                  .isNotEmpty();
+        assertThat(errors).as("the refusal names the member it refuses (" + refusedMember + "), not another defect of the probe")
+                  .anyMatch(message -> message.contains(refusedMember));
+    }
+
+    static Stream<Arguments> round2Rows() {
+        return ROUND_2_ROWS.stream()
+                           .map(row -> Arguments.of(row.name(), row.code(), row.refusedMember()));
     }
 
     /// Attribution only (`JavacTask#analyze`): the errors are the compiler's, and no class file is written.
