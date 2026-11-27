@@ -384,3 +384,23 @@ b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:19:03Z	full	LeaderA
 461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:03:48Z	small	DHTDepartureDrain	nodeliverer	fail	fail	ReportTruthful	5361	2026.11.06.222357	OK	N=3 RF=2
 461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:10:40Z	small	DHTDepartureDrain	flapcode	pass	pass		18396824	2026.11.06.222357	OK	N=4 RF=2 MaxDrain=1
 461ba0013916f353432a3b252a40f945812e8e03	clean	2026-11-24T11:10:43Z	small	DHTDepartureDrain	flap	fail	fail	ReceiverAgrees	46258	2026.11.06.222357	OK	N=4 RF=2 MaxDrain=1
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:06:50Z	small	DirectiveReceipt	base	fail	fail	Sticks	44	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:06:51Z	small	DirectiveReceipt	local_f3	fail	fail	Sticks	106	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:06:53Z	small	DirectiveReceipt	local_ctl	pass	pass		1080	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:06:54Z	small	DirectiveReceipt	record_f1	fail	fail	Sticks	1181	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:06:55Z	small	DirectiveReceipt	record_ctl	pass	pass		74	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:06:56Z	small	DirectiveReceipt	unguarded_late	fail	fail	Sticks	145	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:06:58Z	small	DirectiveReceipt	unguarded_ctl	pass	pass		4424	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:06:59Z	small	DirectiveReceipt	arm2_f2	fail	fail	NoReissue	1336	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:07:01Z	small	DirectiveReceipt	arm2_n1	fail	fail	NoIssueToHalted	547	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:07:02Z	small	DirectiveReceipt	mut_nowitness	fail	fail	RetiredWhole	1729	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:07:42Z	small	DirectiveReceipt	receipt	pass	pass		4216173	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:07:55Z	small	DirectiveReceipt	receipt_core	pass	pass		1143171	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:08:49Z	small	DirectiveReceipt	receipt_nogate	pass	pass		5057016	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:08:56Z	small	DirectiveReceipt	receipt_halted	pass	pass		504346	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:09:54Z	small	DirectiveReceipt	receipt_live	pass	pass		1141216	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:09:56Z	small	DirectiveReceipt	mut_applier	fail	fail	Sticks	3108	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:09:59Z	small	DirectiveReceipt	mut_nor3_live	fail	fail	JoinAnswered	13712	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:10:01Z	small	DirectiveReceipt	mut_drop_live	fail	fail	JoinAnswered	2416	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:10:04Z	small	DirectiveReceipt	residual_foreign	fail	fail	NoIssueToHalted	118	2026.11.06.222357	OK	
+afea9f89962db988ec917509fa0dfd5bc3ff6522	clean	2026-11-27T10:10:09Z	small	DirectiveReceipt	residual_overtake_live	fail	fail	JoinAnswered	71454	2026.11.06.222357	OK	
