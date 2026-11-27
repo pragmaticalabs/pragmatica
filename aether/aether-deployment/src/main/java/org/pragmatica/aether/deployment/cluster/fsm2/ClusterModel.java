@@ -197,12 +197,10 @@ public final class ClusterModel {
     /// R-CF.17 parity (LEGACY `CommunityAdmissionLedger`): the refused WORKER assignment commits of each worker, in a row.
     PMap<NodeId, Integer> assignmentRefusals = PMap.empty(scans);
     /// #3828: the nodes whose COMMITTED directive was removed, with the process incarnation the removal was observed under. No join writes the
-    /// directive back for that incarnation (`Joins.assign`); a join that is positive evidence of another process ends the mark. Leader-local:
+    /// directive back for that incarnation (`Joins.assign`); a join that is positive evidence of another process ends the mark. A mark exists
+    /// only for a node whose departure record stands: the removal of a record ends it, whichever of the two removals came first. Leader-local:
     /// a new leader's `Rebuild` starts empty, where a node without a directive is indistinguishable from one never directed.
     PMap<NodeId, ProcessIncarnation> removedDirectives = PMap.empty(scans);
-    /// #3828: the departed workers whose record's removal was notified while their directive stood: the directive's removal that follows in
-    /// the same C17b transaction is the model's own retirement, not an operator's, and leaves no mark (`Joins.markRemoved`).
-    PSet<NodeId> retiringWorkers = PSet.empty(scans);
     /// R-CF.17 parity: workers reported `community-assignment-unplaced` and not yet placed.
     PSet<NodeId> unplacedWarned = PSet.empty(scans);
     /// Datasources whose FAILED record was committed while suspended: announced once on the resume (`Schemas.announceWithheld`).
@@ -335,7 +333,6 @@ public final class ClusterModel {
         c.exclusionEndReasons = exclusionEndReasons.rebound(meter);
         c.assignmentRefusals = assignmentRefusals.rebound(meter);
         c.removedDirectives = removedDirectives.rebound(meter);
-        c.retiringWorkers = retiringWorkers.rebound(meter);
         c.unplacedWarned = unplacedWarned.rebound(meter);
         c.withheldBlocked = withheldBlocked.rebound(meter);
         c.warningRows = warningRows.rebound(meter);
