@@ -11,6 +11,7 @@ import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeclaredRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
@@ -276,5 +277,62 @@ class RoutesPublishFailTest {
         assertThat(committed(h, LIST)).isEqualTo(Option.some(published(ATTEMPT_1)));
         assertThat(committed(h, GET_ONE)).isEqualTo(Option.some(declared(ATTEMPT_1)));
         assertThat(judgment(h).map(ArtifactJudgmentValue::permanentFailure)).as("no Fatal judgment is recorded").isEqualTo(Option.some(false));
+    }
+
+    // -- ruling A (#3836): a row speaks only for its owner's current attemptId ------------------------------------------
+    /// Red when: a publication derived while the owner is at an earlier attempt is applied to a row the later attempt has not re-declared. The
+    /// flip is refused (owner witness) and the rows end `Published` at the owner's CURRENT attempt, never at the earlier one.
+    @Test
+    void publish_aFlipDerivedForAnEarlierAttemptIsRefusedAndTheRowsPublishAtTheCurrentAttempt() {
+        var h = declaredApp();
+
+        h.holdKinds = Set.of(SubmitKind.ROUTES);
+        h.clearLog();
+        publishRoutes(h, CORE_1);
+        var flips = h.submits(SubmitKind.ROUTES).stream().filter(RoutesPublishFailTest::carriesRows).toList();
+
+        assertThat(flips).as("the Put drafts the flip at attempt-1").hasSize(1);
+        h.seed(new AppBlueprintKey(APP_ID), blueprintOf(ATTEMPT_2, LIST, GET_ONE));
+        h.drain();
+        var settlement = h.applyHeld(flips.getFirst().correlationId());
+
+        assertThat(settlement).as("the owner moved to attempt-2 under the flip").isInstanceOf(Settlement.Refused.class);
+        h.holdKinds = Set.of();
+        h.advance(h.settings.submissionExpiry() + 2 * h.settings.timing().tick());
+        assertThat(committed(h, LIST)).as("published at the owner's current attempt").isEqualTo(Option.some(published(ATTEMPT_2)));
+        assertThat(committed(h, GET_ONE)).isEqualTo(Option.some(published(ATTEMPT_2)));
+    }
+
+    /// Red when: `fail` restates a row at the attemptId the row holds: the failure of attempt-2's artifact is written over a row that still
+    /// carries attempt-1 (its re-declaration is in flight), so the row reads as a Failed row of an earlier attempt.
+    @Test
+    void fail_writesTheOwnersCurrentAttemptId() {
+        var h = declaredApp();
+
+        h.holdKinds = Set.of(SubmitKind.ROUTES);
+        h.seed(new AppBlueprintKey(APP_ID), blueprintOf(ATTEMPT_2, LIST, GET_ONE));
+        h.drain();
+        assertThat(committed(h, LIST)).as("control: the row still holds attempt-1").isEqualTo(Option.some(declared(ATTEMPT_1)));
+        h.holdKinds = Set.of();
+        failFatally(h);
+        assertThat(committed(h, LIST)).isEqualTo(Option.some(failed(ATTEMPT_2, "boom")));
+        assertThat(committed(h, GET_ONE)).isEqualTo(Option.some(failed(ATTEMPT_2, "boom")));
+    }
+
+    /// Red when (G2): a row kept from an earlier attempt is failed under the new attempt and the next reconcile re-declares it: the failed
+    /// artifact's row must stay `Failed`, at the new attempt, until the attempt after.
+    @Test
+    void fail_aRowFailedUnderTheNewAttemptStaysFailedThroughAReconcile() {
+        var h = declaredApp();
+
+        publishRoutes(h, CORE_1);
+        publish(h, blueprintOf(ATTEMPT_2, LIST, GET_ONE), Option.some(blueprintOf(ATTEMPT_1, LIST, GET_ONE)));
+        failFatally(h);
+        assertThat(committed(h, LIST)).as("control: the failure failed the row at attempt-2").isEqualTo(Option.some(failed(ATTEMPT_2, "boom")));
+        h.deliver(new ClusterInput.Reconcile());
+        h.drain();
+        h.advance(h.settings.submissionExpiry() + 2 * h.settings.timing().tick());
+        assertThat(committed(h, LIST)).as("the failed artifact's row stays Failed at attempt-2").isEqualTo(Option.some(failed(ATTEMPT_2, "boom")));
+        assertThat(committed(h, GET_ONE)).isEqualTo(Option.some(failed(ATTEMPT_2, "boom")));
     }
 }

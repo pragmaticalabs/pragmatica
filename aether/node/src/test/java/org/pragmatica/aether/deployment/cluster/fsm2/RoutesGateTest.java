@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRoute;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
@@ -180,6 +181,32 @@ class RoutesGateTest {
         h.drain();
         assertThat(committed(h, LIST)).as("control: the earlier attempt's row is committed").isEqualTo(Option.some(failed("attempt-0", "boom")));
         assertThat(h.held.values().stream().filter(submit -> submit.kind() == SubmitKind.ROUTES)).as("control: the DECLARE is in flight").hasSize(1);
+        assertThat(h.submits(SubmitKind.GOALS)).as("no goal against the stale row").isEmpty();
+    }
+
+    /// Red when: a `Declared` row of an earlier attempt counts as committed (ruling A of #3836): the owner is at attempt-1, its DECLARE is in
+    /// flight, and the row that is committed still speaks for attempt-0. No goal is drafted against it.
+    @Test
+    void gate_aDeclaredRowOfAnEarlierAttemptIsNotCommitted() {
+        assertStaleRowKeepsTheGateClosed(declared("attempt-0"));
+    }
+
+    /// Red when: a `Published` row of an earlier attempt counts as committed: same setting as the `Declared` case.
+    @Test
+    void gate_aPublishedRowOfAnEarlierAttemptIsNotCommitted() {
+        assertStaleRowKeepsTheGateClosed(published("attempt-0"));
+    }
+
+    private static void assertStaleRowKeepsTheGateClosed(DeclaredRouteValue stale) {
+        var h = leaderWithOneCore();
+
+        h.holdKinds = Set.of(SubmitKind.ROUTES);
+        publish(h, blueprintOf("attempt-1", LIST));
+        h.seed(key(LIST), stale);
+        h.drain();
+        assertThat(committed(h, LIST)).as("control: the earlier attempt's row is committed").isEqualTo(Option.some(stale));
+        assertThat(h.held.values().stream().filter(submit -> submit.kind() == SubmitKind.ROUTES)).as("control: the DECLARE is in flight").hasSize(1);
+        assertThat(Routes.rowsCommitted(h.model(), ORDERS)).as("the gate is closed").isFalse();
         assertThat(h.submits(SubmitKind.GOALS)).as("no goal against the stale row").isEmpty();
     }
 
