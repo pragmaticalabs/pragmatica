@@ -33,6 +33,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 
 @SuppressWarnings("JBCT-RET-01")
@@ -366,6 +367,19 @@ public interface ClusterTopologyManager extends TopologyManager {
                      + " changed or the clear was not confirmed committed; read the mark again before retrying";
             }
         }
+    }
+
+    /// #3439: the choke point's two plain refusals, named once: [#drainRefusal] answers with them and [#isDrainRefusal] recognises them.
+    Cause RETIREMENT_AWAITS_VOTER_HANDOFF = Causes.cause("Node retirement awaits certified voter handoff");
+    Cause PAIRED_IN_NODE_REPLACEMENT = Causes.cause("Node is paired in an in-flight node replacement");
+
+    Set<String> PLAIN_DRAIN_REFUSALS = Set.of(RETIREMENT_AWAITS_VOTER_HANDOFF.message(),
+                                              PAIRED_IN_NODE_REPLACEMENT.message());
+
+    /// #3439: whether `cause` is one of the drain choke point's refusals (the table [#drainRefusal] answers from), as opposed to a drain that
+    /// failed for another reason (a consensus put, a join outcome). Refusals are plain causes, so they are recognised by their message.
+    static boolean isDrainRefusal(Cause cause) {
+        return cause instanceof LeaderCannotDrainItself || PLAIN_DRAIN_REFUSALS.contains(cause.message());
     }
 
     /// #3626: why [#drainNode] queued nothing for `node`: it is the node the topology manager runs on, which carries the DRAIN

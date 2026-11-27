@@ -672,6 +672,7 @@ public final class LeaderReconciler {
         durableStallRaised = false;
         lastProvisioningDecision = null;
         reachedFullMembership.set(false);
+        drainRefusals.clear();
     }
 
     /// Operator WARN for M1-class leadership churn: each loss suffered while a core deficit exists is
@@ -1709,13 +1710,29 @@ public final class LeaderReconciler {
         if (mayAct(life)) {
             surplusHoldNoted.set(held);
         }
+        // #3439: the drain-refusal record lives while a surplus episode that asked is open. A pass with no surplus closes the episode and ends
+        // the record; a held pass (#3324) keeps the open episode's entries for the members that remain.
+        if (drainCount == 0) {
+            drainRefusals.clear();
 
-        if (drainCount == 0 || held) {
+            return Set.of();
+        }
+
+        if (held) {
+            drainRefusals.retainOnly(currentMembers);
+
             return Set.of();
         }
 
         var refusals = new ArrayList<DrainRefusal>();
         var victims = selectDrainVictims(currentMembers, drainCount, refusals);
+
+        if (!mayAct(life)) {
+            // The term ended mid-pass: the selection may have written after `deactivate` emptied the record, so the record ends here too.
+            drainRefusals.clear();
+
+            return Set.of();
+        }
 
         if (victims.size() < drainCount) {
             deferYoungSurplusDrain(life, currentMembers, drainCount - victims.size(), refusals);
@@ -2288,7 +2305,16 @@ public final class LeaderReconciler {
             return;
         }
 
-        ctm.drainNode(peerId, SURPLUS_DRAIN_REASON).onFailure(cause -> drainRefusals.refused(peerId, cause));
+        ctm.drainNode(peerId, SURPLUS_DRAIN_REASON).onFailure(cause -> recordRefusal(life, peerId, cause));
+    }
+
+    /// #3439: a drain failure is recorded and told as a refusal only when it is one of the choke point's refusals ([`ClusterTopologyManager#isDrainRefusal`]),
+    /// and only by the term that asked: the outcome completes on another thread, possibly after the term ended.
+    @Contract
+    private void recordRefusal(OwnerLifetime life, NodeId peerId, Cause cause) {
+        if (mayAct(life) && ClusterTopologyManager.isDrainRefusal(cause)) {
+            drainRefusals.refused(peerId, cause);
+        }
     }
 
     /// #1049 — drop every in-flight entry older than its own per-source ceiling. The one time bound left,

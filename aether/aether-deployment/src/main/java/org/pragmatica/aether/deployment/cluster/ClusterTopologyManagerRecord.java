@@ -2449,11 +2449,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public Option<Cause> drainRefusal(NodeId targetNodeId, DrainReason reason) {
         if (!active.get() || retirementRefusal.get().apply(targetNodeId).isPresent()) {
-            return Option.some(Causes.cause("Node retirement awaits certified voter handoff"));
+            return Option.some(RETIREMENT_AWAITS_VOTER_HANDOFF);
         }
 
         if (reason.isSurplusTrim() && nodeReplacements.get().retirementProtected().contains(targetNodeId)) {
-            return Option.some(Causes.cause("Node is paired in an in-flight node replacement"));
+            return Option.some(PAIRED_IN_NODE_REPLACEMENT);
         }
 
         return targetNodeId.equals(observer.self().id())

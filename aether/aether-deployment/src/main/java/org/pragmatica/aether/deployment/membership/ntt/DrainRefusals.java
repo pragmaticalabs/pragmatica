@@ -21,7 +21,8 @@ import static org.pragmatica.lang.Unit.unit;
 
 /// #3439: the refusal last told for each surplus-drain candidate the drain choke point refuses, so a refused drain is warned once
 /// per transition of (node, cause), never on every reconcile pass, and stays readable as state while it holds. A node the choke
-/// point stops refusing, or that is no longer a candidate, is forgotten, so its next refusal is told again.
+/// point stops refusing, or that is no longer a candidate, is forgotten, so its next refusal is told again. The whole record ends with
+/// the term that made it and whenever a surplus episode closes ([#clear]).
 record DrainRefusals(Map<NodeId, String> told, BiConsumer<NodeId, Cause> warn) {
     static DrainRefusals drainRefusals(BiConsumer<NodeId, Cause> warn) {
         return new DrainRefusals(new ConcurrentHashMap<>(), warn);
@@ -44,6 +45,13 @@ record DrainRefusals(Map<NodeId, String> told, BiConsumer<NodeId, Cause> warn) {
     /// Keeps only the nodes this pass asked about: a node no longer a candidate has left its refused state.
     Unit retainOnly(Collection<NodeId> asked) {
         told.keySet().retainAll(Set.copyOf(asked));
+
+        return unit();
+    }
+
+    /// Ends the record: every entry and so the told-state, because both live only while the term and the surplus episode do (invariant, #3439).
+    Unit clear() {
+        told.clear();
 
         return unit();
     }

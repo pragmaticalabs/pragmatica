@@ -42,12 +42,16 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.testlogging.LogCapture;
 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -410,6 +414,34 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(asked.isPresent()).as("the predicate for %s / %s", node, reason).isEqualTo(refused);
         assertThat(drained.isFailure()).as("the choke point for %s / %s", node, reason).isEqualTo(refused);
         asked.onPresent(cause -> assertThat(drained.fold(Cause::message, _ -> "")).as("the same refusal").isEqualTo(cause.message()));
+        asked.onPresent(cause -> assertThat(ClusterTopologyManager.isDrainRefusal(cause)).as("the reconciler recognises it as a refusal").isTrue());
+    }
+
+    /// #3439: the typed refusal of the leader's own id is recognised too; the choke point answers the voter-handoff refusal first for a leader
+    /// that is still a voter, so only a direct question reaches it.
+    @Test
+    void isDrainRefusal_recognisesTheLeaderSelfRefusal() {
+        assertThat(ClusterTopologyManager.isDrainRefusal(new ClusterTopologyManager.LeaderCannotDrainItself(SELF))).isTrue();
+    }
+
+    /// #3439: a manager that leaves [ClusterTopologyManager#drainRefusal] on its default drains whatever it is asked, so it refuses nothing.
+    @Test
+    void drainRefusal_onTheInterfaceDefault_refusesNothing() {
+        var manager = (ClusterTopologyManager) Proxy.newProxyInstance(ClusterTopologyManager.class.getClassLoader(),
+                                                                      new Class<?>[]{ClusterTopologyManager.class},
+                                                                      ClusterTopologyManagerActuatorTest::callTheDefault);
+
+        assertThat(manager.drainRefusal(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).isPresent()).isFalse();
+    }
+
+    private static Object callTheDefault(Object proxy, Method method, Object[] args) throws Throwable {
+        return InvocationHandler.invokeDefault(proxy, method, args);
+    }
+
+    /// #3439: a drain that fails for another reason (a consensus put, a join outcome) is not one of the choke point's refusals.
+    @Test
+    void isDrainRefusal_isNotAnyOtherDrainFailure() {
+        assertThat(ClusterTopologyManager.isDrainRefusal(Causes.cause("consensus put timed out"))).isFalse();
     }
 
     @Test
