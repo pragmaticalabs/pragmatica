@@ -295,7 +295,10 @@ public sealed interface DrainAssembly {
         // keep re-marking a node that restarted under the new leader, silencing that node's next real crash (v-2043 N1).
         var ownDrainRecord = leaderOnlyDrainRecordTick(isLeaderSupplier,
                                                        drainCommandRegistry::drainTargets,
-                                                       drainSetObserver(alertManager, config.self(), drainEnded, departed));
+                                                       drainSetObserver(alertManager,
+                                                                        config.self(),
+                                                                        drainEnded,
+                                                                        departed));
 
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(ownDrainRecord,
                                                                config.timeouts().cluster().pingInterval()));
@@ -488,7 +491,8 @@ public sealed interface DrainAssembly {
     /// mark, which nothing else consumes, ends with the drain record. A tracked node, DEAD included, is never untracked: the FSM keeps
     /// a DEAD entry. Package-private for the pin.
     static Predicate<NodeId> nodeUntracked(MembershipFsm membershipFsm) {
-        return id -> !membershipFsm.memberStates().containsKey(id);
+        return id -> !membershipFsm.memberStates()
+                                   .containsKey(id);
     }
 
     /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement
