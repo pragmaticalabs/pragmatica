@@ -1003,9 +1003,7 @@ public sealed interface Outbox {
         }
 
         return new PairSplit(stay,
-                             stayGuards.stream()
-                                       .distinct()
-                                       .toList(),
+                             stayGuards.stream().distinct().toList(),
                              stayPairs,
                              shared,
                              movedAny);
@@ -1031,13 +1029,9 @@ public sealed interface Outbox {
 
     /// What `draft` witnessed, as a reading of the mirror: the value a witness expects, and nothing for a key it does not carry.
     private static Function<AetherKey, Option<AetherValue>> recorded(TxDraft draft) {
-        return key -> Option.from(draft.guards()
-                                       .stream()
-                                       .filter(guard -> guard.key()
-                                                             .equals(key))
-                                       .findFirst())
-                            .flatMap(guard -> guard.expected()
-                                                   .map(AetherValue.class::cast));
+        return key -> Option.from(draft.guards().stream().filter(guard -> guard.key()
+                                                                               .equals(key)).findFirst()).flatMap(guard -> guard.expected()
+                                                                                                                                .map(AetherValue.class::cast));
     }
 
     private static boolean pairMoved(ClusterModel m,

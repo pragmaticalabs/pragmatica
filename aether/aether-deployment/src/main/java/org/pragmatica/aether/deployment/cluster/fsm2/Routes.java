@@ -246,14 +246,14 @@ public sealed interface Routes {
     /// them: the SliceTarget row (the owner id), the owner's `AppBlueprintValue` and the declared rows. A fact that changes or goes between the goal's
     /// derivation and its commit refuses the transaction. The list is derived from [GateReads], never written beside the gate, so the gate and its
     /// witnesses cannot drift; a resubmitted pair derives it again over what its transaction recorded ([Outbox]'s `recorded`) and keeps every kind.
-    static List<KVCommand.ReadWitness<AetherKey>> goalWitnesses(Function<AetherKey, Option<AetherValue>> read, Artifact artifact) {
+    static List<KVCommand.ReadWitness<AetherKey>> goalWitnesses(Function<AetherKey, Option<AetherValue>> read,
+                                                                Artifact artifact) {
         var reads = GateReads.gateReads(read, artifact);
 
         return reads.keys()
                     .stream()
                     .map(key -> new KVCommand.ReadWitness<AetherKey>(key,
-                                                                     read.apply(key)
-                                                                         .map(value -> (Object) value)))
+                                                                     read.apply(key).map(value -> (Object) value)))
                     .toList();
     }
 
@@ -264,29 +264,28 @@ public sealed interface Routes {
 
     /// What the goal gate of one artifact read: the owner its SliceTarget row names, that owner's blueprint, and the declared rows of the artifact
     /// the blueprint lists. Each is read once through `read`; the gate and the witnesses both take it from here.
-    private record GateReads(AetherKey targetKey,
-                             Function<AetherKey, Option<AetherValue>> read,
-                             Option<BlueprintId> owner,
-                             Option<AppBlueprintValue> blueprint,
-                             List<DeclaredRouteKey> rows) {
+    record GateReads(AetherKey targetKey,
+                     Function<AetherKey, Option<AetherValue>> read,
+                     Option<BlueprintId> owner,
+                     Option<AppBlueprintValue> blueprint,
+                     List<DeclaredRouteKey> rows) {
         static GateReads gateReads(Function<AetherKey, Option<AetherValue>> read, Artifact artifact) {
             var targetKey = new AetherKey.SliceTargetKey(artifact.base());
             var owner = typed(read.apply(targetKey), SliceTargetValue.class).flatMap(SliceTargetValue::owningBlueprint);
-            var blueprint = owner.flatMap(id -> typed(read.apply(AppBlueprintKey.appBlueprintKey(id)), AppBlueprintValue.class));
+            var blueprint = owner.flatMap(id -> typed(read.apply(AppBlueprintKey.appBlueprintKey(id)),
+                                                      AppBlueprintValue.class));
 
             return new GateReads(targetKey,
                                  read,
                                  owner,
                                  blueprint,
-                                 blueprint.map(value -> declaredKeys(value, artifact))
-                                          .or(List.of()));
+                                 blueprint.map(value -> declaredKeys(value, artifact)).or(List.of()));
         }
 
         /// The keys read, in reading order: the target row, the owner's blueprint (when the target names one) and the rows.
         List<AetherKey> keys() {
             return Stream.concat(Stream.concat(Stream.of(targetKey),
-                                               owner.stream()
-                                                    .<AetherKey> map(id -> AppBlueprintKey.appBlueprintKey(id))),
+                                               owner.stream().<AetherKey> map(id -> AppBlueprintKey.appBlueprintKey(id))),
                                  rows.stream())
                          .toList();
         }
@@ -300,11 +299,10 @@ public sealed interface Routes {
     private static boolean allCurrent(GateReads reads, BlueprintId id, AppBlueprintValue value) {
         return reads.rows()
                     .stream()
-                    .allMatch(key -> typed(reads.read()
-                                                .apply(key),
+                    .allMatch(key -> typed(reads.read().apply(key),
                                            DeclaredRouteValue.class).map(row -> standing(row, id, value))
-                                                                    .map(Routes::counts)
-                                                                    .or(false));
+                                          .map(Routes::counts)
+                                          .or(false));
     }
 
     private static List<DeclaredRouteKey> declaredKeys(AppBlueprintValue value, Artifact artifact) {
