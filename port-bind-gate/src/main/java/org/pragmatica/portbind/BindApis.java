@@ -85,9 +85,7 @@ final class BindApis {
             return true;
         }
 
-        var apiClass = load(type);
-
-        return apiClass != ABSENT && apiClass.isAssignableFrom(ownerClass);
+        return load(type).isAssignableFrom(ownerClass);
     }
 
     private Class<?> load(String name) {
@@ -97,7 +95,8 @@ final class BindApis {
     /// Loads without initialising. A class that cannot be loaded here (absent from the scan's classpath, or one whose own supertypes
     /// are) is ABSENT, and [#isOrExtends] answers for an ABSENT receiver that it may be the API: the scan cannot rule out that it
     /// extends a bind type, and letting its call pass would be the unsafe direction (a missed bind is a silent gate). An API type that
-    /// is absent (Netty in a module that does not link it) rules nothing in: a receiver that loaded cannot extend a type it lacks.
+    /// is absent (Netty in a module that does not link it) is the sentinel too, and nothing is assignable to it: a receiver that loaded
+    /// cannot extend a type it lacks.
     private Class<?> tryLoad(String name) {
         try {
             return Class.forName(name, false, loader);
