@@ -953,7 +953,6 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                   new AtomicReference<>(ctx.unentered()));
         }
 
-        /// #3809: as [Electing#armTimers]: the first tick and the peer observation are fenced to this episode.
         /// As [Electing#onEntered]: the timers are armed by the entry hook, through this entry's own handle.
         @Override
         public void onEntered(EpisodeHandle episode) {
