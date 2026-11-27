@@ -23,6 +23,7 @@ import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.SliceInvoker;
+import org.pragmatica.aether.node.SlotPasses;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
 import org.pragmatica.aether.node.stream.CommittedCursorRead;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
@@ -851,17 +852,16 @@ class DurableProjectionRebuildTest {
         return reply;
     }
 
-    /// Runs passes until the `count`-th epoch read is sent. A pass sends only when the previous read has landed, so the
-    /// pass that sends it is the first to act on that answer.
+    /// Runs passes until the `count`-th epoch read is sent, then one more pass that acts on every answer that freed the slot.
+    /// The contract and why the sending pass is not the one to act is at [SlotPasses].
     private void passUntilEpochReadsSent(int count) {
-        PollUntil.pollUntil(this::reconcileAndCountEpochReads, sent -> sent >= count, Duration.ofSeconds(10))
-                 .assertMet(count + " epoch reads sent");
+        SlotPasses.passUntilSent(this::reconcileAndReturnUnit, epochReads::size, count, Duration.ofSeconds(10));
     }
 
-    private int reconcileAndCountEpochReads() {
+    private Unit reconcileAndReturnUnit() {
         manager.reconcile();
 
-        return epochReads.size();
+        return Unit.unit();
     }
 
     /// The committed checkpoint as a core answers the epoch read: one Get answer for the one held key.
