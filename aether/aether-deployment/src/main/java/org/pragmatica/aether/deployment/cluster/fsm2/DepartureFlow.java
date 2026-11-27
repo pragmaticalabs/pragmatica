@@ -490,6 +490,16 @@ public sealed interface DepartureFlow {
     /// A superseded DEPARTED record leaves the node counted; it is replaced by `ADMITTED(e_d + 1)`, expecting the DEPARTED value. A
     /// node whose admission carries no known token (a core promoted by liveness evidence alone, C8) keeps the process the record names:
     /// the rewrite must not erase what the committed record knows `[guess: C8 fail-open applied to the rewrite]`.
+    ///
+    /// ```tla DirectiveReceipt:Admit
+    /// \* W5, W6, W7 (read: any). This method is W7, the superseded rewrite; the departing arm and J8's core arm of Joins submit
+    /// \* the same write. One action as wide as the widest: ADMITTED(e + 1) expecting any value of the record's domain, at any
+    /// \* leader and any step; the applier decides. No witness. Not fair.
+    /// Admit(L) ==
+    ///   /\ On("admit")
+    ///   /\ \E x \in Admissible : Submit(AdmitTx(L, x))
+    ///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
+    /// ```
     static ClusterModel admittedRewrite(ClusterModel m, Ctx ctx, NodeId node) {
         var record = m.records.get(node);
 

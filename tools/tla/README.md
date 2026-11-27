@@ -17,6 +17,7 @@ and constants, e.g. "SharedPools `code`, 2 keys, 2 scopes, MaxAcquires 3: no vio
 | `Stalled` | owner catch-up all-stalled warning, level-triggered (#2967) | `aether/aether-stream/.../replication/package-info.java` | `PartitionBackfill.java` |
 | `RabiaSlot`, `RabiaEpoch`, `RabiaAdopt` | Rabia: slot sequence, in-log reconfiguration, state adoption (#3164) | `integrations/consensus/.../rabia/package-info.java` | `RabiaEngine.java`, `PhaseData.java` |
 | `Fsm2Leader` | FSM2 leader: open-warning set, leader fence, `Rebuild` inherit and rule O, publish after commit (#2763, #2834, #3085, #3274) | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Lifecycle.java`, `Warnings.java`, `Reconcile.java`, `Failures.java`, `Outbox.java`, `ClusterFsm.java` |
+| `DirectiveReceipt` | one node id's departure record, activation directive and issue receipt: the 21 actions of the #3828 redesign memo (section 7, round 10), each writer submitting from a read that may be old, the applier's expected-value rule, the two liveness sentences with their edge runs (#3828; only FACT `none` is code, the rest is the redesign and its rejected rounds). Its writers are checked by `writers-check.py` | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Directory.java`, `DepartureFlow.java` |
 | `LeaderAdmission` | consensus leader election: Passive's one admission (push, entry pull, re-pull), the hold to the stored view, FIX 1 in the voting states and their grace timeout, Passive entry from every voting state, I1-I3 (#3092, #3414, #3581, #3585; #3587 fixed by #3605; pre-vote not modelled) | `integrations/consensus/.../leader/fsm/package-info.java` | `LeaderElectionState.java`, `LeaderManager.java` (the push's serial task) |
 | `DHTDepartureDrain` | DHT departure drain: plan, retarget, halt, receiver acceptance (#3049) | `integrations/dht/.../dht/package-info.java` | `DeparturePushRun.java`, `DHTAntiEntropy.java`, `DHTTopologyListener.java` |
 
@@ -77,6 +78,104 @@ Other syntax and semantic errors are SANY's and TLC's. `check.sh` annotates ever
 position in TLC's output with the Java source line it came from (`<Module>.map.tsv`), so a counterexample reads as
 a sequence of Java locations.
 
+## Writer check: `writers-check.py`
+
+TLC cannot show a wrong writer: `v' = e /\ UNCHANGED v` is no error, it disables the step, and the run stays green on a
+narrower model. Nor can it show a bound written as a conjunct of `Next` or as a cfg `CONSTRAINT`: the fair step the bound
+cuts drops out of the liveness check. For a model that keeps a writer table (`<Module>.writers.tsv`), `writers-check.py
+--table <table> --module <Module> <roots>` reads the module text, the table and the cfg files, and fails on any mismatch:
+
+- **The writes, one invariant:** on every path of a step, every variable is constrained exactly once, in one of two literal
+  forms: `v' = e` or `v' \in S` at the start of a conjunct (`e` not `v` itself), or `v` inside an `UNCHANGED`. A path is one
+  disjunct of an operator whose body is a `\/` list. A definition a step uses counts as the step's own text, once per use.
+  Any other prime fails: of a parameter, a tuple or a definition, in a comparison, inside an `IF`. Each path writes exactly
+  the variables the table expects of its operator.
+- **The steps:** `Next` is a plain disjunction of exactly the mapped operators, with no conjunct of its own; `Spec` is
+  exactly `Init /\ [][Next]_vars /\ Fairness`; `Fairness` holds `WF_vars` of exactly the table's `fair` operators.
+- **The bounds:** every CONSTANT is a `bound` or a `param`. A bound sits in the enabling of at least one step, and the steps
+  that hold it are printed; an `input` bound sits in the enabling of no step a fair operator takes (it then stops only
+  inputs, and what it costs is the reachable prefixes: a run that needs one more term, token or retirement is outside
+  the model, and no run shows that).
+- **The cfg files:** none holds the word `CONSTRAINT`; each names `Spec`, or the `spec` the table gives its variant.
+
+It says which variables a step constrains, never which value. `DirectiveReceipt` is the one model with a table.
+`python3 -m unittest discover -s tools/tla -p test_writers_check.py` (in the `selftests` job, so every run of the workflow
+checks the model as it stands) runs the script on the real model and on 27 mutations of the module, the table and the
+cfg files that must each go red.
+
+## DirectiveReceipt: what the split PASS rows cover (non-interference)
+
+The model with every action on does not finish at its constants (two leaders, `E_max` 1, `H_max` 5), so its PASS rows are
+split: each `receipt_*` and `e7_*` row leaves one release authority on. This section says what that split can and cannot
+hide. It is an argument, and where it says "checked" it names the row or the script that checks it.
+
+**What each action reads and writes** (the writer table; `writers-check.py` fails the module on any other write):
+
+| Action | Writes | Reads |
+|---|---|---|
+| `depart`, `infer` | `inflight`: its own slot (`depart@L`, `infer@L`) | the record of `history[mirror[L]]` |
+| `admit` | `inflight`: slot `admit@L` | nothing (it expects any value) |
+| `retire` | `inflight`: slots `retire@L`, `retireP@L` | `history[mirror[L]]`, any `history[i]`, `role` |
+| `terminate`, `externalConfirm`, `forcedClear` | `retirements` | any `history[i]`; `live` |
+| `attempt` | `inflight`: slot `attempt@r`; `retirements[r]` | any `history[i]`, `retirements[r]` |
+| `foreign put`, `operator removal` | `inflight`: its own slot | the committed directive (`operator removal` only) |
+| `join` (both arms) | `inflight`: slot `join@L` | `history[mirror[L]]`, `pending[L]`, `role` |
+| `commit` | `history` (so `record`, `directive`, `receipt`), `inflight`, `sticky`, `directed`, `ranSince` | the committed state, the transaction |
+
+**The shared variables.** Any two writers share `inflight` and `history`, and nothing else: no release authority and no
+foreign put writes `mirror`, `pending`, `view`, `term`, `token` or a process flag. Through `inflight` nothing passes: a
+writer replaces only its own slot, and no enabling reads another writer's slot. Everything passes through `history`, which
+only `commit` writes. So two writers meet at commits and nowhere else: one's committed transaction changes what the other
+reads later, or what the other's in-flight transaction finds when it commits.
+
+**An interleaving does reach states that neither part reaches alone.** This holds for every pair, and no argument here
+denies it. Together two writers produce histories that neither produces (a DEPARTED record that `retire` then removes; an
+ADMITTED record over an inferred one; a foreign directive beside a DEPARTED record) and bags that hold transactions of
+both. What can be argued is narrower: which *properties* such a state cannot break.
+
+**Safety, RetiredWhole, FactWithholds: closed, for every pair and for the foreign put.** Each is a property of one commit:
+- only `commit` writes `history` and `sticky` (the script), so every other step keeps the three properties as they are;
+- row `step` takes the commit step from **every** committed state that meets `StepInv` (sticky `issued` or `removed` implies
+  a committed receipt) and **every** single transaction of `TxSpace`, for both roles, and passes: `StepInv` holds again
+  after the commit, and the commit breaks none of the three. `StepInv` holds in `Init`. That is an induction over commits,
+  and it does not ask who submitted a transaction or in which order;
+- `TxSpace` is the image of the model's own transaction constructors over the whole record and entry domains, and `TypeOK`
+  holds `inflight` inside it and every history entry inside `EntryDom`, in every row and after the step of `step`.
+
+So no interleaving of any writers breaks these three, at any `H_max` and any leader count. The split of the `receipt_*`
+rows hides nothing for them. `step_unguarded` and `step_nowitness` show that the step config can go red. Its limits are
+its own constants (`E_max` 1, `MaxToken` 2) and FACT `receipt`. `receipt_composed` (every writer of the three keys
+together, one leader, `H_max` 4) stands beside it as a run, not as the argument.
+
+**The five stability properties: closed.** Each reads one variable that one or two rows write (`mirror`: S1; `pending`,
+`view`: S4, S5; the length and the receipts of `history`: W23). No pair of release authorities enters.
+
+**StickyWhileRunning: not a claim of the fixed design.** It is the red of `residual_forced`; `receipt_process` passes it
+with no release authority on, and no row claims it with one.
+
+**Live1, Live2: NOT closed. No argument is offered, per pair or for the foreign put.** A sentence quantifies over what the
+inputs leave at the point where they stop: the committed state, the bag, the retirements in progress. A split run reaches
+only what one authority can leave. Two authorities together leave a bag with transactions of both, which commit in either
+order after that point, and a history that neither produces. The memo's proof goes by the committed record alone and lets
+the commits empty the bag, which is why a mixed bag is not expected to matter; that proof is by hand, and no run checks it
+for a mixed bag beyond these:
+
+| Interleaving | Composed liveness run | The run that would settle the rest |
+|---|---|---|
+| any two release authorities (ten pairs) | `e7_composed_worker`, `e7_composed_core`: all five together, **one** leader, `H_max` 4, `MaxRet` 1, no foreign put, no leader change, no restart | an `e7` row with both authorities on at two leaders and `H_max` 5. Not run: `depart` with `retire` is 7.7M states without the foreign put, hours of a liveness run; the other pairs were not sized |
+| foreign put with `admit` | `e7_admit_foreign`, two leaders | none needed |
+| foreign put with `retire` (and `depart`) | `e7_retire`, **one** leader | `e7_retire` at two leaders: not run (19M states and more) |
+| foreign put with `depart`, `infer`, the termination retirement | none | `e7_depart`, `e7_infer`, `e7_terminate` with the foreign put on, two leaders: 552,946, 723,790 and 1,571,760 states (the counts of the matching `receipt_*` rows), about 15 minutes to an hour each. Not run |
+| a release authority with a leader change or a process restart | none (`e7_core` has both with no release authority) | an `e7` row with the authority and both steps on. Not sized |
+
+Until those runs exist, the liveness claim is: each sentence holds with one release authority at a time at two leaders,
+and with all five together at one leader and `H_max` 4. An interleaving of two authorities at two leaders that leaves a
+state from which a sentence fails is not excluded by anything here.
+
+**The full config, as a bound.** Every action on, two leaders, `H_max` 5, was run once to a deadline: it is unfinished,
+and the states it did explore hold no violation of the safety properties. It is a bound and never a pass; the numbers
+are in the evidence of the change that added the model (#3828).
+
 ## Expected verdicts: `models.tsv`
 
 One row per config: module, source root, variant, `expect` (`pass` or `fail`), `property`, the constant overrides of the
@@ -88,7 +187,7 @@ list: any one of them; `-` for a `pass` row). `run.sh` is red when:
 - a `fail` row ends in a violation of a property other than the ones it names;
 - TLC ends any other way (parse, config or semantic error, timeout): the row reads `ERROR`, never `fail`.
 
-An expected failure (`expect` = `fail`) must cite an open issue or be a known-bad variant of a fixed defect; when the issue is fixed, flip the row to `pass`.
+An expected failure (`expect` = `fail`) must cite an open issue or be a known-bad variant of a fixed defect; when the issue is fixed, flip the row to `pass`. The exceptions are named in the row: a residual of a design (DirectiveReceipt `residual_forced`), and a mutant that validates the instrument (DirectiveReceipt `e1_*` to `e6_*`: each must fail, or a liveness sentence has gone vacuous).
 
 ## Pinned state counts: `pinned-counts.tsv`
 

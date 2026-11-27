@@ -42,6 +42,20 @@ public record RetirementUnit(NodeId node,
     /// Reads the three keys once, in the fixed order record, directive, receipt: a transaction's notifications follow its mutation order,
     /// so the record leaves `departed` before the directive's removal reaches `Directory#onDirectiveRemove`. The lookup is the mirror
     /// in the FSM (`key -> Outbox.mirrored(m, key)`); returns the retiring form.
+    ///
+    /// ```tla DirectiveReceipt:Retire
+    /// \* W8, W9 (read: mirror): the retirement unit, read once over the acting leader's mirror: each member the read holds is
+    /// \* removed at its exact value, each member it does not hold is witnessed absent (`removals`, `witnesses`). W8: the sweep, a
+    /// \* WORKER beside a DEPARTED record with a directive or a receipt (DepartureFlow; fair). W9: a DEPARTED record and no directive,
+    /// \* either role (R-4.3.3, Directory; not fair: an observed event). The same method over a store read is W10 and W15 (RetireP,
+    /// \* AttemptRemove in the skeleton).
+    /// Retire(L) ==
+    ///   /\ On("retire")
+    ///   /\ M(L).rec.st = "D"
+    ///   /\ ((role = "WORKER" /\ (M(L).dir \/ M(L).rcpt # 0)) \/ ~M(L).dir)
+    ///   /\ Submit(UnitTx(<<"retire", L>>, M(L)))
+    ///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
+    /// ```
     public static RetirementUnit retirementUnit(Function<AetherKey, Option<AetherValue>> lookup, NodeId node) {
         return new RetirementUnit(node,
                                   lookup.apply(new NodeDepartureKey(node)),

@@ -675,6 +675,17 @@ public sealed interface Directory {
         return m;
     }
 
+    /// The WORKER directive's mutation: the key expected absent.
+    ///
+    /// ```tla DirectiveReceipt:Issue
+    /// \* W16, W6: arm J-4 of `join` (read: mirror). The code today is FACT = "none": the directive alone, expecting it absent,
+    /// \* and nothing withholds it. For a CORE the arm is enabled beside any record.
+    /// Issue(L) ==
+    ///   /\ On("join") /\ MUT # "noJ4" /\ ~(MUT = "noJ4ret" /\ Retired)
+    ///   /\ J4Cond(L)
+    ///   /\ Submit(IssueTx(L, IF FACT = "arm2" THEN M(L).rcpt ELSE 0, IF FACT = "arm2" THEN view[L] ELSE IF Receipts THEN 1 ELSE 0))
+    ///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
+    /// ```
     private static KVCommand.Mutation<AetherKey, AetherValue> directiveMutation(NodeId node, String communityId) {
         return new KVCommand.Mutation<>(new ActivationDirectiveKey(node),
                                         Option.none(),
