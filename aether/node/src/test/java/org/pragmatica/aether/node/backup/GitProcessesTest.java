@@ -17,8 +17,10 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -78,6 +80,42 @@ class GitProcessesTest {
         assertThat(GitProcesses.kill(List.of(root), 10_000)).isTrue();
         assertThat(root.isAlive()).isFalse();
         assertThat(children).noneMatch(ProcessHandle::isAlive);
+    }
+
+    /// `true` from `kill` means the `Process` of every root reads exited, not only its handle: the JDK completes the handle's exit and the `Process`'s in
+    /// separate stages, and a caller that read `isAlive` right after `true` found the root alive (#3841: 2 of 12000 kills on a loaded host, with a real
+    /// process). The stub models the gap deterministically: its handle exits at once, its `Process` only once it is waited on.
+    @Test
+    void kill_isTrueOnlyOnceTheRootProcessItselfReadsExited() {
+        var exited = new AtomicBoolean();
+        var root = exitingOnlyWhenWaitedOn(mortalHandle(0), exited);
+
+        assertThat(GitProcesses.kill(List.of(root), 10_000)).isTrue();
+        assertThat(root.isAlive()).as("the root Process reads exited when kill answers true").isFalse();
+    }
+
+    /// An interrupt that lands in the wait for a root's `Process` does not end that wait: the kill goes on to the root's exit, answers true, and the
+    /// caller's thread still carries the interrupt (the same contract as the wait for the handles).
+    @Test
+    void kill_keepsAnInterrupt_thatLandsInTheRootProcessWait() {
+        var root = interruptedOnFirstWait(exitingOnlyWhenWaitedOn(mortalHandle(0), new AtomicBoolean()));
+        var dead = GitProcesses.kill(List.of(root), 10_000);
+        var stillInterrupted = Thread.interrupted();
+
+        assertThat(dead).as("the wait went on after the interrupt").isTrue();
+        assertThat(root.isAlive()).as("the root Process reads exited").isFalse();
+        assertThat(stillInterrupted).as("the interrupt flag survives the kill").isTrue();
+    }
+
+    /// The wait for a root's `Process` is held to the kill's bound: a root whose handle has exited but whose `Process` never reads exited is reported as
+    /// not dead when the bound runs out, instead of holding the caller.
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_reportsFalse_whenTheRootProcessNeverReadsExited() {
+        var started = System.nanoTime();
+
+        assertThat(GitProcesses.kill(List.of(neverExiting(mortalHandle(0))), 300)).isFalse();
+        assertThat(System.nanoTime() - started).as("the kill waited out its bound").isGreaterThanOrEqualTo(250_000_000L);
     }
 
     /// A bound that cannot be met is reported as not dead, so the stop can say so instead of claiming a clean stop. The member here can never end, so the
@@ -722,7 +760,84 @@ class GitProcessesTest {
             @Override public InputStream getInputStream() { return InputStream.nullInputStream(); }
             @Override public InputStream getErrorStream() { return InputStream.nullInputStream(); }
             @Override public int waitFor() { throw new UnsupportedOperationException(); }
+            @Override public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException { return exitSeen(handle, timeout, unit); }
             @Override public int exitValue() { throw new IllegalThreadStateException("undying"); }
+            @Override public void destroy() {}
+            @Override public ProcessHandle toHandle() { return handle; }
+        };
+    }
+
+    /// Whether the handle's exit completes within the timeout: the stub `Process` exits when its handle does.
+    private static boolean exitSeen(ProcessHandle handle, long timeout, TimeUnit unit) throws InterruptedException {
+        try {
+            handle.onExit().get(timeout, unit);
+
+            return true;
+        } catch (TimeoutException stillRunning) {
+            return false;
+        } catch (ExecutionException exitedWithFailure) {
+            return true;
+        }
+    }
+
+    /// A `Process` of `handle` that never reads exited: its timed wait runs out its timeout and answers false.
+    private static Process neverExiting(ProcessHandle handle) {
+        return new Process() {
+            @Override public OutputStream getOutputStream() { return OutputStream.nullOutputStream(); }
+            @Override public InputStream getInputStream() { return InputStream.nullInputStream(); }
+            @Override public InputStream getErrorStream() { return InputStream.nullInputStream(); }
+            @Override public int waitFor() { throw new UnsupportedOperationException(); }
+            @Override public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException { return runOut(timeout, unit); }
+            @Override public int exitValue() { throw new IllegalThreadStateException("running"); }
+            @Override public void destroy() {}
+            @Override public ProcessHandle toHandle() { return handle; }
+        };
+    }
+
+    private static boolean runOut(long timeout, TimeUnit unit) throws InterruptedException {
+        try {
+            new CompletableFuture<Boolean>().get(timeout, unit);
+
+            return true;
+        } catch (TimeoutException ranOut) {
+            return false;
+        } catch (ExecutionException failed) {
+            return true;
+        }
+    }
+
+    /// `inner`, except that its first timed wait is interrupted.
+    private static Process interruptedOnFirstWait(Process inner) {
+        var interrupted = new AtomicBoolean();
+
+        return new Process() {
+            @Override public OutputStream getOutputStream() { return inner.getOutputStream(); }
+            @Override public InputStream getInputStream() { return inner.getInputStream(); }
+            @Override public InputStream getErrorStream() { return inner.getErrorStream(); }
+            @Override public int waitFor() throws InterruptedException { return inner.waitFor(); }
+            @Override public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException { return interrupted.compareAndSet(false, true) ? interrupt() : inner.waitFor(timeout, unit); }
+            @Override public boolean isAlive() { return inner.isAlive(); }
+            @Override public int exitValue() { return inner.exitValue(); }
+            @Override public void destroy() { inner.destroy(); }
+            @Override public ProcessHandle toHandle() { return inner.toHandle(); }
+        };
+    }
+
+    private static boolean interrupt() throws InterruptedException {
+        throw new InterruptedException("first wait");
+    }
+
+    /// A `Process` whose handle exits as `handle` says, but which itself reads exited (`isAlive` false) only once it has been waited on: the JDK's two exit
+    /// stages, the handle's and the `Process`'s, with the handle's seen first and the `Process`'s not before something waits for it (#3841).
+    private static Process exitingOnlyWhenWaitedOn(ProcessHandle handle, AtomicBoolean exited) {
+        return new Process() {
+            @Override public OutputStream getOutputStream() { return OutputStream.nullOutputStream(); }
+            @Override public InputStream getInputStream() { return InputStream.nullInputStream(); }
+            @Override public InputStream getErrorStream() { return InputStream.nullInputStream(); }
+            @Override public int waitFor() { throw new UnsupportedOperationException(); }
+            @Override public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException { var seen = exitSeen(handle, timeout, unit); exited.set(seen); return seen; }
+            @Override public boolean isAlive() { return !exited.get(); }
+            @Override public int exitValue() { throw new IllegalThreadStateException("running"); }
             @Override public void destroy() {}
             @Override public ProcessHandle toHandle() { return handle; }
         };
