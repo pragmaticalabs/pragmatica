@@ -5184,6 +5184,8 @@ public interface AetherNode extends ManageableNode {
         dynamicConfigManager.onPresent(dcm -> dcm.onApplied(DEPLOYMENT_CONFIG_LISTENER, configApplied));
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
+        // #3041: a committed stream delete ends the stream's life; the leader's coordinator reclaims the records of it.
+        kvRouterBuilder.onRemove(AetherKey.StreamConfigKey.class, consumerGroupCoordinator::onStreamConfigRemove);
         // #345 1b: feed the per-ownership-domain epoch high-water table from committed EpochBearing puts.
         // No onRemove — the high-water is monotonic by definition, so ownership/governor removes are intentionally ignored.
         kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,
