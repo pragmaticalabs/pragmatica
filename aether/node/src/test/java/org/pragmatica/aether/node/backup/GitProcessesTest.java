@@ -94,6 +94,19 @@ class GitProcessesTest {
         assertThat(root.isAlive()).as("the root Process reads exited when kill answers true").isFalse();
     }
 
+    /// An interrupt that lands in the wait for a root's `Process` does not end that wait: the kill goes on to the root's exit, answers true, and the
+    /// caller's thread still carries the interrupt (the same contract as the wait for the handles).
+    @Test
+    void kill_keepsAnInterrupt_thatLandsInTheRootProcessWait() {
+        var root = interruptedOnFirstWait(exitingOnlyWhenWaitedOn(mortalHandle(0), new AtomicBoolean()));
+        var dead = GitProcesses.kill(List.of(root), 10_000);
+        var stillInterrupted = Thread.interrupted();
+
+        assertThat(dead).as("the wait went on after the interrupt").isTrue();
+        assertThat(root.isAlive()).as("the root Process reads exited").isFalse();
+        assertThat(stillInterrupted).as("the interrupt flag survives the kill").isTrue();
+    }
+
     /// A bound that cannot be met is reported as not dead, so the stop can say so instead of claiming a clean stop. The member here can never end, so the
     /// outcome does not depend on how fast the host reaps a killed process (a real process killed under a bound of zero may already be gone).
     @Test
@@ -754,6 +767,27 @@ class GitProcessesTest {
         } catch (ExecutionException exitedWithFailure) {
             return true;
         }
+    }
+
+    /// `inner`, except that its first timed wait is interrupted.
+    private static Process interruptedOnFirstWait(Process inner) {
+        var interrupted = new AtomicBoolean();
+
+        return new Process() {
+            @Override public OutputStream getOutputStream() { return inner.getOutputStream(); }
+            @Override public InputStream getInputStream() { return inner.getInputStream(); }
+            @Override public InputStream getErrorStream() { return inner.getErrorStream(); }
+            @Override public int waitFor() throws InterruptedException { return inner.waitFor(); }
+            @Override public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException { return interrupted.compareAndSet(false, true) ? interrupt() : inner.waitFor(timeout, unit); }
+            @Override public boolean isAlive() { return inner.isAlive(); }
+            @Override public int exitValue() { return inner.exitValue(); }
+            @Override public void destroy() { inner.destroy(); }
+            @Override public ProcessHandle toHandle() { return inner.toHandle(); }
+        };
+    }
+
+    private static boolean interrupt() throws InterruptedException {
+        throw new InterruptedException("first wait");
     }
 
     /// A `Process` whose handle exits as `handle` says, but which itself reads exited (`isAlive` false) only once it has been waited on: the JDK's two exit
