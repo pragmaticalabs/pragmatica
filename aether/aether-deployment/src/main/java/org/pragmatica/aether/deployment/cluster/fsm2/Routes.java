@@ -58,7 +58,6 @@ public sealed interface Routes {
         NONE,
         NEW_ATTEMPT,
         RESTORED;
-
         boolean reopens() {
             return this == RESTORED;
         }
@@ -175,7 +174,9 @@ public sealed interface Routes {
         return m;
     }
 
-    private static List<KVCommand.Mutation<AetherKey, AetherValue>> difference(ClusterModel m, BlueprintId id, Put put) {
+    private static List<KVCommand.Mutation<AetherKey, AetherValue>> difference(ClusterModel m,
+                                                                               BlueprintId id,
+                                                                               Put put) {
         return m.blueprints.get(id)
                            .fold(() -> removals(m,
                                                 id,
@@ -237,14 +238,16 @@ public sealed interface Routes {
         var committed = m.declaredRoutes.get(key);
 
         return claimant(m, key).filter(id::equals)
-                               .flatMap(_ -> committed.filter(row -> kept(standing(row, id, owner), put))
-                                                      .fold(() -> Option.some(declaration(key, committed, id, owner)),
-                                                            row -> publish(m, id, owner, key, row)));
+                       .flatMap(_ -> committed.filter(row -> kept(standing(row, id, owner),
+                                                                  put))
+                                              .fold(() -> Option.some(declaration(key, committed, id, owner)),
+                                                    row -> publish(m, id, owner, key, row)));
     }
 
     /// A committed row stays as it is unless it is `STALE`, or `Failed` under a put that reopens failed rows.
     private static boolean kept(Standing standing, Put put) {
-        return standing != Standing.STALE && !(standing == Standing.FAILED && put.reopens());
+        return standing != Standing.STALE
+               && !(standing == Standing.FAILED && put.reopens());
     }
 
     /// The mutation that writes `key`'s row `Declared` at the owner's current attemptId over what is committed (nothing, or a `STALE` row).
@@ -342,7 +345,8 @@ public sealed interface Routes {
 
     /// The SliceTarget row's owning blueprint of `base`: the one reading of that relation, shared by the gate and by [#claimant].
     private static Option<BlueprintId> targetOwner(Function<AetherKey, Option<AetherValue>> read, ArtifactBase base) {
-        return typed(read.apply(new AetherKey.SliceTargetKey(base)), SliceTargetValue.class).flatMap(SliceTargetValue::owningBlueprint);
+        return typed(read.apply(new AetherKey.SliceTargetKey(base)),
+                     SliceTargetValue.class).flatMap(SliceTargetValue::owningBlueprint);
     }
 
     /// The one function that names the blueprint speaking for a declared row key (#3836): the SliceTarget owner of the key's base when it is
@@ -353,17 +357,17 @@ public sealed interface Routes {
     /// same claimant. The fallback scans the committed blueprints, and runs only for a key whose target owner does not declare it.
     private static Option<BlueprintId> claimant(ClusterModel m, DeclaredRouteKey key) {
         return targetOwner(mirror(m),
-                           key.artifact()
-                              .base()).filter(id -> declares(m, id, key))
-                                      .orElse(() -> Option.from(m.blueprints.keys()
-                                                                            .stream()
-                                                                            .filter(id -> declares(m, id, key))
-                                                                            .max(Comparator.comparing(BlueprintId::asString))));
+                           key.artifact().base()).filter(id -> declares(m, id, key))
+                          .orElse(() -> Option.from(m.blueprints.keys()
+                                                                .stream()
+                                                                .filter(id -> declares(m, id, key))
+                                                                .max(Comparator.comparing(BlueprintId::asString))));
     }
 
     private static boolean declares(ClusterModel m, BlueprintId id, DeclaredRouteKey key) {
         return m.blueprints.get(id)
-                           .map(value -> declaredKeys(value, key.artifact()).contains(key))
+                           .map(value -> declaredKeys(value,
+                                                      key.artifact()).contains(key))
                            .or(false);
     }
 
