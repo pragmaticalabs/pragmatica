@@ -41,6 +41,13 @@ public sealed interface ForwardError extends HttpError {
         static final Fn2<NotRetried, String, Cause> FACTORY = Causes.forTwoValues("%s request was NOT retried on another node: " + OUTCOME_UNKNOWN_TEXT,
                                                                                   NotRetried::new);
 
+        /// Fixed client-facing text (see [ForwardError#clientMessage()]): the wrapper's own message never mentions its origin, so
+        /// the [Cause.Wrapped] default, which derives from the origin, would replace the declared text.
+        @Override
+        public String clientMessage() {
+            return ForwardError.super.clientMessage();
+        }
+
         @Override
         public HttpStatus status() {
             return HttpStatus.SERVICE_UNAVAILABLE;
@@ -63,6 +70,13 @@ public sealed interface ForwardError extends HttpError {
     record OutcomeUnknown(Cause origin, String message) implements ForwardError, Cause.Wrapped {
         static final Fn1<OutcomeUnknown, Cause> FACTORY = Causes.forOneValue("Forwarded request " + OUTCOME_UNKNOWN_TEXT,
                                                                              OutcomeUnknown::new);
+
+        /// Fixed client-facing text (see [ForwardError#clientMessage()]): the wrapper's own message never mentions its origin, so
+        /// the [Cause.Wrapped] default, which derives from the origin, would replace the declared text.
+        @Override
+        public String clientMessage() {
+            return ForwardError.super.clientMessage();
+        }
 
         @Override
         public HttpStatus status() {
@@ -94,6 +108,13 @@ public sealed interface ForwardError extends HttpError {
         /// re-routes only a call that failed with this type, because only it proves nothing was applied.
         public static NotSent notSent(Cause origin) {
             return FACTORY.apply(origin);
+        }
+
+        /// Fixed client-facing text (see [ForwardError#clientMessage()]): the wrapper's own message never mentions its origin, so
+        /// the [Cause.Wrapped] default, which derives from the origin, would replace the declared text.
+        @Override
+        public String clientMessage() {
+            return ForwardError.super.clientMessage();
         }
 
         @Override

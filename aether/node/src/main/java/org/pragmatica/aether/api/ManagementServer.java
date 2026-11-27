@@ -1546,8 +1546,9 @@ class ManagementServerImpl implements ManagementServer {
     static Option<Cause> malformedForwardParam(MatchedRoute matched) {
         return switch (matched.route()
                               .target()) {
-            case RouteTarget.NodeIdParam(var paramIndex) -> paramAt(matched, paramIndex).flatMap(id -> NodeId.nodeId(id).fold(cause -> Option.some(new ManagementServerError.InvalidRequest("Invalid node id '" + id
-                                                                                                                                                                                           + "': " + cause.message())),
+            case RouteTarget.NodeIdParam(var paramIndex) -> paramAt(matched, paramIndex).flatMap(id -> NodeId.nodeId(id).fold(cause -> Option.some(ManagementServerError.InvalidRequest.because("Invalid node id '" + id
+                                                                                                                                                                                               + "'",
+                                                                                                                                                                                                cause)),
                                                                                                                               _ -> Option.none()));
             case RouteTarget.PartitionOwner(var partitionParamIndex) -> malformedPartitionOwnerParam(matched,
                                                                                                      partitionParamIndex);
@@ -1558,8 +1559,8 @@ class ManagementServerImpl implements ManagementServer {
     private static Option<Cause> malformedPartitionOwnerParam(MatchedRoute matched, int partitionParamIndex) {
         var partition = paramAt(matched, partitionParamIndex).flatMap(raw -> Result.lift(Causes::fromThrowable,
                                                                                          () -> Integer.valueOf(raw))
-                                                                                   .fold(_ -> Option.some(new ManagementServerError.InvalidRequest("Invalid partition '" + raw
-                                                                                                                                                  + "': not an integer")),
+                                                                                   .fold(_ -> Option.some(ManagementServerError.InvalidRequest.literal("Invalid partition '" + raw
+                                                                                                                                                      + "': not an integer")),
                                                                                          _ -> Option.none()));
 
         return partition.isPresent()
@@ -1571,7 +1572,7 @@ class ManagementServerImpl implements ManagementServer {
         return Option.all(matched.param("namespace"),
                           matched.param("stream"),
                           matched.param("version"))
-                     .flatMap((ns, stream, version) -> ResourceAddress.resourceAddress(ns, stream, version).fold(cause -> Option.some(new ManagementServerError.InvalidRequest(cause.message())),
+                     .flatMap((ns, stream, version) -> ResourceAddress.resourceAddress(ns, stream, version).fold(cause -> Option.some(new ManagementServerError.InvalidRequest(cause)),
                                                                                                                  _ -> Option.none()));
     }
 
@@ -1693,8 +1694,8 @@ class ManagementServerImpl implements ManagementServer {
     private static Option<Cause> notListed(NodeId id, Map<NodeId, String> roster) {
         return roster.containsKey(id)
                ? Option.<Cause> none()
-               : Option.<Cause> some(new ManagementServerError.NotFound("Unknown node '" + id.id()
-                                                                       + "': not a cluster member"));
+               : Option.<Cause> some(ManagementServerError.NotFound.literal("Unknown node '" + id.id()
+                                                                           + "': not a cluster member"));
     }
 
     /// Forward unless THIS node is the partition's HRW owner (#1039). Short-circuits only the one case

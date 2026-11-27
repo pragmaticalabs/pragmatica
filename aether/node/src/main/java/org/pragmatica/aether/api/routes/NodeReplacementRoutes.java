@@ -136,7 +136,7 @@ public final class NodeReplacementRoutes implements RouteSource {
         return switch (Option.option(request.outcome()).or("")) {
             case "keep-new" -> org.pragmatica.lang.Result.success(Settlement.KEEP_NEW);
             case "roll-back" -> org.pragmatica.lang.Result.success(Settlement.ROLL_BACK);
-            default -> new ManagementServerError.InvalidRequest("outcome must be 'keep-new' or 'roll-back'").result();
+            default -> ManagementServerError.InvalidRequest.literal("outcome must be 'keep-new' or 'roll-back'").result();
         };
     }
 
@@ -148,9 +148,9 @@ public final class NodeReplacementRoutes implements RouteSource {
     /// A refusal is a statement about the request or the cluster's state, not a server fault: answer 404 / 400 / 409.
     static Cause asManagementError(Cause cause) {
         return switch (cause) {
-            case Refusal.UnknownNode refusal -> new ManagementServerError.NotFound(refusal.message());
-            case Refusal.RoleNotSupported refusal -> new ManagementServerError.InvalidRequest(refusal.message());
-            case Refusal refusal -> new ManagementServerError.Conflict(refusal.message());
+            case Refusal.UnknownNode refusal -> new ManagementServerError.NotFound(refusal);
+            case Refusal.RoleNotSupported refusal -> new ManagementServerError.InvalidRequest(refusal);
+            case Refusal refusal -> new ManagementServerError.Conflict(refusal);
             default -> cause;
         };
     }

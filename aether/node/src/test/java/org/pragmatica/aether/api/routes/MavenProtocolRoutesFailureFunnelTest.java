@@ -48,7 +48,7 @@ class MavenProtocolRoutesFailureFunnelTest {
     Stream<DynamicTest> everyWriteVerb_typedCause_answersItsStatus_withPathAndRequestId() {
         return verbs().map(verb -> DynamicTest.dynamicTest(verb.method() + " typed",
                                                            () -> assertFailure(verb,
-                                                                               new ManagementServerError.NotFound("no such artifact"),
+                                                                               ManagementServerError.NotFound.literal("no such artifact"),
                                                                                HttpStatus.NOT_FOUND)));
     }
 

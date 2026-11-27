@@ -56,7 +56,7 @@ public final class UnconfirmedMarkRoutes implements RouteSource {
         var instance = Option.option(request.instance()).map(String::trim).filter(value -> !value.isEmpty());
 
         if (instance.isEmpty()) {
-            return new ManagementServerError.InvalidRequest("instance is required: the provider instance id you terminated, or 'unknown'").promise();
+            return ManagementServerError.InvalidRequest.literal("instance is required: the provider instance id you terminated, or 'unknown'").promise();
         }
 
         return RequestParse.asRequest(NodeId.nodeId(nodeId))
@@ -90,8 +90,8 @@ public final class UnconfirmedMarkRoutes implements RouteSource {
     /// A refusal is a statement about the request or the cluster's state, not a server fault: 404 for no mark, 409 for the rest.
     static Cause asManagementError(Cause cause) {
         return switch (cause) {
-            case UnconfirmedClearRefusal.NotMarked refusal -> new ManagementServerError.NotFound(refusal.message());
-            case UnconfirmedClearRefusal refusal -> new ManagementServerError.Conflict(refusal.message());
+            case UnconfirmedClearRefusal.NotMarked refusal -> new ManagementServerError.NotFound(refusal);
+            case UnconfirmedClearRefusal refusal -> new ManagementServerError.Conflict(refusal);
             default -> cause;
         };
     }

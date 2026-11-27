@@ -145,11 +145,35 @@ public sealed interface Causes {
     }
 
     static Cause fromThrowable(Throwable throwable) {
-        var sw = new StringWriter();
+        return ThrowableCause.throwableCause(throwable);
+    }
 
-        throwable.printStackTrace(new PrintWriter(sw));
+    /// The cause [#fromThrowable] answers: its [#message()] is the throwable's printed stack trace, unchanged, for logs and
+    /// every existing caller. Its [#clientMessage()] is the fixed [#CLIENT_TEXT] (#3723), because that message carries class
+    /// names, file paths and line numbers that belong in a server log only.
+    ///
+    /// @param message the throwable's printed stack trace
+    record ThrowableCause(String message) implements SimpleCause {
+        /// The client text of a caught throwable: no class name, no trace, no message of the throwable.
+        public static final String CLIENT_TEXT = "Internal error";
 
-        return cause(sw.toString());
+        public static ThrowableCause throwableCause(Throwable throwable) {
+            var sw = new StringWriter();
+
+            throwable.printStackTrace(new PrintWriter(sw));
+
+            return new ThrowableCause(sw.toString());
+        }
+
+        @Override
+        public String clientMessage() {
+            return CLIENT_TEXT;
+        }
+
+        @Override
+        public String toString() {
+            return completeMessage();
+        }
     }
 
     /// Create a mapper which will map a single value into a formatted message.
@@ -239,6 +263,19 @@ public sealed interface Causes {
                                                                             input3));
     }
 
+    /// Cause rung of [#forOneValue(String, Fn2)] for a wrapper that formats the cause it holds (#3723): the constructor
+    /// receives the origin, the message (the template over the origin, exactly as [#forOneValue(String, Fn2)] formats it, so
+    /// `message()` is unchanged) and the client message (the same template over the origin's `clientMessage()`, never its
+    /// `message()`). The wrapper's client text therefore carries nothing its origin hides, at any nesting depth.
+    ///
+    /// @param template the message template prepared for [String.format], with one `%s` for the origin
+    /// @param causeFactory the wrapper's canonical constructor: origin, message, client message
+    static <C extends Cause> Fn1<C, Cause> forOneCause(String template, Fn3<C, Cause, String, String> causeFactory) {
+        return origin -> causeFactory.apply(origin,
+                                            String.format(Locale.ROOT, template, origin),
+                                            String.format(Locale.ROOT, template, origin.clientMessage()));
+    }
+
     interface CompositeCause extends Cause {
         static Cause toComposite(String text, Cause cause) {
             if (cause instanceof CompositeCause composite) {
@@ -278,6 +315,26 @@ public sealed interface Causes {
 
                 stream().forEach(issue -> builder.append("\n  ")
                                                  .append(issue.message()));
+
+                return builder.toString();
+            }
+
+            /// A composite of ONE member (what `Result.all` yields for a single failure, e.g. one bad query parameter) is that
+            /// member: there is no list to introduce, and the `Composite:` header plus indent would be noise in the body of a
+            /// `400`. `message()` keeps the header: it is for logs and is pinned by existing callers.
+            @Override
+            public String clientMessage() {
+                return causes().size() == 1
+                       ? causes().getFirst()
+                               .clientMessage()
+                       : listedClientMessage();
+            }
+
+            private String listedClientMessage() {
+                var builder = new StringBuilder("Composite:");
+
+                stream().forEach(issue -> builder.append("\n  ")
+                                                 .append(issue.clientMessage()));
 
                 return builder.toString();
             }

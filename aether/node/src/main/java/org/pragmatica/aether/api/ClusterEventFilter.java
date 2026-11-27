@@ -33,10 +33,10 @@ public record ClusterEventFilter(Option<String> code, Option<Severity> minimumSe
                                                            .filter(level -> level != Severity.UNKNOWN)
                                                            .toList();
 
-    private static final Cause INVALID_SEVERITY = new ManagementServerError.InvalidRequest("Invalid 'severity' query parameter: expected one of " + SELECTABLE.stream()
-                                                                                                                                                              .map(Severity::name)
-                                                                                                                                                              .collect(Collectors.joining(", "))
-                                                                                          + " (case-insensitive)");
+    private static final Cause INVALID_SEVERITY = ManagementServerError.InvalidRequest.literal("Invalid 'severity' query parameter: expected one of " + SELECTABLE.stream()
+                                                                                                                                                                  .map(Severity::name)
+                                                                                                                                                                  .collect(Collectors.joining(", "))
+                                                                                              + " (case-insensitive)");
 
     /// The filter for the raw `code` and `severity` query parameters; fails with a 400 cause when `severity` names no level.
     public static Result<ClusterEventFilter> clusterEventFilter(Option<String> code, Option<String> severity) {

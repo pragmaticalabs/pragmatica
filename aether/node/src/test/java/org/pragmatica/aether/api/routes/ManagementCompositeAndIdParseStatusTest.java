@@ -63,15 +63,15 @@ class ManagementCompositeAndIdParseStatusTest {
 
     @Test
     void composite_ofMembersThatAgree_answersTheirStatus() {
-        var composite = Causes.composite(new ManagementServerError.InvalidRequest("a").result(),
-                                         new ManagementServerError.InvalidRequest("b").result());
+        var composite = Causes.composite(ManagementServerError.InvalidRequest.literal("a").result(),
+                                         ManagementServerError.InvalidRequest.literal("b").result());
 
         assertThat(problemStatus(composite)).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
     @Test
     void composite_ofMembersThatDisagree_staysInternalServerError() {
-        var composite = Causes.composite(new ManagementServerError.InvalidRequest("a").result(),
+        var composite = Causes.composite(ManagementServerError.InvalidRequest.literal("a").result(),
                                          new ManagementServerError.NotLeader("").result());
 
         assertThat(problemStatus(composite)).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
@@ -79,7 +79,7 @@ class ManagementCompositeAndIdParseStatusTest {
 
     @Test
     void composite_withAnUntypedMember_staysInternalServerError() {
-        var composite = Causes.composite(new ManagementServerError.InvalidRequest("a").result(),
+        var composite = Causes.composite(ManagementServerError.InvalidRequest.literal("a").result(),
                                          Causes.cause("untyped").result());
 
         assertThat(problemStatus(composite)).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);

@@ -69,8 +69,10 @@ import org.pragmatica.lang.utils.Causes;
 /// implemented at the `ManagementServer` security pipeline, not here, so the check
 /// short-circuits before role evaluation.
 public final class StreamApiRoutes implements RouteSource {
-    private static final Cause STREAM_NOT_FOUND = new ManagementServerError.NotFound("Stream not found");
-    private static final Cause GROUP_NOT_FOUND = new ManagementServerError.NotFound("Consumer group not found");
+    private static final Cause STREAM_NOT_FOUND = ManagementServerError.NotFound.literal("Stream not found");
+
+    private static final Cause GROUP_NOT_FOUND = ManagementServerError.NotFound.literal("Consumer group not found");
+
     private static final int DEFAULT_PARTITIONS = 4;
 
     /// #968: the body-carried create's refusals all carry a status. `Missing stream name` used to be
@@ -516,8 +518,8 @@ public final class StreamApiRoutes implements RouteSource {
     /// a fabricated default.
     private Result<Integer> declaredPartitions(String engineKey) {
         return committedPartitions(engineKey).orElse(() -> localPartitions(engineKey))
-                                  .toResult(new ManagementServerError.StreamUnavailable(engineKey,
-                                                                                        "declared partition count is not known"));
+                                  .toResult(ManagementServerError.StreamUnavailable.literal(engineKey,
+                                                                                            "declared partition count is not known"));
     }
 
     private Option<Integer> committedPartitions(String engineKey) {
@@ -793,11 +795,11 @@ public final class StreamApiRoutes implements RouteSource {
                                                         String stream,
                                                         String version,
                                                         String tailLiteral) {
-        return new ManagementServerError.NotImplemented("Tail subscription via SSE/WebSocket is deferred to issue #212. "
-                                                       + "For polling-based tail, use GET /api/v1/streams/" + namespace
-                                                       + "/" + stream
-                                                       + "/" + version
-                                                       + "/events?fromOffset=N&maxEvents=K.").result();
+        return ManagementServerError.NotImplemented.literal("Tail subscription via SSE/WebSocket is deferred to issue #212. "
+                                                           + "For polling-based tail, use GET /api/v1/streams/" + namespace
+                                                           + "/" + stream
+                                                           + "/" + version
+                                                           + "/events?fromOffset=N&maxEvents=K.").result();
     }
 
     /// Spec event-stream-namespaces §16: paginated event read for polling-based tail subscription.
@@ -973,11 +975,11 @@ public final class StreamApiRoutes implements RouteSource {
             case PublishOutcome.OutcomeUnknown(var cause) -> new PublishItemOutcome(index,
                                                                                     PublishItemStatus.OUTCOME_UNKNOWN,
                                                                                     Option.none(),
-                                                                                    Option.some(cause.message()));
+                                                                                    Option.some(HttpError.clientMessage(cause)));
             case PublishOutcome.NotAttempted(var cause) -> new PublishItemOutcome(index,
                                                                                   PublishItemStatus.NOT_ATTEMPTED,
                                                                                   Option.none(),
-                                                                                  Option.some(cause.message()));
+                                                                                  Option.some(HttpError.clientMessage(cause)));
         };
     }
 
@@ -1158,8 +1160,7 @@ public final class StreamApiRoutes implements RouteSource {
 
     private Result<Unit> materializeForPublish(String streamName, StreamConfig config) {
         return streamManager().ensureStreamMaterialized(config)
-                            .mapError(cause -> new ManagementServerError.StreamUnavailable(streamName,
-                                                                                           cause.message()));
+                            .mapError(cause -> new ManagementServerError.StreamUnavailable(streamName, cause));
     }
 
     /// #968: `POST /streams` with a body-carried `name`. Before this the handler (in `StreamRoutes`)
@@ -1278,10 +1279,10 @@ public final class StreamApiRoutes implements RouteSource {
                                                                   RetentionPolicy requested) {
         return committed.equals(requested)
                ? Result.success(new CreateResponse(addr.asString(), "exists"))
-               : new ManagementServerError.Conflict("Stream '" + addr.asString()
-                                                   + "' exists with retention " + committed
-                                                   + "; refusing the differing retention " + requested
-                                                   + ": change retention through the stream declaration").result();
+               : ManagementServerError.Conflict.literal("Stream '" + addr.asString()
+                                                       + "' exists with retention " + committed
+                                                       + "; refusing the differing retention " + requested
+                                                       + ": change retention through the stream declaration").result();
     }
 
     /// Registers a PERMANENT catalog reference ([StreamRegistryEntry.RegisteredByKind#OPERATOR]): no

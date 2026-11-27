@@ -16,6 +16,8 @@
  */
 package org.pragmatica.json;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -30,17 +32,29 @@ import tools.jackson.databind.jsontype.TypeSerializer;
 
 /// Jackson serializer for Result<T> types.
 /// Serializes Result as: {"success": true, "value": <T>} or {"success": false, "error": {"message": "...", "type": "..."}}
+///
+/// The general serializer writes the failure's `message()`: the CLI, cloud clients and state files read it back. The
+/// [#clientFacing()] serializer, registered by [ClientFacingModule] for HTTP bodies, writes its `clientMessage()` (#3723).
 public class ResultSerializer extends ValueSerializer<Result<?>> {
     private final Option<JavaType> valueType;
     private final Option<ValueSerializer<Object>> valueSerializer;
+    private final Fn1<String, Cause> failureText;
 
     public ResultSerializer() {
-        this(Option.none(), Option.none());
+        this(Option.none(), Option.none(), Cause::message);
     }
 
-    private ResultSerializer(Option<JavaType> valueType, Option<ValueSerializer<Object>> valueSerializer) {
+    private ResultSerializer(Option<JavaType> valueType,
+                             Option<ValueSerializer<Object>> valueSerializer,
+                             Fn1<String, Cause> failureText) {
         this.valueType = valueType;
         this.valueSerializer = valueSerializer;
+        this.failureText = failureText;
+    }
+
+    /// The serializer of a failure's client text, for a mapper that writes an HTTP client body.
+    static ResultSerializer clientFacing() {
+        return new ResultSerializer(Option.none(), Option.none(), Cause::clientMessage);
     }
 
     @Override
@@ -57,7 +71,7 @@ public class ResultSerializer extends ValueSerializer<Result<?>> {
                 gen.writeName("error");
                 gen.writeStartObject();
                 gen.writeStringProperty("message",
-                                        failure.cause().message());
+                                        failureText.apply(failure.cause()));
                 gen.writeStringProperty("type",
                                         failure.cause().getClass().getSimpleName());
                 gen.writeEndObject();
@@ -80,7 +94,7 @@ public class ResultSerializer extends ValueSerializer<Result<?>> {
         var contentType = type.getContentType();
         var ser = prov.findValueSerializer(contentType);
 
-        return new ResultSerializer(Option.option(contentType), Option.option(ser));
+        return new ResultSerializer(Option.option(contentType), Option.option(ser), failureText);
     }
 
     @Override

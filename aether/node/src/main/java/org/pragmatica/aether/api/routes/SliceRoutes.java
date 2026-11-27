@@ -51,6 +51,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.LayeredConfigProvider;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -72,11 +73,11 @@ public final class SliceRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(SliceRoutes.class);
     private static final Cause MISSING_ARTIFACT = new ManagementServerError.MissingField("artifact");
     private static final Cause MISSING_INSTANCES = new ManagementServerError.MissingField("instances");
-    private static final Cause BLUEPRINT_NOT_FOUND = new ManagementServerError.NotFound("Blueprint not found");
+    private static final Cause BLUEPRINT_NOT_FOUND = ManagementServerError.NotFound.literal("Blueprint not found");
 
-    private static final Cause SLICE_NOT_LOADED = new ManagementServerError.NotFound("Slice not loaded or no per-slice config available");
+    private static final Cause SLICE_NOT_LOADED = ManagementServerError.NotFound.literal("Slice not loaded or no per-slice config available");
 
-    private static final Cause NOT_IN_BLUEPRINT = new ManagementServerError.Conflict("Slice is not part of any active blueprint. Deploy via blueprint.");
+    private static final Cause NOT_IN_BLUEPRINT = ManagementServerError.Conflict.literal("Slice is not part of any active blueprint. Deploy via blueprint.");
 
     private final Supplier<ManageableNode> nodeSupplier;
 
@@ -173,7 +174,7 @@ public final class SliceRoutes implements RouteSource {
 
     private Promise<ValidatedScale> resolveScaleArtifact(ScaleParams params) {
         return Artifact.artifact(params.artifact())
-                       .mapError(cause -> new ManagementServerError.InvalidRequest(cause.message()))
+                       .mapError(cause -> new ManagementServerError.InvalidRequest(cause))
                        .async()
                        .map(artifact -> new ValidatedScale(params, artifact));
     }
@@ -245,7 +246,7 @@ public final class SliceRoutes implements RouteSource {
                                                         cause.message()));
     }
 
-    private static final Cause MISSING_ARTIFACT_COORDS = new ManagementServerError.InvalidRequest("Missing 'artifact' field");
+    private static final Cause MISSING_ARTIFACT_COORDS = ManagementServerError.InvalidRequest.literal("Missing 'artifact' field");
 
     /// #759 — "deployed" must mean every declared instance is verified ACTIVE at response time, not
     /// merely that the publish command committed. `deployStatus` reads `deploymentMap()` to name three
@@ -649,7 +650,7 @@ public final class SliceRoutes implements RouteSource {
         return new BlueprintValidationResponse(false,
                                                "",
                                                0,
-                                               List.of(cause.message()),
+                                               List.of(HttpError.clientMessage(cause)),
                                                warnings);
     }
 
@@ -747,8 +748,8 @@ public final class SliceRoutes implements RouteSource {
     /// A fence refusal is a state of the cluster the request lost to (409), or an election in progress (503); anything else is the apply's.
     private static Cause scaleRefusal(Cause cause) {
         return switch (cause) {
-            case SliceTargetFenceError.NoCommittedLeader refusal -> new ManagementServerError.ServiceUnavailable(refusal.message());
-            case SliceTargetFenceError refusal -> new ManagementServerError.Conflict(refusal.message());
+            case SliceTargetFenceError.NoCommittedLeader refusal -> new ManagementServerError.ServiceUnavailable(refusal);
+            case SliceTargetFenceError refusal -> new ManagementServerError.Conflict(refusal);
             default -> cause;
         };
     }

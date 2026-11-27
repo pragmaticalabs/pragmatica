@@ -53,7 +53,7 @@ import org.pragmatica.lang.utils.Causes;
 
 
 public final class StreamRoutes implements RouteSource {
-    private static final Cause MISSING_STREAM_NAME = new ManagementServerError.InvalidRequest("Missing stream name");
+    private static final Cause MISSING_STREAM_NAME = ManagementServerError.InvalidRequest.literal("Missing stream name");
 
     /// The refusal carries the status the pre-auth path gate answers with (405, see
     /// `ManagementServer.rejectSystemStreamWrite`): a bare `Causes.cause` is not `HttpStatusAware`

@@ -16,6 +16,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.ApiKeyEntry;
@@ -50,6 +51,7 @@ import org.pragmatica.terra.TerraApplication;
 import org.pragmatica.terra.TerraBlueprint;
 import org.pragmatica.terra.TerraContext;
 import org.pragmatica.terra.TerraFactory;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -146,11 +148,17 @@ class TerraProblemJsonTest {
         assertProblem(get("/conflict"), 409, "/conflict");
     }
 
-    @Test void unexpectedException_is500ProblemJson_withTodaysClientText() throws Exception {
-        var response = get("/unexpected");
+    /// #3723 flips the pin of the old text (the stack trace): a caught throwable answers the fixed text and nothing of the trace,
+    /// over the real transport; the trace stays in the server log.
+    @Test void unexpectedException_is500ProblemJson_withTheFixedInternalErrorText() throws Exception {
+        try (var log = LogCapture.capture(SliceRouter.class, Level.WARN, true)) {
+            var response = get("/unexpected");
 
-        assertProblem(response, 500, "/unexpected");
-        assertThat(problem(response).detail().or("")).isEqualTo(HttpError.clientMessage(UNEXPECTED));
+            assertProblem(response, 500, "/unexpected");
+            assertThat(problem(response).detail().or("")).isEqualTo("Internal error");
+            assertThat(response.body()).doesNotContain(SECRET).doesNotContain("IllegalStateException").doesNotContain("at java").doesNotContain("\\tat ").doesNotContain("\tat ");
+            assertThat(String.join("\n", log.messages())).contains(SECRET).contains("/unexpected");
+        }
     }
 
     @Test void authRefusal_is401ProblemJson_andKeepsTheChallenge() throws Exception {

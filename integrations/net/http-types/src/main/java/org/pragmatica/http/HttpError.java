@@ -23,6 +23,8 @@ import org.pragmatica.lang.utils.Causes;
 
 
 public interface HttpError extends Cause, HttpStatusAware {
+    /// The client text for a cause that is a caught throwable: no class name, no trace, no message of the throwable.
+    String INTERNAL_ERROR_TEXT = Causes.ThrowableCause.CLIENT_TEXT;
     HttpStatus status();
 
     @Override
@@ -44,24 +46,13 @@ public interface HttpError extends Cause, HttpStatusAware {
     }
 
     /// The one renderer of a [Cause] into client-facing text (#2101). Every client-body producer calls this and
-    /// never `Cause::message` directly: an [HttpError] gives its [#clientMessage()], a composite joins its members'
-    /// client text (recursively), any other cause gives its own top-level message. The origin chain is left to the
+    /// never `Cause::message` directly. The text is the cause's own [Cause#clientMessage()]: an [HttpError] gives its
+    /// [#clientMessage()], a composite joins its members' client text (recursively), a [Causes.ThrowableCause] (a caught
+    /// throwable, whose message is its stack trace) gives the fixed [#INTERNAL_ERROR_TEXT], a wrapper derives its text from
+    /// its origin's client text (#3723), any other cause gives its own top-level message. The origin chain is left to the
     /// server log.
     static String clientMessage(Cause cause) {
-        return switch (cause) {
-            case HttpError error -> error.clientMessage();
-            case Causes.CompositeCause composite -> compositeClientMessage(composite);
-            default -> cause.message();
-        };
-    }
-
-    private static String compositeClientMessage(Causes.CompositeCause composite) {
-        var builder = new StringBuilder("Composite:");
-
-        composite.stream().forEach(member -> builder.append("\n  ")
-                                                    .append(clientMessage(member)));
-
-        return builder.toString();
+        return cause.clientMessage();
     }
 
     /// The full origin chain as one line, for server-side logs only (#2101): every link joined by `<-`. An

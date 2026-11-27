@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.http.adapter;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -91,13 +92,16 @@ class SliceRouterProblemJsonTest {
         assertProblem(send(failing(new Conflicting("order already exists")), "/thing"), 409, "/thing");
     }
 
+    /// #3723 flips the pin of the old text (the stack trace): a caught throwable answers the fixed text and nothing of the trace.
     @Test
-    void unexpectedException_is500ProblemJson_withTodaysClientText() {
+    void unexpectedException_is500ProblemJson_withTheFixedInternalErrorText() {
         var failure = Causes.fromThrowable(new IllegalStateException(SECRET));
         var response = send(failing(failure), "/thing");
+        var body = new String(response.body(), StandardCharsets.UTF_8);
 
         assertProblem(response, 500, "/thing");
-        assertThat(problem(response).detail().or("")).isEqualTo(HttpError.clientMessage(failure));
+        assertThat(problem(response).detail().or("")).isEqualTo("Internal error");
+        assertThat(body).doesNotContain(SECRET).doesNotContain("IllegalStateException").doesNotContain("at java").doesNotContain("\\tat ").doesNotContain("\tat ");
     }
 
     @Test
