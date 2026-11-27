@@ -150,7 +150,7 @@ class RoutesTest {
         publish(h, blueprintOf("attempt-1", false, LIST));
         assertThat(committed(h, LIST)).isEqualTo(Option.none());
         h.loseKinds = Set.of();
-        h.advance(h.settings.submissionExpiry() + 1_000L);
+        h.advance(h.settings.submissionExpiry() + 2 * h.settings.timing().tick());
         assertThat(committed(h, LIST)).isEqualTo(Option.some(declared("attempt-1")));
     }
 
