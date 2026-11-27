@@ -189,7 +189,7 @@ class HierarchicalWorkerDrainTest {
                                   .findFirst()
                                   .orElseThrow();
 
-        barrier = Result.lift(HeldPort::httpServer).unwrap();
+        barrier = Result.lift(() -> HeldPort.httpServer()).unwrap();
         barrier.createContext("/release",
                               exchange -> {
                                   entered.succeed(Unit.unit());
