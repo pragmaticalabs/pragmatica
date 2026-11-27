@@ -71,6 +71,22 @@ class AetherNodeOperatorDrainClearTest {
         assertThat(registry.isDrainRequested(DRAINED)).as("the command is still in flight; the leader must keep delivering it").isTrue();
     }
 
+    /// #2315 F1: no edge into MEMBER clears an entry, whatever the node's boot token reads afterwards. The real `BootTokens` never
+    /// replaces a recorded token (OperatorDrainRealTokensTest), so a restarted process cannot reach MEMBER under the drained
+    /// id and its drain ends at DEAD; a clear on a token change would be code only a substituted token can reach.
+    @Test
+    void clearOperatorDrainOnDeath_keepsTheEntry_onAnEdgeIntoMember_evenWhenTheBootTokenChanged() {
+        var registry = DrainCommandRegistry.drainCommandRegistry();
+        var token = new AtomicLong(1L);
+
+        registry.bindSubject(DrainSubject.drainSubject(_ -> token.get(), _ -> 1L));
+        registry.requestDrain(DRAINED);
+        token.set(2L);
+        DrainAssembly.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Observed", "Member"));
+
+        assertThat(registry.isDrainRequested(DRAINED)).isTrue();
+    }
+
     @Test
     void clearOperatorDrainOnDeath_clearsOnlyTheDeadNode() {
         var registry = DrainCommandRegistry.drainCommandRegistry();
@@ -106,15 +122,17 @@ class AetherNodeOperatorDrainClearTest {
     /// #2315: the identity facts are bound where the node is assembled, and the topology manager's drains go through the holder of
     /// their ids. No unit test builds the assembly, so pin the three seams: an unbound registry pins every drain at process and
     /// incarnation `0`, which no edge takes as evidence (the fix would be inert), a manager drain set by node id could not be
-    /// cleared by id, and a drain observer without the DEAD predicate keeps tracking a node that never reports READY.
+    /// cleared by id, and a drain observer without the untracked fact keeps tracking a node the FSM dropped without a DEAD edge, while one
+    /// without the DEAD guard re-creates a mark for a node whose departure consumer already ran.
     @Test
     void assembly_bindsTheDrainSubject_wiresTheTopologyDrainIds_andEndsTrackingOnDead() {
         var code = NodeDepartureWiringTest.assemblyCode();
 
         assertThat(code).containsOnlyOnce("drainCommandRegistry.bindSubject(drainSubject(swimHealthDetector,membershipFsm));");
-        assertThat(code).containsOnlyOnce("nodeReadyAgain(metricsCollector::reportedStates).or(nodeDead(membershipFsm))");
-        assertThat(code).containsOnlyOnce("setDrainSetObserver(drainSetObserver(alertManager,config.self(),drainEnded))");
-        assertThat(code).containsOnlyOnce("drainCommandRegistry::drainTargets,drainSetObserver(alertManager,config.self(),drainEnded));");
+        assertThat(code).containsOnlyOnce("nodeReadyAgain(metricsCollector::reportedStates).or(nodeUntracked(membershipFsm))");
+        assertThat(code).containsOnlyOnce("departed=nodeDead(membershipFsm);");
+        assertThat(code).containsOnlyOnce("setDrainSetObserver(drainSetObserver(alertManager,config.self(),drainEnded,departed))");
+        assertThat(code).containsOnlyOnce("drainCommandRegistry::drainTargets,drainSetObserver(alertManager,config.self(),drainEnded,departed));");
         assertThat(code).containsOnlyOnce("DrainSink.synchronous(topologyDrains::request,");
         assertThat(code).containsOnlyOnce("topologyDrains::clear,");
     }

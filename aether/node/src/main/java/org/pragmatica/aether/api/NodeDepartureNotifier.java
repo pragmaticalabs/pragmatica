@@ -69,8 +69,13 @@ public record NodeDepartureNotifier(ClusterEventAggregator aggregator,
     /// the WARNING-level `node-never-joined` operator warning only: no `NODE_FAILED` event and no node-health
     /// alert, because nothing established that the subject was ever up. Like the pair above it is per-observer
     /// and ungated by leadership.
+    ///
+    /// It is also the end of this death's planned-departure mark (#2315): a DEAD state is not drain-ended evidence for
+    /// the age-out, so a mark a drain record created for the never-reachable node is consumed here, as
+    /// [`AlertManager#onNodeFailed`] consumes it for a reachable one.
     @Contract
     public void onNeverJoined(NodeId departed) {
+        alertManager.forgetDepartureMarks(departed);
         OperatorWarnings.raise(LOG,
                                warningSink,
                                OperatorWarningCode.NODE_NEVER_JOINED,

@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -1078,23 +1079,38 @@ public class AlertManager {
     /// a membership edge or a clock: run 2 showed a SWIM incarnation refutation clearing it mid-drain, and run 3
     /// showed a 30 s clock expiring it before a follower's DEAD edge, which lags the drainee's halt by ~50 s.
     ///
-    /// Marks every node in `drainSet` (never `self`). A mark the record created is dropped only on POSITIVE
-    /// evidence that the drain is over: the node is absent from the record for [`#DRAIN_OMISSION_GRACE_MS`]
-    /// AND `nodeReadyAgain` says it reports itself READY (alive, responsive, not draining). A drainee that
-    /// halted reports nothing, so its mark stays until its DEAD edge consumes it or it rejoins; a cancelled
-    /// drain returns the node to READY, so a later real crash of it alerts.
+    /// Marks every node in `drainSet` (never `self`, never a node `departed` says the observer's FSM holds DEAD). A mark the
+    /// record created is dropped only on POSITIVE evidence that the drain is over: the node is absent from the record for
+    /// [`#DRAIN_OMISSION_GRACE_MS`] AND `drainEnded` holds. `drainEnded` is read from state and is one of two facts: the node
+    /// reports itself READY (alive, responsive, not draining), or the observer's FSM no longer tracks it (no DEAD edge, hence
+    /// no departure notification, will ever come for it, #2315 L5).
+    ///
+    /// A DEAD state is deliberately NOT drain-ended evidence (#2315 F4). The FSM changes the state to DEAD before its DEAD hooks
+    /// run, so for that window a mark whose departure notification is still pending reads DEAD; dropping it there announces
+    /// the planned departure to nobody and raises CRITICAL. What is pending is read from the mark itself: it exists until
+    /// [`#onNodeFailed`] (a reachable death) or [`#forgetDepartureMarks`] (a never-reachable death, a rejoin) consumes it.
+    /// The grace is only the precondition (absence from the record), never the evidence.
+    ///
+    /// A drainee that halted reports nothing, so its mark stays until its DEAD edge consumes it or it rejoins; a cancelled
+    /// drain returns the node to READY, so a later real crash of it alerts. A ping that still names a node after this
+    /// observer's own DEAD edge (the leader clears its registry on its own, later edge) creates nothing: `departed` is that
+    /// node's life being over, and nothing would consume a mark made after the consumer ran.
     @Contract
     public void observeDrainSet(java.util.Set<NodeId> drainSet,
                                 NodeId self,
                                 long nowMs,
-                                java.util.function.Predicate<NodeId> nodeReadyAgain) {
-        drainSet.stream().filter(id -> !id.equals(self)).forEach(id -> markFromBroadcast(id, nowMs));
+                                Predicate<NodeId> drainEnded,
+                                Predicate<NodeId> departed) {
+        drainSet.stream()
+                .filter(id -> !id.equals(self))
+                .filter(id -> !departed.test(id))
+                .forEach(id -> markFromBroadcast(id, nowMs));
         broadcastDrainSeen.keySet()
                           .stream()
                           .filter(id -> drainSet.stream()
                                                 .noneMatch(named -> named.id()
                                                                          .equals(id)))
-                          .forEach(id -> ageOut(id, nowMs, nodeReadyAgain));
+                          .forEach(id -> ageOut(id, nowMs, drainEnded));
     }
 
     private void markFromBroadcast(NodeId id, long nowMs) {
@@ -1104,14 +1120,14 @@ public class AlertManager {
         }
     }
 
-    private void ageOut(String id, long nowMs, java.util.function.Predicate<NodeId> nodeReadyAgain) {
+    private void ageOut(String id, long nowMs, Predicate<NodeId> drainEnded) {
         var lastSeen = broadcastDrainSeen.get(id);
 
         if (lastSeen == null) {
             return;
         }
 
-        if (nowMs - lastSeen >= DRAIN_OMISSION_GRACE_MS && nodeReadyAgain.test(new NodeId(id))) {
+        if (nowMs - lastSeen >= DRAIN_OMISSION_GRACE_MS && drainEnded.test(new NodeId(id))) {
             announcedDeparture.remove(id);
             broadcastDrainSeen.remove(id);
         }
@@ -1226,7 +1242,9 @@ public class AlertManager {
     /// Drop the announced-departure marks for `reconnected` (#926), wired to the transport `PeerJoined` handshake
     /// that used to clear them together with the alert. Kept on the handshake: a mark that ends early costs a
     /// spurious CRITICAL on a later departure, the deliberate direction of the bias above. The alert itself is
-    /// NOT resolved here (#2061, see [`#clearNodeHealthAlert`]).
+    /// NOT resolved here (#2061, see [`#clearNodeHealthAlert`]). Also the consumer of a NEVER-REACHABLE death
+    /// (`NodeDepartureNotifier#onNeverJoined`, #2315): that death raises no node-health alert, so the mark ends
+    /// there instead of in [`#onNodeFailed`].
     @Contract
     public void forgetDepartureMarks(NodeId reconnected) {
         announcedDeparture.remove(reconnected.id());
