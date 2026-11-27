@@ -360,6 +360,24 @@ class SingleParkSleepTest {
     // ---- Failure input 5: the blind spots named in #3850. ----
 
     @Test
+    void hits_aNegativeObservationLoopThatAlsoExitsOnState_isNotReported_aNamedLimitNotCoverage() {
+        // QuicLaneEndMarkerFinLossTest:229 shape: the park waits to show that something does NOT happen, so it should be a Pause; the
+        // exit on state (the thing happened) makes it look like a wait for state. Telling the two apart is not syntactically decidable
+        // (CTO ruling 11-27): the gate accepts it, and the converted sites are the enforcer. This row pins the limit, it is not coverage.
+        assertThat(hitLines("class A {",
+                            "    boolean stillQuiet() {",
+                            "        for (var check = 0; check < 5; check++) {",
+                            "            if (stream.isWritable()) {",
+                            "                return false;",
+                            "            }",
+                            "            " + PARK,
+                            "        }",
+                            "        return true;",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    @Test
     void hits_aDeadlinePollWhoseDeadlineIsReadInTheBody_isNotReported_theThreeRepoShapes() {
         // DurableEntityForgeTest:798 (throw), Issue1117ReadinessTracerTest:478 (return), QuicSimultaneousDialLaneTest:145 (fail(...)): a
         // classifier that reads only the loop condition refuses all three; the clock sits in a guard of the body.
