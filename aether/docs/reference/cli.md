@@ -2842,7 +2842,7 @@ aether cluster list-keys [--audit]
 
 | Option | Description |
 |--------|-------------|
-| `--audit` | Show full key operation history (create, rotate, revoke, expire) |
+| `--audit` | Show the key operation history (create, rotate, revoke, expire): the newest 1000 entries per key, older ones are removed by the leader's key sweep (#3528) |
 
 ---
 

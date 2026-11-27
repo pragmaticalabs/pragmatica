@@ -4181,7 +4181,9 @@ publishes the declaration already committed locally, without moving the incarnat
 
 ### GET /api/v1/cluster/keys/audit
 
-List API key audit trail (create, rotate, revoke, expire events).
+List API key audit trail (create, rotate, revoke, expire events), newest first.
+
+**Bound (#3528):** the audit keeps the newest **1000 entries per key** (counted per `keyId`, ordered by `timestamp`); the response never holds more than 1000 entries for one key plus the entries written since the last sweep. The cluster leader's 60-second key sweep removes the older entries through a consensus batch (at most 1000 removals per sweep), so every node drops the same entries and no node prunes its own store. The bound is enforced once per sweep, not at each write: between two sweeps a key can hold its 1000 plus the writes of that period. A backup taken before this bound can hold more than 1000 entries for a key; restoring it succeeds unchanged, and the leader's sweeps trim it afterwards (a key far over the bound takes several sweeps). Nothing needs to be done by the operator. `[mechanism: leader sweep submits KVCommand.Remove batches through consensus; unit-tested over three simulated stores, not multi-node failure-injection verified: aether/node ApiKeyAuditRetentionTest]`
 
 **RBAC:** ADMIN
 
