@@ -259,6 +259,9 @@ class EmptyAudienceWarningTest {
 
         assertThat(closes).hasSize(1);
         assertThat(closes.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        assertThat(closes.getFirst().message()).as("the removal reason the operator reads")
+                  .isEqualTo("Placement audience of " + ORDERS.base().asString() + ": "
+                             + Recoveries.gone(ORDERS.base().asString(), "the target was removed"));
     }
 
     /// Red when: a target whose placement becomes unparsable keeps `placement-audience-empty` open for a policy that no longer exists.
@@ -272,5 +275,150 @@ class EmptyAudienceWarningTest {
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.warns("invalid-placement")).hasSize(1);
         assertThat(w.h.warns(CLOSE)).hasSize(1);
+        assertThat(w.h.warns(CLOSE).getFirst().message()).as("the reason the operator reads")
+                  .isEqualTo("Placement audience of " + ORDERS.base().asString() + ": its placement does not parse");
+    }
+
+    /// Red when: the opening text states a core count other than the eligible cores (three ready cores here), or leaves out any word of the
+    /// way out.
+    @Test
+    void emptyAudience_text_isExactly_theOperatorsInstruction() {
+        var w = formingWorld("WORKERS_ONLY", 3, W1);
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN).getFirst().message()).isEqualTo(
+            "Target " + ORDERS.base().asString() + " is not placed: its placement WORKERS_ONLY has an empty audience (3 eligible cores; "
+            + "communities: east-w-0 FORMING with 1 live). The community viability floor is 3 live members: add workers, "
+            + "or lower viability_floor in [community_policy] with allow_below_rf = true");
+    }
+
+    /// Red when: the community census is not in id order (east-w-0 before east-w-1, whatever the order they were created in).
+    @Test
+    void emptyAudience_census_listsCommunitiesInIdOrder() {
+        var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
+                       .target(ORDERS, 1, "WORKERS_ONLY")
+                       .community("east-w-1", 3, CommunityState.FORMING)
+                       .community("east-w-0", 3, CommunityState.FORMING)
+                       .seams(seams -> seams.withReady(ALL)
+                                            .withLocalAlive(Option.some(Set.of(W1))));
+
+        w.directive(W1, worker("east-w-0"));
+        w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1));
+        w.activate();
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN).getFirst().message())
+            .contains("(3 eligible cores; communities: east-w-0 FORMING with 1 live, east-w-1 FORMING with 0 live).");
+    }
+
+    /// Red when: the event is held back at the bound minus one nanosecond, or is not raised at the bound: the window is the
+    /// submission-expiry bound in nanoseconds from the draft (a milliseconds-to-nanoseconds factor off by a thousand ends it far too early).
+    @Test
+    void activeWriteLost_heldAtTheBoundMinusOne_raisedAtTheBound() {
+        var w = threeForming(Set.of(), Set.of(ClusterModel.SubmitKind.COMMUNITY));
+        var bound = w.h.monoNs + w.h.settings.submissionExpiry() * 1_000_000L;
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.monoNs = bound - 1;
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("one nanosecond inside the window: still in flight").isEmpty();
+        w.h.monoNs = bound;
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("at the bound the window has ended: the stall is told").hasSize(1);
+    }
+
+    /// Red when: an ACTIVE community whose live members meet the floor but are not ready (empty worker audience, no write due) is held back
+    /// as if its ACTIVE write were in flight: `due` must exclude a community that is already ACTIVE (it has no window, which reads as open).
+    @Test
+    void activeCommunity_membersNotReady_raisesTheEvent_noWriteIsDue() {
+        var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
+                       .target(ORDERS, 1, "WORKERS_ONLY")
+                       .community("east-w-0", 3, CommunityState.ACTIVE)
+                       .seams(seams -> seams.withReady(Set.of(CORE_1, CORE_2, CORE_3))
+                                            .withLocalAlive(Option.some(Set.of(W1, W2, W3))));
+
+        w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
+        w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
+        w.activate();
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("ACTIVE with the floor met: nothing is in flight, the empty audience is told").hasSize(1);
+    }
+
+    private static MbWorld activeWorld() {
+        var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
+                       .target(ORDERS, 1, "WORKERS_ONLY")
+                       .community("east-w-0", 3, CommunityState.ACTIVE)
+                       .seams(seams -> seams.withReady(ALL)
+                                            .withLocalAlive(Option.some(Set.of(W1, W2, W3))));
+
+        w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
+        w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
+        w.activate();
+
+        return w;
+    }
+
+    /// The window belongs to ONE write, the community's own ACTIVE write (#3852 F1). A DEGRADED write opens the window and commits late,
+    /// coalesced with a roster return (its KvPut, its settlement and W3's return land before the next pass), so no pass sees agreement
+    /// between; the ACTIVE write is then drafted. Red when: the ACTIVE write is held back only for the DEGRADED write's remaining window and
+    /// the event opens after ~6 ticks, far inside the ACTIVE write's own bound.
+    @Test
+    void degradedWriteWindow_commitsLate_doesNotCutTheActiveWritesHoldBackShort() {
+        var w = activeWorld();
+        var expiry = w.h.settings.submissionExpiry();
+        var tick = w.h.settings.timing().tick();
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(hosts(w.h, ORDERS)).as("placed while ACTIVE").hasSize(1);
+        w.h.holdKinds = Set.of(ClusterModel.SubmitKind.COMMUNITY);
+        w.announce("east-w-0", W1, W1, W2);
+        w.h.deliver(new ClusterInput.Reconcile());
+        var opened = w.h.model().activationDeadline.get("east-w-0");
+
+        assertThat(opened.isPresent()).as("the DEGRADED write opened the window").isTrue();
+        w.h.advance(expiry - 3 * tick);
+        assertThat(w.h.held).as("the DEGRADED write is held").isNotEmpty();
+        var degraded = w.h.held.values().iterator().next();
+
+        w.h.held.values().removeIf(held -> !held.equals(degraded));
+        w.h.settle(degraded, w.h.applyHeld(degraded.correlationId()));
+        w.h.seed(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
+        w.h.drain();
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.model().communities.get("east-w-0").map(v -> v.state().name()).or("none"))
+            .as("committed DEGRADED, the ACTIVE write drafted").isEqualTo("DEGRADED");
+        assertThat(w.h.warns(OPEN)).as("the ACTIVE write is in flight").isEmpty();
+        w.h.advance(6 * tick);
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("the ACTIVE write has been in flight ~6 ticks, far below its own bound").isEmpty();
+    }
+
+    /// Control of the test above, same sequence plus one agreement pass after the DEGRADED commit (W3 still off the roster): the window is
+    /// removed and the ACTIVE write opens its own, so no opener appears. Green at head: the red above comes from the carried-over window.
+    @Test
+    void control_degradedWriteCommits_withAnAgreementPass_theActiveWriteHasItsOwnWindow() {
+        var w = activeWorld();
+        var expiry = w.h.settings.submissionExpiry();
+        var tick = w.h.settings.timing().tick();
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.holdKinds = Set.of(ClusterModel.SubmitKind.COMMUNITY);
+        w.announce("east-w-0", W1, W1, W2);
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.advance(expiry - 3 * tick);
+        assertThat(w.h.held).as("the DEGRADED write is held").isNotEmpty();
+        var degraded = w.h.held.values().iterator().next();
+
+        w.h.held.values().removeIf(held -> !held.equals(degraded));
+        w.h.settle(degraded, w.h.applyHeld(degraded.correlationId()));
+        w.h.drain();
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.model().activationDeadline.get("east-w-0").isPresent()).as("agreement removed the window").isFalse();
+        var opensBefore = w.h.warns(OPEN).size();
+
+        w.announce("east-w-0", W1, W1, W2, W3);
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.advance(6 * tick);
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("no new opener while the fresh window is open").hasSize(opensBefore);
     }
 }
