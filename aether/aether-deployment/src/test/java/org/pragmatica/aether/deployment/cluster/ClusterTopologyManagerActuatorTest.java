@@ -37,6 +37,7 @@ import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -398,6 +399,49 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_SCALE_DOWN).await().isFailure()).isTrue();
         assertThat(drainCommandSinkCalls).isEmpty();
         assertThat(lifecycleManager.terminateCount.get()).isZero();
+    }
+
+    /// #3439: the surplus selector asks [ClusterTopologyManager#drainRefusal] and [ClusterTopologyManager#drainNode] enforces it: one predicate,
+    /// so what is asked is what is refused. Each case asks the predicate and then drains the same node and reason, once.
+    private void assertOneAnswer(NodeId node, DrainReason reason, boolean refused) {
+        var asked = ctm.drainRefusal(node, reason);
+        var drained = ctm.drainNode(node, reason).await();
+
+        assertThat(asked.isPresent()).as("the predicate for %s / %s", node, reason).isEqualTo(refused);
+        assertThat(drained.isFailure()).as("the choke point for %s / %s", node, reason).isEqualTo(refused);
+        asked.onPresent(cause -> assertThat(drained.fold(Cause::message, _ -> "")).as("the same refusal").isEqualTo(cause.message()));
+    }
+
+    @Test
+    void drainRefusal_isTheChokePointsOwnAnswer_voterHandoffMissing() {
+        ctm.setRetirementRefusal(node -> node.equals(PEER_D) ? Option.some("awaiting certified voter handoff") : Option.none());
+        ctm.activate();
+
+        assertOneAnswer(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL, true);
+        assertOneAnswer(PEER_C, DrainReason.OVERPROVISION_PARTITION_HEAL, false);
+    }
+
+    @Test
+    void drainRefusal_isTheChokePointsOwnAnswer_pairedReplacementRefusedForSurplusTrimOnly() {
+        var pairings = NodeReplacementIndex.nodeReplacementIndex();
+        pairings.put(new AetherKey.NodeReplacementKey(PEER_C),
+                     new AetherValue.NodeReplacementValue(PEER_D, "core", AetherValue.NodeReplacementPhase.JOINING, 0L));
+        ctm.setNodeReplacements(pairings);
+        ctm.activate();
+
+        assertOneAnswer(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL, true);
+        assertOneAnswer(PEER_C, DrainReason.OVERPROVISION_SCALE_DOWN, true);
+        assertOneAnswer(PEER_D, DrainReason.JOIN_GRACE_REAP, false);
+    }
+
+    @Test
+    void drainRefusal_isTheChokePointsOwnAnswer_inactiveManagerAndSelf() {
+        assertOneAnswer(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL, true);
+
+        ctm.activate();
+
+        assertOneAnswer(SELF, DrainReason.OVERPROVISION_PARTITION_HEAL, true);
+        assertOneAnswer(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL, false);
     }
 
     /// #1543: the LeaderReconciler surplus drain picks a fresh ephemeral core first — the +1 replacement. While

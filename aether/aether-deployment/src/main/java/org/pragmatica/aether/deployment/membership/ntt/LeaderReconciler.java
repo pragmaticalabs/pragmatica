@@ -173,6 +173,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @SuppressWarnings("JBCT-RET-08")
 public final class LeaderReconciler {
     private static final Logger log = LoggerFactory.getLogger(LeaderReconciler.class);
+    /// The reason of every surplus drain, asked of the choke point at selection and given to it at dispatch: a refusal can depend on the reason.
+    private static final DrainReason SURPLUS_DRAIN_REASON = DrainReason.OVERPROVISION_PARTITION_HEAL;
     /// One availability-guard refusal as rendered in the deferred-surplus-drain WARN.
     private static final String REFUSAL_FORMAT = "owner=%s, artifact=%s, remainingActive=%d, minAvailable=%d";
 
@@ -279,6 +281,8 @@ public final class LeaderReconciler {
     /// permits" so construction without it keeps the ownership ordering alone.
     private final AtomicReference<BiFunction<NodeId, Set<NodeId>, Option<DrainRefusal>>> sliceDrainGuard = new AtomicReference<>(LeaderReconciler::permitsEveryDrain);
 
+    /// #3439: the surplus-drain candidates the drain choke point refuses, told once per transition — see [`DrainRefusals`].
+    private final DrainRefusals drainRefusals = DrainRefusals.drainRefusals(this::warnDrainRefused);
     private final TimeSource timeSource;
     /// Every task of this reconciler is a one-shot scheduled through [`#lifetime`], over this seam.
     private final OwnerLifetime.Seam lifetimeSeam;
@@ -958,6 +962,19 @@ public final class LeaderReconciler {
     /// [`#ownsActiveSlicesView`]: under FSM2 the legacy scan sees no rows and the guard never refuses.
     public BiFunction<NodeId, Set<NodeId>, Option<DrainRefusal>> sliceDrainGuardView() {
         return sliceDrainGuard.get();
+    }
+
+    /// The surplus-drain candidates the drain choke point refuses now, with the cause each was last refused for. Read-only observable
+    /// state (#3439): empty when every candidate may be drained.
+    public Map<NodeId, String> drainRefusalsView() {
+        return drainRefusals.view();
+    }
+
+    /// A refusal of a surplus-drain candidate, on its transition. The node is not drained and not dropped: the next pass asks again.
+    private void warnDrainRefused(NodeId node, Cause cause) {
+        log.warn("LeaderReconciler surplus drain of {} was refused: {}; it is not drained, and is asked again on the next pass",
+                 node,
+                 cause.message());
     }
 
     /// The default [`#sliceDrainGuard`]: no refusal, so ownership ordering alone decides.
@@ -1737,6 +1754,11 @@ public final class LeaderReconciler {
     ///    `DrainProcedure` and would oscillate DEPARTING→MEMBER. When the other members cannot cover
     ///    the surplus the scale-down stops short and the deferral WARN says the leader is excluded.
     ///
+    /// Choke-point predicate (#3439) — the same pool filter, asked of [`ClusterTopologyManager#drainRefusal`]: a candidate the drain choke point
+    /// would refuse now (a voter whose certified handoff is missing, a node a live replacement pairing protects) is never selected, so it cannot
+    /// absorb a drain slot that a drainable member should take. Each refusal is told once and kept in [`#drainRefusalsView`]; a shortfall it causes
+    /// is deferred with the same follow-up as a young candidate, so the surplus drains once the refusal lifts.
+    ///
     /// Maturity shield (#1055) — the ONE age rule, applied to the candidate pool before any tier:
     /// a member younger than the drain-safety grace ([`#pastDrainSafetyGrace`]) is never a victim, in
     /// every partition (an ephemeral non-owner included: a replacement drained the moment it joined
@@ -1753,11 +1775,19 @@ public final class LeaderReconciler {
                                    .filter(this::pastDrainSafetyGrace)
                                    .sorted(Comparator.comparing(NodeId::id).reversed())
                                    .toList();
+        var drainable = others.stream().filter(this::drainableNow).toList();
         var victims = new LinkedHashSet<NodeId>();
 
-        appendTieredVictims(victims, others, drainCount, refusals);
+        drainRefusals.retainOnly(others);
+        appendTieredVictims(victims, drainable, drainCount, refusals);
 
         return Set.copyOf(victims);
+    }
+
+    /// #3439: whether the drain choke point would accept `id` now, asked of its own predicate ([`ClusterTopologyManager#drainRefusal`]) for the
+    /// reason dispatch uses ([`#SURPLUS_DRAIN_REASON`]), so a node it refuses is never selected. A refusal is told and recorded, never dropped.
+    private boolean drainableNow(NodeId id) {
+        return drainRefusals.permits(id, ctm.drainRefusal(id, SURPLUS_DRAIN_REASON));
     }
 
     /// Append victims from the mature `candidates` in tier order — ephemeral non-owners, configured
@@ -1926,11 +1956,12 @@ public final class LeaderReconciler {
                                         Set<NodeId> currentMembers,
                                         int deferredCount,
                                         List<DrainRefusal> refusals) {
-        log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or slice owners whose removal would drop a hosted slice below minAvailable, or only the leader remains (the leader is never a drain victim, #1089); youngAgesMs={}, minAvailableRefusals=[{}]",
+        log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or slice owners whose removal would drop a hosted slice below minAvailable, or only the leader remains (the leader is never a drain victim, #1089) or candidates the drain choke point refuses (#3439); youngAgesMs={}, minAvailableRefusals=[{}], drainRefusals={}",
                  deferredCount,
                  drainSafetyGraceWindow.millis(),
                  youngMemberAgesMs(currentMembers),
-                 describeRefusals(refusals));
+                 describeRefusals(refusals),
+                 drainRefusals.view());
         armDrainGraceReEval(life, currentMembers);
     }
 
@@ -2257,7 +2288,7 @@ public final class LeaderReconciler {
             return;
         }
 
-        ctm.drainNode(peerId, DrainReason.OVERPROVISION_PARTITION_HEAL);
+        ctm.drainNode(peerId, SURPLUS_DRAIN_REASON).onFailure(cause -> drainRefusals.refused(peerId, cause));
     }
 
     /// #1049 — drop every in-flight entry older than its own per-source ceiling. The one time bound left,

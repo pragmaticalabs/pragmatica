@@ -28,6 +28,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.consensus.topology.TransportObservation;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -455,6 +456,13 @@ public interface ClusterTopologyManager extends TopologyManager {
     }
 
     Promise<Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation);
+
+    /// #3439: the ONE answer to "may `targetNodeId` be drained now, for `reason`". [#drainNode] refuses exactly when this is present, and the
+    /// reconciler's surplus selection asks it before it picks a victim, so a node the choke point would refuse is never selected. Default:
+    /// nothing is refused (a manager that drains nothing).
+    default Option<Cause> drainRefusal(NodeId targetNodeId, DrainReason reason) {
+        return Option.none();
+    }
 
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
 
