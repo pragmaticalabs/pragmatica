@@ -31,9 +31,12 @@ final class PortBindFixtures {
         import java.net.ServerSocket;
         import java.net.Socket;
         import java.util.concurrent.Callable;
-        import java.util.function.IntFunction;
 
         public class Forms {
+            interface Opener {
+                ServerSocket open(int port) throws Exception;
+            }
+
             static final Callable<ServerSocket> STATIC_INIT = () -> new ServerSocket(0);
             final Callable<DatagramSocket> fieldInit = () -> new DatagramSocket(0);
 
@@ -56,7 +59,7 @@ final class PortBindFixtures {
                 socket.bind(address);
             }
 
-            IntFunction<ServerSocket> methodReference() {
+            Opener methodReference() {
                 return ServerSocket::new;
             }
 
