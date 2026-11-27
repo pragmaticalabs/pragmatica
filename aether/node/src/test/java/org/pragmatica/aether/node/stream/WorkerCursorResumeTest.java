@@ -505,6 +505,36 @@ class WorkerCursorResumeTest {
             assertThat(afterAbsent.apply(SECOND)).isEqualTo(Option.none());
         }
 
+        /// #3847: a pass fixes its lookup when it starts and wins the slot afterwards. An answer that lands in between frees
+        /// the slot for that pass without being in its lookup, so the pass that sent read N acts on answers up to N-2 only.
+        /// The helper must return a lookup that reflects the answer that freed the slot. The pass is forced into that order
+        /// (lookup fixed while the slot is busy, answer lands, slot won) instead of left to the asynchronous settle.
+        @Test
+        void passUntilSent_winningPassFixedItsLookupBeforeTheAnswerLanded_stillReturnsALookupThatSeesTheAnswer() {
+            source.forPass(List.of(FIRST));
+
+            var lookup = passUntilSent(fixesLookupBeforeAnswerLands(() -> replies.getFirst().succeed(List.of(Option.some(rewound(REWOUND))))),
+                                       List.of(FIRST),
+                                       2);
+
+            assertThat(lookup.apply(FIRST)).describedAs("the lookup of the pass that sent read 2 reflects answer 1")
+                                           .isEqualTo(Option.some(REWOUND));
+        }
+
+        /// #3847, the production side of the same claim: a lookup is fixed when its pass starts, so an answer that lands
+        /// afterwards is seen by later passes only, even one that wins the slot that answer freed.
+        @Test
+        void lookup_isFixedWhenItsPassStarts_anAnswerLandingAfterwardsIsSeenByLaterPassesOnly() {
+            source.forPass(List.of(FIRST));
+            var early = source.forPass(List.of(FIRST));
+
+            replies.getFirst().succeed(List.of(Option.some(rewound(REWOUND))));
+            passUntilSent(List.of(FIRST), 2);
+
+            assertThat(early.apply(FIRST)).describedAs("the slot was busy when the pass started").isEqualTo(Option.none());
+            assertThat(source.forPass(List.of(FIRST)).apply(FIRST)).describedAs("a pass that starts after the answer landed").isEqualTo(Option.some(REWOUND));
+        }
+
         /// Only the latest pass's keys are kept, and an answer counts only for a key held since its read was sent: a
         /// subscription that left and came back never acts on a read from before it left.
         @Test
@@ -601,6 +631,30 @@ class WorkerCursorResumeTest {
             if (applies.size() > before) {
                 lookup.set(pass);
             }
+
+            return applies.size();
+        }
+
+        private StreamConsumerManager.CommittedEpochSource fixesLookupBeforeAnswerLands(Runnable landAnswer) {
+            return keys -> inTheBadOrder(keys, landAnswer);
+        }
+
+        /// One pass that did all of it: its lookup is fixed while the slot is busy, then the answer lands and the pass wins
+        /// the slot the answer freed. The real source is called in that order, once for the lookup and until one call sends.
+        private Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey> inTheBadOrder(List<StreamConsumerManager.SubscriptionKey> keys,
+                                                                                               Runnable landAnswer) {
+            var fixed = source.forPass(keys);
+            var sentBefore = applies.size();
+
+            landAnswer.run();
+            PollUntil.pollUntil(() -> sentAfterPass(keys), sent -> sent > sentBefore, AWAIT_DEADLINE)
+                     .assertMet("the slot freed after the answer landed");
+
+            return fixed;
+        }
+
+        private int sentAfterPass(List<StreamConsumerManager.SubscriptionKey> keys) {
+            source.forPass(keys);
 
             return applies.size();
         }
