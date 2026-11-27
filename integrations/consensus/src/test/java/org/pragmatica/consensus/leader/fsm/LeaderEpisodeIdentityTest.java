@@ -173,11 +173,12 @@ class LeaderEpisodeIdentityTest {
         awaitState(LeaderElectionState.Electing.class);
     }
 
-    @Test
-    void firstTick_ofAnExitedEntry_submitsNoProposalForTheSavedRecord() throws InterruptedException {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void firstTick_ofAnExitedEntry_submitsNoProposalForTheSavedRecord(boolean reElecting) throws InterruptedException {
         firstTick.set(TimeSpan.timeSpan(500).millis());
         start();
-        enterElection(false);
+        enterElection(reElecting);
         var saved = harness.state();
 
         staleTickBehind(() -> harness.reenter(saved));
