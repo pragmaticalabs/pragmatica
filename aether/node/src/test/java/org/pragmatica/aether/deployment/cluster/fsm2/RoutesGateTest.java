@@ -126,13 +126,18 @@ class RoutesGateTest {
         var h = leaderWithOneCore();
 
         h.holdKinds = Set.of(SubmitKind.GOALS);
-        publish(h, blueprintOf("attempt-1", LIST, GET_ONE));
+        publish(h, blueprintOf("attempt-1", GET_ONE, LIST));
         var goals = h.held.values().stream().filter(submit -> submit.kind() == SubmitKind.GOALS).toList();
 
         assertThat(goals).as("the goal is drafted once the rows are committed").hasSize(1);
         var witnessed = goals.getFirst().transaction().guards().stream().filter(guard -> guard.key() instanceof DeclaredRouteKey).toList();
 
-        assertThat(witnessed.stream().map(KVCommand.ReadWitness::key).toList()).containsExactlyInAnyOrder(key(GET_ONE), key(LIST));
+        // The order is the gate's reading order: the target row, the owner's blueprint, then the rows as the blueprint lists them (GET_ONE sorts
+        // after LIST, so a sorted or reversed list is not this one). Every node and every resubmission derives the same transaction (#3836 F1).
+        assertThat(witnessedKeys(goals.getFirst())).containsExactly(new SliceTargetKey(ORDERS.base()),
+                                                                    AppBlueprintKey.appBlueprintKey(APP_ID),
+                                                                    key(GET_ONE),
+                                                                    key(LIST));
         assertThat(witnessed.stream().map(KVCommand.ReadWitness::expected).toList())
                   .containsOnly(Option.some(declared("attempt-1")));
         h.seed(key(LIST), published("attempt-1"));
