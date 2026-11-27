@@ -107,6 +107,17 @@ class GitProcessesTest {
         assertThat(stillInterrupted).as("the interrupt flag survives the kill").isTrue();
     }
 
+    /// The wait for a root's `Process` is held to the kill's bound: a root whose handle has exited but whose `Process` never reads exited is reported as
+    /// not dead when the bound runs out, instead of holding the caller.
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_reportsFalse_whenTheRootProcessNeverReadsExited() {
+        var started = System.nanoTime();
+
+        assertThat(GitProcesses.kill(List.of(neverExiting(mortalHandle(0))), 300)).isFalse();
+        assertThat(System.nanoTime() - started).as("the kill waited out its bound").isGreaterThanOrEqualTo(250_000_000L);
+    }
+
     /// A bound that cannot be met is reported as not dead, so the stop can say so instead of claiming a clean stop. The member here can never end, so the
     /// outcome does not depend on how fast the host reaps a killed process (a real process killed under a bound of zero may already be gone).
     @Test
@@ -765,6 +776,32 @@ class GitProcessesTest {
         } catch (TimeoutException stillRunning) {
             return false;
         } catch (ExecutionException exitedWithFailure) {
+            return true;
+        }
+    }
+
+    /// A `Process` of `handle` that never reads exited: its timed wait runs out its timeout and answers false.
+    private static Process neverExiting(ProcessHandle handle) {
+        return new Process() {
+            @Override public OutputStream getOutputStream() { return OutputStream.nullOutputStream(); }
+            @Override public InputStream getInputStream() { return InputStream.nullInputStream(); }
+            @Override public InputStream getErrorStream() { return InputStream.nullInputStream(); }
+            @Override public int waitFor() { throw new UnsupportedOperationException(); }
+            @Override public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException { return runOut(timeout, unit); }
+            @Override public int exitValue() { throw new IllegalThreadStateException("running"); }
+            @Override public void destroy() {}
+            @Override public ProcessHandle toHandle() { return handle; }
+        };
+    }
+
+    private static boolean runOut(long timeout, TimeUnit unit) throws InterruptedException {
+        try {
+            new CompletableFuture<Boolean>().get(timeout, unit);
+
+            return true;
+        } catch (TimeoutException ranOut) {
+            return false;
+        } catch (ExecutionException failed) {
             return true;
         }
     }
