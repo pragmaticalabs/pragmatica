@@ -1,0 +1,80 @@
+# The writer table of the DirectiveReceipt model: a copy of the variables table, the writer table heads, the map and
+# the parts of row S5 of the design memo of #3828 (section 7, round 10). tools/tla/writers-check.py reads it.
+# Differences from the memo, each one on purpose:
+#   role        is a VARIABLE that no action primes (the memo: "a constant"), so that one run can leave the role free.
+#   record, directive, receipt   are definitions over the last entry of `history` (the memo allows it).
+#   mark        is NOT in the memo: the leader-local mark of the rejected designs FACT "local" and "record" (known-bad
+#               configs local_f3, record_f1). Rows S1 and S3 write it; under every other FACT it stays FALSE.
+# kind	name	kind-or-operators	rows-or-variables
+var	role	const	-
+var	record	def:history	W23
+var	directive	def:history	W23
+var	receipt	def:history	W23
+var	history	var	W23
+var	inflight	var	W1,W2,W3,W4,W5,W6,W7,W8,W9,W10,W11,W15,W16,W18,W23,S6
+var	term	var	S3
+var	mirror	var	S1
+var	pending	var	S4,S5
+var	view	var	S4,S5
+var	token	var	S5
+var	runs	var	W21,S5
+var	live	var	W21,S5
+var	directed	var	W23,S5
+var	retirements	var	W12,W13,W14,W15
+var	sticky	var	W23
+var	ranSince	var	W21,W23,S5
+var	mark	var	S1,S3
+row	W1	inflight
+row	W2	inflight
+row	W3	inflight
+row	W4	inflight
+row	W5	inflight
+row	W6	inflight
+row	W7	inflight
+row	W8	inflight
+row	W9	inflight
+row	W10	inflight
+row	W11	inflight
+row	W12	retirements
+row	W13	retirements
+row	W14	retirements
+row	W15	inflight,retirements
+row	W16	inflight
+row	W17	-
+row	W18	inflight
+row	W19	-
+row	W20	-
+row	W21	runs,live,ranSince
+row	W22	-
+row	W23	record,directive,receipt,history,inflight,directed,sticky,ranSince
+row	S1	mirror,mark
+row	S2	-
+row	S3	term,mark
+row	S4	pending,view
+row	S5	token,runs,live,directed,pending,view,ranSince
+row	S6	inflight
+part	S5	processRestart	token,runs,live,directed,ranSince
+part	S5	partition	live
+part	S5	reconnect	live,directed,pending,view
+part	S5	stop	runs,live,ranSince
+action	depart	Depart	W1,W3
+action	infer	Infer	W2,W3
+action	join	ArmJ1,Issue	W4,W6,W16
+action	admit	Admit	W5,W6,W7
+action	retire	Retire,RetireP	W8,W9,W10
+action	operatorRemoval	OpRemove	W11,W18
+action	foreignPut	ForeignPut	W18
+action	terminate	Terminate	W12
+action	externalConfirm	ExternalConfirm	W13
+action	forcedClear	ForcedClear	W14
+action	attempt	Attempt	W15
+action	halt	Halt	W21
+action	commit	Commit	W23
+action	advance	Advance	S1
+action	leaderChange	LeaderChange	S3
+action	joinInput	JoinInput	S4
+action	processRestart	Restart	S5
+action	partition	Partition	S5
+action	reconnect	Reconnect	S5
+action	stop	Stop	S5,W21
+action	lose	Lose	S6

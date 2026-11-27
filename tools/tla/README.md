@@ -17,7 +17,7 @@ and constants, e.g. "SharedPools `code`, 2 keys, 2 scopes, MaxAcquires 3: no vio
 | `Stalled` | owner catch-up all-stalled warning, level-triggered (#2967) | `aether/aether-stream/.../replication/package-info.java` | `PartitionBackfill.java` |
 | `RabiaSlot`, `RabiaEpoch`, `RabiaAdopt` | Rabia: slot sequence, in-log reconfiguration, state adoption (#3164) | `integrations/consensus/.../rabia/package-info.java` | `RabiaEngine.java`, `PhaseData.java` |
 | `Fsm2Leader` | FSM2 leader: open-warning set, leader fence, `Rebuild` inherit and rule O, publish after commit (#2763, #2834, #3085, #3274) | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Lifecycle.java`, `Warnings.java`, `Reconcile.java`, `Failures.java`, `Outbox.java`, `ClusterFsm.java` |
-| `DirectiveReceipt` | activation directive, issue receipt and departure record of one node id: the leader's issuing join rows, the retirement unit, the applier's expected-value rule (#3828; only FACT `none` is code, the rest is the redesign and its rejected rounds) | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Directory.java`, `DepartureFlow.java` |
+| `DirectiveReceipt` | one node id's departure record, activation directive and issue receipt: the 21 actions of the #3828 redesign memo (section 7, round 10), each writer submitting from a read that may be old, the applier's expected-value rule, the two liveness sentences with their edge runs (#3828; only FACT `none` is code, the rest is the redesign and its rejected rounds). Its writers are checked by `writers-check.py` | `aether/aether-deployment/.../cluster/fsm2/package-info.java` | `Directory.java`, `DepartureFlow.java` |
 | `LeaderAdmission` | consensus leader election: Passive's one admission (push, entry pull, re-pull), the hold to the stored view, FIX 1 in the voting states and their grace timeout, Passive entry from every voting state, I1-I3 (#3092, #3414, #3581, #3585; #3587 fixed by #3605; pre-vote not modelled) | `integrations/consensus/.../leader/fsm/package-info.java` | `LeaderElectionState.java`, `LeaderManager.java` (the push's serial task) |
 | `DHTDepartureDrain` | DHT departure drain: plan, retarget, halt, receiver acceptance (#3049) | `integrations/dht/.../dht/package-info.java` | `DeparturePushRun.java`, `DHTAntiEntropy.java`, `DHTTopologyListener.java` |
 
@@ -78,6 +78,19 @@ Other syntax and semantic errors are SANY's and TLC's. `check.sh` annotates ever
 position in TLC's output with the Java source line it came from (`<Module>.map.tsv`), so a counterexample reads as
 a sequence of Java locations.
 
+## Writer check: `writers-check.py`
+
+TLC cannot show a wrong writer: `v' = e /\ UNCHANGED v` is no error, it disables the step, and the run stays green on a
+narrower model. For a model that keeps a writer table (`<Module>.writers.tsv`: the variables with the rows that write them,
+the rows with the variables they write, the map from model actions to operators and rows), `writers-check.py --table
+<table> --module <Module> <roots>` compares the module text with the table in both directions: the module's variables are
+the table's lines; each operator primes, outside `UNCHANGED`, exactly the variables its rows name, and leaves every other
+variable in an `UNCHANGED` (in that word, so a write can be told from none); `Next` takes exactly the mapped operators. It
+says which variables an action writes, never which value. `DirectiveReceipt` is the one model with a table.
+`python3 -m unittest discover -s tools/tla -p test_writers_check.py` runs it on the real model and on nine mutations that
+must each go red (a write removed, a write added, the silent `v' = e /\ UNCHANGED v`, a variable or a row off the table),
+and holds edge run E8 of that model: no `CONSTRAINT` in any of its cfg files, with a control that holds the word.
+
 ## Expected verdicts: `models.tsv`
 
 One row per config: module, source root, variant, `expect` (`pass` or `fail`), `property`, the constant overrides of the
@@ -89,7 +102,7 @@ list: any one of them; `-` for a `pass` row). `run.sh` is red when:
 - a `fail` row ends in a violation of a property other than the ones it names;
 - TLC ends any other way (parse, config or semantic error, timeout): the row reads `ERROR`, never `fail`.
 
-An expected failure (`expect` = `fail`) must cite an open issue or be a known-bad variant of a fixed defect; when the issue is fixed, flip the row to `pass`.
+An expected failure (`expect` = `fail`) must cite an open issue or be a known-bad variant of a fixed defect; when the issue is fixed, flip the row to `pass`. The exceptions are named in the row: a residual of a design (DirectiveReceipt `residual_forced`), and a mutant that validates the instrument (DirectiveReceipt `e1_*` to `e6_*`: each must fail, or a liveness sentence has gone vacuous).
 
 ## Pinned state counts: `pinned-counts.tsv`
 

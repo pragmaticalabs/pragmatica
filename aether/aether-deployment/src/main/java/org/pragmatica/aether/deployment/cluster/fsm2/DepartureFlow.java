@@ -392,23 +392,15 @@ public sealed interface DepartureFlow {
     /// for a core or a node without a WORKER directive.
     ///
     /// ```tla DirectiveReceipt:Retire
-    /// \* The retirement of the id. The code today (no receipt exists; the ELSE arm): this method builds the pair, the DEPARTED record
-    /// \* and the WORKER directive at their exact values, only when a WORKER directive is mirrored (the sweep's C17b), and
-    /// \* Directory.removalMutations (R-4.3.3, at the removal of a departed node's directive, either role) removes the record alone.
-    /// \* The THEN arm is the redesign of #3828, NOT this method yet: one unit over record, directive and receipt, each removed at its
-    /// \* mirrored value when present and witnessed absent when not (mutant "nowitness" witnesses nothing), and the sweep also retires
-    /// \* a departed worker that has a receipt and no directive (ruling R3; mutant "nor3" keeps today's condition). A core is retired
-    /// \* only by R-4.3.3 or a termination.
-    /// Retirement(m) ==
-    ///   IF Receipts
-    ///     THEN Tx("retire", NoR, 0, IF m.dir THEN "present" ELSE IF MUT = "nowitness" THEN "any" ELSE "absent",
-    ///             IF m.rcpt # NoR THEN m.rcpt ELSE IF MUT = "nowitness" THEN Any ELSE NoR, "D")
-    ///     ELSE Tx("retire", NoR, 0, IF m.dir THEN "present" ELSE "any", Any, "D")
-    /// Retire ==
-    ///   /\ ROLE = "worker" /\ Departed(mir, joined) /\ ~InFlight("retire")
-    ///   /\ mir.dir \/ (Receipts /\ MUT # "nor3" /\ mir.rcpt # NoR)
-    ///   /\ txs' = txs \cup {Retirement(mir)}
-    ///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, ntf, mir, pend, adm, joined, mark, retired, gone, halted, viol, left>>
+    /// \* W8, W9 (read: mirror). The redesign's unit, NOT this method yet: today it builds the pair of record and directive, for a
+    /// \* WORKER whose directive is mirrored. W8: a WORKER beside a DEPARTED record with a directive or a receipt (fair). W9: a
+    /// \* DEPARTED record and no directive, either role (R-4.3.3, Directory.removalMutations; not fair: an observed event).
+    /// Retire(L) ==
+    ///   /\ On("retire")
+    ///   /\ M(L).rec.st = "D"
+    ///   /\ ((role = "WORKER" /\ (M(L).dir \/ M(L).rcpt # 0)) \/ ~M(L).dir)
+    ///   /\ Submit(UnitTx(<<"retire", L>>, M(L)))
+    ///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
     /// ```
     private static List<KVCommand.Mutation<AetherKey, AetherValue>> workerRetirement(ClusterModel m,
                                                                                      NodeId node,
@@ -542,13 +534,14 @@ public sealed interface DepartureFlow {
     /// node whose admission carries no known token (a core promoted by liveness evidence alone, C8) keeps the process the record names:
     /// the rewrite must not erase what the committed record knows `[guess: C8 fail-open applied to the rewrite]`.
     ///
-    /// ```tla DirectiveReceipt:Rewrite
-    /// \* Step 10, this method as it is today: a DEPARTED record that a join superseded is replaced by ADMITTED, expecting the
-    /// \* DEPARTED value and witnessing nothing else, one admission write at a time.
-    /// Rewrite ==
-    ///   /\ mir.rec = "D" /\ joined /\ ~InFlight("admit")
-    ///   /\ txs' = txs \cup {Tx("admit", NoR, 0, "any", Any, "D")}
-    ///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, ntf, mir, pend, adm, joined, mark, retired, gone, halted, viol, left>>
+    /// ```tla DirectiveReceipt:Admit
+    /// \* W5, W6, W7 (read: any). This method is W7, the superseded rewrite; the departing arm and J8's core arm of Joins submit
+    /// \* the same write. One action as wide as the widest: ADMITTED(e + 1) expecting any value of the record's domain, at any
+    /// \* leader and any step; the applier decides. No witness. Not fair.
+    /// Admit(L) ==
+    ///   /\ On("admit")
+    ///   /\ \E x \in Admissible : Submit(AdmitTx(L, x))
+    ///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
     /// ```
     static ClusterModel admittedRewrite(ClusterModel m, Ctx ctx, NodeId node) {
         var record = m.records.get(node);

@@ -1719,391 +1719,474 @@
 /// PROPERTY MirrorNoRegress
 /// ```
 ///
-/// **TLA+ model of the directive receipt** (`DirectiveReceipt`, #3828). The skeleton and the configs are below; the action fragments
-/// sit on the methods that carry the behaviour today: `Directory#directiveMutation` (Issue), `DepartureFlow#workerRetirement`
-/// (Retire) and `DepartureFlow#admittedRewrite` (Rewrite, which is this commit's code as it stands). **The code at this commit is
-/// FACT = "none"** (config `base`, which fails). Every other FACT value and the receipt arms of Issue and Retire describe code that
-/// does not exist yet (the redesign of #3828) or was rejected on the way to it; the lanes that write the redesign move those two
-/// fragments to `Directory.issue` and `retirementUnit`.
+/// **TLA+ model of the directive receipt** (`DirectiveReceipt`, #3828): the model of section 7 of the redesign's memo, round 10.
+/// The skeleton and the configs are below; three action fragments sit on the methods that carry the behaviour today:
+/// `Directory#directiveMutation` (Issue), `DepartureFlow#workerRetirement` (Retire) and `DepartureFlow#admittedRewrite` (Admit).
+/// **The code at this commit is FACT = "none"** (config `base`, which fails). Every other FACT value, the receipt and the unit
+/// describe code that does not exist yet (the redesign of #3828) or was rejected on the way to it; the lanes that write the
+/// redesign move the two fragments to `Directory.issue` and `retirementUnit`. The model's variables and writers are checked
+/// against `tools/tla/DirectiveReceipt.writers.tsv` by `tools/tla/writers-check.py`.
+///
+/// **What the configs cover.** The model with every action on does not finish at these constants (two leaders, `E_max` 1,
+/// `H_max` 5: tens of millions of states with one release authority, far more with all). So a config that must FAIL
+/// switches actions off freely (`Off`): its counterexample is a behaviour of the whole model. A config that must PASS covers
+/// the actions it leaves on and no others: the `receipt_*` rows each leave one release authority on beside the join, the
+/// commit, the mirror and the operator's and the foreign writer's steps, and the `e7_*` rows do the same for the two
+/// liveness sentences. No config with a `pass` verdict covers two release authorities at two leaders together.
 ///
 /// ```tla DirectiveReceipt:head
-/// (* One node id W: its activation directive, the issue receipt proposed for #3828 and its departure record in the KV; the   *)
-/// (* leader's join table for W, reduced to the rows that write or withhold a directive; the applier's expected-value rule. *)
-/// (* Bounds, not proofs: TLC explores every state within a config's constants and says nothing about larger ones, or      *)
-/// (* about what the model abstracts.                                                                                      *)
+/// (* One node id: its departure record, its activation directive and the issue receipt proposed for #3828, as the applier *)
+/// (* commits them; the writers of the three keys, each submitting a transaction from a read that may be old; the id's     *)
+/// (* process. It is the model of section 7 of the design memo of #3828 (round 10): every state variable is a line of its  *)
+/// (* variables table, every action a row of its writer table (W1 to W23, S1 to S6; the row is named at each action), and  *)
+/// (* tools/tla/DirectiveReceipt.writers.tsv with tools/tla/writers-check.py checks both, since TLC cannot show a wrong    *)
+/// (* writer. Bounds, not proofs: TLC explores every state within a config's constants and says nothing about larger ones *)
+/// (* or about what the model leaves out.                                                                                 *)
+/// (*                                                                                                                    *)
+/// (* FACT selects the fact that decides a directive write. Only "none" is the code at this commit.                       *)
+/// (* "none"      no fact: a pending join whose mirror shows no directive issues one.                                     *)
+/// (* "local"     a leader-local mark, taken when the leader's mirror passes a removal of the directive; a leader that a  *)
+/// (*             leader change names starts with none.                                                                   *)
+/// (* "record"    the same mark, not taken while the mirror holds a DEPARTED record (PR #3834, unmerged).                 *)
+/// (* "unguarded" the receipt of "receipt", written and mirrored, but the issue expects only the directive key absent.    *)
+/// (* "arm2"      the receipt names a process token, and a leader whose own view holds another token issues again and     *)
+/// (*             replaces it (the first draft of the redesign).                                                          *)
+/// (* "receipt"   the redesign: a receipt per node id, put by the issue's own transaction which expects it absent, and    *)
+/// (*             removed only by the retirement unit.                                                                    *)
+/// (* MUT is one switch on FACT = "receipt": "nowitness" (the unit removes what its read holds and witnesses nothing      *)
+/// (* absent), and the three mutants of the edge runs, each taking the submit out of one arm of `join`: "noJ4" (arm J-4), *)
+/// (* "noJ4ret" (arm J-4 where the id was retired), "noJ1" (arm J-1).                                                     *)
+/// (* Off is the set of model actions a config switches off (by the action names of the writers table). A config that    *)
+/// (* must FAIL may narrow freely: a behaviour with fewer inputs is a behaviour of the whole model. A config that must     *)
+/// (* PASS says nothing about the actions it switches off.                                                                *)
+/// (*                                                                                                                    *)
+/// (* The instrument's bounds are conjuncts of enablings, never a cfg CONSTRAINT: the epoch (E_max, in the admissions),   *)
+/// (* the commit history (H_max, in Commit), the term (MaxTerm), the token (MaxToken), the retirements (MaxRet). The      *)
+/// (* in-flight bag holds one transaction per row instance (the action, with its leader or its retirement): a new submit  *)
+/// (* replaces that instance's own transaction, so no submit waits for room.                                              *)
+/// (*                                                                                                                    *)
+/// (* Five rows have no action of their own, each a named omission: W17 (the LEGACY engine: no LEGACY node runs in an FSM2 *)
+/// (* cluster), W19 (the receipt: only the issue puts it and only a unit removes it), W20 (`directed`: set inside Commit and *)
+/// (* Reconnect), W22 (the record's process and time: the record is state, epoch and stale), S2 (the leader's tick: the    *)
+/// (* model has no clock, and the rows the tick triggers are enabled at every step where their expressed part holds).      *)
+/// (* Also left out: every condition the code adds to a writer and the model drops (the rows' dropped cells), the end of a *)
+/// (* pending join, the stop of a node that runs a retirement.                                                             *)
 /// (*                                                                                                                      *)
-/// (* FACT selects the fact that decides a directive write:                                                                *)
-/// (* "none"      the code at this commit: no fact. A join whose mirror shows no directive writes one (Joins.directive).   *)
-/// (* "local"     a leader-local mark taken when the leader sees the directive removed. Not this commit's code.           *)
-/// (* "record"    the same mark, taken only for a node with no DEPARTED record that the leader did not see retired        *)
-/// (*             (PR #3834, unmerged: Joins.markRemoved, isLive, retire). Not this commit's code.                         *)
-/// (* "unguarded" the receipt of "receipt", written and mirrored, but the draft's only expected value is the directive    *)
-/// (*             key's (the expectation of Directory.directiveMutation today). Not this commit's code.                   *)
-/// (* "arm2"      the receipt names a process token, and a leader whose own registry holds another token for the id       *)
-/// (*             issues again, replacing the receipt (the redesign's first draft). Not this commit's code.               *)
-/// (* "receipt"   the redesign: a receipt per node id that names no process, written in the directive's own transaction   *)
-/// (*             expecting the receipt absent, removed only by the retirement unit. Not this commit's code.              *)
-/// (* MUT is a mutant of FACT = "receipt": "blind" (the applier ignores expected values), "nogate" (the leader does not   *)
-/// (* read its receipt mirror before it drafts), "nor3" (the sweep retires a departed worker only with its directive, as  *)
-/// (* DepartureFlow.workerRetirement does today), "drop" (a withheld join is dropped instead of staying pending),         *)
-/// (* "nowitness" (the retirement unit removes what the mirror holds and witnesses nothing absent).                       *)
-/// (*                                                                                                                      *)
-/// (* The applier (KVStore, not this package's code; assumed): a transaction commits only if its term is the leader term   *)
-/// (* and every expected value equals the committed one; it applies all of its mutations or none (Accepts, Commit).        *)
-/// (* A leader's token for the id is its own registry's: the first process it saw under the id, never replaced (0: none   *)
-/// (* yet). Only "arm2" compares it; "local" and "record" store it in the mark.                                           *)
-/// (*                                                                                                                      *)
-/// (* Abstractions. One node id of role ROLE. The leader is the current one only: a deposed leader acts through the        *)
-/// (* transactions it already submitted, which fail the leader check. Rebuild is one step with the term change and reads  *)
-/// (* the committed KV. A notification is one key at a time, in commit order, record before directive before receipt      *)
-/// (* within one transaction. A draft counts as in flight until its last notification is applied, so the leader does not  *)
-/// (* act between an accepted settlement and its own puts [not read: whether the code can]. The DEPARTED write is one     *)
-/// (* step with the observed departure (its loss and resubmission are DepartureFlow's own). J8 (a different process       *)
-/// (* under an id that has a record is refused) is not modelled: the model issues there, a superset. The record carries   *)
-/// (* no process and no epoch. A termination is one step that reads the store (TerminationRetirement); placement COMPLETE *)
-/// (* and the guards on the cluster config and the community are not modelled. A removed directive halts the WORKER       *)
-/// (* process that holds it, and a process that starts while a directive stands holds it (OwnDirectiveRetirement, taken   *)
-/// (* from the design memo's reading, not read for this model); a core does not halt.                                    *)
+/// (* Not in the memo's tables, added here and named in the writers table: `mark` (the leader-local mark of FACT "local"   *)
+/// (* and "record"; FALSE under every other FACT), a receipt that is a token under FACT "arm2", and the properties         *)
+/// (* FactWithholds and RetiredWhole. Marked choices of this model where the memo leaves one: the first term names the     *)
+/// (* least leader (the leaders are alike); a leader change may name any leader; `join` keeps one in-flight slot per leader *)
+/// (* for both of its arms, `retire` one for its mirror read (W8, W9) and one for its prefix read (W10); P1 is weak        *)
+/// (* fairness of the commit of each single transaction.                                                                   *)
 /// EXTENDS Integers, Sequences, FiniteSets
 ///
 /// CONSTANTS FACT, MUT,
-///           ROLE,        \* "worker" or "core"
-///           ORDERED,     \* TRUE: the leader handles a join input after the notifications of everything committed before it
-///           MaxProc,     \* process incarnations under the id
+///           Roles,       \* the roles Init may choose from: {"WORKER"}, {"CORE"} or both (the role is then free)
+///           Leaders,     \* the leaders (numbers); any of them may act, a deposed one too
 ///           MaxTerm,     \* leader terms
-///           MaxOps,      \* operator removals of the directive
-///           MaxForeign,  \* directive puts by another writer (no receipt)
-///           MaxDepart,   \* observed departures
-///           MaxKill,     \* source-confirmed terminations
-///           MaxLose,     \* transactions that are lost and never commit
-///           MaxHold      \* transactions reported failed to the leader that may still commit (the late commit)
+///           MaxToken,    \* processes under the id
+///           MaxRet,      \* termination retirements in progress at once (the memo: two)
+///           E_max,       \* the top epoch of a record
+///           H_max,       \* the entries the commit history may hold
+///           Off          \* the model actions this config switches off
 ///
-/// VARIABLES kv,       \* committed: [dir: the directive is present, rcpt: NoR or the receipt (a token under "arm2", else 0),
-///                     \*             rec: "none" | "D" | "A"]
-///           dirOf,    \* history: the process the committed directive was issued to, as the issuing leader's registry
-///                     \*          named it (0: no directive, or another writer's put)
-///           cur,      \* the id's current process
-///           up,       \* the current process runs (FALSE: it stopped; the id may be terminated)
-///           owed,     \* membership owes the current leader a join input
-///           asked,    \* history: a join input was handled and neither answered by a directive nor ended
-///           term,     \* the leader term
-///           txs,      \* submitted transactions that have neither committed nor been refused or lost
-///           ntf,      \* committed key changes (and, ORDERED, join inputs) the leader has not handled yet
-///           mir,      \* the leader's mirror of kv
-///           pend,     \* the leader holds a pending join for the id
-///           adm,      \* the leader's token for the id (0: none yet)
-///           joined,   \* the leader saw a join that admits the id since Rebuild or the last departure (supersedes a DEPARTED record)
-///           mark,     \* FACT "local", "record": the leader-local mark (NoR: none)
-///           retired,  \* FACT "record": the leader saw the id's DEPARTED record removed and no join since
-///           gone,     \* history: processes whose leader-issued directive was removed since the id's last retirement
-///           halted,   \* history: processes that held a directive when it was removed, since the id's last retirement
-///           viol,     \* history: which safety statements a committed transaction broke
-///           left      \* what is left of each environment budget
+/// VARIABLES role,        \* "WORKER" or "CORE"; no action writes it
+///           history,     \* the committed states in commit order; the last entry is the committed record, directive, receipt
+///           inflight,    \* the submitted transactions, at most one per row instance
+///           term,        \* the leader term and the leader it names
+///           mirror,      \* per leader: the index of the history entry its mirror holds
+///           pending,     \* per leader: a join of the id is pending there
+///           view,        \* per leader: the first process token it saw (0: none yet)
+///           token,       \* the token of the id's current process
+///           runs,        \* the current process runs
+///           live,        \* the leader holds evidence of the process's life
+///           directed,    \* the current process has received a directive
+///           retirements, \* the termination retirements in progress: each a first read
+///           sticky,      \* history variable of Safety: "clear", "issued", "removed"
+///           ranSince,    \* history variable of StickyWhileRunning
+///           mark         \* per leader, FACT "local" and "record" only: the leader-local mark
 ///
-/// vars == <<kv, dirOf, cur, up, owed, asked, term, txs, ntf, mir, pend, adm, joined, mark, retired, gone, halted, viol, left>>
+/// vars == <<role, history, inflight, term, mirror, pending, view, token, runs, live, directed, retirements, sticky,
+///           ranSince, mark>>
 ///
-/// NoR == -1                 \* no receipt, no mark, not applicable
-/// Any == -2                 \* a transaction with no expected value on the receipt key
-/// Tokens == 0..MaxProc
-/// Kinds == {"issue", "retire", "admit"}
+/// On(a) == a \notin Off
 /// Receipts == FACT \in {"unguarded", "arm2", "receipt"}
+/// Marks == FACT \in {"local", "record"}
+/// RetIds == 1..MaxRet
 ///
-/// \* "arm2" only: the leader's own token and the receipt's are both known and unequal (Admission.isDifferentProcessFrom, C8).
-/// Diff(a, b) == a # 0 /\ b # 0 /\ a # b
+/// \* The record's domain (fact 1): absent, ADMITTED(e), DEPARTED(e, stale). An absent record counts as epoch 0.
+/// NoRec == [st |-> "none", e |-> 0, stale |-> FALSE]
+/// Adm(e) == [st |-> "A", e |-> e, stale |-> FALSE]
+/// Dep(e, s) == [st |-> "D", e |-> e, stale |-> s]
+/// RecDom == {NoRec} \cup {Adm(e) : e \in 1..E_max} \cup {Dep(e, s) : e \in 0..E_max, s \in BOOLEAN}
+/// \* A receipt is 0 (absent) or 1; under FACT "arm2" it is the token it names.
+/// RcptDom == IF FACT = "arm2" THEN 0..MaxToken ELSE IF Receipts THEN {0, 1} ELSE {0}
+/// EntryDom == [rec : RecDom, dir : BOOLEAN, rcpt : RcptDom]
+/// NoRet == [on |-> FALSE, e |-> 0, dir |-> FALSE]
 ///
-/// \* Invariant I of the redesign as the leader reads it from its mirror: the id has no receipt. "arm2" adds its second arm.
-/// MayIssue(r, a) == r = NoR \/ (FACT = "arm2" /\ Diff(a, r))
+/// Committed == history[Len(history)]
+/// record == Committed.rec
+/// directive == Committed.dir
+/// receipt == Committed.rcpt
+/// M(L) == history[mirror[L]]      \* what leader L's mirror holds: a prefix of the commit history, maybe an old one
 ///
-/// \* m.departed (Indexer.refreshDeparted): a DEPARTED record that no join since has superseded (Departures.isSuperseded).
-/// Departed(m, j) == m.rec = "D" /\ ~j
+/// \* A transaction: per key what it expects (c: it checks, e: the value; a check with no write is a witness) and what it
+/// \* writes ("put", "del", "keep"); k is its row instance; issue marks a leader issue (arm J-4).
+/// NoOp(k) == [k |-> k, cRec |-> FALSE, eRec |-> NoRec, wRec |-> "keep", nRec |-> NoRec,
+///             cDir |-> FALSE, eDir |-> FALSE, wDir |-> "keep",
+///             cRcpt |-> FALSE, eRcpt |-> 0, wRcpt |-> "keep", nRcpt |-> 0, issue |-> FALSE]
+/// RecTx(k, x, n) == [NoOp(k) EXCEPT !.cRec = TRUE, !.eRec = x, !.wRec = "put", !.nRec = n]
+/// DepartTx(L, x, s) == RecTx(<<IF s THEN "infer" ELSE "depart", L>>, x, Dep(x.e, s))
+/// J1Tx(L, x, w) == [RecTx(<<"join", L>>, x, Adm(x.e + 1)) EXCEPT !.cDir = w, !.eDir = w]
+/// AdmitTx(L, x) == RecTx(<<"admit", L>>, x, Adm(x.e + 1))
+/// \* The issue: directive and receipt, each expecting absent. The rejected designs differ here and in MayIssue only.
+/// IssueTx(L, er, nr) == [NoOp(<<"join", L>>) EXCEPT !.cDir = TRUE, !.eDir = FALSE, !.wDir = "put",
+///                            !.cRcpt = (FACT \in {"arm2", "receipt"}), !.eRcpt = er,
+///                            !.wRcpt = IF Receipts THEN "put" ELSE "keep", !.nRcpt = nr, !.issue = TRUE]
+/// \* The retirement unit over a read: each member the read holds is removed at its exact value, each member it does not
+/// \* hold is witnessed absent.
+/// Wit == MUT # "nowitness"
+/// UnitTx(k, en) == [k |-> k, cRec |-> (en.rec.st # "none" \/ Wit), eRec |-> en.rec,
+///                   wRec |-> IF en.rec.st # "none" THEN "del" ELSE "keep", nRec |-> NoRec,
+///                   cDir |-> (en.dir \/ Wit), eDir |-> en.dir, wDir |-> IF en.dir THEN "del" ELSE "keep",
+///                   cRcpt |-> (en.rcpt # 0 \/ Wit), eRcpt |-> en.rcpt, wRcpt |-> IF en.rcpt # 0 THEN "del" ELSE "keep",
+///                   nRcpt |-> 0, issue |-> FALSE]
+/// OpRemTx == [NoOp(<<"operatorRemoval", 0>>) EXCEPT !.wDir = "del"]
+/// FputTx == [NoOp(<<"foreignPut", 0>>) EXCEPT !.wDir = "put"]
 ///
-/// \* A draft of kind k is waiting to be sent, to be settled, or for its own notifications (Directory.directiveInFlight and
-/// \* its siblings). A held transaction was reported failed, so it does not count.
-/// InFlight(k) == \/ \E t \in txs : t.kind = k /\ ~t.held /\ t.term = term
-///                \/ \E i \in 1..Len(ntf) : ntf[i].src = k
+/// \* Every transaction an action can build: the set P1 quantifies over (TypeOK holds inflight inside it).
+/// Admissible == {x \in RecDom : x.e < E_max}
+/// TxSpace ==
+///        {DepartTx(L, x, s) : L \in Leaders, x \in RecDom, s \in BOOLEAN}
+///   \cup {J1Tx(L, x, w) : L \in Leaders, x \in {y \in Admissible : y.st = "D"}, w \in BOOLEAN}
+///   \cup {AdmitTx(L, x) : L \in Leaders, x \in Admissible}
+///   \cup {IssueTx(L, er, nr) : L \in Leaders, er \in RcptDom, nr \in RcptDom}
+///   \cup {UnitTx(<<n, L>>, en) : n \in {"retire", "retireP"}, L \in Leaders, en \in {y \in EntryDom : y.rec.st = "D"}}
+///   \cup {UnitTx(<<"attempt", r>>, en) : r \in RetIds, en \in {y \in EntryDom : y.rec.st # "A"}}
+///   \cup {OpRemTx, FputTx}
 ///
-/// \* eDir: "present" (removed at its value), "absent" (the key is expected or witnessed absent), "any". eRcpt: a receipt value
-/// \* (expected, and replaced or removed), NoR (expected or witnessed absent), Any. eRec: "D", "none" (witnessed absent), "any".
-/// Tx(k, tok, proc, eDir, eRcpt, eRec) ==
-///   [kind |-> k, term |-> term, held |-> FALSE, tok |-> tok, proc |-> proc, eDir |-> eDir, eRcpt |-> eRcpt, eRec |-> eRec]
+/// \* The bag rule: a submit takes the place of its own instance's earlier transaction.
+/// Submit(t) == inflight' = {u \in inflight : u.k # t.k} \cup {t}
 ///
-/// Ev(k, v, src) == [k |-> k, v |-> v, src |-> src]
+/// \* The token condition T (the head of the join table). It limits fairness and Dom 3, never an enabling.
+/// T(L) == \/ role = "CORE"
+///         \/ M(L).rec.st = "none"
+///         \/ \A L2 \in Leaders : (view[L2] # 0 /\ view[L] # 0) => view[L2] = view[L]
+/// Retired == \E i \in 1..(Len(history) - 1) : history[i].rcpt # 0 /\ history[i + 1].rcpt = 0
 ///
-/// \* The applier's rule. Mutant "blind": only the leader check is left.
-/// Expected(t) == /\ t.eDir = "any" \/ (t.eDir = "present") = kv.dir
-///                /\ t.eRcpt = Any \/ t.eRcpt = kv.rcpt
-///                /\ t.eRec = "any" \/ t.eRec = kv.rec
-/// Accepts(t) == t.term = term /\ (MUT = "blind" \/ Expected(t))
-///
-/// \* What an accepted transaction writes, and the notifications it raises, in order. A retirement removes a member only
-/// \* when it carries the mutation; a witness writes nothing.
-/// Written(t) ==
-///   CASE t.kind = "issue" -> [kv EXCEPT !.dir = TRUE, !.rcpt = IF Receipts THEN t.tok ELSE @]
-///     [] t.kind = "retire" -> [kv EXCEPT !.rec = "none", !.dir = IF t.eDir = "present" THEN FALSE ELSE @,
-///                                        !.rcpt = IF t.eRcpt \in {Any, NoR} THEN @ ELSE NoR]
-///     [] t.kind = "admit" -> [kv EXCEPT !.rec = "A"]
-/// Events(t) ==
-///   CASE t.kind = "issue" -> <<Ev("dir", TRUE, "issue")>> \o (IF Receipts THEN <<Ev("rcpt", t.tok, "issue")>> ELSE <<>>)
-///     [] t.kind = "retire" -> <<Ev("rec", "none", "retire")>>
-///                             \o (IF t.eDir = "present" THEN <<Ev("dir", FALSE, "retire")>> ELSE <<>>)
-///                             \o (IF t.eRcpt \notin {Any, NoR} THEN <<Ev("rcpt", NoR, "retire")>> ELSE <<>>)
-///     [] t.kind = "admit" -> <<Ev("rec", "A", "admit")>>
-///
-/// Init ==
-///   /\ kv = [dir |-> FALSE, rcpt |-> NoR, rec |-> "none"] /\ mir = [dir |-> FALSE, rcpt |-> NoR, rec |-> "none"]
-///   /\ dirOf = 0 /\ cur = 1 /\ up = TRUE /\ owed = TRUE /\ asked = FALSE /\ term = 1 /\ txs = {} /\ ntf = <<>>
-///   /\ pend = FALSE /\ adm = 0 /\ joined = FALSE /\ mark = NoR /\ retired = FALSE
-///   /\ gone = {} /\ halted = {} /\ viol = {}
-///   /\ left = [ops |-> MaxOps, foreign |-> MaxForeign, depart |-> MaxDepart, kill |-> MaxKill, lose |-> MaxLose, hold |-> MaxHold]
-///
-/// \* ---- The leader's join table for W (Joins.onJoin, evaluateRows, afterTable, directive), without its issuing row ----
-///
-/// \* A join input of process p handled (Joins.onJoin): the join is pending until a row ends it. The leader's token for the
-/// \* id is the first one its registry saw. The join ends `retired` (PR #3834).
-/// Deliver(p) ==
-///   /\ adm' = (IF adm = 0 THEN p ELSE adm) /\ pend' = TRUE /\ asked' = TRUE /\ retired' = FALSE
-///
-/// \* The environment sends a join input for a process that ran under the id, the current one or an earlier one (a
-/// \* re-drive). ORDERED: it takes its place among the notifications (a join built from a committed put, DeploymentWiring);
-/// \* one at a time. Otherwise the leader handles it at once, whatever its mirror has not applied yet.
-/// Join(p) ==
-///   /\ owed' = FALSE
-///   /\ IF ORDERED
-///        THEN /\ \A i \in 1..Len(ntf) : ntf[i].k # "join"
-///             /\ ntf' = Append(ntf, Ev("join", p, "env"))
-///             /\ UNCHANGED <<adm, pend, asked, retired>>
-///        ELSE Deliver(p) /\ UNCHANGED ntf
-///   /\ UNCHANGED <<kv, dirOf, cur, up, term, txs, mir, joined, mark, gone, halted, viol, left>>
-///
-/// \* J3: a DEPARTED record and a directive: the same process is admitted again, ADMITTED expecting the record and
-/// \* witnessing the directive (Joins.readmit). J7 (a DEPARTED record and no directive: the join stays pending) changes nothing.
-/// Readmit ==
-///   /\ pend /\ mir.rec = "D" /\ mir.dir /\ (~joined \/ ~InFlight("admit"))
-///   /\ joined' = TRUE
-///   /\ txs' = IF InFlight("admit") THEN txs ELSE txs \cup {Tx("admit", NoR, 0, "present", Any, "D")}
-///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, ntf, mir, pend, adm, mark, retired, gone, halted, viol, left>>
-///
-/// \* J5/J6 with a directive in the mirror: the observed directive ends the join (#3603).
-/// Seen ==
-///   /\ pend /\ mir.rec # "D" /\ mir.dir
-///   /\ pend' = FALSE /\ joined' = TRUE
-///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, txs, ntf, mir, adm, mark, retired, gone, halted, viol, left>>
-///
-/// \* The leader may draft a directive for the pending join. FACT "none": always (Joins.assign today).
-/// MayAssign == CASE FACT = "none" -> TRUE
-///                [] FACT \in {"local", "record"} -> mark = NoR
-///                [] OTHER -> MUT = "nogate" \/ MayIssue(mir.rcpt, adm)
-///
-/// \* J5/J6 with no directive: the join is tracked while a directive draft is in flight; a join the fact withholds stays
-/// \* pending under a receipt (so the pass after a retirement finds it) and is dropped by PR #3834 and by mutant "drop".
-/// Track ==
-///   /\ pend /\ mir.rec # "D" /\ ~mir.dir /\ InFlight("issue") /\ ~joined
-///   /\ joined' = TRUE
-///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, txs, ntf, mir, pend, adm, mark, retired, gone, halted, viol, left>>
-/// Withhold ==
-///   /\ pend /\ mir.rec # "D" /\ ~mir.dir /\ ~InFlight("issue") /\ ~MayAssign
-///   /\ joined' = TRUE /\ pend' = (Receipts /\ MUT # "drop")
-///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, txs, ntf, mir, adm, mark, retired, gone, halted, viol, left>>
-///
-/// \* The receipt mutation of an issue draft (the redesign's one builder): the value it puts and the value it expects.
-/// \* "receipt": puts a receipt that names no process, expects the receipt absent, and has no other form. "arm2": puts the
-/// \* leader's token, and expects the receipt it replaces when its mirror holds one of another token. "unguarded": no
-/// \* expected value. The other FACTs have no receipt.
-/// IssuePuts == IF FACT = "arm2" THEN adm ELSE 0
-/// IssueExpects == CASE FACT = "receipt" -> NoR
-///                   [] FACT = "arm2" -> IF mir.rcpt # NoR /\ Diff(adm, mir.rcpt) THEN mir.rcpt ELSE NoR
-///                   [] OTHER -> Any
+/// \* mayIssue, read from the acting leader's mirror.
+/// MayIssue(L) ==
+///   CASE FACT = "none" -> TRUE
+///     [] Marks -> ~mark[L]
+///     [] FACT = "arm2" -> (M(L).rcpt = 0 \/ M(L).rcpt # view[L])
+///     [] OTHER -> M(L).rcpt = 0
+/// \* Arm J-4's condition on the acting leader's own state (row W16's expressed part, without T).
+/// J4Cond(L) == pending[L] /\ ~M(L).dir /\ (role = "CORE" \/ M(L).rec.st # "D") /\ MayIssue(L)
 /// ```
 ///
 /// ```tla DirectiveReceipt:tail
-/// \* ---- The leader handles the head of its queue: one committed key change (Indexer, the Put and Remove handlers) ----
-/// \* A removed directive of a departed node gets R-4.3.3 (Directory.onDirectiveRemove): the retirement, built from the mirror.
-/// \* FACT "local": any other removal of the directive marks the id. FACT "record": only for a node with no DEPARTED record
-/// \* whose retirement the leader did not see; the removal of a DEPARTED record ends the mark and sets `retired`.
-/// \* With a receipt the handlers only mirror; nothing is decided at a notification.
-/// Notify ==
-///   /\ ntf # <<>> /\ Head(ntf).k # "join"
-///   /\ LET e == Head(ntf)
-///          m2 == [mir EXCEPT ![e.k] = e.v]
-///          removed == e.k = "dir" /\ ~e.v
-///          r433 == removed /\ Departed(m2, joined)
-///          recGone == e.k = "rec" /\ e.v = "none" /\ mir.rec = "D" /\ FACT = "record"
-///      IN /\ mir' = m2 /\ ntf' = Tail(ntf)
-///         /\ txs' = IF r433 /\ ~InFlight("retire") THEN txs \cup {Retirement(m2)} ELSE txs
-///         /\ mark' = CASE removed /\ ~r433 /\ FACT = "local" -> adm
-///                      [] removed /\ ~r433 /\ FACT = "record" /\ ~retired /\ m2.rec # "D" -> adm
-///                      [] recGone -> NoR
-///                      [] OTHER -> mark
-///         /\ retired' = (retired \/ recGone)
-///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, pend, adm, joined, gone, halted, viol, left>>
+/// \* W1, W3 (read: mirror): DEPARTED(e, stale = FALSE) at the epoch of the record read, expecting that record. Not fair.
+/// Depart(L) ==
+///   /\ On("depart")
+///   /\ Submit(DepartTx(L, M(L).rec, FALSE))
+///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
 ///
-/// \* ... or one join input (ORDERED).
-/// JoinHandled ==
-///   /\ ntf # <<>> /\ Head(ntf).k = "join"
-///   /\ Deliver(Head(ntf).v) /\ ntf' = Tail(ntf)
-///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, term, txs, mir, joined, mark, gone, halted, viol, left>>
+/// \* W2, W3 (read: mirror): the same with stale = TRUE. Not fair.
+/// Infer(L) ==
+///   /\ On("infer")
+///   /\ Submit(DepartTx(L, M(L).rec, TRUE))
+///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
 ///
-/// \* ---- The applier ----
-/// \* A transaction commits whole or is refused whole. The history. An accepted issue names the process it was drafted
-/// \* for (the issuing leader's token for the id) as the directive's.
-/// \* It breaks "sticks" when a leader-issued directive of the id was removed since the id's last retirement, "reissue" when
-/// \* that directive was this process's own, and "halted" when the current process held a directive at its removal. An
-/// \* accepted removal of the DEPARTED record is the id's retirement: the history sets start again; it breaks "split" when it
-/// \* leaves a receipt. A retirement that removes a directive halts its holder, which may return only through a fresh join
-/// \* (`owed`).
-/// Commit(t) ==
-///   /\ t \in txs /\ txs' = txs \ {t}
-///   /\ IF Accepts(t)
-///        THEN LET retires == t.kind = "retire" /\ kv.rec = "D"
-///                 unholds == t.kind = "retire" /\ t.eDir = "present" /\ kv.dir
-///             IN /\ kv' = Written(t) /\ ntf' = ntf \o Events(t)
-///                /\ dirOf' = CASE t.kind = "issue" -> t.proc
-///                              [] t.kind = "retire" /\ t.eDir = "present" -> 0
-///                              [] OTHER -> dirOf
-///                /\ viol' = viol \cup (IF t.kind = "issue" /\ gone # {} THEN {"sticks"} ELSE {})
-///                                \cup (IF t.kind = "issue" /\ t.proc \in gone THEN {"reissue"} ELSE {})
-///                                \cup (IF t.kind = "issue" /\ cur \in halted THEN {"halted"} ELSE {})
-///                                \cup (IF retires /\ Written(t).rcpt # NoR THEN {"split"} ELSE {})
-///                /\ gone' = IF retires THEN {} ELSE gone
-///                /\ halted' = IF retires THEN {} ELSE halted
-///                /\ owed' = (owed \/ unholds)
-///                /\ asked' = (asked /\ t.kind # "issue" /\ ~unholds)
-///        ELSE UNCHANGED <<kv, ntf, dirOf, viol, gone, halted, owed, asked>>
-///   /\ UNCHANGED <<cur, up, term, mir, pend, adm, joined, mark, retired, left>>
+/// \* W4: arm J-1 of `join` (read: mirror): ADMITTED(e + 1) over a DEPARTED record that is stale, or of a CORE, or of a
+/// \* WORKER with a directive; it witnesses a present directive. The epoch's bound is its conjunct (Dom 7).
+/// ArmJ1(L) ==
+///   /\ On("join") /\ MUT # "noJ1"
+///   /\ pending[L]
+///   /\ M(L).rec.st = "D"
+///   /\ (M(L).rec.stale \/ role = "CORE" \/ M(L).dir)
+///   /\ M(L).rec.e < E_max
+///   /\ Submit(J1Tx(L, M(L).rec, M(L).dir))
+///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
 ///
-/// \* A transaction is lost and never commits; the leader derives it again from its mirror.
-/// Lose(t) ==
-///   /\ t \in txs /\ left.lose > 0
-///   /\ txs' = txs \ {t} /\ left' = [left EXCEPT !.lose = @ - 1]
-///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, ntf, mir, pend, adm, joined, mark, retired, gone, halted, viol>>
+/// \* W10 (read: prefix): placement COMPLETE beside a DEPARTED record removes the unit. Not fair.
+/// RetireP(L) ==
+///   /\ On("retire")
+///   /\ \E i \in 1..Len(history) : history[i].rec.st = "D" /\ Submit(UnitTx(<<"retireP", L>>, history[i]))
+///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
 ///
-/// \* A transaction is reported failed to the leader and may still commit later (the harness policy of FsmHarness; the
-/// \* outbox's own claim is that an expired draft cannot). The leader no longer counts it as in flight.
-/// Hold(t) ==
-///   /\ t \in txs /\ ~t.held /\ left.hold > 0
-///   /\ txs' = (txs \ {t}) \cup {[t EXCEPT !.held = TRUE]} /\ left' = [left EXCEPT !.hold = @ - 1]
-///   /\ UNCHANGED <<kv, dirOf, cur, up, owed, asked, term, ntf, mir, pend, adm, joined, mark, retired, gone, halted, viol>>
-///
-/// \* ---- The environment ----
-/// \* An operator (any writer that is not the leader) removes the directive with a bare transaction: nothing else is written.
-/// \* A WORKER process that holds the directive halts; its join is over.
+/// \* W11, W18 (read: any): the directive alone is removed, whatever is committed; the receipt stays. Not fair.
 /// OpRemove ==
-///   /\ left.ops > 0 /\ kv.dir
-///   /\ kv' = [kv EXCEPT !.dir = FALSE] /\ ntf' = Append(ntf, Ev("dir", FALSE, "env"))
-///   /\ gone' = gone \cup (IF dirOf # 0 THEN {dirOf} ELSE {})
-///   /\ halted' = IF ROLE = "worker" THEN halted \cup {cur} ELSE halted
-///   /\ dirOf' = 0 /\ asked' = FALSE /\ left' = [left EXCEPT !.ops = @ - 1]
-///   /\ UNCHANGED <<cur, up, owed, term, txs, mir, pend, adm, joined, mark, retired, viol>>
+///   /\ On("operatorRemoval")
+///   /\ directive
+///   /\ Submit(OpRemTx)
+///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
 ///
-/// \* Another writer puts the directive (a test, an operator): no receipt comes with it, and by ruling nothing adds one.
+/// \* W18 (read: any): a directive put by another writer, with no receipt. Not fair.
 /// ForeignPut ==
-///   /\ left.foreign > 0 /\ ~kv.dir
-///   /\ kv' = [kv EXCEPT !.dir = TRUE] /\ ntf' = Append(ntf, Ev("dir", TRUE, "env"))
-///   /\ dirOf' = 0 /\ asked' = FALSE /\ left' = [left EXCEPT !.foreign = @ - 1]
-///   /\ UNCHANGED <<cur, up, owed, term, txs, mir, pend, adm, joined, mark, retired, gone, halted, viol>>
+///   /\ On("foreignPut")
+///   /\ Submit(FputTx)
+///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
 ///
-/// \* The leader observes the id's departure (true or inferred): the DEPARTED record, whatever the directive state, and the
-/// \* pending join is dropped (DepartureFlow.depart, dropPendingJoin).
-/// Depart ==
-///   /\ left.depart > 0 /\ kv.rec # "D"
-///   /\ kv' = [kv EXCEPT !.rec = "D"] /\ ntf' = Append(ntf, Ev("rec", "D", "env"))
-///   /\ pend' = FALSE /\ joined' = FALSE /\ asked' = FALSE /\ left' = [left EXCEPT !.depart = @ - 1]
-///   /\ UNCHANGED <<dirOf, cur, up, owed, term, txs, mir, adm, mark, retired, gone, halted, viol>>
+/// \* A termination retirement starts with its first read (prefix): the record's epoch and the directive.
+/// StartRet ==
+///   \E r \in RetIds, i \in 1..Len(history) :
+///     /\ retirements[r] = NoRet
+///     /\ \A q \in RetIds : q < r => retirements[q] # NoRet
+///     /\ retirements' = [retirements EXCEPT ![r] = [on |-> TRUE, e |-> history[i].rec.e, dir |-> history[i].dir]]
 ///
-/// \* A source-confirmed termination of the id (TerminationRetirement): unless the record is ADMITTED, the unit over the
-/// \* store, in one step: every member the store holds is removed. Only for a process that stopped: a live node is never
-/// \* terminated (the release table of the design memo, exit E2). It ends the id's history as a retirement does.
+/// \* W12: a confirmed reap, in any state of the process. Not fair.
 /// Terminate ==
-///   /\ left.kill > 0 /\ ~up /\ kv.rec # "A" /\ (kv.rec = "D" \/ kv.dir \/ kv.rcpt # NoR)
-///   /\ kv' = [dir |-> FALSE, rcpt |-> NoR, rec |-> "none"]
-///   /\ ntf' = ntf \o (IF kv.rec = "D" THEN <<Ev("rec", "none", "env")>> ELSE <<>>)
-///                 \o (IF kv.dir THEN <<Ev("dir", FALSE, "env")>> ELSE <<>>)
-///                 \o (IF kv.rcpt # NoR THEN <<Ev("rcpt", NoR, "env")>> ELSE <<>>)
-///   /\ dirOf' = 0 /\ gone' = {} /\ halted' = {} /\ asked' = FALSE /\ left' = [left EXCEPT !.kill = @ - 1]
-///   /\ UNCHANGED <<cur, up, owed, term, txs, mir, pend, adm, joined, mark, retired, viol>>
+///   /\ On("terminate")
+///   /\ StartRet
+///   /\ UNCHANGED <<role, history, inflight, term, mirror, pending, view, token, runs, live, directed, sticky, ranSince, mark>>
 ///
-/// \* The current process stops (it exits, or its host goes). Whether a leader records that is Depart's.
-/// Stop ==
-///   /\ up /\ up' = FALSE
-///   /\ UNCHANGED <<kv, dirOf, cur, owed, asked, term, txs, ntf, mir, pend, adm, joined, mark, retired, gone, halted, viol, left>>
+/// \* W13: the EXTERNAL branch, for a process that is not live. Not fair.
+/// ExternalConfirm ==
+///   /\ On("externalConfirm")
+///   /\ ~live
+///   /\ StartRet
+///   /\ UNCHANGED <<role, history, inflight, term, mirror, pending, view, token, runs, live, directed, sticky, ranSince, mark>>
 ///
-/// \* Another process starts under the id.
-/// Restart ==
-///   /\ cur < MaxProc /\ cur' = cur + 1 /\ up' = TRUE /\ owed' = TRUE /\ asked' = FALSE
-///   /\ UNCHANGED <<kv, dirOf, term, txs, ntf, mir, pend, adm, joined, mark, retired, gone, halted, viol, left>>
+/// \* W14: a forced clear, for a process that is not live. Not fair.
+/// ForcedClear ==
+///   /\ On("forcedClear")
+///   /\ ~live
+///   /\ StartRet
+///   /\ UNCHANGED <<role, history, inflight, term, mirror, pending, view, token, runs, live, directed, sticky, ranSince, mark>>
 ///
-/// \* A new leader: Rebuild mirrors the committed KV; every leader-local fact starts empty (Lifecycle.rebuild), its token
-/// \* registry included. The deposed leader's transactions fail the leader check from here on (Accepts), so they are
-/// \* dropped: a reduction, not a claim.
+/// \* TR's one rule (3.4 of the memo), rows 0 to 7 from the top; row 7 has no instance in the record's domain.
+/// Decide(first, now) ==
+///   LET clause == ~now.dir \/ first.dir IN
+///   IF now.rec.st = "none" /\ ~now.dir /\ now.rcpt = 0 THEN "DONE"
+///   ELSE IF now.rec.e # first.e THEN "END"
+///   ELSE IF now.rec.st = "A" THEN "WAIT"
+///   ELSE IF clause THEN "REMOVE" ELSE "END"
+///
+/// \* W15 (read: prefix, once per attempt): REMOVE submits the unit, DONE and END drop the retirement, WAIT is no step.
+/// \* Fair (weak), with no term condition.
+/// Attempt(r) ==
+///   /\ On("attempt")
+///   /\ retirements[r] # NoRet
+///   /\ \E i \in 1..Len(history) :
+///        LET d == Decide(retirements[r], history[i]) IN
+///          /\ d # "WAIT"
+///          /\ inflight' = IF d = "REMOVE"
+///                         THEN {u \in inflight : u.k # <<"attempt", r>>} \cup {UnitTx(<<"attempt", r>>, history[i])}
+///                         ELSE inflight
+///          /\ retirements' = IF d = "REMOVE" THEN retirements ELSE [retirements EXCEPT ![r] = NoRet]
+///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, sticky, ranSince, mark>>
+///
+/// \* W21 (reads the committed directive): a directed, live WORKER halts on the delivered removal. Not fair.
+/// Halt ==
+///   /\ On("halt")
+///   /\ role = "WORKER" /\ runs /\ live /\ directed /\ ~directive
+///   /\ runs' = FALSE /\ live' = FALSE /\ ranSince' = FALSE
+///   /\ UNCHANGED <<role, history, inflight, term, mirror, pending, view, token, directed, retirements, sticky, mark>>
+///
+/// \* The applier's expected-value rule (KVStore; assumed): all of a transaction's writes, or none.
+/// Accepts(t) == /\ t.cRec => record = t.eRec
+///               /\ t.cDir => directive = t.eDir
+///               /\ t.cRcpt => receipt = t.eRcpt
+/// After(t) ==
+///   IF Accepts(t)
+///   THEN [rec |-> CASE t.wRec = "put" -> t.nRec [] t.wRec = "del" -> NoRec [] OTHER -> record,
+///         dir |-> CASE t.wDir = "put" -> TRUE [] t.wDir = "del" -> FALSE [] OTHER -> directive,
+///         rcpt |-> CASE t.wRcpt = "put" -> t.nRcpt [] t.wRcpt = "del" -> 0 [] OTHER -> receipt]
+///   ELSE Committed
+///
+/// \* W23: the commit step of every writer row; a refused transaction leaves the bag and writes nothing. The bound of
+/// \* `history` is its conjunct (Dom 8). `directed` as row W20: a directive put while the process runs. `sticky`: a commit
+/// \* that removes the receipt is a retirement and clears it; a committed leader issue sets "issued"; a commit that removes
+/// \* the directive takes "issued" to "removed". Not fair: it is P1 of the liveness sentences.
+/// Commit(t) ==
+///   LET acc == Accepts(t)
+///       new == After(t)
+///       nst == IF acc /\ receipt # 0 /\ new.rcpt = 0 THEN "clear"
+///              ELSE IF acc /\ t.issue THEN "issued"
+///              ELSE IF sticky = "issued" /\ directive /\ ~new.dir THEN "removed"
+///              ELSE sticky
+///   IN /\ t \in inflight
+///      /\ (new # Committed) => Len(history) < H_max
+///      /\ history' = IF new # Committed THEN Append(history, new) ELSE history
+///      /\ inflight' = inflight \ {t}
+///      /\ directed' = (directed \/ (acc /\ t.wDir = "put" /\ runs))
+///      /\ sticky' = nst
+///      /\ ranSince' = IF nst = "removed" /\ sticky # "removed" /\ runs THEN TRUE ELSE ranSince
+///      /\ UNCHANGED <<role, term, mirror, pending, view, token, runs, live, retirements, mark>>
+///
+/// \* S6: a transaction is lost. (`delay` is no step: a delayed transaction is one that stays in the bag.) Not fair.
+/// Lose(t) ==
+///   /\ On("lose")
+///   /\ t \in inflight
+///   /\ inflight' = inflight \ {t}
+///   /\ UNCHANGED <<role, history, term, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince, mark>>
+///
+/// \* FACT "local", "record": the mark is taken when the mirror passes a removal of the directive ("record": not while it
+/// \* holds a DEPARTED record there).
+/// MarkTaken(i, j) ==
+///   /\ Marks
+///   /\ \E n \in (i + 1)..j : history[n - 1].dir /\ ~history[n].dir /\ (FACT = "record" => history[n].rec.st # "D")
+///
+/// \* S1: a leader's mirror moves to any later prefix of the commit history. Not fair: it is P2 of the liveness sentences.
+/// Advance(L) ==
+///   /\ \E j \in (mirror[L] + 1)..Len(history) :
+///        /\ mirror' = [mirror EXCEPT ![L] = j]
+///        /\ mark' = [mark EXCEPT ![L] = mark[L] \/ MarkTaken(mirror[L], j)]
+///   /\ UNCHANGED <<role, history, inflight, term, pending, view, token, runs, live, directed, retirements, sticky, ranSince>>
+///
+/// \* S3: the term advances and names a leader; every leader keeps its mirror and its pending joins. The named leader's
+/// \* mark is gone (Rebuild builds a new model; FACT "local" and "record"). Not fair.
 /// LeaderChange ==
-///   /\ term < MaxTerm /\ term' = term + 1 /\ mir' = kv /\ ntf' = <<>> /\ txs' = {}
-///   /\ pend' = FALSE /\ adm' = 0 /\ joined' = FALSE /\ mark' = NoR /\ retired' = FALSE
-///   /\ owed' = TRUE /\ asked' = FALSE
-///   /\ UNCHANGED <<kv, dirOf, cur, up, gone, halted, viol, left>>
+///   /\ On("leaderChange")
+///   /\ term.n < MaxTerm
+///   /\ \E L \in Leaders :
+///        /\ term' = [n |-> term.n + 1, ldr |-> L]
+///        /\ mark' = [mark EXCEPT ![L] = FALSE]
+///   /\ UNCHANGED <<role, history, inflight, mirror, pending, view, token, runs, live, directed, retirements, sticky, ranSince>>
 ///
-/// JoinInput == \E p \in 1..cur : Join(p)
-/// Applier == \E t \in txs : Commit(t)
-/// Lost == \E t \in txs : Lose(t)
-/// Held == \E t \in txs : Hold(t)
+/// \* S4's write: a join becomes pending at one leader, whose view becomes the current token if it is not set.
+/// Raise(L) ==
+///   /\ pending' = [pending EXCEPT ![L] = TRUE]
+///   /\ view' = [view EXCEPT ![L] = IF view[L] = 0 THEN token ELSE view[L]]
 ///
+/// \* S4: the join input, in any state and at any leader. Not fair.
+/// JoinInput(L) ==
+///   /\ On("joinInput")
+///   /\ Raise(L)
+///   /\ UNCHANGED <<role, history, inflight, term, mirror, token, runs, live, directed, retirements, sticky, ranSince, mark>>
+///
+/// \* S5, its four actions (facts 3 and 4). None is fair.
+/// Restart ==
+///   /\ On("processRestart")
+///   /\ token < MaxToken
+///   /\ token' = token + 1 /\ runs' = TRUE /\ live' = FALSE /\ directed' = FALSE /\ ranSince' = FALSE
+///   /\ UNCHANGED <<role, history, inflight, term, mirror, pending, view, retirements, sticky, mark>>
+///
+/// Partition ==
+///   /\ On("partition")
+///   /\ runs /\ live
+///   /\ live' = FALSE
+///   /\ UNCHANGED <<role, history, inflight, term, mirror, pending, view, token, runs, directed, retirements, sticky, ranSince, mark>>
+///
+/// Reconnect ==
+///   /\ On("reconnect")
+///   /\ runs /\ ~live
+///   /\ live' = TRUE
+///   /\ directed' = (directed \/ directive)
+///   /\ \E L \in Leaders : Raise(L)
+///   /\ UNCHANGED <<role, history, inflight, term, mirror, token, runs, retirements, sticky, ranSince, mark>>
+///
+/// \* S5 and W21: the process's own stop, and a halt delivered to a worker that is not live.
+/// Stop ==
+///   /\ On("stop")
+///   /\ runs
+///   /\ runs' = FALSE /\ live' = FALSE /\ ranSince' = FALSE
+///   /\ UNCHANGED <<role, history, inflight, term, mirror, pending, view, token, directed, retirements, sticky, mark>>
+///
+/// MinLeader == CHOOSE L \in Leaders : \A L2 \in Leaders : L <= L2
+///
+/// \* The empty store, and a first process in the state fact 4 gives a restarted one. The leaders are alike, so the first
+/// \* term names the least.
+/// Init ==
+///   /\ role \in Roles
+///   /\ history = <<[rec |-> NoRec, dir |-> FALSE, rcpt |-> 0]>>
+///   /\ inflight = {}
+///   /\ term = [n |-> 1, ldr |-> MinLeader]
+///   /\ mirror = [L \in Leaders |-> 1]
+///   /\ pending = [L \in Leaders |-> FALSE]
+///   /\ view = [L \in Leaders |-> 0]
+///   /\ token = 1 /\ runs = TRUE /\ live = FALSE /\ directed = FALSE
+///   /\ retirements = [r \in RetIds |-> NoRet]
+///   /\ sticky = "clear" /\ ranSince = FALSE
+///   /\ mark = [L \in Leaders |-> FALSE]
+///
+/// \* The 21 actions of the memo's map (`join` is ArmJ1 and Issue, `retire` is Retire and RetireP).
 /// Next ==
-///   \/ JoinInput \/ JoinHandled \/ Readmit \/ Rewrite \/ Seen \/ Track \/ Withhold \/ Issue \/ Retire \/ Notify
-///   \/ Applier \/ Lost \/ Held
-///   \/ OpRemove \/ ForeignPut \/ Depart \/ Terminate \/ Stop \/ Restart \/ LeaderChange
+///   \/ \E L \in Leaders : Depart(L) \/ Infer(L) \/ ArmJ1(L) \/ Issue(L) \/ Admit(L) \/ Retire(L) \/ RetireP(L)
+///                         \/ Advance(L) \/ JoinInput(L)
+///   \/ OpRemove \/ ForeignPut \/ Terminate \/ ExternalConfirm \/ ForcedClear \/ Halt
+///   \/ \E r \in RetIds : Attempt(r)
+///   \/ \E t \in inflight : Commit(t) \/ Lose(t)
+///   \/ LeaderChange \/ Restart \/ Partition \/ Reconnect \/ Stop
 ///
-/// \* Fairness: every leader action, the handling of its queue, the applier per transaction kind, and the one join input
-/// \* membership owes a leader. None on a repeated join input or on the other environment actions (bounded anyway).
+/// \* Fairness, by the one rule of the writer table: weak fairness exactly where a fairness cell says "weak", on the row's
+/// \* expressed part and on the tick's (S2: the acting leader is the one the term names). W4, W16 (not beside a DEPARTED
+/// \* record), W8, and W15 (no term condition). Nothing else is fair.
+/// J1Fair(L) == term.ldr = L /\ T(L) /\ ArmJ1(L)
+/// J4Fair(L) == term.ldr = L /\ T(L) /\ M(L).rec.st # "D" /\ Issue(L)
+/// RetireFair(L) == term.ldr = L /\ role = "WORKER" /\ (M(L).dir \/ M(L).rcpt # 0) /\ Retire(L)
+///
 /// Fairness ==
-///   /\ WF_vars(owed /\ JoinInput) /\ WF_vars(JoinHandled)
-///   /\ WF_vars(Readmit) /\ WF_vars(Rewrite) /\ WF_vars(Seen) /\ WF_vars(Track) /\ WF_vars(Withhold)
-///   /\ WF_vars(Issue) /\ WF_vars(Retire) /\ WF_vars(Notify)
-///   /\ \A k \in Kinds : WF_vars(\E t \in txs : t.kind = k /\ Commit(t))
+///   /\ \A L \in Leaders : WF_vars(J1Fair(L)) /\ WF_vars(J4Fair(L)) /\ WF_vars(RetireFair(L))
+///   /\ \A r \in RetIds : WF_vars(Attempt(r))
 ///
 /// Spec == Init /\ [][Next]_vars /\ Fairness
 ///
 /// TypeOK ==
-///   /\ kv.dir \in BOOLEAN /\ kv.rcpt \in {NoR} \cup Tokens /\ kv.rec \in {"none", "D", "A"}
-///   /\ mir.dir \in BOOLEAN /\ mir.rcpt \in {NoR} \cup Tokens /\ mir.rec \in {"none", "D", "A"}
-///   /\ (~Receipts => kv.rcpt = NoR) /\ (FACT \in {"unguarded", "receipt"} => kv.rcpt \in {NoR, 0})
-///   /\ dirOf \in 0..MaxProc /\ cur \in 1..MaxProc /\ term \in 1..MaxTerm
-///   /\ adm \in Tokens /\ mark \in {NoR} \cup Tokens
-///   /\ up \in BOOLEAN /\ owed \in BOOLEAN /\ asked \in BOOLEAN /\ pend \in BOOLEAN /\ joined \in BOOLEAN /\ retired \in BOOLEAN
-///   /\ \A t \in txs : /\ t.kind \in Kinds /\ t.term = term /\ t.held \in BOOLEAN /\ t.proc \in 0..MaxProc
-///                     /\ t.eDir \in {"absent", "present", "any"} /\ t.eRcpt \in {Any, NoR} \cup Tokens
-///                     /\ t.eRec \in {"D", "any"}
-///   /\ \A i \in 1..Len(ntf) : ntf[i].k \in {"dir", "rcpt", "rec", "join"}
-///   /\ gone \subseteq 1..MaxProc /\ halted \subseteq 1..MaxProc /\ viol \subseteq {"sticks", "reissue", "halted", "split"}
-///   /\ \A b \in DOMAIN left : left[b] \in Nat
+///   /\ role \in Roles
+///   /\ Len(history) \in 1..H_max
+///   /\ \A i \in 1..Len(history) : history[i] \in EntryDom
+///   /\ inflight \subseteq TxSpace
+///   /\ \A t, u \in inflight : t.k = u.k => t = u
+///   /\ term.n \in 1..MaxTerm /\ term.ldr \in Leaders
+///   /\ \A L \in Leaders : /\ mirror[L] \in 1..Len(history) /\ pending[L] \in BOOLEAN
+///                         /\ view[L] \in 0..MaxToken /\ mark[L] \in BOOLEAN
+///   /\ token \in 1..MaxToken
+///   /\ runs \in BOOLEAN /\ live \in BOOLEAN /\ directed \in BOOLEAN /\ (live => runs)
+///   /\ \A r \in RetIds : retirements[r] \in [on : BOOLEAN, e : 0..E_max, dir : BOOLEAN]
+///   /\ sticky \in {"clear", "issued", "removed"} /\ ranSince \in BOOLEAN
+///   /\ (~Marks => \A L \in Leaders : ~mark[L])
 ///
-/// \* Safety, per id (S of the memo): no leader issue commits for an id whose leader-issued directive was removed since
-/// \* the id's last retirement or termination. `gone` is the history variable. A directive another writer put is not
-/// \* leader-issued: its removal binds nothing (residual_foreign).
-/// Sticks == "sticks" \notin viol
+/// \* Safety, per id and over committed facts alone: no leader issue commits while a directive that a leader issue put
+/// \* stands removed since the id's last retirement. Only such a commit takes `sticky` from "removed" to "issued".
+/// Safety == [][sticky = "removed" => sticky' # "issued"]_vars
 ///
-/// \* The first draft's weaker S, per process: no leader issue commits for a process whose own leader-issued directive
-/// \* was removed since the id's last retirement. Implied by Sticks; "arm2" claimed it and breaks it (arm2_f2).
-/// NoReissue == "reissue" \notin viol
+/// \* The claim fix round 3 of the memo deleted, kept as the property of the residual config: no leader issue commits for
+/// \* a process under which a leader-issued directive was removed and that has run ever since.
+/// StickyWhileRunning == [][(ranSince /\ sticky # "issued") => sticky' # "issued"]_vars
 ///
-/// \* The worker's reading: no leader issue commits while the current process is one that held a directive at its removal
-/// \* since the id's last retirement (it is halting, and a directive committed now does not cancel the halt). "arm2" breaks
-/// \* it for a process that started while its predecessor's directive stood (arm2_n1, finding N1 of the memo); "receipt"
-/// \* breaks it only for a directive another writer put (residual_foreign).
-/// NoIssueToHalted == "halted" \notin viol
+/// \* Not in the memo. What the fact itself must do: while a leader-issued directive stands removed, no leader whose mirror
+/// \* holds the whole history may be let through by mayIssue. A stale mirror and a late commit break Safety under every FACT
+/// \* but "receipt"; this invariant tells the named inputs F3 (the mark lost at a leader change) and F1 (the mark not taken
+/// \* beside a DEPARTED record) from them.
+/// FactWithholds == sticky = "removed" => \A L \in Leaders : mirror[L] = Len(history) => ~J4Cond(L)
 ///
-/// \* Invariant R of the redesign: an accepted removal of the DEPARTED record leaves no receipt.
-/// RetiredWhole == "split" \notin viol
+/// \* Not in section 7 of the memo (the r2 model's property, for the sixth known-bad config): a commit that removes the
+/// \* record leaves no receipt.
+/// RetiredWhole == [][(record.st # "none" /\ history'[Len(history')].rec.st = "none")
+///                    => history'[Len(history')].rcpt = 0]_vars
 ///
-/// \* Statement 2 of the redesign: a directive the leader committed has its receipt for as long as it stands.
-/// Traced == (Receipts /\ dirOf # 0 /\ kv.dir) => kv.rcpt # NoR
+/// \* The liveness sentences (invariant 2): for every leader L, <>[]Dom_k(L) /\ Settle /\ P1 /\ P2(L) => []<>Goal. The parts
+/// \* are the memo's parts table; they are parts of the two sentences and never fairness of the specification.
+/// Held == role = "WORKER" /\ record.st = "D" /\ ~record.stale /\ ~directive /\ receipt = 0
+/// Unreleased == receipt # 0 /\ ~directive
+/// TopEpoch == record.st = "D" /\ record.e = E_max /\ (record.stale \/ role = "CORE")
+/// TopHistory == Len(history) = H_max
+/// Goal == directive
 ///
-/// \* Liveness: a join the leader handled is, from some point on, answered by a directive, or withheld by a standing
-/// \* receipt (the id is bound until it is retired), or deferred by the DEPARTED record of an id that has no receipt (J7;
-/// \* not this redesign's subject). What may not last: a handled join for an id with no directive, no receipt and no
-/// \* DEPARTED record (joined, never directed; or retired), and a DEPARTED record beside a receipt with no directive
-/// \* (ruling R3). A process that held a directive at its removal is halting and is owed none until the id is retired; a
-/// \* process that stopped is owed none.
-/// JoinAnswered == <>[]((asked /\ up /\ cur \notin halted)
-///                         => (kv.dir \/ (kv.rcpt # NoR /\ kv.rec # "D") \/ (kv.rec = "D" /\ kv.rcpt = NoR)))
+/// \* Dom 1 to 5; Dom 6 tells the sentences apart; Dom 7 and Dom 8 are the instrument's bounds that can stop a needed step.
+/// DomBase(L) == term.ldr = L /\ pending[L] /\ T(L) /\ ~Held /\ ~Unreleased
+/// Dom1(L) == DomBase(L) /\ ~Retired /\ ~TopEpoch /\ ~TopHistory
+/// Dom2(L) == DomBase(L) /\ Retired /\ ~TopEpoch /\ ~TopHistory
+/// Dom1no7(L) == DomBase(L) /\ ~Retired /\ ~TopHistory     \* the probe of edge run E5
+/// Dom1no8(L) == DomBase(L) /\ ~Retired /\ ~TopEpoch       \* the probe of edge run E6
+///
+/// \* Settle: from some point on every step is a commit, an advance, or a fair row's step where its fairness is.
+/// SettleStep ==
+///   \/ \E t \in inflight : Commit(t)
+///   \/ \E L \in Leaders : Advance(L) \/ J1Fair(L) \/ J4Fair(L) \/ RetireFair(L)
+///   \/ \E r \in RetIds : Attempt(r)
+/// Settle == <>[][SettleStep]_vars
+/// P1 == \A t \in TxSpace : WF_vars(Commit(t))
+/// P2(L) == WF_vars(Advance(L))
+///
+/// Live1 == \A L \in Leaders : (<>[]Dom1(L) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
+/// Live2 == \A L \in Leaders : (<>[]Dom2(L) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
+/// \* Edge run E4: must FAIL, on a behaviour that stays inside Dom_k and holds a directive again and again.
+/// NoGoal1 == \A L \in Leaders : (<>[]Dom1(L) /\ Settle /\ P1 /\ P2(L)) => <>[]~Goal
+/// NoGoal2 == \A L \in Leaders : (<>[]Dom2(L) /\ Settle /\ P1 /\ P2(L)) => <>[]~Goal
+/// Live1no7 == \A L \in Leaders : (<>[]Dom1no7(L) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
+/// Live1no8 == \A L \in Leaders : (<>[]Dom1no8(L) /\ Settle /\ P1 /\ P2(L)) => []<>Goal
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:common
@@ -2114,324 +2197,583 @@
 /// ```tlacfg DirectiveReceipt:base
 /// CONSTANT FACT = "none"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 1
-/// CONSTANT MaxTerm = 1
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 0
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 0
-/// CONSTANT MaxHold = 0
-/// INVARIANT Sticks
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "infer", "admit", "retire", "terminate", "foreignPut"}
+/// PROPERTY Safety
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:local_f3
 /// CONSTANT FACT = "local"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 1
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
 /// CONSTANT MaxTerm = 2
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 0
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 0
-/// CONSTANT MaxHold = 0
-/// INVARIANT Sticks
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "depart", "infer", "admit", "retire", "terminate", "foreignPut"}
+/// INVARIANT FactWithholds
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:local_ctl
 /// CONSTANT FACT = "local"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 1
-/// CONSTANT MaxTerm = 1
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 1
-/// CONSTANT MaxHold = 0
-/// INVARIANT Sticks
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "infer", "admit", "retire", "terminate", "foreignPut"}
+/// INVARIANT FactWithholds
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:record_f1
 /// CONSTANT FACT = "record"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 1
-/// CONSTANT MaxTerm = 1
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 1
-/// CONSTANT MaxHold = 0
-/// INVARIANT Sticks
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "infer", "retire", "terminate", "foreignPut"}
+/// INVARIANT FactWithholds
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:record_ctl
 /// CONSTANT FACT = "record"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 1
-/// CONSTANT MaxTerm = 1
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 0
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 1
-/// CONSTANT MaxHold = 0
-/// INVARIANT Sticks
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "infer", "retire", "terminate", "foreignPut"}
+/// INVARIANT FactWithholds
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:unguarded_late
 /// CONSTANT FACT = "unguarded"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 1
-/// CONSTANT MaxTerm = 1
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 0
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 0
-/// CONSTANT MaxHold = 1
-/// INVARIANT Sticks
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "infer", "admit", "retire", "terminate", "foreignPut"}
+/// PROPERTY Safety
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:unguarded_ctl
 /// CONSTANT FACT = "unguarded"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 1
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
 /// CONSTANT MaxTerm = 2
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 1
-/// CONSTANT MaxHold = 0
-/// INVARIANT Sticks
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "infer", "admit", "retire", "terminate", "foreignPut"}
+/// INVARIANT FactWithholds
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:arm2_f2
 /// CONSTANT FACT = "arm2"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 2
-/// CONSTANT MaxTerm = 3
-/// CONSTANT MaxOps = 2
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 0
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 0
-/// CONSTANT MaxHold = 0
-/// INVARIANT NoReissue
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "infer", "admit", "retire", "terminate", "foreignPut"}
+/// PROPERTY Safety
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:arm2_n1
 /// CONSTANT FACT = "arm2"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 2
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
 /// CONSTANT MaxTerm = 2
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 0
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 0
-/// CONSTANT MaxHold = 0
-/// INVARIANT NoIssueToHalted
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "stop", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "infer", "admit", "retire", "terminate", "foreignPut"}
+/// PROPERTY StickyWhileRunning
 /// ```
 ///
 /// ```tlacfg DirectiveReceipt:mut_nowitness
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "nowitness"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 1
-/// CONSTANT MaxTerm = 1
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 1
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 0
-/// CONSTANT MaxHold = 1
-/// INVARIANT RetiredWhole
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "infer", "admit", "terminate", "foreignPut"}
+/// PROPERTY RetiredWhole
 /// ```
 ///
-/// ```tlacfg DirectiveReceipt:receipt
+/// ```tlacfg DirectiveReceipt:residual_forced
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 2
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1, 2}
 /// CONSTANT MaxTerm = 2
-/// CONSTANT MaxOps = 2
-/// CONSTANT MaxForeign = 1
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 1
-/// CONSTANT MaxLose = 1
-/// CONSTANT MaxHold = 1
-/// INVARIANT Sticks
-/// INVARIANT Traced
-/// INVARIANT RetiredWhole
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"terminate", "externalConfirm", "retire", "lose", "leaderChange", "foreignPut", "infer", "admit", "depart", "stop", "processRestart", "halt"}
+/// PROPERTY StickyWhileRunning
 /// ```
 ///
-/// ```tlacfg DirectiveReceipt:receipt_core
+/// ```tlacfg DirectiveReceipt:receipt_depart
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "core"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 2
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
 /// CONSTANT MaxTerm = 2
-/// CONSTANT MaxOps = 2
-/// CONSTANT MaxForeign = 1
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 1
-/// CONSTANT MaxLose = 1
-/// CONSTANT MaxHold = 1
-/// INVARIANT Sticks
-/// INVARIANT Traced
-/// INVARIANT RetiredWhole
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "infer", "admit", "retire", "terminate"}
+/// INVARIANT FactWithholds
+/// PROPERTY Safety
+/// PROPERTY RetiredWhole
 /// ```
 ///
-/// ```tlacfg DirectiveReceipt:receipt_nogate
-/// CONSTANT FACT = "receipt"
-/// CONSTANT MUT = "nogate"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 2
-/// CONSTANT MaxTerm = 2
-/// CONSTANT MaxOps = 2
-/// CONSTANT MaxForeign = 1
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 1
-/// CONSTANT MaxLose = 1
-/// CONSTANT MaxHold = 1
-/// INVARIANT Sticks
-/// ```
-///
-/// ```tlacfg DirectiveReceipt:receipt_halted
+/// ```tlacfg DirectiveReceipt:receipt_infer
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 2
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
 /// CONSTANT MaxTerm = 2
-/// CONSTANT MaxOps = 2
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 1
-/// CONSTANT MaxLose = 1
-/// CONSTANT MaxHold = 1
-/// INVARIANT NoIssueToHalted
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "admit", "retire", "terminate"}
+/// INVARIANT FactWithholds
+/// PROPERTY Safety
+/// PROPERTY RetiredWhole
 /// ```
 ///
-/// ```tlacfg DirectiveReceipt:receipt_live
+/// ```tlacfg DirectiveReceipt:receipt_admit
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = TRUE
-/// CONSTANT MaxProc = 2
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
 /// CONSTANT MaxTerm = 2
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 1
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 1
-/// CONSTANT MaxLose = 1
-/// CONSTANT MaxHold = 0
-/// PROPERTY JoinAnswered
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "infer", "retire", "terminate"}
+/// INVARIANT FactWithholds
+/// PROPERTY Safety
+/// PROPERTY RetiredWhole
 /// ```
 ///
-/// ```tlacfg DirectiveReceipt:mut_applier
-/// CONSTANT FACT = "receipt"
-/// CONSTANT MUT = "blind"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 2
-/// CONSTANT MaxTerm = 2
-/// CONSTANT MaxOps = 2
-/// CONSTANT MaxForeign = 1
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 1
-/// CONSTANT MaxLose = 1
-/// CONSTANT MaxHold = 1
-/// INVARIANT Sticks
-/// ```
-///
-/// ```tlacfg DirectiveReceipt:mut_nor3_live
-/// CONSTANT FACT = "receipt"
-/// CONSTANT MUT = "nor3"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = TRUE
-/// CONSTANT MaxProc = 2
-/// CONSTANT MaxTerm = 1
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 0
-/// CONSTANT MaxHold = 0
-/// PROPERTY JoinAnswered
-/// ```
-///
-/// ```tlacfg DirectiveReceipt:mut_drop_live
-/// CONSTANT FACT = "receipt"
-/// CONSTANT MUT = "drop"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = TRUE
-/// CONSTANT MaxProc = 1
-/// CONSTANT MaxTerm = 1
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 0
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 0
-/// CONSTANT MaxHold = 0
-/// PROPERTY JoinAnswered
-/// ```
-///
-/// ```tlacfg DirectiveReceipt:residual_foreign
+/// ```tlacfg DirectiveReceipt:receipt_terminate
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 1
-/// CONSTANT MaxTerm = 1
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 1
-/// CONSTANT MaxDepart = 0
-/// CONSTANT MaxKill = 0
-/// CONSTANT MaxLose = 0
-/// CONSTANT MaxHold = 0
-/// INVARIANT NoIssueToHalted
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "depart", "infer", "admit", "retire"}
+/// INVARIANT FactWithholds
+/// PROPERTY Safety
+/// PROPERTY RetiredWhole
 /// ```
 ///
-/// ```tlacfg DirectiveReceipt:residual_overtake_live
+/// ```tlacfg DirectiveReceipt:receipt_process
 /// CONSTANT FACT = "receipt"
 /// CONSTANT MUT = "none"
-/// CONSTANT ROLE = "worker"
-/// CONSTANT ORDERED = FALSE
-/// CONSTANT MaxProc = 2
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
 /// CONSTANT MaxTerm = 2
-/// CONSTANT MaxOps = 1
-/// CONSTANT MaxForeign = 1
-/// CONSTANT MaxDepart = 1
-/// CONSTANT MaxKill = 1
-/// CONSTANT MaxLose = 1
-/// CONSTANT MaxHold = 0
-/// PROPERTY JoinAnswered
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"depart", "infer", "admit", "retire", "terminate", "externalConfirm", "forcedClear"}
+/// INVARIANT FactWithholds
+/// PROPERTY Safety
+/// PROPERTY StickyWhileRunning
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:receipt_forced
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"terminate", "externalConfirm", "retire", "lose", "leaderChange", "foreignPut", "infer", "admit", "depart", "stop", "processRestart", "halt"}
+/// PROPERTY Safety
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:receipt_retire_one
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "infer", "admit", "terminate"}
+/// INVARIANT FactWithholds
+/// PROPERTY Safety
+/// PROPERTY RetiredWhole
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:receipt_retire_worker
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "infer", "admit", "terminate"}
+/// INVARIANT FactWithholds
+/// PROPERTY Safety
+/// PROPERTY RetiredWhole
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:receipt_retire_core
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"processRestart", "partition", "reconnect", "stop", "halt", "leaderChange", "lose", "externalConfirm", "forcedClear", "infer", "admit", "terminate"}
+/// INVARIANT FactWithholds
+/// PROPERTY Safety
+/// PROPERTY RetiredWhole
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:residual_forced_memo
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"terminate", "externalConfirm", "retire"}
+/// PROPERTY StickyWhileRunning
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e1_core
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "noJ4"
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live1
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e1_worker
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "noJ4"
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live1
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e2_core
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "noJ4ret"
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e2_worker
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "noJ4ret"
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e3_core_live1
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "noJ1"
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "admit", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live1
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e3_worker_live1
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "noJ1"
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "admit", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live1
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e3_core_live2
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "noJ1"
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "admit", "retire", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e3_worker_live2
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "noJ1"
+/// CONSTANT Roles = {"WORKER"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "admit", "retire", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e4_nogoal1
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY NoGoal1
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e4_nogoal2
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "foreignPut", "operatorRemoval"}
+/// PROPERTY NoGoal2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e5_nodom7
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "infer", "retire", "terminate", "foreignPut", "operatorRemoval"}
+/// PROPERTY Live1no7
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e6_nodom8
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "admit", "retire", "terminate"}
+/// PROPERTY Live1no8
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e7_core
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "depart", "infer", "admit", "retire", "terminate"}
+/// PROPERTY Live1
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e7_depart
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "foreignPut", "infer", "admit", "retire", "terminate"}
+/// PROPERTY Live1
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e7_infer
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "foreignPut", "depart", "admit", "retire", "terminate"}
+/// PROPERTY Live1
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e7_admit
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "foreignPut", "depart", "infer", "retire", "terminate"}
+/// PROPERTY Live1
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e7_terminate
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "foreignPut", "depart", "infer", "admit", "retire"}
+/// PROPERTY Live1
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e7_retire
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "infer", "admit", "terminate"}
+/// PROPERTY Live1
+/// PROPERTY Live2
+/// ```
+///
+/// ```tlacfg DirectiveReceipt:e7_admit_foreign
+/// CONSTANT FACT = "receipt"
+/// CONSTANT MUT = "none"
+/// CONSTANT Roles = {"WORKER", "CORE"}
+/// CONSTANT Leaders = {1, 2}
+/// CONSTANT MaxTerm = 2
+/// CONSTANT MaxToken = 2
+/// CONSTANT MaxRet = 2
+/// CONSTANT E_max = 1
+/// CONSTANT H_max = 5
+/// CONSTANT Off = {"partition", "reconnect", "stop", "halt", "lose", "externalConfirm", "forcedClear", "processRestart", "leaderChange", "depart", "infer", "retire", "terminate"}
+/// PROPERTY Live1
+/// PROPERTY Live2
 /// ```
 package org.pragmatica.aether.deployment.cluster.fsm2;

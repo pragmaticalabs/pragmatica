@@ -154,6 +154,7 @@ jobs:
           python3 -m unittest discover -s tools/tla -p 'test_results_check.py' -v
           python3 -m unittest discover -s tools/tla -p 'test_workflow.py' -v
           python3 -m unittest discover -s tools/tla -p 'test_weekly_verdict.py' -v
+          python3 -m unittest discover -s tools/tla -p 'test_writers_check.py' -v
           bash tools/tla/weekly-host.selftest.sh
           python3 tools/tla/fragment-paths.py --check
 
