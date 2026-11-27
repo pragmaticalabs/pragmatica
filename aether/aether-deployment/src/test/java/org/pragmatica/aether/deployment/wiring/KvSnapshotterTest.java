@@ -66,7 +66,8 @@ class KvSnapshotterTest {
                                                                                   "TopicSubscriptionKey",
                                                                                   "TopicPublisherKey",
                                                                                   "FsmWarningKey",
-                                                                                  "ClusterConfigKey"));
+                                                                                  "ClusterConfigKey",
+                                                                                  "DeclaredRouteKey"));
 
     private final KVStore<AetherKey, AetherValue> store = WiringFixtures.store();
     private final Applier applier = new Applier(store);
