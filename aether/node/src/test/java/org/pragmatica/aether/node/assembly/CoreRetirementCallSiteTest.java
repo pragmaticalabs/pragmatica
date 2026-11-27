@@ -125,7 +125,7 @@ class CoreRetirementCallSiteTest {
         when(replacements.retirementProtected()).thenReturn(Set.of());
         when(replacements.voterSwaps()).thenReturn(Map.of());
 
-        var registry = mock(DrainCommandRegistry.class);
+        var registry = mock(DrainCommandRegistry.class, ABSENT_OPTIONS);
         var deferred = new ArrayList<Supplier<ScheduledFuture<?>>>();
         var outputs = TopologyAssembly.topologyManager(new TopologyAssembly.TopologyManagerInputs(config,
                                                                                                   store,

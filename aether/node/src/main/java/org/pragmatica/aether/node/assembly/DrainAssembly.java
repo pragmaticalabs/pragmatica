@@ -34,6 +34,7 @@ import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.ClusterSyncPongSignalFan;
 import org.pragmatica.aether.metrics.DrainCommandRegistry;
+import org.pragmatica.aether.metrics.DrainSubject;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.metrics.NodeReportedStateHolder;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -279,19 +280,21 @@ public sealed interface DrainAssembly {
         // before convergence (the 3/5-wedge root cause). Deferring the fence during the bounded cold-boot
         // window lets all nodes reform; a genuine minority still self-fences once the window elapses.
         quorumLossDetector.setColdBootSupplier(swimIsBootingSupplier);
+        // #2315: the registry pins each drain to the target's boot token and incarnation, and compares an FSM edge against them.
+        drainCommandRegistry.bindSubject(drainSubject(swimHealthDetector, membershipFsm));
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
         // #2014: the leader is the only node that saw DrainRequested, so its FSM edge is the only place the
         // announced-departure mark was set. The leader's broadcast ping carries the global drain set to every
         // peer: mark each commanded node here so a follower's DEAD edge reads a planned departure as one.
-        var nodeReadyAgain = nodeReadyAgain(metricsCollector::reportedStates);
+        var drainEnded = nodeReadyAgain(metricsCollector::reportedStates).or(nodeDead(membershipFsm));
 
-        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), nodeReadyAgain));
+        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), drainEnded));
         // The leader never processes its own ping, so it re-derives its mark from its own registry each interval. Only
         // the LEADER: an operator drain never leaves the registry, so a node that was leader once and is not now would
         // keep re-marking a node that restarted under the new leader, silencing that node's next real crash (v-2043 N1).
         var ownDrainRecord = leaderOnlyDrainRecordTick(isLeaderSupplier,
                                                        drainCommandRegistry::drainTargets,
-                                                       drainSetObserver(alertManager, config.self(), nodeReadyAgain));
+                                                       drainSetObserver(alertManager, config.self(), drainEnded));
 
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(ownDrainRecord,
                                                                config.timeouts().cluster().pingInterval()));
@@ -353,25 +356,39 @@ public sealed interface DrainAssembly {
         };
     }
 
-    /// #2063: an operator drain target stays in the leader's `DrainCommandRegistry` until something clears it, and only the
-    /// drains the topology manager started itself had a removal path. A node that was drained, left and came back under the
-    /// SAME id (ids come from config) was then told to drain again by the same leader. The entry ends with the node's
-    /// departure, on either of two edges: into DEAD (the departure the drain was for), and out of DEAD (a drain commanded on
-    /// an already-DEAD node is ignored by the FSM, so it leaves no edge of its own and would otherwise be inherited by the
-    /// rejoin). It deliberately does NOT end on DEPARTING back to MEMBER: that edge is the FSM's VIEW refuting or withdrawing
-    /// the drain (a higher-incarnation `SwimHealthy` from a live SWIM refutation, or the #1054 undelivered-drain withdrawal),
-    /// while the command is still in flight and the target is still to be told to drain. Clearing there stops the leader
-    /// pinging the DRAIN and the node never leaves.
+    /// #2063, #2315: an operator drain target stays in the leader's `DrainCommandRegistry` until the drain that set it is done or
+    /// withdrawn, and each edge here names that drain by the identity the entry was pinned with, never by the node alone:
+    ///
+    /// - into DEAD: the life the drain was for ended. An entry pinned at a LATER incarnation is a drain of a newer life that this
+    ///   (late) edge does not describe, and is kept ([DrainCommandRegistry#clearEndedLife]).
+    /// - out of DEAD: a drain commanded on an already-DEAD node is ignored by the FSM, so it leaves no edge of its own and would be
+    ///   inherited by the rejoin; an entry pinned before the re-admitted incarnation is cleared, one pinned at it is the new
+    ///   life's ([DrainCommandRegistry#clearPriorLives]).
+    /// - into MEMBER: a node that comes back as a NEW PROCESS before it reached DEAD (restarted mid-drain) never inherits the drain:
+    ///   the entry is cleared when its pinned boot token differs from the one the id names now ([DrainCommandRegistry#clearSupersededProcess]).
+    ///   The SAME process back as MEMBER is the FSM's VIEW refuting or withdrawing the drain (a higher-incarnation `SwimHealthy` from a live
+    ///   SWIM refutation, or the #1054 undelivered-drain withdrawal) while the command is still in flight and the target is still to be
+    ///   told to drain; its entry stays, or the leader stops pinging the DRAIN and the node never leaves. An unknown token on either
+    ///   side (`0`) is no evidence of a new process: the entry then ends at its DEAD edge.
     @Contract
     static void clearOperatorDrainOnDeath(DrainCommandRegistry drainCommandRegistry,
                                           MembershipTransitionRecord record) {
-        if (isDrainEpisodeEnd(record)) {
-            drainCommandRegistry.clearDrain(record.nodeId());
+        if ("Dead".equals(record.toState())) {
+            drainCommandRegistry.clearEndedLife(record.nodeId(), record.incarnation());
+        } else if ("Dead".equals(record.fromState())) {
+            drainCommandRegistry.clearPriorLives(record.nodeId(), record.incarnation());
+        } else if ("Member".equals(record.toState())) {
+            drainCommandRegistry.clearSupersededProcess(record.nodeId());
         }
     }
 
-    private static boolean isDrainEpisodeEnd(MembershipTransitionRecord record) {
-        return "Dead".equals(record.toState()) || "Dead".equals(record.fromState());
+    /// The identity facts the registry pins a drain with and compares an edge against (#2315): the boot token the node's id names
+    /// now (`0` without a token registry, or while none is recorded for the node) and the FSM's incarnation high-water mark for it.
+    static DrainSubject drainSubject(CoreSwimHealthDetector swimHealthDetector, MembershipFsm membershipFsm) {
+        return DrainSubject.drainSubject(node -> swimHealthDetector.bootTokens()
+                                                                   .map(tokens -> tokens.tokenOf(node))
+                                                                   .or(0L),
+                                         node -> Option.option(membershipFsm.memberIncarnations().get(node)).or(0L));
     }
 
     @Contract
@@ -455,6 +472,13 @@ public sealed interface DrainAssembly {
     static java.util.function.Predicate<NodeId> nodeReadyAgain(java.util.function.Supplier<Map<NodeId, NodeReportedState>> reportedStates) {
         return id -> reportedStates.get()
                                    .get(id) == NodeReportedState.READY;
+    }
+
+    /// The membership FSM holds the node DEAD (#2315): positive evidence that its drain is over, for the node that never reports
+    /// READY again. Without it a mark re-created by a ping that named the node after this observer's own DEAD edge (the leader
+    /// clears its registry on ITS edge, later) would outlive the node. Package-private for the pin.
+    static Predicate<NodeId> nodeDead(MembershipFsm membershipFsm) {
+        return id -> "Dead".equals(membershipFsm.memberStates().get(id));
     }
 
     /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement

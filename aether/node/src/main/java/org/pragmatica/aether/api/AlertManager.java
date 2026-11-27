@@ -12,6 +12,7 @@ import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
@@ -1116,6 +1117,16 @@ public class AlertManager {
         }
     }
 
+    /// How many distinct nodes this observer holds drain tracking for, across both the announced-departure marks and the
+    /// broadcast-drain timestamps (#2315). Bounded by the nodes named in a drain record that have not yet reached DEAD or
+    /// reported READY again, so it is at most the live nodes plus the drains in flight.
+    public int trackedDrainNodes() {
+        return (int) Stream.concat(announcedDeparture.keySet().stream(),
+                                   broadcastDrainSeen.keySet().stream())
+                           .distinct()
+                           .count();
+    }
+
     /// Whether this node holds an announced-departure mark for `nodeId` (#2014). A NON-consuming read:
     /// [`#onNodeFailed`] consumes the mark, so the departure notifier asks first and routes the event
     /// by the answer. The mark is fed by the local FSM's `DrainRequested` edge AND by the leader's
@@ -1150,6 +1161,9 @@ public class AlertManager {
     /// operator to ignore the surface.
     @Contract
     public void onNodeFailed(NodeId failed, NodeId observedBy) {
+        // #2315: the DEAD edge ends the node's drain tracking. A drainee that halted never reports READY again, so
+        // `ageOut` alone would keep its `broadcastDrainSeen` entry for the life of this process.
+        broadcastDrainSeen.remove(failed.id());
         if (announcedDeparture.remove(failed.id()) != null) {
             log.info("Node {} departed gracefully (announced; observed by {}) — no alert raised",
                      failed.id(),

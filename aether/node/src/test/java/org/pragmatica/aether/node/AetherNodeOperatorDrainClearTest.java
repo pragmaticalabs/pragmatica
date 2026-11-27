@@ -14,7 +14,11 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
 import org.pragmatica.aether.metrics.DrainCommandRegistry;
+import org.pragmatica.aether.metrics.DrainSubject;
+import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.BootTokens;
+import org.pragmatica.lang.Option;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -23,6 +27,8 @@ import org.pragmatica.aether.node.assembly.DrainAssembly;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /// #2063 — an operator drain entry ends with the departure it commanded. Before, only the drains the topology manager
 /// started itself were ever cleared, so a drained node that rejoined under the same config-derived id was drained again.
@@ -82,6 +88,7 @@ class AetherNodeOperatorDrainClearTest {
     void lateDeadEdgeOfAnOldLife_doesNotClearANewerLifesDrain() {
         var registry = DrainCommandRegistry.drainCommandRegistry();
 
+        registry.bindSubject(DrainSubject.drainSubject(_ -> 0L, _ -> 9L));
         registry.requestDrain(DRAINED);
 
         DrainAssembly.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Departing", "Dead"));
@@ -105,8 +112,6 @@ class AetherNodeOperatorDrainClearTest {
         private static final TimeSpan LONG_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
         private final DrainCommandRegistry registry = DrainCommandRegistry.drainCommandRegistry();
-        /// The boot token of the process the node id names now; a test changes it to restart the node. Production reads it through
-        /// the token registry, which the harness binds once the registry can be bound to one.
         private final AtomicLong process = new AtomicLong(1);
 
         private MembershipFsm fsmWithDepartureTimeout(TimeSpan departureTimeout) {
@@ -118,7 +123,19 @@ class AetherNodeOperatorDrainClearTest {
                                                   LONG_TIMEOUT);
 
             fsm.onTransition(record -> DrainAssembly.clearOperatorDrainOnDeath(registry, record));
+            registry.bindSubject(DrainAssembly.drainSubject(detectorHoldingTokenOf(), fsm));
             return fsm;
+        }
+
+        /// The node's token registry as production reads it (`CoreSwimHealthDetector#bootTokens`); `process` stands for the
+        /// boot token of the process the node id names now, and a test changes it to restart the node.
+        private CoreSwimHealthDetector detectorHoldingTokenOf() {
+            var tokens = mock(BootTokens.class);
+            var detector = mock(CoreSwimHealthDetector.class);
+
+            when(tokens.tokenOf(DRAINED)).thenAnswer(_ -> process.get());
+            when(detector.bootTokens()).thenReturn(Option.some(tokens));
+            return detector;
         }
 
         private void drain(MembershipFsm fsm, NodeId target) {

@@ -265,6 +265,7 @@ public sealed interface TopologyAssembly {
                                              leaderReconcilerRef::get,
                                              metricsCollector::retainedDispatchedNodes);
         IntSupplier configuredCoreCountSupplier = ctmLiveness.configuredCoreCount();
+        var topologyDrains = TopologyDrains.topologyDrains(drainCommandRegistry);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -273,9 +274,9 @@ public sealed interface TopologyAssembly {
                                                                                    clusterConfigReader,
                                                                                    clusterCommandApplier,
                                                                                    effectivePhaseSupplier,
-                                                                                   DrainSink.synchronous(drainCommandRegistry::requestDrain,
+                                                                                   DrainSink.synchronous(topologyDrains::request,
                                                                                                          fsmDrainRequested(membershipFsmRef)),
-                                                                                   drainCommandRegistry::clearDrain,
+                                                                                   topologyDrains::clear,
                                                                                    resolvedLocalConfig::get,
                                                                                    () -> kvStore.getTyped(AetherKey.AutoHealStateKey.SINGLETON,
                                                                                                           AutoHealStateValue.class),

@@ -7,18 +7,21 @@ package org.pragmatica.aether.node;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.pragmatica.aether.api.AlertManager;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.aether.node.assembly.DrainAssembly;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -200,11 +203,11 @@ class AetherNodeDrainSetObserverTest {
         var alerts = alerts();
 
         alerts.observeDrainSet(Set.of(DRAINED), SELF, 0L, NOT_READY);
-        assertThat(trackedDrainNodes(alerts)).as("instrument check: the drain record created tracking").isEqualTo(1);
+        assertThat(alerts.trackedDrainNodes()).as("instrument check: the drain record created tracking").isEqualTo(1);
 
         alerts.onNodeFailed(DRAINED, SELF);
 
-        assertThat(trackedDrainNodes(alerts)).isZero();
+        assertThat(alerts.trackedDrainNodes()).isZero();
     }
 
     /// Failure input (d), the churn sequence: many drained nodes die without reporting; three drains stay in flight. The
@@ -217,32 +220,52 @@ class AetherNodeDrainSetObserverTest {
         IntStream.range(0, 50).forEach(i -> alerts.observeDrainSet(Set.of(nodeNamed(i)), SELF, i, NOT_READY));
         IntStream.range(3, 50).forEach(i -> alerts.onNodeFailed(nodeNamed(i), SELF));
 
-        assertThat(trackedDrainNodes(alerts)).isLessThanOrEqualTo(inFlight.size());
+        assertThat(alerts.trackedDrainNodes()).isLessThanOrEqualTo(inFlight.size());
         inFlight.forEach(node -> assertThat(alerts.hasAnnouncedDeparture(node)).as("a drain in flight keeps its mark").isTrue());
     }
 
-    /// Reads the sizes of the two tracking maps the way the production accessor does; reflection because the accessor is new.
-    private static int trackedDrainNodes(AlertManager alerts) {
-        return Stream.of("announcedDeparture", "broadcastDrainSeen")
-                     .flatMap(field -> keysOf(alerts, field))
-                     .collect(Collectors.toSet())
-                     .size();
+    /// A ping that still names the node after this observer's own DEAD edge (the leader clears its registry on its own, later
+    /// edge) re-creates the tracking. The observer's FSM holds the node DEAD, which is positive evidence the drain is over, so
+    /// the entry ends once the node leaves the record, exactly as it would on READY.
+    @Test
+    void markRecreatedAfterTheDeadEdge_endsOnceTheNodeLeavesTheRecord_whenTheFsmHoldsItDead() {
+        var alerts = alerts();
+        var fsm = fsmHoldingDead(DRAINED);
+        var drainEnded = DrainAssembly.nodeDead(fsm);
+
+        alerts.observeDrainSet(Set.of(DRAINED), SELF, 0L, drainEnded);
+        alerts.onNodeFailed(DRAINED, SELF);
+        alerts.observeDrainSet(Set.of(DRAINED), SELF, 1L, drainEnded);
+        assertThat(alerts.trackedDrainNodes()).as("instrument check: the late ping re-created the tracking").isEqualTo(1);
+
+        alerts.observeDrainSet(Set.of(), SELF, 1L + AlertManager.DRAIN_OMISSION_GRACE_MS, drainEnded);
+
+        assertThat(alerts.trackedDrainNodes()).isZero();
     }
 
-    @SuppressWarnings("unchecked")
-    private static Stream<String> keysOf(AlertManager alerts, String field) {
-        try {
-            var f = AlertManager.class.getDeclaredField(field);
+    @Test
+    void nodeDead_isFalseForAMemberAndForAnUnknownNode() {
+        var fsm = fsmHoldingDead(DRAINED);
 
-            f.setAccessible(true);
-            return ((Map<String, Long>) f.get(alerts)).keySet().stream();
-        } catch (ReflectiveOperationException e) {
-            throw new AssertionError(e);
-        }
+        assertThat(DrainAssembly.nodeDead(fsm).test(OTHER)).isFalse();
+        assertThat(DrainAssembly.nodeDead(fsm).test(DRAINED)).isTrue();
     }
 
     private static NodeId nodeNamed(int i) {
         return NodeId.nodeId("churn-" + i).unwrap();
     }
 
+    private static MembershipFsm fsmHoldingDead(NodeId node) {
+        var fsm = MembershipFsm.membershipFsm(FsmObserver.noop(),
+                                              System::currentTimeMillis,
+                                              Long.MAX_VALUE,
+                                              TimeSpan.timeSpan(40).millis(),
+                                              TimeSpan.timeSpan(30).seconds(),
+                                              TimeSpan.timeSpan(30).seconds());
+
+        fsm.onMemberDescriptor(NodeInfo.nodeInfo(node, new NodeAddress(node.id(), 6000), Map.of(NodeInfo.LABEL_ROLE, "core")));
+        fsm.onSwimHealthy(node, 1L);
+        fsm.onSwimDeparted(node, 2L);
+        return fsm;
+    }
 }
