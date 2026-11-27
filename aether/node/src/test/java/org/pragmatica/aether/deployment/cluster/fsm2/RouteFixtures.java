@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -73,7 +74,11 @@ final class RouteFixtures {
 
     /// A node's route publication for ORDERS, as `HttpRoutePublisher` puts it: a plain Put on the node's key.
     static void publishRoutes(FsmHarness h, NodeId node) {
-        h.seed(new NodeRoutesKey(node, ORDERS), new NodeRoutesValue(List.of(), Epoch.ZERO));
+        publishRoutes(h, node, ORDERS);
+    }
+
+    static void publishRoutes(FsmHarness h, NodeId node, Artifact artifact) {
+        h.seed(new NodeRoutesKey(node, artifact), new NodeRoutesValue(List.of(), Epoch.ZERO));
         h.drain();
     }
 }

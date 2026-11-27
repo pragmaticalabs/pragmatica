@@ -120,6 +120,28 @@ class RoutesPublishFailTest {
         assertThat(committed(h, GET_ONE)).as("the row that is still Declared does flip").isEqualTo(Option.some(published(ATTEMPT_1)));
     }
 
+    /// Red when: the sweep flips without evidence (a Declared row is published because a blueprint declared it, or on any node's routes): no node
+    /// serves the route, and the row says it does.
+    @Test
+    void publish_withoutANodesRoutesTheRowsStayDeclared() {
+        var h = declaredApp();
+
+        h.advance(h.settings.submissionExpiry() + 2 * h.settings.timing().tick());
+        assertThat(committed(h, LIST)).isEqualTo(Option.some(declared(ATTEMPT_1)));
+        assertThat(committed(h, GET_ONE)).isEqualTo(Option.some(declared(ATTEMPT_1)));
+    }
+
+    /// Red when: the evidence is matched without the artifact's version (any `orders` routes publish the row): a node still serving the earlier
+    /// version's routes marks the new version's routes as served.
+    @Test
+    void publish_anotherVersionsRoutesDoNotPublish() {
+        var h = declaredApp();
+
+        publishRoutes(h, CORE_1, ORDERS_V2);
+        h.advance(h.settings.submissionExpiry() + 2 * h.settings.timing().tick());
+        assertThat(committed(h, LIST)).isEqualTo(Option.some(declared(ATTEMPT_1)));
+    }
+
     // -- W3: FAIL ---------------------------------------------------------------------------------------------------
     /// Red when: the Fatal FAILURE transaction does not carry the Declared rows' Failed mutations (no `Routes.fail` in `Failures.settle`): the
     /// judgment commits and the rows stay Declared. One transaction holds the judgment and every row.
@@ -137,6 +159,19 @@ class RoutesPublishFailTest {
         assertThat(carrying.getFirst().transaction().mutations().stream().map(mutation -> (AetherKey) mutation.key()).toList())
                   .as("the judgment and both rows ride together")
                   .contains(new ArtifactJudgmentKey(ORDERS), key(LIST), key(GET_ONE));
+    }
+
+    /// Red when: a row that is already Failed is rewritten by a later failure (its first reason is lost, and the transaction expects a row it
+    /// does not need to touch).
+    @Test
+    void fail_aFailedRowKeepsItsReason() {
+        var h = declaredApp();
+
+        h.seed(key(LIST), failed(ATTEMPT_1, "earlier"));
+        h.drain();
+        failFatally(h);
+        assertThat(committed(h, LIST)).isEqualTo(Option.some(failed(ATTEMPT_1, "earlier")));
+        assertThat(committed(h, GET_ONE)).isEqualTo(Option.some(failed(ATTEMPT_1, "boom")));
     }
 
     /// Red when: a Published row is left out of the Failed set (only Declared is failed): the served-then-failed deploy keeps answering 503.
