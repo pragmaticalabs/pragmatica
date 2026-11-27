@@ -255,6 +255,94 @@ class WorkerDepartureRetirementTest {
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("the operator's removal sticks").isFalse();
     }
 
+    private MbWorld departedAndNotRetired() {
+        var w = world();
+
+        w.h.loseKinds = Set.of(SubmitKind.CLEANUP, SubmitKind.DIRECTIVE_REMOVAL);
+        w.h.deliver(new ClusterInput.WorkerLeave(worker));
+        w.h.drain();
+        assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).as("precondition: DEPARTED").isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("precondition: the directive stands").isTrue();
+
+        return w;
+    }
+
+    private void assertNoMarkAndReturningWorkerAssigned(MbWorld w) {
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("the directive is retired").isFalse();
+        assertThat(w.recordOf(worker).isPresent()).as("the record is retired").isFalse();
+        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("no removal mark outlives the retired record").isFalse();
+
+        w.h.loseKinds = Set.of();
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN + 1)));
+        settle(w);
+
+        assertThat(w.stored(new ActivationDirectiveKey(worker))
+                    .map(value -> ((ActivationDirectiveValue) value).role()))
+                  .as("the returning worker is assigned")
+                  .isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
+    }
+
+    // #3828 invariant, order 1 — Red when: a record removal then a directive removal, one transaction (C17b's own order), leaves a mark.
+    @Test
+    void retirement_recordThenDirective_oneTransaction_leavesNoMark() {
+        var w = departedAndNotRetired();
+
+        w.h.seedRemoveTogether(List.of(new NodeDepartureKey(worker), new ActivationDirectiveKey(worker)));
+        w.h.drain();
+
+        assertNoMarkAndReturningWorkerAssigned(w);
+    }
+
+    // #3828 invariant, order 2 — Red when: a directive removal then a record removal, one transaction, leaves a mark.
+    @Test
+    void retirement_directiveThenRecord_oneTransaction_leavesNoMark() {
+        var w = departedAndNotRetired();
+
+        w.h.seedRemoveTogether(List.of(new ActivationDirectiveKey(worker), new NodeDepartureKey(worker)));
+        w.h.drain();
+
+        assertNoMarkAndReturningWorkerAssigned(w);
+    }
+
+    // #3828 invariant, order 3 — Red when: a record removal, then a directive removal in a second transaction, leaves a mark.
+    @Test
+    void retirement_recordThenDirective_twoTransactions_leavesNoMark() {
+        var w = departedAndNotRetired();
+
+        w.h.seedRemoveTogether(List.of(new NodeDepartureKey(worker)));
+        w.h.drain();
+        w.h.seedRemoveTogether(List.of(new ActivationDirectiveKey(worker)));
+        w.h.drain();
+
+        assertNoMarkAndReturningWorkerAssigned(w);
+    }
+
+    // #3828 invariant, order 4 — Red when: a directive removal, then a record removal in a second transaction, leaves a mark.
+    @Test
+    void retirement_directiveThenRecord_twoTransactions_leavesNoMark() {
+        var w = departedAndNotRetired();
+
+        w.h.seedRemoveTogether(List.of(new ActivationDirectiveKey(worker)));
+        w.h.drain();
+        w.h.seedRemoveTogether(List.of(new NodeDepartureKey(worker)));
+        w.h.drain();
+
+        assertNoMarkAndReturningWorkerAssigned(w);
+    }
+
+    // #3828 control — Red when: the operator's removal of a LIVE worker's directive (its record stands) leaves no mark, so a join writes the
+    // directive back.
+    @Test
+    void liveWorker_operatorRemovesTheDirective_leavesTheMark() {
+        var w = world();
+
+        w.h.seedRemove(new ActivationDirectiveKey(worker));
+        w.h.drain();
+
+        assertThat(w.recordOf(worker).isPresent()).as("precondition: the worker's record stands").isTrue();
+        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the removal of a live worker's directive is marked").isTrue();
+    }
+
     // #3028 — Red when: a falsely departed worker that rejoins (same process) before C17b loses its directive.
     @Test
     void falselyDepartedWorker_rejoiningBeforeC17b_keepsItsDirective() {

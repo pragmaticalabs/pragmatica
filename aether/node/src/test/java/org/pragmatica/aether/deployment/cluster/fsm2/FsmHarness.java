@@ -235,6 +235,21 @@ final class FsmHarness {
         }
     }
 
+    /// Remove `keys` at their current values in ONE leader transaction, the mutations in the order given (the notifications follow it).
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void seedRemoveTogether(List<AetherKey> keys) {
+        var leader = committedLeader().or(new LeaderValue(SELF, 1L));
+        var mutations = keys.stream()
+                            .map(key -> new KVCommand.Mutation<AetherKey, AetherValue>(key, store.get(key), Option.none()))
+                            .toList();
+
+        applyCommand(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(keys.getFirst(),
+                                                                             "seed-remove-together",
+                                                                             leader,
+                                                                             List.of(),
+                                                                             mutations));
+    }
+
     /// Seed without telling the FSM (state that already existed before it was activated).
     void seedQuietly(AetherKey key, AetherValue value) {
         notifying = false;
