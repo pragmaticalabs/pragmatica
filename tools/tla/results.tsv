@@ -449,3 +449,4 @@ b3be7a226d8447bcb5ba7be06f46c8c0a630fee8	clean	2026-11-24T07:19:03Z	full	LeaderA
 0f8df2ff8d67e75f568a2412f5947778b37484f1	clean	2026-11-27T19:27:09Z	heavy	DirectiveReceipt	e7_composed_core	pass	pass		1763908	2026.11.06.222357	OK	
 0f8df2ff8d67e75f568a2412f5947778b37484f1	clean	2026-11-27T20:21:04Z	heavy	DirectiveReceipt	e7_composed_worker	pass	pass		1871396	2026.11.06.222357	OK	
 0f8df2ff8d67e75f568a2412f5947778b37484f1	clean	2026-11-27T22:21:06Z	heavy	DirectiveReceipt	receipt_composed	pass	error				ERROR	
+0f8df2ff8d67e75f568a2412f5947778b37484f1	clean	2026-11-27T23:24:08Z	heavy	DirectiveReceipt	receipt_composed	pass	pass		146773952	2026.11.06.222357	OK	
