@@ -761,6 +761,7 @@ public sealed interface Outbox {
             case AetherKey.ActivationDirectiveKey k -> m.directives.get(k.nodeId()).map(v -> (AetherValue) v);
             case AetherKey.CommunityKey k -> m.communities.get(k.communityId()).map(v -> (AetherValue) v);
             case AetherKey.SchemaVersionKey k -> m.schemas.get(k.datasourceName()).map(v -> (AetherValue) v);
+            case AetherKey.DeclaredRouteKey k -> m.declaredRoutes.get(k).map(v -> (AetherValue) v);
             case AetherKey.TopicSubscriptionKey k -> m.topicRows.get(k);
             case AetherKey.TopicPublisherKey k -> m.topicRows.get(k);
             case AetherKey.FsmWarningKey k -> m.warningRows.get(k).map(v -> (AetherValue) v);
@@ -820,6 +821,9 @@ public sealed interface Outbox {
             case STALE_MARK -> m;
             // #1337 parity: a refused stale topic-row removal is derived again by the next pass's sweep (`DepartureFlow.sweepStaleTopicRows`).
             case STALE_TOPIC_ROW -> m;
+            // #3389: a refused routes batch is not resubmitted; the reconcile's `Routes.sweep` derives the difference between the blueprint and the
+            // mirror the refusal corrected, so a draft lost with a leader term or dropped by a suspension is covered by the same step.
+            case ROUTES -> m;
             // #2834: the next flush drafts the difference between the family sets and the mirror the refusal corrected.
             case WARNINGS -> Warnings.unlanded(m, draft);
             case DIRECTIVE -> rederiveAssignment(m, ctx, draft);

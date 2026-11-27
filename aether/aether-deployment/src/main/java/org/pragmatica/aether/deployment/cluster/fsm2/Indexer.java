@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeclaredRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
@@ -28,6 +29,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
@@ -122,6 +124,9 @@ public sealed interface Indexer {
             case AetherKey.ClusterConfigKey _ -> value instanceof ClusterConfigValue v
                                                  ? indexClusterConfig(m, v)
                                                  : m;
+            case DeclaredRouteKey k -> value instanceof DeclaredRouteValue v
+                                       ? indexDeclaredRoute(m, k, v)
+                                       : m;
             case AetherKey.TopicSubscriptionKey k -> indexTopicRow(m, k, k.nodeId(), value);
             case AetherKey.TopicPublisherKey k -> indexTopicRow(m, k, k.nodeId(), value);
             case AetherKey.FsmWarningKey k -> value instanceof AetherValue.FsmWarningValue v
@@ -154,6 +159,7 @@ public sealed interface Indexer {
                                                            SlicePair.slicePair(k.nodeId(), k.artifact()));
             case AetherKey.NodePlacementKey k -> removeNodePlacement(m, k.nodeId());
             case AetherKey.CommunityPlacementOperationKey k -> removePlacementOp(m, k.communityId());
+            case DeclaredRouteKey k -> removeDeclaredRoute(m, k);
             case AetherKey.TopicSubscriptionKey k -> removeTopicRow(m, k, k.nodeId());
             case AetherKey.TopicPublisherKey k -> removeTopicRow(m, k, k.nodeId());
             case AetherKey.FsmWarningKey k -> Warnings.removeRow(m, k);
@@ -610,6 +616,49 @@ public sealed interface Indexer {
         m.routesByNode = Idx.remove(m.routesByNode, pair.node(), pair.artifact());
 
         return m;
+    }
+
+    /// #3389: a declared-route row at its committed value, the keys of its artifact, and the artifacts its owner blueprint holds rows for.
+    /// The put replaces the row's previous attribution first, so a row taken over by another blueprint leaves its old owner's set.
+    static ClusterModel indexDeclaredRoute(ClusterModel m, DeclaredRouteKey key, DeclaredRouteValue value) {
+        removeDeclaredRoute(m, key);
+        m.declaredRoutes = m.declaredRoutes.put(key, value);
+        m.declaredByArtifact = Idx.add(m.declaredByArtifact, key.artifact(), key);
+        owner(value).onPresent(id -> m.declaredByOwner = Idx.add(m.declaredByOwner, id, key.artifact()));
+
+        return m;
+    }
+
+    static ClusterModel removeDeclaredRoute(ClusterModel m, DeclaredRouteKey key) {
+        var previous = m.declaredRoutes.get(key);
+
+        m.declaredRoutes = m.declaredRoutes.remove(key);
+        m.declaredByArtifact = Idx.remove(m.declaredByArtifact, key.artifact(), key);
+        previous.flatMap(Indexer::owner).onPresent(id -> unattribute(m, id, key.artifact()));
+
+        return m;
+    }
+
+    /// The owner leaves the artifact's set once none of the artifact's remaining rows names it.
+    private static ClusterModel unattribute(ClusterModel m, BlueprintId owner, Artifact artifact) {
+        var holds = Idx.members(m.declaredByArtifact, artifact)
+                       .toList()
+                       .stream()
+                       .flatMap(key -> m.declaredRoutes.get(key)
+                                                       .stream())
+                       .anyMatch(row -> row.blueprintId()
+                                           .equals(owner.asString()));
+
+        if (!holds) {
+            m.declaredByOwner = Idx.remove(m.declaredByOwner, owner, artifact);
+        }
+
+        return m;
+    }
+
+    /// The blueprint a row names. `Routes` writes the text of a [BlueprintId], so it always parses; a row that does not has no owner.
+    private static Option<BlueprintId> owner(DeclaredRouteValue row) {
+        return BlueprintId.blueprintId(row.blueprintId()).option();
     }
 
     /// #1337 (R-CF.15): a node-scoped topic row, kept at its committed value for the departure cleanup.

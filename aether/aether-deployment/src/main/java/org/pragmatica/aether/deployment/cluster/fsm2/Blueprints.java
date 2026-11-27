@@ -88,6 +88,9 @@ public sealed interface Blueprints {
         if (value.registerOnly()) {
             return m;
         }
+        // #3389 W1: the routes are drafted in the same drain as the targets, ahead of the goals the targets lead to (the load gate on those goals
+        // is `Outbox.goalDraft`'s, a later step of #3389 A2).
+        Routes.reconcile(m, ctx, id);
 
         return declare(m, ctx, id, expanded, true);
     }
@@ -149,7 +152,7 @@ public sealed interface Blueprints {
     /// The owner blueprint at the value the mirror holds when the batch is built. On the awaited-target re-send (`watch` ->
     /// `submitTargets`) that is the mirror's value at re-send time, not the declaration's; the two differ only after a change that does
     /// not re-declare (registerOnly, or a republish C2 rejected).
-    private static KVCommand.ReadWitness<AetherKey> ownerWitness(ClusterModel m, BlueprintId owner) {
+    static KVCommand.ReadWitness<AetherKey> ownerWitness(ClusterModel m, BlueprintId owner) {
         return new KVCommand.ReadWitness<>(new AppBlueprintKey(owner),
                                            m.blueprints.get(owner).map(value -> (Object) value));
     }
@@ -280,6 +283,8 @@ public sealed interface Blueprints {
         var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 
         Indexer.removeBlueprint(m, id);
+        // #3389 W4: the blueprint is gone from the model, so the diff removes every row it owns.
+        Routes.reconcile(m, ctx, id);
         owned.forEach(slice -> removeSlice(m, ctx, slice, mutations));
         m.applies.get(id)
                  .onPresent(apply -> mutations.add(new KVCommand.Mutation<>(new DeploymentApplyKey(id),

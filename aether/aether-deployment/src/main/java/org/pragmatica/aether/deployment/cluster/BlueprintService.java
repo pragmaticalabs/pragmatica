@@ -1170,7 +1170,9 @@ class BlueprintServiceInstance implements BlueprintService {
                               .flatMap(replication -> ReplicationPreflight.validate(sliceJars,
                                                                                     nodeComposite,
                                                                                     replication))
-                              .map(warnings -> new Preflighted(expanded, warnings, declaredRoutesOf(sliceJars)))
+                              .map(warnings -> new Preflighted(expanded,
+                                                               warnings,
+                                                               declaredRoutesOf(sliceJars)))
                               .async();
     }
 
