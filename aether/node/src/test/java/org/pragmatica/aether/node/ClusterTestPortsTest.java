@@ -26,7 +26,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.IntSupplier;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import com.sun.management.UnixOperatingSystemMXBean;
@@ -88,8 +90,7 @@ class ClusterTestPortsTest {
     void issuedPort_isNotIssuedAgainEvenWhenTheSourceOffersItAgain() {
         var first = ClusterTestPorts.freeClusterPort();
         var second = ClusterTestPorts.freeClusterPort();
-        var offers = new ArrayDeque<>(List.of(first, first, first, second, second));
-        var third = ClusterTestPorts.freeClusterPort(() -> offers.isEmpty() ? ClusterTestPorts.windowCandidate() : offers.poll());
+        var third = ClusterTestPorts.freeClusterPort(offeringAll(first, first, first, second, second));
 
         assertThat(third).as("only a never-issued port may come back").isNotIn(first, second);
     }
@@ -454,7 +455,7 @@ class ClusterTestPortsTest {
         var skips = new ArrayList<ClusterTestPorts.Skip>();
 
         try (var held = new DatagramSocket(new InetSocketAddress(candidate))) {
-            ClusterTestPorts.freeClusterPort(offering(candidate), skips);
+            ClusterTestPorts.freeClusterPort(offering(drawingFirst(candidate), candidate), skips);
         }
         assertSingleSkip(skips, candidate, ClusterTestPorts.SkipCause.ProbeBusy.class);
         assertThat(List.of(ClusterTestPorts.heldHere(candidate), ClusterTestPorts.heldHere(candidate + SWIM)))
@@ -476,7 +477,7 @@ class ClusterTestPortsTest {
             var skips = new ArrayList<ClusterTestPorts.Skip>();
 
             assertThat(ClusterTestPorts.isFreeClusterPort(candidate)).as("the lock holder binds nothing: every probe reads it free").isTrue();
-            assertThat(ClusterTestPorts.freeClusterPort(offering(candidate), skips)).isNotEqualTo(candidate);
+            assertThat(ClusterTestPorts.freeClusterPort(offering(drawingFirst(candidate), candidate), skips)).isNotEqualTo(candidate);
             assertSingleSkip(skips, candidate, ClusterTestPorts.SkipCause.LockRefused.class);
             assertThat(skipsFor(skips, candidate).getFirst().probedBusy()).as("a lock refusal is not a probe read").isFalse();
             assertThat(ClusterTestPorts.isFreeClusterPort(candidate)).as("no probe socket left").isTrue();
@@ -588,11 +589,23 @@ class ClusterTestPortsTest {
         throw new IllegalStateException("no free window port to occupy");
     }
 
-    /// Offers `port` first, then random window ports.
+    /// Offers `port` first, then random window ports other than `port`.
     private static IntSupplier offering(int port) {
-        var offers = new ArrayDeque<>(List.of(port));
+        return offeringAll(port);
+    }
 
-        return () -> offers.isEmpty() ? ClusterTestPorts.windowCandidate() : offers.poll();
+    /// As [#offering(int)], the fallback drawing from `draws` (#3819 seam: a test makes the first fallback draw the subject).
+    private static IntSupplier offering(IntSupplier draws, int port) {
+        return offeringAll(draws, port);
+    }
+
+    /// A fallback source whose first draw is `subject`, then random window ports: the draw that used to record a second skip.
+    private static IntSupplier drawingFirst(int subject) {
+        var first = new AtomicBoolean(true);
+
+        return () -> first.getAndSet(false)
+                     ? subject
+                     : ClusterTestPorts.windowCandidate();
     }
 
     /// A window port, with its SWIM port, that no allocator holds right now (checked by taking and dropping the locks) and whose
@@ -637,14 +650,28 @@ class ClusterTestPortsTest {
                                               .allSatisfy(skip -> assertThat(skip.cause()).isInstanceOf(cause));
     }
 
-    /// Offers each of `ports` once, in order, then random window ports.
+    /// Offers each of `ports` once, in order, then random window ports. #3819: the fallback NEVER draws a port offered explicitly,
+    /// so a fixture that offers a subject once never offers it again (a second draw of a held subject recorded a second skip).
     private static IntSupplier offeringAll(int... ports) {
+        return offeringAll(ClusterTestPorts::windowCandidate, ports);
+    }
+
+    /// As [#offeringAll(int...)], the fallback drawing from `draws`.
+    private static IntSupplier offeringAll(IntSupplier draws, int... ports) {
         var offers = new ArrayDeque<Integer>();
+        var offered = new HashSet<Integer>();
 
         for (int port : ports) {
             offers.add(port);
+            offered.add(port);
         }
-        return () -> offers.isEmpty() ? ClusterTestPorts.windowCandidate() : offers.poll();
+        return () -> offers.isEmpty()
+                     ? drawOtherThan(draws, offered)
+                     : offers.poll();
+    }
+
+    private static int drawOtherThan(IntSupplier draws, Set<Integer> offered) {
+        return IntStream.generate(draws).filter(port -> !offered.contains(port)).findFirst().getAsInt();
     }
 
     /// A child JVM running [PortHolderMain] on this JVM's classpath.
