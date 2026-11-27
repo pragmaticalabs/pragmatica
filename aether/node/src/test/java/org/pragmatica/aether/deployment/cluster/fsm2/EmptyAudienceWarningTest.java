@@ -236,7 +236,7 @@ class EmptyAudienceWarningTest {
         var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
                        .target(ORDERS, 1, "CORE_ONLY")
                        .community("east-w-0", 3, CommunityState.FORMING)
-                       .seams(seams -> seams.withReady(Set.of())
+                       .seams(seams -> seams.withReady(Set.of(W1, W2, W3))
                                             .withLocalAlive(Option.some(Set.of(W1, W2, W3))));
 
         w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
