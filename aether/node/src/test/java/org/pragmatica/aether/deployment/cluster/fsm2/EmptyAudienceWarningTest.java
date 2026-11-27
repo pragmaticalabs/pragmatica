@@ -73,7 +73,9 @@ class EmptyAudienceWarningTest {
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.warns(OPEN)).hasSize(1);
 
-        w.directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
+        w.h.seed(new ActivationDirectiveKey(W2), worker("east-w-0"));
+        w.h.seed(new ActivationDirectiveKey(W3), worker("east-w-0"));
+        w.h.drain();
         w.refreshSeams(seams -> seams.withLocalAlive(Option.some(Set.of(W1, W2, W3))));
         w.announce("east-w-0", W1, W1, W2, W3);
         w.h.deliver(new ClusterInput.Reconcile());
@@ -94,7 +96,7 @@ class EmptyAudienceWarningTest {
     void threeWorkers_fromTheStart_raiseNothing() {
         var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
                        .target(ORDERS, 1, "WORKERS_ONLY")
-                       .community("east-w-0", 3, CommunityState.FORMING)
+                       .community("east-w-0", 3, CommunityState.ACTIVE)
                        .seams(seams -> seams.withReady(ALL).withLocalAlive(Option.some(Set.of(W1, W2, W3))));
 
         w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
