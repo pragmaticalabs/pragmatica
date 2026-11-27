@@ -43,6 +43,7 @@ import org.pragmatica.lang.Result;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -304,12 +305,33 @@ class RunActionTableTest {
     }
 
     // --- content guard (#3691): a formatted text that would lose a comment is refused, the file stays as it was.
-    // The source is a printer gap of this base (a `//` after a ternary condition is deleted by the printer); when the
-    // printer keeps it, this fixture needs another gap or the guard needs its own formatter seam.
+    // The source was a printer gap (a `//` after a ternary condition was deleted by the printer). Since #3698 the printer
+    // keeps it, so rows G1-G3 are disabled until a printer gap or a formatter seam can drive a refusal again; the
+    // tripwire row G0 asserts the current behaviour and says what to enable when it goes red.
 
     private static final String LOSES_A_COMMENT = "package com.example;\n\nclass Plain {\n    int f(boolean c) {\n"
                                                   + "        return c // POS4\n               ? 1\n               : 2;\n    }\n}\n";
 
+    private static final String PRINTS_THE_COMMENT = "package com.example;\n\nclass Plain {\n    int f(boolean c) {\n"
+                                                     + "        return c\n        // POS4\n               ? 1\n               : 2;\n    }\n}\n";
+
+    /// TRIPWIRE (#3698): the printer keeps the comment of `LOSES_A_COMMENT`, so the file is rewritten and nothing is
+    /// refused. When this goes red the printer loses a comment again: enable rows G1, G2 and G3 below (and
+    /// `ContentGuardTest.isFormatted_ofARefusedFile_isAFailureNotFalse` in jbct-format) and re-pin.
+    @Test
+    void row_G0_tripwire_thePrinterKeepsTheComment_soRowsG1ToG3StayDisabled() throws IOException {
+        var module = module("m", BUSINESS);
+        var file = source(module, "Plain.java", LOSES_A_COMMENT);
+        var result = perform(plan(module), format(FormatAction.WRITE));
+        var outcome = only(result, file);
+
+        assertFalse(outcome.format() instanceof Refused,
+                    "the printer lost the comment again: enable rows G1-G3 and ContentGuardTest.isFormatted_ofARefusedFile_isAFailureNotFalse");
+        assertEquals(PRINTS_THE_COMMENT, Files.readString(file),
+                     "the printer changed where it prints the comment: if it is lost, enable rows G1-G3 and ContentGuardTest.isFormatted_ofARefusedFile_isAFailureNotFalse; otherwise re-pin");
+    }
+
+    @Disabled("Needs a printer gap or a formatter seam: the printer keeps the comment since #3698. Enable when row G0 goes red.")
     @Test
     void row_G1_writeRefusesAFileThatWouldLoseAComment_andLeavesItUntouched() throws IOException {
         var module = module("m", BUSINESS);
@@ -324,6 +346,7 @@ class RunActionTableTest {
         assertEquals(Kind.INCOMPLETE, result.verdict().kind());
     }
 
+    @Disabled("Needs a printer gap or a formatter seam: the printer keeps the comment since #3698. Enable when row G0 goes red.")
     @Test
     void row_G2_checkRefusesTheSameFile_notWouldChange() throws IOException {
         var module = module("m", BUSINESS);
@@ -335,6 +358,7 @@ class RunActionTableTest {
         assertEquals(Kind.INCOMPLETE, result.verdict().kind());
     }
 
+    @Disabled("Needs a printer gap or a formatter seam: the printer keeps the comment since #3698. Enable when row G0 goes red.")
     @Test
     void row_G3_processLintsTheFileAndRefusesItsFormat() throws IOException {
         var module = module("m", INFRASTRUCTURE);

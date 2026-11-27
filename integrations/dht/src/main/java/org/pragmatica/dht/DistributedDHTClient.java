@@ -1262,9 +1262,8 @@ public final class DistributedDHTClient implements DHTClient {
                                          entry.epochIncarnation(),
                                          entry.epochTerm(),
                                          entry.epochCounter(),
-
         // the re-homing is this node's write now, sized under the change it applied; it is a repair write (#2258)
-        node.replicationFence(),
+                                         node.replicationFence(),
                                          true)).map(_ -> Option.some(value))
                          .recover(_ -> Option.some(value));
     }
