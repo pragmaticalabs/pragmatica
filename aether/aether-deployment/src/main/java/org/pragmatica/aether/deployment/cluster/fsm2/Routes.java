@@ -8,6 +8,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -21,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRoute;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.RouteState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Option;
@@ -230,40 +232,79 @@ public sealed interface Routes {
     /// The goal gate of #3389 A2 part 2: every declared row of `artifact` is in the mirror, at the attempt its owner blueprint is committed at, and
     /// `Declared` or `Published` ([#standing]). An artifact with no owner in the mirror, an owner that declares no route for it, or a
     /// `registerOnly` owner has no rows to wait for, so its goal is never held. A row of an earlier attempt, in any state, is not committed: the
-    /// new attempt's DECLARE re-declares it first.
+    /// new attempt's DECLARE re-declares it first. The gate decides on what [GateReads] read, the same reading [#goalWitnesses] witnesses.
     static boolean rowsCommitted(ClusterModel m, Artifact artifact) {
-        return Schemas.owner(m, artifact)
-                      .flatMap(id -> m.blueprints.get(id)
-                                                 .map(value -> allCurrent(m, id, value, artifact)))
-                      .or(true);
+        var reads = GateReads.gateReads(mirror(m), artifact);
+
+        return reads.owner()
+                    .flatMap(id -> reads.blueprint()
+                                        .map(value -> allCurrent(reads, id, value)))
+                    .or(true);
     }
 
-    /// A witness on each declared row of `artifact` at the value the mirror holds, in declaration order: a row that changes or goes between the goal's
-    /// derivation and its commit refuses the goal transaction.
-    static List<KVCommand.ReadWitness<AetherKey>> rowWitnesses(ClusterModel m, Artifact artifact) {
-        return declaredKeys(m, artifact).stream()
-                           .map(key -> rowWitness(m, key))
-                           .toList();
+    /// #3836: the witnesses of a goal transaction, one per fact the goal gate reads and at the value `read` gives for it, in the order the gate reads
+    /// them: the SliceTarget row (the owner id), the owner's `AppBlueprintValue` and the declared rows. A fact that changes or goes between the goal's
+    /// derivation and its commit refuses the transaction. The list is derived from [GateReads], never written beside the gate, so the gate and its
+    /// witnesses cannot drift; a resubmitted pair derives it again over what its transaction recorded ([Outbox]'s `recorded`) and keeps every kind.
+    static List<KVCommand.ReadWitness<AetherKey>> goalWitnesses(Function<AetherKey, Option<AetherValue>> read, Artifact artifact) {
+        var reads = GateReads.gateReads(read, artifact);
+
+        return reads.keys()
+                    .stream()
+                    .map(key -> new KVCommand.ReadWitness<AetherKey>(key,
+                                                                     read.apply(key)
+                                                                         .map(value -> (Object) value)))
+                    .toList();
     }
 
-    private static List<DeclaredRouteKey> declaredKeys(ClusterModel m, Artifact artifact) {
-        return Schemas.owner(m, artifact)
-                      .flatMap(m.blueprints::get)
-                      .map(value -> declaredKeys(value, artifact))
-                      .or(List.of());
+    /// The mirror as the one place the gate reads from.
+    static Function<AetherKey, Option<AetherValue>> mirror(ClusterModel m) {
+        return key -> Outbox.mirrored(m, key);
     }
 
-    private static KVCommand.ReadWitness<AetherKey> rowWitness(ClusterModel m, DeclaredRouteKey key) {
-        return new KVCommand.ReadWitness<>(key,
-                                           m.declaredRoutes.get(key).map(row -> (Object) row));
+    /// What the goal gate of one artifact read: the owner its SliceTarget row names, that owner's blueprint, and the declared rows of the artifact
+    /// the blueprint lists. Each is read once through `read`; the gate and the witnesses both take it from here.
+    private record GateReads(AetherKey targetKey,
+                             Function<AetherKey, Option<AetherValue>> read,
+                             Option<BlueprintId> owner,
+                             Option<AppBlueprintValue> blueprint,
+                             List<DeclaredRouteKey> rows) {
+        static GateReads gateReads(Function<AetherKey, Option<AetherValue>> read, Artifact artifact) {
+            var targetKey = new AetherKey.SliceTargetKey(artifact.base());
+            var owner = typed(read.apply(targetKey), SliceTargetValue.class).flatMap(SliceTargetValue::owningBlueprint);
+            var blueprint = owner.flatMap(id -> typed(read.apply(AppBlueprintKey.appBlueprintKey(id)), AppBlueprintValue.class));
+
+            return new GateReads(targetKey,
+                                 read,
+                                 owner,
+                                 blueprint,
+                                 blueprint.map(value -> declaredKeys(value, artifact))
+                                          .or(List.of()));
+        }
+
+        /// The keys read, in reading order: the target row, the owner's blueprint (when the target names one) and the rows.
+        List<AetherKey> keys() {
+            return Stream.concat(Stream.concat(Stream.of(targetKey),
+                                               owner.stream()
+                                                    .<AetherKey> map(id -> AppBlueprintKey.appBlueprintKey(id))),
+                                 rows.stream())
+                         .toList();
+        }
     }
 
-    private static boolean allCurrent(ClusterModel m, BlueprintId id, AppBlueprintValue value, Artifact artifact) {
-        return declaredKeys(value, artifact).stream()
-                           .allMatch(key -> m.declaredRoutes.get(key)
-                                                            .map(row -> standing(row, id, value))
-                                                            .map(Routes::counts)
-                                                            .or(false));
+    private static <T extends AetherValue> Option<T> typed(Option<AetherValue> value, Class<T> type) {
+        return value.filter(type::isInstance)
+                    .map(type::cast);
+    }
+
+    private static boolean allCurrent(GateReads reads, BlueprintId id, AppBlueprintValue value) {
+        return reads.rows()
+                    .stream()
+                    .allMatch(key -> typed(reads.read()
+                                                .apply(key),
+                                           DeclaredRouteValue.class).map(row -> standing(row, id, value))
+                                                                    .map(Routes::counts)
+                                                                    .or(false));
     }
 
     private static List<DeclaredRouteKey> declaredKeys(AppBlueprintValue value, Artifact artifact) {

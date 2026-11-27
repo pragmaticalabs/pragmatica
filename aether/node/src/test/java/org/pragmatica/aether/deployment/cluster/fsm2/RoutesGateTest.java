@@ -402,6 +402,7 @@ class RoutesGateTest {
         var h = leaderWithOneCore();
         var first = heldGoalOf(h, twoSlices("attempt-1"));
 
+        assertThat(witnessedKeys(first).stream().filter(AppBlueprintKey.appBlueprintKey(APP_ID)::equals).count()).as("the blueprint both pairs share is witnessed once").isEqualTo(1);
         h.seed(key(LIST), published("attempt-1"));
         h.drain();
         var settlement = h.applyHeld(first.correlationId());

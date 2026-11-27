@@ -28,7 +28,6 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.Submitted;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.DeclaredRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
@@ -452,22 +451,24 @@ public sealed interface Outbox {
                                     .withGuards(Stream.concat(live.stream()
                                                                   .map(entry -> observedGuard(entry.getKey(),
                                                                                               entry.getValue().guard())),
-                                                              rowGuards(m, live))
+                                                              gateGuards(m, live))
                                                       .toList())
                                     .withPairs(live.stream().map(Map.Entry::getKey).collect(Collectors.toSet()))
                                     .withNode(node)
                                     .withOnAccepted(started(ctx, node, live)));
     }
 
-    /// #3389: the witnesses on the declared rows of the artifact of each live LOADED or ACTIVE goal (a node holds one pair per artifact, so
-    /// no row repeats): the goal is refused if a row moved between the decision and the commit. An UNLOADED goal carries none.
-    private static Stream<KVCommand.ReadWitness<AetherKey>> rowGuards(ClusterModel m,
-                                                                      List<Map.Entry<SlicePair, GoalIntent>> live) {
+    /// #3389, #3836: the witnesses of each live LOADED or ACTIVE goal on every fact its gate reads (the SliceTarget row, the owner's blueprint and
+    /// the declared rows of its artifact, [Routes#goalWitnesses]): the goal is refused if one moved between the decision and the commit. Pairs of one
+    /// blueprint share its witness, which is written once. An UNLOADED goal carries none.
+    private static Stream<KVCommand.ReadWitness<AetherKey>> gateGuards(ClusterModel m,
+                                                                       List<Map.Entry<SlicePair, GoalIntent>> live) {
         return live.stream()
                    .filter(Outbox::gated)
-                   .flatMap(entry -> Routes.rowWitnesses(m,
-                                                         entry.getKey().artifact())
-                                           .stream());
+                   .flatMap(entry -> Routes.goalWitnesses(Routes.mirror(m),
+                                                          entry.getKey().artifact())
+                                           .stream())
+                   .distinct();
     }
 
     /// A goal that loads: LOADED or ACTIVE. An UNLOADED goal is never gated on the declared rows (it only removes).
@@ -515,7 +516,7 @@ public sealed interface Outbox {
     }
 
     /// #3389: a goal that loads waits until every declared route row of its artifact is committed, so a slice never loads before its routes
-    /// are `Declared`; the transaction then witnesses the rows ([#rowGuards]). The commit of a row requests the reconcile that derives the
+    /// are `Declared`; the transaction then witnesses what the gate reads ([#gateGuards]). The commit of a row requests the reconcile that derives the
     /// held goal again (`Judgments`).
     private static boolean rowsCommitted(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
         return ! gated(entry) || Routes.rowsCommitted(m,
@@ -1001,23 +1002,42 @@ public sealed interface Outbox {
             stayGuards.addAll(guards);
         }
 
-        return new PairSplit(stay, stayGuards, stayPairs, shared, movedAny);
+        return new PairSplit(stay,
+                             stayGuards.stream()
+                                       .distinct()
+                                       .toList(),
+                             stayPairs,
+                             shared,
+                             movedAny);
     }
 
-    /// The witnesses of `draft` that concern `pair`: its observed guard and, for a goal that loads, the declared rows of its artifact (#3389).
-    /// A pair resubmitted after a refusal keeps all of them, so a goal never commits without the row witnesses it was derived under.
+    /// The witnesses of `draft` that concern `pair`: its observed guard and, for a goal that loads, every witness its gate derived (#3389, #3836:
+    /// the target row, the owner's blueprint, the declared rows). The list is derived by [Routes#goalWitnesses] over what the draft recorded, the
+    /// function that derived it, so a pair resubmitted after a refusal keeps every kind and a goal never commits without the witnesses it was
+    /// derived under. An UNLOADED pair recorded none of them, so it keeps none.
     private static List<KVCommand.ReadWitness<AetherKey>> pairGuards(TxDraft draft, SlicePair pair) {
+        var gate = Routes.goalWitnesses(recorded(draft),
+                                        pair.artifact())
+                         .stream()
+                         .map(KVCommand.ReadWitness::key)
+                         .collect(Collectors.toSet());
+
         return draft.guards()
                     .stream()
                     .filter(guard -> guard.key()
-                                          .equals(pair.observedKey()) || declaredRowOf(guard,
-                                                                                       pair.artifact()))
+                                          .equals(pair.observedKey()) || gate.contains(guard.key()))
                     .toList();
     }
 
-    private static boolean declaredRowOf(KVCommand.ReadWitness<AetherKey> guard, Artifact artifact) {
-        return guard.key() instanceof DeclaredRouteKey row && row.artifact()
-                                                                 .equals(artifact);
+    /// What `draft` witnessed, as a reading of the mirror: the value a witness expects, and nothing for a key it does not carry.
+    private static Function<AetherKey, Option<AetherValue>> recorded(TxDraft draft) {
+        return key -> Option.from(draft.guards()
+                                       .stream()
+                                       .filter(guard -> guard.key()
+                                                             .equals(key))
+                                       .findFirst())
+                            .flatMap(guard -> guard.expected()
+                                                   .map(AetherValue.class::cast));
     }
 
     private static boolean pairMoved(ClusterModel m,
