@@ -31,7 +31,7 @@ class AppHttpServerTlsFailClosedTest {
     @Test
     @Timeout(60)
     void start_unbuildableAppTls_failsBeforeAnyBind() throws Exception {
-        try (var held = new ServerSocket(0)) {
+        try (var held = new ServerSocket(0)) { // port0-held: the blocker socket stays open for the whole try block, the server under test runs inside it
             var server = appHttpServerWithMissingCertificate(held.getLocalPort(), HttpProtocol.H1);
 
             var outcome = server.start().await(timeSpan(30).seconds());

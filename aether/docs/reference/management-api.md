@@ -4181,7 +4181,9 @@ publishes the declaration already committed locally, without moving the incarnat
 
 ### GET /api/v1/cluster/keys/audit
 
-List API key audit trail (create, rotate, revoke, expire events).
+List API key audit trail (create, rotate, revoke, expire events), newest first.
+
+**Bound (#3528):** the audit keeps the newest **1000 entries per key** (counted per `keyId`, ordered by `timestamp`); the response never holds more than 1000 entries for one key plus the entries written since the last sweep. The cluster leader's 60-second key sweep removes the older entries through a consensus batch (at most 1000 removals per sweep), so every node drops the same entries and no node prunes its own store. The bound is enforced once per sweep, not at each write: between two sweeps a key can hold its 1000 plus the writes of that period. A backup taken before this bound can hold more than 1000 entries for a key; restoring it succeeds unchanged, and the leader's sweeps trim it afterwards (a key far over the bound takes several sweeps). Nothing needs to be done by the operator. `[mechanism: leader sweep submits KVCommand.Remove batches through consensus; unit-tested over three simulated stores, not multi-node failure-injection verified: aether/node ApiKeyAuditRetentionTest]`
 
 **RBAC:** ADMIN
 
@@ -5360,7 +5362,7 @@ is another node, are `409` (with no leader committed yet, an election in progres
 are `400`; the cluster-topology routes answer `503` while the topology manager is not on the node, and the stream tail route answers `501` (deferred) (#954).
 
 A caller-supplied id that cannot be parsed (a blueprint id, an artifact coordinate, a version, a node id) is `400` on every management route, and a refusal that several typed failures funnel into answers their common status when they agree (#1921).
-A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a malformed percent-escape in a topic group name are `400`; an unknown stream or consumer group on the stream routes, and an unknown topic or consumer group on the topic routes, is `404` (read from the answering node's own view: the committed stream config in its KV view or the stream in its engine, so a stream or topic created moments ago elsewhere can read as unknown until its commit applies; a known group whose projection is not hosted on the node stays `409`); a malformed node id, partition or stream address on a route that is forwarded to another node is `400` before anything is forwarded, while a well-formed node id naming no connected node is `503` (#1921).
+A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a malformed percent-escape in a topic group name are `400`; an unknown stream or consumer group on the stream routes, and an unknown topic or consumer group on the topic routes, is `404` (an unknown STREAM is one the answering node's replicated catalog view holds neither a registry entry nor a committed stream config for, never one whose partitions the node does not hold, so the holder and a non-holder answer alike, #1753; an unknown topic or consumer group is read from the answering node's own view: the committed config in its KV view or the object in its engine; either way a stream or topic created moments ago elsewhere can read as unknown until its commit applies on the answering node; a known group whose projection is not hosted on the node stays `409`); a malformed node id, partition or stream address on a route that is forwarded to another node is `400` before anything is forwarded, while a well-formed node id naming no connected node is `503` (#1921).
 
 **Stream engine refusals on the stream read routes** (`STREAM_PARTITION`, `STREAM_READ`, `STREAMS_EVENTS`, `STREAM_CONSUMERS`) answer the status of their class, decided in one exhaustive mapper (`StreamErrorStatus`; a new engine error type does not compile until it is classified) (#1921):
 
@@ -5372,6 +5374,8 @@ A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a m
 | `410` | the cursor's offset was reclaimed by retention (a judgement call: the offset was valid) | `CursorExpired` |
 | `503` | retry later or elsewhere | `PARTITION_NOT_LOCAL`, `PartitionHeldNotMaterialized`, `MaterializeBudgetExceeded`, `ReshufflePaced`, `STREAM_MEMORY_EXCEEDED`, `SEGMENT_TIER_FULL`, `SEALING_BEHIND`, `BUFFER_FULL`, `StreamConfigNotYetVisible`, the ownership and epoch refusals (`NotOwnerAppend`, `OwnerNotActivated`, `NotCurrentOwner`, `StaleEpochAppend`, `StaleEpochRead`, `OwnerCatchupPending`, `LinearizableRoundTimeout`, `ReplicaQuarantined`, `ReplicaNotVerified`, `RepairNotAuthorized`, `RepairWitnessFailed`), the closed and stalled signals, `CONSENSUS_PATH_UNAVAILABLE` |
 | `500` | engine integrity or an internal signal | `WalReplayMismatch`, `WalHeadLost`, `STREAM_CONFIG_COMMIT_FAILED`, `RingIndexCorrupted`, `EventProcessingFailed`, `SeedRejected`, `ProvenanceRegression`, `ProvenanceMismatch`, `ReplicaOffsetGap`, `ReplicaEntryConflict`, `UNREADABLE_CONSISTENCY_MODE`, `BUFFER_EMPTY`, `RUN_DOES_NOT_FIT`, `DivergenceNotEstablished`, `TruncateBelowRetained` |
+
+On `STREAM_PARTITION`, `STREAM_GET`, `STREAM_CONSUMERS`, `STREAM_READ` and `STREAMS_EVENTS` the `404` comes from the catalog alone (registry entry or committed stream config), decided before the engine is asked (#1753, #1963). An engine `StreamNotFound` for a stream the catalog knows means this node has not materialized it yet and answers `503`, retry; a partition the stream does not declare is `400` at whichever node answers.
 
 The publish routes keep their own refusals (#524). A refusal that travels from a remote owner as its message only arrives as an untyped cause and stays `500`.
 
@@ -5790,8 +5794,8 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/info
 }
 ```
 
-- `totalEvents`: sum of the per-partition `eventCount` values, each reported by the partition's ring holder
-  (the answering node's own ring when it holds one, otherwise the owner). Reflects visible events only.
+- `totalEvents`: sum of the per-partition `eventCount` values, each reported by the partition's owner (the answering
+  node's own ring only when that node IS the owner). Reflects visible events only.
 - `partitionDetails[]`: `headOffset` is the owner's visible head and `eventCount` the span from `tailOffset` to it,
   as the partition OWNER reports them — never a replica ring on the answering node, which may not have
   backfilled yet. An empty partition reads `-1 / -1 / 0`.
@@ -5799,6 +5803,16 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/info
   so on a node that holds no ring for the stream this is small or zero while `totalEvents` is complete.
 - `503`: a partition owner could not answer (unreachable, still materializing). Retry; the response never
   substitutes an empty partition, so a zero `totalEvents` is a measured zero.
+- `404`: the catalog (registry entry or committed stream config) has no such stream. A node that holds none of the
+  stream's partitions, or has not materialized it yet, answers like the holder (#1753, #1963): the partition count is the
+  declared one, every partition is the owner's.
+- **Lag window after a stream is created (same read as `.../consumers`).** `/info` and `.../consumers` read the same thing:
+  each partition's bounds from its owner (`ownerBounds`, one ask per partition), after the same catalog lookup. They are not
+  two views that can disagree; two requests in the window between creation and the owner's promotion are two samples of one
+  moving state. A sample taken while the owner is not yet promoted (or its answer times out) is `503`; a later one reads the
+  empty partition (`-1 / -1 / 0`). Neither is ever `404` for a stream the catalog holds. Retry on `503`. `[unverified: the
+  probe of #3796 saw /info answer 503 while /consumers answered 200 a moment later; both sampled one owner at different
+  instants, which the code supports but no test pins]`
 
 ### Partition Details
 
@@ -5817,6 +5831,10 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/partitions/{partition}
   "eventCount": 256
 }
 ```
+
+The bounds are the partition OWNER's, whichever node answers (#1753): a node that holds the stream metadata-only, or has not
+materialized it, no longer answers `Stream partition is not owned by this node` or `404`. `404`: the catalog has no such
+stream; `400`: the stream does not declare that partition; `503`: the owner could not answer.
 
 ### Partition Replica State
 
@@ -6291,6 +6309,11 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/read/{partition}?from={offset
 - `max` (optional, default 100) -- Maximum number of events to return
 - `readPreference` (optional) -- Replica read preference hint
 
+**Statuses:** `404` the catalog has no such stream; `400` the stream does not declare `{partition}` (a negative number, or the
+declared count or more), as on `.../partitions/{partition}`; `503` the owner could not answer (retry). The declared-partition
+check runs when a partition count is known (committed config, else the answering node's ring); in the window where a stream is
+registered but its config is not yet committed and the node has no ring, the read goes to the owner unchecked.
+
 **CLI:**
 ```bash
 aether streams read <name> <partition> [--since <offset>] [--limit <count>]
@@ -6424,10 +6447,32 @@ aether streams consumer-group status <group> [<stream>]
 GET /api/v1/streams/{namespace}/{stream}/{version}/consumers
 ```
 
-**Auth:** VIEWER. Per-partition offsets of one stream version, as the receiving stream node holds them. The address is
-validated first (a malformed address is `400`); an unknown stream is refused with the stream-manager's typed status.
+**Auth:** VIEWER. Per-partition offsets of one stream version, as each partition's OWNER reports them (#1753, #1963), so
+the answer does not depend on which node receives the request. The address is validated first (a malformed address is
+`400`); a stream the catalog does not have is `404`; an owner that cannot answer is `503`. Served by `StreamApiRoutes`
+since #1753 (the route and its path are unchanged). In the window right after a stream is created it can answer `503` or an
+empty partition for the same reason `/info` does (see the lag-window note under [Stream Info](#stream-info)); both read the
+owner's bounds.
 
 **Response:** `{"name": "<namespace:stream:version>", "partitions": [{"partition": 0, "headOffset": 0, "tailOffset": 41, "eventCount": 42}]}`
+
+### Raw Engine-Key Reads (reserved-kind streams)
+
+```
+GET /api/v1/engine-streams/{engineKey}/events?fromOffset={n}&maxEvents={k}
+GET /api/v1/engine-streams/{engineKey}/consumers
+```
+
+**Auth:** VIEWER. The streams the runtime provisions under a reserved kind prefix (`topic:<ns>:<topic>:<ver>` for durable topics,
+`entity:...`) have a four-part engine key, which the `{namespace}/{stream}/{version}` form of the routes above cannot
+carry (#1399). These two routes take the key raw, as ONE path segment, and answer as `.../events` and `.../consumers` do: the same catalog lookup (a key the catalog
+does not hold is `404`) and the same `503` when the owner cannot answer, on whichever node receives the request.
+`/events` returns the window the partition owner's ring serves for `fromOffset` and `maxEvents` (`maxEvents` is clamped to
+1000 per page; `hasMore` says whether more follow), and `/consumers` the owner's `(head, tail, count)` per partition. The
+event response's `address` is the engine key. Any engine key the catalog holds is accepted, including a three-part catalog
+address. Read-only: there is no raw-key write route, and a write verb on these paths is `405` with `Allow: GET`.
+
+**CLI:** none. These routes are reachable over HTTP only; the `aether streams` commands address a stream by catalog name.
 
 ---
 
@@ -6539,7 +6584,7 @@ the operator naming a target directly. A `partition` outside `[0, partitionCount
 is rejected with `400 Bad Request`, naming the valid range — never a silent write to partition 0,
 never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemResponses HttpStatusAware
 dispatch]` That `400` is the single publish; the batch form reports the same condition per item as
-`NOT_ATTEMPTED` with `200` — see below.
+`NOT_ATTEMPTED` inside a `207` — see below.
 
 A publish refused before the append because fewer than `confirmation_factor − 1` peers are registered
 for the partition — typically the FIRST publish to a stream that publish auto-creates, whose replica set
@@ -6576,13 +6621,22 @@ failure (a reserved name `400`, or an unavailable stream `409`) fails the whole 
 status and writes nothing. An empty batch publishes nothing and creates no stream. `[mechanism:
 publishMany runs ensureStreamExists before the per-item fan-out, and only when there are items]`
 
-**Batch publish is not atomic, and the response says per item what happened (#1342).** `publish-batch`
-validates and writes each item independently and concurrently. **`200` means the batch RAN, not that
-every event landed — read `notPublished`.** The top-level `published` / `notPublished` counts and one
-outcome per item, in request order, come back for every batch that ran, partial included. "Ran" means
-the route processed the batch past the stream-level check above: a batch in which NO item passed the
-PARTITION-level admission still answers `200` with `published: 0` and every item `NOT_ATTEMPTED`; a stream-level
-refusal is the batch's own status (CTO ruling, #1342 × #1299; before #1342 the all-rejected case answered `500`).
+**Batch publish is not atomic, and the response says per item what happened (#1342, #1354).** `publish-batch`
+validates and writes each item independently and concurrently. **The status says whether every event landed: `200`
+only when every item is `PUBLISHED`; anything else is `207 Multi-Status`, with the same body.** The top-level
+`published` / `notPublished` counts and one outcome per item, in request order, come back for every batch that
+ran, partial included. "Ran" means the route processed the batch past the stream-level check above: a batch in
+which NO item passed the PARTITION-level admission answers `207` with `published: 0` and every item
+`NOT_ATTEMPTED`; a stream-level refusal is the batch's own status (CTO ruling, #1342 × #1299; before #1342 the
+all-rejected case answered `500`).
+
+| Batch outcome | Status |
+|---|---|
+| every item `PUBLISHED` | `200` |
+| an empty batch (no item, none unpublished; nothing is written or created) | `200` |
+| at least one item `NOT_ATTEMPTED` or `OUTCOME_UNKNOWN`, partial or `published: 0` | `207` |
+| stream-level refusal: a reserved name | `400` |
+| stream-level refusal: an unavailable stream | `409` |
 
 ```json
 {"address":"acme:orders:1.0.0","published":1,"notPublished":1,
@@ -6596,12 +6650,18 @@ refusal is the batch's own status (CTO ruling, #1342 × #1299; before #1342 the 
 - `OUTCOME_UNKNOWN`: the write was refused or timed out, before or after the local append (#1236) — the
   caller cannot tell which, so it may be in the log; retrying it can duplicate.
 
-A client that treats `200` as "every event landed" misreads a partial batch; check `notPublished`. Before
-#1342 the response on a partial batch was the first failure alone, and the offsets of the items that had
-landed were discarded. `[mechanism: publishMany fires every item concurrently via Promise.allOf with no
-short-circuit; each item's Result becomes its own PublishItemOutcome]` `[verified:
-StreamApiRoutesPublishBatchTest.partialBatch_overHttpDispatch_answers200_withNotPublishedAndTheLandedOffset —
-the real route through ManagementRouter, asserting the written status and JSON]`
+A client that matched exactly `200` must also accept `207`, and must read `notPublished` and the per-item outcomes
+to learn which events to retry. Before #1354 every batch the route ran answered `200`, so a partial batch looked
+like success to a client that read only the status; before #1342 the response on a partial batch was the first
+failure alone, and the offsets of the items that had landed were discarded. The status is derived in ONE place,
+`PublishBatchResponse.httpStatus`, as a function of the item statuses; `ManagementRouter` writes the status a
+`StatusBearingResponse` value declares and `200` for every other success, so no route call site picks a status.
+An empty batch answering `200` is a reading of "not fully `PUBLISHED`", not a stated ruling.
+`[mechanism: publishMany fires every item concurrently via Promise.allOf with no short-circuit; each item's Result
+becomes its own PublishItemOutcome; PublishBatchResponse.httpStatus allMatch PUBLISHED -> 200 else 207]`
+`[verified: StreamApiRoutesPublishBatchTest — the real route through ManagementRouter, asserting the written status
+and JSON for a partial batch of three, a batch with none published, an OUTCOME_UNKNOWN-only batch, a full batch and
+an empty batch]`
 
 ### Delete Stream Version
 

@@ -166,8 +166,9 @@ public final class OwnerLifetime {
         return ended.get();
     }
 
-    /// Number of live entries; for tests.
-    int size() {
+    /// Number of live entries: scheduled and neither completed nor cancelled. A lifetime that has ended holds none, so
+    /// an owner's test reads this to see that a registration made after the end was refused rather than kept.
+    public int size() {
         return entries.size();
     }
 

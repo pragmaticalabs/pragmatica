@@ -410,6 +410,24 @@ class NodeDeploymentStopLifetimeTest {
             assertThat(lifetime.isEnded()).as("a node stop that finds the FSM in Leaving still ends it").isTrue();
         }
 
+        /// #1191 (b): the hook of an earlier winner (`Active.onEntry` and what it armed) can run after `Stopped.onEntry` has ended the
+        /// node's lifetime. GUARD, green at 86795a3965: the node's lifetime is an `OwnerLifetime`, which refuses a registration made after
+        /// its `end()` (nothing enqueued, nothing live), so the late arm needs no per-state wiring here. The `Active` captured before the
+        /// stop stands for that hook, exactly as in the sites' (b) tests; the control is the same call before the stop.
+        @Test
+        void registrationAfterTheStop_isRefused_andEnqueuesNothing() {
+            var active = activeWithSlice(SliceState.ROUTING);
+
+            active.scheduleRoutingRemediation(KEY);
+            assertThat(seam.wrappers).as("control: before the stop the same call enqueues").hasSize(1);
+            assertThat(lifetime.size()).as("control: and holds one live registration").isEqualTo(1);
+            stop();
+            active.scheduleRoutingRemediation(KEY);
+
+            assertThat(seam.wrappers).as("the late registration was refused, not enqueued").hasSize(1);
+            assertThat(lifetime.size()).as("nothing armed by the stopped node is live").isZero();
+        }
+
         @Test
         void quorumCycle_withoutShutdown_leavesTheLifetimeLive() {
             harness.dispatch(new QuorumDisappeared());

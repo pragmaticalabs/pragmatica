@@ -47,7 +47,7 @@ class AetherNodeBrokenTlsBootTest {
     @Test
     @Timeout(value = 90, unit = SECONDS)
     void start_refuses_whenAppHttpTlsCannotBeBuilt() throws Exception {
-        try (var held = new ServerSocket(0)) {
+        try (var held = new ServerSocket(0)) { // port0-held: the blocker socket stays open for the whole try block, the node under test runs inside it
             var base = AppHttpConfig.insecureAppHttpConfig(held.getLocalPort());
             var appHttp = new AppHttpConfig(base.enabled(), base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
                                             base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
@@ -63,7 +63,7 @@ class AetherNodeBrokenTlsBootTest {
     void start_refuses_whenManagementTlsCannotBeBuilt() throws Exception {
         var brokenTls = Option.some(TlsConfig.server(Path.of("/missing/node-cert.pem"), Path.of("/missing/node-key.pem")));
 
-        try (var held = new ServerSocket(0)) {
+        try (var held = new ServerSocket(0)) { // port0-held: the blocker socket stays open for the whole try block, the node under test runs inside it
             assertRefused(AppHttpConfig.insecureAppHttpConfig(freePort()), held.getLocalPort(), brokenTls, HttpProtocol.H1);
         }
     }
@@ -106,7 +106,7 @@ class AetherNodeBrokenTlsBootTest {
         java.nio.file.Files.write(dir.resolve("app.crt"), certificateOwner.certificatePem());
         java.nio.file.Files.write(dir.resolve("app.key"), keyOwner.privateKeyPem());
 
-        try (var held = new ServerSocket(0)) {
+        try (var held = new ServerSocket(0)) { // port0-held: the blocker socket stays open for the whole try block, the node under test runs inside it
             var base = AppHttpConfig.insecureAppHttpConfig(held.getLocalPort());
             var appHttp = new AppHttpConfig(base.enabled(), base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
                                             base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
