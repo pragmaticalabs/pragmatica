@@ -137,6 +137,22 @@ class FlakeScanTest {
     }
 
     @Test
+    void scan_aSingleCallParkNanosSleep_isFlaggedAsParkSleep_andNeverExcused() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", methodBody("LockSupport.park" + "Nanos(1_000_000L);"))).hits();
+
+        assertThat(hits).extracting(FlakeScan.Hit::kind).containsExactly(FlakeScan.Kind.PARK_SLEEP);
+        assertThat(FlakeScan.problems(hits, List.of(hits.getFirst().key()), 1, Map.of())).anyMatch(problem -> problem.contains("PARK_SLEEP at"));
+    }
+
+    @Test
+    void scan_aParkNanosInsideALoop_isNotFlagged() throws IOException {
+        var scan = FlakeScan.scan(plant("A.java", methodBody("while (!done()) {", "    LockSupport.park" + "Nanos(1_000L);", "}")));
+
+        assertThat(scan.examinedFiles()).containsExactly("m/src/test/java/A.java");
+        assertThat(scan.hits()).isEmpty();
+    }
+
+    @Test
     void problems_aWalkThatIsNeverAnAllowListEntry_isStillReportedWhenTheListNamesIt() throws IOException {
         var hits = FlakeScan.scan(plant("A.java", walkLine())).hits();
 
@@ -421,6 +437,10 @@ class FlakeScanTest {
     }
 
     /// Built from pieces so this file never carries the pattern it scans for.
+    private static String methodBody(String... lines) {
+        return "class A {\n    void m() throws Exception {\n" + String.join("\n", lines) + "\n    }\n}";
+    }
+
     private static String walkLine() {
         return "try (var files = Files" + ".walk(root)) {";
     }

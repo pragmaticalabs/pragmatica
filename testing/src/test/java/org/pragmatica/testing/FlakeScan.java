@@ -61,6 +61,10 @@ import org.pragmatica.testlogging.SourceWalk;
 /// port-allocation call, whatever its argument, so `PICK_THEN_REBIND` (a port-0 construction outside the shared helper or without a
 /// `// port0-held:` marker) and the literal-port constructor form of `FIXED_PORT` are retired. `FIXED_PORT` keeps what bytecode cannot
 /// see: a port constant (`int httpPort = 8080`) and a literal handed to `bind`, `listen` or a config setter.
+///
+/// `PARK_SLEEP` is a hazard in a wait (#3386), found by [SingleParkSleep] over the whole text of every scanned file, not by a line regex: a
+/// `parkNanos` call that no loop encloses is a single-call sleep, which returns at once under a set interrupt flag. It is never an allow-list
+/// entry: a hit is fixed, with [PollUntil] (wait for the state) or [Pause] (a pause that parks to its deadline).
 final class FlakeScan {
     private static final List<String> SCANNED_SOURCES = List.of("/src/test/java/", "/src/it/java/");
     /// A pattern with a fixed flake behind it, and the fix the failure message points at.
@@ -76,7 +80,9 @@ final class FlakeScan {
         SHORT_AWAIT("\\batMost\\s*\\(\\s*(Duration\\s*\\.\\s*ofMillis\\s*\\(|Duration\\s*\\.\\s*ofSeconds\\s*\\(\\s*[1-4]\\s*\\)|[0-9_]+\\s*,\\s*TimeUnit\\s*\\.\\s*MILLISECONDS|[1-4]\\s*,\\s*(TimeUnit\\s*\\.\\s*)?SECONDS)",
                     "give the wait a deadline of at least 5 s (PollUntil.pollUntil(..., Duration.ofSeconds(10)) or atMost(Duration.ofSeconds(10))): the deadline bounds only the failure, a pass returns at once"),
         REPO_WALK("\\bFiles\\s*\\.\\s*(walk|walkFileTree|find)\\s*\\(",
-                  "scan source files with org.pragmatica.testlogging.SourceWalk.files(root): the java.nio walks (walk, walkFileTree, find) list and stat every entry before any filter runs, so a walk from a repository or multi-module root visits other modules' target/ while a parallel build rewrites it and fails with NoSuchFileException. A walk of a directory nothing else writes (a directory the test creates, the module's own fixed source path, a class directory complete before the forks start) is declared in RepoWalkExceptions with its reason (#3703)");
+                  "scan source files with org.pragmatica.testlogging.SourceWalk.files(root): the java.nio walks (walk, walkFileTree, find) list and stat every entry before any filter runs, so a walk from a repository or multi-module root visits other modules' target/ while a parallel build rewrites it and fails with NoSuchFileException. A walk of a directory nothing else writes (a directory the test creates, the module's own fixed source path, a class directory complete before the forks start) is declared in RepoWalkExceptions with its reason (#3703)"),
+        PARK_SLEEP("(?!)",
+                   "a test that waits for a state waits for THAT state: org.pragmatica.testing.PollUntil.pollUntil(supplier, predicate, deadline); a test that means a plain pause calls org.pragmatica.testing.Pause.pause(duration), which parks to a deadline and keeps the interrupt flag. A single LockSupport.parkNanos call returns at once whenever the thread's interrupt flag is set (the call does not clear it), and early on a spurious wakeup, so the test waits for nothing and asserts state that has not happened yet (#3384, #3386). A parkNanos inside a loop that re-checks a condition or a deadline is not a hit");
 
         private final Pattern pattern;
         private final String fix;
@@ -156,6 +162,7 @@ final class FlakeScan {
                 }
             }
         }
+        hits.addAll(SingleParkSleep.hits(relative, lines, String.join("\n", lines)));
     }
 
     /// A statement as the statement pass sees it: its first code line (1-based) and its text, line breaks kept.
@@ -294,9 +301,10 @@ final class FlakeScan {
         return problems;
     }
 
-    /// Whether the allow-list or the declared walks excuse `hit`, consuming the entry it uses.
+    /// Whether the allow-list or the declared walks excuse `hit`, consuming the entry it uses. A `PARK_SLEEP` hit is never excused: it is fixed.
     private static boolean excused(Hit hit, Map<String, Integer> remaining, Map<String, Integer> walksLeft) {
         return switch (hit.kind()) {
+            case PARK_SLEEP -> false;
             case REPO_WALK -> walksLeft.merge(hit.file(), -1, Integer::sum) >= 0;
             default -> remaining.merge(hit.key(), -1, Integer::sum) >= 0;
         };
