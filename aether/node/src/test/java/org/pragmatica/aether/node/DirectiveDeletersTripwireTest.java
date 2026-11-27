@@ -41,6 +41,7 @@ class DirectiveDeletersTripwireTest {
                                                                      Map.entry("TerminationRetirement.java", "B18/B19: directive and record in one transaction (4b)"),
                                                                      Map.entry("Directory.java", "fsm2: the directive writer (J5) and its R-4.3.3 directive-removal with the record"),
                                                                      Map.entry("DepartureFlow.java", "fsm2 C17b: a departed WORKER's directive and its record in one transaction, the record's exact-value removal the guard (4b, #3193)"),
+                                                                     Map.entry("RetirementUnit.java", "fsm2: an id's record, directive and receipt removed in one transaction at their exact values (#3828)"),
                                                                      Map.entry("Indexer.java", "fsm2: the mirror of committed removes, a reader"),
                                                                      Map.entry("Outbox.java", "fsm2: re-reads the expected values of its drafts, a reader"),
                                                                      Map.entry("ClusterConfigRoutes.java", "management: a read witness, a reader"),
