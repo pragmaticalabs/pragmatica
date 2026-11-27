@@ -85,9 +85,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     LeaderElectionContext ctx();
 
     /// Dispatches an event to this FSM instance from code that is ALREADY confined to the node's serial executor
-    /// (#3587): a handler, or a callback body wrapped in [LeaderElectionContext#serialized]. It has no queueing path of
+    /// (#3587): a handler, or a callback body wrapped in `LeaderElectionContext#serializedFor`. It has no queueing path of
     /// its own (#3605 round-3 ruling): every callback that runs off the drainer (a timer, a promise completion) enters
-    /// the node's order through ONE path, `ctx.serialized(...)`, and calls this only inside it. Enforced, not assumed
+    /// the node's order through ONE path, `ctx.serializedFor(...)`, and calls this only inside it. Enforced, not assumed
     /// (round-4 ruling): it goes through [LeaderElectionContext#dispatchConfined], which throws
     /// [IllegalStateException] when the caller is not the drainer, so an unwrapped callback fails the first time it
     /// fires instead of dispatching on its own thread. A hook never takes this path: it follows up
@@ -1761,14 +1761,17 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         storeProposalTimeoutFuture(owner, timeoutFuture);
         handler.propose(candidate, viewSeq)
-               .onSuccess(ctx.serialized(_ -> dispatchSelf(ctx,
-                                                           new ProposalSettled(candidate,
-                                                                               true,
-                                                                               "submitted@epoch=" + epoch))))
-               .onFailure(ctx.serialized(cause -> dispatchSelf(ctx,
-                                                               new ProposalSettled(candidate,
-                                                                                   false,
-                                                                                   cause.message() + "@epoch=" + epoch))));
+               .onSuccess(ctx.serializedFor(owner,
+                                            _ -> dispatchSelf(ctx,
+                                                              new ProposalSettled(candidate,
+                                                                                  true,
+                                                                                  "submitted@epoch=" + epoch))))
+               .onFailure(ctx.serializedFor(owner,
+                                            cause -> dispatchSelf(ctx,
+                                                                  new ProposalSettled(candidate,
+                                                                                      false,
+                                                                                      cause.message()
+                                                                                     + "@epoch=" + epoch))));
     }
 
     /// Stores the proposal-timeout future onto the owning Electing/ReElecting record so that

@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionContext.EpisodeIdentity;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderDoubtConfirmed;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
@@ -198,7 +199,9 @@ public final class LeaderPreVote {
         current.vouching = new HashSet<>();
         current.doubting = new HashSet<>(Set.of(ctx.self()));
         stopTimer(current);
-        current.timer = some(SharedScheduler.schedule(ctx.serialized(() -> onRoundTimeout(current, round)), timeout));
+        current.timer = some(SharedScheduler.schedule(ctx.serializedFor(identityOf(current),
+                                                                        () -> onRoundTimeout(current, round)),
+                                                      timeout));
         log.info("Leader pre-vote round {}: {} lost its view of leader {}, asking {} voter(s) whether they still see it",
                  round,
                  ctx.self(),
@@ -291,7 +294,8 @@ public final class LeaderPreVote {
                  current.doubting.size(),
                  current.vouching.size(),
                  ctx.electorate().size());
-        current.timer = some(SharedScheduler.schedule(ctx.serialized(() -> onRetry(current)), retryDelay()));
+        current.timer = some(SharedScheduler.schedule(ctx.serializedFor(identityOf(current), () -> onRetry(current)),
+                                                      retryDelay()));
 
         return NO_EFFECT;
     }
@@ -328,7 +332,13 @@ public final class LeaderPreVote {
         return NO_EFFECT;
     }
 
-    private boolean isLive(Episode current) {
+    /// #3846: the suspicion episode as the identity its timers carry into the serial executor. Read there, so it takes the
+    /// lock like every other read of `episode`.
+    private EpisodeIdentity identityOf(Episode current) {
+        return () -> isLive(current);
+    }
+
+    private synchronized boolean isLive(Episode current) {
         return episode.filter(live -> live == current)
                       .isPresent();
     }

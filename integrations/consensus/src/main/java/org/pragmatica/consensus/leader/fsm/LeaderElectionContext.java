@@ -885,7 +885,7 @@ public final class LeaderElectionContext {
 
     private void scheduleReassertion(Supplier<Option<TransportView>> view) {
         if (reassertionArmed.compareAndSet(false, true)) {
-            SharedScheduler.schedule(serialized(() -> reassert(view)), reassertPeriod.get());
+            SharedScheduler.schedule(serializedFor(NODE_LIFETIME, () -> reassert(view)), reassertPeriod.get());
         }
     }
 
@@ -1153,39 +1153,64 @@ public final class LeaderElectionContext {
         return confinementBreaches.get();
     }
 
-    /// #3587: `task` as a callback (a timer's, a listener's) that runs it in the node's one total order. The ONE path by
-    /// which a callback that runs off the drainer enters that order (#3605 round-3 ruling); a callback that dispatches
-    /// without it is refused by [#dispatchConfined] (round 4). Each `serialized(` site has a behaviour row in
-    /// `LeaderTimerSerialCensusTest`.
-    public Runnable serialized(Runnable task) {
-        return () -> serial.execute(task);
+    /// #3846: the identity of ONE episode of an asynchronous source: a timer, a promise completion, any callback that
+    /// enters the election FSM later than the code that started it. `isLive()` is read INSIDE the serial task, after every
+    /// task queued ahead of the completion (the exit of the episode, a re-entry) ran, so reading it and acting on it are
+    /// one task. A state's episode is one ENTRY into it ([Fsm#entered], whose lifetime ends when a successor's CAS wins),
+    /// never the state record: an entry is new on every entry, a record may be entered again.
+    @FunctionalInterface
+    public interface EpisodeIdentity {
+        boolean isLive();
     }
 
-    /// #3809: `task` as the tick of ONE episode of a state: [#serialized(Runnable)], and it runs only while `owner` is
-    /// still the FSM's current state. The episode is the state record's reference (`FsmState`: the reference identifies
-    /// the entry), so a tick whose timer fired before `owner` exited, and is queued behind the exit (and a re-entry that
-    /// allocated a new record), changes no state. GUARANTEE: a tick acts only on the episode that armed it. MECHANISM:
-    /// the check runs INSIDE the serial task, after every task queued ahead of the tick (the exit, the re-entry) ran, so
-    /// the read of the current state and the act on it are one task. ONE enforcer for every timer of a state record
-    /// (grace, poll, election, observation, lease, proposal timeout); `LeaderPreVote` keeps its own episode identity.
+    /// The episode of a source that lives as long as the node: it ends with [#stop()], when the executor closes and
+    /// rejects every later task (`SerialExecutor#execute`). Only the view re-assertion, which no state owns, has it.
+    private static final EpisodeIdentity NODE_LIFETIME = () -> true;
+
+    /// #3587, #3809, #3846: `task` as a callback (a timer's, a listener's) that runs in the node's one total order, and
+    /// only while `owner`'s current ENTRY is still the FSM's current entry. The ONE path by which a callback that runs off
+    /// the drainer enters that order (#3605 round-3 ruling); a callback that dispatches without it is refused by
+    /// [#dispatchConfined] (round 4). GUARANTEE: a completion acts only on the episode that started it. MECHANISM: the
+    /// entry is read HERE, at the arm site, which always runs inside that entry (a hook or a handler of the current
+    /// state, or a completion already admitted by this check); the completion carries its lifetime and is dropped once
+    /// that lifetime has ended. An `owner` that is not the current entry arms nothing that can run. The unfenced
+    /// `serialized(...)` entry is gone: this and [#serializedFor(EpisodeIdentity, Runnable)] are the only ways in. Each
+    /// site has a behaviour row in `LeaderStaleTickEpisodeTest` or `LeaderEpisodeIdentityTest`.
     public Runnable serializedFor(LeaderElectionState owner, Runnable task) {
-        return serialized(() -> runIfCurrent(owner, task));
+        return serializedFor(entryOf(owner), task);
     }
 
-    private void runIfCurrent(LeaderElectionState owner, Runnable task) {
-        if (fsm.current() == owner) {
+    /// As [#serializedFor(LeaderElectionState, Runnable)] for a callback that receives a value (a promise completion's
+    /// result or cause): the value is captured on the completing thread and `callback` runs with it in the node's one
+    /// total order, if the entry that started it is still current.
+    public <T> Consumer<T> serializedFor(LeaderElectionState owner, Consumer<T> callback) {
+        var episode = entryOf(owner);
+
+        return value -> serial.execute(() -> runIfLive(episode, () -> callback.accept(value)));
+    }
+
+    /// As [#serializedFor(LeaderElectionState, Runnable)] for a source that is not a state: `episode` is that source's
+    /// own identity (the pre-vote's suspicion episode, [#NODE_LIFETIME]).
+    public Runnable serializedFor(EpisodeIdentity episode, Runnable task) {
+        return () -> serial.execute(() -> runIfLive(episode, task));
+    }
+
+    private EpisodeIdentity entryOf(LeaderElectionState owner) {
+        var entered = fsm.entered();
+        var lifetime = entered.lifetime();
+
+        return entered.state() == owner
+               ? () -> !lifetime.isEnded()
+               : () -> false;
+    }
+
+    private void runIfLive(EpisodeIdentity episode, Runnable task) {
+        if (episode.isLive()) {
             task.run();
         } else {
-            log.debug("Dropping a tick of the exited {} episode: the FSM is in {}",
-                      owner.getClass().getSimpleName(),
+            log.debug("Dropping a completion of an exited episode: the FSM is in {}",
                       fsm.current().getClass().getSimpleName());
         }
-    }
-
-    /// As [#serialized(Runnable)] for a callback that receives a value (a promise completion's result or cause): the
-    /// value is captured on the completing thread and `callback` runs with it in the node's one total order.
-    public <T> Consumer<T> serialized(Consumer<T> callback) {
-        return value -> serial.execute(() -> callback.accept(value));
     }
 
     /// #3587: deliver `event` to the FSM in the node's one total order. Inside a task (a handler following up, a
@@ -1221,7 +1246,7 @@ public final class LeaderElectionContext {
     /// ([SerialExecutor#isConfined]); otherwise this logs the breach, counts it ([#confinementBreachesForTest]) and
     /// throws [IllegalStateException] naming the rule and the calling thread (its id, and its name when it has one:
     /// a virtual thread's name is empty). Confinement is enforced here, not counted in the source: an off-drainer
-    /// callback that dispatches without [#serialized] fails the first time it fires instead of racing the drainer. A
+    /// callback that dispatches without [#serializedFor(LeaderElectionState, Runnable)] fails the first time it fires instead of racing the drainer. A
     /// refusal on a scheduler thread is logged by the scheduler and by Promise at WARN/ERROR without the rule context,
     /// so this ERROR line and the count are what carry the rule.
     @Contract
@@ -1235,8 +1260,8 @@ public final class LeaderElectionContext {
 
     private IllegalStateException confinementBreach(ClusterFsmEvent event) {
         var message = "#3605 confinement rule: a leader FSM dispatch runs only on the node's serial drainer (a handler, "
-                    + "a ctx.serialized(...) callback, or a serially/submit task); refused " + event.getClass()
-                                                                                                    .getSimpleName()
+                    + "a ctx.serializedFor(...) callback, or a serially/submit task); refused " + event.getClass()
+                                                                                                       .getSimpleName()
                     + " dispatched from thread " + callingThread();
 
         confinementBreaches.incrementAndGet();

@@ -53,8 +53,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// proposal's success and failure callbacks) runs its WHOLE body as one task of the node's serial executor.
 ///
 /// Round-3 ruling (know 6c68615e20, item 1): such a callback enters the node order through ONE path,
-/// `ctx.serialized(...)`; `dispatchSelf` is for already-confined code and has no queueing path of its own. This census
-/// has one behaviour row per `serialized(` site of leader main. Round-4 ruling (know 4c954b1c5d): a NEW unwrapped site
+/// `ctx.serializedFor(...)` (#3846: the unfenced `serialized` is gone); `dispatchSelf` is for already-confined code and has no queueing path of its own. This census
+/// has one behaviour row per `serializedFor(` site of leader main. Round-4 ruling (know 4c954b1c5d): a NEW unwrapped site
 /// is caught by enforcement, not by a count of the source: every leader dispatch goes through
 /// [LeaderElectionContext#dispatchConfined], which refuses a caller off the drainer ([LeaderDispatchConfinementTest]).
 /// What the `serialized` wrap adds beyond that is that the callback's READS (the KV leader, the ping freshness, the
