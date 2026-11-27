@@ -16,6 +16,7 @@ import com.sun.source.util.JavacTask;
 import java.net.URI;
 import java.util.List;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -82,6 +83,34 @@ class LeaderEpisodeEntryPathTest {
                   .isNotEmpty();
         assertThat(errors).as("the refusal names the removed entry, not some other defect of the probe")
                   .anyMatch(message -> message.contains("serialized"));
+    }
+
+    // ---- #3846 round 1 (F1): the two arm paths that still opt out of the fence ----
+    private static final String SERIALLY_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(task); }";
+    private static final String LAMBDA_IDENTITY_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return ctx.serializedFor(() -> true, task); }";
+
+    /// TRIPWIRE: asserts today's behaviour, that both arm sites COMPILE. It goes red the moment the fence becomes a
+    /// compile-time rule. Lane B: that red is the goal. Flip this test to "must not compile" by deleting it and enabling
+    /// `armSite_throughARemainingUnfencedPath_doesNotCompile` below.
+    @ParameterizedTest
+    @ValueSource(strings = {SERIALLY_ARM_SITE, LAMBDA_IDENTITY_ARM_SITE})
+    void tripwire_armSite_throughARemainingUnfencedPath_stillCompiles(String armSite) throws Exception {
+        var errors = compile(HEAD + "  " + armSite + "\n}\n");
+
+        assertThat(errors).as("TRIPWIRE: this arm site no longer compiles, which is what #3846 asks for. Flip this test to "
+                              + "\"must not compile\": delete it and enable armSite_throughARemainingUnfencedPath_doesNotCompile")
+                  .isEmpty();
+    }
+
+    /// The real assertion (ruling 2026-11-27): an arm site that reaches the serial executor without an episode identity
+    /// of the entry it arms from does not compile. `@Disabled` until lane B's enforcer lands.
+    @Disabled("lane B: enable together with the compile-time enforcer and delete the tripwire above")
+    @ParameterizedTest
+    @ValueSource(strings = {SERIALLY_ARM_SITE, LAMBDA_IDENTITY_ARM_SITE})
+    void armSite_throughARemainingUnfencedPath_doesNotCompile(String armSite) throws Exception {
+        var errors = compile(HEAD + "  " + armSite + "\n}\n");
+
+        assertThat(errors).as("an arm site that opts out of the episode fence compiled").isNotEmpty();
     }
 
     /// Attribution only (`JavacTask#analyze`): the errors are the compiler's, and no class file is written.

@@ -10,6 +10,8 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -18,6 +20,7 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ElectionTick;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeout;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -48,8 +51,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// Production order: every event goes through the real confined dispatch, the exit and re-entry is one serial task,
 /// the proposal promises are the ones the handler returned, completed by the test as the network would. The saved-record
-/// re-entry is the one step production has no handler for; the harness requests it the way a handler would
-/// ([FsmTestHarness#reenter]).
+/// re-entry is the one step production cannot reach, so the harness requests it the way a handler would
+/// ([FsmTestHarness#reenter]). WHY production order cannot reach it: every record that carries a timer is built per
+/// transition (`LeaderElectionContext#quorumWaiting`, `awaitingKvSync`, `electing`, `reElecting`, `Led.fresh`,
+/// `new Passive`), and the only transitions to an existing record go to the timer-free singletons `dormant`,
+/// `quorumLost` and `stopped`. That fact is pinned by `productionReentry_ofATimedState_buildsANewRecord`: when a
+/// production transition re-enters a saved record, that test goes red and the saved-record tests become production
+/// tests (replace `harness.reenter` by that transition).
 class LeaderEpisodeIdentityTest {
     private static final NodeId SELF = new NodeId("node-1");
     private static final NodeId PEER = new NodeId("node-2");
@@ -62,6 +70,8 @@ class LeaderEpisodeIdentityTest {
     private final List<Promise<Unit>> issued = new CopyOnWriteArrayList<>();
     private final AtomicReference<TimeSpan> grace = new AtomicReference<>(LONG);
     private final AtomicReference<TimeSpan> firstTick = new AtomicReference<>(LONG);
+    private final AtomicReference<TimeSpan> observation = new AtomicReference<>(LONG);
+    private final AtomicInteger kvReads = new AtomicInteger();
     private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness;
     private LeaderElectionContext ctx;
 
@@ -93,7 +103,7 @@ class LeaderEpisodeIdentityTest {
                   .isTrue();
         assertThat(ctx.stuckElectionCount()).as("the exited episode's failure was counted against the re-entered episode")
                   .isEqualTo(stuckBefore);
-        assertThat(tickFutureOfCurrent()).as("the exited episode's failure rescheduled the re-entered episode's tick")
+        assertThat((Object) tickFutureOfCurrent()).as("the exited episode's failure rescheduled the re-entered episode's tick")
                   .isSameAs(tickOfEpisodeTwo);
     }
 
@@ -116,7 +126,7 @@ class LeaderEpisodeIdentityTest {
         assertThat(ctx.proposalInFlight()).as("the exited entry's failure cleared the new entry's in-flight flag")
                   .isTrue();
         assertThat(ctx.stuckElectionCount()).isEqualTo(stuckBefore);
-        assertThat(tickFutureOfCurrent()).as("the exited entry's failure rescheduled the new entry's tick")
+        assertThat((Object) tickFutureOfCurrent()).as("the exited entry's failure rescheduled the new entry's tick")
                   .isSameAs(tickOfEntryTwo);
     }
 
@@ -147,7 +157,7 @@ class LeaderEpisodeIdentityTest {
         failDelivered(issued.get(0), "failure of the current episode");
         assertThat(ctx.proposalInFlight()).isFalse();
         assertThat(ctx.stuckElectionCount()).isEqualTo(1);
-        assertThat(tickFutureOfCurrent()).isNotSameAs(tickBefore);
+        assertThat((Object) tickFutureOfCurrent()).isNotSameAs(tickBefore);
     }
 
     // ---- input 3, tick half: a timed state re-entered with a saved record ----
@@ -158,7 +168,7 @@ class LeaderEpisodeIdentityTest {
         enterAwaitingKvSync();
         var saved = harness.state();
 
-        staleTickBehind(() -> harness.reenter(saved));
+        staleTickBehind(graceTimerOf(saved), () -> harness.reenter(saved));
         assertThat(harness.state()).as("the old entry's grace tick fell through the saved record's new entry")
                   .isSameAs(saved);
     }
@@ -181,9 +191,82 @@ class LeaderEpisodeIdentityTest {
         enterElection(reElecting);
         var saved = harness.state();
 
-        staleTickBehind(() -> harness.reenter(saved));
+        staleTickBehind(tickFutureOfCurrent(), () -> harness.reenter(saved));
         assertThat(proposals).as("the old entry's first tick proposed for the saved record's new entry").hasValue(0);
         assertThat(harness.state()).isSameAs(saved);
+    }
+
+    // ---- input 3, bound then re-entered (round 1 n2): a record whose first entry already bound ----
+    /// The peer observation of the first entry runs (it binds the record to that entry), then the record is left and
+    /// entered again with an observation of the first entry still queued behind the exit. The queued observation must be
+    /// refused in the new entry: it reads the KV (the counted effect) only if the slot rebound to the new entry.
+    @Test
+    void observation_ofAnExitedFirstEntry_ofABoundRecord_actsNotInTheNewEntry() throws InterruptedException {
+        observation.set(TimeSpan.timeSpan(50).millis());
+        start();
+        enterElection(false);
+        var saved = harness.state();
+        var readsAtEntry = kvReads.get();
+
+        Awaitility.await("instrument: an observation ran in the first entry, which bound the record to it")
+                  .atMost(WITHIN)
+                  .until(() -> kvReads.get() > readsAtEntry);
+        var readsAfterReentry = new AtomicInteger();
+        var parked = parkExit(() -> reenterAndCount(saved, readsAfterReentry));
+
+        Awaitility.await("instrument: an observation of the first entry is queued behind the exit task")
+                  .atMost(WITHIN)
+                  .until(() -> ctx.pendingSerialTasksForTest() >= 1);
+        parked.release();
+        OnDrainer.drained(ctx);
+        assertThat(harness.state()).as("instrument: the saved record was entered again").isSameAs(saved);
+        assertThat(kvReads.get()).as("an observation of the exited first entry acted in the saved record's new entry")
+                  .isEqualTo(readsAfterReentry.get());
+    }
+
+    private void reenterAndCount(LeaderElectionState saved, AtomicInteger readsAfterReentry) {
+        harness.reenter(saved);
+        readsAfterReentry.set(kvReads.get());
+    }
+
+    // ---- g08: the Fsm holds no entry yet ----
+    /// The Fsm's factory runs before the Fsm holds any entry (`Fsm#entered` is null then). An arm in it gets an identity
+    /// that is never live, and stays never live after the Fsm holds its first entry, though the owner IS that entry.
+    @Test
+    void arm_insideTheFsmFactory_whereNoEntryExists_isNeverLive() {
+        var armed = new AtomicReference<Runnable>();
+        var ran = new AtomicInteger();
+
+        harness = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent> harness("episode-identity",
+                                                                                 fsm -> armInFactory(fsm, armed, ran));
+        ctx = harness.state().ctx();
+
+        armed.get().run();
+        OnDrainer.drained(ctx);
+        assertThat(ran).as("an arm made before the Fsm held an entry ran").hasValue(0);
+    }
+
+    private LeaderElectionState armInFactory(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                                             AtomicReference<Runnable> armed,
+                                             AtomicInteger ran) {
+        var dormant = contextOver(fsm);
+
+        armed.set(dormant.ctx().serializedFor(dormant, ran::incrementAndGet));
+
+        return dormant;
+    }
+
+    // ---- (f): production order never re-enters a record that carries a timer ----
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void productionReentry_ofATimedState_buildsANewRecord(boolean reElecting) {
+        start();
+        enterElection(reElecting);
+        var saved = harness.state();
+
+        OnDrainer.run(ctx, () -> reenterElection(reElecting));
+        assertThat(harness.state()).as("a production transition entered the saved record again: see the class doc")
+                  .isNotSameAs(saved);
     }
 
     // ---- the fixture ----
@@ -207,9 +290,9 @@ class LeaderEpisodeIdentityTest {
                                               () -> 0.0,
                                               LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                                               () -> true,
-                                              Option::none,
+                                              this::readKv,
                                               grace.get(),
-                                              LONG,
+                                              observation.get(),
                                               LONG,
                                               _ -> true,
                                               LONG);
@@ -217,6 +300,12 @@ class LeaderEpisodeIdentityTest {
         built.installKvSyncPending(() -> false);
 
         return built.dormant();
+    }
+
+    private Option<LeaderCommitted> readKv() {
+        kvReads.incrementAndGet();
+
+        return Option.none();
     }
 
     private Promise<Unit> propose() {
@@ -264,7 +353,7 @@ class LeaderEpisodeIdentityTest {
         assertThat(proposals.get()).as("instrument: the tick proposed").isEqualTo(before + 1);
     }
 
-    private Object tickFutureOfCurrent() {
+    private ScheduledFuture<?> tickFutureOfCurrent() {
         return switch (harness.state()) {
             case LeaderElectionState.Electing e -> e.tickFuture().get();
             case LeaderElectionState.ReElecting r -> r.tickFuture().get();
@@ -295,17 +384,61 @@ class LeaderEpisodeIdentityTest {
         Awaitility.await().atMost(WITHIN).until(() -> expected.isInstance(harness.state()));
     }
 
-    /// Holds the drainer, queues `exitAndReenter` as one serial task, waits until the old entry's timer has fired into
-    /// the queue behind it (the instrument: the exit task and at least one tick are pending), then releases and waits
-    /// for the drainer to run everything queued.
-    private void staleTickBehind(Runnable exitAndReenter) throws InterruptedException {
+    /// Holds the drainer, queues `exitAndReenter` as one serial task, waits until `timer` (the ONE timer under test, the
+    /// first tick or the grace, never a count of queued tasks: the entry arms a peer observation as well) has fired into
+    /// the queue behind it, then releases and waits for the drainer to run everything queued. Two instruments:
+    /// the timer had not fired when the exit task was queued, so the exit task is ahead of it; and the timer is done
+    /// only after the scheduler handed it to the serial executor, so it is queued behind the exit task.
+    private void staleTickBehind(ScheduledFuture<?> timer, Runnable exitAndReenter) throws InterruptedException {
         var held = LeaderEntryPointAtomicityTest.holdDrainer(ctx);
 
         ctx.serially(exitAndReenter);
-        Awaitility.await("instrument: the old entry's timer fired behind the exit task")
+        assertThat(timer.isDone()).as("instrument: the timer fired before the exit task was queued: raise its delay")
+                  .isFalse();
+        Awaitility.await("instrument: the timer under test fired behind the exit task")
                   .atMost(WITHIN)
-                  .until(() -> ctx.pendingSerialTasksForTest() >= 2);
+                  .until(timer::isDone);
         held.release();
         OnDrainer.drained(ctx);
+    }
+
+    private static ScheduledFuture<?> graceTimerOf(LeaderElectionState waiting) {
+        return switch (waiting) {
+            case LeaderElectionState.AwaitingKvSync kvSync -> kvSync.graceTimeoutFuture().get();
+            default -> throw new AssertionError("not waiting for the KV sync: " + waiting);
+        };
+    }
+
+    /// Queues `exitAndReenter` as ONE serial task on its own thread that parks at its start until released: every timer
+    /// task that fires while it is parked queues behind it (a task queued before it ran before it started).
+    private Parked parkExit(Runnable exitAndReenter) throws InterruptedException {
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var thread = Thread.ofPlatform().start(() -> ctx.serially(() -> parkThen(started, release, exitAndReenter)));
+
+        assertThat(started.await(WITHIN.toSeconds(), TimeUnit.SECONDS)).as("instrument: the exit task started").isTrue();
+
+        return new Parked(thread, release);
+    }
+
+    private static void parkThen(CountDownLatch started, CountDownLatch release, Runnable exitAndReenter) {
+        started.countDown();
+        awaitRelease(release);
+        exitAndReenter.run();
+    }
+
+    private static void awaitRelease(CountDownLatch release) {
+        try {
+            assertThat(release.await(WITHIN.toSeconds(), TimeUnit.SECONDS)).as("instrument: the parked task was released").isTrue();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private record Parked(Thread thread, CountDownLatch latch) {
+        void release() throws InterruptedException {
+            latch.countDown();
+            thread.join(10_000);
+        }
     }
 }
