@@ -241,7 +241,8 @@ class Fsm2RoutesTest {
                              Map.entry("TopicSubscriptionKey", AetherKey.TopicSubscriptionKey.topicSubscriptionKey(TOPIC, ORDERS, MethodName.methodName("onOrder").unwrap(), PEER)),
                              Map.entry("TopicPublisherKey", AetherKey.TopicPublisherKey.topicPublisherKey(TOPIC, ORDERS, PEER)),
                              Map.entry("FsmWarningKey", AetherKey.FsmWarningKey.fsmWarningKey("invalid-placement", ORDERS.asString())),
-                             Map.entry("ClusterConfigKey", AetherKey.ClusterConfigKey.clusterConfigKey(1L)));
+                             Map.entry("ClusterConfigKey", AetherKey.ClusterConfigKey.clusterConfigKey(1L)),
+                             Map.entry("DeclaredRouteKey", AetherKey.DeclaredRouteKey.declaredRouteKey(ORDERS, "GET", "/orders").unwrap()));
     }
 
     /// The families `Indexer.indexPut` / `indexRemove` switch on, read from the Indexer's own source.

@@ -23,6 +23,8 @@ B1.cluster.CommunityKey.put -> fsm2:Fsm2Routes
 B1.cluster.CommunityKey.remove -> fsm2:Fsm2Routes
 B1.cluster.CommunityPlacementOperationKey.put -> fsm2:Fsm2Routes
 B1.cluster.CommunityPlacementOperationKey.remove -> fsm2:Fsm2Routes
+B1.cluster.DeclaredRouteKey.put -> fsm2:Fsm2Routes
+B1.cluster.DeclaredRouteKey.remove -> fsm2:Fsm2Routes
 B1.cluster.DeploymentApplyKey.put -> fsm2:Fsm2Routes
 B1.cluster.DeploymentApplyKey.remove -> fsm2:Fsm2Routes
 B1.cluster.DeploymentOutcomeKey.put -> fsm2:Fsm2Routes
