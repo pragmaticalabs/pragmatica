@@ -96,14 +96,8 @@ class EmptyAudienceWarningTest {
     /// due in the same tick, so the audience is not stalled (Placement runs before the community write commits).
     @Test
     void threeWorkers_fromTheStart_raiseNothing() {
-        var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
-                       .target(ORDERS, 1, "WORKERS_ONLY")
-                       .community("east-w-0", 3, CommunityState.FORMING)
-                       .seams(seams -> seams.withReady(ALL).withLocalAlive(Option.some(Set.of(W1, W2, W3))));
+        var w = threeForming(Set.of(), Set.of());
 
-        w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
-        w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
-        w.activate();
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
@@ -111,6 +105,62 @@ class EmptyAudienceWarningTest {
         assertThat(w.h.warns(OPEN)).isEmpty();
         assertThat(w.h.warns(CLOSE)).isEmpty();
         assertThat(hosts(w.h, ORDERS)).hasSize(1);
+    }
+
+    /// Red when: the community's own ACTIVE write is refused and the empty audience stays silent (the draft is redone every pass, so a
+    /// suppression read from the draft would hide the stall for good). The event is computed from committed state, except while that write is
+    /// in flight: it is raised on the first pass after the refusal.
+    @Test
+    void activeWriteRefused_raisesOnTheNextPass_andClosesWhenItCommits() {
+        var w = threeForming(Set.of(ClusterModel.SubmitKind.COMMUNITY), Set.of());
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("the write is in flight").isEmpty();
+
+        var write = w.h.held.values().iterator().next();
+
+        w.h.held.clear();
+        w.h.settle(write, w.h.refused(write));
+        w.h.drain();
+        w.h.deliver(new ClusterInput.Reconcile());
+
+        assertThat(w.h.warns(OPEN)).as("refused: the stall is told").hasSize(1);
+
+        w.h.holdKinds = Set.of();
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.deliver(new ClusterInput.Reconcile());
+
+        assertThat(w.h.warns(CLOSE)).as("the next write commits: the episode closes").hasSize(1);
+        assertThat(hosts(w.h, ORDERS)).hasSize(1);
+    }
+
+    /// Red when: the ACTIVE write is lost (never settles) and the empty audience stays silent past the in-flight bound.
+    @Test
+    void activeWriteLost_raisesAfterTheInFlightBound() {
+        var w = threeForming(Set.of(), Set.of(ClusterModel.SubmitKind.COMMUNITY));
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("the write is in flight").isEmpty();
+
+        w.h.advance(w.h.settings.submissionExpiry() + 3 * w.h.settings.timing().tick());
+        w.h.deliver(new ClusterInput.Reconcile());
+
+        assertThat(w.h.warns(OPEN)).as("lost: the stall is told").hasSize(1);
+    }
+
+    private static MbWorld threeForming(Set<ClusterModel.SubmitKind> hold, Set<ClusterModel.SubmitKind> lose) {
+        var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
+                       .target(ORDERS, 1, "WORKERS_ONLY")
+                       .community("east-w-0", 3, CommunityState.FORMING)
+                       .seams(seams -> seams.withReady(ALL).withLocalAlive(Option.some(Set.of(W1, W2, W3))));
+
+        w.h.holdKinds = hold;
+        w.h.loseKinds = lose;
+        w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
+        w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
+        w.activate();
+
+        return w;
     }
 
     /// Red when: a policy other than WORKERS_ONLY that computes an empty audience (CORE_ONLY with no ready core) stays silent: the one
