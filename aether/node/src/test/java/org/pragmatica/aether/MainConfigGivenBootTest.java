@@ -216,7 +216,7 @@ class MainConfigGivenBootTest {
 
     private static Run boot(Path work, java.util.Map<String, String> env, String... args) throws Exception {
         var java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-        var command = new ArrayList<>(List.of(java, "-Xmx256m", "-cp", System.getProperty("java.class.path"), Main.class.getName()));
+        var command = new ArrayList<>(List.of(java, "-Xmx256m", "-XX:-UseBASE64Intrinsics", "-cp", System.getProperty("java.class.path"), Main.class.getName()));
 
         command.addAll(List.of(args));
         var dir = Files.createTempDirectory(work, "main-config-boot");
