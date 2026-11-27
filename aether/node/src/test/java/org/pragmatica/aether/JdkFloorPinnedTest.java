@@ -4,9 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether;
 
+import java.io.IOException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.config.JvmVulnerabilityGate;
@@ -18,10 +25,12 @@ import static org.assertj.core.api.Assertions.fail;
 
 
 /// #3806 (CVE-2026-114938, Java4Shell) — every image definition pins a Temurin at or above the floor, and fails its own build
-/// below it. The floor has ONE Java home, [JvmVulnerabilityGate#JDK_FLOOR]; the Dockerfiles cannot import it (their build contexts
+/// below it. The definitions are DISCOVERED, not listed: [#discovered] walks the repository for every `Dockerfile*` and for every
+/// shell script that carries a `FROM` line, so a new image definition is a subject the day it is added. A definition that is not a
+/// JDK image the floor applies to goes on [#EXCLUDED], each with its reason; an entry that no longer exists fails the test. The floor has ONE Java home, [JvmVulnerabilityGate#JDK_FLOOR]; the Dockerfiles cannot import it (their build contexts
 /// differ), so this test is the tie: a Dockerfile whose `ARG JDK_FLOOR` drifts from the constant, whose base tag names a JDK
 /// below it, or whose build-time check line differs from its siblings, is red here. The check itself is proven by building
-/// (below-floor base: the build fails), see the PR; this test pins that each definition CARRIES it and that the four carry the same one.
+/// (below-floor base: the build fails), see the PR; this test pins that each definition CARRIES it and that all carry the same one.
 ///
 /// The same file pins that the node's `Main` and `ForgeServer` call the gate before reading any config.
 ///
@@ -34,8 +43,16 @@ class JdkFloorPinnedTest {
     private static final String BUILD_AND_PUSH = "build-and-push.sh";
     private static final String NODE_MAIN = "aether/node/src/main/java/org/pragmatica/aether/Main.java";
     private static final String FORGE_MAIN = "aether/forge/forge-core/src/main/java/org/pragmatica/aether/forge/ForgeServer.java";
-    private static final String GATE_CALL = "JvmVulnerabilityGate.enforceForThisProcess(";
-    private static final List<String> DEFINITIONS = List.of(NODE, FORGE, FORGE_LEGACY, BUILD_AND_PUSH);
+    private static final String GATE_CALL = "JvmVulnerabilityGate.enforceForThisProcess();";
+
+    /// Image definitions that are NOT a serving JDK image under the floor, each with the reason. A listed path that does not exist fails
+    /// [#exclusionsAllExist]: an exclusion must never outlive its file.
+    private static final Map<String, String> EXCLUDED = Map.of("tools/quickstart-check.sh",
+                                                               "clean-install verification: a throwaway `maven:3.9-eclipse-temurin-25` build container, never shipped or served (#3806 report, INFO 6)");
+
+    private static final Set<String> PRUNED_DIRECTORIES = Set.of(".git", "target", ".m2-local", "node_modules", ".idea");
+    private static final Pattern DOCKERFILE_NAME = Pattern.compile("(?i)(dockerfile.*|.*\\.dockerfile|containerfile.*)");
+    private static final Pattern FROM_LINE = Pattern.compile("(?m)^FROM ");
 
     private static final Pattern BASE = Pattern.compile("(?m)^ARG JDK_BASE=eclipse-temurin:(\\d+(?:\\.\\d+)*)_\\d+-(?:jdk|jre)-\\S+$");
 
@@ -44,8 +61,28 @@ class JdkFloorPinnedTest {
     private static final Pattern FROM_LINES = Pattern.compile("(?m)^FROM .*$");
 
     @Test
+    void discovery_findsTheDefinitions_andNothingIsSilentlySkipped() {
+        var found = discovered();
+
+        assertThat(found).as("the walk found image definitions at all").isNotEmpty();
+        assertThat(found).as("the known definitions are among them")
+                  .contains(NODE, FORGE, FORGE_LEGACY, BUILD_AND_PUSH);
+        assertThat(subjects()).as("every discovered definition is a subject unless explicitly excluded")
+                  .containsExactlyInAnyOrderElementsOf(found.stream().filter(path -> !EXCLUDED.containsKey(path)).toList());
+    }
+
+    @Test
+    void exclusionsAllExist_andEachStatesItsReason() {
+        EXCLUDED.forEach((path, reason) -> {
+            assertThat(Files.isRegularFile(repositoryRoot().resolve(path))).as("excluded %s still exists", path).isTrue();
+            assertThat(reason).as("excluded %s states why", path).isNotBlank();
+            assertThat(discovered()).as("excluded %s is a discovered definition (else the entry is dead)", path).contains(path);
+        });
+    }
+
+    @Test
     void everyDefinition_declaresTheSameFloorAsTheStartUpGate() {
-        for (var path : DEFINITIONS) {
+        for (var path : subjects()) {
             var matcher = FLOOR.matcher(read(path));
 
             assertThat(matcher.find()).as("%s declares ARG JDK_FLOOR", path).isTrue();
@@ -58,7 +95,7 @@ class JdkFloorPinnedTest {
     void everyDefinition_pinsABaseTagAtOrAboveTheFloor() {
         var floor = Runtime.Version.parse(JvmVulnerabilityGate.JDK_FLOOR);
 
-        for (var path : DEFINITIONS) {
+        for (var path : subjects()) {
             var matcher = BASE.matcher(read(path));
 
             assertThat(matcher.find()).as("%s pins ARG JDK_BASE=eclipse-temurin:<exact version>_<build>-<jdk|jre>-<variant>, not a floating tag",
@@ -74,7 +111,7 @@ class JdkFloorPinnedTest {
 
     @Test
     void everyDefinition_buildsFromTheArgAndFromNoFloatingTemurinTag() {
-        for (var path : DEFINITIONS) {
+        for (var path : subjects()) {
             var froms = FROM_LINES.matcher(read(path))
                                   .results()
                                   .map(result -> result.group()
@@ -89,7 +126,7 @@ class JdkFloorPinnedTest {
 
     @Test
     void everyDefinition_failsItsOwnBuildBelowTheFloor_withTheSameCheck() {
-        var checks = DEFINITIONS.stream().map(JdkFloorPinnedTest::checkLine).toList();
+        var checks = subjects().stream().map(JdkFloorPinnedTest::checkLine).toList();
 
         for (var check : checks) {
             assertThat(check).as("the check reads the JDK's own java.version")
@@ -102,7 +139,7 @@ class JdkFloorPinnedTest {
                       .contains("exit 1");
         }
 
-        assertThat(checks).as("the four definitions carry the same check line").containsOnly(checks.getFirst());
+        assertThat(checks).as("all definitions carry the same check line").containsOnly(checks.getFirst());
     }
 
     /// The start-up gate is only an enforcer if both entry points call it, and first: a listener binds only after the config is
@@ -123,6 +160,48 @@ class JdkFloorPinnedTest {
         assertThat(source.indexOf(GATE_CALL, call + 1)).as("%s calls the gate exactly once", path).isEqualTo(-1);
         assertThat(source.indexOf(firstConfigStep)).as("%s: the gate runs before `%s`", path, firstConfigStep)
                   .isGreaterThan(call);
+    }
+
+    /// Every image definition in the repository, as a repository-relative path: any `Dockerfile*`, `*.dockerfile` or `Containerfile*`,
+    /// and any `*.sh` with a `FROM` line (a definition embedded in a script, as `build-and-push.sh` carries one).
+    private static List<String> discovered() {
+        var root = repositoryRoot();
+        var found = new ArrayList<String>();
+
+        try {
+            Files.walkFileTree(root, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    return PRUNED_DIRECTORIES.contains(dir.getFileName().toString())
+                           ? FileVisitResult.SKIP_SUBTREE
+                           : FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                    if (isDefinition(file)) {
+                        found.add(root.relativize(file).toString().replace('\\', '/'));
+                    }
+
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException e) {
+            return fail("could not walk " + root, e);
+        }
+
+        return found.stream().sorted().toList();
+    }
+
+    private static boolean isDefinition(Path file) throws IOException {
+        var name = file.getFileName().toString();
+
+        return DOCKERFILE_NAME.matcher(name).matches()
+               || name.endsWith(".sh") && FROM_LINE.matcher(Files.readString(file)).find();
+    }
+
+    private static List<String> subjects() {
+        return discovered().stream().filter(path -> !EXCLUDED.containsKey(path)).toList();
     }
 
     /// The check line with the one escaping difference removed: inside the unquoted heredoc of `build-and-push.sh` every `$` is `\$`.

@@ -109,8 +109,9 @@ public record Main(String[] args) {
 
         installFatalEscapeRelay(dispatcherSink).expect("unreachable: Main installs the fatal-escape hook first");
         // #3806 (CVE-2026-114938): before the config is read and long before any listener binds, a JVM vulnerable to Java4Shell on an
-        // AVX-512 VBMI host refuses to start (abortBoot: FATAL + exit 1); with -XX:-UseBASE64Intrinsics, or CPU flags that cannot be read, it warns.
-        JvmVulnerabilityGate.enforceForThisProcess(log::warn, this::abortBoot);
+        // AVX-512 VBMI host exits 1 (FATAL logged); with -XX:-UseBASE64Intrinsics, or CPU flags that cannot be read, it warns.
+        // No arguments on purpose: the sinks and the exit live in the gate, where a forked-JVM test observes them.
+        JvmVulnerabilityGate.enforceForThisProcess();
         publishConfigPath();
         var aetherConfig = loadConfig();
 

@@ -424,6 +424,12 @@ run your own JDK (VMs, bare hosts) and cannot upgrade yet, start the JVM with `-
 node then starts with a warning, because the flag makes HotSpot compile the Java decode loop instead of the intrinsic. If the CPU
 flags cannot be read the node also starts with a warning, never a refusal.
 
+Two fail-safe readings to know about. A failed read of the intrinsic flag (a VM that is not HotSpot, or has no management module)
+counts as "not disabled", so on a VBMI host the start is refused: only a confirmed `-XX:-UseBASE64Intrinsics` lowers a refusal to a
+warning. And a JDK whose version carries a pre-release or build suffix with no `+` (`-ea`, `-internal`, a vendor `-LTS`) is compared
+as below the floor, even when it is built from the fixed source; on a VBMI host such a self-built JDK is refused, so start it with
+`-XX:-UseBASE64Intrinsics`. Vendor builds that use `+` (for example `25.0.5.1+2-1-24.04.1-Ubuntu`) compare normally.
+
 ### Security
 
 - Non-root user (`aether:aether`)
