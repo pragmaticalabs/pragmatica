@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -302,7 +304,7 @@ class LeaderTimerSerialCensusTest {
                       .isZero();
             assertThat(ctx.pendingSerialTasksForTest()).as("instrument: %s fired while the drainer was held", name)
                       .isPositive();
-            ctx.serially(() -> trace.add(MARKER));
+            ctx.serially(inbound(), () -> trace.add(MARKER));
             held.release();
             var beforeMarker = beforeMarker();
 
@@ -313,7 +315,7 @@ class LeaderTimerSerialCensusTest {
                                                   .anyMatch(event));
         } finally {
             cleanup.run();
-            ctx.stop();
+            ctx.stop(inbound());
         }
     }
 

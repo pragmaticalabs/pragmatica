@@ -199,7 +199,7 @@ public final class LeaderPreVote {
         current.vouching = new HashSet<>();
         current.doubting = new HashSet<>(Set.of(ctx.self()));
         stopTimer(current);
-        current.timer = some(SharedScheduler.schedule(ctx.serializedFor(identityOf(current),
+        current.timer = some(SharedScheduler.schedule(ctx.serializedFor(new Suspicion(current),
                                                                         () -> onRoundTimeout(current, round)),
                                                       timeout));
         log.info("Leader pre-vote round {}: {} lost its view of leader {}, asking {} voter(s) whether they still see it",
@@ -279,7 +279,7 @@ public final class LeaderPreVote {
                  leader,
                  vouchers);
 
-        return () -> ctx.submit(new LeaderDoubtConfirmed(leader));
+        return () -> ctx.dispatchConfined(new LeaderDoubtConfirmed(leader));
     }
 
     private Runnable refrain(Episode current) {
@@ -294,7 +294,7 @@ public final class LeaderPreVote {
                  current.doubting.size(),
                  current.vouching.size(),
                  ctx.electorate().size());
-        current.timer = some(SharedScheduler.schedule(ctx.serializedFor(identityOf(current), () -> onRetry(current)),
+        current.timer = some(SharedScheduler.schedule(ctx.serializedFor(new Suspicion(current), () -> onRetry(current)),
                                                       retryDelay()));
 
         return NO_EFFECT;
@@ -333,9 +333,19 @@ public final class LeaderPreVote {
     }
 
     /// #3846: the suspicion episode as the identity its timers carry into the serial executor. Read there, so it takes the
-    /// lock like every other read of `episode`.
-    private EpisodeIdentity identityOf(Episode current) {
-        return () -> isLive(current);
+    /// lock like every other read of `episode`. A permitted implementation of the sealed [EpisodeIdentity]; only this class
+    /// builds one.
+    final class Suspicion implements EpisodeIdentity {
+        private final Episode current;
+
+        private Suspicion(Episode current) {
+            this.current = current;
+        }
+
+        @Override
+        public boolean isLive() {
+            return LeaderPreVote.this.isLive(current);
+        }
     }
 
     private synchronized boolean isLive(Episode current) {

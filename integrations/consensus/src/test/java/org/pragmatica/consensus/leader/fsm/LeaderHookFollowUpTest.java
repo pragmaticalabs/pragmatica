@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -163,7 +165,7 @@ class LeaderHookFollowUpTest {
         var manager = manager(true);
         var ctx = manager.context();
 
-        ctx.serially(() -> ctx.fsm()
+        ctx.serially(inbound(), () -> ctx.fsm()
                               .dispatch(new ClusterFsmEvent.QuorumEstablished()));
         assertThat(ctx.fsm().current()).as("instrument: QuorumWaiting")
                   .isInstanceOf(LeaderElectionState.QuorumWaiting.class);
@@ -176,7 +178,7 @@ class LeaderHookFollowUpTest {
         var manager = manager(true);
         var ctx = manager.context();
 
-        ctx.serially(() -> knowLeaderInView(ctx));
+        ctx.serially(inbound(), () -> knowLeaderInView(ctx));
         assertThat(ctx.currentTopology()).as("instrument: both cores in the stored view").containsExactly(SELF, PEER);
         assertThat(ctx.localLeaderCandidate()).as("instrument: the local election picks core-0")
                   .isEqualTo(Option.some(SELF));
@@ -220,7 +222,7 @@ class LeaderHookFollowUpTest {
     private static HeldDrainer holdDrainer(LeaderElectionContext ctx) throws InterruptedException {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        var holder = Thread.ofPlatform().start(() -> ctx.serially(() -> block(entered, release)));
+        var holder = Thread.ofPlatform().start(() -> ctx.serially(inbound(), () -> block(entered, release)));
 
         assertThat(entered.await(10, TimeUnit.SECONDS)).as("instrument: the holder owns the drainer").isTrue();
 

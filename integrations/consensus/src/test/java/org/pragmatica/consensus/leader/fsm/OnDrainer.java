@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -33,7 +35,7 @@ final class OnDrainer {
     }
 
     static void dispatch(LeaderElectionContext ctx, ClusterFsmEvent event) {
-        run(ctx, () -> ctx.submit(event));
+        run(ctx, () -> ctx.submit(inbound(), event));
     }
 
     /// Runs `task` as ONE task on the node's serial executor and returns after it ran: several steps that production
@@ -41,7 +43,7 @@ final class OnDrainer {
     static void run(LeaderElectionContext ctx, Runnable task) {
         var handled = new CountDownLatch(1);
 
-        ctx.serially(() -> runThenComplete(task, handled));
+        ctx.serially(inbound(), () -> runThenComplete(task, handled));
         awaitHandled(handled);
     }
 
@@ -51,7 +53,7 @@ final class OnDrainer {
     static void drained(LeaderElectionContext ctx) {
         var handled = new CountDownLatch(1);
 
-        ctx.serially(handled::countDown);
+        ctx.serially(inbound(), handled::countDown);
         awaitHandled(handled);
     }
 

@@ -15,10 +15,12 @@ import com.sun.source.util.JavacTask;
 
 import java.net.URI;
 import java.util.List;
+import java.util.stream.Stream;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -85,32 +87,38 @@ class LeaderEpisodeEntryPathTest {
                   .anyMatch(message -> message.contains("serialized"));
     }
 
-    // ---- #3846 round 1 (F1): the two arm paths that still opt out of the fence ----
+    // ---- #3846 round 1 (F1): the paths that used to opt out of the fence are closed by the type system ----
     private static final String SERIALLY_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(task); }";
     private static final String LAMBDA_IDENTITY_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return ctx.serializedFor(() -> true, task); }";
+    private static final String SUBMIT_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, org.pragmatica.consensus.fsm.ClusterFsmEvent event) { return () -> ctx.submit(event); }";
+    private static final String STOP_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx) { return () -> ctx.stop(); }";
+    private static final String FORGED_TOKEN_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(org.pragmatica.consensus.leader.LeaderInbound.leaderInbound(), task); }";
+    private static final String NEW_TOKEN_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(new org.pragmatica.consensus.leader.LeaderInbound(), task); }";
+    private static final String FORGED_IDENTITY_SITE = "static final class Forged implements LeaderElectionContext.EpisodeIdentity { public boolean isLive() { return true; } }";
 
-    /// TRIPWIRE: asserts today's behaviour, that both arm sites COMPILE. It goes red the moment the fence becomes a
-    /// compile-time rule. Lane B: that red is the goal. Flip this test to "must not compile" by deleting it and enabling
-    /// `armSite_throughARemainingUnfencedPath_doesNotCompile` below.
+    /// The ruling (2026-11-27): an arm site that reaches the serial executor without an episode identity of the entry it
+    /// arms from does not compile. The rows are the two failure inputs (`() -> ctx.serially(task)` from a state and
+    /// `ctx.serializedFor(() -> true, task)`), the other inbound doors a state could arm through (`submit`, `stop`), and
+    /// the three ways to forge what those doors now require (the capability's factory, its constructor, an identity). Each refusal names the member it
+    /// refuses, so a red that comes from a probe that cannot compile at all does not pass as the rule.
     @ParameterizedTest
-    @ValueSource(strings = {SERIALLY_ARM_SITE, LAMBDA_IDENTITY_ARM_SITE})
-    void tripwire_armSite_throughARemainingUnfencedPath_stillCompiles(String armSite) throws Exception {
-        var errors = compile(HEAD + "  " + armSite + "\n}\n");
-
-        assertThat(errors).as("TRIPWIRE: this arm site no longer compiles, which is what #3846 asks for. Flip this test to "
-                              + "\"must not compile\": delete it and enable armSite_throughARemainingUnfencedPath_doesNotCompile")
-                  .isEmpty();
-    }
-
-    /// The real assertion (ruling 2026-11-27): an arm site that reaches the serial executor without an episode identity
-    /// of the entry it arms from does not compile. `@Disabled` until lane B's enforcer lands.
-    @Disabled("lane B: enable together with the compile-time enforcer and delete the tripwire above")
-    @ParameterizedTest
-    @ValueSource(strings = {SERIALLY_ARM_SITE, LAMBDA_IDENTITY_ARM_SITE})
-    void armSite_throughARemainingUnfencedPath_doesNotCompile(String armSite) throws Exception {
+    @MethodSource("unfencedArmSites")
+    void armSite_throughAnUnfencedPath_doesNotCompile(String armSite, String refusedMember) throws Exception {
         var errors = compile(HEAD + "  " + armSite + "\n}\n");
 
         assertThat(errors).as("an arm site that opts out of the episode fence compiled").isNotEmpty();
+        assertThat(errors).as("the refusal names the member it refuses (" + refusedMember + "), not some other defect of the probe")
+                  .anyMatch(message -> message.contains(refusedMember));
+    }
+
+    static Stream<Arguments> unfencedArmSites() {
+        return Stream.of(Arguments.of(SERIALLY_ARM_SITE, "serially"),
+                         Arguments.of(LAMBDA_IDENTITY_ARM_SITE, "serializedFor"),
+                         Arguments.of(SUBMIT_ARM_SITE, "submit"),
+                         Arguments.of(STOP_ARM_SITE, "stop"),
+                         Arguments.of(FORGED_TOKEN_ARM_SITE, "leaderInbound"),
+                         Arguments.of(NEW_TOKEN_ARM_SITE, "LeaderInbound"),
+                         Arguments.of(FORGED_IDENTITY_SITE, "EpisodeIdentity"));
     }
 
     /// Attribution only (`JavacTask#analyze`): the errors are the compiler's, and no class file is written.

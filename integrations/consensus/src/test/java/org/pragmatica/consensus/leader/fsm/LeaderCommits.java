@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+
 import java.util.function.Consumer;
 
 import org.pragmatica.consensus.NodeId;
@@ -73,7 +75,7 @@ public final class LeaderCommits {
 
     private static void observeThenSubmit(LeaderElectionContext ctx, NodeId leader, long viewSequence) {
         ctx.observeViewSequence(viewSequence);
-        ctx.submit(LeaderCommitted.leaderCommitted(leader, viewSequence));
+        ctx.submit(inbound(), LeaderCommitted.leaderCommitted(leader, viewSequence));
     }
 
     /// Checked on the calling thread, before any drainer task: an exception inside a drainer task is swallowed by the

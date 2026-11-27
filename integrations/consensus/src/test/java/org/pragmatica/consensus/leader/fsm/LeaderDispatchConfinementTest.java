@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -69,14 +71,14 @@ class LeaderDispatchConfinementTest {
                                      .isInstanceOf(LeaderElectionState.Dormant.class);
             assertThat(ctx.confinementBreachesForTest()).as("the refusal is counted")
                                                         .isEqualTo(1);
-            ctx.serially(() -> ctx.dispatchConfined(new ClusterFsmEvent.QuorumEstablished()));
+            ctx.serially(inbound(), () -> ctx.dispatchConfined(new ClusterFsmEvent.QuorumEstablished()));
             assertThat(ctx.fsm()
                           .current()).as("control: the same dispatch on the drainer reaches the FSM")
                                      .isNotInstanceOf(LeaderElectionState.Dormant.class);
             assertThat(ctx.confinementBreachesForTest()).as("control: a dispatch on the drainer is not refused")
                                                         .isEqualTo(1);
         } finally {
-            ctx.stop();
+            ctx.stop(inbound());
         }
     }
 
@@ -104,7 +106,7 @@ class LeaderDispatchConfinementTest {
                                     .message()
                                     .doesNotContain("''");
         } finally {
-            ctx.stop();
+            ctx.stop(inbound());
         }
     }
 
@@ -121,7 +123,7 @@ class LeaderDispatchConfinementTest {
 
         try {
             var holder = Thread.ofPlatform()
-                               .start(() -> ctx.serially(() -> holdTheDrainer(holding, release)));
+                               .start(() -> ctx.serially(inbound(), () -> holdTheDrainer(holding, release)));
             var dispatcher = Thread.ofPlatform()
                                    .unstarted(() -> dispatchThenRead(ctx, stateAtReturn));
 
@@ -141,7 +143,7 @@ class LeaderDispatchConfinementTest {
                                            .isNotInstanceOf(LeaderElectionState.Dormant.class);
         } finally {
             release.countDown();
-            ctx.stop();
+            ctx.stop(inbound());
         }
     }
 
@@ -185,7 +187,7 @@ class LeaderDispatchConfinementTest {
             assertThat(ctx.fsm()
                           .current()).as("the refused LeaderOutOfView never reached the FSM: the tenure stands")
                                      .isInstanceOf(LeaderElectionState.Led.class);
-            ctx.serially(() -> ctx.fsm()
+            ctx.serially(inbound(), () -> ctx.fsm()
                                   .dispatch(new PeerRemovedFromView(PEER)));
             assertThat(ctx.fsm()
                           .current()).as("control: on the drainer the same removal ends the tenure")
@@ -193,7 +195,7 @@ class LeaderDispatchConfinementTest {
             assertThat(ctx.confinementBreachesForTest()).as("control: only the off-drainer dispatch was refused")
                                                         .isEqualTo(1);
         } finally {
-            ctx.stop();
+            ctx.stop(inbound());
         }
     }
 
@@ -206,7 +208,7 @@ class LeaderDispatchConfinementTest {
         var ctx = context(ctx2 -> LeaderElectionState.Led.fresh(ctx2, PEER), SHORT);
 
         try {
-            ctx.serially(() -> ctx.fsm()
+            ctx.serially(inbound(), () -> ctx.fsm()
                                   .current()
                                   .onEntry());
             Awaitility.await("instrument: the lease checked twice, so every Led timer armed at entry has fired")
@@ -219,7 +221,7 @@ class LeaderDispatchConfinementTest {
                       .pollInterval(Duration.ofMillis(5))
                       .until(() -> ctx.confinementBreachesForTest() == 0);
         } finally {
-            ctx.stop();
+            ctx.stop(inbound());
         }
     }
 

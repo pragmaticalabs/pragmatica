@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -337,10 +339,10 @@ class LeaderEpisodeIdentityTest {
 
     /// Runs on the drainer: the state is left and entered again (a new record), as one serial task.
     private void reenterElection(boolean reElecting) {
-        ctx.submit(new ClusterFsmEvent.QuorumDisappeared());
-        ctx.submit(new ClusterFsmEvent.QuorumEstablished());
-        ctx.submit(new ClusterFsmEvent.NodeAdded(SELF, CORES, seq()));
-        ctx.submit(new KvSyncGraceTimeout());
+        ctx.submit(inbound(), new ClusterFsmEvent.QuorumDisappeared());
+        ctx.submit(inbound(), new ClusterFsmEvent.QuorumEstablished());
+        ctx.submit(inbound(), new ClusterFsmEvent.NodeAdded(SELF, CORES, seq()));
+        ctx.submit(inbound(), new KvSyncGraceTimeout());
         assertThat(harness.state()).isInstanceOf(reElecting
                                                  ? LeaderElectionState.ReElecting.class
                                                  : LeaderElectionState.Electing.class);
@@ -392,7 +394,7 @@ class LeaderEpisodeIdentityTest {
     private void staleTickBehind(ScheduledFuture<?> timer, Runnable exitAndReenter) throws InterruptedException {
         var held = LeaderEntryPointAtomicityTest.holdDrainer(ctx);
 
-        ctx.serially(exitAndReenter);
+        ctx.serially(inbound(), exitAndReenter);
         assertThat(timer.isDone()).as("instrument: the timer fired before the exit task was queued: raise its delay")
                   .isFalse();
         Awaitility.await("instrument: the timer under test fired behind the exit task")
@@ -414,7 +416,7 @@ class LeaderEpisodeIdentityTest {
     private Parked parkExit(Runnable exitAndReenter) throws InterruptedException {
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        var thread = Thread.ofPlatform().start(() -> ctx.serially(() -> parkThen(started, release, exitAndReenter)));
+        var thread = Thread.ofPlatform().start(() -> ctx.serially(inbound(), () -> parkThen(started, release, exitAndReenter)));
 
         assertThat(started.await(WITHIN.toSeconds(), TimeUnit.SECONDS)).as("instrument: the exit task started").isTrue();
 

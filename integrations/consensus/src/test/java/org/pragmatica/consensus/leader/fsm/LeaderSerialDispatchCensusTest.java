@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -128,7 +130,7 @@ class LeaderSerialDispatchCensusTest {
         var manager = dormantManager();
         var held = holdDrainer(manager.context());
 
-        manager.context().serially(LeaderSerialDispatchCensusTest::failingTask);
+        manager.context().serially(inbound(), LeaderSerialDispatchCensusTest::failingTask);
         manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 1));
         held.release();
         assertThat(observedSequences()).as("the event queued behind a failing task ran in the same drain")
@@ -215,7 +217,7 @@ class LeaderSerialDispatchCensusTest {
     private static HeldDrainer holdDrainer(LeaderElectionContext ctx) throws InterruptedException {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        var holder = Thread.ofPlatform().start(() -> ctx.serially(() -> block(entered, release)));
+        var holder = Thread.ofPlatform().start(() -> ctx.serially(inbound(), () -> block(entered, release)));
 
         assertThat(entered.await(10, TimeUnit.SECONDS)).as("instrument: the holder owns the drainer").isTrue();
 

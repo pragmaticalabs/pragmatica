@@ -23,6 +23,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.leader.LeaderInbound;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.topology.TransportView;
@@ -899,7 +900,7 @@ public final class LeaderElectionContext {
     }
 
     private void dispatchTransportView(TransportView view) {
-        submit(new ClusterFsmEvent.NodeAdded(self, view.topology(), view.sequence()));
+        dispatchConfined(new ClusterFsmEvent.NodeAdded(self, view.topology(), view.sequence()));
     }
 
     private boolean applyTopology(List<NodeId> topology, long sequence) {
@@ -1138,9 +1139,11 @@ public final class LeaderElectionContext {
     }
 
     /// #3587: run `task` in the node's one total order of leader-election events ([SerialExecutor#execute]). Every
-    /// `LeaderManager` entry point that reads or writes election state takes this path.
+    /// `LeaderManager` entry point that reads or writes election state takes this path. #3846: it takes the
+    /// [LeaderInbound] capability, which only the inbound boundary can obtain, so no code of this package can hand the
+    /// executor a task without an episode identity ([#serializedFor(LeaderElectionState, Runnable)]).
     @Contract
-    public void serially(Runnable task) {
+    public void serially(LeaderInbound inbound, Runnable task) {
         serial.execute(task);
     }
 
@@ -1159,16 +1162,62 @@ public final class LeaderElectionContext {
     /// task queued ahead of the completion (the exit of the episode, a re-entry) ran, so reading it and acting on it are
     /// one task. A state's episode is one ENTRY into it ([Fsm#entered], whose lifetime ends when a successor's CAS wins),
     /// never the state record: an entry is new on every entry, a record may be entered again.
-    @FunctionalInterface
-    public interface EpisodeIdentity {
+    ///
+    /// GUARANTEE: an identity is built only from an entry, a pre-vote suspicion or the node's lifetime, never from a
+    /// caller's own predicate. MECHANISM: the interface is sealed, so a lambda is not a target for it and a new
+    /// implementation must be named in `permits`; every permitted type has a private constructor.
+    public sealed interface EpisodeIdentity permits NodeLifetime, Entry, FirstEntryOf, LeaderPreVote.Suspicion {
         boolean isLive();
     }
 
-    /// The episode of a source that lives as long as the node: it ends with [#stop()], when the executor closes and
-    /// rejects every later task (`SerialExecutor#execute`). Only the view re-assertion, which no state owns, has it.
-    private static final EpisodeIdentity NODE_LIFETIME = () -> true;
-    /// The identity of an entry that does not exist: never live.
-    private static final EpisodeIdentity NEVER = () -> false;
+    /// The episode of a source that lives as long as the node: it ends with [#stop(LeaderInbound)], when the executor
+    /// closes and rejects every later task (`SerialExecutor#execute`). Only the view re-assertion, which no state owns,
+    /// has it.
+    private static final class NodeLifetime implements EpisodeIdentity {
+        private NodeLifetime() {}
+
+        @Override
+        public boolean isLive() {
+            return true;
+        }
+    }
+
+    private static final EpisodeIdentity NODE_LIFETIME = new NodeLifetime();
+
+    /// The identity of one entry, read at an arm site that runs inside it: live until the entry's lifetime ends. No entry
+    /// (the Fsm holds none yet, or holds another state's) is an identity that is never live: a missing identity never
+    /// reads as live.
+    private static final class Entry implements EpisodeIdentity {
+        private final Option<OwnerLifetime> lifetime;
+
+        private Entry(Option<OwnerLifetime> lifetime) {
+            this.lifetime = lifetime;
+        }
+
+        @Override
+        public boolean isLive() {
+            return lifetime.map(entered -> !entered.isEnded())
+                           .or(false);
+        }
+    }
+
+    /// The identity of `owner`'s FIRST entry, for a record that arms its timers in its factory, before the Fsm holds the
+    /// entry ([FirstEntry]). Unlike [Entry] it is not read at the arm site: the entry is read inside the serial task,
+    /// where the Fsm already holds it.
+    private final class FirstEntryOf implements EpisodeIdentity {
+        private final LeaderElectionState owner;
+        private final FirstEntry first;
+
+        private FirstEntryOf(LeaderElectionState owner, FirstEntry first) {
+            this.owner = owner;
+            this.first = first;
+        }
+
+        @Override
+        public boolean isLive() {
+            return first.admits(enteredLifetimeOf(owner));
+        }
+    }
 
     /// #3587, #3809, #3846: `task` as a callback (a timer's, a listener's) that runs in the node's one total order, and
     /// only while `owner`'s current ENTRY is still the FSM's current entry. The ONE path by which a callback that runs off
@@ -1177,7 +1226,8 @@ public final class LeaderElectionContext {
     /// entry is read HERE, at the arm site, which always runs inside that entry (a hook or a handler of the current
     /// state, or a completion already admitted by this check); the completion carries its lifetime and is dropped once
     /// that lifetime has ended. An `owner` that is not the current entry arms nothing that can run. The unfenced
-    /// `serialized(...)` entry is gone: this and [#serializedFor(EpisodeIdentity, Runnable)] are the only ways in. Each
+    /// `serialized(...)` entry is gone: this and [#serializedFor(EpisodeIdentity, Runnable)] are the only ways in for code of
+    /// this package ([#serially], [#submit] and [#stop] take a [LeaderInbound] it cannot obtain). Each
     /// site has a behaviour row in `LeaderStaleTickEpisodeTest` or `LeaderEpisodeIdentityTest`.
     public Runnable serializedFor(LeaderElectionState owner, Runnable task) {
         return serializedFor(entryOf(owner), task);
@@ -1194,27 +1244,18 @@ public final class LeaderElectionContext {
 
     /// As [#serializedFor(LeaderElectionState, Runnable)] for a source that is not a state: `episode` is that source's
     /// own identity (the pre-vote's suspicion episode, [#NODE_LIFETIME]).
-    public Runnable serializedFor(EpisodeIdentity episode, Runnable task) {
+    Runnable serializedFor(EpisodeIdentity episode, Runnable task) {
         return () -> serial.execute(() -> runIfLive(episode, task));
     }
 
-    /// The identity of the entry `owner` is IN, read at an arm site that runs inside that entry. No entry of `owner` (the
-    /// Fsm holds none yet, or holds another state's) is an identity that is never live: a missing identity never reads
-    /// as live.
+    /// The identity of the entry `owner` is IN, read at an arm site that runs inside that entry ([Entry]).
     private EpisodeIdentity entryOf(LeaderElectionState owner) {
-        return enteredLifetimeOf(owner).map(LeaderElectionContext::liveWhileRunning)
-                                .or(NEVER);
+        return new Entry(enteredLifetimeOf(owner));
     }
 
-    /// #3846: the identity of `owner`'s FIRST entry, for a record that arms its timers in its factory, before the Fsm
-    /// holds the entry ([FirstEntry]). Unlike [#entryOf(LeaderElectionState)] it is not read at the arm site: the entry
-    /// is read inside the serial task, where the Fsm already holds it.
+    /// #3846: the identity of `owner`'s FIRST entry ([FirstEntryOf]).
     EpisodeIdentity firstEntryOf(LeaderElectionState owner, FirstEntry first) {
-        return () -> first.admits(enteredLifetimeOf(owner));
-    }
-
-    private static EpisodeIdentity liveWhileRunning(OwnerLifetime lifetime) {
-        return () -> ! lifetime.isEnded();
+        return new FirstEntryOf(owner, first);
     }
 
     private Option<OwnerLifetime> enteredLifetimeOf(LeaderElectionState owner) {
@@ -1242,6 +1283,7 @@ public final class LeaderElectionContext {
     ///
     /// ```tla LeaderAdmission:P_Push
     /// \* Passive's one admission for a pushed commit (#3581), one atomic step with the fix "serial" (#3587, #3605).
+    /// \* (#3846: entered through the LeaderInbound capability; the step itself is unchanged.)
     /// P_Push(r) == /\ Fix("serial")
     ///              /\ st = "passive"
     ///              /\ PushStep(r)
@@ -1251,7 +1293,7 @@ public final class LeaderElectionContext {
     ///              /\ UNCHANGED <<st, view, vseq, kv, base, adm, env, hi, removed, cluster>>
     /// ```
     @Contract
-    public void submit(ClusterFsmEvent event) {
+    public void submit(LeaderInbound inbound, ClusterFsmEvent event) {
         if (serial.isConfined()) {
             dispatchConfined(event);
         } else {
@@ -1315,7 +1357,7 @@ public final class LeaderElectionContext {
     /// has run ([SerialExecutor#execute] never waits). A caller that stops a collaborator right after this call may
     /// still see election steps from the events queued ahead of `Shutdown`.
     @Contract
-    public void stop() {
+    public void stop(LeaderInbound inbound) {
         serial.execute(this::shutdownInOrder);
     }
 
