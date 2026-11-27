@@ -7,6 +7,9 @@ package org.pragmatica.aether.node;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -189,4 +192,57 @@ class AetherNodeDrainSetObserverTest {
 
         assertThat(alerts.getActiveNodeHealthAlerts()).hasSize(1);
     }
+
+    /// Failure input (d): a node that never reports READY again reaches DEAD. Its tracking entry must go with the DEAD edge;
+    /// `ageOut` alone waits for a READY that a halted node never sends.
+    @Test
+    void nodeThatNeverReportsReady_reachingDead_isNoLongerTracked() {
+        var alerts = alerts();
+
+        alerts.observeDrainSet(Set.of(DRAINED), SELF, 0L, NOT_READY);
+        assertThat(trackedDrainNodes(alerts)).as("instrument check: the drain record created tracking").isEqualTo(1);
+
+        alerts.onNodeFailed(DRAINED, SELF);
+
+        assertThat(trackedDrainNodes(alerts)).isZero();
+    }
+
+    /// Failure input (d), the churn sequence: many drained nodes die without reporting; three drains stay in flight. The
+    /// tracked count is the in-flight drains, never the distinct ids ever seen.
+    @Test
+    void churn_leavesTrackingAtMostTheDrainsInFlight() {
+        var alerts = alerts();
+        var inFlight = Set.of(nodeNamed(0), nodeNamed(1), nodeNamed(2));
+
+        IntStream.range(0, 50).forEach(i -> alerts.observeDrainSet(Set.of(nodeNamed(i)), SELF, i, NOT_READY));
+        IntStream.range(3, 50).forEach(i -> alerts.onNodeFailed(nodeNamed(i), SELF));
+
+        assertThat(trackedDrainNodes(alerts)).isLessThanOrEqualTo(inFlight.size());
+        inFlight.forEach(node -> assertThat(alerts.hasAnnouncedDeparture(node)).as("a drain in flight keeps its mark").isTrue());
+    }
+
+    /// Reads the sizes of the two tracking maps the way the production accessor does; reflection because the accessor is new.
+    private static int trackedDrainNodes(AlertManager alerts) {
+        return Stream.of("announcedDeparture", "broadcastDrainSeen")
+                     .flatMap(field -> keysOf(alerts, field))
+                     .collect(Collectors.toSet())
+                     .size();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Stream<String> keysOf(AlertManager alerts, String field) {
+        try {
+            var f = AlertManager.class.getDeclaredField(field);
+
+            f.setAccessible(true);
+            return ((Map<String, Long>) f.get(alerts)).keySet().stream();
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    private static NodeId nodeNamed(int i) {
+        return NodeId.nodeId("churn-" + i).unwrap();
+    }
+
 }

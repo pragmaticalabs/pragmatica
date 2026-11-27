@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Nested;
@@ -75,6 +76,19 @@ class AetherNodeOperatorDrainClearTest {
         assertThat(registry.drainTargets()).containsExactly(OTHER);
     }
 
+    /// Failure input (c) at the edge: a DEAD edge of an old life arrives after a drain of a newer life was pinned. The edge
+    /// names the life that ended (its incarnation), and the newer drain is not that life's.
+    @Test
+    void lateDeadEdgeOfAnOldLife_doesNotClearANewerLifesDrain() {
+        var registry = DrainCommandRegistry.drainCommandRegistry();
+
+        registry.requestDrain(DRAINED);
+
+        DrainAssembly.clearOperatorDrainOnDeath(registry, transition(DRAINED, "Departing", "Dead"));
+
+        assertThat(registry.isDrainRequested(DRAINED)).isTrue();
+    }
+
     /// The transition listener is assembled inside `AetherNode.assemble`, which no unit test constructs; pin that the hook is
     /// called there with the node's own registry (same stripped-source approach as the death-edge wiring pins).
     @Test
@@ -91,6 +105,9 @@ class AetherNodeOperatorDrainClearTest {
         private static final TimeSpan LONG_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
         private final DrainCommandRegistry registry = DrainCommandRegistry.drainCommandRegistry();
+        /// The boot token of the process the node id names now; a test changes it to restart the node. Production reads it through
+        /// the token registry, which the harness binds once the registry can be bound to one.
+        private final AtomicLong process = new AtomicLong(1);
 
         private MembershipFsm fsmWithDepartureTimeout(TimeSpan departureTimeout) {
             var fsm = MembershipFsm.membershipFsm(FsmObserver.noop(),
@@ -195,6 +212,117 @@ class AetherNodeOperatorDrainClearTest {
 
             assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member");
             assertThat(registry.isDrainRequested(DRAINED)).isFalse();
+        }
+
+        /// Failure input (a): the drained node restarts and is back as MEMBER before it reached DEAD. The FSM reads the
+        /// restart as it reads a refutation (a strictly newer incarnation), so the identity that tells them apart is the
+        /// process: the entry was pinned to the first process's boot token, and the new incarnation never inherits it.
+        @Test
+        void drainedNode_restartedAsANewProcess_backAsMemberBeforeDead_hasNoEntryForTheNewIncarnation() {
+            var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
+
+            promoteCore(fsm, DRAINED);
+            drain(fsm, DRAINED);
+            assertThat(fsm.memberStates()).containsEntry(DRAINED, "Departing");
+
+            process.set(2);
+            fsm.onSwimHealthy(DRAINED, 2L);
+
+            assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member");
+            assertThat(registry.isDrainRequested(DRAINED)).isFalse();
+        }
+
+        /// Failure input (b), the same event order as (a) with the SAME process: the drain is refuted while in flight and the
+        /// entry stays. Only the boot token differs between this test and the one above.
+        @Test
+        void drainedNode_refutedByTheSameProcess_keepsTheEntryWhileTheDrainIsInFlight() {
+            var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
+
+            promoteCore(fsm, DRAINED);
+            drain(fsm, DRAINED);
+
+            fsm.onSwimHealthy(DRAINED, 2L);
+
+            assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member");
+            assertThat(registry.isDrainRequested(DRAINED)).isTrue();
+        }
+
+        /// Control (e): the restart that does reach DEAD first. The DEAD edge ends the drain once, and the rejoin of the new
+        /// process finds no entry.
+        @Test
+        void drainedNode_restartedAfterReachingDead_hasNoEntryForTheNewIncarnation() {
+            var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
+
+            promoteCore(fsm, DRAINED);
+            drain(fsm, DRAINED);
+            fsm.onSwimDeparted(DRAINED, 2L);
+            process.set(2);
+            fsm.onSwimHealthy(DRAINED, 9L);
+
+            assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member");
+            assertThat(registry.isDrainRequested(DRAINED)).isFalse();
+        }
+
+        /// Failure input (h), the marked guess: process identity is the boot token, and an unknown token (`0`) is never evidence.
+        /// A node with no known token that reaches DEAD and rejoins inherits no drain: the DEAD edges end it, token or not.
+        @Test
+        void unknownToken_drainedNodeRejoiningAfterDead_inheritsNoDrain() {
+            var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
+
+            process.set(0);
+            promoteCore(fsm, DRAINED);
+            drain(fsm, DRAINED);
+            fsm.onSwimDeparted(DRAINED, 2L);
+            fsm.onSwimHealthy(DRAINED, 9L);
+
+            assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member");
+            assertThat(registry.isDrainRequested(DRAINED)).isFalse();
+        }
+
+        /// Failure input (h): no token on either side, MEMBER again before DEAD. A `0` event is no proof of a new process, so the
+        /// live drain is not cleared.
+        @Test
+        void unknownToken_onBothSides_refutedBackToMember_keepsTheLiveDrain() {
+            var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
+
+            process.set(0);
+            promoteCore(fsm, DRAINED);
+            drain(fsm, DRAINED);
+            fsm.onSwimHealthy(DRAINED, 2L);
+
+            assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member");
+            assertThat(registry.isDrainRequested(DRAINED)).isTrue();
+        }
+
+        /// Failure input (h): the drain was pinned to a known token, and the token reads `0` when the node is MEMBER again (the
+        /// registry lost it). `0` is not a different process; the live drain stays.
+        @Test
+        void tokenLostAfterThePin_backToMember_keepsTheLiveDrain() {
+            var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
+
+            promoteCore(fsm, DRAINED);
+            drain(fsm, DRAINED);
+            process.set(0);
+            fsm.onSwimHealthy(DRAINED, 2L);
+
+            assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member");
+            assertThat(registry.isDrainRequested(DRAINED)).isTrue();
+        }
+
+        /// Failure input (h): the drain was pinned while the token was still unknown (the boot window) and a token is known by the
+        /// time the node is MEMBER again. An unknown pin is no proof of another process either.
+        @Test
+        void tokenFirstKnownAfterThePin_backToMember_keepsTheLiveDrain() {
+            var fsm = fsmWithDepartureTimeout(LONG_TIMEOUT);
+
+            process.set(0);
+            promoteCore(fsm, DRAINED);
+            drain(fsm, DRAINED);
+            process.set(7);
+            fsm.onSwimHealthy(DRAINED, 2L);
+
+            assertThat(fsm.memberStates()).containsEntry(DRAINED, "Member");
+            assertThat(registry.isDrainRequested(DRAINED)).isTrue();
         }
 
         @Test
