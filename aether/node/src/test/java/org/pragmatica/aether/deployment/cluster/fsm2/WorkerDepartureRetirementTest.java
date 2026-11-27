@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
@@ -35,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// terminal for the id; a process admitted under it again is a new admission, which J5 directs (#3028).
 class WorkerDepartureRetirementTest {
     private static final long TOKEN = 0x4444L;
+
     private final NodeId worker = node("worker-1");
 
     private MbWorld world() {
@@ -43,7 +45,8 @@ class WorkerDepartureRetirementTest {
         w.admit(worker, TOKEN);
 
         return w.community("c1", 5, CommunityState.ACTIVE)
-                .directive(worker, Fixtures.worker("c1"))
+                .directive(worker,
+                           Fixtures.worker("c1"))
                 .activate();
     }
 
@@ -57,13 +60,19 @@ class WorkerDepartureRetirementTest {
         return submit.transaction()
                      .mutations()
                      .stream()
-                     .anyMatch(mutation -> mutation.key().equals(key) && mutation.replacement().isEmpty() && mutation.expected().isPresent());
+                     .anyMatch(mutation -> mutation.key()
+                                                   .equals(key)
+                                           && mutation.replacement()
+                                                      .isEmpty()
+                                           && mutation.expected()
+                                                      .isPresent());
     }
 
     private long directiveRemovals(MbWorld w) {
         return w.h.submits()
                   .stream()
-                  .filter(submit -> removes(submit, new ActivationDirectiveKey(worker)))
+                  .filter(submit -> removes(submit,
+                                            new ActivationDirectiveKey(worker)))
                   .count();
     }
 
@@ -75,14 +84,14 @@ class WorkerDepartureRetirementTest {
 
         w.h.deliver(new ClusterInput.WorkerLeave(worker));
         settle(w);
-
         assertThat(w.h.submits(SubmitKind.CLEANUP)
                       .stream()
-                      .anyMatch(submit -> removes(submit, new ActivationDirectiveKey(worker))
-                                          && removes(submit, new NodeDepartureKey(worker))))
-                  .as("one C17b removes the worker's directive and its record, each at its exact value")
+                      .anyMatch(submit -> removes(submit,
+                                                  new ActivationDirectiveKey(worker)) && removes(submit,
+                                                                                                 new NodeDepartureKey(worker)))).as("one C17b removes the worker's directive and its record, each at its exact value")
                   .isTrue();
-        assertThat(w.h.submits(SubmitKind.DIRECTIVE_REMOVAL)).as("no R-4.3.3 follows: the record is already gone").isEmpty();
+        assertThat(w.h.submits(SubmitKind.DIRECTIVE_REMOVAL)).as("no R-4.3.3 follows: the record is already gone")
+                  .isEmpty();
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("the directive is retired").isFalse();
         assertThat(w.recordOf(worker).isPresent()).as("the record is retired with it").isFalse();
     }
@@ -102,8 +111,8 @@ class WorkerDepartureRetirementTest {
 
         assertThat(cleanup).as("C17b submitted and held").isNotEmpty();
         assertThat(cleanup).as("every C17b carries the record's removal")
-                  .allMatch(submit -> removes(submit, new NodeDepartureKey(worker)));
-
+                  .allMatch(submit -> removes(submit,
+                                              new NodeDepartureKey(worker)));
         w.h.deliver(new ClusterInput.Deactivate());
         assertThat(w.h.applyHeld(cleanup.getFirst().correlationId())).as("C17b commits as its leader goes")
                   .isInstanceOf(Settlement.Accepted.class);
@@ -112,7 +121,6 @@ class WorkerDepartureRetirementTest {
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.h.activate();
         settle(w);
-
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("the directive is retired").isFalse();
         assertThat(w.recordOf(worker).isPresent()).as("the successor finds no orphaned record").isFalse();
     }
@@ -126,17 +134,13 @@ class WorkerDepartureRetirementTest {
         w.h.loseKinds = Set.of(SubmitKind.DIRECTIVE_REMOVAL);
         w.h.deliver(new ClusterInput.WorkerLeave(worker));
         w.h.drain();
-
         assertThat(w.present(new ActivationDirectiveKey(worker))).isFalse();
-        assertThat(w.recordOf(worker).isPresent()).as("no window: the record went with the directive, no R-4.3.3 needed").isFalse();
-
+        assertThat(w.recordOf(worker).isPresent()).as("no window: the record went with the directive, no R-4.3.3 needed")
+                  .isFalse();
         w.h.loseKinds = Set.of();
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN)));
         settle(w);
-
-        assertThat(w.stored(new ActivationDirectiveKey(worker))
-                    .map(value -> ((ActivationDirectiveValue) value).role()))
-                  .as("the new admission is directed as WORKER")
+        assertThat(w.stored(new ActivationDirectiveKey(worker)).map(value -> ((ActivationDirectiveValue) value).role())).as("the new admission is directed as WORKER")
                   .isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
         assertThat(w.counts(worker)).as("and counted").isTrue();
     }
@@ -155,7 +159,6 @@ class WorkerDepartureRetirementTest {
         var cleanup = w.h.submits(SubmitKind.CLEANUP);
 
         assertThat(cleanup).as("C17b submitted and held").isNotEmpty();
-
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN)));
         w.h.drain();
         var admission = w.h.submits(SubmitKind.ADMISSION);
@@ -164,10 +167,9 @@ class WorkerDepartureRetirementTest {
         w.h.applyHeld(admission.getLast().correlationId());
         w.h.drain();
         cleanup.forEach(stale -> assertThat(w.h.applyHeld(stale.correlationId())).as("the stale C17b is refused")
-                                                                                  .isInstanceOf(Settlement.Refused.class));
+                                           .isInstanceOf(Settlement.Refused.class));
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         settle(w);
-
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("the directive survives the stale C17b").isTrue();
         assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).as("the rejoin's record survives it too")
                   .isEqualTo(Option.some(DepartureState.ADMITTED));
@@ -183,21 +185,19 @@ class WorkerDepartureRetirementTest {
         settle(w);
         w.h.deliver(new ClusterInput.WorkerLeave(worker));
         settle(w);
-
         assertThat(directiveRemovals(w)).as("exactly one directive removal").isEqualTo(1L);
-
         var ghost = node("ghost-9");
 
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerLeave(ghost));
         settle(w);
-
         assertThat(w.h.submits()
                       .stream()
-                      .flatMap(submit -> submit.transaction().mutations().stream())
-                      .anyMatch(mutation -> mutation.key() instanceof ActivationDirectiveKey
-                                            || mutation.key() instanceof NodeDepartureKey && mutation.replacement().isEmpty()))
-                  .as("no directive mutation and no record removal for an unknown node")
+                      .flatMap(submit -> submit.transaction()
+                                               .mutations()
+                                               .stream())
+                      .anyMatch(mutation -> mutation.key() instanceof ActivationDirectiveKey || mutation.key() instanceof NodeDepartureKey && mutation.replacement()
+                                                                                                                                                      .isEmpty())).as("no directive mutation and no record removal for an unknown node")
                   .isFalse();
     }
 
@@ -212,9 +212,9 @@ class WorkerDepartureRetirementTest {
         w.directive(CORE_2, ActivationDirectiveValue.core()).activate();
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         settle(w);
-
         assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.DEPARTED));
-        assertThat(w.present(new ActivationDirectiveKey(CORE_2))).as("a core's directive waits for source-confirmed termination").isTrue();
+        assertThat(w.present(new ActivationDirectiveKey(CORE_2))).as("a core's directive waits for source-confirmed termination")
+                  .isTrue();
     }
 
     // #3028 — Red when: a worker that comes back after its directive was retired is not directed again.
@@ -225,13 +225,9 @@ class WorkerDepartureRetirementTest {
         w.h.deliver(new ClusterInput.WorkerLeave(worker));
         settle(w);
         assertThat(w.present(new ActivationDirectiveKey(worker))).isFalse();
-
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN + 1)));
         settle(w);
-
-        assertThat(w.stored(new ActivationDirectiveKey(worker))
-                    .map(value -> ((ActivationDirectiveValue) value).role()))
-                  .as("J5 assigns the returning worker a WORKER directive again (its community is J5's choice, not c1's)")
+        assertThat(w.stored(new ActivationDirectiveKey(worker)).map(value -> ((ActivationDirectiveValue) value).role())).as("J5 assigns the returning worker a WORKER directive again (its community is J5's choice, not c1's)")
                   .isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
     }
 
@@ -245,13 +241,13 @@ class WorkerDepartureRetirementTest {
         settle(w);
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN + 1)));
         settle(w);
-        assertThat(w.present(new ActivationDirectiveKey(worker))).as("precondition: J5 directed the returning worker").isTrue();
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("precondition: J5 directed the returning worker")
+                  .isTrue();
         w.h.seedRemove(new ActivationDirectiveKey(worker));
         w.h.drain();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admissionOf(worker)));
         settle(w);
-
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("the operator's removal sticks").isFalse();
     }
 
@@ -261,7 +257,8 @@ class WorkerDepartureRetirementTest {
         w.h.loseKinds = Set.of(SubmitKind.CLEANUP, SubmitKind.DIRECTIVE_REMOVAL);
         w.h.deliver(new ClusterInput.WorkerLeave(worker));
         w.h.drain();
-        assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).as("precondition: DEPARTED").isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).as("precondition: DEPARTED")
+                  .isEqualTo(Option.some(DepartureState.DEPARTED));
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("precondition: the directive stands").isTrue();
 
         return w;
@@ -270,15 +267,12 @@ class WorkerDepartureRetirementTest {
     private void assertNoMarkAndReturningWorkerAssigned(MbWorld w) {
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("the directive is retired").isFalse();
         assertThat(w.recordOf(worker).isPresent()).as("the record is retired").isFalse();
-        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("no removal mark outlives the retired record").isFalse();
-
+        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("no removal mark outlives the retired record")
+                  .isFalse();
         w.h.loseKinds = Set.of();
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN + 1)));
         settle(w);
-
-        assertThat(w.stored(new ActivationDirectiveKey(worker))
-                    .map(value -> ((ActivationDirectiveValue) value).role()))
-                  .as("the returning worker is assigned")
+        assertThat(w.stored(new ActivationDirectiveKey(worker)).map(value -> ((ActivationDirectiveValue) value).role())).as("the returning worker is assigned")
                   .isEqualTo(Option.some(ActivationDirectiveValue.WORKER));
     }
 
@@ -289,7 +283,6 @@ class WorkerDepartureRetirementTest {
 
         w.h.seedRemoveTogether(List.of(new NodeDepartureKey(worker), new ActivationDirectiveKey(worker)));
         w.h.drain();
-
         assertNoMarkAndReturningWorkerAssigned(w);
     }
 
@@ -300,7 +293,6 @@ class WorkerDepartureRetirementTest {
 
         w.h.seedRemoveTogether(List.of(new ActivationDirectiveKey(worker), new NodeDepartureKey(worker)));
         w.h.drain();
-
         assertNoMarkAndReturningWorkerAssigned(w);
     }
 
@@ -313,7 +305,6 @@ class WorkerDepartureRetirementTest {
         w.h.drain();
         w.h.seedRemoveTogether(List.of(new ActivationDirectiveKey(worker)));
         w.h.drain();
-
         assertNoMarkAndReturningWorkerAssigned(w);
     }
 
@@ -326,7 +317,6 @@ class WorkerDepartureRetirementTest {
         w.h.drain();
         w.h.seedRemoveTogether(List.of(new NodeDepartureKey(worker)));
         w.h.drain();
-
         assertNoMarkAndReturningWorkerAssigned(w);
     }
 
@@ -337,11 +327,10 @@ class WorkerDepartureRetirementTest {
         var w = world();
 
         assertThat(w.recordOf(worker).isPresent()).as("precondition: a live worker has no record").isFalse();
-
         w.h.seedRemove(new ActivationDirectiveKey(worker));
         w.h.drain();
-
-        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the removal of a live worker's directive is marked").isTrue();
+        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the removal of a live worker's directive is marked")
+                  .isTrue();
     }
 
     // #3828 invariant (d) — Red when: the operator's removal of a re-admitted live worker's directive (its record is ADMITTED, superseding a
@@ -355,15 +344,35 @@ class WorkerDepartureRetirementTest {
         w.h.drain();
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN)));
         settle(w);
-
         assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).as("precondition: the re-admission wrote ADMITTED")
                   .isEqualTo(Option.some(DepartureState.ADMITTED));
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("precondition: the directive stands").isTrue();
-
         w.h.seedRemove(new ActivationDirectiveKey(worker));
         w.h.drain();
+        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the removal of a re-admitted live worker's directive is marked")
+                  .isTrue();
+    }
 
-        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the removal of a re-admitted live worker's directive is marked").isTrue();
+    // #3828 enforcer (2), DEPARTED-record arm [guess: the ruling's "no DEPARTED record" is read literally] — Red when: a worker whose DEPARTED
+    // record is superseded by its own rejoin (the re-admission write not yet committed) is marked by the removal of its directive: the record
+    // is still DEPARTED, so the removal is not a live worker's.
+    @Test
+    void workerWithADepartedRecord_directiveRemoved_leavesNoMark() {
+        var w = world();
+
+        w.h.loseKinds = Set.of(SubmitKind.CLEANUP, SubmitKind.DIRECTIVE_REMOVAL, SubmitKind.ADMISSION);
+        w.h.deliver(new ClusterInput.WorkerLeave(worker));
+        w.h.drain();
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN)));
+        w.h.drain();
+        assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).as("precondition: the record is still DEPARTED")
+                  .isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(w.h.model().departed.contains(worker)).as("precondition: superseded by the rejoin, so the removal is not R-4.3.3's")
+                  .isFalse();
+        w.h.seedRemove(new ActivationDirectiveKey(worker));
+        w.h.drain();
+        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("a DEPARTED record's worker is not live: no mark")
+                  .isFalse();
     }
 
     // #3828 enforcer (1) — Red when: the removal of a DEPARTED record leaves the mark an earlier operator removal wrote for the same id, so
@@ -375,21 +384,19 @@ class WorkerDepartureRetirementTest {
         w.h.loseKinds = Set.of(SubmitKind.CLEANUP, SubmitKind.DIRECTIVE_REMOVAL);
         w.h.seedRemove(new ActivationDirectiveKey(worker));
         w.h.drain();
-        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("precondition: the operator's removal marked the worker").isTrue();
-
+        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("precondition: the operator's removal marked the worker")
+                  .isTrue();
         w.h.deliver(new ClusterInput.WorkerLeave(worker));
         w.h.drain();
         assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).as("precondition: DEPARTED")
                   .isEqualTo(Option.some(DepartureState.DEPARTED));
-
         w.h.seedRemove(new NodeDepartureKey(worker));
         w.h.drain();
-        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the record's removal dropped the mark").isFalse();
-
+        assertThat(w.h.model().removedDirectives.containsKey(worker)).as("the record's removal dropped the mark")
+                  .isFalse();
         w.h.loseKinds = Set.of();
         w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, TOKEN + 1)));
         settle(w);
-
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("the returning worker is directed again").isTrue();
     }
 
@@ -406,7 +413,6 @@ class WorkerDepartureRetirementTest {
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.h.applyHeld(departure);
         settle(w);
-
         assertThat(w.present(new ActivationDirectiveKey(worker))).as("the rejoined worker keeps its directive").isTrue();
         assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).isNotEqualTo(Option.some(DepartureState.DEPARTED));
     }
@@ -419,12 +425,13 @@ class WorkerDepartureRetirementTest {
 
         w.admit(worker, TOKEN);
         w.community("c1", 5, CommunityState.ACTIVE)
-         .directive(worker, Fixtures.worker("c1"))
+         .directive(worker,
+                    Fixtures.worker("c1"))
          .record(worker, DepartureState.DEPARTED, 0L, TOKEN, DepartureCause.STALE)
          .activate();
         settle(w);
-
-        assertThat(w.present(new ActivationDirectiveKey(worker))).as("the inferred departure's directive is retired").isFalse();
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("the inferred departure's directive is retired")
+                  .isFalse();
         assertThat(w.recordOf(worker).isPresent()).as("C17b retires the record with the directive").isFalse();
     }
 
@@ -439,8 +446,9 @@ class WorkerDepartureRetirementTest {
         settle(w);
         var cleanup = w.h.submits(SubmitKind.CLEANUP).getLast();
 
-        assertThat(List.of(new ActivationDirectiveKey(worker), new NodeDepartureKey(worker), new SliceObservedKey(worker, ORDERS)))
-                  .as("the C17b under test retires the directive, the record and the row together")
+        assertThat(List.of(new ActivationDirectiveKey(worker),
+                           new NodeDepartureKey(worker),
+                           new SliceObservedKey(worker, ORDERS))).as("the C17b under test retires the directive, the record and the row together")
                   .allMatch(key -> removes(cleanup, key));
         w.h.seed(new ActivationDirectiveKey(worker), ActivationDirectiveValue.worker("c1", "hint-2"));
         w.h.drain();
@@ -453,6 +461,7 @@ class WorkerDepartureRetirementTest {
         var resubmissions = w.h.submits(SubmitKind.CLEANUP);
 
         assertThat(resubmissions).as("the unmoved row is resubmitted at once").hasSize(before + 1);
+
         return resubmissions.getLast();
     }
 
@@ -462,8 +471,12 @@ class WorkerDepartureRetirementTest {
     void refusedWorkerCleanup_directiveMoved_resubmissionKeepsTheRetirementWhole() {
         var again = refusedForMovedDirective(world());
 
-        assertThat(removes(again, new NodeDepartureKey(worker))).as("the record's removal is split out with the moved directive").isFalse();
-        assertThat(removes(again, new ActivationDirectiveKey(worker))).as("the moved directive is not removed on a stale expectation").isFalse();
+        assertThat(removes(again,
+                           new NodeDepartureKey(worker))).as("the record's removal is split out with the moved directive")
+                  .isFalse();
+        assertThat(removes(again,
+                           new ActivationDirectiveKey(worker))).as("the moved directive is not removed on a stale expectation")
+                  .isFalse();
     }
 
     // D10 — Red when: the resubmission that no longer removes the record drops the witness on it, so it could commit after the
@@ -474,10 +487,11 @@ class WorkerDepartureRetirementTest {
         var again = refusedForMovedDirective(w);
         var departedRecord = w.recordOf(worker);
 
-        assertThat(departedRecord.map(NodeDepartureValue::state)).as("the record stands, DEPARTED").isEqualTo(Option.some(DepartureState.DEPARTED));
-        assertThat(again.transaction().guards())
-                  .as("a witness on the record, expecting the DEPARTED value the mirror holds")
-                  .containsExactly(new KVCommand.ReadWitness<AetherKey>(new NodeDepartureKey(worker), departedRecord.map(v -> (Object) v)));
+        assertThat(departedRecord.map(NodeDepartureValue::state)).as("the record stands, DEPARTED")
+                  .isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(again.transaction().guards()).as("a witness on the record, expecting the DEPARTED value the mirror holds")
+                  .containsExactly(new KVCommand.ReadWitness<AetherKey>(new NodeDepartureKey(worker),
+                                                                        departedRecord.map(v -> (Object) v)));
     }
 
     // D11 — Red when: the resubmission carries the mutations whose keys moved, not only the unmoved ones (the row, alone, is what
@@ -509,9 +523,10 @@ class WorkerDepartureRetirementTest {
 
         assertThat(verdict).isInstanceOf(Settlement.Refused.class);
         w.h.settleHeld(cleanup, verdict);
-
         assertThat(w.h.submits(SubmitKind.CLEANUP)).as("no C17b removes the record without the directive")
-                  .noneMatch(submit -> removes(submit, new NodeDepartureKey(worker)) && !removes(submit, new ActivationDirectiveKey(worker)));
+                  .noneMatch(submit -> removes(submit,
+                                               new NodeDepartureKey(worker)) && !removes(submit,
+                                                                                         new ActivationDirectiveKey(worker)));
         assertThat(w.recordOf(worker).isPresent()).as("the record stands with the moved directive").isTrue();
     }
 }
