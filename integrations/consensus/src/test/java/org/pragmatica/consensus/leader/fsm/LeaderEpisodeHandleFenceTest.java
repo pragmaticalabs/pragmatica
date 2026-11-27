@@ -18,6 +18,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionContext.EpisodeIdentity;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
@@ -30,6 +31,7 @@ import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+import static org.pragmatica.lang.utils.OwnerLifetime.ownerLifetime;
 
 /// #3846 round 2: the findings of v3855c (C1-C4) and the stale handle, as deterministic behaviour rows (latches, no
 /// sleeps). INVARIANT under test: FSM code reaches the serial executor, `Fsm.dispatch` or `followUp` from outside the
@@ -198,6 +200,94 @@ class LeaderEpisodeHandleFenceTest {
         OnDrainer.drained(ctx);
         assertThat(freshRan).as("instrument: a handle taken in the new entry acts").hasValue(1);
         assertThat(staleRan).as("a handle of entry N acted in entry N+1").hasValue(0);
+    }
+
+    // ---- the run-time enforcer: a handle's liveness is its entry's IDENTITY (round-2 invariant, enforcer 2) ----
+    // Liveness is two conjuncts, each pinned alone: the entry's lifetime has not ended, AND it is the very lifetime the Fsm
+    // holds as the current entry. The Fsm ends a lifetime only in the CAS winner's `advanced`, so through production alone
+    // the two never disagree on the drainer; these rows build the disagreement the way the receiver is specified (a
+    // lifetime handed to `entryEpisode`), so a check that kept only one conjunct, or compared the state, goes red.
+    @Test
+    void handle_ofAnEndedLifetime_thatIsStillTheFsmsEntry_isRefused() {
+        var ran = new AtomicInteger();
+
+        start();
+        OnDrainer.dispatch(harness, new ClusterFsmEvent.QuorumEstablished());
+        var lifetime = harness.fsm()
+                              .entered()
+                              .lifetime();
+        var handle = ctx.entryEpisode(lifetime);
+
+        handle.serialized(ran::incrementAndGet).run();
+        OnDrainer.drained(ctx);
+        assertThat(ran).as("instrument: the live current entry acts").hasValue(1);
+        lifetime.end();
+        handle.serialized(ran::incrementAndGet).run();
+        OnDrainer.drained(ctx);
+        assertThat(ran).as("a handle over an ended lifetime acted although the Fsm still holds it").hasValue(1);
+    }
+
+    @Test
+    void handle_ofAUnendedLifetime_thatIsNotTheFsmsEntry_isRefused() {
+        var ran = new AtomicInteger();
+
+        start();
+        OnDrainer.dispatch(harness, new ClusterFsmEvent.QuorumEstablished());
+        var foreign = ownerLifetime();
+
+        ctx.entryEpisode(foreign)
+           .serialized(ran::incrementAndGet)
+           .run();
+        OnDrainer.drained(ctx);
+        assertThat(ran).as("a handle over a lifetime the Fsm does not hold acted (identity not compared)").hasValue(0);
+    }
+
+    @Test
+    void entryEpisode_ofAMissingLifetime_isRefusedByANamedCheck() {
+        var ran = new AtomicInteger();
+
+        start();
+        ctx.entryEpisode(null)
+           .serialized(ran::incrementAndGet)
+           .run();
+        OnDrainer.drained(ctx);
+        assertThat(ran).as("a missing lifetime ran the task").hasValue(0);
+        assertThat(ctx.refusedNullIdentitiesForTest()).as("the refusal is the named, counted check").isEqualTo(1);
+    }
+
+    // ---- followUp: both conjuncts of its guard ----
+    @Test
+    void followUp_ofTheLiveCurrentEntry_fromAForeignThread_isRefused() {
+        start();
+        OnDrainer.dispatch(harness, new ClusterFsmEvent.QuorumEstablished());
+        var before = harness.state();
+        var live = handleOfTheCurrentEntry();
+
+        onForeignThread(() -> live.followUp(new ClusterFsmEvent.QuorumDisappeared()));
+        OnDrainer.drained(ctx);
+        assertThat(harness.state()).as("a foreign thread moved the FSM through a LIVE handle").isSameAs(before);
+        assertThat(ctx.refusedFollowUpsForTest()).as("refused by the confinement check").isPositive();
+    }
+
+    @Test
+    void followUp_ofAnExitedEntry_onTheDrainer_isRefused() {
+        var exited = exitQuorum();
+        var staleHandle = exitedHandle;
+
+        OnDrainer.run(ctx, () -> staleHandle.followUp(new ClusterFsmEvent.QuorumEstablished()));
+        assertThat(harness.state()).as("a stale handle moved the FSM on the drainer").isSameAs(exited);
+        assertThat(ctx.refusedFollowUpsForTest()).as("refused by the liveness check").isPositive();
+    }
+
+    // ---- the inbound boundary's stop reaches the FSM in order ----
+    @Test
+    void managerStop_shutsTheFsmDownThroughTheInbound() {
+        start();
+        var manager = new FsmBackedLeaderManager(harness.fsm(), ctx, inbound(ctx), false);
+
+        manager.stop();
+        assertThat(harness.state()).as("stop() did not deliver Shutdown through the inbound").isSameAs(ctx.stopped());
+        harness = null;
     }
 
     // ---- fixture ----
