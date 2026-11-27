@@ -23,6 +23,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
+import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamConsumerRuntime.SubscriptionSnapshot;
 import org.pragmatica.consensus.NodeId;
@@ -38,7 +39,7 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.engineKey;
 /// (`StreamAssembly` passes `CommittedCursorRead.committedEpochs` to `StreamConsumerManager`).
 ///
 /// 3 cores and 3 workers (the shape of `EmberWorkerStreamConsumerTest`, whose fixture run is green). The slice is a real jar in a staged repository
-/// (see [WorkerConsumerSlice]) deployed WORKERS_ONLY, so the one worker the system picks loads it, writes its own ACTIVE row, and its `StreamConsumerManager` attaches the declared partition through its real runtime. A checkpoint with a newer
+/// (see [WorkerConsumerSlice]) deployed WORKERS_ONLY through a blueprint apply, so the one worker the system picks loads it, writes its own ACTIVE row, and its `StreamConsumerManager` attaches the declared partition through its real runtime. A checkpoint with a newer
 /// rewind epoch is then committed through the leader under the committed assignment's token, as a projection rebuild does. A worker's replica
 /// excludes cursor checkpoints and it gets no put notification for one, so only the reconcile pass's committed-epoch source can see the rewind:
 /// the worker's consumer must restart and run under the rewound epoch.
@@ -100,15 +101,17 @@ class EmberWorkerRewindRestartTest {
                    WAIT_BOUND_MS,
                    "the leader counts every worker as a worker member: " + workers);
         StreamTripwireSupport.createStream(leader(), StreamTripwireSupport.smallRingStream(STREAM, 1, 1_000L, 3_600_000L));
-        slice.deployOnWorkers(leader());
-        var worker = slice.awaitActiveWorker(this::leader, workers, WAIT_BOUND_MS, this::diagnostics);
+        slice.deployOnWorkers(cluster);
+        slice.awaitActiveOnEveryWorker(this::leader, workers, WAIT_BOUND_MS, this::diagnostics);
         WorkerConsumerSlice.commit(leader(),
                                    registrationKey(),
-                                   AetherValue.StreamRegistrationValue.streamRegistrationValue(worker, GROUP, false, "java.lang.String"));
+                                   AetherValue.StreamRegistrationValue.streamRegistrationValue(workers.getFirst(), GROUP, false, "java.lang.String"));
         var assignmentKey = AetherKey.ConsumerAssignmentKey.consumerAssignmentKey(ENGINE_KEY, PARTITION, GROUP);
 
-        awaitCondition("the partition is assigned to the worker",
-                       () -> assignment(assignmentKey).map(ConsumerAssignmentValue::assignee).equals(Option.some(worker)));
+        awaitCondition("the partition is assigned to a worker",
+                       () -> assignment(assignmentKey).map(ConsumerAssignmentValue::assignee).filter(workers::contains).isPresent());
+        var worker = assignment(assignmentKey).unwrap().assignee();
+        slice.assertAssigneeIsActiveWorker(cluster, worker, workers);
         var runtime = StreamTripwireSupport.component(node(worker), "streamConsumerRuntime", StreamConsumerRuntime.class);
 
         awaitUntil(() -> started(runtime).isPresent(),
@@ -118,6 +121,9 @@ class EmberWorkerRewindRestartTest {
                                                           .isEqualTo(RewindEpoch.NONE);
 
         var cursorKey = AetherKey.StreamCursorCheckpointKey.streamCursorCheckpointKey(ENGINE_KEY, PARTITION, GROUP);
+
+        assertThat(ReplicaFilter.replicaFilter().excludes(cursorKey)).as("premise, structural: the replica filter every worker store is built with (AetherNode, ReplicaFeedAssembly) excludes the checkpoint family, so the worker never holds a checkpoint and the epoch can only come through the consensus read")
+                                                                    .isTrue();
         var token = assignment(assignmentKey).unwrap().token();
         var written = leader().<Object> apply(List.of(ClusterCursorStore.checkpointCommand(cursorKey, 0L, token, REWOUND)))
                               .await(COMMIT_BOUND);
@@ -135,7 +141,7 @@ class EmberWorkerRewindRestartTest {
                    "the worker's consumer was restarted under the rewound epoch " + REWOUND
                    + " (StreamAssembly's committed-epoch source on a forwarding node); snapshots: " + runtime.subscriptions());
         assertThat(node(worker).kvStore().getTyped(cursorKey, StreamCursorCheckpointValue.class))
-                .as("premise: the worker's mirror never held the checkpoint, so the epoch came through the consensus read")
+                .as("the worker's mirror lacks the checkpoint at the end, as the replica filter requires (a point-in-time read, not the premise)")
                 .isEqualTo(Option.none());
     }
 
