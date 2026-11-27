@@ -136,8 +136,7 @@ public final class LeaderPreVote {
     }
 
     private Option<Boolean> stanceOn(NodeId leader) {
-        return switch (ctx.fsm()
-                          .current()) {
+        return switch (ctx.current()) {
             case LeaderElectionState.Led led -> some(sees(led, leader));
             case LeaderElectionState.Electing _, LeaderElectionState.ReElecting _ -> some(false);
             default -> none();
@@ -354,8 +353,7 @@ public final class LeaderPreVote {
     }
 
     private boolean stillSuspected(NodeId leader) {
-        return ctx.fsm()
-                  .current() instanceof LeaderElectionState.Led led
+        return ctx.current() instanceof LeaderElectionState.Led led
                && led.leader()
                      .equals(leader)
                && led.isLeaderSuspected();

@@ -361,7 +361,7 @@ class LeaderStaleTickEpisodeTest {
     private void reenterAwaitingKvSync() {
         ctx.submit(inbound(), new ClusterFsmEvent.QuorumDisappeared());
         ctx.submit(inbound(), new ClusterFsmEvent.QuorumEstablished());
-        reentered.set(ctx.fsm().current());
+        reentered.set(ctx.current());
     }
 
     private void reenterAwaitingKvSyncWithTheSyncEnded() {
@@ -372,14 +372,14 @@ class LeaderStaleTickEpisodeTest {
     private void reenterQuorumWaitingThenReady() {
         ctx.submit(inbound(), new ClusterFsmEvent.QuorumDisappeared());
         ctx.submit(inbound(), new ClusterFsmEvent.QuorumEstablished());
-        reentered.set(ctx.fsm().current());
+        reentered.set(ctx.current());
         consensusReady.set(true);
     }
 
     private void reenterElection(boolean reElecting) {
         reenterAwaitingKvSync();
         ctx.submit(inbound(), new KvSyncGraceTimeout());
-        reentered.set(ctx.fsm().current());
+        reentered.set(ctx.current());
         assertThat(reentered.get()).isInstanceOf(reElecting
                                                  ? LeaderElectionState.ReElecting.class
                                                  : LeaderElectionState.Electing.class);
@@ -401,7 +401,7 @@ class LeaderStaleTickEpisodeTest {
         ctx.submit(inbound(), new ClusterFsmEvent.QuorumDisappeared());
         ctx.submit(inbound(), new ClusterFsmEvent.QuorumEstablished());
         LeaderCommits.commitLeader(ctx, event -> ctx.submit(inbound(), event), PEER, 2L);
-        reentered.set(ctx.fsm().current());
+        reentered.set(ctx.current());
         assertThat(reentered.get()).isInstanceOf(LeaderElectionState.Led.class);
     }
 

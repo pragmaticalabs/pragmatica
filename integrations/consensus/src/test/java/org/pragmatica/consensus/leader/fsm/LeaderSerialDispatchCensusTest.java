@@ -118,7 +118,7 @@ class LeaderSerialDispatchCensusTest {
         manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 2));
         held.release();
         manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 3));
-        assertThat(manager.context().fsm().current()).isInstanceOf(LeaderElectionState.Stopped.class);
+        assertThat(manager.context().current()).isInstanceOf(LeaderElectionState.Stopped.class);
         assertThat(observedSequences()).as("only the view submitted before the stop reached the FSM")
                   .containsExactly(1L);
     }

@@ -319,7 +319,7 @@ class ReadmittedVoterAdoptedSequenceTest {
     private void passiveCoreThatPulledNothing() {
         harness = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent> harness("readmitted-voter-adopted-sequence",
                                                                                 fsm -> context(fsm).dormant());
-        manager = new FsmBackedLeaderManager(ctx().fsm(), ctx(), false);
+        manager = new FsmBackedLeaderManager(harness.fsm(), ctx(), false);
         manager.installVoterConfiguration(voters(1, CORES));
         assertThat(harness.state()).as("instrument: the core outside the voter set is Passive")
                   .isInstanceOf(LeaderElectionState.Passive.class);
@@ -341,7 +341,7 @@ class ReadmittedVoterAdoptedSequenceTest {
     private void passiveCoreThatPulledTheNewerLeader() {
         harness = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent> harness("readmitted-voter-adopted-sequence",
                                                                                 fsm -> context(fsm).dormant());
-        manager = new FsmBackedLeaderManager(ctx().fsm(), ctx(), false);
+        manager = new FsmBackedLeaderManager(harness.fsm(), ctx(), false);
         manager.installVoterConfiguration(voters(1, CORES));
         assertThat(harness.state()).as("instrument: the core outside the voter set is Passive")
                   .isInstanceOf(LeaderElectionState.Passive.class);

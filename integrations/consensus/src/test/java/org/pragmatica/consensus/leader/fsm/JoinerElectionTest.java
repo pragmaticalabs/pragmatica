@@ -51,6 +51,7 @@ class JoinerElectionTest {
 
     private final AtomicInteger proposals = new AtomicInteger();
     private final AtomicReference<LeaderElectionContext> context = new AtomicReference<>();
+    private final AtomicReference<org.pragmatica.statemachine.Fsm<LeaderElectionState, ClusterFsmEvent>> fsmOfContext = new AtomicReference<>();
 
     private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness(Option<NodeId> kvLeader, TimeSpan grace) {
         return harness(() -> kvLeader, grace);
@@ -90,6 +91,7 @@ class JoinerElectionTest {
                                             grace);
 
         context.set(ctx);
+        fsmOfContext.set(fsm);
 
         return ctx.dormant();
     }
@@ -179,7 +181,7 @@ class JoinerElectionTest {
 
         var ctx = context.get();
 
-        new LeaderManager.FsmBackedLeaderManager(ctx.fsm(), ctx, false).installVoterConfiguration(
+        new LeaderManager.FsmBackedLeaderManager(fsmOfContext.get(), ctx, false).installVoterConfiguration(
                 VoterConfiguration.voterConfiguration(1L, List.of(SELF, PEER)).unwrap());
 
         assertThat(h.state()).as("readmitted under a configuration without the old leader").isNotInstanceOf(LeaderElectionState.Passive.class);
@@ -248,7 +250,7 @@ class JoinerElectionTest {
     private void installThroughTheManager(Supplier<Boolean> pending) {
         var ctx = context.get();
 
-        new LeaderManager.FsmBackedLeaderManager(ctx.fsm(), ctx, false).installKvSyncProgress(pending);
+        new LeaderManager.FsmBackedLeaderManager(fsmOfContext.get(), ctx, false).installKvSyncProgress(pending);
     }
 
     private static void awaitNotAwaiting(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) throws InterruptedException {

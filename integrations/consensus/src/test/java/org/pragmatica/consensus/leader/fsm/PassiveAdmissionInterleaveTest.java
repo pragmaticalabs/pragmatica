@@ -148,7 +148,7 @@ class PassiveAdmissionInterleaveTest {
                                                                                                   router,
                                                                                                   kvLeader).dormant());
         var ctx = ((LeaderElectionState) harness.state()).ctx();
-        var manager = new FsmBackedLeaderManager(ctx.fsm(), ctx, false);
+        var manager = new FsmBackedLeaderManager(harness.fsm(), ctx, false);
 
         manager.installPassiveCoreDirectory(CORES);
         manager.peerJoined(new PeerJoined(LEADER, List.of(SELF, LEADER, OTHER), ObservationSource.QUIC, 1));

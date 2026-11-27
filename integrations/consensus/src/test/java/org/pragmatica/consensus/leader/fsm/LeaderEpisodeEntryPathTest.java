@@ -94,12 +94,14 @@ class LeaderEpisodeEntryPathTest {
     private static final String STOP_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx) { return () -> ctx.stop(); }";
     private static final String FORGED_TOKEN_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(org.pragmatica.consensus.leader.LeaderInbound.leaderInbound(), task); }";
     private static final String NEW_TOKEN_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(new org.pragmatica.consensus.leader.LeaderInbound(), task); }";
+    private static final String FSM_DISPATCH_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, org.pragmatica.consensus.fsm.ClusterFsmEvent event) { return () -> ctx.fsm().dispatch(event); }";
     private static final String FORGED_IDENTITY_SITE = "static final class Forged implements LeaderElectionContext.EpisodeIdentity { public boolean isLive() { return true; } }";
 
     /// The ruling (2026-11-27): an arm site that reaches the serial executor without an episode identity of the entry it
     /// arms from does not compile. The rows are the two failure inputs (`() -> ctx.serially(task)` from a state and
     /// `ctx.serializedFor(() -> true, task)`), the other inbound doors a state could arm through (`submit`, `stop`), and
-    /// the three ways to forge what those doors now require (the capability's factory, its constructor, an identity). Each refusal names the member it
+    /// the three ways to forge what those doors now require (the capability's factory, its constructor, an identity), and
+    /// `ctx.fsm().dispatch` (the FSM is not exposed: a dispatch from an async callback would skip the fence). Each refusal names the member it
     /// refuses, so a red that comes from a probe that cannot compile at all does not pass as the rule.
     @ParameterizedTest
     @MethodSource("unfencedArmSites")
@@ -118,7 +120,8 @@ class LeaderEpisodeEntryPathTest {
                          Arguments.of(STOP_ARM_SITE, "stop"),
                          Arguments.of(FORGED_TOKEN_ARM_SITE, "leaderInbound"),
                          Arguments.of(NEW_TOKEN_ARM_SITE, "LeaderInbound"),
-                         Arguments.of(FORGED_IDENTITY_SITE, "EpisodeIdentity"));
+                         Arguments.of(FORGED_IDENTITY_SITE, "EpisodeIdentity"),
+                         Arguments.of(FSM_DISPATCH_ARM_SITE, "fsm"));
     }
 
     /// Attribution only (`JavacTask#analyze`): the errors are the compiler's, and no class file is written.

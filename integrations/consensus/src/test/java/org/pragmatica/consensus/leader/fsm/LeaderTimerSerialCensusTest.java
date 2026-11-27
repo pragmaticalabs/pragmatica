@@ -92,6 +92,8 @@ class LeaderTimerSerialCensusTest {
     private static final String READ_VIEW = "read: transport view";
     private static final String MARKER = "marker: the task queued after the timer's";
 
+    // The context no longer exposes its FSM (#3846): a test that dispatches from a thread production never uses keeps it.
+    private Fsm<LeaderElectionState, ClusterFsmEvent> fsm;
     private final List<Object> trace = new CopyOnWriteArrayList<>();
     private final AtomicReference<Option<LeaderCommitted>> kvLeader = new AtomicReference<>(Option.none());
     private final Promise<Unit> proposal = Promise.promise();
@@ -346,14 +348,14 @@ class LeaderTimerSerialCensusTest {
     /// st01b: a grace timeout handled while KV sync is still pending and the wait is short of its maximum re-arms the
     /// grace timer. The cleanup ends the pending sync first, so a late re-armed timeout elects instead of re-arming.
     private Runnable rearmGrace(LeaderElectionContext ctx) {
-        ctx.fsm().dispatch(new KvSyncGraceTimeout());
+        fsm.dispatch(new KvSyncGraceTimeout());
 
         return () -> endWait(ctx);
     }
 
     private static void endWait(LeaderElectionContext ctx) {
         ctx.installKvSyncPending(() -> false);
-        ctx.fsm().current().onExit();
+        ctx.current().onExit();
     }
 
     /// st01c: a fresh `Electing` arms its first tick at the rank-staircase delay (rank 0: the base delay).
@@ -363,7 +365,7 @@ class LeaderTimerSerialCensusTest {
 
     /// st01d: a tick with an empty stored view sends no proposal and reschedules the tick (GUARD 2).
     private Runnable tickWithoutView(LeaderElectionContext ctx) {
-        ctx.fsm().dispatch(new ElectionTick());
+        fsm.dispatch(new ElectionTick());
 
         return currentState(ctx)::onCasLost;
     }
@@ -374,7 +376,7 @@ class LeaderTimerSerialCensusTest {
 
     /// st01e: a tick with a view sends a proposal and arms its timeout; the proposal never settles.
     private Runnable propose(LeaderElectionContext ctx) {
-        ctx.fsm().dispatch(new ElectionTick());
+        fsm.dispatch(new ElectionTick());
 
         return currentState(ctx)::onCasLost;
     }
@@ -400,8 +402,7 @@ class LeaderTimerSerialCensusTest {
     }
 
     private static LeaderElectionState currentState(LeaderElectionContext ctx) {
-        return ctx.fsm()
-                  .current();
+        return ctx.current();
     }
 
     private Runnable armElectingObservation(LeaderElectionContext ctx) {
@@ -550,7 +551,7 @@ class LeaderTimerSerialCensusTest {
 
         router.addRoute(LeaderChange.class, LeaderTimerSerialCensusTest::ignoreChange);
         router.addRoute(Send.class, trace::add);
-        var fsm = Fsm.<LeaderElectionState, ClusterFsmEvent> fsm("leader-timer-serial-census",
+        fsm = Fsm.<LeaderElectionState, ClusterFsmEvent> fsm("leader-timer-serial-census",
                                                                  f -> testCase.initial()
                                                                               .apply(context(f,
                                                                                              router,

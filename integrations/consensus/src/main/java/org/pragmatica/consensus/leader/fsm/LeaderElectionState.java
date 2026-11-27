@@ -691,8 +691,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// names is lost even where the storage KEPT it (it is this node, or the last node left), the one case the stored
     /// view cannot express. A view write names none.
     private static void holdLeaderToView(LeaderElectionContext ctx, Option<NodeId> namedFailed) {
-        heldLeader(ctx.fsm().current()).filter(leader -> !isInStoredView(ctx, leader) || namedFailed.filter(leader::equals)
-                                                                                                    .isPresent())
+        heldLeader(ctx.current()).filter(leader -> !isInStoredView(ctx, leader) || namedFailed.filter(leader::equals)
+                                                                                              .isPresent())
                   .onPresent(leader -> dispatchSelf(ctx,
                                                     new LeaderOutOfView(leader)));
     }
@@ -1559,14 +1559,14 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// the schedule is a no-op (a stale `ProposalSettled.failure` arriving after the FSM has moved
     /// on must NOT spawn a new orphan timer).
     private static void rescheduleCurrentTick(LeaderElectionContext ctx) {
-        switch (ctx.fsm().current()) {
+        switch (ctx.current()) {
             case Electing e -> scheduleElectionTickInto(ctx, e, e.tickFuture());
             case ReElecting r -> scheduleElectionTickInto(ctx, r, r.tickFuture());
             // GUARD 6 (election-trigger swallow): a reschedule requested from a non-electing state
             // is dropped. Benign when the FSM legitimately moved on (e.g. a leader committed), but
             // WARN-worthy because if it happens during an active election it leaves no pending tick.
             default -> log.warn("triggerElection swallowed by GUARD[non-electing-state]: " + "rescheduleCurrentTick from {} — no tick scheduled",
-                                ctx.fsm().current().getClass().getSimpleName());
+                                ctx.current().getClass().getSimpleName());
         }
     }
 
@@ -1648,7 +1648,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///           /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, base, adm, env, hi, removed, suspect, taken>>
     /// ```
     private static void electLocallyOnTick(LeaderElectionContext ctx, LeaderElectionState owner) {
-        if (ctx.fsm().current() != owner) {
+        if (ctx.current() != owner) {
             return;
         }
 
@@ -1719,7 +1719,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
-        if (ctx.fsm().current() != owner) {
+        if (ctx.current() != owner) {
             // #1797 F1: a tick's own KV-pull adoption moved the FSM out of `owner` before this point;
             // `owner.onExit` already cleared the guard, `tryStartProposal` just re-set it, and a proposal
             // sent from the left state would store its timeout on a dead record (so nothing ever

@@ -1134,8 +1134,10 @@ public final class LeaderElectionContext {
         return stopped;
     }
 
-    public Fsm<LeaderElectionState, ClusterFsmEvent> fsm() {
-        return fsm;
+    /// The current state, read only (#3846 residual): the FSM itself is not exposed, because `Fsm#dispatch` reached
+    /// from an async callback would run a handler outside the episode fence and outside [#dispatchConfined].
+    LeaderElectionState current() {
+        return fsm.current();
     }
 
     /// #3587: run `task` in the node's one total order of leader-election events ([SerialExecutor#execute]). Every
