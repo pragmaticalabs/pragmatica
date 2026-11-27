@@ -170,7 +170,8 @@ class PortBindGateTest {
 
         assertThat(bundled.entries()).allSatisfy(entry -> assertThat(entry.reason()).isNotBlank());
         assertThat(bundled.entries()).extracting(AllowList.Entry::target)
-                  .noneMatch(target -> target.split("#")[0].endsWith(".HeldPort"));
+                  .noneMatch(target -> target.split("#") [0]
+                                             .endsWith(".HeldPort"));
     }
 
     @Test
