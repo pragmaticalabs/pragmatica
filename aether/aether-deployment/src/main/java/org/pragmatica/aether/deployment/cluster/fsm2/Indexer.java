@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DirectiveReceiptKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
@@ -31,6 +32,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DirectiveReceiptValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue;
@@ -93,6 +95,9 @@ public sealed interface Indexer {
             case NodeDepartureKey k -> value instanceof NodeDepartureValue v
                                        ? indexRecord(m, k.nodeId(), v)
                                        : m;
+            case DirectiveReceiptKey k -> value instanceof DirectiveReceiptValue v
+                                          ? indexReceipt(m, k.nodeId(), v)
+                                          : m;
             case ArtifactJudgmentKey k -> value instanceof ArtifactJudgmentValue v
                                           ? indexJudgment(m, ctx, k.artifact(), v)
                                           : m;
@@ -145,6 +150,7 @@ public sealed interface Indexer {
             case CommunityKey k -> removeCommunity(m, k.communityId());
             case GovernorAnnouncementKey k -> removeAnnouncement(m, k.communityId());
             case NodeDepartureKey k -> removeRecord(m, k.nodeId());
+            case DirectiveReceiptKey k -> removeReceipt(m, k.nodeId());
             case ArtifactJudgmentKey k -> removeJudgment(m, ctx, k.artifact());
             case DeploymentApplyKey k -> removeApply(m, k.blueprintId());
             case DeploymentOutcomeKey k -> removeOutcome(m, k.blueprintId());
@@ -478,6 +484,19 @@ public sealed interface Indexer {
         m.records = m.records.remove(node);
 
         return refreshDeparted(m, node);
+    }
+
+    // -- directive receipts (#3828, design 3.3) ----------------------------------------------------------------------
+    static ClusterModel indexReceipt(ClusterModel m, NodeId node, DirectiveReceiptValue value) {
+        m.receipts = m.receipts.put(node, value);
+
+        return m;
+    }
+
+    static ClusterModel removeReceipt(ClusterModel m, NodeId node) {
+        m.receipts = m.receipts.remove(node);
+
+        return m;
     }
 
     /// R-2.11 (H-1): an id leaves `inherited` when its record changes.
