@@ -18,6 +18,7 @@ package org.pragmatica.consensus.net.quic;
 import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.IntConsumer;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.JoinGenerationGuard;
@@ -250,9 +251,10 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
     /// #1456 test seam: runs between the bind completing and the just-bound channel being published,
     /// so a test can call `stop()` from inside that window. The window is sub-millisecond in
-    /// production, which is why the race is only reachable deterministically from here. No-op unless
-    /// a test installs a hook.
-    private volatile Runnable beforePublish = () -> {};
+    /// production, which is why the race is only reachable deterministically from here. It receives the
+    /// port the channel bound (#3830): `boundPort()` is still empty in this window, and a test that binds
+    /// port 0 has no other way to learn it. No-op unless a test installs a hook.
+    private volatile IntConsumer beforePublish = _ -> {};
 
     /// #3635 test seam: runs after a failed bind's owned group is released and before the failure is reported, so a test can
     /// attach its observer to the start promise before it can resolve. No-op unless a test installs a hook.
@@ -306,7 +308,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
     /// #1456 test seam — see [#beforePublish].
     @Contract
-    void beforePublishForTest(Runnable hook) {
+    void beforePublishForTest(IntConsumer hook) {
         beforePublish = hook;
     }
 
@@ -396,7 +398,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     /// that was stopped. A leaked reconciler was observed still dialling 2m10s later, inside
     /// unrelated test classes.
     private void publishBoundChannel(Channel channel, Promise<Unit> promise) {
-        beforePublish.run();
+        beforePublish.accept(((InetSocketAddress) channel.localAddress()).getPort());
         serverChannel.publishOrReclaim(channel)
                      .onPresent(orphan -> closeOrphanedChannel(orphan, promise))
                      .onEmpty(() -> announceBoundChannel(channel, promise));

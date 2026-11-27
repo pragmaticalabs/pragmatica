@@ -15,10 +15,6 @@
  */
 package org.pragmatica.consensus.net.quic;
 
-import java.io.IOException;
-import java.net.DatagramSocket;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -86,7 +82,6 @@ class QuicLateDesignatedDialTest {
     void designatedDialCompletingAfterThePeerDialedBack_neverSupersedesTheLiveLane() {
         var low = new NodeId("ld-a");
         var high = new NodeId("ld-b");
-        var highPort = freeUdpPort();
         var lowJournal = new CopyOnWriteArrayList<PeerTransitionRecord>();
         var highJournal = new CopyOnWriteArrayList<PeerTransitionRecord>();
         var toLow = new CopyOnWriteArrayList<LaneProbe>();
@@ -98,14 +93,17 @@ class QuicLateDesignatedDialTest {
         // Without it, a retransmitted Initial can reach the peer FIRST under load: the lower id's dial then completes
         // (legitimately — the peer's own dial becomes a DUPLICATE) and there is nothing to abandon, so the arming would
         // be timing. The gate makes the shape exact; opening it afterwards lets a NOT-abandoned dial complete and show.
-        try (var gate = UdpGate.udpGate(highPort)) {
+        // #3830: the peer binds port 0 itself when it starts and the gate is pointed at the port it reports (`boundPort()`), so no port
+        // is probed, closed and handed over: the gate holds the address the lower id dials until the peer exists.
+        try (var gate = UdpGate.udpGate(0)) {
             start(lowNet, 0);
             lowNet.dialForTests(nodeInfo(high, gate.port()), false);
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(PEER_START_DELAY_MS));
             assertThat(lowNet.peerPhaseForTests(high))
                 .as("arming: the lower id's dial is still pending when the peer starts")
                 .isEqualTo(Option.some(PeerState.Phase.CONNECTING));
-            start(highNet, highPort);
+            start(highNet, 0);
+            gate.retarget(highNet.boundPort().unwrap());
             highNet.dialForTests(nodeInfo(low, lowNet.boundPort().unwrap()), true);
 
             awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), "both ends CONNECTED");
@@ -191,14 +189,6 @@ class QuicLateDesignatedDialTest {
         networks.add(network);
 
         return network;
-    }
-
-    private static int freeUdpPort() {
-        try (var socket = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            return fail("no free UDP port: " + e.getMessage());
-        }
     }
 
     private static void awaitTrue(BooleanSupplier condition, String what) {

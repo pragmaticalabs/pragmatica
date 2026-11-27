@@ -15,9 +15,7 @@
  */
 package org.pragmatica.consensus.net.quic;
 
-import java.net.DatagramSocket;
 import java.net.SocketAddress;
-import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -68,12 +66,11 @@ class QuicDialFailureMetricsTest {
     @Test
     void tlsRefusal_countsAHandshakeFailure_andADialFailure() {
         var dialer = network("dfm-dialer", ClusterTestTls.clusterTls("dfm-dialer"));
-        var foreignPort = freeUdpPort();
         var foreign = network("dfm-foreign", ClusterTestTls.clusterTls("dfm-foreign", FOREIGN_SECRET));
 
         start(dialer, 0);
-        start(foreign, foreignPort);
-        dialer.dialForTests(nodeInfo("dfm-foreign", foreignPort), true);
+        start(foreign, 0);
+        dialer.dialForTests(nodeInfo("dfm-foreign", boundPort(foreign)), true);
 
         // onConnectFailed writes the dial counter, then the handshake counter, on the network thread: await both.
         await(() -> dialer.quicMetrics().dialFailureCount() >= 1, "the dial to the foreign cluster fails");
@@ -88,12 +85,11 @@ class QuicDialFailureMetricsTest {
     @Test
     void identityMismatch_countsADialFailure_butNoHandshakeFailure() {
         var dialer = network("dfm-dialer", ClusterTestTls.clusterTls("dfm-dialer"));
-        var actualPort = freeUdpPort();
         var actual = network("dfm-actual", ClusterTestTls.clusterTls("dfm-actual"));
 
         start(dialer, 0);
-        start(actual, actualPort);
-        dialer.dialForTests(nodeInfo("dfm-expected", actualPort), true);
+        start(actual, 0);
+        dialer.dialForTests(nodeInfo("dfm-expected", boundPort(actual)), true);
 
         // The zero asserted below only means something once the failure path has run past both metric writes.
         await(() -> connectionFailedRouted.get() >= 1, "the dial fails on the identity check and its failure is routed");
@@ -127,12 +123,9 @@ class QuicDialFailureMetricsTest {
         return NodeInfo.nodeInfo(new NodeId(id), NodeAddress.nodeAddress("127.0.0.1", port).fold(_ -> fail("bad address"), a -> a));
     }
 
-    private static int freeUdpPort() {
-        try (var socket = new DatagramSocket(0)) {
-            return socket.getLocalPort();
-        } catch (SocketException e) {
-            return fail("no free UDP port: " + e.getMessage());
-        }
+    /// #3830: the network bound port 0 itself; the port it reports is held by it, so nothing is probed, closed and handed over.
+    private static int boundPort(QuicClusterNetwork network) {
+        return network.boundPort().unwrap();
     }
 
     private static void await(BooleanSupplier condition, String what) {

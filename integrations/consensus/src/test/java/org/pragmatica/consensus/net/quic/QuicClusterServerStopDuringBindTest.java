@@ -25,6 +25,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
@@ -76,6 +77,9 @@ class QuicClusterServerStopDuringBindTest {
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final long RECLAIM_WAIT_MS = 10_000;
     private static final long LATCH_WAIT_SECONDS = 30;
+    /// The server's identity address; it binds the port passed to `start`, not this one.
+    private static final NodeAddress IDENTITY_ADDRESS = NodeAddress.nodeAddress("127.0.0.1", 19994)
+                                                                   .fold(_ -> fail("bad address"), address -> address);
 
     private EventLoopGroup sharedGroup;
 
@@ -91,22 +95,28 @@ class QuicClusterServerStopDuringBindTest {
 
     @Test
     void start_closesTheChannelAndFails_whenStopRunsBeforeTheBindIsPublished() throws Exception {
-        var port = freeUdpPort();
-        var server = quicClusterServerOn(port);
+        var server = quicClusterServer();
         var reachedGate = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var boundAtGate = new AtomicBoolean();
+        var gatePort = new AtomicInteger();
 
-        ((QuicClusterServerInstance) server).beforePublishForTest(() -> holdAtGate(port,
-                                                                                   boundAtGate,
-                                                                                   reachedGate,
-                                                                                   release));
+        // #3830: the server binds port 0 itself and the gate reports the port it bound: `boundPort()` is still empty in the
+        // bind-to-publish window (that is the window), so the hook hands the bound port to the test.
+        ((QuicClusterServerInstance) server).beforePublishForTest(port -> holdAtGate(port,
+                                                                                     gatePort,
+                                                                                     boundAtGate,
+                                                                                     reachedGate,
+                                                                                     release));
 
-        var start = CompletableFuture.supplyAsync(() -> server.start(port).await(AWAIT_TIMEOUT));
+        var start = CompletableFuture.supplyAsync(() -> server.start(0).await(AWAIT_TIMEOUT));
 
         assertThat(reachedGate.await(LATCH_WAIT_SECONDS, TimeUnit.SECONDS))
             .as("start() must reach the bound-but-not-yet-published gate")
             .isTrue();
+
+        var port = gatePort.get();
+
         assertThat(boundAtGate.get())
             .as("control: UDP %d must already be held at the gate, or this test would be asserting "
                 + "the release of a port that was never taken", port)
@@ -130,7 +140,12 @@ class QuicClusterServerStopDuringBindTest {
     /// Runs between the bind completing and the just-bound channel being published — the window
     /// #1456 lives in. Records that the port is genuinely held, signals the test, and parks until
     /// the test has finished running `stop()`.
-    private static void holdAtGate(int port, AtomicBoolean bound, CountDownLatch reached, CountDownLatch release) {
+    private static void holdAtGate(int port,
+                                   AtomicInteger boundPort,
+                                   AtomicBoolean bound,
+                                   CountDownLatch reached,
+                                   CountDownLatch release) {
+        boundPort.set(port);
         bound.set(!bindable(port));
         reached.countDown();
 
@@ -141,13 +156,13 @@ class QuicClusterServerStopDuringBindTest {
         }
     }
 
-    private QuicClusterServer quicClusterServerOn(int port) {
+    private QuicClusterServer quicClusterServer() {
         var codec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), combinedCodecs());
 
         return QuicTlsProvider.serverContext(ClusterTestTls.clusterTls("stop-during-bind"))
                               .fold(cause -> fail("Server SSL context creation failed: " + cause.message()),
                                     ssl -> QuicClusterServer.quicClusterServer(SERVER_NODE,
-                                                                               new NodeAddress("127.0.0.1", port),
+                                                                               IDENTITY_ADDRESS,
                                                                                Map.of(),
                                                                                codec,
                                                                                codec,
@@ -187,12 +202,6 @@ class QuicClusterServerStopDuringBindTest {
             return socket.isBound();
         } catch (SocketException taken) {
             return false;
-        }
-    }
-
-    private static int freeUdpPort() throws SocketException {
-        try (var socket = new DatagramSocket(0)) {
-            return socket.getLocalPort();
         }
     }
 

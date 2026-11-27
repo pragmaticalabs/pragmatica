@@ -15,11 +15,7 @@
  */
 package org.pragmatica.consensus.net.quic;
 
-import java.io.IOException;
 import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -108,58 +104,64 @@ class QuicDialAttemptTest {
     void peerDownLongerThanTheConnectTimeout_onlyTheNewestAttemptConnects_oneLaneSetEachEnd() {
         var low = new NodeId("da-a");
         var high = new NodeId("da-b");
-        var highPort = freeUdpPort();
         var lowNode = node(low, SHORT_HELLO_TIMEOUT, BootTokens.bootTokens(0L));
         var highNode = node(high, SHORT_HELLO_TIMEOUT, BootTokens.bootTokens(0L));
 
-        start(lowNode.network(), 0);
-        // `dialForTests` is asynchronous (resolve → beginConnecting), so each attempt is armed by ITS OWN eviction —
-        // the count rising to the attempt's number — never by the phase a previous attempt left behind.
-        for (int attempt = 1; attempt <= OUTAGE_ATTEMPTS; attempt++) {
-            var evictionsSoFar = attempt;
+        // #3830: the address the lower id dials is a gate that holds its own port for the whole test and drops everything while the
+        // peer is "down"; the peer then binds port 0 itself, the gate is pointed at the port it reports and opened, so a released
+        // attempt's late retransmission still reaches the real peer (what this test pins) and no probed port is handed over.
+        try (var gate = UdpGate.udpGate(0)) {
+            start(lowNode.network(), 0);
+            // `dialForTests` is asynchronous (resolve → beginConnecting), so each attempt is armed by ITS OWN eviction —
+            // the count rising to the attempt's number — never by the phase a previous attempt left behind.
+            for (int attempt = 1; attempt <= OUTAGE_ATTEMPTS; attempt++) {
+                var evictionsSoFar = attempt;
 
-            lowNode.network().dialForTests(nodeInfo(high, highPort), false);
-            awaitTrue(() -> transitions(lowNode.journal(), high, PeerState.CAUSE_EVICT_STALE_CONNECTING) >= evictionsSoFar,
-                      "attempt " + attempt + " times out while the peer is down");
-            // Let the released attempt's own failure land before the next dial starts.
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(ATTEMPT_QUIET_MS));
+                lowNode.network().dialForTests(nodeInfo(high, gate.port()), false);
+                awaitTrue(() -> transitions(lowNode.journal(), high, PeerState.CAUSE_EVICT_STALE_CONNECTING) >= evictionsSoFar,
+                          "attempt " + attempt + " times out while the peer is down");
+                // Let the released attempt's own failure land before the next dial starts.
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(ATTEMPT_QUIET_MS));
+            }
+            assertThat(transitions(lowNode.journal(), high, PeerState.CAUSE_BEGIN_CONNECTING))
+                .as("arming: every outage attempt really started").isEqualTo(OUTAGE_ATTEMPTS);
+            assertThat(transitions(lowNode.journal(), high, PeerState.CAUSE_EVICT_STALE_CONNECTING))
+                .as("arming: every outage attempt timed out while the peer was down").isEqualTo(OUTAGE_ATTEMPTS);
+            // The peer is listening before the final dial, so the final attempt cannot lose its window to the peer's bind.
+            start(highNode.network(), 0);
+            gate.retarget(highNode.network().boundPort().unwrap());
+            gate.open();
+            lowNode.network().dialForTests(nodeInfo(high, gate.port()), false);
+
+            awaitConnectedRedialing(lowNode.network(), nodeInfo(high, gate.port()), false,
+                                    () -> connected(lowNode.network(), high) && connected(highNode.network(), low),
+                                    "both ends CONNECTED");
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(OUTAGE_SETTLE_MS));
+            assertEveryLaneCarriesTrafficBothWays(lowNode, highNode);
+
+            assertThat(causes(lowNode.journal()).stream().filter(cause -> cause.startsWith(DIALER_HELLO)))
+                .as("only the newest attempt completed: the timed-out ones were released and never completed late")
+                .hasSize(1);
+            assertThat(lowNode.network().quicMetrics().handshakeTotalCount()).as("one connection attached at the dialer, however many attempts timed out")
+                                                                              .isEqualTo(1);
+            assertThat(highNode.network().quicMetrics().handshakeTotalCount()).as("... and at the peer").isEqualTo(1);
+            assertThat(causes(highNode.journal())).as("no timed-out attempt completed late and replaced the live link")
+                                                  .doesNotContainAnyElementsOf(SUPERSEDING_CAUSES);
+            assertThat(causes(lowNode.journal())).doesNotContainAnyElementsOf(SUPERSEDING_CAUSES);
         }
-        assertThat(transitions(lowNode.journal(), high, PeerState.CAUSE_BEGIN_CONNECTING))
-            .as("arming: every outage attempt really started").isEqualTo(OUTAGE_ATTEMPTS);
-        assertThat(transitions(lowNode.journal(), high, PeerState.CAUSE_EVICT_STALE_CONNECTING))
-            .as("arming: every outage attempt timed out while the peer was down").isEqualTo(OUTAGE_ATTEMPTS);
-        // The peer is listening before the final dial, so the final attempt cannot lose its window to the peer's bind.
-        start(highNode.network(), highPort);
-        lowNode.network().dialForTests(nodeInfo(high, highPort), false);
-
-        awaitConnectedRedialing(lowNode.network(), nodeInfo(high, highPort), false,
-                                () -> connected(lowNode.network(), high) && connected(highNode.network(), low),
-                                "both ends CONNECTED");
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(OUTAGE_SETTLE_MS));
-        assertEveryLaneCarriesTrafficBothWays(lowNode, highNode);
-
-        assertThat(causes(lowNode.journal()).stream().filter(cause -> cause.startsWith(DIALER_HELLO)))
-            .as("only the newest attempt completed: the timed-out ones were released and never completed late")
-            .hasSize(1);
-        assertThat(lowNode.network().quicMetrics().handshakeTotalCount()).as("one connection attached at the dialer, however many attempts timed out")
-                                                                          .isEqualTo(1);
-        assertThat(highNode.network().quicMetrics().handshakeTotalCount()).as("... and at the peer").isEqualTo(1);
-        assertThat(causes(highNode.journal())).as("no timed-out attempt completed late and replaced the live link")
-                                              .doesNotContainAnyElementsOf(SUPERSEDING_CAUSES);
-        assertThat(causes(lowNode.journal())).doesNotContainAnyElementsOf(SUPERSEDING_CAUSES);
     }
 
     @Test
     void attemptPastItsQuicHandshake_isNeverAbandoned_evenWhileItsHelloIsUnanswered() {
         var low = new NodeId("dh-a");
         var high = new NodeId("dh-b");
-        var highPort = freeUdpPort();
         var helloHeld = new HeldAdmission(BootTokens.bootTokens(0L));
         var lowNode = node(low, DEFAULT_HELLO_TIMEOUT, BootTokens.bootTokens(0L));
         var highNode = node(high, DEFAULT_HELLO_TIMEOUT, helloHeld);
 
         start(lowNode.network(), 0);
-        start(highNode.network(), highPort);
+        var highPort = startOnBoundPort(highNode.network());
+
         lowNode.network().dialForTests(nodeInfo(high, highPort), false);
         // The peer holds its Hello answer: our QUIC handshake is done and our Hello has arrived, so the peer may
         // adopt this connection the moment it answers.
@@ -191,11 +193,11 @@ class QuicDialAttemptTest {
         // attached at all of them. Without it, a seed's retransmitted Initial can reach the late core FIRST under load:
         // that seed's dial then completes (legitimately — the late core's own dial becomes a DUPLICATE, 20 still holds)
         // and there is nothing left to abandon, so the arming below would be timing. The gate makes it exact.
-        // #2998: a probed UDP port is free only until something else binds it, so each core's port is probed
-        // immediately before its own bind (the late core's, seconds after the seeds start, is the widest window).
+        // #3830: each core binds port 0 itself and the test reads the port back from `boundPort()`: a probed UDP port is
+        // free only until something else binds it (#2998 narrowed that window, this closes it).
         try (var gate = UdpGate.udpGate(0)) {
             for (int i = 0; i < late; i++) {
-                ports.set(i, startOnFreePort(nodes.get(i).network()));
+                ports.set(i, startOnBoundPort(nodes.get(i).network()));
             }
             // Each seed dials every higher seed — the designated dialer — and the seeds connect to each other first.
             for (int i = 0; i < late; i++) {
@@ -228,7 +230,7 @@ class QuicDialAttemptTest {
             assertThat(seeds.stream().filter(seed -> phase(seed.network(), ids.get(late)) == PeerState.Phase.CONNECTING))
                 .as("arming: every seed's dial to the late core is still pending when the late core starts")
                 .hasSize(late);
-            ports.set(late, startOnFreePort(nodes.get(late).network()));
+            ports.set(late, startOnBoundPort(nodes.get(late).network()));
             gate.retarget(ports.get(late));
             // The late core is the designated dialer for no pair; it initiates from its isolation branch (forced).
             for (int i = 0; i < late; i++) {
@@ -323,11 +325,11 @@ class QuicDialAttemptTest {
         return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("127.0.0.1", port).fold(_ -> fail("bad address"), a -> a));
     }
 
-    private static int startOnFreePort(QuicClusterNetwork network) {
-        var port = freeUdpPort();
-
-        start(network, port);
-        return port;
+    /// Starts `network` on port 0 and returns the port it bound (#3830): the network holds its port from the bind, so nothing is
+    /// probed, closed and handed over.
+    private static int startOnBoundPort(QuicClusterNetwork network) {
+        start(network, 0);
+        return network.boundPort().unwrap();
     }
 
     private static void start(QuicClusterNetwork network, int port) {
@@ -417,14 +419,6 @@ class QuicDialAttemptTest {
         @Override public Unit onRetired(Consumer<NodeId> listener) {return delegate.onRetired(listener);}
         @Override public Unit selfRefused(String reason) {return delegate.selfRefused(reason);}
         @Override public Unit onSelfRefused(Consumer<String> listener) {return delegate.onSelfRefused(listener);}
-    }
-
-    private static int freeUdpPort() {
-        try (var socket = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            return fail("no free UDP port: " + e.getMessage());
-        }
     }
 
     /// The stub topology has no reconciler, so a dial whose every Initial is lost on a loaded box is never retried and

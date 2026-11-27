@@ -203,10 +203,9 @@ class QuicClusterNetworkLifecycleTest {
 
         for (var trial = 0; trial < trials; trial++) {
             var network = network(serverSsl, clientSsl);
-            var held = freeUdpPort();
 
-            try (var holder = new java.net.DatagramSocket(held)) {
-                assertThat(network.startOnPort(held).await(AWAIT).isFailure()).as("a start on a held port fails").isTrue();
+            try (var holder = HeldPort.udp()) {
+                assertThat(network.startOnPort(holder.getLocalPort()).await(AWAIT).isFailure()).as("a start on a held port fails").isTrue();
             }
 
             network.startOnPort(0).await(AWAIT);
@@ -480,12 +479,6 @@ class QuicClusterNetworkLifecycleTest {
 
     private static io.netty.handler.codec.quic.QuicSslContext clientSsl(String name) {
         return QuicTlsProvider.clientContext(ClusterTestTls.clusterTls("lifecycle-client-" + name)).fold(_ -> fail("client ssl"), ssl -> ssl);
-    }
-
-    private static int freeUdpPort() throws Exception {
-        try (var socket = new java.net.DatagramSocket(0)) {
-            return socket.getLocalPort();
-        }
     }
 
     private QuicClusterNetwork started() {
