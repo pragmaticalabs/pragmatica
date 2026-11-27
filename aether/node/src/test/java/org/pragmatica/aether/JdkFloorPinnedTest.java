@@ -5,18 +5,15 @@
 package org.pragmatica.aether;
 
 import java.io.IOException;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.config.JvmVulnerabilityGate;
+import org.pragmatica.testlogging.SourceWalk;
 
 import org.junit.jupiter.api.Test;
 
@@ -25,7 +22,7 @@ import static org.assertj.core.api.Assertions.fail;
 
 
 /// #3806 (CVE-2026-114938, Java4Shell) — every image definition pins a Temurin at or above the floor, and fails its own build
-/// below it. The definitions are DISCOVERED, not listed: [#discovered] walks the repository for every `Dockerfile*` and for every
+/// below it. The definitions are DISCOVERED, not listed: [#discovered] walks the repository (through `SourceWalk`, which prunes build output) for every `Dockerfile*` and for every
 /// shell script that carries a `FROM` line, so a new image definition is a subject the day it is added. A definition that is not a
 /// JDK image the floor applies to goes on [#EXCLUDED], each with its reason; an entry that no longer exists fails the test. The floor has ONE Java home, [JvmVulnerabilityGate#JDK_FLOOR]; the Dockerfiles cannot import it (their build contexts
 /// differ), so this test is the tie: a Dockerfile whose `ARG JDK_FLOOR` drifts from the constant, whose base tag names a JDK
@@ -50,7 +47,6 @@ class JdkFloorPinnedTest {
     private static final Map<String, String> EXCLUDED = Map.of("tools/quickstart-check.sh",
                                                                "clean-install verification: a throwaway `maven:3.9-eclipse-temurin-25` build container, never shipped or served (#3806 report, INFO 6)");
 
-    private static final Set<String> PRUNED_DIRECTORIES = Set.of(".git", "target", ".m2-local", "node_modules", ".idea");
     private static final Pattern DOCKERFILE_NAME = Pattern.compile("(?i)(dockerfile.*|.*\\.dockerfile|containerfile.*)");
     private static final Pattern FROM_LINE = Pattern.compile("(?m)^FROM ");
 
@@ -166,31 +162,20 @@ class JdkFloorPinnedTest {
     /// and any `*.sh` with a `FROM` line (a definition embedded in a script, as `build-and-push.sh` carries one).
     private static List<String> discovered() {
         var root = repositoryRoot();
-        var found = new ArrayList<String>();
 
         try {
-            Files.walkFileTree(root, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                    return PRUNED_DIRECTORIES.contains(dir.getFileName().toString())
-                           ? FileVisitResult.SKIP_SUBTREE
-                           : FileVisitResult.CONTINUE;
-                }
+            var found = new ArrayList<String>();
 
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                    if (isDefinition(file)) {
-                        found.add(root.relativize(file).toString().replace('\\', '/'));
-                    }
-
-                    return FileVisitResult.CONTINUE;
+            for (var file : SourceWalk.files(root)) {
+                if (isDefinition(file)) {
+                    found.add(root.relativize(file).toString().replace('\\', '/'));
                 }
-            });
+            }
+
+            return found;
         } catch (IOException e) {
             return fail("could not walk " + root, e);
         }
-
-        return found.stream().sorted().toList();
     }
 
     private static boolean isDefinition(Path file) throws IOException {
