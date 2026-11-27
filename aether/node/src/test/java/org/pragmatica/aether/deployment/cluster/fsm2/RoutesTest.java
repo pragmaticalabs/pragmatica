@@ -182,6 +182,22 @@ class RoutesTest {
         assertThat(h.model().declaredByOwner.size()).isZero();
     }
 
+    /// Red when: the removal's own step does not draft the ROUTES removal (W4 is left to the next reconcile's sweep): the rows then outlive the
+    /// blueprint by a reconcile pass, which the end state alone cannot show because the sweep reaches the same end state.
+    @Test
+    void remove_blueprintRemovalDraftsTheRowRemovalInItsOwnStep() {
+        var h = active();
+
+        publish(h, blueprintOf("attempt-1", false, LIST));
+        var before = h.steps.size();
+
+        h.seedRemove(new AppBlueprintKey(APP_ID));
+        h.drain();
+        assertThat(h.steps.get(before)
+                          .stream()
+                          .anyMatch(effect -> effect instanceof ClusterEffect.Submit submit && submit.kind() == SubmitKind.ROUTES)).isTrue();
+    }
+
     /// Red when: the sweep considers only committed blueprints: rows whose owner is gone (a removal draft lost with its leader) are never removed.
     @Test
     void sweep_removesTheRowsOfABlueprintThatIsGone() {
