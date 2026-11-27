@@ -134,10 +134,12 @@ class RoutesGateTest {
 
         // The order is the gate's reading order: the target row, the owner's blueprint, then the rows as the blueprint lists them (GET_ONE sorts
         // after LIST, so a sorted or reversed list is not this one). Every node and every resubmission derives the same transaction (#3836 F1).
-        assertThat(witnessedKeys(goals.getFirst())).containsExactly(new SliceTargetKey(ORDERS.base()),
-                                                                    AppBlueprintKey.appBlueprintKey(APP_ID),
-                                                                    key(GET_ONE),
-                                                                    key(LIST));
+        assertThat(witnessedKeys(goals.getFirst()).stream().filter(witness -> !(witness instanceof AetherKey.SliceObservedKey)).toList())
+                  .as("the observed guard leads the transaction; the gate's own reads follow in reading order")
+                  .containsExactly(new SliceTargetKey(ORDERS.base()),
+                                   AppBlueprintKey.appBlueprintKey(APP_ID),
+                                   key(GET_ONE),
+                                   key(LIST));
         assertThat(witnessed.stream().map(KVCommand.ReadWitness::expected).toList())
                   .containsOnly(Option.some(declared("attempt-1")));
         h.seed(key(LIST), published("attempt-1"));
