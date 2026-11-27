@@ -36,6 +36,7 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.testing.Pause;
 
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
@@ -845,23 +846,21 @@ class DurableEntityForgeTest {
     /// Wait out a fixed span. Deliberately a sleep and not a poll: what is being waited for is the ABSENCE
     /// of a second fire, and absence has no condition to poll on — only elapsed ticks.
     ///
-    /// The loop is load-bearing, not defensive. [org.pragmatica.lang.Promise#await()] registers an unpark
+    /// [Pause] parks to a DEADLINE, which is load-bearing: [org.pragmatica.lang.Promise#await()] registers an unpark
     /// callback and then parks in a `while (result == null)` loop; when the promise resolves between the
     /// registration and the check, the loop exits WITHOUT consuming the permit that callback's `unpark`
-    /// leaves behind. A bare `parkNanos` on the same thread then returns in ~0ns by consuming that residual
-    /// permit — and every caller here runs dozens of `await()` calls immediately beforehand. Parking to a
-    /// DEADLINE re-parks after such a wakeup, so the span elapses whatever the permit state.
+    /// leaves behind. A single `parkNanos` on the same thread then returns in ~0ns by consuming that residual
+    /// permit (as it does under a set interrupt flag, #3386) — and every caller here runs dozens of `await()`
+    /// calls immediately beforehand. [Pause] re-parks after such a wakeup, so the span elapses whatever the
+    /// permit state, and it does not spin under a set flag.
     ///
     /// The elapsed span is measured and asserted rather than assumed. A quiet period that does not elapse
     /// degrades its caller's exactly-once gate into a re-read of the value it just polled for — the gate
     /// stays green and stops testing anything, which is the failure mode a bare park already produced here.
     private static void awaitQuietPeriod(Duration span) {
         var startedAt = System.nanoTime();
-        var deadline = startedAt + span.toNanos();
 
-        while (System.nanoTime() < deadline) {
-            LockSupport.parkNanos(deadline - System.nanoTime());
-        }
+        Pause.pause(span);
 
         var elapsedMillis = Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
 

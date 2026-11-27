@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.testing.Pause;
 
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
@@ -98,7 +99,7 @@ class KvBackupGracefulStopTest {
     @Test
     void sameRevision_holdsSameBackedUpEntries_onEveryNode(@TempDir Path dir) {
         startCluster(dir);
-        LockSupport.parkNanos(Duration.ofSeconds(12).toNanos());
+        Pause.pause(Duration.ofSeconds(12));
         var samples = new java.util.TreeMap<Long, java.util.Map<String, java.util.Set<java.util.Map<AetherKey, AetherValue>>>>();
         var deadline = System.nanoTime() + Duration.ofSeconds(8).toNanos();
         var next = 0;

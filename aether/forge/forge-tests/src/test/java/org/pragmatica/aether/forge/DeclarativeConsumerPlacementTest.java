@@ -43,6 +43,7 @@ import org.junit.jupiter.api.TestClassOrder;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.testing.Pause;
 
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
@@ -894,7 +895,7 @@ class DeclarativeConsumerPlacementTest {
     }
 
     private static void sleep(Duration duration) {
-        java.util.concurrent.locks.LockSupport.parkNanos(duration.toNanos());
+        Pause.pause(duration);
     }
 
     // --- HTTP ----------------------------------------------------------------

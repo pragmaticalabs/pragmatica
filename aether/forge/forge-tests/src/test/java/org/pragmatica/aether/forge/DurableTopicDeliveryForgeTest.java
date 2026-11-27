@@ -41,6 +41,7 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.testing.Pause;
 
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
@@ -1167,7 +1168,7 @@ class DurableTopicDeliveryForgeTest {
     /// NOT move, and there is no condition to poll for that — only elapsed time in which movement would
     /// have shown up.
     private static void sleep(Duration duration) {
-        java.util.concurrent.locks.LockSupport.parkNanos(duration.toNanos());
+        Pause.pause(duration);
     }
 
     private void failIfSliceFailed() {
