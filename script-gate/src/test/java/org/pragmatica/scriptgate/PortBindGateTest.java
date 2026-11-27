@@ -82,11 +82,12 @@ class PortBindGateTest {
     }
 
     @Test
-    void aSubtypesOwnConstruction_isFlagged_atItsSuperCall(@TempDir Path root) {
+    void aSubtypesOwnConstruction_isFlagged_atItsSuperCall_whateverItsArguments(@TempDir Path root) {
         var findings = scan(PortBindFixtures.compiled(root), AllowList.parse(""));
 
         assertThat(sitesOf(findings, "fx.Forms$Superclass")).containsKey("<init>");
-        assertThat(sitesOf(findings, "fx.Forms$Narrow")).doesNotContainKey("<init>");
+        assertThat(sitesOf(findings, "fx.Forms$Narrow")).as("the argument never matters: a no-arg `super()` is a ServerSocket constructor too")
+                  .containsKey("<init>");
     }
 
     @Test
