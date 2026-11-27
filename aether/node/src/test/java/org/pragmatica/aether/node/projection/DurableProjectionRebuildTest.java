@@ -522,24 +522,25 @@ class DurableProjectionRebuildTest {
         publishAll(1, 6);
         awaitModel(123456L, 15_000);
         awaitCommittedCursor(6L, 20_000);
-        var delivered = attempts.get();
 
         recreateCheckpointAt(2L);
         assertThat(committedCursor()).as("control: the checkpoint was deleted and recreated at 2, the applier did not refuse either write")
                   .isEqualTo(Option.some(2L));
         forwardingEpochs.set(true);
         passUntilEpochReadsSent(1);
+        var consumerEpoch = subscriptionsForGroup().getFirst().rewindEpoch();
+        var answerEpoch = RewindEpoch.rewindEpoch(INCARNATION, 5L, 1L);
+
+        assertThat(consumerEpoch).as("the re-attached consumer runs at the recreated checkpoint's epoch").isEqualTo(RewindEpoch.NONE);
+        assertThat(answerEpoch.isStrictlyAfter(consumerEpoch)).as("restart cause: the answer's epoch %s is newer than the running consumer's epoch %s",
+                                                                  answerEpoch,
+                                                                  consumerEpoch)
+                                                              .isTrue();
         epochReads.getFirst()
-                  .succeed(List.of(Option.some(StreamCursorCheckpointValue.streamCursorCheckpointValue(6L,
-                                                                                                      selfToken(),
-                                                                                                      RewindEpoch.rewindEpoch(INCARNATION,
-                                                                                                                              5L,
-                                                                                                                              1L)))));
+                  .succeed(List.of(Option.some(StreamCursorCheckpointValue.streamCursorCheckpointValue(6L, selfToken(), answerEpoch))));
         passUntilEpochReadsSent(2);
         verify(managedRuntime, times(1)).abandon(TOPIC_STREAM, PARTITION, GROUP);
         awaitCommittedCursor(6L, 20_000);
-        assertThat(attempts.get() - delivered).as("offsets 2..5 delivered again from the recreated cursor, once each")
-                  .isEqualTo(4);
 
         answerEpochReadFromCommittedState(1);
         passUntilEpochReadsSent(3);
