@@ -364,10 +364,17 @@ class SliceInvokerNotSentRerouteTest {
               .onFailure(cause -> assertThat(cause).isInstanceOf(expected));
     }
 
-    /// Records every `InvokeRequest` and its target; each node's write outcome is `Sent` unless the test sets another.
+    /// Records every `InvokeRequest` and its target as ONE frame, so a reader that sees a request also sees its target:
+    /// two parallel lists let the test thread observe the request of an asynchronous re-route before its target (#3818).
+    /// Each node's write outcome is `Sent` unless the test sets another.
     private static final class RecordingNetwork extends StubClusterNetwork {
-        private final List<InvokeRequest> requests = new CopyOnWriteArrayList<>();
-        private final List<NodeId> targets = new CopyOnWriteArrayList<>();
+        private record Frame(InvokeRequest request, NodeId target) {
+            static Frame frame(InvokeRequest request, NodeId target) {
+                return new Frame(request, target);
+            }
+        }
+
+        private final List<Frame> frames = new CopyOnWriteArrayList<>();
         private final Map<NodeId, Function<NodeId, WriteOutcome>> outcomes = new ConcurrentHashMap<>();
         private final List<TimeSpan> waits = new CopyOnWriteArrayList<>();
         private final java.util.Set<NodeId> asyncRefusals = ConcurrentHashMap.newKeySet();
@@ -400,8 +407,7 @@ class SliceInvokerNotSentRerouteTest {
         @Override
         public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (message instanceof InvokeRequest request) {
-                requests.add(request);
-                targets.add(nodeId);
+                frames.add(Frame.frame(request, nodeId));
             }
 
             if (asyncRefusals.contains(nodeId)) {
@@ -414,15 +420,15 @@ class SliceInvokerNotSentRerouteTest {
         }
 
         List<InvokeRequest> requests() {
-            return List.copyOf(requests);
+            return frames.stream().map(Frame::request).toList();
         }
 
         List<NodeId> targets() {
-            return List.copyOf(targets);
+            return frames.stream().map(Frame::target).toList();
         }
 
         NodeId lastTarget() {
-            return targets.getLast();
+            return frames.getLast().target();
         }
     }
 
