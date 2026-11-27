@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -28,9 +29,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.replication.PartitionBackfill.partitionBackfill;
@@ -247,7 +248,7 @@ class PartitionBackfillTest {
             registry.updateWatermark(STREAM, PARTITION, SOURCE, 9L);
             registry.registerReplica(STREAM, PARTITION, SELF);
             var slowAppends = AlignedRecovery.alignedRecovery((stream, partition, offset, payload, timestamp) -> {
-                                                                  LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+                                                                  Pause.pause(Duration.ofMillis(50));
 
                                                                   return recovery.appendRecovered(stream,
                                                                                                   partition,

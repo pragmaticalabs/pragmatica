@@ -31,6 +31,7 @@ import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Option;
+import org.pragmatica.testing.Pause;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -894,7 +895,7 @@ class DeclarativeConsumerPlacementTest {
     }
 
     private static void sleep(Duration duration) {
-        java.util.concurrent.locks.LockSupport.parkNanos(duration.toNanos());
+        Pause.pause(duration);
     }
 
     // --- HTTP ----------------------------------------------------------------

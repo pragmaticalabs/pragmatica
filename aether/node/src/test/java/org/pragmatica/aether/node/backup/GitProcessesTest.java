@@ -145,8 +145,14 @@ class GitProcessesTest {
         var handle = undyingHandle(Stream::empty);
 
         Thread.currentThread().interrupt();
-        var dead = GitProcesses.awaitDead(Set.of(handle), System.nanoTime() + 300_000_000L);
-        var stillInterrupted = Thread.interrupted();
+        boolean dead;
+        boolean stillInterrupted;
+
+        try {
+            dead = GitProcesses.awaitDead(Set.of(handle), System.nanoTime() + 300_000_000L);
+        } finally {
+            stillInterrupted = Thread.interrupted();
+        }
 
         assertThat(dead).as("a member that is alive is not dead").isFalse();
         assertThat(stillInterrupted).as("the interrupt flag survives the wait").isTrue();
@@ -162,8 +168,14 @@ class GitProcessesTest {
             var children = awaitChildren(root, 2);
 
             Thread.currentThread().interrupt();
-            var dead = GitProcesses.kill(List.of(root), 5_000);
-            var stillInterrupted = Thread.interrupted();
+            boolean dead;
+            boolean stillInterrupted;
+
+            try {
+                dead = GitProcesses.kill(List.of(root), 5_000);
+            } finally {
+                stillInterrupted = Thread.interrupted();
+            }
 
             assertThat(dead).as("round " + round + ": the tree is dead, and kill says so under a set interrupt").isTrue();
             assertThat(stillInterrupted).as("round " + round + ": the interrupt flag is restored").isTrue();

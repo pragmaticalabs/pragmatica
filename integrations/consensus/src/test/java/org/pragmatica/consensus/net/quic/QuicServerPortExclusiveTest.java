@@ -42,6 +42,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.SliceCodec;
 
 import io.netty.buffer.Unpooled;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -152,7 +153,7 @@ class QuicServerPortExclusiveTest {
         try (var intruder = reuseSocket()) {
             intruder.bind(new InetSocketAddress(port));
             // Hold the stolen port for a moment, as a concurrent server would, before reporting.
-            LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(2));
+            Pause.pause(Duration.ofSeconds(2));
             intrusion.set("BOUND at delivered=" + delivered());
         } catch (IOException e) {
             intrusion.set("refused at delivered=" + delivered() + ": " + e);

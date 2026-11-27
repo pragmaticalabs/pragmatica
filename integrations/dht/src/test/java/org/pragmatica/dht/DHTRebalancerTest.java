@@ -52,6 +52,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.LockSupport;
 import java.time.Duration;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.testing.Pause;
 import org.pragmatica.testlogging.LogCapture;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.LogEvent;
@@ -1576,7 +1577,7 @@ class DHTRebalancerTest {
                 var node = dhtNode(LOCAL, storage, ring, RF1);
                 node.putLocal(soleKey(ring, "h3"), value("payload")).await();
                 write(node, late, "late");
-                LockSupport.parkNanos(ms(5).nanos());
+                Pause.pause(Duration.ofNanos(ms(5).nanos()));
                 var network = ScriptedNetwork.scripted((_, _) -> Reply.ACK);
                 var run = direct(node, network, 1_500, 100, Set::of);
 

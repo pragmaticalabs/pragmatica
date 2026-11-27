@@ -15,6 +15,7 @@
  */
 package org.pragmatica.consensus.rabia;
 
+import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
@@ -26,6 +27,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisA
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Option;
+import org.pragmatica.testing.Pause;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -286,7 +288,7 @@ class GenesisSeatUnreachableTest {
         assertThat(engine.genesisSeatConfirmationPendingForTesting()).as("precondition: the deadline is armed").isTrue();
 
         engine.stop().await();
-        LockSupport.parkNanos(1_000_000_000L);
+        Pause.pause(Duration.ofSeconds(1));
 
         assertThat(seatWarnings()).as("nothing decided after stop").isEmpty();
     }

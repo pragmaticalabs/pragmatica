@@ -10,6 +10,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -22,9 +23,8 @@ import org.pragmatica.messaging.StreamType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.AWAIT;
@@ -98,7 +98,7 @@ class InboundFifoPinTest {
             senders.a().send(B, LaneProbe.laneProbe(A, StreamType.CONSENSUS, "a-" + i + "-" + pad));
             senders.c().send(B, LaneProbe.laneProbe(C, StreamType.CONSENSUS, "c-" + i + "-" + pad));
             if (paced && (i + 1) % PACED_BURST == 0) {
-                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+                Pause.pause(Duration.ofMillis(5));
             }
         });
     }

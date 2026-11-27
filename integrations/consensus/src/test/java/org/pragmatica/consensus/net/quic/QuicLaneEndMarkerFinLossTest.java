@@ -21,6 +21,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -46,6 +47,7 @@ import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.handler.codec.quic.QuicStreamType;
 import org.pragmatica.portbind.HeldPort;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -99,9 +101,9 @@ class QuicLaneEndMarkerFinLossTest {
                   "the acceptor read the data");
         relay.blockDialerToAcceptor = true;   // the finish is lost
         retire(stream);
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1500));
+        Pause.pause(Duration.ofMillis(1500));
         relay.blockDialerToAcceptor = false;  // PTO re-sends the oldest unacked data
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1500));
+        Pause.pause(Duration.ofMillis(1500));
         relay.blockAcceptorToDialer = false;
         awaitTrue(() -> acceptorSide.get().stream(LANE).map(current -> current != atAcceptor).or(true),
                   "the acceptor released the retired lane although the finish was first lost");
@@ -119,7 +121,7 @@ class QuicLaneEndMarkerFinLossTest {
         awaitTrue(() -> receivedByAcceptor.stream().anyMatch(m -> m instanceof LaneProbe p && p.marker().equals("last-before-finish")),
                   "the acceptor read the data");
         retire(stream);
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(3000));
+        Pause.pause(Duration.ofMillis(3000));
         relay.blockAcceptorToDialer = false;
         awaitTrue(() -> acceptorSide.get().stream(LANE).map(current -> current != atAcceptor).or(true),
                   "control: the acceptor released the retired lane");
@@ -165,7 +167,7 @@ class QuicLaneEndMarkerFinLossTest {
         second.awaitUninterruptibly(AWAIT.millis());
         assertThat(second.isDone()).isTrue();
         assertThat(second.isSuccess()).as("a write after the FIN is refused").isFalse();
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(300));
+        Pause.pause(Duration.ofMillis(300));
         assertThat(caught.get()).as("and does not surface as an exception in the pipeline").isZero();
     }
 
@@ -180,7 +182,7 @@ class QuicLaneEndMarkerFinLossTest {
 
         atAcceptor.config().setAutoRead(false);
         stream.config().setWriteBufferWaterMark(new io.netty.channel.WriteBufferWaterMark(8 * 1024, 64 * 1024));
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(300));
+        Pause.pause(Duration.ofMillis(300));
         io.netty.channel.ChannelFuture last = null;
         var blockedAfter = -1;
 
@@ -201,7 +203,7 @@ class QuicLaneEndMarkerFinLossTest {
             }
         }
         assertThat(blockedAfter).as("precondition: the stream became not writable within " + MAX_BLOCKING_WRITES + " writes of 64 KB").isPositive();
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(200));
+        Pause.pause(Duration.ofMillis(200));
         eventLoopBarrier(stream);
         assertThat(stream.isWritable()).as("precondition: the stream is still not writable").isFalse();
         assertThat(last.isDone()).as("precondition: the last write is stuck behind flow control").isFalse();
@@ -275,7 +277,7 @@ class QuicLaneEndMarkerFinLossTest {
         awaitTrue(() -> dialerSide.stream(LANE).isPresent() && acceptorSide.get().stream(LANE).isPresent()
                         && dialerSide.stream(LANE).unwrap().streamId() == acceptorSide.get().stream(LANE).unwrap().streamId(),
                   "both ends carry FORWARD on the dialer's stream");
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(300));   // let handshake-era acks settle
+        Pause.pause(Duration.ofMillis(300));   // let handshake-era acks settle
     }
 
     private static void awaitTrue(BooleanSupplier condition, String what) {

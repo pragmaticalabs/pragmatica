@@ -24,6 +24,7 @@ import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Option;
+import org.pragmatica.testing.Pause;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
@@ -98,7 +99,7 @@ class KvBackupGracefulStopTest {
     @Test
     void sameRevision_holdsSameBackedUpEntries_onEveryNode(@TempDir Path dir) {
         startCluster(dir);
-        LockSupport.parkNanos(Duration.ofSeconds(12).toNanos());
+        Pause.pause(Duration.ofSeconds(12));
         var samples = new java.util.TreeMap<Long, java.util.Map<String, java.util.Set<java.util.Map<AetherKey, AetherValue>>>>();
         var deadline = System.nanoTime() + Duration.ofSeconds(8).toNanos();
         var next = 0;

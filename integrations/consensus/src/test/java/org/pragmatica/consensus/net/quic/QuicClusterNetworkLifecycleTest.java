@@ -50,6 +50,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.portbind.HeldPort;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -165,7 +166,7 @@ class QuicClusterNetworkLifecycleTest {
         var hookDone = new java.util.concurrent.atomic.AtomicBoolean();
 
         network.whenReady(() -> {
-            java.util.concurrent.locks.LockSupport.parkNanos(150_000_000L);
+            Pause.pause(Duration.ofMillis(150));
             hookDone.set(true);
         });
         network.startOnPort(0).await(AWAIT).onFailure(cause -> fail("start failed: " + cause.message()));

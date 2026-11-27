@@ -21,6 +21,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -55,6 +56,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -135,7 +137,7 @@ class QuicDialAttemptTest {
         awaitConnectedRedialing(lowNode.network(), nodeInfo(high, highPort), false,
                                 () -> connected(lowNode.network(), high) && connected(highNode.network(), low),
                                 "both ends CONNECTED");
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(OUTAGE_SETTLE_MS));
+        Pause.pause(Duration.ofMillis(OUTAGE_SETTLE_MS));
         assertEveryLaneCarriesTrafficBothWays(lowNode, highNode);
 
         assertThat(causes(lowNode.journal()).stream().filter(cause -> cause.startsWith(DIALER_HELLO)))
@@ -224,7 +226,7 @@ class QuicDialAttemptTest {
 
             awaitTrue(() -> seeds.stream().allMatch(seed -> phase(seed.network(), ids.get(late)) == PeerState.Phase.CONNECTING),
                       "arming: every seed's dial to the late core is in flight");
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(LATE_START_DELAY_MS));
+            Pause.pause(Duration.ofMillis(LATE_START_DELAY_MS));
             assertThat(seeds.stream().filter(seed -> phase(seed.network(), ids.get(late)) == PeerState.Phase.CONNECTING))
                 .as("arming: every seed's dial to the late core is still pending when the late core starts")
                 .hasSize(late);
@@ -250,7 +252,7 @@ class QuicDialAttemptTest {
                      ARMING_WAIT_MS);
             // Open the gate: an attempt that was NOT abandoned now completes and supersedes the live link.
             gate.open();
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(GATE_SETTLE_MS));
+            Pause.pause(Duration.ofMillis(GATE_SETTLE_MS));
         }
 
         assertThat(nodes.stream().mapToLong(node -> node.network().quicMetrics().handshakeTotalCount()).sum())

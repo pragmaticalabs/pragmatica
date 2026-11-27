@@ -20,6 +20,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -47,6 +48,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -101,7 +103,7 @@ class QuicLateDesignatedDialTest {
         try (var gate = UdpGate.udpGate(highPort)) {
             start(lowNet, 0);
             lowNet.dialForTests(nodeInfo(high, gate.port()), false);
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(PEER_START_DELAY_MS));
+            Pause.pause(Duration.ofMillis(PEER_START_DELAY_MS));
             assertThat(lowNet.peerPhaseForTests(high))
                 .as("arming: the lower id's dial is still pending when the peer starts")
                 .isEqualTo(Option.some(PeerState.Phase.CONNECTING));
@@ -111,7 +113,7 @@ class QuicLateDesignatedDialTest {
             awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), "both ends CONNECTED");
             waitUpTo(() -> lowNet.quicMetrics().dialAbandonedCount() == 1, ARMING_WAIT_MS);
             gate.open();
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MS));
+            Pause.pause(Duration.ofMillis(SETTLE_MS));
 
             // Asserted while the gate is still open: a link that went through it (only if a dial was NOT abandoned)
             // must be judged by these, not killed by the gate's close first.
