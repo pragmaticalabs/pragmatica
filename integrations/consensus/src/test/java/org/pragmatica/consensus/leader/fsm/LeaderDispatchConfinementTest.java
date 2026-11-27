@@ -72,13 +72,13 @@ class LeaderDispatchConfinementTest {
                                      .isInstanceOf(LeaderElectionState.Dormant.class);
             assertThat(ctx.confinementBreachesForTest()).as("the refusal is counted")
                                                         .isEqualTo(1);
-            ctx.serially(inbound(), () -> ctx.dispatchConfined(new ClusterFsmEvent.QuorumEstablished()));
+            inbound(ctx).serially(() -> ctx.dispatchConfined(new ClusterFsmEvent.QuorumEstablished()));
             assertThat(ctx.current()).as("control: the same dispatch on the drainer reaches the FSM")
                                      .isNotInstanceOf(LeaderElectionState.Dormant.class);
             assertThat(ctx.confinementBreachesForTest()).as("control: a dispatch on the drainer is not refused")
                                                         .isEqualTo(1);
         } finally {
-            ctx.stop(inbound());
+            inbound(ctx).stop();
         }
     }
 
@@ -106,7 +106,7 @@ class LeaderDispatchConfinementTest {
                                     .message()
                                     .doesNotContain("''");
         } finally {
-            ctx.stop(inbound());
+            inbound(ctx).stop();
         }
     }
 
@@ -123,7 +123,7 @@ class LeaderDispatchConfinementTest {
 
         try {
             var holder = Thread.ofPlatform()
-                               .start(() -> ctx.serially(inbound(), () -> holdTheDrainer(holding, release)));
+                               .start(() -> inbound(ctx).serially(() -> holdTheDrainer(holding, release)));
             var dispatcher = Thread.ofPlatform()
                                    .unstarted(() -> dispatchThenRead(ctx, stateAtReturn));
 
@@ -143,7 +143,7 @@ class LeaderDispatchConfinementTest {
                                            .isNotInstanceOf(LeaderElectionState.Dormant.class);
         } finally {
             release.countDown();
-            ctx.stop(inbound());
+            inbound(ctx).stop();
         }
     }
 
@@ -184,13 +184,13 @@ class LeaderDispatchConfinementTest {
                                .hasMessageContaining(FOREIGN);
             assertThat(ctx.current()).as("the refused LeaderOutOfView never reached the FSM: the tenure stands")
                                      .isInstanceOf(LeaderElectionState.Led.class);
-            ctx.serially(inbound(), () -> fsm.dispatch(new PeerRemovedFromView(PEER)));
+            inbound(ctx).serially(() -> fsm.dispatch(new PeerRemovedFromView(PEER)));
             assertThat(ctx.current()).as("control: on the drainer the same removal ends the tenure")
                                      .isNotInstanceOf(LeaderElectionState.Led.class);
             assertThat(ctx.confinementBreachesForTest()).as("control: only the off-drainer dispatch was refused")
                                                         .isEqualTo(1);
         } finally {
-            ctx.stop(inbound());
+            inbound(ctx).stop();
         }
     }
 
@@ -203,8 +203,10 @@ class LeaderDispatchConfinementTest {
         var ctx = context(ctx2 -> LeaderElectionState.Led.fresh(ctx2, PEER), SHORT);
 
         try {
-            ctx.serially(inbound(), () -> ctx.current()
-                                  .onEntry());
+            // the Fsm runs no entry hook for its initial state: the test runs it, on the drainer, with the initial entry's lifetime
+            inbound(ctx).serially(() -> ctx.current()
+                                  .onEntry(fsm.entered()
+                                              .lifetime()));
             Awaitility.await("instrument: the lease checked twice, so every Led timer armed at entry has fired")
                       .atMost(Duration.ofSeconds(10))
                       .pollInterval(Duration.ofMillis(5))
@@ -215,7 +217,7 @@ class LeaderDispatchConfinementTest {
                       .pollInterval(Duration.ofMillis(5))
                       .until(() -> ctx.confinementBreachesForTest() == 0);
         } finally {
-            ctx.stop(inbound());
+            inbound(ctx).stop();
         }
     }
 

@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.lang.utils.OwnerLifetime.ownerLifetime;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
@@ -212,6 +213,8 @@ class ElectingPeerObservationTest {
         var ctx = ((LeaderElectionState.QuorumLost) h.state()).ctx();
 
         var freshElecting = LeaderElectionState.Electing.fresh(ctx);
+        // The observation is armed by the entry hook (#3846 round 2), never by construction.
+        freshElecting.onEntry(ownerLifetime());
         var observationFuture = freshElecting.observationFuture().get();
         assertThat((Object) observationFuture).isNotNull();
         assertThat(observationFuture.isCancelled()).isFalse();
@@ -241,9 +244,10 @@ class ElectingPeerObservationTest {
         var ctx = ((LeaderElectionState.QuorumLost) h.state()).ctx();
 
         var freshReElecting = LeaderElectionState.ReElecting.fresh(ctx);
+        freshReElecting.onEntry(ownerLifetime());
         var observationFuture = freshReElecting.observationFuture().get();
         assertThat((Object) observationFuture)
-                .as("ReElecting.fresh schedules an observation future symmetrically with Electing")
+                .as("ReElecting.onEntry schedules an observation future symmetrically with Electing")
                 .isNotNull();
         assertThat(observationFuture.isCancelled()).isFalse();
 

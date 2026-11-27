@@ -7,6 +7,8 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -86,7 +88,7 @@ class LeaderAdoptionSequenceGateTest {
     void excludedCoreObservesVerifiedLeaderWithoutReenteringElection() {
         var h = harness(new AtomicReference<>(Option.<NodeId>none()));
         var ctx = ctxOf(h);
-        var manager = new org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager(h.fsm(), ctx, false);
+        var manager = new org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager(h.fsm(), ctx, inbound(ctx), false);
         // #3581: the excluded core is a passive observer, which adopts a committed leader only while its stored view
         // holds it, so the transport view names the cluster first.
         h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, List.of(SELF, LEADER, SUCCESSOR), seq()));
@@ -123,7 +125,7 @@ class LeaderAdoptionSequenceGateTest {
                 LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                 LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER, ready::get, Option::none, LONG, LONG).dormant());
         var ctx = ctxOf(h);
-        var manager = new org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager(h.fsm(), ctx, false);
+        var manager = new org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager(h.fsm(), ctx, inbound(ctx), false);
         manager.installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration.voterConfiguration(1, List.of(LEADER, SUCCESSOR)).unwrap());
         manager.installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration.voterConfiguration(2, List.of(SELF, LEADER, SUCCESSOR)).unwrap());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.QuorumWaiting.class);
@@ -174,9 +176,9 @@ class LeaderAdoptionSequenceGateTest {
 
         // Topology deliberately excludes the healthy LEADER — the transport-absent FIX-1 condition. The view is applied
         // BEFORE the adoption: a view applied after it would lose the absent leader (#3092 I2, ViewApplicationTableTest).
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF), seq()));
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ConsensusReady());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF), seq()));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ConsensusReady());
 
         assertThat(h.state())
                 .as("joiner adopts the healthy committed leader in AwaitingKvSync, before electing")

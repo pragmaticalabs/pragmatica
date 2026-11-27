@@ -201,7 +201,7 @@ class LeaderEntryPointAtomicityTest {
         var ownedBefore = testCase.owned().apply(ctx);
         var held = holdDrainer(ctx);
 
-        ctx.serially(inbound(), () -> testCase.change().accept(ctx));
+        inbound(ctx).serially(() -> testCase.change().accept(ctx));
         testCase.call().accept(manager);
         assertThat(outcome()).as("%s acted on the caller's thread while another thread held the serial executor", name)
                              .isEmpty();
@@ -209,7 +209,7 @@ class LeaderEntryPointAtomicityTest {
                                                    name)
                                                .isEqualTo(ownedBefore);
         held.release();
-        ctx.serially(inbound(), LeaderEntryPointAtomicityTest::nothing);
+        inbound(ctx).serially(LeaderEntryPointAtomicityTest::nothing);
         assertThat(outcome()).as("%s acted on the state read before the queued task ran: its check and its act are not "
                                  + "one task",
                                  name)
@@ -283,7 +283,7 @@ class LeaderEntryPointAtomicityTest {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var holder = Thread.ofPlatform()
-                           .start(() -> ctx.serially(inbound(), () -> block(entered, release)));
+                           .start(() -> inbound(ctx).serially(() -> block(entered, release)));
 
         assertThat(entered.await(10, TimeUnit.SECONDS)).as("instrument: the holder owns the drainer")
                                                        .isTrue();
@@ -310,7 +310,7 @@ class LeaderEntryPointAtomicityTest {
                                                                  f -> initial(context(f, router), fixture),
                                                                  recorder());
 
-        return new FsmBackedLeaderManager(fsm, fsm.current().ctx(), fixture == Fixture.LOCAL_DORMANT);
+        return new FsmBackedLeaderManager(fsm, fsm.current().ctx(), inbound(fsm.current().ctx()), fixture == Fixture.LOCAL_DORMANT);
     }
 
     /// The initial state is set without an `onEnter` (`Fsm#fsm`), so `Electing` arms no timer: it only gives the

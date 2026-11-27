@@ -94,8 +94,8 @@ class QuorumWaitingKvPollTest {
         var h = buildHarness(consensusReady, kvLeader);
 
         // Seed topology so adoptLeaderIfInTopology accepts PEER_A.
-        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B), seq()));
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B), seq()));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
 
         // Synchronous: Dormant → QuorumWaiting.onEntry → adoptLeaderFromKvIfPresent →
         // LeaderCommitted dispatched → handler arm transitions to Led(PEER_A).
@@ -104,7 +104,7 @@ class QuorumWaitingKvPollTest {
                 .isInstanceOf(LeaderElectionState.Led.class);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(PEER_A);
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     /// Periodic re-check ALSO pulls KV. consensus stays not-ready, but a peer commits a leader
@@ -152,14 +152,14 @@ class QuorumWaitingKvPollTest {
         var kvLeader = new AtomicReference<>(Option.some(PEER_A));
         var h = buildHarness(consensusReady, kvLeader);
 
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
 
         assertThat(h.state())
                 .as("committed KV leader adopted despite empty topology — consensus overrides transport (FIX 1)")
                 .isInstanceOf(LeaderElectionState.Led.class);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(PEER_A);
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     /// #3092 I2, LOCAL mode (no proposal handler): the counterpart of the cluster-mode test above. A KV leader absent

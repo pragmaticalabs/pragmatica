@@ -10,6 +10,8 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -374,7 +376,7 @@ class ViewApplicationTableTest {
                 return initial.apply(context);
             });
             ctx = holder.get();
-            manager = new FsmBackedLeaderManager(harness.fsm(), ctx, mode == Mode.LOCAL);
+            manager = new FsmBackedLeaderManager(harness.fsm(), ctx, inbound(ctx), mode == Mode.LOCAL);
         }
 
         static Node startedIn(StartState start, Mode mode) {
@@ -673,6 +675,11 @@ class ViewApplicationTableTest {
     @Test
     void item6_localTick_onAnEmptyView_reschedulesAndElectsWhenAViewAppears() {
         localNode(StartState.ELECTING, Option::none, TimeSpan.timeSpan(20).millis());
+        // the Fsm runs no entry hook for its initial state: enter it on the drainer, with the initial entry's lifetime
+        OnDrainer.run(node.ctx, () -> node.ctx.current()
+                                              .onEntry(node.harness.fsm()
+                                                                   .entered()
+                                                                   .lifetime()));
         node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N1, List.of(), 2L));
 
         OnDrainer.dispatch(node.harness, new ElectionTick());

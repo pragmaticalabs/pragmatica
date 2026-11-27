@@ -29,12 +29,14 @@ import org.pragmatica.statemachine.FsmObserver;
 /// context in an `AtomicReference` holder for the caller, and returns the `Dormant` initial state.
 ///
 /// No dispatcher thread: `Fsm.dispatch` runs on the thread draining the node's serial executor (#3587,
-/// [`LeaderElectionContext#serially`]), which every leader-election event of the node enters; a direct `Fsm.dispatch`
+/// [`LeaderElectionContext.Inbound#serially`]), which every leader-election event of the node enters; a direct `Fsm.dispatch`
 /// (tests only) runs on the caller's thread.
 public final class LeaderElectionFsm {
     /// Pair of the built Fsm and its context. Returned together so the factory caller (the
     /// `LeaderManager` builder) can wire both into the final `LeaderManager` record.
-    public record FsmWithContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm, LeaderElectionContext context) {}
+    public record FsmWithContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                                 LeaderElectionContext context,
+                                 LeaderElectionContext.Inbound inbound) {}
 
     private LeaderElectionFsm() {}
 
@@ -190,7 +192,9 @@ public final class LeaderElectionFsm {
                                                                                                                                         leaderPingFreshFn);
         var fsm = Fsm.fsm("leader-election", self.id(), initialStateFactory, observer);
 
-        return new FsmWithContext(fsm, ctxHolder.get());
+        return new FsmWithContext(fsm,
+                                  ctxHolder.get(),
+                                  ctxHolder.get().claimInbound());
     }
 
     private static LeaderElectionState buildContextAndInitialState(AtomicReference<LeaderElectionContext> ctxHolder,

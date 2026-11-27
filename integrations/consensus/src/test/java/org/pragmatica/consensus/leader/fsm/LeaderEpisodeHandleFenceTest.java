@@ -15,7 +15,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.LogEvent;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -30,25 +29,20 @@ import org.pragmatica.statemachine.FsmTestHarness;
 import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
 
-/// #3846 round 2, lane A: the findings of v3855c (C1-C4) and the stale handle, as deterministic behaviour rows (latches,
-/// no sleeps). INVARIANT under test: FSM code reaches the serial executor, `Fsm.dispatch` or `followUp` from outside the
+/// #3846 round 2: the findings of v3855c (C1-C4) and the stale handle, as deterministic behaviour rows (latches, no
+/// sleeps). INVARIANT under test: FSM code reaches the serial executor, `Fsm.dispatch` or `followUp` from outside the
 /// current dispatch frame only through a handle of the episode it was given at entry, and that call takes effect only if
 /// the episode is still current when it runs; a refusal is a no-op a test observes.
 ///
-/// Each finding is ONE scenario method that returns what happened, and two tests read it:
-/// - `c<N>_*_defectStillReproduces_atThisHead` is the ENABLED tripwire: it asserts the CURRENT behaviour, and its failure
-///   message says what to enable. It goes red when the fence lands, which is the signal to enable the real row beside it
-///   and delete the tripwire.
-/// - `c<N>_*_isRefused` is the real assertion, `@Disabled` until the fence exists (lane B). Lifted, it is red at
-///   2867082201.
-/// The stale-handle row and the controls hold at this head and stay enabled.
-///
-/// The rows use the API of 2867082201 (`serially(inbound, task)`, `serializedFor(owner|identity, task)`,
-/// `followUp`). Lane B ports each row to the handle API: the SCENARIO (who calls, from which thread, in which episode)
-/// is the contract, the call spelling is not.
+/// Each finding is ONE scenario method that returns what happened, and one real row reads it. Lane A wrote the rows with
+/// the API of 2867082201 (`serially(inbound, task)`, `serializedFor(owner|identity, task)`, `ctx.followUp`); the SCENARIO
+/// (who calls, from which thread, in which episode) is unchanged, only the call spelling moved to the handle API: a
+/// receiver ([LeaderElectionContext.EpisodeHandle], [LeaderElectionContext.Inbound]) instead of an argument. Where a
+/// finding's old spelling no longer exists (`serially(null, ...)`, `serializedFor(ctx.current(), ...)`), the compile rows
+/// of `LeaderEpisodeEntryPathTest` pin its absence and the row here pins the nearest spelling that still compiles.
 class LeaderEpisodeHandleFenceTest {
-    private static final String DISABLED = "#3846 round 2: enable when the episode-handle fence exists (lane B)";
     private static final String SERIAL_LOGGER = "org.pragmatica.consensus.leader.fsm.SerialExecutor";
     private static final NodeId SELF = new NodeId("node-1");
     private static final NodeId PEER = new NodeId("node-2");
@@ -61,6 +55,7 @@ class LeaderEpisodeHandleFenceTest {
     private LeaderElectionContext ctx;
     private final AtomicReference<RuntimeException> foreignRefusal = new AtomicReference<>();
     private LogCapture serialLog;
+    private LeaderElectionContext.EpisodeHandle exitedHandle;
 
     @AfterEach
     void stopTimersAndRestoreLog() {
@@ -74,18 +69,11 @@ class LeaderEpisodeHandleFenceTest {
 
     // ---- C1: a foreign thread changes the FSM state through followUp ----
     @Test
-    void c1_foreignFollowUp_defectStillReproduces_atThisHead() {
-        assertThat(foreignFollowUpMovedTheFsm())
-            .as("C1 no longer reproduces: a foreign-thread followUp did not move the FSM. The fence landed: enable "
-                + "c1_foreignFollowUp_isRefused and delete this tripwire")
-            .isTrue();
-    }
-
-    @Disabled(DISABLED)
-    @Test
     void c1_foreignFollowUp_isRefused() {
         assertThat(foreignFollowUpMovedTheFsm()).as("a foreign thread changed the FSM state through followUp (C1)")
                                                 .isFalse();
+        assertThat(ctx.refusedFollowUpsForTest()).as("the refusal is a counted, named check, not an event the state ignored")
+                                                 .isPositive();
     }
 
     /// Instrument for C1: the event the foreign thread sends does move the exited FSM when it arrives the production way,
@@ -100,51 +88,43 @@ class LeaderEpisodeHandleFenceTest {
 
     private boolean foreignFollowUpMovedTheFsm() {
         var exited = exitQuorum();
+        var exitedEpisode = exitedHandle;
 
-        onForeignThread(() -> ctx.followUp(new ClusterFsmEvent.QuorumEstablished()));
+        onForeignThread(() -> exitedEpisode.followUp(new ClusterFsmEvent.QuorumEstablished()));
+        OnDrainer.drained(ctx);
 
         return harness.state() != exited;
     }
 
     // ---- C2: null stands in for the capability ----
+    /// The inbound receiver is handed out once, to the code that builds the context; a claim made after that is refused,
+    /// so FSM code that reaches `claimInbound()` cannot run a task through it.
     @Test
-    void c2_seriallyWithNull_defectStillReproduces_atThisHead() {
-        assertThat(nullCapabilityTaskRan())
-            .as("C2 no longer reproduces: serially(null, task) did not run the task. The fence landed: enable "
-                + "c2_seriallyWithNull_isRefused and delete this tripwire")
-            .isTrue();
+    void c2_aLaterClaimOfTheInboundReceiver_isRefused() {
+        assertThat(laterClaimTaskRan()).as("a receiver claimed after the builder's ran a task (C2)").isFalse();
+        assertThat(ctx.refusedInboundForTest()).as("the refusal is counted: a named check")
+                                               .isPositive();
     }
 
-    @Disabled(DISABLED)
-    @Test
-    void c2_seriallyWithNull_isRefused() {
-        assertThat(nullCapabilityTaskRan()).as("serially(null, task) ran the task (C2)").isFalse();
-    }
-
-    private boolean nullCapabilityTaskRan() {
+    private boolean laterClaimTaskRan() {
         var ran = new AtomicInteger();
 
         start();
-        onForeignThread(() -> ctx.serially(null, ran::incrementAndGet));
+        inbound(ctx);
+        onForeignThread(() -> ctx.claimInbound()
+                                 .serially(ran::incrementAndGet));
         OnDrainer.drained(ctx);
 
         return ran.get() > 0;
     }
 
     // ---- C3: identity laundered through ctx.current() ----
-    @Test
-    void c3_launderedIdentity_defectStillReproduces_atThisHead() {
-        assertThat(launderedTaskRanInTheNextEpisode())
-            .as("C3 no longer reproduces: a task armed through ctx.current() from episode N's callback did not run in N+1. "
-                + "The fence landed: enable c3_launderedIdentity_isRefused and delete this tripwire")
-            .isTrue();
-    }
-
-    @Disabled(DISABLED)
+    /// Episode N's callback holds N's handle only (the state exposes no way to read another episode's); used in N+1 it
+    /// is refused, from a foreign thread as from the drainer.
     @Test
     void c3_launderedIdentity_isRefused() {
         assertThat(launderedTaskRanInTheNextEpisode())
-            .as("serializedFor(ctx.current(), task), called by a callback of episode N, ran in episode N+1 (C3)")
+            .as("a callback of episode N armed a task through N's handle, and it ran in episode N+1 (C3)")
             .isFalse();
     }
 
@@ -155,9 +135,10 @@ class LeaderEpisodeHandleFenceTest {
         start();
         OnDrainer.dispatch(harness, new ClusterFsmEvent.QuorumEstablished());
         var episodeOne = harness.state();
-        var stored = ctx.serializedFor(episodeOne, storedRan::incrementAndGet);
-        Runnable callbackOfOne = () -> ctx.serializedFor(ctx.current(), launderedRan::incrementAndGet)
-                                          .run();
+        var handleOne = handleOfTheCurrentEntry();
+        var stored = handleOne.serialized(storedRan::incrementAndGet);
+        Runnable callbackOfOne = () -> handleOne.serialized(launderedRan::incrementAndGet)
+                                                .run();
 
         OnDrainer.dispatch(harness, new ClusterFsmEvent.QuorumDisappeared());
         OnDrainer.dispatch(harness, new ClusterFsmEvent.QuorumEstablished());
@@ -165,27 +146,19 @@ class LeaderEpisodeHandleFenceTest {
         stored.run();
         onForeignThread(callbackOfOne);
         OnDrainer.drained(ctx);
-        assertThat(storedRan).as("instrument: the Runnable armed in N is dropped in N+1 (the fence that exists)")
-                             .hasValue(0);
+        assertThat(storedRan).as("instrument: the Runnable armed in N is dropped in N+1").hasValue(0);
 
         return launderedRan.get() > 0;
     }
 
     // ---- C4: null identity fenced only by an accidental NullPointerException ----
     @Test
-    void c4_nullIdentity_defectStillReproduces_atThisHead() {
-        assertThat(nullIdentityEndedInAnAbsorbedNpe())
-            .as("C4 no longer reproduces: serializedFor((EpisodeIdentity) null, task) no longer ends in an absorbed NPE. "
-                + "The fence landed: enable c4_nullIdentity_isRefusedByANamedCheck and delete this tripwire")
-            .isTrue();
-    }
-
-    @Disabled(DISABLED)
-    @Test
     void c4_nullIdentity_isRefusedByANamedCheck() {
         assertThat(nullIdentityEndedInAnAbsorbedNpe())
             .as("a null identity was refused by an accidental NullPointerException that the serial executor absorbed (C4)")
             .isFalse();
+        assertThat(ctx.refusedNullIdentitiesForTest()).as("the refusal is the named check, and it is counted")
+                                                      .isPositive();
     }
 
     private boolean nullIdentityEndedInAnAbsorbedNpe() {
@@ -193,7 +166,8 @@ class LeaderEpisodeHandleFenceTest {
 
         start();
         serialLog = LogCapture.capture(SERIAL_LOGGER, Level.ERROR, true);
-        ctx.serializedFor((EpisodeIdentity) null, ran::incrementAndGet)
+        ctx.episodeOf((EpisodeIdentity) null)
+           .serialized(ran::incrementAndGet)
            .run();
         OnDrainer.drained(ctx);
         assertThat(ran).as("a null identity ran the task").hasValue(0);
@@ -204,7 +178,7 @@ class LeaderEpisodeHandleFenceTest {
                         .anyMatch(NullPointerException.class::isInstance);
     }
 
-    // ---- stale handle: a handle of N, used after the same record is re-entered as N+1, is refused (holds at this head) ----
+    // ---- stale handle: a handle of N, used after the same record is re-entered as N+1, is refused ----
     @Test
     void staleHandle_ofEntryN_usedInEntryNPlusOne_isRefused() {
         var staleRan = new AtomicInteger();
@@ -213,11 +187,11 @@ class LeaderEpisodeHandleFenceTest {
         start();
         OnDrainer.dispatch(harness, new ClusterFsmEvent.QuorumEstablished());
         var saved = harness.state();
-        var staleHandle = ctx.serializedFor(saved, staleRan::incrementAndGet);
+        var staleHandle = handleOfTheCurrentEntry().serialized(staleRan::incrementAndGet);
 
         OnDrainer.run(ctx, () -> harness.reenter(saved));
         assertThat(harness.state()).as("instrument: the same record, a new entry").isSameAs(saved);
-        var freshHandle = ctx.serializedFor(saved, freshRan::incrementAndGet);
+        var freshHandle = handleOfTheCurrentEntry().serialized(freshRan::incrementAndGet);
 
         staleHandle.run();
         freshHandle.run();
@@ -230,9 +204,18 @@ class LeaderEpisodeHandleFenceTest {
     private LeaderElectionState exitQuorum() {
         start();
         OnDrainer.dispatch(harness, new ClusterFsmEvent.QuorumEstablished());
+        exitedHandle = handleOfTheCurrentEntry();
         OnDrainer.dispatch(harness, new ClusterFsmEvent.QuorumDisappeared());
 
         return harness.state();
+    }
+
+    /// The handle the current state received at its entry ([LeaderElectionState#onEntered]), rebuilt over the lifetime the
+    /// Fsm holds for it: the same identity the state's own handle carries.
+    private LeaderElectionContext.EpisodeHandle handleOfTheCurrentEntry() {
+        return ctx.entryEpisode(harness.fsm()
+                                       .entered()
+                                       .lifetime());
     }
 
     private void start() {

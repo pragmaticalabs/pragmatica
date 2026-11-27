@@ -130,7 +130,7 @@ class LeaderSerialDispatchCensusTest {
         var manager = dormantManager();
         var held = holdDrainer(manager.context());
 
-        manager.context().serially(inbound(), LeaderSerialDispatchCensusTest::failingTask);
+        inbound(manager.context()).serially(LeaderSerialDispatchCensusTest::failingTask);
         manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 1));
         held.release();
         assertThat(observedSequences()).as("the event queued behind a failing task ran in the same drain")
@@ -153,6 +153,7 @@ class LeaderSerialDispatchCensusTest {
                                                                  throwingOnStop());
         var manager = new FsmBackedLeaderManager(fsm,
                                                  fsm.current().ctx(),
+                                                 inbound(fsm.current().ctx()),
                                                  false);
 
         manager.stop();
@@ -217,7 +218,7 @@ class LeaderSerialDispatchCensusTest {
     private static HeldDrainer holdDrainer(LeaderElectionContext ctx) throws InterruptedException {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        var holder = Thread.ofPlatform().start(() -> ctx.serially(inbound(), () -> block(entered, release)));
+        var holder = Thread.ofPlatform().start(() -> inbound(ctx).serially(() -> block(entered, release)));
 
         assertThat(entered.await(10, TimeUnit.SECONDS)).as("instrument: the holder owns the drainer").isTrue();
 
@@ -242,7 +243,7 @@ class LeaderSerialDispatchCensusTest {
                                                                  recorder());
         var ctx = fsm.current().ctx();
 
-        return new FsmBackedLeaderManager(fsm, ctx, false);
+        return new FsmBackedLeaderManager(fsm, ctx, inbound(ctx), false);
     }
 
     private FsmObserver<LeaderElectionState, ClusterFsmEvent> recorder() {

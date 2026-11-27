@@ -35,7 +35,7 @@ final class OnDrainer {
     }
 
     static void dispatch(LeaderElectionContext ctx, ClusterFsmEvent event) {
-        run(ctx, () -> ctx.submit(inbound(), event));
+        run(ctx, () -> inbound(ctx).submit(event));
     }
 
     /// Runs `task` as ONE task on the node's serial executor and returns after it ran: several steps that production
@@ -43,7 +43,7 @@ final class OnDrainer {
     static void run(LeaderElectionContext ctx, Runnable task) {
         var handled = new CountDownLatch(1);
 
-        ctx.serially(inbound(), () -> runThenComplete(task, handled));
+        inbound(ctx).serially(() -> runThenComplete(task, handled));
         awaitHandled(handled);
     }
 
@@ -53,7 +53,7 @@ final class OnDrainer {
     static void drained(LeaderElectionContext ctx) {
         var handled = new CountDownLatch(1);
 
-        ctx.serially(inbound(), handled::countDown);
+        inbound(ctx).serially(handled::countDown);
         awaitHandled(handled);
     }
 

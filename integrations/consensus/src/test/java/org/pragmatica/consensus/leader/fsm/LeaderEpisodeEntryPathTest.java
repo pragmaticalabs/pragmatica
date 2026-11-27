@@ -17,7 +17,6 @@ import java.net.URI;
 import java.util.List;
 import java.util.stream.Stream;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -29,7 +28,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #3846 failure input 2: a timer or a promise callback armed through the old unfenced path. The enforcer is the
 /// compiler, not a census a new arm site can bypass: `LeaderElectionContext` offers no way to hand a task to the
-/// serial executor except through an episode identity, so an arm site written without one does not compile.
+/// serial executor, to dispatch, or to follow up from outside the dispatch frame except by calling a method ON an
+/// `EpisodeHandle` that the state received at entry, so an arm site written without one does not compile.
 ///
 /// The probes are compiled in the context's own package (package-private access is the widest a new arm site in
 /// `leader/fsm` could have) against this test's class path. The control probe is the same arm site through the
@@ -55,8 +55,8 @@ class LeaderEpisodeEntryPathTest {
     @Test
     void controlProbe_armingATimerThroughAnEpisode_compiles() throws Exception {
         var errors = compile(HEAD
-                             + "  static Runnable arm(LeaderElectionContext ctx, LeaderElectionState owner, Runnable task) {\n"
-                             + "    return ctx.serializedFor(owner, task);\n"
+                             + "  static Runnable arm(LeaderElectionContext.EpisodeHandle episode, Runnable task) {\n"
+                             + "    return episode.serialized(task);\n"
                              + "  }\n}\n");
 
         assertThat(errors).as("instrument: the probe class path compiles an arm site through the fenced path")
@@ -66,8 +66,8 @@ class LeaderEpisodeEntryPathTest {
     @Test
     void controlProbe_armingACallbackThroughAnEpisode_compiles() throws Exception {
         var errors = compile(HEAD
-                             + "  static Consumer<String> callback(LeaderElectionContext ctx, LeaderElectionState owner) {\n"
-                             + "    return ctx.serializedFor(owner, (String value) -> {});\n"
+                             + "  static Consumer<String> callback(LeaderElectionContext.EpisodeHandle episode) {\n"
+                             + "    return episode.serialized((String value) -> {});\n"
                              + "  }\n}\n");
 
         assertThat(errors).as("instrument: the probe class path compiles a callback arm site through the fenced path")
@@ -93,8 +93,8 @@ class LeaderEpisodeEntryPathTest {
     private static final String LAMBDA_IDENTITY_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return ctx.serializedFor(() -> true, task); }";
     private static final String SUBMIT_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, org.pragmatica.consensus.fsm.ClusterFsmEvent event) { return () -> ctx.submit(event); }";
     private static final String STOP_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx) { return () -> ctx.stop(); }";
-    private static final String FORGED_TOKEN_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(org.pragmatica.consensus.leader.LeaderInbound.leaderInbound(), task); }";
-    private static final String NEW_TOKEN_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(new org.pragmatica.consensus.leader.LeaderInbound(), task); }";
+    private static final String FORGED_INBOUND_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.new Inbound(true).serially(task); }";
+    private static final String FORGED_HANDLE_SITE = "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return ctx.new EpisodeHandle(null).serialized(task); }";
     private static final String FSM_DISPATCH_ARM_SITE = "static Runnable arm(LeaderElectionContext ctx, org.pragmatica.consensus.fsm.ClusterFsmEvent event) { return () -> ctx.fsm().dispatch(event); }";
     private static final String FSM_ACCESSOR_SITE = "static Runnable arm(LeaderElectionContext ctx) { return () -> ctx.fsm(); }";
     private static final String FORGED_IDENTITY_SITE = "static final class Forged implements LeaderElectionContext.EpisodeIdentity { public boolean isLive() { return true; } }";
@@ -102,7 +102,8 @@ class LeaderEpisodeEntryPathTest {
     /// The ruling (2026-11-27): an arm site that reaches the serial executor without an episode identity of the entry it
     /// arms from does not compile. The rows are the two failure inputs (`() -> ctx.serially(task)` from a state and
     /// `ctx.serializedFor(() -> true, task)`), the other inbound doors a state could arm through (`submit`, `stop`), and
-    /// the three ways to forge what those doors now require (the capability's factory, its constructor, an identity), and
+    /// the three ways to forge what those doors now require (the inbound receiver's constructor, an episode handle's
+    /// constructor, an identity), and
     /// `ctx.fsm().dispatch` (the FSM is not exposed: a dispatch from an async callback would skip the fence). Each refusal names the member it
     /// refuses, so a red that comes from a probe that cannot compile at all does not pass as the rule.
     @ParameterizedTest
@@ -120,8 +121,8 @@ class LeaderEpisodeEntryPathTest {
                          Arguments.of(LAMBDA_IDENTITY_ARM_SITE, "serializedFor"),
                          Arguments.of(SUBMIT_ARM_SITE, "submit"),
                          Arguments.of(STOP_ARM_SITE, "stop"),
-                         Arguments.of(FORGED_TOKEN_ARM_SITE, "leaderInbound"),
-                         Arguments.of(NEW_TOKEN_ARM_SITE, "LeaderInbound"),
+                         Arguments.of(FORGED_INBOUND_SITE, "Inbound"),
+                         Arguments.of(FORGED_HANDLE_SITE, "EpisodeHandle"),
                          Arguments.of(FORGED_IDENTITY_SITE, "EpisodeIdentity"),
                          Arguments.of(FSM_DISPATCH_ARM_SITE, "fsm"),
                          Arguments.of(FSM_ACCESSOR_SITE, "fsm"));
@@ -129,17 +130,17 @@ class LeaderEpisodeEntryPathTest {
 
     // ---- #3846 round 2 (v3855c C1-C4): the rows the round-1 enforcer left compiling ----
     private static final String EVENT = "org.pragmatica.consensus.fsm.ClusterFsmEvent";
-    private static final String CONTROL_FENCED = "static Runnable arm(LeaderElectionContext ctx, LeaderElectionState owner, Runnable task) { return ctx.serializedFor(owner, task); }";
+    private static final String CONTROL_FENCED = "static Runnable arm(LeaderElectionContext.EpisodeHandle episode, Runnable task) { return episode.serialized(task); }";
     private static final String CONTROL_CURRENT = "static LeaderElectionState arm(LeaderElectionContext ctx) { return ctx.current(); }";
 
-    /// One round-2 row: the `code` that must not compile once the fence stands, and the `control` next to it that must
-    /// compile at every head. `refusedMember` is what the refusal must name when the row is enabled.
+    /// One round-2 row: the `code` that must not compile, and the `control` next to it that must compile at every head.
+    /// `refusedMember` is what the refusal must name.
     private record Round2Row(String name, String code, String control, String refusedMember) {}
 
     private static final List<Round2Row> ROUND_2_ROWS = List.of(
         new Round2Row("followUp from an off-frame lambda",
                       "static Runnable arm(LeaderElectionContext ctx, " + EVENT + " event) { return () -> ctx.followUp(event); }",
-                      "static void onFrame(LeaderElectionContext ctx, " + EVENT + " event) { ctx.followUp(event); }",
+                      "static void onFrame(LeaderElectionContext.EpisodeHandle episode, " + EVENT + " event) { episode.followUp(event); }",
                       "followUp"),
         new Round2Row("serially(null, task)",
                       "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serially(null, task); }",
@@ -149,25 +150,26 @@ class LeaderEpisodeEntryPathTest {
                       "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return () -> ctx.serializedFor(ctx.current(), task).run(); }",
                       CONTROL_FENCED,
                       "serializedFor"),
+        new Round2Row("serializedFor(null, task)",
+                      "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return ctx.serializedFor(null, task); }",
+                      CONTROL_FENCED,
+                      "serializedFor"),
         new Round2Row("serializedFor((EpisodeIdentity) null, task)",
                       "static Runnable arm(LeaderElectionContext ctx, Runnable task) { return ctx.serializedFor((LeaderElectionContext.EpisodeIdentity) null, task); }",
                       CONTROL_FENCED,
-                      "serializedFor"));
+                      "serializedFor"),
+        new Round2Row("ctx.fsm()",
+                      "static Runnable arm(LeaderElectionContext ctx) { return () -> ctx.fsm(); }",
+                      CONTROL_CURRENT,
+                      "fsm"));
 
-    /// ENABLED TRIPWIRE: asserts the CURRENT behaviour of 2867082201. Every round-2 row compiles (that is the red:
-    /// v3855c C1-C4), and every control compiles (the instrument can compile each shape). When the fence lands a row stops
-    /// compiling and this goes red: enable `round2Row_doesNotCompile` (remove its `@Disabled`) and delete this tripwire.
-    /// (`ctx.fsm()` is the fifth row of the ruling; it already does not compile at this head, so it is an enabled row of
-    /// `armSite_throughAnUnfencedPath_doesNotCompile`: `FSM_ACCESSOR_SITE`.)
+    /// The instrument of every round-2 row: each control compiles, so a refusal of its row comes from the removed member
+    /// and not from a probe or a class path that cannot compile that shape. ENABLED at every head.
     @Test
-    void round2Rows_compileAtThisHead_untilTheFenceIsBuilt() throws Exception {
+    void round2Controls_compile() throws Exception {
         for (var row : ROUND_2_ROWS) {
             assertThat(compile(HEAD + "  " + row.control() + "\n}\n"))
                 .as("instrument: the control of row '" + row.name() + "' must compile at every head")
-                .isEmpty();
-            assertThat(compile(HEAD + "  " + row.code() + "\n}\n"))
-                .as("round-2 row '" + row.name() + "' no longer compiles: the fence landed. Enable "
-                    + "round2Row_doesNotCompile (remove @Disabled) and delete this tripwire")
                 .isEmpty();
         }
     }
@@ -179,19 +181,6 @@ class LeaderEpisodeEntryPathTest {
             .as("instrument: the probe class path compiles a read of the current state").isEmpty();
     }
 
-    /// The literal `ctx.serializedFor(null, task)` of the ruling does not compile today, but only because `null` is
-    /// ambiguous between the `LeaderElectionState` and `EpisodeIdentity` overloads: an accident of overload count, not a
-    /// fence (the cast row above is the real C4 input). ENABLED so a change of the overload set shows up here.
-    @Test
-    void literalNullIdentity_isRefusedAtThisHead_onlyByOverloadAmbiguity() throws Exception {
-        var errors = compile(HEAD + "  static Runnable arm(LeaderElectionContext ctx, Runnable task) { return ctx.serializedFor(null, task); }\n}\n");
-
-        assertThat(errors).as("the literal null row compiled: the overload set changed, re-derive the C4 row").isNotEmpty();
-        assertThat(errors).as("refused by something other than ambiguity: the accident is gone, name the real check")
-                  .anyMatch(message -> message.contains("ambiguous"));
-    }
-
-    @Disabled("#3846 round 2: enable when the episode-handle fence exists (lane B); lifted it is red at 2867082201")
     @ParameterizedTest
     @MethodSource("round2Rows")
     void round2Row_doesNotCompile(String name, String code, String refusedMember) throws Exception {

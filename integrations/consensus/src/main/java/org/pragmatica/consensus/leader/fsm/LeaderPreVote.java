@@ -198,8 +198,8 @@ public final class LeaderPreVote {
         current.vouching = new HashSet<>();
         current.doubting = new HashSet<>(Set.of(ctx.self()));
         stopTimer(current);
-        current.timer = some(SharedScheduler.schedule(ctx.serializedFor(new Suspicion(current),
-                                                                        () -> onRoundTimeout(current, round)),
+        current.timer = some(SharedScheduler.schedule(ctx.episodeOf(new Suspicion(current))
+                                                         .serialized(() -> onRoundTimeout(current, round)),
                                                       timeout));
         log.info("Leader pre-vote round {}: {} lost its view of leader {}, asking {} voter(s) whether they still see it",
                  round,
@@ -293,7 +293,8 @@ public final class LeaderPreVote {
                  current.doubting.size(),
                  current.vouching.size(),
                  ctx.electorate().size());
-        current.timer = some(SharedScheduler.schedule(ctx.serializedFor(new Suspicion(current), () -> onRetry(current)),
+        current.timer = some(SharedScheduler.schedule(ctx.episodeOf(new Suspicion(current))
+                                                         .serialized(() -> onRetry(current)),
                                                       retryDelay()));
 
         return NO_EFFECT;

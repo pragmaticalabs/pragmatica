@@ -136,15 +136,21 @@ class LeaderEpisodeIdentityTest {
     @Test
     void arm_byAStateThatIsNotTheCurrentEntry_runsNothing() {
         start();
-        var dormant = harness.state();
+        var dormantEntry = handleOfTheCurrentEntry();
 
         enterAwaitingKvSync();
         var ran = new AtomicInteger();
 
-        ctx.serializedFor(dormant, ran::incrementAndGet).run();
-        ctx.serializedFor(harness.state(), ran::incrementAndGet).run();
+        dormantEntry.serialized(ran::incrementAndGet).run();
+        handleOfTheCurrentEntry().serialized(ran::incrementAndGet).run();
         OnDrainer.drained(ctx);
         assertThat(ran).as("only the arm by the current entry ran").hasValue(1);
+    }
+
+    /// The handle the current state received at its entry ([LeaderElectionState#onEntered]), rebuilt over the lifetime the
+    /// Fsm holds for it: the same identity the state's own handle carries.
+    private LeaderElectionContext.EpisodeHandle handleOfTheCurrentEntry() {
+        return ctx.entryEpisode(harness.fsm().entered().lifetime());
     }
 
     // ---- input 4: the control ----
@@ -253,7 +259,7 @@ class LeaderEpisodeIdentityTest {
                                              AtomicInteger ran) {
         var dormant = contextOver(fsm);
 
-        armed.set(dormant.ctx().serializedFor(dormant, ran::incrementAndGet));
+        armed.set(dormant.ctx().unentered().serialized(ran::incrementAndGet));
 
         return dormant;
     }
@@ -339,10 +345,10 @@ class LeaderEpisodeIdentityTest {
 
     /// Runs on the drainer: the state is left and entered again (a new record), as one serial task.
     private void reenterElection(boolean reElecting) {
-        ctx.submit(inbound(), new ClusterFsmEvent.QuorumDisappeared());
-        ctx.submit(inbound(), new ClusterFsmEvent.QuorumEstablished());
-        ctx.submit(inbound(), new ClusterFsmEvent.NodeAdded(SELF, CORES, seq()));
-        ctx.submit(inbound(), new KvSyncGraceTimeout());
+        inbound(ctx).submit(new ClusterFsmEvent.QuorumDisappeared());
+        inbound(ctx).submit(new ClusterFsmEvent.QuorumEstablished());
+        inbound(ctx).submit(new ClusterFsmEvent.NodeAdded(SELF, CORES, seq()));
+        inbound(ctx).submit(new KvSyncGraceTimeout());
         assertThat(harness.state()).isInstanceOf(reElecting
                                                  ? LeaderElectionState.ReElecting.class
                                                  : LeaderElectionState.Electing.class);
@@ -394,7 +400,7 @@ class LeaderEpisodeIdentityTest {
     private void staleTickBehind(ScheduledFuture<?> timer, Runnable exitAndReenter) throws InterruptedException {
         var held = LeaderEntryPointAtomicityTest.holdDrainer(ctx);
 
-        ctx.serially(inbound(), exitAndReenter);
+        inbound(ctx).serially(exitAndReenter);
         assertThat(timer.isDone()).as("instrument: the timer fired before the exit task was queued: raise its delay")
                   .isFalse();
         Awaitility.await("instrument: the timer under test fired behind the exit task")
@@ -416,7 +422,7 @@ class LeaderEpisodeIdentityTest {
     private Parked parkExit(Runnable exitAndReenter) throws InterruptedException {
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        var thread = Thread.ofPlatform().start(() -> ctx.serially(inbound(), () -> parkThen(started, release, exitAndReenter)));
+        var thread = Thread.ofPlatform().start(() -> inbound(ctx).serially(() -> parkThen(started, release, exitAndReenter)));
 
         assertThat(started.await(WITHIN.toSeconds(), TimeUnit.SECONDS)).as("instrument: the exit task started").isTrue();
 

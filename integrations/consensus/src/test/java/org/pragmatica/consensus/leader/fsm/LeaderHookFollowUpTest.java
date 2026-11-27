@@ -165,7 +165,7 @@ class LeaderHookFollowUpTest {
         var manager = manager(true);
         var ctx = manager.context();
 
-        ctx.serially(inbound(), () -> ctx.dispatchConfined(new ClusterFsmEvent.QuorumEstablished()));
+        inbound(ctx).serially(() -> ctx.dispatchConfined(new ClusterFsmEvent.QuorumEstablished()));
         assertThat(ctx.current()).as("instrument: QuorumWaiting")
                   .isInstanceOf(LeaderElectionState.QuorumWaiting.class);
         assertThat(ctx.currentTopology()).as("instrument: SELF not in the stored view").doesNotContain(SELF);
@@ -177,7 +177,7 @@ class LeaderHookFollowUpTest {
         var manager = manager(true);
         var ctx = manager.context();
 
-        ctx.serially(inbound(), () -> knowLeaderInView(ctx));
+        inbound(ctx).serially(() -> knowLeaderInView(ctx));
         assertThat(ctx.currentTopology()).as("instrument: both cores in the stored view").containsExactly(SELF, PEER);
         assertThat(ctx.localLeaderCandidate()).as("instrument: the local election picks core-0")
                   .isEqualTo(Option.some(SELF));
@@ -206,6 +206,7 @@ class LeaderHookFollowUpTest {
 
         return new FsmBackedLeaderManager(fsm,
                                           fsm.current().ctx(),
+                                          inbound(fsm.current().ctx()),
                                           local);
     }
 
@@ -221,7 +222,7 @@ class LeaderHookFollowUpTest {
     private static HeldDrainer holdDrainer(LeaderElectionContext ctx) throws InterruptedException {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        var holder = Thread.ofPlatform().start(() -> ctx.serially(inbound(), () -> block(entered, release)));
+        var holder = Thread.ofPlatform().start(() -> inbound(ctx).serially(() -> block(entered, release)));
 
         assertThat(entered.await(10, TimeUnit.SECONDS)).as("instrument: the holder owns the drainer").isTrue();
 

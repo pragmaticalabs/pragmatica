@@ -15,13 +15,24 @@
  */
 package org.pragmatica.consensus.leader;
 
-/// Test seam (#3846): the [LeaderInbound] capability for tests that stand in for the inbound boundary (`LeaderManager`),
-/// which in production is the only type that can obtain it. It lives in this package for the same reason: the factory
-/// is package-private to `leader`, so a type in `leader.fsm` still cannot call it.
+import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
+
+import java.util.Collections;
+import java.util.Map;
+import java.util.WeakHashMap;
+
+/// Test seam (#3846 round 2): the [LeaderElectionContext.Inbound] receiver for tests that stand in for the inbound
+/// boundary (`LeaderManager`) over a context they built themselves. The context grants its one Inbound to the first
+/// `claimInbound()`; this seam makes that claim once per context and returns the same receiver to every later call, so a
+/// test and the `FsmBackedLeaderManager` it builds share it. A context built by `LeaderElectionFsm.leaderElectionFsm` was
+/// already claimed by its builder: use `FsmWithContext.inbound()` for it, never this seam.
 public final class LeaderInboundForTest {
+    private static final Map<LeaderElectionContext, LeaderElectionContext.Inbound> CLAIMED =
+        Collections.synchronizedMap(new WeakHashMap<>());
+
     private LeaderInboundForTest() {}
 
-    public static LeaderInbound inbound() {
-        return LeaderInbound.leaderInbound();
+    public static LeaderElectionContext.Inbound inbound(LeaderElectionContext ctx) {
+        return CLAIMED.computeIfAbsent(ctx, LeaderElectionContext::claimInbound);
     }
 }

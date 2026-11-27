@@ -55,8 +55,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// proposal's success and failure callbacks) runs its WHOLE body as one task of the node's serial executor.
 ///
 /// Round-3 ruling (know 6c68615e20, item 1): such a callback enters the node order through ONE path,
-/// `ctx.serializedFor(...)` (#3846: the unfenced `serialized` is gone); `dispatchSelf` is for already-confined code and has no queueing path of its own. This census
-/// has one behaviour row per `serializedFor(` site of leader main. Round-4 ruling (know 4c954b1c5d): a NEW unwrapped site
+/// a method on the state's `EpisodeHandle` (`serialized(...)`, #3846 round 2: the context offers no executor path); `dispatchSelf` is for already-confined code and has no queueing path of its own. This census
+/// has one behaviour row per handle `serialized(` site of leader main. Round-4 ruling (know 4c954b1c5d): a NEW unwrapped site
 /// is caught by enforcement, not by a count of the source: every leader dispatch goes through
 /// [LeaderElectionContext#dispatchConfined], which refuses a caller off the drainer ([LeaderDispatchConfinementTest]).
 /// What the `serialized` wrap adds beyond that is that the callback's READS (the KV leader, the ping freshness, the
@@ -172,9 +172,9 @@ class LeaderTimerSerialCensusTest {
     }
 
     /// `arm` runs on the test thread while the drainer is held and returns the cleanup that cancels what it armed.
-    /// #3809: a state's timer ticks act only while that state is the FSM's current one ([LeaderElectionContext#serializedFor]),
-    /// so a case whose timer a state arms makes that state the FSM's `initial` (the Fsm runs no `onEntry` for it): the state
-    /// arms in `fresh` (the election states) or `arm` calls its `onEntry` (poll, grace, lease).
+    /// #3809: a state's timer ticks act only while that state is the FSM's current one ([LeaderElectionContext.EpisodeHandle#serialized(Runnable)]),
+    /// so a case whose timer a state arms makes that state the FSM's `initial` (the Fsm runs no `onEntry` for it): the test
+    /// enters it ([#enterInitialState]) with the lifetime of the initial entry, and the state arms in its entry hook.
     record Case(Timings timings,
                 Function<LeaderElectionContext, LeaderElectionState> initial,
                 Consumer<LeaderElectionContext> prepare,
@@ -294,6 +294,8 @@ class LeaderTimerSerialCensusTest {
 
         testCase.prepare().accept(ctx);
         var held = LeaderEntryPointAtomicityTest.holdDrainer(ctx);
+
+        enterInitialState(ctx);
         var cleanup = testCase.arm().apply(this, ctx);
 
         try {
@@ -306,7 +308,7 @@ class LeaderTimerSerialCensusTest {
                       .isZero();
             assertThat(ctx.pendingSerialTasksForTest()).as("instrument: %s fired while the drainer was held", name)
                       .isPositive();
-            ctx.serially(inbound(), () -> trace.add(MARKER));
+            inbound(ctx).serially(() -> trace.add(MARKER));
             held.release();
             var beforeMarker = beforeMarker();
 
@@ -317,7 +319,7 @@ class LeaderTimerSerialCensusTest {
                                                   .anyMatch(event));
         } finally {
             cleanup.run();
-            ctx.stop(inbound());
+            inbound(ctx).stop();
         }
     }
 
@@ -326,7 +328,6 @@ class LeaderTimerSerialCensusTest {
     private Runnable armQuorumPoll(LeaderElectionContext ctx) {
         var waiting = currentState(ctx);
 
-        waiting.onEntry();
         kvLeader.set(Option.some(new LeaderCommitted(PEER)));
 
         return waiting::onExit;
@@ -335,8 +336,6 @@ class LeaderTimerSerialCensusTest {
     /// st01a: `AwaitingKvSync`'s entry, with no KV leader and none known, arms the grace timer.
     private Runnable armGraceTimer(LeaderElectionContext ctx) {
         var waiting = currentState(ctx);
-
-        waiting.onEntry();
 
         return waiting::onExit;
     }
@@ -401,6 +400,12 @@ class LeaderTimerSerialCensusTest {
         return cleanup;
     }
 
+    /// The Fsm runs no `onEntry` for its initial state, so the test runs it with the initial entry's own lifetime, which is
+    /// the FSM's current one: the handle the state receives is live, exactly as for a state entered by a transition.
+    private void enterInitialState(LeaderElectionContext ctx) {
+        currentState(ctx).onEntry(fsm.entered().lifetime());
+    }
+
     private static LeaderElectionState currentState(LeaderElectionContext ctx) {
         return ctx.current();
     }
@@ -449,8 +454,6 @@ class LeaderTimerSerialCensusTest {
 
     private Runnable armLease(LeaderElectionContext ctx) {
         var led = currentState(ctx);
-
-        led.onEntry();
 
         return led::onCasLost;
     }
