@@ -62,9 +62,11 @@ import org.pragmatica.testlogging.SourceWalk;
 /// `// port0-held:` marker) and the literal-port constructor form of `FIXED_PORT` are retired. `FIXED_PORT` keeps what bytecode cannot
 /// see: a port constant (`int httpPort = 8080`) and a literal handed to `bind`, `listen` or a config setter.
 ///
-/// `PARK_SLEEP` is a hazard in a wait (#3386), found by [SingleParkSleep] over the whole text of every scanned file, not by a line regex: a
-/// `parkNanos` call that no loop encloses is a single-call sleep, which returns at once under a set interrupt flag. It is never an allow-list
-/// entry: a hit is fixed, with [PollUntil] (wait for the state) or [Pause] (a pause that parks to its deadline).
+/// `PARK_SLEEP` is a hazard in a wait (#3386, #3850), found by [SingleParkSleep] over the whole text of every scanned file, not by a line regex: a
+/// `parkNanos` call that waits to neither a deadline nor a re-checked state (no loop around it, or a loop whose condition and guards read only a
+/// counter or nothing) is a single-call sleep, which returns at once under a set interrupt flag. It is never an allow-list
+/// entry: a hit is fixed, with [PollUntil] (wait for the state) or [Pause] (a pause that parks to its deadline). A negative observation that
+/// also exits on state is a named limit of the scan, not coverage: it goes through [Pause], and the conversion of the sites is the enforcer.
 final class FlakeScan {
     private static final List<String> SCANNED_SOURCES = List.of("/src/test/java/", "/src/it/java/");
     /// A pattern with a fixed flake behind it, and the fix the failure message points at.
@@ -82,7 +84,7 @@ final class FlakeScan {
         REPO_WALK("\\bFiles\\s*\\.\\s*(walk|walkFileTree|find)\\s*\\(",
                   "scan source files with org.pragmatica.testlogging.SourceWalk.files(root): the java.nio walks (walk, walkFileTree, find) list and stat every entry before any filter runs, so a walk from a repository or multi-module root visits other modules' target/ while a parallel build rewrites it and fails with NoSuchFileException. A walk of a directory nothing else writes (a directory the test creates, the module's own fixed source path, a class directory complete before the forks start) is declared in RepoWalkExceptions with its reason (#3703)"),
         PARK_SLEEP("(?!)",
-                   "a test that waits for a state waits for THAT state: org.pragmatica.testing.PollUntil.pollUntil(supplier, predicate, deadline); a test that means a plain pause calls org.pragmatica.testing.Pause.pause(duration), which parks to a deadline and keeps the interrupt flag. A single LockSupport.parkNanos call returns at once whenever the thread's interrupt flag is set (the call does not clear it), and early on a spurious wakeup, so the test waits for nothing and asserts state that has not happened yet (#3384, #3386). A parkNanos inside a loop that re-checks a condition or a deadline is not a hit");
+                   "a test that waits for a state waits for THAT state: org.pragmatica.testing.PollUntil.pollUntil(supplier, predicate, deadline); a test that means a plain pause calls org.pragmatica.testing.Pause.pause(duration), which parks to a deadline and keeps the interrupt flag. A single LockSupport.parkNanos call returns at once whenever the thread's interrupt flag is set (the call does not clear it), and early on a spurious wakeup, so the test waits for nothing and asserts state that has not happened yet (#3384, #3386). A parkNanos inside a loop that reads a clock or re-checks a state before the park is not a hit; one inside a loop that only counts is");
 
         private final Pattern pattern;
         private final String fix;

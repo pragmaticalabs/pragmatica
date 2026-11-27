@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -122,7 +123,7 @@ class StreamOwnerKillWritesResumeTest extends AbstractMultiPartitionStream {
         while (System.nanoTime() < deadline && served.size() < PARTITIONS) {
             for (var i = 0; i < PARTITIONS; i++) {
                 publish(survivorPort, seq++, PUBLISH_TIMEOUT);
-                LockSupport.parkNanos(PUBLISH_PACE_NANOS);
+                Pause.pause(Duration.ofNanos(PUBLISH_PACE_NANOS));
             }
 
             served.clear();

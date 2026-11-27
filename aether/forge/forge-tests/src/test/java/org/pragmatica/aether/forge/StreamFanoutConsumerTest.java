@@ -19,6 +19,7 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
+import org.pragmatica.testing.Pause;
 import org.pragmatica.aether.ember.EmberCluster;
 
 import org.junit.jupiter.api.AfterAll;
@@ -338,7 +339,7 @@ class StreamFanoutConsumerTest {
     private void publishPaced(int port, String tag, int count, long gapNanos) {
         for (int i = 0; i < count; i++) {
             publish(port, tag + "-" + i);
-            LockSupport.parkNanos(gapNanos);
+            Pause.pause(Duration.ofNanos(gapNanos));
         }
     }
 

@@ -226,7 +226,7 @@ class QuicLaneEndMarkerFinLossTest {
             if (stream.isWritable() || last.isDone()) {
                 return false;
             }
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100));
+            Pause.pause(Duration.ofMillis(100));
         }
 
         return true;

@@ -986,7 +986,7 @@ class OwnerActivationTest {
         unreachable.add(PEER_A);
 
         for (var attempt = 0; attempt < 3; attempt++) {
-            LockSupport.parkNanos(1_000_000L);
+            Pause.pause(Duration.ofNanos(1_000_000L));
             assertThat(reporting.activate(STREAM, PARTITION).await().isSuccess()).as("never bypassed").isFalse();
         }
 
@@ -1071,7 +1071,7 @@ class OwnerActivationTest {
     /// Runs the gate until it succeeds, at most three times, each after the bound (0 ms or longer) has certainly elapsed.
     private boolean activateAfterBound(OwnerActivation gate) {
         for (var attempt = 0; attempt < 3; attempt++) {
-            LockSupport.parkNanos(2_000_000L);
+            Pause.pause(Duration.ofNanos(2_000_000L));
             if (gate.activate(STREAM, PARTITION).await().isSuccess()) {
                 return true;
             }
@@ -1144,7 +1144,7 @@ class OwnerActivationTest {
         catchUpSucceeds.set(false);
 
         for (var attempt = 0; attempt < 4; attempt++) {
-            LockSupport.parkNanos(2_000_000L);
+            Pause.pause(Duration.ofNanos(2_000_000L));
             assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).isFalse();
         }
 
@@ -1206,7 +1206,7 @@ class OwnerActivationTest {
         unreachable.add(PEER_A);
 
         for (var attempt = 0; attempt < 4; attempt++) {
-            LockSupport.parkNanos(2_000_000L);
+            Pause.pause(Duration.ofNanos(2_000_000L));
             assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).isFalse();
         }
 

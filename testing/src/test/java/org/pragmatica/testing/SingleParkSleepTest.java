@@ -20,23 +20,19 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Pins the `PARK_SLEEP` pass (#3386) over source fixtures: a `parkNanos` call that no loop encloses is a hit, one inside a loop is not.
+/// Pins the `PARK_SLEEP` pass (#3386) over source fixtures: a `parkNanos` call that no deadline or state loop encloses is a hit, one inside such a loop is not.
 /// The call name is built from pieces so this file never carries the call it scans for.
 ///
-/// #3850 (lane A): the invariant is that every park waits to a DEADLINE or to a RE-CHECKED STATE; the rows prefixed `ruled_` pin the
-/// RULED behaviour and are `@Disabled` while the gate still enforces only "a loop encloses the call". Each is shadowed by an enabled
-/// `tripwire_` row that asserts what the gate does TODAY and says what lane B enables; lane B deletes each tripwire and enables its
-/// `ruled_` row in the same change as the gate. The rows without either prefix hold at the base and must keep holding.
+/// #3850: the invariant is that every park waits to a DEADLINE or to a RE-CHECKED STATE, and the NEAREST enclosing loop decides. The rows
+/// pin each decision of that rule (counted loop, bound, guard before or after the park, `do`, `for` update clock) and the blind spots the
+/// issue named (a lambda in a `case` arm, Unicode identifiers). The named limit, a negative observation that also exits on state, is
+/// pinned as accepted: it is not coverage, the enforcer is the conversion of the sites to `Pause`.
 class SingleParkSleepTest {
-    private static final String ENABLE = "#3850 lane B: enable the ruled_ row of the same name, delete this tripwire: ";
     private static final String GATE_SCOPE = "the gate refuses a park whose nearest enclosing loop is neither a deadline nor a re-checked state";
     private static final String PARK = "LockSupport.park" + "Nanos(1_000_000L);";
 
@@ -88,7 +84,7 @@ class SingleParkSleepTest {
     void hits_aCallInsideAForLoopAndADoLoop_isNotReported() {
         assertThat(hitLines("class A {",
                             "    void waits() {",
-                            "        for (int i = 0; i < 3; i++) {",
+                            "        for (; !done(); ) {",
                             "            " + PARK,
                             "        }",
                             "        do {",
@@ -188,26 +184,14 @@ class SingleParkSleepTest {
         return new String[]{"class A {", "    void paces() {", "        for (int i = 0; i < 5; i++) {", "            " + PARK, "        }", "    }", "}"};
     }
 
-    @Disabled("#3850 lane B")
     @Test
-    void ruled_aCountOnlyForLoop_isReported() {
+    void hits_aCountOnlyForLoop_isReported() {
         assertThat(hitLines(countOnlyLoop())).as(GATE_SCOPE).containsExactly(4);
     }
 
     @Test
-    void tripwire_aCountOnlyForLoop_isStillAcceptedAtTheBase() {
-        assertThat(hitLines(countOnlyLoop())).as(ENABLE + "ruled_aCountOnlyForLoop_isReported").isEmpty();
-    }
-
-    @Disabled("#3850 lane B")
-    @Test
-    void ruled_aCountOnlyLoopNestedInADeadlineLoop_isReported_theNearestLoopDecides() {
+    void hits_aCountOnlyLoopNestedInADeadlineLoop_isReported_theNearestLoopDecides() {
         assertThat(hitLines(nestedCountOnly())).as(GATE_SCOPE).containsExactly(5);
-    }
-
-    @Test
-    void tripwire_aCountOnlyLoopNestedInADeadlineLoop_isStillAcceptedAtTheBase() {
-        assertThat(hitLines(nestedCountOnly())).as(ENABLE + "ruled_aCountOnlyLoopNestedInADeadlineLoop_isReported_theNearestLoopDecides").isEmpty();
     }
 
     private static String[] nestedCountOnly() {
@@ -307,15 +291,9 @@ class SingleParkSleepTest {
                             "}"};
     }
 
-    @Disabled("#3850 lane B")
     @Test
-    void ruled_aCountedRetryWhoseOnlyExitReadsTheCounter_isReported_noPassRechecksState() {
+    void hits_aCountedRetryWhoseOnlyExitReadsTheCounter_isReported_noPassRechecksState() {
         assertThat(hitLines(counterOnlyExit())).as(GATE_SCOPE).containsExactly(8);
-    }
-
-    @Test
-    void tripwire_aCountedRetryWhoseOnlyExitReadsTheCounter_isStillAcceptedAtTheBase() {
-        assertThat(hitLines(counterOnlyExit())).as(ENABLE + "ruled_aCountedRetryWhoseOnlyExitReadsTheCounter_isReported_noPassRechecksState").isEmpty();
     }
 
     private static String[] counterGuardedPark() {
@@ -331,30 +309,18 @@ class SingleParkSleepTest {
                             "}"};
     }
 
-    @Disabled("#3850 lane B")
     @Test
-    void ruled_aCountedLoopWithNoExitAtAll_isReported_theResultOfEachPassIsDiscarded() {
+    void hits_aCountedLoopWithNoExitAtAll_isReported_theResultOfEachPassIsDiscarded() {
         assertThat(hitLines(counterGuardedPark())).as(GATE_SCOPE).containsExactly(6);
-    }
-
-    @Test
-    void tripwire_aCountedLoopWithNoExitAtAll_isStillAcceptedAtTheBase() {
-        assertThat(hitLines(counterGuardedPark())).as(ENABLE + "ruled_aCountedLoopWithNoExitAtAll_isReported_theResultOfEachPassIsDiscarded").isEmpty();
     }
 
     private static String[] unconditionalLoop() {
         return new String[]{"class A {", "    void spins() {", "        while (true) {", "            tick();", "            " + PARK, "        }", "    }", "}"};
     }
 
-    @Disabled("#3850 lane B")
     @Test
-    void ruled_aLoopThatReadsNothing_isReported() {
+    void hits_aLoopThatReadsNothing_isReported() {
         assertThat(hitLines(unconditionalLoop())).as(GATE_SCOPE).containsExactly(5);
-    }
-
-    @Test
-    void tripwire_aLoopThatReadsNothing_isStillAcceptedAtTheBase() {
-        assertThat(hitLines(unconditionalLoop())).as(ENABLE + "ruled_aLoopThatReadsNothing_isReported").isEmpty();
     }
 
     // ---- Failure input 5: the blind spots named in #3850. ----
@@ -425,57 +391,406 @@ class SingleParkSleepTest {
                             "}"};
     }
 
-    @Disabled("#3850 lane B")
     @Test
-    void ruled_aBlockLambdaInACaseArmInsideALoop_isReported_theLambdaBodyIsABoundary() {
+    void hits_aBlockLambdaInACaseArmInsideALoop_isReported_theLambdaBodyIsABoundary() {
         assertThat(hitLines(caseArmLambdaInLoop())).as(GATE_SCOPE).containsExactly(6);
-    }
-
-    @Test
-    void tripwire_aBlockLambdaInACaseArmInsideALoop_isStillAcceptedAtTheBase() {
-        assertThat(hitLines(caseArmLambdaInLoop())).as(ENABLE + "ruled_aBlockLambdaInACaseArmInsideALoop_isReported_theLambdaBodyIsABoundary").isEmpty();
     }
 
     private static String[] unicodeIdentifierAroundThePark() {
         return new String[]{"class A {", "    void pauses() {", "        \u00e9park" + "Nanos(5);", "    }", "}"};
     }
 
-    @Disabled("#3850 lane B")
     @Test
-    void ruled_aMethodWhoseNameEndsInTheParkName_isNotAParkCall_unicodeLettersAreIdentifierLetters() {
+    void hits_aMethodWhoseNameEndsInTheParkName_isNotAParkCall_unicodeLettersAreIdentifierLetters() {
         assertThat(hitLines(unicodeIdentifierAroundThePark())).isEmpty();
     }
 
-    @Test
-    void tripwire_aMethodWhoseNameEndsInTheParkName_isStillReportedAtTheBase() {
-        assertThat(hitLines(unicodeIdentifierAroundThePark())).as(ENABLE + "ruled_aMethodWhoseNameEndsInTheParkName_isNotAParkCall_unicodeLettersAreIdentifierLetters")
-                                                              .containsExactly(3);
-    }
-
     private static String[] unicodeIdentifierBeforeAWhile() {
-        return new String[]{"class A {", "    void \u03b1while(int x) {", "        " + PARK, "    }", "}"};
-    }
-
-    @Disabled("#3850 lane B")
-    @Test
-    void ruled_aMethodNamedWithAUnicodeLetterBeforeWhile_isNotALoop_itsParkIsReported() {
-        assertThat(hitLines(unicodeIdentifierBeforeAWhile())).as(GATE_SCOPE).containsExactly(3);
+        return new String[]{"class A {", "    void \u03b1while(int x) {", "        if (ok()) {", "            return;", "        }", "        " + PARK, "    }", "}"};
     }
 
     @Test
-    void tripwire_aMethodNamedWithAUnicodeLetterBeforeWhile_isStillTakenForALoopAtTheBase() {
-        assertThat(hitLines(unicodeIdentifierBeforeAWhile())).as(ENABLE + "ruled_aMethodNamedWithAUnicodeLetterBeforeWhile_isNotALoop_itsParkIsReported").isEmpty();
+    void hits_aMethodNamedWithAUnicodeLetterBeforeWhile_isNotALoop_itsParkIsReported() {
+        assertThat(hitLines(unicodeIdentifierBeforeAWhile())).as(GATE_SCOPE).containsExactly(6);
     }
 
-    // ---- Whole repository: the count-only census at 7292523b36 (s56/facts-i3850a.md), file -> number of count-only sites in it. ----
+    // ---- Further rows of the classification: each pins one decision of the nearest-loop rule. ----
 
-    private static final Map<String, Integer> COUNT_ONLY_SITES = Map.of("aether/aether-stream/src/test/java/org/pragmatica/aether/stream/DivergentTailPromotionTest.java", 1,
-                                                                        "aether/aether-stream/src/test/java/org/pragmatica/aether/stream/OwnerActivationTest.java", 3,
-                                                                        "aether/ember/src/test/java/org/pragmatica/aether/ember/EmberForwardLaneTripwireTest.java", 1,
-                                                                        "aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamFanoutConsumerTest.java", 1,
-                                                                        "aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamOwnerKillWritesResumeTest.java", 1,
-                                                                        "integrations/consensus/src/test/java/org/pragmatica/consensus/net/quic/QuicDialAttemptTest.java", 1,
-                                                                        "integrations/consensus/src/test/java/org/pragmatica/consensus/net/quic/QuicLaneBacklogTest.java", 1);
+    @Test
+    void hits_aCountedRetryWhoseStateGuardComesAfterThePark_isReported_theGuardMustBeReachedBeforeThePark() {
+        assertThat(hitLines("class A {",
+                            "    boolean retries() {",
+                            "        for (var attempt = 0; attempt < 3; attempt++) {",
+                            "            " + PARK,
+                            "            if (ok()) {",
+                            "                return true;",
+                            "            }",
+                            "        }",
+                            "        return false;",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(4);
+    }
+
+    @Test
+    void hits_aCountedLoopBoundedByANamedVariable_isReported_aBareBoundComparedWithTheCounterIsNotState() {
+        assertThat(hitLines("class A {",
+                            "    void paces(int frames) {",
+                            "        for (int i = 0; i < frames; i++) {",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(4);
+    }
+
+    @Test
+    void hits_aForEachOverData_isReported_itWalksItemsItDoesNotWaitForAnything() {
+        assertThat(hitLines("class A {",
+                            "    void paces(List<String> items) {",
+                            "        for (var item : items) {",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(4);
+    }
+
+    @Test
+    void hits_aWhileWhoseCounterIsSteppedInTheBody_isReported_theCounterIsNotState() {
+        assertThat(hitLines("class A {",
+                            "    void paces() {",
+                            "        while (n < 5) {",
+                            "            n++;",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(5);
+    }
+
+    @Test
+    void hits_aDeadlineReadInTheForUpdate_isNotReported_theClassicParkToDeadlineLoop() {
+        assertThat(hitLines("class A {",
+                            "    void pauses() {",
+                            "        for (var left = until - System.nanoTime(); left > 0; left = until - System.nanoTime()) {",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    @Test
+    void hits_aDoLoopWhoseConditionReadsState_isNotReportedAndOneThatReadsNothingIs() {
+        assertThat(hitLines("class A {",
+                            "    void waits() {",
+                            "        do {",
+                            "            " + PARK,
+                            "        } while (!done());",
+                            "        do {",
+                            "            " + PARK,
+                            "        } while (true);",
+                            "    }",
+                            "}")).containsExactly(7);
+    }
+
+    @Test
+    void hits_aStateGuardInsideAnotherBlockOfTheLoopBody_isReported_onlyTheTopLevelOfTheBodyCounts() {
+        assertThat(hitLines("class A {",
+                            "    void spins() {",
+                            "        while (true) {",
+                            "            if (more()) {",
+                            "                if (ok()) {",
+                            "                    return;",
+                            "                }",
+                            "            }",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(9);
+    }
+
+    @Test
+    void hits_aGuardWhoseBlockHoldsThePark_isReported_thePassDoesNotExitBeforeIt() {
+        assertThat(hitLines("class A {",
+                            "    void spins() {",
+                            "        while (true) {",
+                            "            if (ok()) {",
+                            "                " + PARK,
+                            "                return;",
+                            "            }",
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(5);
+    }
+
+    @Test
+    void hits_aBracelessGuardBeforeThePark_isNotReported() {
+        assertThat(hitLines("class A {",
+                            "    void waits() {",
+                            "        while (true) {",
+                            "            if (ok()) return;",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    @Test
+    void hits_aGuardThatDoesNotExit_isReported_itOnlyReadsState() {
+        assertThat(hitLines("class A {",
+                            "    void spins() {",
+                            "        while (true) {",
+                            "            if (ok()) {",
+                            "                log();",
+                            "            }",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(7);
+    }
+
+    @Test
+    void hits_aBracelessCountOnlyLoop_isReported() {
+        assertThat(hitLines("class A {",
+                            "    void paces() {",
+                            "        for (int i = 0; i < 5; i++)",
+                            "            " + PARK,
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(4);
+    }
+
+    @Test
+    void hits_aBreakGuardBeforeThePark_isNotReported() {
+        assertThat(hitLines("class A {",
+                            "    void waits() {",
+                            "        while (true) {",
+                            "            if (ready()) {",
+                            "                break;",
+                            "            }",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    @Test
+    void hits_aWallClockOrInstantDeadlineInTheCondition_isNotReported() {
+        // each condition reads a clock and nothing else (no variable holds the deadline), so the clock alone makes it a deadline loop
+        assertThat(hitLines("class A {",
+                            "    void waits() {",
+                            "        while (System.currentTimeMillis() < 5_000L) {",
+                            "            " + PARK,
+                            "        }",
+                            "        while (Instant.now().isBefore(Instant.MAX)) {",
+                            "            " + PARK,
+                            "        }",
+                            "        while (System.nanoTime() < 5_000L) {",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    @Test
+    void hits_aClockReadOnceInTheForInitialiser_isReported_onlyAClockReReadByTheLoopIsADeadline() {
+        assertThat(hitLines("class A {",
+                            "    void paces() {",
+                            "        for (var t = System.nanoTime(); n < 5; n++) {",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(4);
+    }
+
+    @Test
+    void hits_aCounterAssignedInTheBodyAndDeclaredInTheHeader_isReported_theDeclarationMakesItACounter() {
+        assertThat(hitLines("class A {",
+                            "    void paces() {",
+                            "        for (var i = 0; i < 5; ) {",
+                            "            i = i + 1;",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(5);
+    }
+
+    @Test
+    void hits_aCounterSteppedByAPrefixOperatorInTheBody_isReported() {
+        assertThat(hitLines("class A {",
+                            "    void paces() {",
+                            "        while (n < 5) {",
+                            "            ++n;",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(5);
+    }
+
+    @Test
+    void hits_aBoundWrittenBeforeTheCounter_isReported() {
+        assertThat(hitLines("class A {",
+                            "    void paces(int frames) {",
+                            "        for (int i = 0; frames > i; i++) {",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(4);
+    }
+
+    @Test
+    void hits_aBracelessGuardWhoseStatementOnlyHoldsAnExitInsideALambda_isReported() {
+        assertThat(hitLines("class A {",
+                            "    void spins() {",
+                            "        while (true) {",
+                            "            if (ok()) run(() -> { return; });",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(5);
+    }
+
+    @Test
+    void hits_aClassNamedWithAUnicodeLetterBeforeDo_isNotADoLoop_itsInitialiserParkIsReported_theWhileThatFollowsIsNotItsCondition() {
+        assertThat(hitLines("class A {",
+                            "    void m() {",
+                            "        class \u03b1do {",
+                            "            {",
+                            "                " + PARK,
+                            "            }",
+                            "        }",
+                            "        while (!done()) {}",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(5);
+    }
+
+    @Test
+    void hits_aQualifierWithAUnicodeLetterInABracelessLoop_isStripped_theLoopStillEnclosesTheCall() {
+        assertThat(hitLines("class A {", "    void waits() {", "        while (!done()) \u00e9.park" + "Nanos(5);", "    }", "}")).isEmpty();
+    }
+
+    @Test
+    void hits_aCallLambdaWhoseNameStartsWithCase_isABoundary_itIsNotACaseLabel() {
+        assertThat(hitLines("class A {",
+                            "    void waits() {",
+                            "        while (!done()) {",
+                            "            caseHandler.run(() -> {",
+                            "                " + PARK,
+                            "            });",
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(5);
+    }
+
+    @Test
+    void hits_aLabelledIfWithAUnicodeLabelInsideAStateLoop_isControlFlow_notABoundary() {
+        assertThat(hitLines("class A {",
+                            "    void waits() {",
+                            "        while (!done()) {",
+                            "            \u00e9: if (slow()) {",
+                            "                " + PARK,
+                            "            }",
+                            "        }",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    @Test
+    void hits_aCountBoundedByAConstantArrayLength_isReported_constantsAndMembersAreNotState() {
+        assertThat(hitLines("class A {",
+                            "    void paces() {",
+                            "        for (int i = 0; i < FRAMES.length; i++) {",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(4);
+    }
+
+    @Test
+    void hits_aCounterSteppedWithPlusEqualsInTheBody_isReported() {
+        assertThat(hitLines("class A {",
+                            "    void paces() {",
+                            "        while (n < 5) {",
+                            "            n += 1;",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(5);
+    }
+
+    @Test
+    void hits_aCounterSteppedOnlyInTheForUpdate_isReported_everyNameOfTheUpdateIsACounter() {
+        assertThat(hitLines("class A {",
+                            "    void paces() {",
+                            "        for (; n < 5; n = n + 1) {",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(4);
+    }
+
+    @Test
+    void hits_aLoopWhoseConditionComparesALiteralWithAName_isNotReported_withNoCounterTheNameIsState() {
+        assertThat(hitLines("class A {",
+                            "    void waits() {",
+                            "        while (0 != pending) {",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    @Test
+    void hits_aBoundReadThroughACall_isNotReported_aNamedLimitANameWithAMemberReadsAsState() {
+        assertThat(hitLines("class A {",
+                            "    void paces() {",
+                            "        for (int i = 0; i < frames.size(); i++) {",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    @Test
+    void hits_aParkThatIsTheBodyOfABracelessIfInTheLoop_isReported_itIsNotAGuard() {
+        assertThat(hitLines("class A {",
+                            "    void spins() {",
+                            "        while (true) {",
+                            "            if (ok()) park" + "Nanos(5);",
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(4);
+    }
+
+    @Test
+    void hits_aParkInsideTheCallOfABracelessIfStatement_isReported_theStatementHasNoExitYet() {
+        assertThat(hitLines("class A {",
+                            "    void spins() {",
+                            "        while (true) {",
+                            "            if (ok()) log(" + PARK.replace(";", ")") + ";",
+                            "        }",
+                            "    }",
+                            "}")).as(GATE_SCOPE).containsExactly(4);
+    }
+
+    @Test
+    void hits_aLoopKeywordAfterAUnicodeNamedCall_isReadFromTheRealKeyword() {
+        assertThat(hitLines("class A {",
+                            "    void waits() {",
+                            "        if (\u03b1for(1)) while (!done()) {",
+                            "            " + PARK,
+                            "        }",
+                            "    }",
+                            "}")).isEmpty();
+    }
+
+    // ---- Whole repository: no park is refused anywhere. The count-only census of 7292523b36 (s56/facts-i3850a.md), plus the two negative
+    // observations, were converted to Pause; the positive control is that the scan reached every file that held one. ----
+
+    private static final List<String> CONVERTED_FILES = List.of("aether/aether-stream/src/test/java/org/pragmatica/aether/stream/DivergentTailPromotionTest.java",
+                                                                "aether/aether-stream/src/test/java/org/pragmatica/aether/stream/OwnerActivationTest.java",
+                                                                "aether/ember/src/test/java/org/pragmatica/aether/ember/EmberForwardLaneTripwireTest.java",
+                                                                "aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamFanoutConsumerTest.java",
+                                                                "aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamOwnerKillWritesResumeTest.java",
+                                                                "integrations/consensus/src/test/java/org/pragmatica/consensus/net/quic/QuicDialAttemptTest.java",
+                                                                "integrations/consensus/src/test/java/org/pragmatica/consensus/net/quic/QuicLaneBacklogTest.java",
+                                                                "integrations/consensus/src/test/java/org/pragmatica/consensus/net/quic/QuicLaneEndMarkerFinLossTest.java");
 
     private static Path repositoryRoot() {
         var dir = Path.of("").toAbsolutePath();
@@ -486,33 +801,22 @@ class SingleParkSleepTest {
         return dir == null ? Path.of("").toAbsolutePath() : dir;
     }
 
-    private static Map<String, Long> parkSleepHitsInTheCensusFiles() throws IOException {
-        var root = repositoryRoot();
-        var scan = FlakeScan.scan(root);
-
-        assertThat(scan.examinedFiles()).as("positive control: the scan reached every file of the count-only census").containsAll(COUNT_ONLY_SITES.keySet());
-        return COUNT_ONLY_SITES.keySet()
-                               .stream()
-                               .collect(Collectors.toMap(file -> file,
-                                                                          file -> scan.hits()
-                                                                                      .stream()
-                                                                                      .filter(hit -> hit.kind() == FlakeScan.Kind.PARK_SLEEP && hit.file().equals(file))
-                                                                                      .count()));
-    }
-
-    @Disabled("#3850 lane B")
     @Test
-    void ruled_theWholeRepository_hasNoCountOnlyParkLoop_theGateRefusesEachCensusSiteUntilItIsConverted() throws IOException {
-        var hits = parkSleepHitsInTheCensusFiles();
+    void theQuicEndMarkerNegativeObservation_isAPause_theGateCannotSeeItsShape() throws IOException {
+        var file = repositoryRoot().resolve("integrations/consensus/src/test/java/org/pragmatica/consensus/net/quic/QuicLaneEndMarkerFinLossTest.java");
+        var source = Files.readString(file);
+        var start = source.indexOf("private static boolean stillBlocked(");
+        var method = source.substring(start, source.indexOf("/// Returns once", start));
 
-        var expected = COUNT_ONLY_SITES.entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey, site -> site.getValue().longValue()));
-
-        assertThat(hits).as(GATE_SCOPE).isEqualTo(expected);
+        assertThat(start).as("positive control: the method is where the test looks").isPositive();
+        assertThat(method).as("a wait that shows something does NOT happen needs elapsed time (#3850 named limit)").contains("Pause.pause(").doesNotContain("park" + "Nanos");
     }
 
     @Test
-    void tripwire_theWholeRepository_stillAcceptsEveryCountOnlyCensusSiteAtTheBase() throws IOException {
-        assertThat(parkSleepHitsInTheCensusFiles().values()).as(ENABLE + "ruled_theWholeRepository_hasNoCountOnlyParkLoop_theGateRefusesEachCensusSiteUntilItIsConverted")
-                                                            .containsOnly(0L);
+    void hits_theWholeRepository_hasNoParkSleepHit_everyCountOnlyAndNegativeObservationSiteIsConverted() throws IOException {
+        var scan = FlakeScan.scan(repositoryRoot());
+
+        assertThat(scan.examinedFiles()).as("positive control: the scan reached every converted file").containsAll(CONVERTED_FILES);
+        assertThat(scan.hits().stream().filter(hit -> hit.kind() == FlakeScan.Kind.PARK_SLEEP).map(FlakeScan.Hit::key)).as(GATE_SCOPE).isEmpty();
     }
 }
