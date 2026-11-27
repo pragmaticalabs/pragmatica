@@ -5,11 +5,13 @@
 package org.pragmatica.aether.api.routes;
 
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.security.Authenticated;
@@ -19,6 +21,7 @@ import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.JsonCodec;
 import org.pragmatica.http.ResponseSerializer;
@@ -57,16 +60,72 @@ public final class ManagementRouter {
         this.routesByName = routesByName;
     }
 
-    public static ManagementRouter managementRouter(RouteSource... sources) {
-        var allRoutes = java.util.stream.Stream.of(sources).flatMap(RouteSource::routes).toList();
-        var byName = allRoutes.stream()
-                              .filter(r -> !r.name()
-                                             .isEmpty())
-                              .collect(Collectors.toMap(Route::name,
-                                                        r -> r,
-                                                        (a, _) -> a));
+    /// Assembles the router over `sources`. A route table has one handler per route name: a name two registrations share
+    /// refuses the whole table with a [DuplicateRoute] naming both sources, so a node never starts with one handler silently
+    /// hiding another. A route with no name is not a registration under a name (it dispatches by path) and may repeat.
+    public static Result<ManagementRouter> managementRouter(RouteSource... sources) {
+        var registrations = Stream.of(sources).flatMap(ManagementRouter::registrationsOf).toList();
+
+        return firstDuplicate(registrations).fold(() -> Result.success(assemble(sources, registrations)),
+                                                  DuplicateRoute::result);
+    }
+
+    private static ManagementRouter assemble(RouteSource[] sources, List<Registration> registrations) {
+        var byName = registrations.stream().collect(Collectors.toMap(Registration::name, Registration::route));
 
         return new ManagementRouter(RequestRouter.with(sources), JsonCodecAdapter.defaultCodec(), Map.copyOf(byName));
+    }
+
+    private static Stream<Registration> registrationsOf(RouteSource source) {
+        return source.routes()
+                     .filter(route -> !route.name()
+                                            .isEmpty())
+                     .map(route -> Registration.registration(source, route));
+    }
+
+    private static Option<DuplicateRoute> firstDuplicate(List<Registration> registrations) {
+        return Option.from(registrations.stream()
+                                        .collect(Collectors.groupingBy(Registration::name,
+                                                                       LinkedHashMap::new,
+                                                                       Collectors.toList()))
+                                        .values()
+                                        .stream()
+                                        .filter(group -> group.size() > 1)
+                                        .findFirst()).map(DuplicateRoute::duplicateRoute);
+    }
+
+    private record Registration(String source, Route<?> route) {
+        static Registration registration(RouteSource source, Route<?> route) {
+            return new Registration(source.getClass().getName(),
+                                    route);
+        }
+
+        String name() {
+            return route.name();
+        }
+    }
+
+    /// Two registrations under one route name: the table cannot say which handler the name reaches. Names the route and the
+    /// source of the first two registrations (the same source twice when one source registers the name twice).
+    public record DuplicateRoute(String routeName, String firstSource, String secondSource) implements Cause, HttpStatusAware {
+        static DuplicateRoute duplicateRoute(List<Registration> registrations) {
+            return new DuplicateRoute(registrations.get(0).name(),
+                                      registrations.get(0).source(),
+                                      registrations.get(1).source());
+        }
+
+        @Override
+        public String message() {
+            return "Route '" + routeName
+                 + "' is registered twice: by " + firstSource
+                 + " and by " + secondSource
+                 + "; a route table has one handler per route name";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.INTERNAL_SERVER_ERROR;
+        }
     }
 
     /// The handler registered under a [ManagementRoute] name, or none. Read-only; lets a test ask the SAME lookup `dispatch` uses

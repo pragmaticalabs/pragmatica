@@ -77,7 +77,8 @@ class StreamApiRoutesEventsTest {
     class RouteSourceWiring {
 
         /// `StreamApiRoutes.routes()` must emit exactly one entry per spec-required verb: the read
-        /// surface (list/versions/latest/metadata/partition/replicas/read/groups-list/tail/events),
+        /// surface (list/versions/latest/metadata/partition/consumers/replicas/read/groups-list/tail/events; consumers moved
+        /// here from `StreamRoutes` in #1753 so it resolves through the same catalog lookup),
         /// the write surface (create — both the catalog-addressed form and, since #968, the
         /// body-carried legacy form — /publish/publish-batch/group-create/group-delete), and the
         /// destructive surface (delete). Asserting the exact NAME SET — rather than a bare size — is a smoke test
@@ -89,6 +90,7 @@ class StreamApiRoutesEventsTest {
                                                                         ManagementRoute.STREAMS_METADATA.name(),
                                                                         ManagementRoute.STREAM_GET.name(),
                                                                         ManagementRoute.STREAM_PARTITION.name(),
+                                                                        ManagementRoute.STREAM_CONSUMERS.name(),
                                                                         ManagementRoute.STREAM_REPLICAS.name(),
                                                                         ManagementRoute.STREAM_READ.name(),
                                                                         ManagementRoute.STREAMS_GROUPS_LIST.name(),
@@ -100,7 +102,9 @@ class StreamApiRoutesEventsTest {
                                                                         ManagementRoute.STREAMS_PUBLISH_BATCH.name(),
                                                                         ManagementRoute.STREAMS_GROUP_CREATE.name(),
                                                                         ManagementRoute.STREAMS_GROUP_DELETE.name(),
-                                                                        ManagementRoute.STREAMS_DELETE.name());
+                                                                        ManagementRoute.STREAMS_DELETE.name(),
+                                                                        ManagementRoute.STREAM_ENGINE_EVENTS.name(),
+                                                                        ManagementRoute.STREAM_ENGINE_CONSUMERS.name());
 
         @Test
         void routes_enumerateEverySpecRequiredVerb_asExactNameSet() {

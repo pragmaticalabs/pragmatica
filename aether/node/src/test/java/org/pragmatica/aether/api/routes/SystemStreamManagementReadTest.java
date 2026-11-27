@@ -71,6 +71,7 @@ class SystemStreamManagementReadTest {
     private StreamPartitionManager ownerPartitions;
     private StreamPartitionManager servingPartitions;
     private StreamApiRoutes routes;
+    private KVStore<AetherKey, AetherValue> catalog;
     private String engineKey;
 
     @BeforeEach
@@ -79,7 +80,8 @@ class SystemStreamManagementReadTest {
         servingPartitions = StreamPartitionManager.streamPartitionManager();
         servingPartitions.placementRoleSupplier((_, _) -> Role.NONE);
         engineKey = org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS.asString();
-        routes = StreamApiRoutes.streamApiRoutes(() -> nodeWith(servingPartitions, forwardingRouter(), emptyStore()),
+        catalog = emptyStore();
+        routes = StreamApiRoutes.streamApiRoutes(() -> nodeWith(servingPartitions, forwardingRouter(), catalog),
                                                  StreamNamespacesService.inMemory(),
                                                  ConsumerGroupCoordinator.noOp(),
                                                  ConsumerGroupRegistry.consumerGroupRegistry());
@@ -144,7 +146,7 @@ class SystemStreamManagementReadTest {
 
         var isolated = StreamApiRoutes.streamApiRoutes(() -> nodeWith(servingPartitions,
                                                                       StreamReadRouter.localOnly(servingPartitions),
-                                                                      emptyStore()),
+                                                                      catalog),
                                                        StreamNamespacesService.inMemory(),
                                                        ConsumerGroupCoordinator.noOp(),
                                                        ConsumerGroupRegistry.consumerGroupRegistry());
@@ -187,7 +189,7 @@ class SystemStreamManagementReadTest {
                                                        SERVING,
                                                        (_, _) -> Option.some(OWNER),
                                                        StreamReadForwardMetrics.NOOP);
-        var silentRoutes = StreamApiRoutes.streamApiRoutes(() -> nodeWith(servingPartitions, router, emptyStore()),
+        var silentRoutes = StreamApiRoutes.streamApiRoutes(() -> nodeWith(servingPartitions, router, catalog),
                                                            StreamNamespacesService.inMemory(),
                                                            ConsumerGroupCoordinator.noOp(),
                                                            ConsumerGroupRegistry.consumerGroupRegistry());
@@ -259,11 +261,13 @@ class SystemStreamManagementReadTest {
 
     // === helpers ===
 
+    /// #1753, #1963: a stream route resolves the stream through the catalog, so a declared stream is also committed there.
     private void declare(int partitions) {
         var config = StreamConfig.streamConfig(engineKey, partitions, RETENTION, "earliest");
 
         ownerPartitions.createStream(config).onFailure(cause -> fail(cause.message()));
         servingPartitions.createStream(config).onFailure(cause -> fail(cause.message()));
+        commit(catalog, partitions);
     }
 
     private void publish(int partition, int events) {

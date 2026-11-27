@@ -38,7 +38,7 @@ class ManagementRouterGrantedHandlerTest {
     @Test
     void handle_grantedRoute_receivesTheAuthenticatedItWasGiven() {
         var probe = GrantedRouteProbe.answering();
-        var router = ManagementRouter.managementRouter(probe);
+        var router = ManagementRouter.managementRouter(probe).unwrap();
         var given = new AtomicReference<Authenticated>();
         var writer = new StatusWriter();
 
@@ -60,7 +60,7 @@ class ManagementRouterGrantedHandlerTest {
             received.set(authenticated);
             return Promise.success("\"live\"");
         };
-        var router = ManagementRouter.managementRouter(ManagementRoutes.<String>route(ManagementRoute.HEALTH_LIVE).toJson(handler));
+        var router = ManagementRouter.managementRouter(ManagementRoutes.<String>route(ManagementRoute.HEALTH_LIVE).toJson(handler)).unwrap();
         var given = Authenticated.authenticated(SecurityContext.securityContext("matched-caller", java.util.Set.of(), AuthorizationRole.ADMIN).unwrap());
         var writer = new StatusWriter();
 
@@ -76,6 +76,7 @@ class ManagementRouterGrantedHandlerTest {
         var writer = new StatusWriter();
 
         TestAdminGrants.withAdminGrant(_ -> assertThat(ManagementRouter.managementRouter(probe)
+                                                                       .unwrap()
                                                                        .handle(new ProbeRequest(), writer)).isTrue());
 
         assertThat(probe.received().map(Authenticated::grant).toOptional()).as("the route ran, with no grant")

@@ -223,7 +223,7 @@ class StreamApiRoutesPublishBatchTest {
 
         try {
             createStream(manager, mode);
-            var router = ManagementRouter.managementRouter(routesFor(manager));
+            var router = ManagementRouter.managementRouter(routesFor(manager)).unwrap();
             var recorder = new RecordingResponseWriter();
             var path = route.assemble(NAMESPACE, STREAM, VERSION).unwrap();
 

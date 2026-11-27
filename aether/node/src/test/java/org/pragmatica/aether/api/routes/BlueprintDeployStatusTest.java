@@ -289,7 +289,7 @@ class BlueprintDeployStatusTest {
                                     String requestBody,
                                     List<StreamValidationFailure> rejected,
                                     List<StreamValidationWarning> warnings) {
-        var router = ManagementRouter.managementRouter(SliceRoutes.sliceRoutes(() -> nodeOver(Map.of(), rejected, warnings)));
+        var router = ManagementRouter.managementRouter(SliceRoutes.sliceRoutes(() -> nodeOver(Map.of(), rejected, warnings))).unwrap();
         var recorder = new RecordingResponseWriter();
 
         assertThat(router.handle(postRequest(path, requestBody), recorder)).as("the router must own " + path).isTrue();
