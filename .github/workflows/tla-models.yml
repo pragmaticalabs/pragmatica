@@ -34,6 +34,7 @@ on:
       - 'aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/fsm2/Lifecycle.java'
       - 'aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/fsm2/Outbox.java'
       - 'aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/fsm2/Reconcile.java'
+      - 'aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/fsm2/RetirementUnit.java'
       - 'aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/fsm2/Warnings.java'
       - 'aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/fsm2/package-info.java'
       - 'aether/aether-stream/src/main/java/org/pragmatica/aether/stream/replication/PartitionBackfill.java'
