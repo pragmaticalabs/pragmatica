@@ -117,6 +117,7 @@ class ManagementStatusCoverageTest {
             entry(ROUTES + "NodeLifecycleRoutes$PromoteError#IMMUTABLE_ROLE", "CONFLICT"),
             entry(ROUTES + "NodeLifecycleRoutes$PromoteError#MISSING_TARGET_ROLE", "BAD_REQUEST"),
             entry(ROUTES + "NodeLifecycleRoutes$PromoteError#UNKNOWN_NODE_ROLE", "CONFLICT"),
+            entry(ROUTES + "ManagementRouter$DuplicateRoute", "INTERNAL_SERVER_ERROR"),
             entry(ROUTES + "NodeLifecycleRoutes$PromoteError#UNSUPPORTED_TARGET_ROLE", "BAD_REQUEST"),
             entry(ROUTES + "NodeLifecycleRoutes$SliceFloorBreached", "CONFLICT"),
             entry(ROUTES + "NotImplementedRoutes$NotImplemented", "NOT_IMPLEMENTED"),

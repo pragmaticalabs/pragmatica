@@ -21,6 +21,7 @@ import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.JsonCodec;
 import org.pragmatica.http.ResponseSerializer;
@@ -106,7 +107,7 @@ public final class ManagementRouter {
 
     /// Two registrations under one route name: the table cannot say which handler the name reaches. Names the route and the
     /// source of the first two registrations (the same source twice when one source registers the name twice).
-    public record DuplicateRoute(String routeName, String firstSource, String secondSource) implements Cause {
+    public record DuplicateRoute(String routeName, String firstSource, String secondSource) implements Cause, HttpStatusAware {
         static DuplicateRoute duplicateRoute(List<Registration> registrations) {
             return new DuplicateRoute(registrations.get(0).name(),
                                       registrations.get(0).source(),
@@ -119,6 +120,11 @@ public final class ManagementRouter {
                  + "' is registered twice: by " + firstSource
                  + " and by " + secondSource
                  + "; a route table has one handler per route name";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.INTERNAL_SERVER_ERROR;
         }
     }
 
