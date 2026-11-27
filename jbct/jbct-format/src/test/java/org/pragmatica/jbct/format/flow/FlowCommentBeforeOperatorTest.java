@@ -26,8 +26,6 @@ class FlowCommentBeforeOperatorTest {
                                                       " // C7Q\n// D8R\n");
     private static final String STRING_PLUS = "var s = \"firstOperandWithLongName\" + secondOperandWithLongName + \"thirdOperandWithLongName\" + fourthOperandWithLongName + fifth;";
     private static final String RETURN_AND = "return firstOperandWithLongName && secondOperandWithLongName && thirdOperandWithLongName && fourthOperandWithLongName && fifthOne;";
-    private static final String SWITCH_STATEMENT = "switch (k) {\n            case 1 -> a();\n            default -> b();\n        }";
-    private static final String SWITCH_EXPRESSION = "var v = switch (k) {\n            case 1 -> 1;\n            default -> 2;\n        };";
     private final FlowFormatter fmt = FlowFormatter.flowFormatter(FormatterConfig.defaultConfig());
 
     private static String inMethod(String statement) {
@@ -89,6 +87,21 @@ class FlowCommentBeforeOperatorTest {
         }
     }
 
+    /// `statement` carries one `@@` marking the gap: each comment form goes there.
+    private void assertMarkedGapKeepsEveryComment(String statement) {
+        var base = inMethod(statement);
+        int at = base.indexOf("@@");
+
+        assertThat(at).as("marker in %s", statement)
+                      .isGreaterThanOrEqualTo(0);
+
+        var clean = base.replace("@@", "");
+
+        for (var form : FORMS) {
+            assertGapForm(clean, at, form);
+        }
+    }
+
     private void assertGapForm(String base, int at, String form) {
         var withLeadingSpace = base.substring(0, at) + form + base.substring(at);
         var once = format(withLeadingSpace);
@@ -103,11 +116,35 @@ class FlowCommentBeforeOperatorTest {
     }
 
     @Test void switchStatement_commentBeforeTheBlockBrace_isPrintedBeforeIt() {
-        assertEveryGapKeepsEveryComment(SWITCH_STATEMENT, "{\n            case");
+        assertMarkedGapKeepsEveryComment("switch (k) @@{\n            case 1 -> a();\n            default -> b();\n        }\n        return 0;");
     }
 
     @Test void switchExpression_commentBeforeTheBlockBrace_isPrintedBeforeIt() {
-        assertEveryGapKeepsEveryComment(SWITCH_EXPRESSION, "{\n            case");
+        assertMarkedGapKeepsEveryComment("var v = switch (k) @@{\n            case 1 -> 1;\n            default -> 2;\n        };\n        return v;");
+    }
+
+    @Test void switchAsArgument_commentBeforeTheBlockBrace_isPrintedBeforeIt() {
+        assertMarkedGapKeepsEveryComment("use(switch (k) @@{\n            case 1 -> 1;\n            default -> 2;\n        });\n        return 0;");
+    }
+
+    @Test void switchReturned_commentBeforeTheBlockBrace_isPrintedBeforeIt() {
+        assertMarkedGapKeepsEveryComment("return switch (k) @@{\n            case 1 -> 1;\n            default -> 2;\n        };");
+    }
+
+    @Test void switchWithColonLabels_commentBeforeTheBlockBrace_isPrintedBeforeIt() {
+        assertMarkedGapKeepsEveryComment("switch (k) @@{\n            case 1: a(); break;\n            default: b();\n        }\n        return 0;");
+    }
+
+    @Test void switchInALambdaBlock_commentBeforeTheBlockBrace_isPrintedBeforeIt() {
+        assertMarkedGapKeepsEveryComment("items.forEach(x -> {\n            switch (x) @@{\n                case 1 -> a();\n                default -> b();\n            }\n        });\n        return 0;");
+    }
+
+    @Test void switchInAChainedLambdaBlock_commentBeforeTheBlockBrace_isPrintedBeforeIt() {
+        assertMarkedGapKeepsEveryComment("items.stream().map(x -> {\n            switch (x) @@{\n                case 1 -> a();\n                default -> b();\n            }\n            return x;\n        }).toList();\n        return 0;");
+    }
+
+    @Test void switchInASwitchRuleBlock_commentBeforeTheBlockBrace_isPrintedBeforeIt() {
+        assertMarkedGapKeepsEveryComment("switch (k) {\n            case 1 -> {\n                switch (j) @@{\n                    case 1 -> a();\n                    default -> b();\n                }\n            }\n            default -> b();\n        }\n        return 0;");
     }
 
     @Test void wrappedStringPlus_commentBeforeAPlus_isPrintedBeforeIt() {
