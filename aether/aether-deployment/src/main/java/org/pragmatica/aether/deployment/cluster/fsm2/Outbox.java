@@ -682,6 +682,7 @@ public sealed interface Outbox {
     private static ClusterModel refused(ClusterModel m, Ctx ctx, Submitted submission, Settlement.Refused refused) {
         var mirrorBefore = mirrorFingerprint(m, refused);
 
+        Communities.closeWindows(m, ctx, submission.drafts());
         reindex(m, ctx, refused);
         m.leader = refused.leader();
 
@@ -1086,6 +1087,7 @@ public sealed interface Outbox {
     // FER: a failed write is not retried at once; its pending entries are released and the reconcile `retryLater` queues re-derives it.
     private static ClusterModel failed(ClusterModel m, Ctx ctx, Submitted submission, Settlement.Failed failed) {
         metric(ctx, submission, "failed");
+        Communities.closeWindows(m, ctx, submission.drafts());
         for (var draft : submission.drafts()) {
             dropPending(m, draft);
             Blueprints.releaseUnsent(m, draft);

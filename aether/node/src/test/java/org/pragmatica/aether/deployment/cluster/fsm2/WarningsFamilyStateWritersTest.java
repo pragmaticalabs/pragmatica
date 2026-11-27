@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class WarningsFamilyStateWritersTest {
     private static final String FIELDS = "invalidPlacementWarned|retryExhaustedWarned|schemaUnknownWarned|schemaStalledWarned|strayWarned"
                                          + "|heldByArtifact|holdSignatures|unmatchedWarned|noPolicyWarned|unplacedWarned|unjudgeableWarned"
-                                         + "|suppressedWarned|growthBlocked|applyDeadlineWarned";
+                                         + "|suppressedWarned|growthBlocked|applyDeadlineWarned|emptyAudienceWarned";
     private static final Pattern ASSIGNMENT = Pattern.compile("\\b\\w+\\.(" + FIELDS + ")\\s*=(?!=)");
     private static final Pattern COPY = Pattern.compile("^\\s*c\\.(" + FIELDS + ")\\s*=\\s*\\1\\.rebound\\(meter\\);\\s*$");
 

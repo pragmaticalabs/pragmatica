@@ -96,6 +96,14 @@ growth                 = false  # OFF unless true: a source keeps its single <so
 allow_below_rf         = false  # a floor below 3 weakens redundancy and must be allowed on purpose
 ```
 
+**The floor and a silent target (#3815).** A community is ACTIVE only with `viability_floor` live members, so a cluster with fewer
+workers than the floor (one worker, the default 3) places no `WORKERS_ONLY` target. The floor stays: it is the DHT replication factor.
+The stall is not silent: a committed target whose placement audience is empty (any policy kind, computed at the one site
+`Placement.reconcileWithPolicy`) raises the operator warning `placement-audience-empty` once per episode, naming the target, the policy,
+every community with its state and live members, and the floor, and pointing at `allow_below_rf`. It is closed by
+`placement-audience-available` when the audience is non-empty (the target then places), when the placement no longer parses, or when the
+target is removed. To place on fewer workers than the floor, set `viability_floor` below it together with `allow_below_rf = true`.
+
 `max_size` lies between `viability_floor` and 200, `max_communities` between 1 and 100, and a mistyped value or an
 unknown key refuses the whole apply. A declared `[community.<id>]` may not take an id of the shape `<source>-w-<number>`
 (the derived ids) and may not exceed 200.

@@ -85,7 +85,7 @@ public sealed interface Placement {
                                         Artifact artifact,
                                         SliceTargetValue target,
                                         Cause cause) {
-        return Warnings.raise(m,
+        return Warnings.raise(closeEmptyAudience(m, ctx, artifact.base(), "its placement does not parse"),
                               Warnings.INVALID_PLACEMENT,
                               artifact.asString(),
                               Warnings.SINGLE,
@@ -138,8 +138,101 @@ public sealed interface Placement {
         var audience = audience(m, policy);
 
         return audience.isEmpty()
+               ? emptyAudience(m, ctx, artifact.base(), policy)
+               : reconcileAudience(closeEmptyAudience(m, ctx, artifact.base(), "the audience is not empty"),
+                                   ctx,
+                                   artifact,
+                                   target,
+                                   policy,
+                                   audience);
+    }
+
+    /// #3815: a committed target whose audience is empty is not placed, and the operator is told once per episode (`placement-audience-empty`,
+    /// closed by `placement-audience-available`). FER (degrade forward): the target stays unplaced; the floor is not lowered here, because it
+    /// is the DHT replication factor. Guarantee: the stall is visible, never silent. Mechanism: the committed open set of `Warnings`.
+    private static ClusterModel emptyAudience(ClusterModel m, Ctx ctx, ArtifactBase base, PlacementPolicy policy) {
+        return activationInFlight(m, ctx, policy)
                ? m
-               : reconcileAudience(m, ctx, artifact, target, policy, audience);
+               : Warnings.raise(m,
+                                Warnings.EMPTY_AUDIENCE,
+                                base.asString(),
+                                Warnings.SINGLE,
+                                Warnings.SINGLE,
+                                emptyAudienceText(m, ctx, base, policy));
+    }
+
+    /// The empty audience of a worker-reading policy waits only while the community's own FORMING/DEGRADED to ACTIVE write is in flight, never
+    /// on a draft: the event is computed from committed state, and `Communities.run` redrafts a refused or lost write every pass, so a
+    /// suppression read from the draft would hide the stall for good. A due community (its next state is ACTIVE) is in flight until its
+    /// window (`ClusterModel.activationDeadline`) ends: it has not been drafted yet (this pass, before `Communities.run`; a slot holding another
+    /// write's window counts as not drafted), or the bound since the first draft of that ACTIVE write has not passed (a lost write), and no
+    /// refusal or failure of that write closed it.
+    private static boolean activationInFlight(ClusterModel m, Ctx ctx, PlacementPolicy policy) {
+        var floor = CommunityPolicies.current(m, ctx).viabilityFloor();
+
+        return policy != PlacementPolicy.CORE_ONLY && m.communities.entries()
+                                                                   .stream()
+                                                                   .filter(entry -> due(m, floor, entry))
+                                                                   .anyMatch(entry -> windowOpen(m, ctx, entry));
+    }
+
+    private static boolean due(ClusterModel m, int floor, Map.Entry<String, CommunityValue> entry) {
+        var state = entry.getValue().state();
+
+        return state != CommunityState.ACTIVE && Communities.next(state,
+                                                                  Communities.liveMembers(m, entry.getKey()),
+                                                                  floor) == CommunityState.ACTIVE;
+    }
+
+    /// Open when the window in the slot belongs to the community's ACTIVE write (its edge leaves the committed state for ACTIVE) and its bound
+    /// has not passed. A slot with no window, or with the window of another write, means the ACTIVE write has not been drafted yet (this pass,
+    /// before `Communities.run` opens its window): open, and never closed by the other write's deadline.
+    private static boolean windowOpen(ClusterModel m, Ctx ctx, Map.Entry<String, CommunityValue> entry) {
+        return m.activationDeadline.get(entry.getKey())
+                                   .filter(window -> window.isFor(entry.getValue().state(),
+                                                                  CommunityState.ACTIVE))
+                                   .map(window -> window.openAt(ctx.monoNs()))
+                                   .or(true);
+    }
+
+    private static String emptyAudienceText(ClusterModel m, Ctx ctx, ArtifactBase base, PlacementPolicy policy) {
+        return "Target " + base.asString()
+             + " is not placed: its placement " + policy
+             + " has an empty audience (" + cores(m).size()
+             + " eligible cores; " + communityCensus(m)
+             + "). The community viability floor is " + CommunityPolicies.current(m, ctx).viabilityFloor()
+             + " live members: add workers, or lower viability_floor in [community_policy] with allow_below_rf = true";
+    }
+
+    /// Every community with its state and its live members, in id order.
+    private static String communityCensus(ClusterModel m) {
+        var census = m.communities.entries()
+                                  .stream()
+                                  .sorted(Comparator.comparing(Map.Entry::getKey))
+                                  .map(entry -> entry.getKey()
+                                               + " " + entry.getValue()
+                                                            .state()
+                                               + " with " + Communities.liveMembers(m,
+                                                                                    entry.getKey())
+                                               + " live")
+                                  .collect(Collectors.joining(", "));
+
+        return census.isEmpty()
+               ? "no communities"
+               : "communities: " + census;
+    }
+
+    /// Closes the open `placement-audience-empty` episode of `base` with `placement-audience-available`, the reason being `why`; nothing
+    /// when none is open.
+    static ClusterModel closeEmptyAudience(ClusterModel m, Ctx ctx, ArtifactBase base, String why) {
+        return m.emptyAudienceWarned.contains(base)
+               ? Warnings.raise(m,
+                                Recoveries.PLACEMENT_AUDIENCE_AVAILABLE,
+                                base.asString(),
+                                Warnings.SINGLE,
+                                Warnings.SINGLE,
+                                "Placement audience of " + base.asString() + ": " + why)
+               : m;
     }
 
     private static ClusterModel reconcileAudience(ClusterModel m,
