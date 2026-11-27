@@ -421,4 +421,74 @@ class EmptyAudienceWarningTest {
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.warns(OPEN)).as("no new opener while the fresh window is open").hasSize(opensBefore);
     }
+
+    /// The window belongs to ONE write (#3852, reverse direction): the DEGRADED write commits, the ACTIVE write is drafted and in flight, and
+    /// the DEGRADED write's settlement (refused here) arrives late. Red when: that settlement closes the community's window, which is now the
+    /// ACTIVE write's, and the event opens while the ACTIVE write is still inside its own bound.
+    @Test
+    void degradedWriteRefusedLate_whileTheActiveWriteIsInFlight_leavesItsWindowOpen() {
+        lateSettlementOfTheDegradedWrite_leavesTheActiveWritesWindowOpen(true);
+    }
+
+    /// Same as the refusal above, through the failure path (`Outbox.failed`): a late failure of the older write.
+    @Test
+    void degradedWriteFailedLate_whileTheActiveWriteIsInFlight_leavesItsWindowOpen() {
+        lateSettlementOfTheDegradedWrite_leavesTheActiveWritesWindowOpen(false);
+    }
+
+    private static void lateSettlementOfTheDegradedWrite_leavesTheActiveWritesWindowOpen(boolean refused) {
+        var w = activeWorld();
+        var tick = w.h.settings.timing().tick();
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.holdKinds = Set.of(ClusterModel.SubmitKind.COMMUNITY);
+        w.announce("east-w-0", W1, W1, W2);
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.held).as("the DEGRADED write is held").isNotEmpty();
+        var degraded = w.h.held.values().iterator().next();
+
+        w.h.held.clear();
+        w.h.applyTransaction(degraded);
+        w.h.seed(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
+        w.h.drain();
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.model().communities.get("east-w-0").map(v -> v.state().name()).or("none"))
+            .as("committed DEGRADED, the ACTIVE write drafted").isEqualTo("DEGRADED");
+        assertThat(w.h.held).as("the ACTIVE write is held in flight").isNotEmpty();
+        w.h.advance(2 * tick);
+        w.h.settleHeld(degraded,
+                       refused
+                       ? w.h.refused(degraded)
+                       : new ClusterInput.Settlement.Failed("late"));
+        w.h.advance(2 * tick);
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("the older write settled late: the ACTIVE write is still inside its own bound").isEmpty();
+    }
+
+    /// The window belongs to ONE write (#3852, enforcer in `Placement`): the DEGRADED write's window has run out, then its commit lands
+    /// coalesced with the roster return, so the pass that sees committed DEGRADED has not drafted the ACTIVE write yet. Red when: the stale
+    /// window of the other write, past its deadline, is read as the ACTIVE write's and the event opens at once.
+    @Test
+    void expiredDegradedWindow_activeWriteNotYetDrafted_isHeldBack() {
+        var w = activeWorld();
+        var expiry = w.h.settings.submissionExpiry();
+        var tick = w.h.settings.timing().tick();
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.holdKinds = Set.of(ClusterModel.SubmitKind.COMMUNITY);
+        w.announce("east-w-0", W1, W1, W2);
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.advance(expiry + tick);
+        assertThat(w.h.held).as("the DEGRADED write is held").isNotEmpty();
+        var degraded = w.h.held.values().iterator().next();
+
+        w.h.held.values().removeIf(held -> !held.equals(degraded));
+        w.h.settle(degraded, w.h.applyHeld(degraded.correlationId()));
+        w.h.seed(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
+        w.h.drain();
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.model().communities.get("east-w-0").map(v -> v.state().name()).or("none"))
+            .as("committed DEGRADED, the ACTIVE write drafted").isEqualTo("DEGRADED");
+        assertThat(w.h.warns(OPEN)).as("the ACTIVE write has no window of its own to have run out").isEmpty();
+    }
 }
