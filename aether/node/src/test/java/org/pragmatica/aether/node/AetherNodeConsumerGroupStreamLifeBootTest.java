@@ -40,7 +40,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #3041 through the REAL assembly: the stream-life guard and the reclaim, on a booted single-node cluster. A lone node never
 /// elects itself (the election's empty-topology guard skips the proposal, seen in the first run's log), so the test
-/// routes the `LeaderChange` a leader would raise through `AetherNode.route`, the same entry the election uses. The unit tests drive a coordinator over a store they built; what only this test pins is what
+/// routes the `LeaderChange` a leader would raise through `AetherNode.route`, the same entry the election uses. For
+/// the same reason no join can commit (the epoch mint needs a committed leader), so the live life's records are written
+/// as the coordinator would write them; the admit side of the join is covered by `ConsumerGroupStreamLifeReclaimTest`. The unit tests drive a coordinator over a store they built; what only this test pins is what
 /// `AetherNode` wires: `StreamLives.committedIn(kvStore)` into the coordinator (a join of a stream with no committed
 /// config is refused, a join of a committed one is not), the applier's guard on [ConsumerGroupKey] in the node's own
 /// KV store (a write of a dead life is refused), and the router entry that hands a committed removal of a
@@ -92,10 +94,12 @@ class AetherNodeConsumerGroupStreamLifeBootTest {
         node.<Object>apply(List.of(putStreamConfig()))
             .await(timeSpan(30).seconds())
             .onFailure(cause -> fail("the stream config must commit: " + cause.message()));
-        awaitJoinAccepted();
+        node.<Object>apply(List.of(groupRecord(0), groupRecord(1)))
+            .await(timeSpan(30).seconds())
+            .onFailure(cause -> fail("the records of the live life must commit: " + cause.message()));
 
         await().atMost(Duration.ofSeconds(60))
-               .untilAsserted(() -> assertThat(recordsOfStream()).as("the join of the committed stream wrote one record per partition")
+               .untilAsserted(() -> assertThat(recordsOfStream()).as("the records of the live life were admitted and mirrored by the node's registry")
                                                                  .hasSize(2));
 
         node.<Object>apply(List.of(new KVCommand.Remove<AetherKey>(StreamConfigKey.streamConfigKey(STREAM))))
@@ -122,13 +126,16 @@ class AetherNodeConsumerGroupStreamLifeBootTest {
                                                                                             .isEqualTo(expected.message()));
     }
 
-    private void awaitJoinAccepted() {
-        await().atMost(Duration.ofSeconds(60))
-               .untilAsserted(() -> assertThat(joined().isSuccess()).as("a committed stream admits the join").isTrue());
-    }
-
     private Result<Unit> joined() {
         return node.consumerGroupCoordinator().joinGroup("g", STREAM, 2, "c1", node.self());
+    }
+
+    private KVCommand<AetherKey> groupRecord(int partition) {
+        return new KVCommand.Put<AetherKey, AetherValue>(ConsumerGroupKey.consumerGroupKey("g", STREAM, partition),
+                                                         ConsumerGroupValue.consumerGroupValue(node.self(),
+                                                                                              "c1",
+                                                                                              Epoch.epoch(1L, 1L, 1L),
+                                                                                              LIFE));
     }
 
     private static KVCommand<AetherKey> putStreamConfig() {
