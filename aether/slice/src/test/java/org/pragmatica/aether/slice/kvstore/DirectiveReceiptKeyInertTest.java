@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -63,12 +64,12 @@ class DirectiveReceiptKeyInertTest {
     }
 
     private static List<Path> productionSources() {
-        try (var files = Files.walk(AETHER)) {
-            return files.filter(file -> file.toString().endsWith(".java"))
-                        .filter(file -> file.toString().contains("/src/main/java/"))
-                        .filter(file -> !file.toString().contains("/target/"))
-                        .sorted()
-                        .toList();
+        try {
+            return SourceWalk.files(AETHER)
+                             .stream()
+                             .filter(file -> file.toString().endsWith(".java"))
+                             .filter(file -> file.toString().contains("/src/main/java/"))
+                             .toList();
         } catch (IOException e) {
             throw new UncheckedIOException("cannot list " + AETHER.toAbsolutePath(), e);
         }
