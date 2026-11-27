@@ -44,6 +44,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRoute;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
@@ -685,6 +686,7 @@ class BlueprintServiceInstance implements BlueprintService {
                                        .map(bindings -> bindings.withWarnings(preflighted.replicationWarnings()))
                                        .async()
                                        .flatMap(bindings -> applyAllCommands(expanded,
+                                                                             preflighted.declaredRoutes(),
                                                                              bindings,
                                                                              migrations,
                                                                              artifactCoords,
@@ -692,6 +694,7 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<PublishedBlueprint> applyAllCommands(ExpandedBlueprint expanded,
+                                                         Map<Artifact, List<DeclaredRoute>> declaredRoutes,
                                                          StreamBindings bindings,
                                                          Map<String, List<MigrationEntry>> migrations,
                                                          String artifactCoords,
@@ -699,6 +702,7 @@ class BlueprintServiceInstance implements BlueprintService {
         var attemptId = newAttemptId();
         var record = applyRecord(expanded, attemptId);
         var commands = buildAllCommands(expanded,
+                                        declaredRoutes,
                                         streamBindingsPut(expanded.id(), bindings.bound()),
                                         migrations,
                                         artifactCoords,
@@ -875,6 +879,7 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private List<KVCommand<AetherKey>> buildAllCommands(ExpandedBlueprint expanded,
+                                                        Map<Artifact, List<DeclaredRoute>> declaredRoutes,
                                                         KVCommand<AetherKey> streamBindings,
                                                         Map<String, List<MigrationEntry>> migrations,
                                                         String artifactCoords,
@@ -883,7 +888,7 @@ class BlueprintServiceInstance implements BlueprintService {
                                                         Option<KVCommand<AetherKey>> record) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
 
-        commands.add(buildBlueprintPutCommand(expanded, registerOnly, attemptId));
+        commands.add(buildBlueprintPutCommand(expanded, registerOnly, attemptId, declaredRoutes));
         // #759 review, BLOCKING: a fresh publish reuses `expanded.id()` on a retry after a prior
         // FAILED/ROLLED_BACK attempt of the SAME blueprint id, and `outcome(id)` otherwise keeps
         // returning that stale terminal record — indistinguishable from the new attempt already
@@ -945,7 +950,11 @@ class BlueprintServiceInstance implements BlueprintService {
 
     /// #1564: the slice-jar pre-flights passed, with the replication warnings they raised — carried to the
     /// publish answer, since the blueprint record itself must not hold deploy-response data.
-    private record Preflighted(ExpandedBlueprint expanded, List<StreamValidationWarning> replicationWarnings) {}
+    /// #3389: `declaredRoutes` are the routes the slice jars' topologies declare per artifact; they ride the blueprint Put so the leader
+    /// declares them in the route table before any slice loads.
+    private record Preflighted(ExpandedBlueprint expanded,
+                               List<StreamValidationWarning> replicationWarnings,
+                               Map<Artifact, List<DeclaredRoute>> declaredRoutes) {}
 
     /// #1564: the committed cluster config read as replication state — the `[replication]` defaults and the
     /// desired core count — the same conversion the nodes resolve resource declarations with at activation.
@@ -1051,9 +1060,10 @@ class BlueprintServiceInstance implements BlueprintService {
 
     private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded,
                                                                  boolean registerOnly,
-                                                                 String attemptId) {
+                                                                 String attemptId,
+                                                                 Map<Artifact, List<DeclaredRoute>> declaredRoutes) {
         return new Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
-                         AppBlueprintValue.appBlueprintValue(expanded, registerOnly, attemptId));
+                         AppBlueprintValue.appBlueprintValue(expanded, registerOnly, attemptId, declaredRoutes));
     }
 
     private Promise<ExpandedBlueprint> applyResourcesConfig(ExpandedBlueprint expanded,
@@ -1160,8 +1170,28 @@ class BlueprintServiceInstance implements BlueprintService {
                               .flatMap(replication -> ReplicationPreflight.validate(sliceJars,
                                                                                     nodeComposite,
                                                                                     replication))
-                              .map(warnings -> new Preflighted(expanded, warnings))
+                              .map(warnings -> new Preflighted(expanded, warnings, declaredRoutesOf(sliceJars)))
                               .async();
+    }
+
+    /// #3389: the routes each slice jar declares, by artifact; a jar that declares none has no entry.
+    private static Map<Artifact, List<DeclaredRoute>> declaredRoutesOf(List<SliceJar> sliceJars) {
+        return sliceJars.stream()
+                        .filter(sliceJar -> !routesOf(sliceJar).isEmpty())
+                        .collect(Collectors.toUnmodifiableMap(SliceJar::artifact,
+                                                              BlueprintServiceInstance::routesOf,
+                                                              (first, _) -> first));
+    }
+
+    private static List<DeclaredRoute> routesOf(SliceJar sliceJar) {
+        return sliceJar.topologies()
+                       .stream()
+                       .flatMap(topology -> topology.routes()
+                                                    .stream())
+                       .map(route -> DeclaredRoute.declaredRoute(route.method(),
+                                                                 route.path()))
+                       .distinct()
+                       .toList();
     }
 
     private static List<SliceTopology> topologiesOf(List<SliceJar> sliceJars) {
@@ -1243,6 +1273,7 @@ class BlueprintServiceInstance implements BlueprintService {
         return sliceStreamBindings(expanded).map(bindings -> bindings.withWarnings(preflighted.replicationWarnings()))
                                   .flatMap(bindings -> storeBlueprintWithKey(AetherKey.AppBlueprintKey.appBlueprintKey(expanded.id()),
                                                                              expanded,
+                                                                             preflighted.declaredRoutes(),
                                                                              streamBindingsPut(expanded.id(),
                                                                                                bindings.bound())).map(stored -> PublishedBlueprint.publishedBlueprint(stored,
                                                                                                                                                                       bindings.rejected(),
@@ -1415,9 +1446,10 @@ class BlueprintServiceInstance implements BlueprintService {
 
     private Promise<ExpandedBlueprint> storeBlueprintWithKey(AetherKey.AppBlueprintKey key,
                                                              ExpandedBlueprint expanded,
+                                                             Map<Artifact, List<DeclaredRoute>> declaredRoutes,
                                                              KVCommand<AetherKey> streamBindings) {
         var attemptId = newAttemptId();
-        var value = AppBlueprintValue.appBlueprintValue(expanded, false, attemptId);
+        var value = AppBlueprintValue.appBlueprintValue(expanded, false, attemptId, declaredRoutes);
         KVCommand<AetherKey> command = new Put<>(key, value);
         // #759 review round 2, BLOCKING 1: `publish(String dsl)` is a live republish path
         // (SliceRoutes.handleBlueprint) that bypasses buildAllCommands, so without this it kept the
