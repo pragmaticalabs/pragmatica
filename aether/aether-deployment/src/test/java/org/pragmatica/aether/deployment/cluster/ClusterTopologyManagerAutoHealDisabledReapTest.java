@@ -124,7 +124,7 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
                                                             () -> Option.<ClusterConfigValue> none(),
                                                             commands -> Promise.success(List.<Object> of()),
                                                             () -> AetherValue.ClusterPhase.NORMAL,
-                                                            _ -> {},
+                                                            DrainSink.synchronous(_ -> {}, _ -> {}),
                                                             _ -> {},
                                                             this::autoHealState,
                                                             liveness);

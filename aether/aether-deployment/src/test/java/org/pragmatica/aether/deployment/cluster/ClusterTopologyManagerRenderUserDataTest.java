@@ -237,7 +237,7 @@ class ClusterTopologyManagerRenderUserDataTest {
                                                                         clusterStore::current,
                                                                         clusterStore::apply,
                                                                         () -> ClusterPhase.NORMAL,
-                                                                        ignored -> {},
+                                                                        DrainSink.synchronous(_ -> {}, _ -> {}),
                                                                         ignored -> {},
                                                                         () -> Option.some(leaderResolved),
                                                                         Option::none,

@@ -11,16 +11,23 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.RepositoryType;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.RouteTable;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.MapConfigSource;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -118,6 +125,69 @@ class EmberClusterStagedSeamsTest {
         assertThat(cluster.addNode().await(JOIN_BOUND).isSuccess()).as("a node joins after the release").isTrue();
         assertThat(cluster.allNodes()).as("CONTROL: the joined node is among the nodes read").hasSize(4);
         assertThat(heldNodes()).as("the node that joined after the release is not held either").containsExactly(false);
+    }
+
+    /// #3591 (u2): the cluster-wide release combines every node's release, so a node whose held publication fails to reach the
+    /// cluster fails the release (the other nodes' success does not mask it). Fake nodes: the node-level write failure is pinned at
+    /// `HttpRoutePublisherPublicationHoldTest`; this pins that the cluster aggregation carries it to the caller.
+    @Test
+    @Timeout(60)
+    void releaseRoutePublication_completesWithTheFailure_whenOneNodesHeldPublicationFailsToRelease() {
+        var built = emberCluster(3, PORTS.first(), PORTS.first() + 40, PORTS.first() + 80, "rel-fail");
+        var released = new AtomicInteger();
+
+        adoptReleasing(built, "rel-fail-1", Promise.unitPromise(), released);
+        adoptReleasing(built, "rel-fail-2", Causes.cause("held publication write failed").promise(), released);
+        adoptReleasing(built, "rel-fail-3", Promise.unitPromise(), released);
+
+        var result = built.releaseRoutePublication().await(TimeSpan.timeSpan(30).seconds());
+
+        assertThat(released.get()).as("CONTROL: every node's release was reached").isEqualTo(3);
+        assertThat(result.isFailure()).as("one node's failed release must fail the cluster release").isTrue();
+        assertThat(failureOf(result).message()).contains("held publication write failed");
+    }
+
+    private static void adoptReleasing(EmberCluster target, String id, Promise<Unit> outcome, AtomicInteger released) {
+        var nodeId = NodeId.nodeId(id).unwrap();
+        var publisher = (HttpRoutePublisher) Proxy.newProxyInstance(HttpRoutePublisher.class.getClassLoader(),
+                                                                    new Class<?>[]{HttpRoutePublisher.class},
+                                                                    (proxy, method, args) -> releasing(method.getName(), outcome, released));
+        var server = (AppHttpServer) Proxy.newProxyInstance(AppHttpServer.class.getClassLoader(),
+                                                            new Class<?>[]{AppHttpServer.class},
+                                                            (proxy, method, args) -> publisherOf(method.getName(), publisher));
+        var node = (AetherNode) Proxy.newProxyInstance(AetherNode.class.getClassLoader(),
+                                                       new Class<?>[]{AetherNode.class},
+                                                       (proxy, method, args) -> serverOf(method.getName(), server));
+
+        target.adoptNode(NodeInfo.nodeInfo(nodeId,
+                                           NodeAddress.nodeAddress("localhost", PORTS.first()).unwrap()),
+                         node);
+    }
+
+    private static Object releasing(String method, Promise<Unit> outcome, AtomicInteger released) {
+        if (!"releaseRoutePublication".equals(method)) {
+            throw new UnsupportedOperationException("fake publisher does not answer " + method);
+        }
+
+        released.incrementAndGet();
+
+        return outcome;
+    }
+
+    private static Object publisherOf(String method, HttpRoutePublisher publisher) {
+        if (!"httpRoutePublisher".equals(method)) {
+            throw new UnsupportedOperationException("fake AppHttpServer does not answer " + method);
+        }
+
+        return Option.some(publisher);
+    }
+
+    private static Object serverOf(String method, AppHttpServer server) {
+        if (!"appHttpServer".equals(method)) {
+            throw new UnsupportedOperationException("fake AetherNode does not answer " + method);
+        }
+
+        return server;
     }
 
     private List<Boolean> heldNodes() {

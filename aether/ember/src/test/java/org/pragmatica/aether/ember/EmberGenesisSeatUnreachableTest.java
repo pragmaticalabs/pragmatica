@@ -32,7 +32,8 @@ import static org.pragmatica.testing.PollUntil.pollUntil;
 /// connects. The engine raises `genesis-seat-unreachable` (subject `-1`) and the cluster forms with the two live cores.
 ///
 /// Pins the assembly: `AetherNode` binding the engine's warning sink to its event aggregator (`useOperatorWarningSink`) and
-/// `RabiaEngine#signalUnreachableSeats` at the install. Removing either leaves the event log without the warning and this test red.
+/// the install's own deadline (`RabiaEngine#armGenesisSeatConfirmation`, 5 s after the install). Removing either leaves the event log
+/// without the warning and this test red.
 /// `GenesisSeatUnreachableTest` pins the same emission at unit level with a faked network.
 ///
 /// The second test pins ask 2: auto-heal replaces a seat dead from genesis within a bound, and the warning closes. The remedy sentence
@@ -74,14 +75,17 @@ class EmberGenesisSeatUnreachableTest {
     @Timeout(400)
     void anAgreedSeatThatNeverConnects_isNamedWithItsRemedy_andTheClusterStillForms() {
         startTwoPendingCores();
-        assertThat(cluster.killNode(DEAD_SEAT, false).await(STOP_BOUND).isSuccess()).as("the seat's process is killed while pending").isTrue();
+        killDeadSeatAndAwaitItsLinkDrop();
         assertThat(cluster.startHeldBackNodes().await(START_BOUND).isSuccess()).as("the late core starts").isTrue();
 
         awaitCondition("the two live cores install a three-seat roster that still names the dead seat", this::liveCoresFormedWithDeadSeat);
-        awaitCondition("the unreachable-seat warning reaches a live node's event log", () -> !unreachableSubjects().isEmpty());
+        var snapshot = pollUntil(this::unreachableSnapshot, seen -> !seen.events().isEmpty(), Duration.ofMillis(CONDITION_BOUND_MS), POLL_INTERVAL)
+                           .assertMet("the unreachable-seat warning reaches a live node's event log")
+                           .finalValue();
 
-        assertThat(unreachableSubjects()).as("the warning names the one seat that never connected, and no other").containsExactly(DEAD_SEAT);
-        var summary = unreachableEvents().getFirst().summary();
+        assertThat(snapshot.subjects()).as("the warning names the one seat that never connected, and no other (read once, on the snapshot that satisfied the wait: " + snapshot + ")")
+                                       .containsExactly(DEAD_SEAT);
+        var summary = snapshot.events().getFirst().summary();
 
         assertThat(summary).as("the message names the seat, the effect on formation and the heal-on remedy (the auto-heal state at the raise: the key is absent at genesis, so on)")
                            .contains(DEAD_SEAT, "Formation is not blocked", "Auto-heal is on", "within ~75 s", "Operator action")
@@ -96,7 +100,7 @@ class EmberGenesisSeatUnreachableTest {
     @Timeout(900)
     void anAgreedSeatThatNeverConnects_isReplacedByAutoHeal_withinTheBound() {
         startTwoPendingCores();
-        assertThat(cluster.killNode(DEAD_SEAT, false).await(STOP_BOUND).isSuccess()).as("the seat's process is killed while pending").isTrue();
+        killDeadSeatAndAwaitItsLinkDrop();
         assertThat(cluster.startHeldBackNodes().await(START_BOUND).isSuccess()).as("the late core starts").isTrue();
         awaitCondition("the two live cores install a three-seat roster that still names the dead seat", this::liveCoresFormedWithDeadSeat);
 
@@ -108,6 +112,19 @@ class EmberGenesisSeatUnreachableTest {
         System.out.println("EmberGenesisSeatUnreachableTest: replaced in " + (System.currentTimeMillis() - started) + " ms; voters="
                            + EmberNodeReplacementTest.installedVoters(cluster.allNodes().getFirst()));
         awaitCondition("the warning is closed because the seat left the roster", () -> closedSubjects().contains(DEAD_SEAT));
+    }
+
+    /// `killNode(.., false)` bounds the stop at one second and swallows the bound's expiry, so under load it returns success while the killed
+    /// core is still stopping and the survivor still holds a live link to it (#3774, second mode: in a loaded suite run the roster installed
+    /// with `-1` still CONNECTED, so no seat was unreachable and no warning could be raised). The seat is dead for this test once the survivor's
+    /// link to it is gone: before the late core starts, `-2`'s only peer is `-1`.
+    private void killDeadSeatAndAwaitItsLinkDrop() {
+        assertThat(cluster.killNode(DEAD_SEAT, false).await(STOP_BOUND).isSuccess()).as("the seat's process is killed while pending").isTrue();
+        awaitCondition("the surviving started core's link to the killed seat is gone", this::survivorHoldsNoLink);
+    }
+
+    private boolean survivorHoldsNoLink() {
+        return cluster.getNode(PREFIX + "-2").filter(core -> core.connectedNodeCount() == 0).isPresent();
     }
 
     private boolean deadSeatReplaced() {
@@ -148,23 +165,37 @@ class EmberGenesisSeatUnreachableTest {
                                                                    .isPresent());
     }
 
-    private Set<String> unreachableSubjects() {
-        return unreachableEvents().stream().map(event -> event.details().get("subject")).collect(Collectors.toSet());
+    /// What one read of every live node's event log saw: the unreachable-seat warnings, and the reads that FAILED. A failed read is
+    /// not "no warning" (while the event stream's owner is still promoting, every read of it fails for a long time): it never
+    /// contributes events, it is carried in the snapshot so that a missed wait names it, and the wait simply polls again.
+    private record Snapshot(List<ClusterEvent.OperatorWarning> events, List<String> failedReads) {
+        static Snapshot snapshot(List<ClusterEvent.OperatorWarning> events, List<String> failedReads) {
+            return new Snapshot(events, failedReads);
+        }
+
+        Set<String> subjects() {
+            return events.stream().map(event -> event.details().get("subject")).collect(Collectors.toSet());
+        }
     }
 
-    private List<ClusterEvent.OperatorWarning> unreachableEvents() {
-        return cluster.allNodes()
-                      .stream()
-                      .flatMap(core -> core.eventAggregator()
-                                           .events()
-                                           .await()
-                                           .map(List::copyOf)
-                                           .or(List.of())
-                                           .stream())
-                      .filter(ClusterEvent.OperatorWarning.class::isInstance)
-                      .map(ClusterEvent.OperatorWarning.class::cast)
-                      .filter(event -> UNREACHABLE_CODE.equals(event.details().get("code")))
-                      .toList();
+    private Snapshot unreachableSnapshot() {
+        var reads = cluster.allNodes()
+                           .stream()
+                           .collect(Collectors.toMap(core -> String.valueOf(core.self().id()), core -> core.eventAggregator().events().await()));
+        var events = reads.values()
+                          .stream()
+                          .flatMap(read -> read.fold(_ -> Stream.<ClusterEvent>empty(), List::stream))
+                          .filter(ClusterEvent.OperatorWarning.class::isInstance)
+                          .map(ClusterEvent.OperatorWarning.class::cast)
+                          .filter(event -> UNREACHABLE_CODE.equals(event.details().get("code")))
+                          .toList();
+        var failed = reads.entrySet()
+                          .stream()
+                          .filter(read -> read.getValue().isFailure())
+                          .map(read -> read.getKey() + ": " + read.getValue().fold(Cause::message, _ -> ""))
+                          .toList();
+
+        return Snapshot.snapshot(events, failed);
     }
 
     /// Cores `-1` and `-2` started, `-3` held back but in the genesis roster: both wait in genesis. A genesis-pending start never

@@ -604,7 +604,7 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `observer-consensus-resumed` (INFO — the recovery: the observer applies committed decisions again, or left the lagging state by being promoted to a voter, removed from the cluster or shut down (the message says which); published only after a published `observer-consensus-lagging` for the same `subject`, so an observer that never lagged shows none)
 - `core-voter-syncing-stuck` (WARNING — raised by the leader, once per episode: a core voter stayed in one SYNCING episode for the stuck bound (5 minutes, a guess, not measured) while this leader led without interruption, its own consensus was active and the voter's reports kept arriving; it now counts as failed for the core voter reconciler: at most one such voter at a time, only while no voter has other failure evidence, replaced only by an admitted READY candidate, one seat per settled roster change; with no candidate nothing is removed; `subject` is the voter, the message names the elapsed time; recovery action: none when a candidate exists, otherwise restart or replace the voter or add core capacity; issue #2136)
 - `core-voter-syncing-ended` (INFO — the recovery: the voter's SYNCING episode ended (a READY, missing or stale report, the raising node lost leadership (raised by that node on the loss itself) or its own consensus went inactive, the voter left the roster, for example by being healed, or the raising node did not evaluate for more than 5 seconds, for example during a reconfiguration: then the voter may still be stuck and a new episode starts from zero); exactly one per `core-voter-syncing-stuck`, from the node that raised it; published only after a published `core-voter-syncing-stuck` for the same `subject`)
-- `genesis-seat-unreachable` (WARNING — genesis formed with a seat of the agreed roster that was not a connected peer when the roster was installed: the seat reported the view earlier and is gone now; formation is not blocked and auto-heal is expected to replace the seat; `subject` is the seat's node id)
+- `genesis-seat-unreachable` (WARNING — genesis formed with a seat of the agreed roster that was not a connected peer when the roster was installed and was still not connected when checked once, 5 seconds after the install (a seat that is connected at that check is never named; the check needs no activation, so a node that installed genesis and never activates names its dead seat too): the seat reported the view earlier and is probably gone; formation is not blocked and auto-heal is expected to replace the seat; `subject` is the seat's node id. The seat that is named stays open until the node sees it connected or out of the roster on a consensus tick, which an activated node runs)
 - `genesis-seat-reachable` (INFO — the recovery: the seat is a connected peer again, or it left the voter roster (replaced); the message says which; published only after a published `genesis-seat-unreachable` for the same `subject`)
 - `topic-tier-mismatch` (WARNING — an ephemeral-tier publisher delivered to a subscriber whose handler takes the delivery context (a durable-topic handler, which needs an envelope an ephemeral delivery does not carry); the delivery was refused and that event was NOT delivered to the subscriber, while the publish itself still succeeds (the ephemeral tier is at-most-once). Raised once per subscriber until a delivery to it succeeds; every refusal is counted on `aether.topic.delivery.undelivered` (tags `topic`, `address`, `slice`, `reason=tier-mismatch`). `subject` is `<topic address>/<subscriber artifact>:<method>`; declare the topic `durable` in the publisher slice's `resources.toml`, or drop the `MessageContext` parameter from the subscriber, issue #1337)
 - `topic-tier-mismatch-resolved` (INFO — the recovery: a later delivery from the same publisher reached the same subscriber; published only after a published `topic-tier-mismatch` for the same `subject`)
@@ -4181,7 +4181,9 @@ publishes the declaration already committed locally, without moving the incarnat
 
 ### GET /api/v1/cluster/keys/audit
 
-List API key audit trail (create, rotate, revoke, expire events).
+List API key audit trail (create, rotate, revoke, expire events), newest first.
+
+**Bound (#3528):** the audit keeps the newest **1000 entries per key** (counted per `keyId`, ordered by `timestamp`); the response never holds more than 1000 entries for one key plus the entries written since the last sweep. The cluster leader's 60-second key sweep removes the older entries through a consensus batch (at most 1000 removals per sweep), so every node drops the same entries and no node prunes its own store. The bound is enforced once per sweep, not at each write: between two sweeps a key can hold its 1000 plus the writes of that period. A backup taken before this bound can hold more than 1000 entries for a key; restoring it succeeds unchanged, and the leader's sweeps trim it afterwards (a key far over the bound takes several sweeps). Nothing needs to be done by the operator. `[mechanism: leader sweep submits KVCommand.Remove batches through consensus; unit-tested over three simulated stores, not multi-node failure-injection verified: aether/node ApiKeyAuditRetentionTest]`
 
 **RBAC:** ADMIN
 
@@ -4933,9 +4935,29 @@ Which guard applied — and why — is always visible in `message`, both on succ
 }
 ```
 
+**The drain is reported only after its request's outcome (#3754).** The route answers from the outcome of `DrainPort.request`: `"success": true` means the request succeeded and the target is registered in the leader's DRAIN set, never only that the request was accepted. A drain that was not queued is audited as `drain not queued: <cause>` and emits no lifecycle event. The floor's warnings (`SLICE_FLOOR_BREACHED_BY_FORCE`, `SLICE_FLOOR_DRAIN_ADMITTED`) follow the same rule: they are raised only for a drain whose request succeeded.
+
+**Fencing status: not wired yet.** At present the port is unfenced: the request runs its effect at once, with no leadership witness, so the outcome is the registration's and the route does not wait. The fenced path exists in the sink (`FencedDrainSink`) and is exercised only against a scripted witness port. When the fenced port is wired (the AetherNode lane of #3754), the leader commits a leadership witness before it queues a drain, and the route then waits for that commit: at most `applyTimeout` (30 s by default), plus the time the leader's own gate takes, so a client whose timeout is shorter would see a client-side timeout, not a status. A repeated request for a target whose commit is in flight would not start a second commit: it receives the first one's outcome, and a replacement drain that joins it answers the same `HttpError` an opened one does.
+
+A target that is already registered answers at once and starts no commit. This is local to the node that answers: a deposed leader keeps its registry entries until the target's DEAD edge and keeps broadcasting them for as long as it still reports itself leader (after a deposition, until it detects it); they are broadcast again if that node regains leadership first. `[derived: design-3754-c1 R-C2; no test covers it]`
+`[mechanism: NodeLifecycleRoutes.enqueueOperatorDrain maps the outcome of DrainPort.request; verified against a scripted witness port: aether/node/src/test/java/org/pragmatica/aether/api/routes/NodeLifecycleRoutesFencedDrainTest.java and aether/node/src/test/java/org/pragmatica/aether/node/assembly/FencedDrainSinkTest.java; the status table: NodeLifecycleRoutesDrainRefusalTest.java]`
+`[unverified: a real leadership witness; no test runs one until the fenced port is wired]`
+
+**Refusals when the drain was not queued.** Nothing was queued by any of these, so a retry is safe. The table is total: a cause it does not name answers 503.
+
+| Cause | Status | Operator action |
+|---|---|---|
+| `NotLeader`, `LeadershipNotWitnessed`, `ActivationChanged` | `503 Service Unavailable` | leadership moved: retry against the current leader |
+| `WitnessExpired`, `ApplyTimeout` | `504 Gateway Timeout` | the commit did not answer in time: retry |
+| `AttemptCancelled` | `409 Conflict` | the node rejoined, or the attempt was cancelled, while the commit was in flight: re-read the node's state, then retry if it is still wanted |
+| `CalledUnderOwnerMonitor` | `500 Internal Server Error` | a defect in the leader (a caller held the owner monitor); report it |
+| any other cause (for example a failed submit) | `503 Service Unavailable` | retry |
+
+[unverified: how `aether nodes drain` renders a `504`]
+
 ### POST /api/v1/nodes/shutdown/{id}
 
-Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The same admission as drain applies, including the slice `minAvailable` floor and the `force=true` override described there (#1720); a refused shutdown answers `409` with `Cannot shutdown node <id>: ...`. A shutdown of the current leader (or of the handling node) is refused with `409 Conflict` before anything is dispatched, with its own text: `Cannot shut down node <id>: it is the current leader or the node handling this request, and such a node is not shut down through the API. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader; ...` (#3348). A shutdown of any other node is unchanged. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
+Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The same admission as drain applies, including the slice `minAvailable` floor and the `force=true` override described there (#1720); a refused shutdown answers `409` with `Cannot shutdown node <id>: ...`. The response is built from the request outcome and a shutdown that was not queued answers from the refusal table under `POST /api/v1/nodes/drain/{id}` (the shutdown rides the same DRAIN channel, so once the fenced port is wired it waits for the same commit). A shutdown of the current leader (or of the handling node) is refused with `409 Conflict` before anything is dispatched, with its own text: `Cannot shut down node <id>: it is the current leader or the node handling this request, and such a node is not shut down through the API. Move leadership first: stop this node's process from outside the cluster (the service manager or the container runtime) so the cluster elects another leader; ...` (#3348). A shutdown of any other node is unchanged. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
 
 **Response:**
 ```json
@@ -6562,7 +6584,7 @@ the operator naming a target directly. A `partition` outside `[0, partitionCount
 is rejected with `400 Bad Request`, naming the valid range — never a silent write to partition 0,
 never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemResponses HttpStatusAware
 dispatch]` That `400` is the single publish; the batch form reports the same condition per item as
-`NOT_ATTEMPTED` with `200` — see below.
+`NOT_ATTEMPTED` inside a `207` — see below.
 
 A publish refused before the append because fewer than `confirmation_factor − 1` peers are registered
 for the partition — typically the FIRST publish to a stream that publish auto-creates, whose replica set
@@ -6599,13 +6621,22 @@ failure (a reserved name `400`, or an unavailable stream `409`) fails the whole 
 status and writes nothing. An empty batch publishes nothing and creates no stream. `[mechanism:
 publishMany runs ensureStreamExists before the per-item fan-out, and only when there are items]`
 
-**Batch publish is not atomic, and the response says per item what happened (#1342).** `publish-batch`
-validates and writes each item independently and concurrently. **`200` means the batch RAN, not that
-every event landed — read `notPublished`.** The top-level `published` / `notPublished` counts and one
-outcome per item, in request order, come back for every batch that ran, partial included. "Ran" means
-the route processed the batch past the stream-level check above: a batch in which NO item passed the
-PARTITION-level admission still answers `200` with `published: 0` and every item `NOT_ATTEMPTED`; a stream-level
-refusal is the batch's own status (CTO ruling, #1342 × #1299; before #1342 the all-rejected case answered `500`).
+**Batch publish is not atomic, and the response says per item what happened (#1342, #1354).** `publish-batch`
+validates and writes each item independently and concurrently. **The status says whether every event landed: `200`
+only when every item is `PUBLISHED`; anything else is `207 Multi-Status`, with the same body.** The top-level
+`published` / `notPublished` counts and one outcome per item, in request order, come back for every batch that
+ran, partial included. "Ran" means the route processed the batch past the stream-level check above: a batch in
+which NO item passed the PARTITION-level admission answers `207` with `published: 0` and every item
+`NOT_ATTEMPTED`; a stream-level refusal is the batch's own status (CTO ruling, #1342 × #1299; before #1342 the
+all-rejected case answered `500`).
+
+| Batch outcome | Status |
+|---|---|
+| every item `PUBLISHED` | `200` |
+| an empty batch (no item, none unpublished; nothing is written or created) | `200` |
+| at least one item `NOT_ATTEMPTED` or `OUTCOME_UNKNOWN`, partial or `published: 0` | `207` |
+| stream-level refusal: a reserved name | `400` |
+| stream-level refusal: an unavailable stream | `409` |
 
 ```json
 {"address":"acme:orders:1.0.0","published":1,"notPublished":1,
@@ -6619,12 +6650,18 @@ refusal is the batch's own status (CTO ruling, #1342 × #1299; before #1342 the 
 - `OUTCOME_UNKNOWN`: the write was refused or timed out, before or after the local append (#1236) — the
   caller cannot tell which, so it may be in the log; retrying it can duplicate.
 
-A client that treats `200` as "every event landed" misreads a partial batch; check `notPublished`. Before
-#1342 the response on a partial batch was the first failure alone, and the offsets of the items that had
-landed were discarded. `[mechanism: publishMany fires every item concurrently via Promise.allOf with no
-short-circuit; each item's Result becomes its own PublishItemOutcome]` `[verified:
-StreamApiRoutesPublishBatchTest.partialBatch_overHttpDispatch_answers200_withNotPublishedAndTheLandedOffset —
-the real route through ManagementRouter, asserting the written status and JSON]`
+A client that matched exactly `200` must also accept `207`, and must read `notPublished` and the per-item outcomes
+to learn which events to retry. Before #1354 every batch the route ran answered `200`, so a partial batch looked
+like success to a client that read only the status; before #1342 the response on a partial batch was the first
+failure alone, and the offsets of the items that had landed were discarded. The status is derived in ONE place,
+`PublishBatchResponse.httpStatus`, as a function of the item statuses; `ManagementRouter` writes the status a
+`StatusBearingResponse` value declares and `200` for every other success, so no route call site picks a status.
+An empty batch answering `200` is a reading of "not fully `PUBLISHED`", not a stated ruling.
+`[mechanism: publishMany fires every item concurrently via Promise.allOf with no short-circuit; each item's Result
+becomes its own PublishItemOutcome; PublishBatchResponse.httpStatus allMatch PUBLISHED -> 200 else 207]`
+`[verified: StreamApiRoutesPublishBatchTest — the real route through ManagementRouter, asserting the written status
+and JSON for a partial batch of three, a batch with none published, an OUTCOME_UNKNOWN-only batch, a full batch and
+an empty batch]`
 
 ### Delete Stream Version
 

@@ -39,7 +39,7 @@ class AlertForwarderTransportRetryTest {
 
     @BeforeEach
     void startReceiver() throws IOException {
-        server = new ServerSocket(0);
+        server = new ServerSocket(0); // port0-held: the receiver socket stays open from @BeforeEach to @AfterEach, serving its port for the whole test
     }
 
     @AfterEach

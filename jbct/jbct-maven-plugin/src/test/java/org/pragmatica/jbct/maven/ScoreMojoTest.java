@@ -48,6 +48,8 @@ class ScoreMojoTest {
     void captureLog() throws IOException {
         originalOut = System.out;
         System.setOut(new PrintStream(out, true, UTF_8));
+        Files.writeString(projectDir.resolve("pom.xml"), "<project/>");
+        Files.writeString(projectDir.resolve("jbct.toml"), "[project]\nbasePackage = \"sample\"\n");
         sourceDirectory = Files.createDirectories(projectDir.resolve("src/main/java/sample"));
         Files.writeString(sourceDirectory.resolve("Sample.java"),
                           """

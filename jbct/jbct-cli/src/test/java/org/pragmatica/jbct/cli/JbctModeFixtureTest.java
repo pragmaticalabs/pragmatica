@@ -25,6 +25,9 @@ class JbctModeFixtureTest {
     private static final String USER_HOME_PROPERTY = "user.home";
     private static final String ARCH_02 = "JBCT-ARCH-02";
     private static final String RET_03 = "JBCT-RET-03";
+    /// A rule ID anywhere but in a TREE coverage line (`JBCT-TREE-01: judged 0 of 2 file(s)`): the coverage line is printed
+    /// for every run, a skipped root's `0 of N` included (#2526), so "no rule ran" is "no finding", not "no rule ID".
+    private static final String NO_RULE_FINDING = "JBCT-(?!TREE-0\\d: judged \\d+ of \\d+ file\\(s\\))";
     private static final String NEEDS_FORMAT = "Files not properly formatted:";
 
     private static final String UNFORMATTED = """
@@ -197,7 +200,7 @@ class JbctModeFixtureTest {
         var root = module("fmt", JbctMode.FORMAT_ONLY);
 
         assertThat(run(new LintCommand(), root.toString())).isZero();
-        assertThat(text()).doesNotContain("JBCT-").contains("mode=format-only (from ", ") root=" + root(root), "; test-root rule: ").contains("format only, no rule run");
+        assertThat(text()).doesNotContainPattern(NO_RULE_FINDING).contains("mode=format-only (from ", ") root=" + root(root), "; test-root rule: ").contains("format only, no rule run");
     }
 
     @Test
@@ -206,7 +209,7 @@ class JbctModeFixtureTest {
 
         assertThat(run(new CheckCommand(), root.toString())).isEqualTo(1);
         assertPrintedTheReceivedReport();
-        assertThat(text()).contains(price(root, "fmt").toString()).doesNotContain("JBCT-")
+        assertThat(text()).contains(price(root, "fmt").toString()).doesNotContainPattern(NO_RULE_FINDING)
                           .contains("mode=format-only (from ", ") root=" + root(root), "; test-root rule: ").contains("format only, no rule run");
     }
 
@@ -239,10 +242,10 @@ class JbctModeFixtureTest {
         var root = module("off", JbctMode.DISABLED);
 
         assertThat(run(new LintCommand(), root.toString())).isZero();
-        assertThat(text()).doesNotContain("JBCT-").contains("mode=disabled (from ", ") root=" + root(root), "; test-root rule: ").contains("skipped, no format, no rule run");
+        assertThat(text()).doesNotContainPattern(NO_RULE_FINDING).contains("mode=disabled (from ", ") root=" + root(root), "; test-root rule: ").contains("skipped, no format, no rule run");
         assertThat(run(new CheckCommand(), root.toString())).isZero();
         assertPrintedTheReceivedReport();
-        assertThat(text()).doesNotContain("JBCT-").doesNotContain(price(root, "off").toString());
+        assertThat(text()).doesNotContainPattern(NO_RULE_FINDING).doesNotContain(price(root, "off").toString());
         assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(root(root)));
     }
 
@@ -285,7 +288,7 @@ class JbctModeFixtureTest {
         assertThat(run(new CheckCommand(), off.toString(), fmt.toString())).isEqualTo(1);
         assertPrintedTheReceivedReport();
         assertThat(text()).contains(price(fmt, "fmt").toString()).doesNotContain(price(off, "off").toString())
-                          .doesNotContain("JBCT-");
+                          .doesNotContainPattern(NO_RULE_FINDING);
         assertThat(run(new FormatCommand(), off.toString(), fmt.toString())).isZero();
         assertThat(Files.readString(price(off, "off"))).isEqualTo(before);
         assertThat(statementIndent(price(fmt, "fmt"))).isEqualTo(8);
@@ -300,7 +303,7 @@ class JbctModeFixtureTest {
 
         assertThat(run(new CheckCommand(), "--mode", "disabled", root.toString())).isZero();
         assertPrintedTheReceivedReport();
-        assertThat(text()).doesNotContain("JBCT-").doesNotContain(price(root, "biz").toString());
+        assertThat(text()).doesNotContainPattern(NO_RULE_FINDING).doesNotContain(price(root, "biz").toString());
         assertThat(captured.stdoutLines(false)).anyMatch(line -> line.contains(root(root)));
         assertThat(run(new FormatCommand(), "--mode", "disabled", root.toString())).isZero();
         assertThat(Files.readString(price(root, "biz"))).isEqualTo(before);

@@ -321,7 +321,7 @@ public final class StreamReadRouter {
                                                                                       committedOwnerSource,
                                                                                       epochHighWater,
                                                                                       barrier,
-                                                                                      partitionManager::behindCommittedOwner);
+                                                                                      partitionManager::replicaStaleness);
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,

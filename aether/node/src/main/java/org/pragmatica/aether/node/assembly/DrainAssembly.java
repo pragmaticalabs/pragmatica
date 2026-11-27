@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.assembly;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
@@ -17,7 +18,9 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+import org.pragmatica.aether.deployment.cluster.DrainGate;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
+import org.pragmatica.aether.deployment.cluster.FencePort;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
@@ -54,6 +57,7 @@ import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DeparturePushObserver;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -324,14 +328,29 @@ public sealed interface DrainAssembly {
     }
 
     /// The leader's DRAIN channel for the management server (C6-W0, moved from the management unit): a request goes through
-    /// the FSM-aware sink (`requestDrainThroughFsm`), the pending read is the registry's commanded-but-not-departed set. A
+    /// the [FencedDrainSink], over an UNFENCED port adapter in this lane (the fence wires in with the AetherNode lane), and the
+    /// pending read is the sink's: the targets with a witness in flight and the registry's commanded-but-not-departed set. A
     /// seam of its own so a test can pin both halves without building the quorum-loss inputs.
     static NodeLifecycleRoutes.DrainPort drainPort(DrainCommandRegistry drainCommandRegistry,
                                                    MembershipFsm membershipFsm) {
-        return NodeLifecycleRoutes.DrainPort.registry(target -> requestDrainThroughFsm(drainCommandRegistry,
-                                                                                       new AtomicReference<>(membershipFsm),
-                                                                                       target),
-                                                      drainCommandRegistry::drainTargets);
+        var sink = FencedDrainSink.fencedDrainSink(unfencedPort(),
+                                                   drainCommandRegistry::requestDrain,
+                                                   drainCommandRegistry::drainTargets,
+                                                   new AtomicReference<>(membershipFsm));
+
+        return NodeLifecycleRoutes.DrainPort.registry(target -> sink.request(target, DrainGate.always()),
+                                                      sink::pending,
+                                                      sink::inFlight);
+    }
+
+    /// Runs the effect at once, with no witness: the port adapter of this lane, replaced by the CCL port when the fence is wired.
+    private static FencePort unfencedPort() {
+        return new FencePort() {
+            @Override
+            public <T> Promise<T> fenced(List<KVCommand.ReadWitness<AetherKey>> guards, Supplier<Promise<T>> effect) {
+                return effect.get();
+            }
+        };
     }
 
     /// #2063: an operator drain target stays in the leader's `DrainCommandRegistry` until something clears it, and only the

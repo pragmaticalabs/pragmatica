@@ -530,11 +530,11 @@ public interface ClusterTopologyManager extends TopologyManager {
     }
 
     /// Membership v2 / B5b production factory. Wires the leader's DRAIN command channel:
-    /// `drainCommandSink` enqueues a drain target into the `DrainCommandRegistry` (so the leader's
+    /// `drainSink` enqueues a drain target into the `DrainCommandRegistry` (so the leader's
     /// cluster-sync ping carries the target in its global `drainNodes` set, and the target self-drains via its
     /// `DrainProcedure`); `drainCommandClear` removes the target when the CTM grace-terminate
-    /// backstop fires, whether or not it reaps (#1050). `AetherNode` wires these to
-    /// `DrainCommandRegistry::requestDrain` / `::clearDrain`.
+    /// backstop fires, whether or not it reaps (#1050). `AetherNode` wires the sink as `DrainSink.synchronous` over
+    /// `DrainCommandRegistry::requestDrain` and the FSM's drain event, and the clear to `DrainCommandRegistry::clearDrain`.
     ///
     /// #685 review round 1 NOTE 4 — `autoHealStateReader` is REQUIRED here, not defaulted: a
     /// production wiring site that omitted it would silently get permanently-enabled auto-heal with
@@ -548,7 +548,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                          Supplier<ClusterPhase> phaseSupplier,
-                                                         Consumer<NodeId> drainCommandSink,
+                                                         DrainSink drainSink,
                                                          Consumer<NodeId> drainCommandClear,
                                                          Supplier<Option<AutoHealStateValue>> autoHealStateReader,
                                                          MembershipLiveness liveness) {
@@ -561,7 +561,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          commandApplier,
                                                                          phaseSupplier,
                                                                          System::currentTimeMillis,
-                                                                         drainCommandSink,
+                                                                         drainSink,
                                                                          drainCommandClear,
                                                                          autoHealStateReader,
                                                                          liveness);
@@ -593,7 +593,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                          Supplier<ClusterPhase> phaseSupplier,
-                                                         Consumer<NodeId> drainCommandSink,
+                                                         DrainSink drainSink,
                                                          Consumer<NodeId> drainCommandClear,
                                                          Supplier<Option<TomlDocument>> resolvedLocalConfig,
                                                          Supplier<Option<AutoHealStateValue>> autoHealStateReader,
@@ -607,7 +607,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          commandApplier,
                                                                          phaseSupplier,
                                                                          System::currentTimeMillis,
-                                                                         drainCommandSink,
+                                                                         drainSink,
                                                                          drainCommandClear,
                                                                          resolvedLocalConfig,
                                                                          autoHealStateReader,

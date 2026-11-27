@@ -238,7 +238,16 @@ public final class ManagementRouter {
 
         ResponseSerializer.serialize(value, contentType, jsonCodec)
                           .onFailure(cause -> writeError(response, cause, serverCtx))
-                          .onSuccess(bytes -> response.write(HttpStatus.OK, bytes, contentType));
+                          .onSuccess(bytes -> response.write(successStatus(value),
+                                                             bytes,
+                                                             contentType));
+    }
+
+    /// `200` unless the value declares its own status ([StatusBearingResponse], #1354).
+    private static HttpStatus successStatus(Object value) {
+        return value instanceof StatusBearingResponse bearing
+               ? bearing.httpStatus()
+               : HttpStatus.OK;
     }
 
     private org.pragmatica.http.routing.RequestContext adaptContext(HttpRequest serverCtx, Route<?> route) {

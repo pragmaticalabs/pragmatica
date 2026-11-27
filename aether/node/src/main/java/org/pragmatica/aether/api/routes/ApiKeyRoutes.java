@@ -261,7 +261,7 @@ public final class ApiKeyRoutes implements RouteSource {
 
     @SuppressWarnings({"unchecked", "JBCT-EX-01"})
     @Contract
-    private void sweepExpiredKeys() {
+    void sweepExpiredKeys() {
         try {
             var node = nodeSupplier.get();
 
@@ -297,6 +297,7 @@ public final class ApiKeyRoutes implements RouteSource {
                              log.info("API key expired: keyId={}",
                                       v.keyId());
                          });
+            commands.addAll(ApiKeyAuditRetention.excessRemovals(node.kvStore()));
             if (!commands.isEmpty()) {
                 node.apply(commands);
             }

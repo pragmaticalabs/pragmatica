@@ -5,19 +5,20 @@
 package org.pragmatica.aether.node;
 
 import java.io.IOException;
-import java.net.DatagramSocket;
 
 /// #2731 fixture: a second JVM that allocates ports and then sits in the window between allocation and a node's bind
 /// (it never binds them), until its stdin closes or it is killed.
 ///
-/// `new <n>`: `n` cluster ports through [ClusterTestPorts]. `legacy`: one port the pre-#2731 way, a `DatagramSocket(0)`
-/// probe that is released, which is the red control. Prints `PORT <p>` per port, then `READY`.
+/// `new <n>`: `n` cluster ports through [ClusterTestPorts]. `legacy`: one port the pre-#2731 way, a port-0 probe from [HeldPort]
+/// that is released at once, which is the red control. The gate that bans a released probe (`FlakeScan` `PICK_THEN_REBIND`) checks
+/// where a port-0 socket is built, not when it is closed, so it does not see this close: the control exists to be pick-then-close.
+/// Prints `PORT <p>` per port, then `READY`.
 public final class PortHolderMain {
     private PortHolderMain() {}
 
     public static void main(String[] args) throws IOException {
         if (args[0].equals("legacy")) {
-            try (var probe = new DatagramSocket(0)) {
+            try (var probe = HeldPort.udp()) {
                 System.out.println("PORT " + probe.getLocalPort());
             }
         } else {

@@ -202,7 +202,7 @@ public final class H3Probe {
         return new Bootstrap().group(group)
                               .channel(NioDatagramChannel.class)
                               .handler(codec)
-                              .bind(0)
+                              .bind(0) // port0-held: the client channel keeps its port for as long as the channel is open and its port is never read
                               .sync()
                               .channel();
     }
