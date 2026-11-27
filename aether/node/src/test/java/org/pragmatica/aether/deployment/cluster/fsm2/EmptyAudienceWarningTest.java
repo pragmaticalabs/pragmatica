@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.consensus.NodeId;
@@ -38,8 +39,8 @@ class EmptyAudienceWarningTest {
             w.directive(worker, worker("east-w-0"));
         }
 
+        w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(workers[0], false, workers));
         w.activate();
-        w.announce("east-w-0", workers[0], workers);
 
         return w;
     }
@@ -97,8 +98,8 @@ class EmptyAudienceWarningTest {
                        .seams(seams -> seams.withReady(ALL).withLocalAlive(Option.some(Set.of(W1, W2, W3))));
 
         w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
+        w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
         w.activate();
-        w.announce("east-w-0", W1, W1, W2, W3);
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
