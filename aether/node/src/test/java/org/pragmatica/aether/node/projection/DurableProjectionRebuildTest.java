@@ -184,6 +184,9 @@ class DurableProjectionRebuildTest {
     /// core and reads its own committed state, when true it is a forwarding node whose reads are [#epochReads].
     private final AtomicBoolean forwardingEpochs = new AtomicBoolean(false);
     private final List<Promise<List<Object>>> epochReads = new CopyOnWriteArrayList<>();
+    /// #3853: when above zero, [#reconcileAndReturnUnit] counts it down and makes the node a forwarding one once it reaches zero, so the
+    /// first passes of [#passUntilEpochReadsSent] send no read.
+    private final AtomicInteger passesBeforeForwarding = new AtomicInteger();
     /// The runtime as the manager sees it, so a test can count the manager's abandons (a rewind restart abandons).
     private StreamConsumerRuntime managedRuntime;
     private ExecutorService consensus;
@@ -606,6 +609,22 @@ class DurableProjectionRebuildTest {
                  .assertMet("epoch 5 answered again after the recreated epoch restarted the consumer again");
     }
 
+    /// #3853: [#passUntilEpochReadsSent] waits for the count-th read, however many passes that takes. The first three passes run while
+    /// the node is a core and read its own committed state, so they send nothing; the node forwards from the fourth. A wait that
+    /// returned after one pass (the sent count not read) would return with no read sent. Mutant t5: the sent supplier constant MAX.
+    @Test
+    void passUntilEpochReadsSent_theFirstPassesSendNoRead_keepsPassingUntilTheReadIsSent() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        awaitCommittedCursor(6L, 20_000);
+        passesBeforeForwarding.set(3);
+
+        passUntilEpochReadsSent(1);
+
+        assertThat(forwardingEpochs).describedAs("the passes ran until the node forwarded").isTrue();
+        assertThat(epochReads).describedAs("the wait returned only after the first read was sent, and the extra pass sent no second").hasSize(1);
+    }
+
     private long reconcileAndCountAbandons() {
         manager.reconcile();
 
@@ -860,8 +879,15 @@ class DurableProjectionRebuildTest {
 
     private Unit reconcileAndReturnUnit() {
         manager.reconcile();
+        forwardWhenCountdownEnds();
 
         return Unit.unit();
+    }
+
+    private void forwardWhenCountdownEnds() {
+        if (passesBeforeForwarding.get() > 0 && passesBeforeForwarding.decrementAndGet() == 0) {
+            forwardingEpochs.set(true);
+        }
     }
 
     /// The committed checkpoint as a core answers the epoch read: one Get answer for the one held key.
