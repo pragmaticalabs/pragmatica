@@ -18,9 +18,13 @@ import org.pragmatica.lang.Option;
 ///
 /// The manager asks for a drain with a node id and, when its grace-terminate or withdrawal ends the drain, clears with a node id.
 /// A node id names no drain: the entry may by then belong to an operator's newer drain of the same node. This keeps the id of the
-/// drain the manager set and clears by it, so the registry refuses the clear when the entry is no longer that drain.
+/// drain the manager set and clears by it, so the registry refuses the clear when the entry is no longer that drain. The manager
+/// asks as [DrainCommandRegistry.Requester#MANAGER], so its entry is its own: the operator's drain of the same process holds another
+/// entry under another id, and neither one's clear ends the other.
 ///
-/// The held ids are at most the manager's own pending drains: [#request] adds one per node and the manager's clear removes it.
+/// The held ids are at most the manager's own pending attempts: [#request] adds one per node, and the end of the attempt removes
+/// it. An attempt ends in one of two ways, and each reaches the holder: [#clear] ends the attempt and the command, [#release] ends
+/// the attempt and leaves the command to the node's DEAD edge (an eviction).
 final class TopologyDrains {
     private final DrainCommandRegistry registry;
     private final Map<NodeId, DrainId> held = new ConcurrentHashMap<>();
@@ -36,13 +40,20 @@ final class TopologyDrains {
     /// Registers the drain of `target` and remembers its id.
     @Contract
     void request(NodeId target) {
-        registry.requestDrain(target).onPresent(id -> held.put(target, id));
+        registry.requestDrain(target, DrainCommandRegistry.Requester.MANAGER).onPresent(id -> held.put(target, id));
     }
 
     /// Ends the drain this manager set for `target`; a no-op when it set none, or when the entry is another drain by now.
     @Contract
     void clear(NodeId target) {
         Option.option(held.remove(target)).onPresent(registry::clearDrain);
+    }
+
+    /// Ends the attempt for `target` and keeps its command: forgets the id this manager held, so the entry stays until the node's
+    /// DEAD edge clears it. A no-op when it held none.
+    @Contract
+    void release(NodeId target) {
+        held.remove(target);
     }
 
     int held() {

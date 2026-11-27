@@ -115,7 +115,7 @@ class TopologyDrainsEvictionReleaseTest {
                                                              TopologyDrainsEvictionReleaseTest::clusterConfig,
                                                              _ -> Promise.success(List.of()),
                                                              () -> ClusterPhase.NORMAL,
-                                                             DrainSink.synchronous(drains::request, _ -> {}),
+                                                             DrainSink.synchronous(drains::request, _ -> {}, drains::release),
                                                              drains::clear,
                                                              Option::none,
                                                              liveness);

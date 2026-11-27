@@ -2540,7 +2540,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private synchronized void untrack(NodeId targetNodeId, long seq) {
-        ownedAttempt(targetNodeId, seq).onPresent(_ -> pendingDrains.remove(targetNodeId));
+        ownedAttempt(targetNodeId, seq).onPresent(_ -> endAttempt(targetNodeId));
+    }
+
+    /// The end of an attempt that leaves the command in place (#2315): the entry goes and the sink releases what it held for the
+    /// attempt, so an id is never kept for an attempt that no longer exists. Every other end clears the command, and
+    /// `drainCommandClear` releases through the same holder. Called under the monitor.
+    @Contract
+    private void endAttempt(NodeId targetNodeId) {
+        pendingDrains.remove(targetNodeId);
+        drainSink.release(targetNodeId);
     }
 
     /// The entry of `targetNodeId` if it still belongs to the attempt `seq`. Identity is `seq`, never record equality; callers
@@ -2584,7 +2593,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void armOrRelease(DrainAttempt entry, NodeId targetNodeId) {
         switch (entry.kind()) {
             case DRAIN -> scheduleGraceTerminate(targetNodeId, entry.seq());
-            case EVICTION -> pendingDrains.remove(targetNodeId);
+            case EVICTION -> endAttempt(targetNodeId);
         }
     }
 
