@@ -22,12 +22,10 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
@@ -156,18 +154,19 @@ public sealed interface Directory {
                : Reconcile.request(m, ctx);
     }
 
-    /// R-4.3.3: `Remove(NodeDepartureKey)` expecting the DEPARTED value, plus the observed rows at their exact values and any
+    /// R-4.3.3: the id's [RetirementUnit] (the `NodeDepartureKey` removal expecting the DEPARTED value, and the receipt, #3828), plus the observed rows at their exact values and any
     /// remaining desired, route and topic-row (#1337) keys. The topic rows ride here because the node leaves `departed` with its record, so
     /// the C17b tick sweep never reaches a row this transaction leaves.
     private static ClusterModel removeDeparted(ClusterModel m, Ctx ctx, NodeId node) {
         return Reconcile.request(submitRemovals(m, node), ctx);
     }
 
+    /// The unit's removals first (the record at the DEPARTED value it was read at, then the receipt, #3828), then the rows, desired keys
+    /// and route keys at their current values.
     private static List<KVCommand.Mutation<AetherKey, AetherValue>> removalMutations(ClusterModel m,
                                                                                      NodeId node,
-                                                                                     NodeDepartureValue record) {
-        return Stream.of(List.of(DepartureFlow.removal(new NodeDepartureKey(node),
-                                                       record)),
+                                                                                     RetirementUnit unit) {
+        return Stream.of(unit.removals(),
                          DepartureFlow.observedRemovals(m, node),
                          DepartureFlow.desiredRemovals(m, node),
                          DepartureFlow.routeRemovals(m, node),
@@ -180,10 +179,11 @@ public sealed interface Directory {
     /// (which removes the record with its directive, #3193), R-4.3.3 is the only remover of a departure record (R-4.3.5, MQ-4) and the
     /// directive it answers is already gone, so no reconcile step derives it: dropping it
     /// would leave the record of a terminated id for good (NT-106). It stops when the node is no longer departed (its record moved or went)
-    /// or has a directive again.
+    /// or has a directive again: `removalDraft` derives no draft while the unit does not witness the directive absent (one condition,
+    /// the draft's witness and this stop are the same statement).
     static Option<TxDraft> refreshedRemoval(ClusterModel m, TxDraft draft) {
         return draft.node()
-                    .filter(node -> m.departed.contains(node) && !m.directives.containsKey(node))
+                    .filter(m.departed::contains)
                     .flatMap(node -> removalDraft(m,
                                                   node,
                                                   draft.attempt() + 1));
@@ -193,19 +193,31 @@ public sealed interface Directory {
         return removalDraft(m, node, 0).fold(() -> m, draft -> Outbox.direct(m, draft));
     }
 
-    /// The record's removal first (it expects the DEPARTED value), then the rows, desired keys and route keys at their current values.
+    /// The unit read once from the mirror, retiring form (both roles retire here): its removals first, then the rows. Guarded by the
+    /// unit's witnesses, which carry "directive absent": a directive created between derivation and commit refuses the transaction
+    /// (#3828, F-4). No draft while the record is gone or the mirror holds a directive, the loop-stopping condition of [#refreshedRemoval].
     private static Option<TxDraft> removalDraft(ClusterModel m, NodeId node, int attempt) {
-        return m.records.get(node)
-                        .map(record -> removalDraft(m, node, record, attempt));
+        return m.records.containsKey(node)
+               ? Option.some(RetirementUnit.retirementUnit(DepartureFlow.mirror(m),
+                                                           node))
+                       .filter(Directory::witnessesDirectiveAbsent)
+                       .map(unit -> removalDraft(m, node, unit, attempt))
+               : Option.none();
     }
 
-    private static TxDraft removalDraft(ClusterModel m, NodeId node, NodeDepartureValue record, int attempt) {
-        var mutations = removalMutations(m, node, record);
+    private static boolean witnessesDirectiveAbsent(RetirementUnit unit) {
+        return unit.witnesses()
+                   .stream()
+                   .anyMatch(witness -> witness.key() instanceof ActivationDirectiveKey);
+    }
+
+    private static TxDraft removalDraft(ClusterModel m, NodeId node, RetirementUnit unit, int attempt) {
+        var mutations = removalMutations(m, node, unit);
 
         return new TxDraft(SubmitKind.DIRECTIVE_REMOVAL,
                            mutations.getFirst().key(),
                            mutations,
-                           List.of(),
+                           unit.witnesses(),
                            Set.of(),
                            Option.some(node),
                            attempt,

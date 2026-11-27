@@ -585,7 +585,8 @@ public final class ClusterModel {
 
     /// One transaction the handlers intend to submit at the end of the drain (R-5.7.4): its kind, its primary key,
     /// its mutations, its read guards, the pairs and node it concerns (for the per-pair re-derivation of R-5.7.2), the
-    /// number of times it has been submitted, and the events to route when it is accepted.
+    /// number of times it has been submitted, and the events to route when it is accepted. A CLEANUP draft also keeps the
+    /// [RetirementUnit] it was built with (#3828), beside its rows.
     public record TxDraft(SubmitKind kind,
                           AetherKey key,
                           List<KVCommand.Mutation<AetherKey, AetherValue>> mutations,
@@ -594,7 +595,8 @@ public final class ClusterModel {
                           Option<NodeId> node,
                           int attempt,
                           List<RoutedEvent> onAccepted,
-                          List<JudgmentOp> eventOps) {
+                          List<JudgmentOp> eventOps,
+                          Option<RetirementUnit> unit) {
         public TxDraft {
             mutations = List.copyOf(mutations);
             guards = List.copyOf(guards);
@@ -611,7 +613,19 @@ public final class ClusterModel {
                        Option<NodeId> node,
                        int attempt,
                        List<RoutedEvent> onAccepted) {
-            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, List.of());
+            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, List.of(), Option.none());
+        }
+
+        public TxDraft(SubmitKind kind,
+                       AetherKey key,
+                       List<KVCommand.Mutation<AetherKey, AetherValue>> mutations,
+                       List<KVCommand.ReadWitness<AetherKey>> guards,
+                       Set<SlicePair> pairs,
+                       Option<NodeId> node,
+                       int attempt,
+                       List<RoutedEvent> onAccepted,
+                       List<JudgmentOp> eventOps) {
+            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, eventOps, Option.none());
         }
 
         public static TxDraft draft(SubmitKind kind,
@@ -621,29 +635,52 @@ public final class ClusterModel {
         }
 
         public TxDraft withGuards(List<KVCommand.ReadWitness<AetherKey>> value) {
-            return new TxDraft(kind, key, mutations, value, pairs, node, attempt, onAccepted, eventOps);
+            return new TxDraft(kind, key, mutations, value, pairs, node, attempt, onAccepted, eventOps, unit);
         }
 
         public TxDraft withPairs(Set<SlicePair> value) {
-            return new TxDraft(kind, key, mutations, guards, value, node, attempt, onAccepted, eventOps);
+            return new TxDraft(kind, key, mutations, guards, value, node, attempt, onAccepted, eventOps, unit);
         }
 
         public TxDraft withNode(NodeId value) {
-            return new TxDraft(kind, key, mutations, guards, pairs, Option.some(value), attempt, onAccepted, eventOps);
+            return new TxDraft(kind,
+                               key,
+                               mutations,
+                               guards,
+                               pairs,
+                               Option.some(value),
+                               attempt,
+                               onAccepted,
+                               eventOps,
+                               unit);
         }
 
         public TxDraft withOnAccepted(List<RoutedEvent> value) {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, value, eventOps);
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, value, eventOps, unit);
         }
 
         /// The judgment operations this transaction carries that answer an event (see [JudgmentOp#eventOnly]): if the write is lost,
         /// failed or its judgment moved, they are decided again from here, since no sweep derives them.
         public TxDraft withEventOps(List<JudgmentOp> value) {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, onAccepted, value);
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, onAccepted, value, unit);
+        }
+
+        /// The retirement unit a CLEANUP draft was built with (#3828, design 3.4): resubmission asks the unit, never the flat lists.
+        public TxDraft withUnit(RetirementUnit value) {
+            return new TxDraft(kind,
+                               key,
+                               mutations,
+                               guards,
+                               pairs,
+                               node,
+                               attempt,
+                               onAccepted,
+                               eventOps,
+                               Option.some(value));
         }
 
         public TxDraft nextAttempt() {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt + 1, onAccepted, eventOps);
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt + 1, onAccepted, eventOps, unit);
         }
     }
 

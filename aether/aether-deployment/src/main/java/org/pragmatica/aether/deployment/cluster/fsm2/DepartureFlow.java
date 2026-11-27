@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -17,12 +18,12 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.deployment.cluster.fsm2.TimerId.Kind;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DirectiveReceiptValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -338,11 +339,13 @@ public sealed interface DepartureFlow {
 
     // -- C17b ------------------------------------------------------------------------------------------------------
     /// One transaction, guarded on the committed DEPARTED record: the node's observed rows at their exact values (current
-    /// or stale alike), any desired, route and topic-row (#1337) keys still present, and for a WORKER with a directive its directive
-    /// and its record, each at its exact value (#3193, CTO ruling 6b6de53d51 item 3, design 12 item 4b: directive and record go
-    /// together or not at all). For that worker the record's removal is the guard, so no witness is added on the same key, and no
-    /// R-4.3.3 follows: the record leaves `departed` first in notification order, so [Directory#onDirectiveRemove] only re-reconciles.
-    /// Never a core's directive, a core's record or the placement key. The directive's removal is what retires the worker from its
+    /// or stale alike), any desired, route and topic-row (#1337) keys still present, and for a WORKER the id's [RetirementUnit] (#3828,
+    /// design 3.4; #3193, CTO ruling 6b6de53d51 item 3, design 12 item 4b): its record, directive and receipt, each at the exact value read
+    /// or witnessed absent, so the unit goes whole or not at all. A WORKER is told by its directive's role, else by its receipt's role
+    /// (R3): a worker whose directive was removed and whose record has no other remover is retired here. For that worker the record's
+    /// removal is the guard, and no R-4.3.3 follows: the record leaves `departed` first in notification order, so
+    /// [Directory#onDirectiveRemove] only re-reconciles. A core (or an id with neither role evidence) takes the unit's guarding form: no
+    /// removal, one witness on the record. Never the placement key. The directive's removal is what retires the worker from its
     /// community: the governor's roster is derived from the directives, so its next announcement drops the worker and
     /// `COMMUNITY_MEMBER_LEFT` is projected from that roster put. Removal is terminal for the NodeId: C11f does not re-admit a retired
     /// worker; a falsely declared-dead worker is replaced under a fresh NodeId (`FalseDeadWorkerRejoinTest`,
@@ -354,52 +357,48 @@ public sealed interface DepartureFlow {
     /// after it failed until the reconcile re-runs the pending join, a C17b would remove the rows of the process being admitted (W3', CTO ruling
     /// 2026-10-14). A removal input or a C17s clears `joined`, and C17b follows.
     static ClusterModel cleanup(ClusterModel m, Ctx ctx, NodeId node, int attempt) {
-        if (!m.departed.contains(node) || cleanupInFlight(m, node) || m.joined.contains(node) || Liveness.isPending(m,
-                                                                                                                    node)) {
+        if (!m.departed.contains(node) || !m.records.containsKey(node) || cleanupInFlight(m, node) || m.joined.contains(node) || Liveness.isPending(m,
+                                                                                                                                                    node)) {
             return m;
         }
 
-        return m.records.get(node)
-                        .fold(() -> m,
-                              record -> cleanupOf(m, node, record, attempt));
+        return cleanupDraft(cleanupUnit(m, node, true), cleanupRows(m, node), attempt).fold(() -> m,
+                                                                                            draft -> Outbox.direct(m,
+                                                                                                                   draft));
     }
 
-    private static ClusterModel cleanupOf(ClusterModel m, NodeId node, NodeDepartureValue record, int attempt) {
-        var mutations = cleanupMutations(m, node, record);
+    /// The unit read once from the mirror: in the retiring form when the id is retirable and the caller may retire, else the guarding form
+    /// of the same read.
+    private static RetirementUnit cleanupUnit(ClusterModel m, NodeId node, boolean mayRetire) {
+        var unit = RetirementUnit.retirementUnit(mirror(m), node);
 
-        return mutations.isEmpty()
-               ? m
-               : Outbox.direct(m, cleanupDraft(node, mutations, record, attempt));
+        return mayRetire && retirable(m, node)
+               ? unit
+               : unit.guarding();
     }
 
-    private static List<KVCommand.Mutation<AetherKey, AetherValue>> cleanupMutations(ClusterModel m,
-                                                                                     NodeId node,
-                                                                                     NodeDepartureValue record) {
-        return Stream.of(workerRetirement(m, node, record),
-                         observedRemovals(m, node),
+    static Function<AetherKey, Option<AetherValue>> mirror(ClusterModel m) {
+        return key -> Outbox.mirrored(m, key);
+    }
+
+    /// R3 (#3828): an id is retirable when it is a WORKER, by its directive's role, else by its receipt's role. A CORE receipt is not
+    /// evidence of a worker.
+    private static boolean retirable(ClusterModel m, NodeId node) {
+        return m.directives.get(node)
+                           .map(ActivationDirectiveValue::role)
+                           .orElse(() -> m.receipts.get(node)
+                                                   .map(DirectiveReceiptValue::role))
+                           .map(ActivationDirectiveValue.WORKER::equals)
+                           .or(false);
+    }
+
+    private static List<KVCommand.Mutation<AetherKey, AetherValue>> cleanupRows(ClusterModel m, NodeId node) {
+        return Stream.of(observedRemovals(m, node),
                          desiredRemovals(m, node),
                          routeRemovals(m, node),
                          topicRowRemovals(m, node))
                      .flatMap(List::stream)
                      .toList();
-    }
-
-    /// #3193: a departed WORKER's record and directive, each at its exact value, on EVERY departed record, inferred (STALE) included, as
-    /// legacy `ClusterDeploymentState.handleNodeRemoval` does (CTO ruling f407aba5dd: supersedes design rule Q1 for worker directives;
-    /// ruling 6b6de53d51 item 3: one transaction). The record goes first, so its removal notification takes the node out of `departed`
-    /// before the directive's reaches [Directory#onDirectiveRemove]. Removal is terminal: a falsely declared-dead worker is not re-admitted
-    /// under this id; it is replaced under a fresh NodeId (`FalseDeadWorkerRejoinTest`, `MembershipFsm.processEvidenceRefusal`). Nothing
-    /// for a core or a node without a WORKER directive.
-    private static List<KVCommand.Mutation<AetherKey, AetherValue>> workerRetirement(ClusterModel m,
-                                                                                     NodeId node,
-                                                                                     NodeDepartureValue record) {
-        return m.directives.get(node)
-                           .filter(directive -> ActivationDirectiveValue.WORKER.equals(directive.role()))
-                           .map(directive -> List.of(removal(new NodeDepartureKey(node),
-                                                             record),
-                                                     removal(new ActivationDirectiveKey(node),
-                                                             directive)))
-                           .or(List.of());
     }
 
     /// The node's observed rows at their exact values, current or stale alike.
@@ -412,33 +411,25 @@ public sealed interface DepartureFlow {
                      .toList();
     }
 
-    /// The guard on the DEPARTED record: a witness, unless the draft removes the record itself (a worker's retirement), whose exact-value
-    /// removal is then the guard (a witness on that key would only repeat the removal's own expectation).
-    private static TxDraft cleanupDraft(NodeId node,
-                                        List<KVCommand.Mutation<AetherKey, AetherValue>> mutations,
-                                        NodeDepartureValue record,
-                                        int attempt) {
-        return new TxDraft(SubmitKind.CLEANUP,
-                           mutations.getFirst().key(),
-                           mutations,
-                           recordGuards(node, mutations, Option.some(record)),
-                           Set.of(),
-                           Option.some(node),
-                           attempt,
-                           List.of());
-    }
+    /// The unit's removals followed by the rows (design 3.4: the draft keeps its unit beside its rows), guarded by the unit's witnesses: for a
+    /// retiring unit the record's exact-value removal is the guard on the DEPARTED record, for a guarding unit a witness on it. Nothing when
+    /// there is neither a removal nor a row.
+    private static Option<TxDraft> cleanupDraft(RetirementUnit unit,
+                                                List<KVCommand.Mutation<AetherKey, AetherValue>> rows,
+                                                int attempt) {
+        var mutations = Stream.concat(unit.removals().stream(),
+                                      rows.stream()).toList();
 
-    private static List<KVCommand.ReadWitness<AetherKey>> recordGuards(NodeId node,
-                                                                       List<KVCommand.Mutation<AetherKey, AetherValue>> mutations,
-                                                                       Option<NodeDepartureValue> record) {
-        return retiresRecord(mutations)
-               ? List.of()
-               : List.of(new KVCommand.ReadWitness<AetherKey>(new NodeDepartureKey(node), record.map(v -> (Object) v)));
-    }
-
-    private static boolean retiresRecord(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
-        return mutations.stream()
-                        .anyMatch(mutation -> mutation.key() instanceof NodeDepartureKey);
+        return mutations.isEmpty()
+               ? Option.none()
+               : Option.some(new TxDraft(SubmitKind.CLEANUP,
+                                         mutations.getFirst().key(),
+                                         mutations,
+                                         unit.witnesses(),
+                                         Set.of(),
+                                         Option.some(unit.node()),
+                                         attempt,
+                                         List.of()).withUnit(unit));
     }
 
     private static boolean cleanupInFlight(ClusterModel m, NodeId node) {
@@ -452,69 +443,47 @@ public sealed interface DepartureFlow {
                                                                                                                                                                                              .equals(Option.some(node)));
     }
 
-    /// A refused C17b (R-5.7.2): stop for good if the record moved. Otherwise the mutations whose keys moved are split out (a
-    /// node that wrote a row keeps it), and the rest are resubmitted at once, at most five times.
+    /// A refused C17b (R-5.7.2): stop for good if the record moved. Otherwise the rows whose keys moved are split out (a
+    /// node that wrote a row keeps it), and the rest are resubmitted at once, at most five times, with a unit read again from the mirror.
     // FER (degrade forward): a refused C17b whose record moved is not resubmitted. Guarantee: nothing is removed against a record that
-    // is no longer the one the cleanup was derived from. Mechanism: the guard on the DEPARTED record; the departed node's rows are
-    // collected by the next reconcile's step 10, which derives a fresh C17b from the mirror.
-    // Design-out: a C17b always carries its node (`cleanupDraft` sets it), so a draft without one cannot be built; the arm exists to total the
+    // is no longer the one the cleanup was derived from. Mechanism: the unit's record member, asked through `recordUnchanged`; the departed
+    // node's rows are collected by the next reconcile's step 10, which derives a fresh C17b from the mirror.
+    // Design-out: a C17b always carries its unit (`cleanupDraft` sets it), so a draft without one cannot be built; the arm exists to total the
     // switch and nothing is lost by returning the model unchanged.
     static ClusterModel cleanupRefused(ClusterModel m, Ctx ctx, TxDraft draft) {
-        return draft.node()
-                    .fold(() -> m,
-                          node -> resubmitIfUnchanged(m, node, draft));
+        return draft.unit()
+                    .map(unit -> resubmitIfUnchanged(m, draft, unit))
+                    .or(m);
     }
 
     // FER: a C17b past its bound, or whose record moved, is not resubmitted; the next reconcile builds a fresh one from the mirror.
-    private static ClusterModel resubmitIfUnchanged(ClusterModel m, NodeId node, TxDraft draft) {
-        return draft.attempt() < Outbox.GOAL_RESUBMISSIONS && recordUnchanged(m, node, draft)
-               ? resubmitUnmoved(m, node, draft)
+    private static ClusterModel resubmitIfUnchanged(ClusterModel m, TxDraft draft, RetirementUnit unit) {
+        return draft.attempt() < Outbox.GOAL_RESUBMISSIONS && unit.recordUnchanged(mirror(m))
+               ? resubmitUnmoved(m, draft, unit)
                : m;
     }
 
-    /// The unmoved mutations of a refused C17b, at once. A worker's retirement is kept whole or not at all (design 12 item 4b): when its
-    /// directive moved, the record's removal is split out with it and the rest is guarded by a witness on the unchanged record again; the
-    /// next reconcile's C17b retires the moved directive and the record together.
-    private static ClusterModel resubmitUnmoved(ClusterModel m, NodeId node, TxDraft draft) {
-        var unmoved = wholeRetirement(draft.mutations()
-                                           .stream()
-                                           .filter(mutation -> mutation.expected()
-                                                                       .equals(Outbox.mirrored(m,
-                                                                                               mutation.key())))
-                                           .toList());
-
-        return unmoved.isEmpty()
-               ? m
-               : Outbox.direct(m,
-                               new TxDraft(SubmitKind.CLEANUP,
-                                           unmoved.getFirst().key(),
-                                           unmoved,
-                                           recordGuards(node, unmoved, m.records.get(node)),
-                                           draft.pairs(),
-                                           draft.node(),
-                                           draft.attempt() + 1,
-                                           List.of()));
+    /// The unmoved rows of a refused C17b, at once, with the unit computed again from the mirror (never the refused draft's own unit
+    /// filtered): in the retiring form when the refused one was and C17b's condition still holds, else the guarding form. A unit member
+    /// that moved or appeared since derivation is read at its new value, so the id's record, directive and receipt still go together; an
+    /// unmoved record is the only condition for resubmitting at once, and the unit's witnesses are not compared with the record (G4).
+    private static ClusterModel resubmitUnmoved(ClusterModel m, TxDraft draft, RetirementUnit unit) {
+        return cleanupDraft(cleanupUnit(m, unit.node(), unit.retires()),
+                            unmovedRows(m, draft, unit),
+                            draft.attempt() + 1).fold(() -> m, resubmitted -> Outbox.direct(m, resubmitted));
     }
 
-    private static List<KVCommand.Mutation<AetherKey, AetherValue>> wholeRetirement(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
-        return retiresRecord(mutations) && mutations.stream()
-                                                    .noneMatch(mutation -> mutation.key() instanceof ActivationDirectiveKey)
-               ? mutations.stream()
-                          .filter(mutation -> !(mutation.key() instanceof NodeDepartureKey))
-                          .toList()
-               : mutations;
-    }
-
-    /// The record a C17b was derived from is the one the mirror holds: read from its witness, or from the record's own exact-value
-    /// removal when the draft retires a worker.
-    private static boolean recordUnchanged(ClusterModel m, NodeId node, TxDraft draft) {
-        return Stream.concat(draft.guards().stream().map(KVCommand.ReadWitness::expected),
-                             draft.mutations()
-                                  .stream()
-                                  .filter(mutation -> mutation.key() instanceof NodeDepartureKey)
-                                  .map(mutation -> mutation.expected()
-                                                           .map(v -> (Object) v)))
-                     .allMatch(expected -> expected.equals(m.records.get(node).map(v -> (Object) v)));
+    private static List<KVCommand.Mutation<AetherKey, AetherValue>> unmovedRows(ClusterModel m,
+                                                                                TxDraft draft,
+                                                                                RetirementUnit unit) {
+        return draft.mutations()
+                    .stream()
+                    .filter(mutation -> !unit.removals()
+                                             .contains(mutation))
+                    .filter(mutation -> mutation.expected()
+                                                .equals(Outbox.mirrored(m,
+                                                                        mutation.key())))
+                    .toList();
     }
 
     // -- the ADMITTED rewrite of a superseded record (R-4.3.0, step 10) ---------------------------------------------
@@ -724,8 +693,9 @@ public sealed interface DepartureFlow {
 
     // -- step 10: departed rows, records ---------------------------------------------------------------------------
     /// C17b for every departed node that still has rows, desired keys or route keys (C1, the tick), except a liveness-pending core
-    /// (G-4), and the ADMITTED rewrite of superseded DEPARTED records. A record is removed here only with its WORKER directive, in that
-    /// worker's C17b (#3193, design 12 item 4b); otherwise never (R-4.3.5 narrowed by MQ-4).
+    /// (G-4), and the ADMITTED rewrite of superseded DEPARTED records. A record is removed here only with its retirement unit, in the
+    /// C17b of a WORKER told by its directive's role, else by its receipt's role (#3193, design 12 item 4b; #3828, R3); the record of a
+    /// core is never removed here (R-4.3.5 narrowed by MQ-4).
     static ClusterModel sweep(ClusterModel m, Ctx ctx) {
         m.departed.toList().stream().sorted().forEach(node -> cleanup(m, ctx, node, 0));
         m.records.entries()
