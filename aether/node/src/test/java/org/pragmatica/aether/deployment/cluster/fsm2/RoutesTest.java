@@ -233,6 +233,93 @@ class RoutesTest {
         assertThat(h.model().declaredByOwner.get(other).map(artifacts -> artifacts.contains(ORDERS))).isEqualTo(Option.some(true));
     }
 
+    // -- #3836 round 3: a declared route row speaks for exactly one claimant ---------------------------------------------------------------
+    private static final BlueprintId APP_V2_ID = blueprintId("org.example:app:2.0.0");
+
+    /// The upgrade of `APP`: the same base at 2.0.0, one ORDERS instance, declaring `routes`. C2 lets it coexist with 1.0.0 (same base).
+    private static AppBlueprintValue upgradeOf(String attempt, DeclaredRoute... routes) {
+        var expanded = ExpandedBlueprint.expandedBlueprint(APP_V2_ID,
+                                                           List.of(slice(ORDERS, 1, 1, Set.of())));
+
+        return AppBlueprintValue.appBlueprintValue(expanded,
+                                                   false,
+                                                   attempt,
+                                                   Map.of(ORDERS, List.of(routes)));
+    }
+
+    private static Option<String> ownerOf(FsmHarness h, DeclaredRoute route) {
+        return committed(h, route).filter(DeclaredRouteValue.class::isInstance)
+                                  .map(DeclaredRouteValue.class::cast)
+                                  .map(DeclaredRouteValue::blueprintId);
+    }
+
+    private static void ticks(FsmHarness h, int count) {
+        for (int i = 0; i < count; i++) {
+            h.advance(h.settings.timing().tick());
+        }
+    }
+
+    /// Red when: two live versions of one base that declare the same route each take the row from the other (each sees the other's row as
+    /// `STALE` and re-declares it), so the table never settles and the sweep drafts a ROUTES write on every pass. The claimant of a key is
+    /// one function of the committed values: after both blueprints are committed the writes stop, one version owns the row, the shared
+    /// artifact's gate counts it, and a new leader that rebuilds from the same committed state writes nothing either.
+    @Test
+    void claimant_twoVersionsDeclaringOneRowSettleWithOneClaimant() {
+        var h = active();
+
+        publish(h, blueprintOf("attempt-1", false, LIST));
+        assertThat(ownerOf(h, LIST)).as("control: 1.0.0 owns the row while it is alone").isEqualTo(Option.some(APP));
+        publish(h, upgradeOf("attempt-b", LIST), Option.some(blueprintOf("attempt-1", false, LIST)));
+        var before = h.submits(SubmitKind.ROUTES).size();
+
+        ticks(h, 5);
+        var settled = ownerOf(h, LIST);
+
+        assertThat(h.submits(SubmitKind.ROUTES).size() - before).as("ROUTES writes over 5 ticks with both versions committed (owner now %s)",
+                                                                   settled)
+                  .isZero();
+        assertThat(settled.map(owner -> owner.equals(APP) || owner.equals(APP_V2_ID.asString()))).as("the row has a claimant: a declarer")
+                  .isEqualTo(Option.some(true));
+        assertThat(Routes.rowsCommitted(h.model(), ORDERS)).as("the shared artifact's gate counts the row").isTrue();
+        h.deliver(new ClusterInput.Deactivate());
+        h.activate();
+        before = h.submits(SubmitKind.ROUTES).size();
+        ticks(h, 5);
+        assertThat(h.submits(SubmitKind.ROUTES).size() - before).as("a leader that rebuilds the same committed state writes nothing").isZero();
+        assertThat(ownerOf(h, LIST)).as("and picks the same claimant").isEqualTo(settled);
+    }
+
+    /// Red when: a version writes, fails or removes a row it is not the claimant of. 1.0.0 declares LIST and GET_ONE, 2.0.0 only LIST: the
+    /// shared LIST row settles on one claimant, and the GET_ONE row, which only 1.0.0 declares, never goes to or is taken by 2.0.0.
+    @Test
+    void claimant_aRowOnlyOneVersionDeclaresIsNeverWrittenByTheOther() {
+        var h = active();
+
+        publish(h, blueprintOf("attempt-1", false, LIST, GET_ONE));
+        publish(h, upgradeOf("attempt-b", LIST), Option.some(blueprintOf("attempt-1", false, LIST, GET_ONE)));
+        var before = h.submits(SubmitKind.ROUTES).size();
+
+        ticks(h, 5);
+        assertThat(h.submits(SubmitKind.ROUTES).size() - before).as("ROUTES writes over 5 ticks with both versions committed").isZero();
+        assertThat(ownerOf(h, GET_ONE)).as("GET_ONE is declared by 1.0.0 alone").isIn(Option.some(APP), Option.none());
+    }
+
+    /// Red when: `removal` (W4) stops filtering on the row's owner: a version that does not declare a route removes the row another live
+    /// version of its base owns. 2.0.0 declares GET_ONE only, 1.0.0 declares LIST only; neither row is the other's to remove.
+    @Test
+    void removal_aRowAnotherVersionOwnsIsNeverRemoved() {
+        var h = active();
+
+        publish(h, blueprintOf("attempt-1", false, LIST));
+        publish(h, upgradeOf("attempt-b", GET_ONE), Option.some(blueprintOf("attempt-1", false, LIST)));
+        assertThat(ownerOf(h, GET_ONE)).as("control: 2.0.0 declared GET_ONE").isEqualTo(Option.some(APP_V2_ID.asString()));
+        h.clearLog();
+        ticks(h, 3);
+        assertThat(ownerOf(h, GET_ONE)).as("2.0.0's row stays").isEqualTo(Option.some(APP_V2_ID.asString()));
+        assertThat(ownerOf(h, LIST)).as("1.0.0's row stays").isEqualTo(Option.some(APP));
+        assertThat(h.submits(SubmitKind.ROUTES)).as("no ROUTES write once both are declared").isEmpty();
+    }
+
     private static void releaseHeld(FsmHarness h) {
         new ArrayList<>(h.held.values()).forEach(submit -> {
             h.applyHeld(submit.correlationId());

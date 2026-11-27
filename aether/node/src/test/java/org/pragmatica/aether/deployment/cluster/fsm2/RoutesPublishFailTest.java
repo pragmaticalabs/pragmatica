@@ -4,19 +4,27 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.deployment.cluster.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeclaredRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRoute;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.lang.Option;
 
@@ -336,5 +344,72 @@ class RoutesPublishFailTest {
         h.advance(h.settings.submissionExpiry() + 2 * h.settings.timing().tick());
         assertThat(committed(h, LIST)).as("the failed artifact's row stays Failed at attempt-2").isEqualTo(Option.some(failed(ATTEMPT_2, "boom")));
         assertThat(committed(h, GET_ONE)).isEqualTo(Option.some(failed(ATTEMPT_2, "boom")));
+    }
+
+    /// Red when (#3836 F2): a same-id ALL_OR_NOTHING rollback restores the blueprint under the rolled-back attemptId (#972: the ROLLED_BACK
+    /// outcome fences to its attempt) and its rows, Failed at that very attempt, stay `Failed` for good: the restored blueprint's gate never
+    /// opens although its slice is retryable. After the restore the rows speak for the restored blueprint again and the gate opens with no
+    /// further publish, while the restored blueprint keeps the rolled-back attemptId and the outcome stays ROLLED_BACK at it.
+    @Test
+    void restore_aSameIdRollbackReopensTheGateAndKeepsTheRolledBackAttempt() {
+        var h = leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5, CORE_1);
+
+        h.activate();
+        publish(h, blueprintOf(ATTEMPT_1, LIST));
+        publish(h, blueprintOf(ATTEMPT_2, LIST), Option.some(blueprintOf(ATTEMPT_1, LIST)));
+        failFatally(h);
+        for (int i = 0; i < 5; i++) {
+            h.advance(h.settings.timing().tick());
+        }
+        var restored = h.store.get(new AppBlueprintKey(APP_ID))
+                              .filter(AppBlueprintValue.class::isInstance)
+                              .map(AppBlueprintValue.class::cast);
+
+        assertThat(restored.map(AppBlueprintValue::attemptId)).as("#972: the restore carries the rolled-back attemptId")
+                  .isEqualTo(Option.some(ATTEMPT_2));
+        assertThat(h.store.get(new DeploymentOutcomeKey(APP_ID))
+                          .map(outcome -> ((DeploymentOutcomeValue) outcome).status())).as("#972: the outcome closes ROLLED_BACK")
+                  .isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
+        assertThat(Routes.rowsCommitted(h.model(), ORDERS)).as("the restored blueprint's gate opens (row now %s)", committed(h, LIST))
+                  .isTrue();
+    }
+
+    /// Red when (#3836 F1 and F2 together): 2.0.0 of the same base shares LIST with 1.0.0 and fails fatally under ALL_OR_NOTHING, so 1.0.0 is
+    /// restored under its own committed attemptId and 2.0.0 is removed. Whoever was the claimant of the row, after the rollback the row has one
+    /// claimant (a declarer that is still committed), the writes stop and the restored blueprint's gate opens with no further publish.
+    @Test
+    void restore_aDifferentIdRollbackLeavesOneClaimantAndAnOpenGate() {
+        var h = leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5, CORE_1);
+        var upgrade = upgradeOf(ATTEMPT_2, LIST);
+
+        h.activate();
+        publish(h, blueprintOf(ATTEMPT_1, LIST));
+        publish(h, upgrade, Option.some(blueprintOf(ATTEMPT_1, LIST)));
+        failFatally(h);
+        for (int i = 0; i < 5; i++) {
+            h.advance(h.settings.timing().tick());
+        }
+        var before = h.submits(SubmitKind.ROUTES).size();
+
+        for (int i = 0; i < 5; i++) {
+            h.advance(h.settings.timing().tick());
+        }
+        assertThat(h.store.get(new AppBlueprintKey(upgrade.blueprint().id())).isPresent()).as("control: 2.0.0 is rolled back and removed")
+                  .isFalse();
+        assertThat(h.submits(SubmitKind.ROUTES).size() - before).as("no ROUTES write once the rollback settled").isZero();
+        assertThat(committed(h, LIST).map(row -> ((DeclaredRouteValue) row).blueprintId())).as("the claimant is the restored 1.0.0")
+                  .isEqualTo(Option.some(APP));
+        assertThat(Routes.rowsCommitted(h.model(), ORDERS)).as("the restored blueprint's gate opens (row now %s)", committed(h, LIST))
+                  .isTrue();
+    }
+
+    private static AppBlueprintValue upgradeOf(String attempt, DeclaredRoute... routes) {
+        var expanded = ExpandedBlueprint.expandedBlueprint(blueprintId("org.example:app:2.0.0"),
+                                                           List.of(slice(ORDERS, 1, 1, Set.of())));
+
+        return AppBlueprintValue.appBlueprintValue(expanded,
+                                                   false,
+                                                   attempt,
+                                                   Map.of(ORDERS, List.of(routes)));
     }
 }
