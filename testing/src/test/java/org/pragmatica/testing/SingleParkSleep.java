@@ -36,7 +36,7 @@ import java.util.regex.Pattern;
 /// body is the call's own statement, with no method, lambda, anonymous class or class boundary between the loop and the call. Everything
 /// else is a hit, including a call in a lambda handed to a looping helper (hand the helper [Pause] instead).
 ///
-/// What it does NOT see, and review must: whether the enclosing loop re-checks anything (a `for` that paces, or a loop whose condition
+/// What it does NOT see, and review must: an expression lambda (no braces) inside a loop, which has no block to be a boundary and so counts as the loop's own statement; whether the enclosing loop re-checks anything (a `for` that paces, or a loop whose condition
 /// cannot change, still passes; such a loop returns at once under a set flag and so spins instead of waiting), a park reached through a
 /// method reference (`LockSupport::parkNanos` handed to a helper) or through another wrapper, and `parkUntil`/`park()`. `Thread.sleep`
 /// has its own pattern (`SLEEP`). Test-support code that ships in a main tree is out of scope, like the rest of the scan; [Pause] is

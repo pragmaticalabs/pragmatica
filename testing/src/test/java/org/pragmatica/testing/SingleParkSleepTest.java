@@ -57,8 +57,8 @@ class SingleParkSleepTest {
     }
 
     @Test
-    void hits_aLambdaInsideALoop_isStillReported_theLambdaIsABoundary() {
-        assertThat(hitLines("class A {", "    void sleeps() {", "        while (true) {", "            run(() -> " + PARK.replace(";", ")") + ";", "        }", "    }", "}")).containsExactly(4);
+    void hits_aBlockLambdaInsideALoop_isStillReported_theLambdaBodyIsABoundary() {
+        assertThat(hitLines("class A {", "    void sleeps() {", "        while (true) {", "            run(() -> {", "                " + PARK, "            });", "        }", "    }", "}")).containsExactly(5);
     }
 
     @Test
