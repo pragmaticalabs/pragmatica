@@ -399,6 +399,17 @@ class RoutesGateTest {
         assertThat(h.store.get(goalKey)).as("the refused goal wrote nothing").isEqualTo(Option.none());
     }
 
+    /// Red when: the blueprint two pairs of one owner share is written once per pair: the transaction carries the whole `AppBlueprintValue`, so a
+    /// copy per pair grows it with the blueprint's artifacts.
+    @Test
+    void gate_theBlueprintTwoPairsShareIsWitnessedOnce() {
+        var h = leaderWithOneCore();
+        var goal = heldGoalOf(h, twoSlices("attempt-1"));
+
+        assertThat(goal.transaction().mutations()).as("control: both goals ride one transaction").hasSize(2);
+        assertThat(witnessedKeys(goal).stream().filter(AppBlueprintKey.appBlueprintKey(APP_ID)::equals).count()).isEqualTo(1);
+    }
+
     /// Red when: a pair resubmitted after a refusal drops the target and blueprint witnesses (the split keeps only the observed guard and the
     /// declared rows): ORDERS' row changes, BILLING's goal is resubmitted alone, with BILLING's target and the shared blueprint witnessed and
     /// not ORDERS' target; the blueprint then moves, and the resubmitted goal is refused.
@@ -407,7 +418,6 @@ class RoutesGateTest {
         var h = leaderWithOneCore();
         var first = heldGoalOf(h, twoSlices("attempt-1"));
 
-        assertThat(witnessedKeys(first).stream().filter(AppBlueprintKey.appBlueprintKey(APP_ID)::equals).count()).as("the blueprint both pairs share is witnessed once").isEqualTo(1);
         h.seed(key(LIST), published("attempt-1"));
         h.drain();
         var settlement = h.applyHeld(first.correlationId());
